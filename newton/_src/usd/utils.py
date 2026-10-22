@@ -1744,7 +1744,7 @@ def _classify_color_space(name: str, default: ColorSpace) -> tuple[ColorSpace, b
     """Classify a USD color-space name as sRGB or linear.
 
     Args:
-        name: Authored or inherited color-space name; empty for untagged data.
+        name: Authored or inherited color-space name; empty or ``auto`` for untagged data.
         default: Color space of untagged data.
 
     Returns:
@@ -1753,7 +1753,7 @@ def _classify_color_space(name: str, default: ColorSpace) -> tuple[ColorSpace, b
         (``lin_*`` or ``acescg``) and as sRGB otherwise.
     """
     token = name.strip().lower()
-    if not token:
+    if not token or token == "auto":
         return default, True
     if token in _LINEAR_COLOR_SPACES:
         return ColorSpace.LINEAR, True

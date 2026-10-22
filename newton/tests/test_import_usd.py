@@ -14505,6 +14505,10 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
         prim = self._define_material_mesh(stage, "Supported", "lin_rec709_scene")
         with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
             resolve_material_properties_for_prim(prim)
+        # Omniverse assets tag texture files with ``auto``, which means untagged.
+        prim = self._define_material_mesh(stage, "Auto", "auto", texture_asset=texture_path)
+        with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+            self.assertEqual(usd.get_mesh(prim).texture, texture_path)
 
 
 if __name__ == "__main__":

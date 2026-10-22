@@ -517,8 +517,9 @@ colors such as ``srgb_rec709_scene`` are kept as authored.
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on
 the file attribute, and converts linear/raw color textures to display/sRGB when
-they are loaded. Untagged (``sourceColorSpace="auto"``) and display/sRGB
-textures stay display-encoded.
+they are loaded. Display/sRGB textures stay display-encoded, as do untagged
+textures, whose ``sourceColorSpace`` is ``auto`` or unset and whose file
+attribute has no color-space metadata or ``auto``.
 
 Gaussian splat spherical-harmonics radiance is resolved from the same
 color-space metadata. Untagged radiance is treated as display/sRGB.
