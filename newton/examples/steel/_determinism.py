@@ -13,31 +13,21 @@ from newton.solvers import SolverSteel
 
 # Each mode draws its two copies at one place, magenta and green and half transparent. The GL
 # viewer blends coincident copies to one gray body and shows diverging copies as two ghosts.
-COPY_COLORS = ((0.9, 0.2, 0.8), (0.2, 0.8, 0.3))
+COPY_COLORS = {"magenta": (0.9, 0.2, 0.8), "green": (0.2, 0.8, 0.3)}
 COPY_OPACITY = 0.5
 
 
 @wp.kernel(enable_backward=False)
-def show_copies(
+def measure_divergence(
     body_q_a: wp.array[wp.transform],
     body_q_b: wp.array[wp.transform],
-    side_offset: wp.vec3,
-    display_body_offset: int,
     divergence_offset: int,
-    display_body_q: wp.array[wp.transform],
     body_divergence: wp.array[wp.float32],
 ):
-    """Place both copies of one mode at its side of the view and record how far apart each body is."""
+    """Record how far apart each body is in the two copies of one mode."""
     body_id = wp.tid()
-    body_count = body_q_a.shape[0]
-    q_a = body_q_a[body_id]
-    q_b = body_q_b[body_id]
-    p_a = wp.transform_get_translation(q_a)
-    p_b = wp.transform_get_translation(q_b)
-    display_body_q[display_body_offset + body_id] = wp.transform(p_a + side_offset, wp.transform_get_rotation(q_a))
-    display_body_q[display_body_offset + body_count + body_id] = wp.transform(
-        p_b + side_offset, wp.transform_get_rotation(q_b)
-    )
+    p_a = wp.transform_get_translation(body_q_a[body_id])
+    p_b = wp.transform_get_translation(body_q_b[body_id])
     body_divergence[divergence_offset + body_id] = wp.length(p_a - p_b)
 
 
@@ -68,30 +58,24 @@ class DeterminismExample:
             raise RuntimeError("The Steel determinism examples require a CUDA device.")
 
         self.copies = {
-            mode: [_SimulationCopy(scene, solver_options, deterministic) for _ in range(2)]
+            mode: [
+                _SimulationCopy(f"{mode} {color_name}", scene, solver_options, deterministic, color)
+                for color_name, color in COPY_COLORS.items()
+            ]
             for mode, deterministic in (("default", False), ("deterministic", True))
         }
         self.scene_body_count = scene.body_count
         # Every copy reads the same control so the copies only differ by how they were simulated.
         self.control = self.copies["default"][0].model.control()
-
-        # The default pair sits at -side_offset and the deterministic pair at +side_offset.
-        self.side_offsets = [wp.vec3(*side_offset) * sign for sign in (-1.0, 1.0)]
-        display = newton.ModelBuilder()
-        for offset in self.side_offsets:
-            for color in COPY_COLORS:
-                first_shape = display.shape_count
-                display.add_builder(scene, xform=wp.transform(offset, wp.quat_identity()))
-                for shape in range(first_shape, display.shape_count):
-                    display.shape_color[shape] = color
-                    display.shape_opacity[shape] = COPY_OPACITY
-        display.add_ground_plane()
-        self.model = display.finalize()
-        self.state_0 = self.model.state()
         self.body_divergence = wp.zeros(2 * self.scene_body_count, dtype=wp.float32)
         self.max_divergence = {"default": 0.0, "deterministic": 0.0}
 
-        self.viewer.set_model(self.model)
+        # Each copy is a viewer layer, the default pair at -side_offset and the deterministic pair at +side_offset.
+        for copies, sign in zip(self.copies.values(), (-1.0, 1.0), strict=True):
+            for copy in copies:
+                self.viewer.activate(copy.layer_id)
+                self.viewer.set_model(copy.model)
+                self.viewer.set_layer_transform(copy.layer_id, wp.vec3(*side_offset) * sign)
         self.viewer.set_camera(**camera)
 
         self.capture()
@@ -121,16 +105,10 @@ class DeterminismExample:
         self.sim_time += self.frame_dt
         for mode_id, (copy_a, copy_b) in enumerate(self.copies.values()):
             wp.launch(
-                show_copies,
+                measure_divergence,
                 dim=self.scene_body_count,
-                inputs=[
-                    copy_a.state_0.body_q,
-                    copy_b.state_0.body_q,
-                    self.side_offsets[mode_id],
-                    2 * mode_id * self.scene_body_count,
-                    mode_id * self.scene_body_count,
-                ],
-                outputs=[self.state_0.body_q, self.body_divergence],
+                inputs=[copy_a.state_0.body_q, copy_b.state_0.body_q, mode_id * self.scene_body_count],
+                outputs=[self.body_divergence],
             )
         divergence = self.body_divergence.numpy().reshape(2, self.scene_body_count).max(axis=1)
         self.max_divergence = dict(zip(self.copies, (float(d) for d in divergence), strict=True))
@@ -138,7 +116,10 @@ class DeterminismExample:
     def render(self):
         """Draw both copies of each mode overlaid, the default pair left and the deterministic pair right."""
         self.viewer.begin_frame(self.sim_time)
-        self.viewer.log_state(self.state_0)
+        for copies in self.copies.values():
+            for copy in copies:
+                self.viewer.activate(copy.layer_id)
+                self.viewer.log_state(copy.state_0)
         self.viewer.log_scalar("Default (left), max divergence [mm]", 1.0e3 * self.max_divergence["default"])
         self.viewer.log_scalar(
             "Deterministic (right), max divergence [mm]", 1.0e3 * self.max_divergence["deterministic"]
@@ -170,13 +151,24 @@ class DeterminismExample:
 
 
 class _SimulationCopy:
-    """One model, solver and collision pipeline simulating the scene."""
+    """One model, solver and collision pipeline simulating the scene, drawn as one viewer layer."""
 
-    def __init__(self, scene: newton.ModelBuilder, solver_options: dict, deterministic: bool):
+    def __init__(
+        self,
+        layer_id: str,
+        scene: newton.ModelBuilder,
+        solver_options: dict,
+        deterministic: bool,
+        color: tuple[float, float, float],
+    ):
+        self.layer_id = layer_id
         builder = newton.ModelBuilder()
         # The ground plane takes its gap from this builder.
         builder.rigid_gap = scene.rigid_gap
         builder.replicate(scene, 1)
+        for shape in range(builder.shape_count):
+            builder.shape_color[shape] = color
+            builder.shape_opacity[shape] = COPY_OPACITY
         builder.add_ground_plane()
         self.model = builder.finalize()
         self.solver = SolverSteel(
