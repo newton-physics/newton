@@ -866,6 +866,82 @@ add_function_test(
 )
 
 
+def _belt_ride(device, mode, articulated, steps=120, window=30):
+    """Step a box resting on a kinematic belt moving at 0.5 m/s along x.
+
+    Returns the box's mean x velocity over the last ``window`` steps and the matrix-free row count.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0, restitution=0.0, density=500.0)
+    belt = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()))
+    builder.add_shape_box(belt, hx=2.0, hy=2.0, hz=0.05, cfg=cfg)
+    builder.body_flags[belt] = int(newton.BodyFlags.KINEMATIC)
+    pose = wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
+    box = (builder.add_link if articulated else builder.add_body)(xform=pose)
+    if articulated:
+        joint = builder.add_joint_d6(
+            parent=-1,
+            child=box,
+            parent_xform=pose,
+            linear_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+            angular_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+        )
+        builder.add_articulation([joint])
+    builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.05, cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        articulated_contact_response="immediate",
+        friction_mode=mode,
+        friction_anchor_beta=0.0,
+        iterations=32,
+        free_body_constraint_max=64,
+        articulation_constraint_max=64,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+    )
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=32, deterministic=True)
+    contacts = pipeline.contacts()
+    state, next_state, control = model.state(), model.state(), model.control()
+    # The belt's free joint comes first.
+    joint_qd = state.joint_qd.numpy()
+    joint_qd[0] = 0.5
+    state.joint_qd.assign(joint_qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    for step in range(steps):
+        if step == steps - window:
+            x_start = state.body_q.numpy()[box, 0]
+        state.clear_forces()
+        pipeline.collide(state, contacts)
+        solver.step(state, next_state, control, contacts, 1.0 / 240.0)
+        state, next_state = next_state, state
+    mean_vx = (state.body_q.numpy()[box, 0] - x_start) * 240.0 / window
+    return mean_vx, int(solver._mf_constraint_count.numpy().sum())
+
+
+def test_kinematic_belt_drags_the_box(test, device):
+    """A box on a kinematic belt reaches the belt speed in every friction mode, free and articulated."""
+    for articulated in (False, True):
+        for mode in ("fixed_normal", "bisection", "bisection_desaxce", "coulomb_newton"):
+            with test.subTest(articulated=articulated, mode=mode):
+                mean_vx, mf_rows = _belt_ride(device, mode, articulated)
+                # The free box's contact is a matrix-free row; the articulated box's is a dense one.
+                test.assertEqual(mf_rows == 0, articulated)
+                test.assertAlmostEqual(mean_vx, 0.5, delta=5.0e-3)
+
+
+class TestSteelKinematicBeltFriction(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelKinematicBeltFriction,
+    "test_kinematic_belt_drags_the_box",
+    test_kinematic_belt_drags_the_box,
+    devices=cuda_devices,
+)
+
+
 @wp.kernel(enable_backward=False)
 def _pose_motion_probe(
     before: wp.array[wp.transform],
