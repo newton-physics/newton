@@ -2353,26 +2353,6 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
                 self._assert_kinematic_state_matches_flags(model, solver)
 
-    def test_kinematic_switchable_root_starts_dynamic(self):
-        for use_mujoco_cpu in (False, True):
-            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                builder = newton.ModelBuilder()
-                SolverMuJoCo.register_custom_attributes(builder)
-                root = builder.add_body(
-                    mass=1.0,
-                    inertia=wp.mat33(np.eye(3)),
-                    custom_attributes={"mujoco:kinematic_switchable": True},
-                )
-                builder.add_shape_box(root, hx=0.05, hy=0.05, hz=0.05)
-                model = builder.finalize(requires_grad=False)
-                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
-                self.assertEqual(solver.mj_model.nmocap, 1)
-                self._assert_kinematic_state_matches_flags(model, solver)
-
-                model.body_flags.fill_(int(BodyFlags.KINEMATIC))
-                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-                self._assert_kinematic_state_matches_flags(model, solver)
-
     def test_making_non_root_kinematic_raises(self):
         model, root_body = self._build_model(root_kinematic=True)
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
@@ -2614,43 +2594,32 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 np.testing.assert_allclose(pos, parent_xform.p, atol=1.0e-6)
                 np.testing.assert_allclose(quat, [parent_xform.q[3], *parent_xform.q[:3]], atol=1.0e-6)
 
-    def test_switchable_roots_reserve_weld_rows(self):
-        """njmax leaves room for the welds of roots that start dynamic, or warns when it cannot."""
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
+    def test_kinematic_roots_reserve_weld_rows(self):
+        """njmax leaves room for welds inactive in the first world, or warns when it cannot."""
+        template = newton.ModelBuilder()
         for i in range(20):
-            body = builder.add_body(
-                xform=wp.transform((0.5 * i, 0.0, 1.0), wp.quat_identity()),
-                custom_attributes={"mujoco:kinematic_switchable": True},
-            )
-            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+            body = template.add_body(xform=wp.transform((0.5 * i, 0.0, 1.0), wp.quat_identity()), is_kinematic=True)
+            template.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
         model = builder.finalize()
+        # The first world starts dynamic, so its welds are missing from MuJoCo's initial constraint count.
+        body_flags = model.body_flags.numpy()
+        body_flags[:20] = int(BodyFlags.DYNAMIC)
+        model.body_flags.assign(body_flags)
 
         solver = SolverMuJoCo(model)
         model.body_flags.fill_(int(BodyFlags.KINEMATIC))
         solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
         state_0, state_1, control = model.state(), model.state(), model.control()
         solver.step(state_0, state_1, control, None, 0.002)
-        self.assertGreaterEqual(solver.mjw_data.njmax, int(solver.mjw_data.nefc.numpy().max()))
-        self.assertGreaterEqual(int(solver.mjw_data.nefc.numpy().max()), 6 * 20)
+        nefc = solver.mjw_data.nefc.numpy()
+        np.testing.assert_array_less(nefc - 1, solver.mjw_data.njmax)
+        np.testing.assert_array_equal(nefc, 6 * 20)
 
-        model.body_flags.fill_(int(BodyFlags.DYNAMIC))
+        model.body_flags.assign(body_flags)
         with self.assertWarnsRegex(NewtonWarning, "weld rows"):
             SolverMuJoCo(model, njmax=16)
-
-    def test_switchable_attribute_on_non_root_warns(self):
-        builder = newton.ModelBuilder()
-        SolverMuJoCo.register_custom_attributes(builder)
-        root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        child = builder.add_link(
-            mass=1.0, inertia=wp.mat33(np.eye(3)), custom_attributes={"mujoco:kinematic_switchable": True}
-        )
-        joints = [builder.add_joint_free(root), builder.add_joint_revolute(root, child, axis=newton.Axis.Z)]
-        builder.add_articulation(joints)
-        model = builder.finalize()
-        with self.assertWarnsRegex(NewtonWarning, "kinematic_switchable is ignored"):
-            solver = SolverMuJoCo(model, disable_contacts=True)
-        self.assertEqual(solver.mj_model.nmocap, 0)
 
     def test_making_unconverted_root_kinematic_raises(self):
         model, root_body = self._build_model(root_kinematic=False)
@@ -2658,33 +2627,8 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         body_flags = model.body_flags.numpy()
         body_flags[root_body] = int(BodyFlags.KINEMATIC)
         model.body_flags.assign(body_flags)
-        with self.assertRaisesRegex(ValueError, "mujoco:kinematic_switchable"):
+        with self.assertRaisesRegex(ValueError, "Mark the body kinematic before creating the solver"):
             solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-
-    def test_kinematic_switchable_opt_in_on_imported_body(self):
-        """An imported body opts into runtime kinematic switching through the builder or the model."""
-        mjcf = '<mujoco><worldbody><body name="crate" pos="0 0 1"><freejoint/><geom type="box" size=".1 .1 .1"/></body></worldbody></mujoco>'
-        for set_on_model in (False, True):
-            with self.subTest(set_on_model=set_on_model):
-                builder = newton.ModelBuilder()
-                SolverMuJoCo.register_custom_attributes(builder)
-                builder.add_mjcf(mjcf)
-                crate = next(i for i, label in enumerate(builder.body_label) if label.endswith("crate"))
-                if not set_on_model:
-                    builder.custom_attributes["mujoco:kinematic_switchable"].values[crate] = True
-                model = builder.finalize()
-                if set_on_model:
-                    switchable = model.mujoco.kinematic_switchable.numpy()
-                    switchable[crate] = True
-                    model.mujoco.kinematic_switchable.assign(switchable)
-
-                solver = SolverMuJoCo(model, disable_contacts=True)
-                self._assert_kinematic_state_matches_flags(model, solver)
-                body_flags = model.body_flags.numpy()
-                body_flags[crate] = int(BodyFlags.KINEMATIC)
-                model.body_flags.assign(body_flags)
-                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-                self._assert_kinematic_state_matches_flags(model, solver)
 
     def test_kinematic_root_tracks_prescribed_motion_and_holds_payload(self):
         """A shaken kinematic platform follows its prescribed pose and carries a box without slip."""

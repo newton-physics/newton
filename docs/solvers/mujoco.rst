@@ -1089,8 +1089,8 @@ Caveats
   MuJoCo has no prescribed degrees of freedom, so kinematic roots keep
   their authored mass and are held by a stiff weld to a mocap target.
   Contacts on a light kinematic body carrying a heavy load are softer
-  than an infinite-mass collider's, and only roots prepared at solver
-  construction can be switched at runtime. See `Kinematic welds`_.
+  than an infinite-mass collider's, and only roots that are kinematic when
+  the solver is created can be switched at runtime. See `Kinematic welds`_.
 
 **Collision filtering has a 32-bit capacity.**
   The solver creates MuJoCo masks that reproduce Newton's allowed collision
@@ -1179,56 +1179,49 @@ Switching kinematic roots at runtime
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 MuJoCo cannot add bodies or constraints to a compiled model, and all MuJoCo
-Warp worlds share one model, so the weld of every root that may become
-kinematic must exist when the solver is created. Roots that are kinematic in
-any world at that point get one automatically. To start a root dynamic and
-make it kinematic later, opt it in with the ``mujoco:kinematic_switchable``
-body attribute before creating the solver. :attr:`~newton.Model.body_flags`
-can then switch these roots in either direction, per world, followed by
-``notify_model_changed(ModelFlags.BODY_PROPERTIES)``:
+Warp worlds share one model, so a root can only be kinematic in
+:class:`~newton.solvers.SolverMuJoCo` if it was kinematic in some world when
+the solver was created. :attr:`~newton.Model.body_flags` can switch such roots
+between kinematic and dynamic in either direction, per world, followed by
+``notify_model_changed(ModelFlags.BODY_PROPERTIES)``. To start a root dynamic
+and make it kinematic later, mark it kinematic before creating the solver and
+switch it to dynamic right after:
 
-.. testcode:: mujoco-kinematic-switchable
+.. testcode:: mujoco-kinematic-switching
 
    from newton.solvers import SolverMuJoCo
 
    builder = newton.ModelBuilder()
-   SolverMuJoCo.register_custom_attributes(builder)
-   crate = builder.add_body(
-       xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
-       custom_attributes={"mujoco:kinematic_switchable": True},
-   )
+   crate = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), is_kinematic=True)
    builder.add_shape_box(crate, hx=0.1, hy=0.1, hz=0.1)
    model = builder.finalize()
    solver = SolverMuJoCo(model)
 
-   # Later: take over the crate's motion.
+   # Start dynamic.
    body_flags = model.body_flags.numpy()
+   body_flags[crate] = int(newton.BodyFlags.DYNAMIC)
+   model.body_flags.assign(body_flags)
+   solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+   # Later: take over the crate's motion.
    body_flags[crate] = int(newton.BodyFlags.KINEMATIC)
    model.body_flags.assign(body_flags)
    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
-For an imported asset, set the attribute on the builder after importing, for
-example
-``builder.custom_attributes["mujoco:kinematic_switchable"].values[body] = True``,
-or on ``model.mujoco.kinematic_switchable`` before creating the solver.
-
-Each opted-in root adds a mocap body and an inactive weld to the exported
-MuJoCo model, and the default ``njmax`` reserves the six constraint rows each
-inactive weld needs once its root turns kinematic.
+Each such root adds a mocap body and a weld to the exported MuJoCo model, and
+the default ``njmax`` reserves the six constraint rows of each weld that is
+inactive in the first world.
 
 Errors and warnings
 ~~~~~~~~~~~~~~~~~~~
 
-- Making a root without a target, or any non-root body, kinematic raises
-  :class:`ValueError`, as does making a massless kinematic root dynamic.
-  These checks run on eager notifications; inside CUDA graph capture an
-  invalid flag is not detected.
-- ``mujoco:kinematic_switchable`` on a body that is not a root with joint
-  DOFs, or on a root without mass or inertia, is ignored with a
-  :class:`~newton.exceptions.NewtonWarning`.
-- An explicit ``njmax`` too small for the welds of switchable roots
-  issues a :class:`~newton.exceptions.NewtonWarning`; constraints may
-  overflow once those roots turn kinematic.
+- Making a root kinematic that was not kinematic in any world when the solver
+  was created, or any non-root body, raises :class:`ValueError`, as does
+  making a massless kinematic root dynamic. These checks run on eager
+  notifications; inside CUDA graph capture an invalid flag is not detected.
+- An explicit ``njmax`` too small for the welds that are inactive in the
+  first world issues a :class:`~newton.exceptions.NewtonWarning`;
+  constraints may overflow once those roots turn kinematic.
 
 
 Updating joint force properties

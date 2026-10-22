@@ -452,9 +452,9 @@ Implementation details differ by coordinate formulation:
 :class:`~newton.solvers.SolverMuJoCo` follows MuJoCo, which has no prescribed degrees of freedom: it holds
 kinematic roots with a weld to a target that tracks the prescribed motion. This has user-visible consequences:
 
-- Switching a root between kinematic and dynamic at runtime requires opting the root in before the solver is
-  created, through the ``mujoco:kinematic_switchable`` body attribute.
-  Roots that are kinematic when the solver is created are opted in automatically.
+- Only roots that are kinematic in some world when the solver is created can be switched between kinematic and
+  dynamic at runtime. To start such a root dynamic, mark it kinematic before creating the solver and switch it to
+  dynamic afterwards.
 - Kinematic roots keep their real mass, so contacts on a light kinematic body under a heavy load are softer than an
   infinite-mass collider's.
 - A kinematic root without mass or inertia is driven as a MuJoCo mocap body. It cannot be switched to dynamic, and
