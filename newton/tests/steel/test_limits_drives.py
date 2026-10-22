@@ -19,7 +19,11 @@ from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
+    ROW_SLOTS_ATOMIC,
+    ROW_SLOTS_COUNT,
+    ROW_SLOTS_WRITE,
     allocate_joint_velocity_limit_slots,
+    allocate_physx_drive_slots,
     allocate_rigid_velocity_limit_slots,
     build_joint_limit_rows,
     prescale_joint_velocity_limits,
@@ -61,10 +65,23 @@ def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: flo
         wp.zeros((1, max_constraints), dtype=wp.float32, device=device),
     ]
     if scalar_builder:
-        wp.launch(build_joint_limit_rows, dim=1, inputs=[*inputs, 1], outputs=outputs, device=device)
+        wp.launch(
+            build_joint_limit_rows,
+            dim=1,
+            inputs=[*inputs, 1],
+            outputs=[*outputs, ROW_SLOTS_ATOMIC, wp.zeros(1, dtype=wp.int32, device=device)],
+            device=device,
+        )
     else:
         kernel = _get_joint_limit_warp_kernel(1, wp.get_device(device).arch, 1)
-        wp.launch_tiled(kernel, dim=[1], inputs=[1, *inputs], outputs=outputs, block_dim=32, device=device)
+        wp.launch_tiled(
+            kernel,
+            dim=[1],
+            inputs=[1, *inputs],
+            outputs=[*outputs, ROW_SLOTS_ATOMIC, wp.zeros(1, dtype=wp.int32, device=device)],
+            block_dim=32,
+            device=device,
+        )
     count = int(world_slot_counter.numpy()[0])
     return J_group.numpy()[0, :count, 0].tolist(), world_phi.numpy()[0, :count].tolist()
 
@@ -516,7 +533,7 @@ def test_warp_builder_matches_reference_row_order_and_values(test, device, scala
             build_joint_limit_rows,
             dim=articulation_count,
             inputs=[*inputs, size],
-            outputs=list(outputs),
+            outputs=[*outputs, ROW_SLOTS_ATOMIC, wp.zeros(1, dtype=wp.int32, device=device)],
             device=device,
         )
     else:
@@ -526,7 +543,7 @@ def test_warp_builder_matches_reference_row_order_and_values(test, device, scala
             kernel,
             dim=[(articulation_count + warps_per_block - 1) // warps_per_block],
             inputs=[articulation_count, *inputs],
-            outputs=list(outputs),
+            outputs=[*outputs, ROW_SLOTS_ATOMIC, wp.zeros(1, dtype=wp.int32, device=device)],
             block_dim=32 * warps_per_block,
             device=device,
         )
@@ -605,7 +622,13 @@ def _allocated_joint_velocity_slots(device, qd: float, *, fraction: float, qdot_
             8,
             wp.ones(1, dtype=wp.int32, device=device),
         ],
-        outputs=[velocity_limit_slot, velocity_limit_sign, world_slot_counter],
+        outputs=[
+            velocity_limit_slot,
+            velocity_limit_sign,
+            world_slot_counter,
+            ROW_SLOTS_ATOMIC,
+            wp.zeros(1, dtype=wp.int32, device=device),
+        ],
         device=device,
     )
     return (
@@ -637,7 +660,13 @@ def _allocated_rigid_velocity_slots(device, qd6, *, fraction: float, lin_limit: 
             64,
             wp.ones(1, dtype=wp.int32, device=device),
         ],
-        outputs=[rigid_velocity_limit_slot, rigid_velocity_limit_sign, mf_slot_counter],
+        outputs=[
+            rigid_velocity_limit_slot,
+            rigid_velocity_limit_sign,
+            mf_slot_counter,
+            ROW_SLOTS_ATOMIC,
+            wp.zeros(1, dtype=wp.int32, device=device),
+        ],
         device=device,
     )
     return (
@@ -1091,6 +1120,46 @@ def test_pgs_drive_impulse_is_clamped_to_the_effort_limit(test, device):
     test.assertGreater(float(np.max(np.abs(drive_force))), 0.99 * effort_limit)
 
 
+def test_count_pass_assigns_no_drive_slot_above_the_sentinel(test, device):
+    """Leave a drive slot unassigned on the COUNT pass even when the row capacity exceeds the pass's sentinel."""
+    max_constraints = (1 << 30) + 1
+
+    def ints(values):
+        return wp.array(values, dtype=wp.int32, device=device)
+
+    # (drive_slot, world_slot_counter, element_row_cursor) after one driven prismatic DOF.
+    expected = {
+        int(ROW_SLOTS_ATOMIC): ([0], [1], [0]),
+        int(ROW_SLOTS_COUNT): ([-1], [0], [1]),
+        int(ROW_SLOTS_WRITE): ([0], [0], [1]),
+    }
+    for mode, result in expected.items():
+        drive_slot, world_slot_counter, element_row_cursor = ints([-7]), ints([0]), ints([0])
+        wp.launch(
+            allocate_physx_drive_slots,
+            dim=1,
+            inputs=[
+                ints([0, 1]),
+                ints([0]),
+                ints([1]),
+                ints([int(JointType.PRISMATIC)]),
+                ints([0]),
+                wp.array([[1, 0]], dtype=wp.int32, device=device),
+                wp.array([1.0], dtype=wp.float32, device=device),
+                wp.array([0.0], dtype=wp.float32, device=device),
+                ints([0]),
+                max_constraints,
+            ],
+            outputs=[drive_slot, world_slot_counter, mode, element_row_cursor],
+            device=device,
+        )
+        with test.subTest(mode=mode):
+            test.assertEqual(
+                (drive_slot.numpy().tolist(), world_slot_counter.numpy().tolist(), element_row_cursor.numpy().tolist()),
+                result,
+            )
+
+
 def test_saturated_pgs_drive_differs_from_the_augmented_drive(test, device):
     """Differ from the implicit drive when the effort limit saturates, at any iteration count.
 
@@ -1331,6 +1400,12 @@ for _name, _func in (
     ("test_streamed_drive_metadata_matches_resident", test_streamed_drive_metadata_matches_resident),
 ):
     add_function_test(TestSteelPGSDrives, _name, _func, devices=devices)
+add_function_test(
+    TestSteelPGSDrives,
+    "test_count_pass_assigns_no_drive_slot_above_the_sentinel",
+    test_count_pass_assigns_no_drive_slot_above_the_sentinel,
+    devices=split_devices,
+)
 
 
 _HAS_DRIVE_ROWS = "drive_mode" in inspect.signature(SolverSteel.__init__).parameters

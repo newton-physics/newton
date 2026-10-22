@@ -1172,6 +1172,45 @@ class TestSteelPrivateApi(unittest.TestCase):
             with self.subTest(option=name):
                 self.assertIsInstance(getattr(SolverSteel, name), (property, _ConstructionOption))
 
+    def test_deterministic_option_follows_the_warp_mode(self):
+        """Inherit ``wp.config.deterministic``, fall back from inherited unsupported modes and reject explicit ones."""
+        mode = wp.DeterministicMode
+        model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
+        cuda_model = (
+            _build_plane_model("cuda:0", separation=0.0, restitution=0.0)[0] if wp.is_cuda_available() else None
+        )
+        saved = wp.config.deterministic
+        try:
+            self.assertEqual(SolverSteel(model, solve_mode="split").deterministic, mode.NOT_GUARANTEED)
+            wp.config.deterministic = mode.RUN_TO_RUN
+            self.assertEqual(SolverSteel(model, solve_mode="split").deterministic, mode.RUN_TO_RUN)
+            self.assertEqual(
+                SolverSteel(model, solve_mode="split", deterministic=mode.NOT_GUARANTEED).deterministic,
+                mode.NOT_GUARANTEED,
+            )
+            wp.config.deterministic = mode.GPU_TO_GPU
+            with self.assertWarnsRegex(
+                newton.exceptions.NewtonWarning, "is GPU_TO_GPU; .* supports at most RUN_TO_RUN"
+            ):
+                self.assertEqual(SolverSteel(model, solve_mode="split").deterministic, mode.RUN_TO_RUN)
+            if cuda_model is not None:
+                for inherited in (mode.RUN_TO_RUN, mode.GPU_TO_GPU):
+                    wp.config.deterministic = inherited
+                    with self.assertWarnsRegex(
+                        newton.exceptions.NewtonWarning, "'propagation' supports at most NOT_GUARANTEED"
+                    ):
+                        solver = SolverSteel(cuda_model, articulated_contact_response="propagation")
+                    self.assertEqual(solver.deterministic, mode.NOT_GUARANTEED)
+        finally:
+            wp.config.deterministic = saved
+        with self.assertRaisesRegex(ValueError, "GPU_TO_GPU"):
+            SolverSteel(model, solve_mode="split", deterministic=mode.GPU_TO_GPU)
+        with self.assertRaises(TypeError):
+            SolverSteel(model, solve_mode="split", deterministic=True)
+        if cuda_model is not None:
+            with self.assertRaisesRegex(ValueError, "requires articulated_contact_response='immediate'"):
+                SolverSteel(cuda_model, deterministic=mode.RUN_TO_RUN, articulated_contact_response="propagation")
+
     def test_step_option_assignment_validates_like_the_constructor(self):
         """Reject invalid step-option assignments, keep the previous value, and normalize valid ones."""
         model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)

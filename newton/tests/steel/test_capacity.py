@@ -385,6 +385,7 @@ def test_allocator_rejects_incomplete_contact_frame(test, device):
             float("inf"),
             float("inf"),
             _point_friction(device),
+            0,
         ],
         outputs=[
             wp.zeros((capacity,), dtype=wp.int32, device=device),
@@ -529,6 +530,7 @@ def _allocate_overflowing_contacts(device, contact_count, row_capacity, propagat
             float("inf"),
             float("inf"),
             _point_friction(device),
+            0,
         ],
         outputs=[
             wp.zeros((contact_count,), dtype=wp.int32, device=device),
