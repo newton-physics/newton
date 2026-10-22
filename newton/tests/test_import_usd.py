@@ -3206,47 +3206,109 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         )
         self.assertNotIn(gaussian.GetPath().pathString, result_no_visuals["path_shape_map"])
 
+    @staticmethod
+    def _define_gaussian_prim(stage, path, *, attribute_color_space=None):
+        """Define a one-splat Gaussian prim, optionally tagging the SH attribute's color space."""
+        from pxr import Sdf
+
+        prim = stage.DefinePrim(path, "ParticleField3DGaussianSplat")
+        prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+        sh = prim.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array)
+        sh.Set([(0.0, 0.0, 0.0)])
+        if attribute_color_space is not None:
+            sh.SetColorSpace(attribute_color_space)
+        return prim
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_gaussian_sh_color_space_follows_usd_schema(self):
         """Treat untagged and non-linear SH radiance as sRGB; keep scene-linear radiance linear."""
-        from pxr import Sdf, Usd
-
-        from newton._src.usd.utils import get_gaussian  # noqa: PLC0415
+        from pxr import Usd
 
         stage = Usd.Stage.CreateInMemory()
         for name, token, expected in (
             ("Untagged", None, newton.utils.ColorSpace.SRGB),
             ("Display", "srgb_rec709_scene", newton.utils.ColorSpace.SRGB),
+            ("DisplayReferred", "srgb_rec709_display", newton.utils.ColorSpace.SRGB),
             ("Linear", "lin_rec709_scene", newton.utils.ColorSpace.LINEAR),
             ("Raw", "raw", newton.utils.ColorSpace.LINEAR),
         ):
-            prim = stage.DefinePrim(f"/World/{name}", "ParticleField3DGaussianSplat")
-            prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
-            prim.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array).Set(
-                [(0.0, 0.0, 0.0)]
-            )
+            prim = self._define_gaussian_prim(stage, f"/World/{name}")
             if token is not None:
                 Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set(token)
-            self.assertEqual(get_gaussian(prim).sh_color_space, expected)
+            self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, expected)
 
         # A color space authored on a parent prim is inherited by the splat prim.
         parent = stage.DefinePrim("/Scene", "Xform")
         Usd.ColorSpaceAPI.Apply(parent).CreateColorSpaceNameAttr().Set("lin_rec709_scene")
-        prim = stage.DefinePrim("/Scene/Inherited", "ParticleField3DGaussianSplat")
-        prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
-        prim.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array).Set(
-            [(0.0, 0.0, 0.0)]
-        )
-        self.assertEqual(get_gaussian(prim).sh_color_space, newton.utils.ColorSpace.LINEAR)
+        prim = self._define_gaussian_prim(stage, "/Scene/Inherited")
+        self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, newton.utils.ColorSpace.LINEAR)
 
-        prim = stage.DefinePrim("/World/AP1", "ParticleField3DGaussianSplat")
-        prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
-        prim.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array).Set(
-            [(0.0, 0.0, 0.0)]
-        )
+        prim = self._define_gaussian_prim(stage, "/World/AP1")
         Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set("lin_ap1_scene")
-        with self.assertRaisesRegex(ValueError, "lin_ap1_scene"):
-            get_gaussian(prim)
+        with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
+            gaussian = newton.Gaussian.create_from_usd(prim)
+        self.assertEqual(gaussian.sh_color_space, newton.utils.ColorSpace.LINEAR)
+        self.assertIn("lin_ap1_scene", logs.output[0])
+        self.assertIn("/World/AP1", logs.output[0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_sh_color_space_allowlist(self):
+        """Map supported Rec.709 color-space names exactly and warn for every other name."""
+        from pxr import Usd
+
+        color_space = newton.utils.ColorSpace
+        supported = {
+            "srgb_rec709_scene": color_space.SRGB,
+            "srgb_rec709_display": color_space.SRGB,
+            "sRGB": color_space.SRGB,
+            "srgb_texture": color_space.SRGB,
+            "lin_rec709_scene": color_space.LINEAR,
+            "lin_rec709": color_space.LINEAR,
+            "lin_srgb": color_space.LINEAR,
+            "raw": color_space.LINEAR,
+            "data": color_space.LINEAR,
+            "identity": color_space.LINEAR,
+            "linear": color_space.LINEAR,
+        }
+        unsupported = {
+            "lin_ap1_scene": color_space.LINEAR,
+            "acescg": color_space.LINEAR,
+            "srgb_ap1_scene": color_space.SRGB,
+            "g22_rec709_scene": color_space.SRGB,
+        }
+
+        stage = Usd.Stage.CreateInMemory()
+
+        for token, expected in supported.items():
+            with self.subTest(token=token):
+                prim = self._define_gaussian_prim(stage, f"/World/{token}", attribute_color_space=token)
+                with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+                    gaussian = newton.Gaussian.create_from_usd(prim)
+                self.assertEqual(gaussian.sh_color_space, expected)
+
+        for token, expected in unsupported.items():
+            with self.subTest(token=token):
+                prim = self._define_gaussian_prim(stage, f"/World/{token}", attribute_color_space=token)
+                with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
+                    gaussian = newton.Gaussian.create_from_usd(prim)
+                self.assertEqual(gaussian.sh_color_space, expected)
+                self.assertIn(token, logs.output[0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_with_non_rec709_linear_radiance_does_not_abort_import(self):
+        """Import every splat of a stage whose root is tagged with a non-Rec.709 linear color space."""
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.Xform.Define(stage, "/World")
+        Usd.ColorSpaceAPI.Apply(stage.GetPrimAtPath("/World")).CreateColorSpaceNameAttr().Set("lin_ap1_scene")
+        for name in ("A", "B"):
+            self._define_gaussian_prim(stage, f"/World/{name}")
+
+        with self.assertLogs("newton._src.usd.utils", level="WARNING"):
+            result = newton.ModelBuilder().add_usd(stage, root_path="/World")
+        self.assertIn("/World/A", result["path_shape_map"])
+        self.assertIn("/World/B", result["path_shape_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_static_collider_has_no_collision_flags(self):

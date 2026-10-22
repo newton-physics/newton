@@ -521,10 +521,28 @@ they are loaded. Display/sRGB textures stay display-encoded.
 
 Gaussian splat spherical-harmonics radiance is resolved from the same
 color-space metadata but with the opposite default: untagged radiance is treated
-as display/sRGB, and ``lin_rec709_scene`` (or a primaries-agnostic linear name
-such as ``raw``) is imported as :attr:`newton.utils.ColorSpace.LINEAR`. Newton
-does not convert color primaries, so Gaussian radiance in a linear color space
-with other primaries, such as ``lin_ap1_scene``, raises a :class:`ValueError`.
+as display/sRGB. The supported color-space names are:
+
+* ``srgb``, ``srgb_texture``, ``srgb_rec709_scene``, ``srgb_rec709_display``
+  (and untagged): imported as :attr:`~newton.utils.ColorSpace.SRGB`.
+  ``srgb_rec709_display`` is a display-referred marker that renderers without
+  special handling treat like ``srgb_rec709_scene``.
+* ``lin_rec709_scene``, ``lin_rec709``, ``lin_srgb``, ``raw``, ``data``,
+  ``identity`` and ``linear``: imported as
+  :attr:`~newton.utils.ColorSpace.LINEAR`.
+
+Newton does not convert color primaries or transfer functions. Any other name,
+such as ``lin_ap1_scene``, ``acescg``, ``srgb_ap1_scene`` or
+``g22_rec709_scene``, is imported as linear if it looks linear (``lin_*`` or
+``acescg``) and as sRGB otherwise, and a warning naming the prim is logged. The
+import itself does not fail.
+
+.. note::
+
+   A ``colorSpace`` fallback that a schema declares on the coefficient attribute
+   takes precedence over a color space inherited from a parent prim or applied
+   with ``ColorSpaceAPI`` on the prim. For such prims, author linear radiance by
+   setting ``colorSpace`` on the coefficient attribute itself.
 
 Mass and Inertia Precedence
 ---------------------------

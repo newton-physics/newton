@@ -2431,14 +2431,23 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
     return _empty_material_properties()
 
 
+# Gaussian SH radiance color spaces Newton handles exactly: Rec.709 primaries with an sRGB or linear transfer function.
+_GAUSSIAN_SRGB_COLOR_SPACES = frozenset({"", "srgb", "srgb_texture", "srgb_rec709_scene", "srgb_rec709_display"})
+_GAUSSIAN_LINEAR_COLOR_SPACES = frozenset(
+    {"lin_rec709_scene", "lin_rec709", "lin_srgb", "raw", "data", "identity", "linear"}
+)
+
+
 def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     """Load Gaussian splat data from a USD prim.
 
     Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and
-    `radiance:sphericalHarmonicsCoefficients`. SH radiance is linear only when its
-    (possibly inherited) color-space name is `lin_rec709_scene` or a primaries-agnostic
-    linear name such as `raw`; untagged radiance is treated as sRGB. Linear color spaces
-    with other primaries (for example `lin_ap1_scene`) are not converted and are rejected.
+    `radiance:sphericalHarmonicsCoefficients`. The (possibly inherited) color-space name of the
+    radiance selects :attr:`Gaussian.sh_color_space`: untagged, `srgb`, `srgb_texture`, `srgb_rec709_scene` and
+    `srgb_rec709_display` radiance is sRGB, and `lin_rec709_scene`, `lin_rec709`, `lin_srgb`, `raw`, `data`, `identity` and `linear`
+    radiance is linear. Any other name is imported as linear if it looks linear (`lin_*` or
+    `acescg`) and as sRGB otherwise, without converting primaries or transfer function, and a
+    warning is logged.
 
     Args:
         prim: A USD prim containing Gaussian splat data.
@@ -2446,9 +2455,6 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
 
     Returns:
         A new :class:`Gaussian` instance.
-
-    Raises:
-        ValueError: If the SH radiance uses a linear color space whose primaries are not Rec.709.
     """
 
     def _get_valued_attr(name):
@@ -2460,6 +2466,9 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
 
     def _get_float_array_attr(name):
         attr = _get_valued_attr(name)
+        return None if attr is None else np.array(attr.Get(), dtype=np.float32)
+
+    def _get_float_array_from(attr):
         return None if attr is None else np.array(attr.Get(), dtype=np.float32)
 
     positions = _get_float_array_attr("positions")
@@ -2477,26 +2486,30 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         else:
             raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
 
-    # Untagged radiance is display-referred (sRGB); only explicitly linear color spaces are LINEAR.
+    # Untagged radiance is display-referred (sRGB); only explicitly linear Rec.709 color spaces are LINEAR.
     sh_attr = _get_valued_attr("radiance:sphericalHarmonicsCoefficients")
     sh_color_space_name = _get_attribute_color_space(sh_attr)
-    sh_color_space = ColorSpace.SRGB
-    if _texture_source_is_linear(sh_color_space_name):
-        # No primaries conversion is available, so only Rec.709 (or primaries-agnostic) linear is supported.
-        token = sh_color_space_name.strip().lower()
-        if token.startswith("lin_") and token != "lin_rec709_scene":
-            raise ValueError(
-                f"Unsupported Gaussian SH color space '{sh_color_space_name}': "
-                "only 'lin_rec709_scene' is supported among linear color spaces with defined primaries"
-            )
+    token = sh_color_space_name.strip().lower()
+    if token in _GAUSSIAN_LINEAR_COLOR_SPACES:
         sh_color_space = ColorSpace.LINEAR
+    elif token in _GAUSSIAN_SRGB_COLOR_SPACES:
+        sh_color_space = ColorSpace.SRGB
+    else:
+        sh_color_space = ColorSpace.LINEAR if _texture_source_is_linear(token) or token == "acescg" else ColorSpace.SRGB
+        logger.warning(
+            "Gaussian SH radiance of %s uses unsupported color space '%s'; importing it as %s "
+            "without converting color primaries or transfer function",
+            prim.GetPath(),
+            sh_color_space_name,
+            sh_color_space.name,
+        )
 
     return Gaussian(
         positions=positions,
         rotations=_get_float_array_attr("orientations"),
         scales=_get_float_array_attr("scales"),
         opacities=_get_float_array_attr("opacities"),
-        sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
+        sh_coeffs=_get_float_array_from(sh_attr),
         sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
         sh_color_space=sh_color_space,
         min_response=min_response,
