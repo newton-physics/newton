@@ -57,7 +57,7 @@ the middle cloth an upward velocity of 1 m/s. Each cloth has four particles.
         label="cloth",
     )
     builder = newton.ModelBuilder()
-    builder.replicate(cloth, world_count=3)
+    builder.replicate(cloth, copy_count=3)
     model = builder.finalize(device="cpu")
     state = model.state()
 
