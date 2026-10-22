@@ -1,1 +1,1 @@
-Require `mujoco~=3.16.0` and `mujoco-warp~=3.16.0` (previously `~=3.15.0`).
+Require `mujoco~=3.16.0` and `mujoco-warp~=3.16.0` (previously `~=3.15.0`). Update environment pins and reinstall the `sim` extra with `pip install --upgrade "newton[sim]"`. MuJoCo Warp 3.16 changes plane–mesh contact generation and line-search convergence, so `SolverMuJoCo` trajectories with native contacts may differ from 3.15.
