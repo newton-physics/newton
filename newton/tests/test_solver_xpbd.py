@@ -385,6 +385,72 @@ def test_optional_control_and_contacts(test, device):
     test.assertLess(float(state_out.particle_q.numpy()[0, 1]), 1.0)
 
 
+def test_elastic_spring_compliance_is_iteration_independent(test, device):
+    """Preserve analytical spring compliance and its gradient across iterations."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.0)
+    builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
+    builder.add_spring(0, 1, ke=10.0, kd=0.0, control=0.0)
+
+    model = builder.finalize(device=device, requires_grad=True)
+    solver = newton.solvers.SolverXPBD(model, iterations=4)
+
+    # Both buffer-lifetime paths must preserve x = 1 + 1 / (1 + ke * dt**2).
+    for requires_grad in (False, True):
+        with test.subTest(requires_grad=requires_grad):
+            state_in = model.state(requires_grad=requires_grad)
+            state_out = model.state(requires_grad=requires_grad)
+            state_in.particle_q.assign([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)])
+            if requires_grad:
+                with mock.patch.object(wp.config, "verify_autograd_array_access", True):
+                    with wp.Tape() as tape:
+                        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+                    output_grad = wp.array([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+                    tape.backward(grads={state_out.particle_q: output_grad})
+                test.assertAlmostEqual(float(model.spring_stiffness.grad.numpy()[0]), -1.0 / 121.0, places=5)
+            else:
+                solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+            test.assertAlmostEqual(float(state_out.particle_q.numpy()[1, 0]), 21.0 / 11.0, places=5)
+
+
+def test_elastic_bending_compliance_is_iteration_independent(test, device):
+    """Verify converged bending constraints preserve finite compliance."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for position, mass in (
+        ((0.0, 1.0, 0.0), 0.0),
+        ((0.0, -1.0, 0.0), 1.0),
+        ((0.0, 0.0, 0.0), 0.0),
+        ((1.0, 0.0, 0.0), 0.0),
+    ):
+        builder.add_particle(pos=wp.vec3(*position), vel=wp.vec3(0.0), mass=mass, radius=0.0)
+    builder.add_edge(0, 1, 2, 3, edge_ke=10.0, edge_kd=0.0)
+
+    model = builder.finalize(device=device)
+    state_in = model.state()
+    state_out = model.state()
+    solver = newton.solvers.SolverXPBD(model)
+
+    def solve(iterations: int) -> float:
+        state_in.particle_q.assign([(0.0, 1.0, 0.0), (0.0, -1.0, 1.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)])
+        state_in.particle_qd.zero_()
+        solver.iterations = iterations
+        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+        return float(state_out.particle_q.numpy()[1, 2])
+
+    four_iterations = solve(iterations=4)
+    eight_iterations = solve(iterations=8)
+
+    for value in (four_iterations, eight_iterations):
+        test.assertGreater(value, 0.0)
+        test.assertLess(value, 1.0)
+    test.assertAlmostEqual(
+        eight_iterations,
+        four_iterations,
+        places=5,
+        msg="Converged nonlinear iterations must not make a compliant bending edge artificially rigid.",
+    )
+
+
 def test_particle_particle_friction_with_relative_motion(test, device):
     """
     Test that friction DOES affect particles with different tangential velocities.
@@ -2560,7 +2626,7 @@ def test_xpbd_mimic_applies_to_compound_d6_rotations(test, device):
 
 
 def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
-    """Cap the reported indices when XPBD cannot enforce mimic relationships."""
+    """Cap XPBD's defensive warning for unsupported mimic metadata."""
     builder = newton.ModelBuilder()
     joints = []
     followers = []
@@ -2571,7 +2637,9 @@ def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
         builder.add_shape_box(body_1, hx=0.1, hy=0.1, hz=0.1)
         reference = builder.add_joint_fixed(-1, body_0)
         follower = builder.add_joint_fixed(body_0, body_1)
-        builder.set_joint_mimic(follower, reference)
+        # Bypass the authoring guard to exercise defensive solver handling of
+        # unsupported metadata supplied directly by callers.
+        builder.joint_mimic_joint[follower] = reference
         joints.extend((reference, follower))
         followers.append(follower)
     builder.add_articulation(joints)
@@ -2668,6 +2736,22 @@ add_function_test(
     TestSolverXPBD,
     "test_optional_control_and_contacts",
     test_optional_control_and_contacts,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_spring_compliance_is_iteration_independent",
+    test_elastic_spring_compliance_is_iteration_independent,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_bending_compliance_is_iteration_independent",
+    test_elastic_bending_compliance_is_iteration_independent,
     devices=devices,
     check_output=False,
 )

@@ -11,44 +11,17 @@ from ._src.core import (
 )
 from ._version import __version__
 
-use_coord_layout_targets: bool = True
-"""Use :attr:`joint_q`-aligned layout for joint position targets.
-
-Controls the shape of :attr:`~newton.Model.joint_target_q` and
-:attr:`~newton.Control.joint_target_q`:
-
-- ``True`` (the default): shape ``(joint_coord_count,)``, matching
-  :attr:`~newton.State.joint_q`.
-- ``False``: legacy shape ``(joint_dof_count,)``, which is misaligned with
-  :attr:`~newton.State.joint_q` whenever an articulation contains a free,
-  ball, or distance joint upstream of a position-controlled DOF, or contains
-  a rod joint.
-
-:attr:`joint_target_qd` is shaped ``(joint_dof_count,)`` in both layouts,
-matching :attr:`~newton.State.joint_qd`.
-
-Solvers, the actuator library, importers, and viewers honor this flag. Toggle
-it before constructing a :class:`~newton.ModelBuilder`.
-
-.. deprecated:: 1.5
-    The legacy DOF-shaped layout is deprecated. In a future release the
-    coordinate layout becomes the only layout and this flag is removed;
-    ``finalize()`` warns when building an affected model (one whose joint
-    coordinate and DOF counts differ) under ``False``.
-"""
-
 __all__ = [
     "MAXVAL",
     "Axis",
     "AxisType",
     "__version__",
-    "use_coord_layout_targets",
 ]
 
 # ==================================================================================
 # geometry
 # ==================================================================================
-from ._src.geometry import (  # noqa: E402
+from ._src.geometry import (
     SDF,
     Gaussian,
     GeoType,
@@ -89,6 +62,9 @@ from ._src.sim import (  # noqa: E402
     Rod,
     State,
     StateFlags,
+    TendonGuide,
+    TendonGuideFlags,
+    TendonGuideType,
     eval_fk,
     eval_ik,
     eval_inverse_dynamics_force,
@@ -113,6 +89,9 @@ __all__ += [
     "Rod",
     "State",
     "StateFlags",
+    "TendonGuide",
+    "TendonGuideFlags",
+    "TendonGuideType",
     "eval_fk",
     "eval_ik",
     "eval_inverse_dynamics_force",
@@ -126,11 +105,27 @@ __all__ += [
 # ==================================================================================
 # submodule APIs
 # ==================================================================================
-from . import actuators, controllers, geometry, ik, math, selection, sensors, solvers, usd, utils, viewer  # noqa: E402
+from . import (  # noqa: E402
+    actuators,
+    config,
+    controllers,
+    exceptions,
+    geometry,
+    ik,
+    math,
+    selection,
+    sensors,
+    solvers,
+    usd,
+    utils,
+    viewer,
+)
 
 __all__ += [
     "actuators",
+    "config",
     "controllers",
+    "exceptions",
     "geometry",
     "ik",
     "math",
@@ -141,3 +136,8 @@ __all__ += [
     "utils",
     "viewer",
 ]
+
+from ._src.diagnostics import install_console_fallback as _install_console_fallback  # noqa: E402
+
+_install_console_fallback()
+del _install_console_fallback

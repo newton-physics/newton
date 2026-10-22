@@ -254,55 +254,34 @@ def test_root_free_joint_under_rotated_parent_xform_uses_parent_frame_qd(
     np.testing.assert_allclose(state_1.body_qd.numpy()[body, 3:6], (0.0, 0.0, 0.0), atol=1e-5)
 
 
-def test_featherstone_d6_three_angular_body_qd_matches_fk(
-    test: TestBodyVelocity,
-    device,
-):
-    """SolverFeatherstone's reported body_qd should match eval_fk for a D6 joint
-    with three angular DOFs at a non-identity configuration.
-
-    The Featherstone state update and the public eval_fk must agree on the
-    world-frame angular velocity, which is the transported-axis sum rather than
-    the raw joint_qd.
-    """
+def test_d6_angular_state_matches_fk(test: TestBodyVelocity, device, solver_fn):
+    """Solvers must report the eval_fk body state of multi-angular D6 coordinates and recover them with eval_ik."""
+    q = np.array([0.5, -0.4, 0.7], dtype=np.float32)
+    qd = np.array([0.9, -0.6, 0.3], dtype=np.float32)
     cfg = newton.ModelBuilder.JointDofConfig.create_unlimited
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
-    builder.add_shape_sphere(child, radius=0.1)
-    j = builder.add_joint_d6(
-        parent=-1,
-        child=child,
-        angular_axes=[
-            cfg(axis=newton.Axis.X),
-            cfg(axis=newton.Axis.Y),
-            cfg(axis=newton.Axis.Z),
-        ],
-    )
-    builder.add_articulation([j])
+    # non-XYZ axis orders, as in the nv_humanoid.xml hips
+    for axes in ((newton.Axis.X, newton.Axis.Z, newton.Axis.Y), (newton.Axis.X, newton.Axis.Z)):
+        with test.subTest(axis_count=len(axes)):
+            n = len(axes)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            child = builder.add_link(mass=1.0, inertia=wp.mat33(np.diag([0.1, 0.2, 0.15])))
+            j = builder.add_joint_d6(-1, child, angular_axes=[cfg(axis=axis) for axis in axes])
+            builder.add_articulation([j])
+            model = builder.finalize(device=device)
 
-    model = builder.finalize(device=device)
-    solver = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
-    state_0 = model.state()
-    state_1 = model.state()
+            state_0, state_1 = model.state(), model.state()
+            state_0.joint_q.assign(q[:n])
+            state_0.joint_qd.assign(qd[:n])
+            newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+            # not smaller: constraint stabilization turns float32 pose round-off into velocity errors ~ 1/dt
+            dt = 1.0e-4
+            solver_fn(model).step(state_0, state_1, None, None, dt)
 
-    q = state_0.joint_q.numpy()
-    qd = state_0.joint_qd.numpy()
-    q[:3] = [0.5, -0.4, 0.7]
-    qd[:3] = [0.9, -0.6, 0.3]
-    state_0.joint_q.assign(q)
-    state_0.joint_qd.assign(qd)
-
-    # Reference angular velocity from the (corrected) public FK.
-    reference = model.state()
-    reference.joint_q.assign(q)
-    reference.joint_qd.assign(qd)
-    newton.eval_fk(model, reference.joint_q, reference.joint_qd, reference)
-    expected = reference.body_qd.numpy()[child]
-
-    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-    solver.step(state_0, state_1, model.control(), None, 1.0e-7)
-
-    np.testing.assert_allclose(state_1.body_qd.numpy()[child], expected, atol=1.0e-5, rtol=1.0e-6)
+            np.testing.assert_allclose(state_1.body_q.numpy(), state_0.body_q.numpy(), atol=1.0e-4)
+            np.testing.assert_allclose(state_1.body_qd.numpy(), state_0.body_qd.numpy(), atol=1.0e-3)
+            newton.eval_ik(model, state_1, state_1.joint_q, state_1.joint_qd)
+            np.testing.assert_allclose(state_1.joint_q.numpy(), q[:n] + dt * qd[:n], atol=1.0e-5)
+            np.testing.assert_allclose(state_1.joint_qd.numpy(), qd[:n], atol=1.0e-3)
 
 
 def test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent(
@@ -754,6 +733,14 @@ for device in devices:
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
 
+        add_function_test(
+            TestBodyVelocity,
+            f"test_d6_angular_state_matches_fk_{solver_name}",
+            test_d6_angular_state_matches_fk,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+
         for name, fn in (
             ("test_angular_com_stationary", test_angular_velocity_com_stationary),
             ("test_linear_com_moves", test_linear_velocity_com_moves),
@@ -769,12 +756,6 @@ for device in devices:
                 tolerance=tolerance,
             )
 
-    add_function_test(
-        TestBodyVelocity,
-        "test_featherstone_d6_three_angular_body_qd_matches_fk",
-        test_featherstone_d6_three_angular_body_qd_matches_fk,
-        devices=[device],
-    )
     add_function_test(
         TestBodyVelocity,
         "test_featherstone_free_descendant_joint_qd_round_trip_under_rotated_parent",

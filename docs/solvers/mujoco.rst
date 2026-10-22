@@ -144,7 +144,15 @@ Geometry types
      - Heightfield data is stored normalized to ``[0, 1]`` on the Newton
        :class:`~newton.Heightfield` source and forwarded as-is. The geom
        origin is shifted by ``min_z`` so the lowest point is at the
-       correct world height.
+       correct world height. MJCF's base depth is preserved in the per-shape
+       ``mujoco:hfield_base`` custom attribute [m], after import scaling, and
+       multiplied by the shape's Z scale on conversion. This depth extends
+       below the lowest elevation; it does not change the height samples.
+       MJCF import requires exactly four positive ``size`` values, matching
+       MuJoCo; missing, zero, or negative sizes are rejected.
+       For native Newton fields, an absent or negative value (the default) retains the legacy
+       ``1e-4`` m MuJoCo base. This attribute affects only the MuJoCo solver;
+       recreate the solver after changing it.
    * - :attr:`~newton.GeoType.MESH` / :attr:`~newton.GeoType.CONVEX_MESH`
      - ``mjGEOM_MESH``
      - MuJoCo only supports **convex** collision meshes. Non-convex
@@ -409,6 +417,15 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 :attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
 
+For MJCF position-only drives with ``dampratio`` and the default joint-target
+control mapping, solver construction resolves damping using each world's
+initial physical inertia, authored armature, and position gain, excluding
+synthetic armature used to lock kinematic bodies. It replaces the imported
+damping-ratio placeholder with the resulting coefficient and initializes zero entries in
+:attr:`~newton.Model.joint_target_kd`; nonzero explicit damping is preserved.
+Subsequent gain edits use the joint-target arrays and
+:attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` as usual.
+
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is
 only reachable through the ``mujoco`` :ref:`custom-attribute namespace <mujoco-custom-attributes>`.
@@ -454,6 +471,12 @@ array; slot layout depends on the constraint type.
    * - :attr:`~newton.solvers.SolverMuJoCo.EqType.JOINT`
      - ``mjEQ_JOINT``
      - Polynomial coefficients forwarded in ``data[0:5]``.
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.TENDON`
+     - ``mjEQ_TENDON``
+     - Couples two ``mujoco:tendon`` lengths (``equality_constraint_tendon1``
+       and ``equality_constraint_tendon2``). Polynomial coefficients forwarded
+       in ``data[0:5]``. MJCF and programmatic authoring only; USD import is not
+       supported yet.
    * - Mimic
      - ``mjEQ_JOINT``
      - Added via :meth:`~newton.ModelBuilder.set_joint_mimic`. Maps the
@@ -465,7 +488,8 @@ array; slot layout depends on the constraint type.
 Newton's core API does not expose equality constraints as a dedicated
 builder call. Construct them with the
 :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` helpers
-``add_equality_connect``, ``add_equality_weld``, and ``add_equality_joint``,
+``add_equality_connect``, ``add_equality_weld``, ``add_equality_joint``, and
+``add_equality_tendon``,
 then read or update finalized fields via
 ``model.mujoco.equality_constraint_*``:
 
@@ -537,8 +561,7 @@ are excluded from MuJoCo's ``nq`` / ``nv``.
 Tendons
 -------
 
-Newton's core API does not currently expose tendons (fixed or spatial)
-as first-class concepts. They are implemented through the MuJoCo
+MuJoCo's fixed and spatial tendons use the
 :ref:`custom-attribute namespace <mujoco-custom-attributes>`: populated
 on import from MJCF/USD and parsed into MuJoCo's tendon structures by
 ``SolverMuJoCo._init_tendons``. To author tendons programmatically, use
@@ -547,6 +570,13 @@ on import from MJCF/USD and parsed into MuJoCo's tendon structures by
 ``geom``, and ``pulley`` wrap elements; any other wrap type and any
 degenerate tendon definition produces a warning and is skipped rather
 than raising.
+
+These provider tendons are separate from Newton's experimental
+:doc:`massless routed tendons </tendons>` used by XPBD and VBD. There is no
+automatic conversion between native ``Model.tendon_*`` routes and
+``model.mujoco.tendon_*`` data. USD ``MjcTendon`` import and tendon-actuator
+target resolution use the provider path; see
+:doc:`/concepts/usd_parsing` for supported path attributes.
 
 For force-based limit gains, set ``model.mujoco.tendon_limit_ke`` (stiffness
 [N/m]) and ``tendon_limit_kd`` (damping [N s/m]), select force-space authoring
@@ -718,11 +748,17 @@ Multi-world support
 
 Constructing :class:`~newton.solvers.SolverMuJoCo` with
 ``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a MuJoCo model from the **first world** only and
-replicates it across all worlds via ``mujoco_warp``. This requires
-all Newton worlds to be structurally identical (same bodies, joints,
-and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
-construction and raises ``ValueError`` on a mismatch.
+worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+Bodies, joints, equality constraints, mimic relationships, primitive geoms,
+and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
+assets, scales, and convex-hull counts may differ across worlds. Collision
+flags may also differ when Newton supplies contacts. Native MuJoCo contacts
+require matching collision flags, groups, and exclusions for corresponding geom
+slots. With native contacts,
+per-world mesh scales are compiled into the MuJoCo assets, so changing their
+:attr:`~newton.Model.shape_scale` after construction raises ``ValueError``;
+recreate the solver to resize them. The solver validates
+compatibility at construction and raises ``ValueError`` on a mismatch.
 
 Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world
@@ -827,6 +863,36 @@ See MuJoCo's `solver documentation
 <https://mujoco.readthedocs.io/en/stable/XMLreference.html#option>`_ for
 what each parameter does and when to tune it.
 
+
+Imported option flags
+---------------------
+
+MJCF ``<option><flag>`` settings are stored as boolean ``ONCE`` custom
+attributes, ``model.mujoco.flag_<name>``, with ``True`` meaning enabled.
+The same attributes can be authored on a USD PhysicsScene through
+``MjcSceneAPI`` names ``mjc:flag:<name>``. Supported names are
+``constraint``, ``equality``, ``frictionloss``, ``limit``, ``contact``,
+``spring``, ``damper``, ``clampctrl``, ``warmstart``,
+``actuation``, ``refsafe``, ``sensor``, ``eulerdamp``, ``nativeccd``,
+``island``, ``multiccd``, ``energy``, and ``invdiscrete``.
+
+``enable_multiccd``, ``disable_contacts``, and ``disable_sensors`` default
+to ``None``: explicit constructor arguments take precedence over model
+custom attributes, then Newton defaults. By default, ``multiccd``,
+``energy``, and ``invdiscrete`` are disabled; the other listed features
+are enabled. ``sleep`` uses the existing ``model.mujoco.enable_sleeping``
+attribute described below and requires ``island`` to remain enabled.
+Unknown flags and the Warp-unsupported
+``override``, ``fwdinv``, ``diagexact``, ``midphase``, and ``autoreset``
+flags are warned about and ignored during MJCF import. ``filterparent``
+is also warned about and ignored because imported parent-child collision
+filters are not controlled by this flag.
+
+``gravity="disable"`` sets Newton's builder gravity to zero, affecting
+all solvers and content already added to the shared builder. Inside
+``begin_world()`` / ``end_world()``, only that world's gravity is changed;
+outside a world, the global/default gravity is changed. A later import
+with ``gravity="enable"`` does not restore the previous gravity vector.
 
 Sleeping
 --------

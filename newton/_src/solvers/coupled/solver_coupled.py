@@ -158,6 +158,14 @@ def _zero_reset_view_rows_kernel(
         values[local_id] = zero_value
 
 
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare the common dtypes up front.
+for _dtype in (wp.float32, wp.vec3, wp.mat33, wp.transform, wp.spatial_vector):
+    wp.overload(_copy_reset_view_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_scatter_reset_owned_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_zero_reset_view_rows_kernel, {"values": wp.array[_dtype], "zero_value": _dtype})
+
+
 def _identity_index_map(count: int, device) -> wp.array:
     """Return a dense local-to-global identity map."""
     return wp.array(list(range(count)), dtype=int, device=device)
@@ -434,6 +442,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         coupling: object | None = None,
     ) -> None:
         super().__init__(model)
+
+        if model.tendon_count:
+            raise ValueError("SolverCoupled does not yet support partitioning tendon routes; use XPBD or VBD directly")
 
         self._attribute_projections = self._build_attribute_projections()
         self._joint_constraint_starts = self._build_joint_constraint_starts()
@@ -889,10 +900,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if pairs is None:
             return
 
-        pair_count = min(int(getattr(view, "shape_contact_pair_count", pairs.shape[0])), pairs.shape[0])
+        pair_count = len(pairs)
         if pair_count == 0:
             view.shape_contact_pairs = wp.zeros(0, dtype=wp.vec2i, device=self.model.device)
-            view.shape_contact_pair_count = 0
             return
 
         shape_count = int(getattr(view, "shape_count", self.model.shape_count))
@@ -928,7 +938,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         count = int(filtered_count.numpy()[0])
         view.shape_contact_pairs = filtered_pairs[:count]
-        view.shape_contact_pair_count = count
 
     def _apply_global_shape_metadata(
         self,
@@ -1112,8 +1121,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     @staticmethod
     def _warn_compaction_fallback(cfg: SolverCoupled.Entry, reason: str) -> None:
-        logger.info(
-            f"SolverCoupled entry {cfg.name!r} could not be compacted because {reason}; using the full model layout.",
+        logger.debug(
+            "SolverCoupled entry %r could not be compacted because %s; using the full model layout.",
+            cfg.name,
+            reason,
         )
 
     def _entry_visible_shapes(self, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> set[int]:
@@ -2893,7 +2904,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return contacts
 
         filtered = self._ensure_entry_contact_buffer(entry, contacts)
-        keep_full_surface_contacts = filtered._enable_rigid_soft_full_surface_contact
         force_contact_update = int(self._entry_contact_sources.get(entry.name) is not contacts)
         if force_contact_update:
             self._entry_contact_sources[entry.name] = contacts
@@ -3039,11 +3049,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_tids,
                     contacts.soft_contact_indices,
                     contacts.soft_contact_barycentric,
+                    contacts._soft_contact_mesh_features,
                     entry.view.shape_flags,
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
                     int(ParticleFlags.ACTIVE),
-                    int(keep_full_surface_contacts),
                     filtered.soft_contact_count,
                     filtered.soft_contact_particle,
                     filtered.soft_contact_shape,
@@ -3053,6 +3063,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_tids,
                     filtered.soft_contact_indices,
                     filtered.soft_contact_barycentric,
+                    filtered._soft_contact_mesh_features,
                     soft_src_to_dst,
                 ],
                 device=self.model.device,
@@ -3061,6 +3072,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return filtered
 
     def _ensure_entry_contact_buffer(self, entry: SolverEntry, contacts: Contacts) -> Contacts:
+        # A non-compacted rigid-only view can retain the parent's particle allocation.
+        has_particles = entry.particle_indices.size > 0 or entry.proxy_particle_local_indices.size > 0
+        if has_particles and not entry.solver.coupling_supports_full_surface_soft_contacts():
+            contacts._assert_particle_only_soft_contacts(
+                f"SolverCoupled entry {entry.name!r} ({type(entry.solver).__name__})"
+            )
         filtered = self._entry_contact_buffers.get(entry.name)
         if filtered is None or not self._entry_contact_buffer_matches(filtered, contacts):
             from ...sim import Contacts  # noqa: PLC0415
@@ -3114,9 +3131,22 @@ class SolverCoupled(SolverBase, CouplingInterface):
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
         filtered._enable_rigid_soft_full_surface_contact = bool(
-            contacts._enable_rigid_soft_full_surface_contact
-            and entry.solver.coupling_supports_full_surface_soft_contacts()
+            contacts._enable_rigid_soft_full_surface_contact and has_particles
         )
+        if filtered._enable_rigid_soft_full_surface_contact and contacts._soft_contact_mesh_features is not None:
+            if filtered._soft_contact_mesh_features is None:
+                # Entry copies only consume features; detection scratch stays in the source buffer.
+                filtered._soft_contact_mesh_features = wp.full(
+                    contacts.soft_contact_max, wp.vec3i(-1), dtype=wp.vec3i, device=contacts.device
+                )
+            # Shape IDs and deformable feature IDs retain the parent numbering.
+            # Force evaluation supplies the entry view's remapped shape_body and poses.
+            filtered._soft_contact_mesh_data = contacts._soft_contact_mesh_data
+        else:
+            filtered._soft_contact_mesh_features = None
+            filtered._soft_contact_mesh_params = None
+            filtered._soft_contact_mesh_state = None
+            filtered._soft_contact_mesh_data = None
         return filtered
 
     @staticmethod
@@ -3162,7 +3192,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 )
                 if self.model.shape_contact_pairs is not None:
                     entry.view.shape_contact_pairs = wp.clone(self.model.shape_contact_pairs)
-                    entry.view.shape_contact_pair_count = int(self.model.shape_contact_pair_count)
                 self._customize_compact_view(entry.view)
                 self._filter_shape_contact_pairs(entry.view)
 
@@ -3232,8 +3261,7 @@ def _entry_control(view: ModelView) -> Control:
     from ...sim import Control  # noqa: PLC0415
 
     control = Control()
-    use_coord_layout_targets = bool(getattr(view.parent, "use_coord_layout_targets", False))
-    target_q_count = int(view.joint_coord_count if use_coord_layout_targets else view.joint_dof_count)
+    target_q_count = int(view.joint_coord_count)
     dof_count = int(view.joint_dof_count)
     requires_grad = bool(getattr(view.parent, "requires_grad", False))
     device = view.parent.device
@@ -3274,11 +3302,9 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
 
     device = entry.view.parent.device
     dof_map = entry.joint_dof_local_to_global
-    use_coord_layout_targets = bool(getattr(entry.view.parent, "use_coord_layout_targets", False))
-    target_q_map = entry.joint_coord_local_to_global if use_coord_layout_targets else dof_map
     for name, local_to_global in (
         ("joint_f", dof_map),
-        ("joint_target_q", target_q_map),
+        ("joint_target_q", entry.joint_coord_local_to_global),
         ("joint_target_qd", dof_map),
         ("joint_act", dof_map),
     ):
@@ -3770,6 +3796,10 @@ def _prepare_filtered_contact_update_kernel(
         # entry lost contacts, so every filtered buffer mirrors the source flag, refreshed or cached.
         if counter_count > 2:
             dst_counters[2] = src_counters[2]
+        # Packing truncates the source count to its stored prefix. Preserve overflow
+        # provenance (including an upstream coupled copy) for the force consumer.
+        if soft_update != 0 and counter_count > 3:
+            dst_counters[3] = wp.int32(src_counters[1] > soft_contact_max or src_counters[3] != 0)
     if rigid_update != 0 and tid < rigid_contact_max:
         rigid_src_to_dst[tid] = -1
     if soft_update != 0 and tid < soft_contact_max:
@@ -3937,11 +3967,11 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_tids: wp.array[int],
     src_indices: wp.array[wp.vec3i],
     src_barycentric: wp.array[wp.vec3],
+    src_mesh_features: wp.array[wp.vec3i],
     shape_flags: wp.array[wp.int32],
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
     active_particle_mask: int,
-    keep_full_surface_contacts: int,
     dst_count: wp.array[wp.int32],
     dst_particle: wp.array[int],
     dst_shape: wp.array[int],
@@ -3951,6 +3981,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_tids: wp.array[int],
     dst_indices: wp.array[wp.vec3i],
     dst_barycentric: wp.array[wp.vec3],
+    dst_mesh_features: wp.array[wp.vec3i],
     src_to_dst: wp.array[wp.int32],
 ):
     if update_filter[0] == 0:
@@ -3962,8 +3993,6 @@ def _filter_soft_contacts_global_shape_ids_kernel(
 
     particle = src_particle[contact_id]
     shape = src_shape[contact_id]
-    if particle < 0 and keep_full_surface_contacts == 0:
-        return
     if shape < 0 or shape >= shape_flags.shape[0]:
         return
     if (shape_flags[shape] & collide_particles_mask) == 0:
@@ -3989,9 +4018,19 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_pos[dst_id] = src_body_pos[contact_id]
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
-    dst_tids[dst_id] = src_tids[contact_id]
+    # soft_contact_tids is indexed by candidate thread, not by contact, and full-surface mesh
+    # contacts are appended past the candidate range, so the source array can be shorter than
+    # soft_contact_count.
+    if contact_id < src_tids.shape[0]:
+        dst_tids[dst_id] = src_tids[contact_id]
+    else:
+        dst_tids[dst_id] = -1
     # Carry the unified feature record too (the particle-only path writes (p, -1, -1) + (1, 0, 0)); VBD
     # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
     # VBD even with full-surface contact off (E7).
     dst_indices[dst_id] = src_indices[contact_id]
     dst_barycentric[dst_id] = src_barycentric[contact_id]
+    if dst_mesh_features:
+        dst_mesh_features[dst_id] = wp.vec3i(-1, -1, -1)
+        if src_mesh_features:
+            dst_mesh_features[dst_id] = src_mesh_features[contact_id]

@@ -92,7 +92,6 @@ def load_mesh_with_sdf(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 120
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -142,7 +141,7 @@ class Example:
             length=0.0,
             label="ground_plane",
         )
-        main_scene.replicate(world_builder, world_count=self.world_count)
+        main_scene.replicate(world_builder, copy_count=self.world_count)
 
         self.model = main_scene.finalize()
 

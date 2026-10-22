@@ -18,6 +18,7 @@ Newton Physics
    guide/installation
    guide/compatibility
    guide/visualization
+   guide/diagnostics
    guide/tutorials
    Development <guide/development>
    Source Code Guidelines <guide/source_code_guidelines>
@@ -64,6 +65,7 @@ Newton Physics
    :caption: Further Reading
 
    FAQ <faq>
+   Massless Routed Tendons <tendons>
    Migration Guide <migration>
    Isaac Lab <lab/isaac-lab>
 
