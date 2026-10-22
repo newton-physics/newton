@@ -14468,14 +14468,20 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_non_rec709_color_spaces_warn_for_colors_textures_and_gaussians(self):
         """Log the same warning for scalar colors, textures and Gaussians in spaces Newton does not convert."""
+        from PIL import Image
         from pxr import Sdf, Usd
 
         from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
 
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        texture_path = os.path.join(tmpdir.name, "texture.png")
+        Image.fromarray(np.zeros((1, 1, 4), dtype=np.uint8)).save(texture_path)
+
         stage = Usd.Stage.CreateInMemory()
         for token in ("lin_ap1_scene", "srgb_ap1_scene"):
             color_prim = self._define_material_mesh(stage, f"Color_{token}", token)
-            texture_prim = self._define_material_mesh(stage, f"Texture_{token}", token, texture_asset="missing.png")
+            texture_prim = self._define_material_mesh(stage, f"Texture_{token}", token, texture_asset=texture_path)
             gaussian_prim = stage.DefinePrim(f"/World/Gaussian_{token}", "ParticleField3DGaussianSplat")
             gaussian_prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
             sh = gaussian_prim.CreateAttribute(
