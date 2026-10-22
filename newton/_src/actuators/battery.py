@@ -104,7 +104,11 @@ def _battery_actuator_order(builder: ModelBuilder, model: Model) -> tuple[np.nda
     """Return all actuator rows sorted by battery, unassigned last, and the start of each battery's rows."""
     battery_count = model.custom_frequency_counts.get(BATTERY_FREQUENCY, 0)
     actuator_battery = np.array(
-        builder.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values or [], dtype=np.int64
+        [
+            -1 if b is None else b
+            for b in builder.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values or ()
+        ],
+        dtype=np.int64,
     )
     order = np.argsort(np.where(actuator_battery < 0, battery_count, actuator_battery), kind="stable")
     counts = np.bincount(actuator_battery[actuator_battery >= 0], minlength=battery_count)

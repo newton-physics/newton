@@ -3457,7 +3457,7 @@ class ModelBuilder:
             if world != self.current_world:
                 raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
             battery = self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values[actuator]
-            if battery >= 0:
+            if battery is not None and battery >= 0:
                 raise ValueError(f"add_battery: actuator {actuator} already draws from battery {battery}")
         battery = self.add_custom_values(
             **{
