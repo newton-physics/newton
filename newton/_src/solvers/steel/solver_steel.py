@@ -2065,7 +2065,9 @@ class SolverSteel(SolverBase):
                 overflowed steps remain flagged in :attr:`constraint_overflow`. The mode adds a per-step
                 sort of the contacts by world and row family and 24 bytes of storage per contact slot. With
                 the ``"propagation"`` and ``"propagation_colored"`` responses it also lists each world's
-                contact-active bodies by body index and sums each body's warm-start seed in row order;
+                contact-active bodies by body index and sums each body's warm-start seed in row order. Both
+                walk a world's bodies or rows serially, so their cost grows with the bodies and contact rows
+                in one world;
                 ``"propagation_colored"`` regroups a world's contact rows by color, an order fixed by the
                 contact set. ``"propagation_fused"`` and ``GPU_TO_GPU`` are not supported. Passing an
                 unsupported mode raises :class:`ValueError`. An inherited unsupported mode emits a
