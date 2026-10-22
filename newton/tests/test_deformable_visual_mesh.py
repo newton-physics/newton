@@ -24,6 +24,7 @@ from newton.examples.sensors.example_deformable_visual_mesh_camera import (
 from newton.examples.sensors.example_deformable_visual_mesh_camera import (
     _CameraRecorder as DeformableVisualMeshCameraRecorder,
 )
+from newton.exceptions import NewtonWarning
 from newton.sensors import SensorCamera
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
@@ -365,14 +366,15 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                 assert_np_equal(_skin(model, mesh, model.state()), vertices, tol=1.0e-6)
 
     def test_outside_tet_vertex_clamps_within_owning_range(self):
-        """A vertex outside every owning tet warns, clamps to the nearest owning
-        tet, and still produces a valid partition-of-unity weight row."""
+        """Log fallback binding and keep normalized weights inside the owning range."""
         builder = newton.ModelBuilder()
         _add_soft(builder)
         verts = np.array([[5.0, 5.0, 5.0], [0.5, 0.5, 0.5], [0.2, 0.2, 0.2], [0.7, 0.7, 0.7]], dtype=np.float32)
-        with self.assertWarnsRegex(UserWarning, "clamped to the nearest owning tetrahedron") as warning:
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet", tet_range=(0, builder.tet_count))
-        self.assertEqual(Path(warning.filename).resolve(), Path(__file__).resolve())
+        self.assertEqual(len(logs.records), 1)
+        self.assertIn("1 of 4 visual vertices fell outside", logs.records[0].getMessage())
+        self.assertIn("clamped to the nearest owning tetrahedron", logs.records[0].getMessage())
         model = builder.finalize()
         rm = model.deformable_visual_meshes[0]
         parents = rm.parent.numpy()
@@ -882,7 +884,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_viewer_usd_accepts_deformable_visual_mesh_name(self):
-        """Export valid mesh paths and visibility without hidden point updates."""
+        """Export deformed points and bounds without hidden geometry updates."""
         from pxr import UsdGeom
 
         builder, _uvs = self._cloth_skin_builder(label="123 bad/skin!")
@@ -896,7 +898,9 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
             viewer.set_model(model)
             state = model.state()
             mesh = model.deformable_visual_meshes[0]
+            rest = state.particle_q.numpy().copy()
             for frame, visible in enumerate((True, False, False, True)):
+                state.particle_q.assign(rest + np.array([0.0, 0.0, frame], dtype=np.float32))
                 viewer.show_deformable_visual_meshes = visible
                 viewer.begin_frame(frame / 60.0)
                 viewer.log_state(state)
@@ -905,6 +909,10 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
             prim = UsdGeom.Mesh(viewer.stage.GetPrimAtPath(path))
             self.assertTrue(prim)
             self.assertEqual(prim.GetPointsAttr().GetTimeSamples(), [0.0, 3.0])
+            self.assertEqual(prim.GetExtentAttr().GetTimeSamples(), [0.0, 3.0])
+            for frame in (0, 3):
+                points = np.asarray(prim.GetPointsAttr().Get(frame))
+                assert_np_equal(np.asarray(prim.GetExtentAttr().Get(frame)), np.array([points.min(0), points.max(0)]))
             for frame, visible in enumerate((True, False, False, True)):
                 self.assertEqual(prim.GetVisibilityAttr().Get(frame), "inherited" if visible else "invisible")
             assert_np_equal(np.asarray(prim.GetPointsAttr().Get(3)), _skin(model, mesh, state))
@@ -1148,7 +1156,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                             viewer.log_state(state)
                             self.assertEqual(upload.call_count, 5)
                             mesh.texture = str(Path(directory) / "missing.png")
-                            with self.assertWarnsRegex(UserWarning, "Failed to load texture"):
+                            with self.assertWarnsRegex(NewtonWarning, "Failed to load texture"):
                                 viewer.log_state(state)
                             with warnings.catch_warnings():
                                 warnings.simplefilter("error")
@@ -1831,8 +1839,9 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
             [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
         )
 
-        with self.assertWarnsRegex(UserWarning, "invalid_bind_pose_count"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder = self._import(stage)
+        self.assertIn("invalid_bind_pose_count", "\n".join(logs.output))
 
         model = builder.finalize()
         self.assertEqual(model.deformable_visual_mesh_count, 0)
@@ -1877,8 +1886,9 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
             [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)]
         )
 
-        with self.assertWarnsRegex(UserWarning, "degenerate_parent"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder = self._import(stage)
+        self.assertIn("degenerate_parent", "\n".join(logs.output))
 
         self.assertEqual(builder.finalize().deformable_visual_mesh_count, 0)
 
@@ -1890,6 +1900,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
         body.AddAppliedSchema("PhysicsDeformableBodyAPI")
         sim = _add_cloth_mesh(stage, "/World/Body/Sim")
+        _author_deformable_element_array(sim.GetPrim(), "thicknesses", [0.001], "constant")
         self._add_graphics_mesh(stage, "/World/Body/Skin")
         sim.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
         sim.GetPrim().CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
@@ -1899,8 +1910,9 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
             [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (2.0, 0.0, 1.0), (3.0, 0.0, 1.0)]
         )
 
-        with self.assertWarnsRegex(UserWarning, "degenerate_parent"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder = self._import(stage)
+        self.assertIn("degenerate_parent", "\n".join(logs.output))
 
         self.assertEqual(builder.finalize().deformable_visual_mesh_count, 0)
 
@@ -1920,8 +1932,9 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
             [(float("nan"), 0.2, 0.2), (0.4, 0.2, 0.2), (0.2, 0.4, 0.2)]
         )
 
-        with self.assertWarnsRegex(UserWarning, "non_finite_bind_point"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder = self._import(stage)
+        self.assertIn("non_finite_bind_point", "\n".join(logs.output))
 
         model = builder.finalize()
         self.assertEqual(model.deformable_visual_mesh_count, 1)
@@ -2116,8 +2129,9 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         prim.CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(["bindPose"])
         prim.CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set([(0, 0, 0)])
         self._add_graphics_mesh(stage, "/World/Cable/Skin")
-        with self.assertWarnsRegex(UserWarning, "invalid_bind_pose_count"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder = self._import(stage)
+        self.assertIn("invalid_bind_pose_count", "\n".join(logs.output))
         model = builder.finalize()
         self.assertEqual(model.body_count, 2)
         self.assertEqual(model.deformable_visual_mesh_count, 0)

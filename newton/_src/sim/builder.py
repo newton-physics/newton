@@ -12554,7 +12554,7 @@ class ModelBuilder:
         - ``Kind.TET`` -- ``tet_range`` gives the owning ``[start, end)``
           tetrahedra; each vertex stores its containing tet and four barycentric
           weights. A vertex outside every owning tet is clamped to the nearest
-          one by centroid distance with a warning; it never binds outside
+          one by centroid distance with a warning-level log; it never binds outside
           ``tet_range``. Pass precomputed ``parent`` / ``weights``
           (shape [vertex_count, 4]) to skip the search.
         - ``Kind.BODY`` -- ``bodies`` lists the candidate rigid bodies (e.g. a
@@ -12867,7 +12867,7 @@ class ModelBuilder:
         Build-time, host-side embedding restricted to the owning ``[start, end)``
         tet range, so a clamp can never cross deformable bodies. A vertex outside
         every owning tet (gaps, surface overhang) is clamped to the nearest owning
-        tet by centroid distance and a warning is emitted. The USD importer
+        tet by centroid distance and a warning-level log is emitted. The USD importer
         can pass an authored bind pose through ``positions``.
         """
         from .deformable_visual_binding import embed_tetrahedra  # noqa: PLC0415
@@ -12911,10 +12911,11 @@ class ModelBuilder:
         )
         clamped = int(outside.numpy().sum())
         if clamped:
-            warnings.warn(
-                f"add_deformable_visual_mesh: {clamped} of {len(vertices)} visual vertices fell outside "
+            logger.warning(
+                "add_deformable_visual_mesh: %d of %d visual vertices fell outside "
                 "the owning tet range and were clamped to the nearest owning tetrahedron.",
-                stacklevel=_external_warning_stacklevel(),
+                clamped,
+                len(vertices),
             )
         return parent.numpy().copy(), weights.numpy().copy()
 

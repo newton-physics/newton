@@ -25,7 +25,6 @@ belong to a volume deformable.
 from __future__ import annotations
 
 import logging
-import warnings
 
 import numpy as np
 import warp as wp
@@ -182,7 +181,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             path = str(prim.GetPath())
             mesh = ctx.get_mesh_cached(prim, load_uvs=True)
             if mesh is None or len(mesh.vertices) == 0 or len(mesh.indices) == 0:
-                warnings.warn(f"{path}: graphics mesh has no geometry; skipping visual mesh.", stacklevel=2)
+                logger.warning("%s: graphics mesh has no geometry; skipping visual mesh.", path)
                 continue
 
             # Proposal bind pose (or the mesh points), in the common world frame the
@@ -190,16 +189,17 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             try:
                 bind = usd._get_deformable_bind_pose(prim, strict=True)
             except ValueError as exc:
-                warnings.warn(f"{path}: invalid visual bind pose; skipping ({exc})", stacklevel=2)
+                logger.warning("%s: invalid visual bind pose; skipping (%s)", path, exc)
                 continue
             points = bind if bind is not None else np.asarray(mesh.vertices, dtype=np.float64)
             if bind is not None and (source_vertices := getattr(mesh, "_usd_source_point_indices", None)) is not None:
                 points = bind[source_vertices]
             if len(points) != len(mesh.vertices):
-                warnings.warn(
-                    f"{path}: bind pose has {len(points)} points but the mesh has "
-                    f"{len(mesh.vertices)} vertices; skipping visual mesh.",
-                    stacklevel=2,
+                logger.warning(
+                    "%s: bind pose has %d points but the mesh has %d vertices; skipping visual mesh.",
+                    path,
+                    len(points),
+                    len(mesh.vertices),
                 )
                 continue
             world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
@@ -274,7 +274,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                         spec = builder._deformable_visual_meshes[index]
                         spec["parent"], spec["local_offsets"] = reference_binding
             except ValueError as exc:
-                warnings.warn(f"{path}: could not embed visual mesh; skipping ({exc})", stacklevel=2)
+                logger.warning("%s: could not embed visual mesh; skipping (%s)", path, exc)
                 continue
 
             spec = builder._deformable_visual_meshes[index]
@@ -287,9 +287,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
         for prim in ctx.prims.visual_gaussians.get(body_path, ()):
             path = str(prim.GetPath())
             if family != "soft":
-                warnings.warn(
-                    f"{path}: Gaussian graphics currently require a volume deformable; skipping.", stacklevel=2
-                )
+                logger.warning("%s: Gaussian graphics currently require a volume deformable; skipping.", path)
                 continue
             imageable = UsdGeom.Imageable(prim)
             if imageable and imageable.ComputeVisibility() == UsdGeom.Tokens.invisible:
@@ -322,7 +320,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     label=path,
                 )
             except ValueError as exc:
-                warnings.warn(f"{path}: could not embed Gaussian graphics; skipping ({exc})", stacklevel=2)
+                logger.warning("%s: could not embed Gaussian graphics; skipping (%s)", path, exc)
                 continue
 
             spec = builder._deformable_visual_gaussians[index]

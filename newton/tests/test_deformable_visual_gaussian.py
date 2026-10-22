@@ -338,8 +338,9 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         self._add_gaussian(stage, "/World/Bear/Gaussian", [(0.25, 0.25, 0.25)], parent=[0])
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "must be authored together"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             result = builder.add_usd(stage, root_path="/World")
+        self.assertIn("must be authored together", "\n".join(logs.output))
 
         self.assertEqual(builder.finalize().deformable_visual_gaussian_count, 0)
         self.assertNotIn("/World/Bear/Gaussian", result["path_shape_map"])

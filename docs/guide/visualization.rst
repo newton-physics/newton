@@ -1120,7 +1120,9 @@ Automatic binding uses CPU spatial queries within the supplied triangle or
 tetrahedron range. Outside-tet vertices still search all owning tet centroids.
 Pass precomputed ``parent`` and ``weights`` to skip this setup work.
 Triangle binding drops normal offsets. Vertices outside the owning tetrahedra
-are clamped with a warning. Body binding uses one segment per vertex, so seams
+are clamped with a warning-level log (see :ref:`diagnostics`).
+Skipped USD graphics are also reported through logging.
+Body binding uses one segment per vertex, so seams
 can appear between segments. Finish topology changes, including fixed-joint
 collapse, before attaching visual meshes when possible. If fixed joints are
 collapsed afterward, body bindings follow the surviving body, or remain fixed
