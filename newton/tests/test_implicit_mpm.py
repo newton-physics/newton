@@ -515,6 +515,7 @@ def _postprocessed_plastic_strain(diagonal_scale, device):
             elastic_strain,
             wp.array([[0.01, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=vec6, device=device),
             wp.zeros(1, dtype=wp.vec3, device=device),
+            False,
         ],
         outputs=[elastic_strain, plastic_strain],
         device=device,
