@@ -206,6 +206,9 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             world_verts = _transform_points_np(world_mat, points).astype(np.float32)
             uvs = mesh._uvs if mesh._uvs is not None and len(mesh._uvs) == len(world_verts) else None
             texture = usd.resolve_material_properties_for_prim(prim).get("texture")
+            if texture is not None and uvs is None:
+                logger.warning("%s: visual texture requires UVs; importing the visual mesh without its texture.", path)
+                texture = None
             indices = np.asarray(mesh.indices, dtype=np.int32)
 
             try:

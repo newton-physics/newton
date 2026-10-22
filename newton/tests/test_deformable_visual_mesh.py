@@ -756,6 +756,10 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
             builder.add_deformable_visual_mesh(
                 verts, _QUAD, kind="tet", tet_range=(0, 1), uvs=np.zeros((2, 2), np.float32)
             )
+        with self.assertRaisesRegex(ValueError, "texture requires uvs"):
+            builder.add_deformable_visual_mesh(
+                verts, _QUAD, kind="tet", tet_range=(0, 1), texture=np.zeros((2, 2, 3), np.uint8)
+            )
 
     def test_rejects_out_of_range_drivers(self):
         """Reject driver indices outside the builder's simulation arrays."""
@@ -2235,6 +2239,35 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         rm = model.deformable_visual_meshes[0]
         self.assertIsNotNone(rm.uvs)
         assert_np_equal(rm.uvs.numpy(), np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32), tol=1e-6)
+
+    def test_missing_uvs_omit_texture_not_visual_geometry(self):
+        """Keep an imported visual binding when its texture has no UV coordinates."""
+        from pxr import Sdf, UsdShade
+
+        stage = self._stage()
+        self._add_volume_body(stage, "/World/Tire")
+        gfx = self._add_graphics_mesh(stage, "/World/Tire/Skin")
+        material = UsdShade.Material.Define(stage, "/World/Material")
+        shader = UsdShade.Shader.Define(stage, "/World/Material/Surface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        texture = UsdShade.Shader.Define(stage, "/World/Material/Texture")
+        texture.CreateIdAttr("UsdUVTexture")
+        texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath("skin.png"))
+        texture.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(texture.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(gfx.GetPrim()).Bind(material)
+
+        with self.assertLogs("newton", level="WARNING") as logs:
+            builder = self._import(stage)
+        self.assertTrue(any("texture requires UVs" in entry for entry in logs.output))
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.deformable_visual_mesh_count, 1)
+        mesh = model.deformable_visual_meshes[0]
+        self.assertIsNone(mesh.texture)
+        state = model.state()
+        state.particle_q.assign(state.particle_q.numpy() + np.array([0, 0, 1], dtype=np.float32))
+        np.testing.assert_allclose(_skin(model, mesh, state), [[0.2, 0.2, 1.2], [0.4, 0.2, 1.2], [0.2, 0.4, 1.2]])
 
     def test_load_visual_shapes_false_skips_visual_meshes(self):
         stage = self._stage()

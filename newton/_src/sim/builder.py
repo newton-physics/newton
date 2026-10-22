@@ -12587,7 +12587,7 @@ class ModelBuilder:
                 (``Kind.TRIANGLE`` / ``Kind.TET``).
             weights: Precomputed barycentric weights matching ``parent``.
             uvs: Per-render-vertex texture coordinates, shape [vertex_count, 2].
-            texture: Albedo texture image array (H, W, C) or path.
+            texture: Albedo texture image array (H, W, C) or path. Requires ``uvs``.
             label: Display label used to build a readable viewer object name.
 
         Returns:
@@ -12616,6 +12616,9 @@ class ModelBuilder:
                 raise ValueError("add_deformable_visual_mesh: uvs length must match the number of visual vertices")
             if not np.all(np.isfinite(uvs)):
                 raise ValueError("add_deformable_visual_mesh: uvs must be finite")
+
+        if texture is not None and uvs is None:
+            raise ValueError("add_deformable_visual_mesh: texture requires uvs")
 
         binding = self._prepare_deformable_visual_binding(
             vertices,
