@@ -420,13 +420,15 @@ the saved copy instead, so repeated solves of one step start from the same
 history. Both run inside the step, so a graph captured from the coupled step
 records them; a reset cancels both. Owning particles raises
 :class:`NotImplementedError` when the coupled solver is constructed. Sleeping,
-contact warm starting, contact compliance and contact torsion raise it there
-too, and so does ``update_mass_matrix_interval`` above 1 when the coupler runs
-more than one iteration; a standalone Steel on a ``ModelView`` keeps these
-options. Acting as a proxy destination raises :class:`NotImplementedError` on
-the first coupled step. Coupled use is validated with
-``solve_mode="matrix_free"`` and the ``"immediate"`` articulated contact
-response. Set ``model.rigid_contact_max`` to the capacity of
+contact warm starting, contact compliance, contact torsion and
+``deterministic=wp.DeterministicMode.RUN_TO_RUN`` raise it there too, and so
+does ``update_mass_matrix_interval`` above 1 when the coupler runs more than
+one iteration; a standalone Steel on a ``ModelView`` keeps these options. The
+coupler routes contacts and sums coupling forces with atomics, so the contact
+order that run-to-run mode relies on is not fixed inside it. Acting as a proxy
+destination raises :class:`NotImplementedError` on the first coupled step.
+Coupled use is validated with ``solve_mode="matrix_free"`` and the
+``"immediate"`` articulated contact response. Set ``model.rigid_contact_max`` to the capacity of
 the coupled contact buffer before constructing the coupled solver, because Steel
 sizes its contact scratch from the model.
 

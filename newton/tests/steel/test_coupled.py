@@ -503,6 +503,7 @@ def test_unsupported_options_raise(test, device):
         ("enable_sleeping", {"enable_sleeping": True}, 0.0),
         ("contact_compliance", {"contact_compliance": True, "friction_anchor_beta": 0.0}, 0.0),
         ("contact torsion", {}, 0.01),
+        ("deterministic=RUN_TO_RUN", {"deterministic": wp.DeterministicMode.RUN_TO_RUN}, 0.0),
     ):
         model, box, rod_bodies = _build_box_rod(device)
         if torsion_radius:

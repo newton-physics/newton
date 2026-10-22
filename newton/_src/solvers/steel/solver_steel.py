@@ -3302,6 +3302,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 ("contact_warmstart", self._contact_warmstart),
                 ("contact_compliance", self._contact_compliance),
                 ("contact torsion", self._contact_torsion_enabled),
+                # The coupler routes contacts and sums coupling forces with atomics, so their order varies by run.
+                ("deterministic=RUN_TO_RUN", self._ordered_rows),
             )
             if enabled
         ]
