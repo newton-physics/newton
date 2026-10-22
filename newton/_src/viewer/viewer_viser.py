@@ -23,6 +23,13 @@ import newton
 if TYPE_CHECKING:
     import viser
 
+from ..core.host_transform import (
+    transform_assign_position_wxyz,
+    transform_inverse,
+    transform_point,
+    transform_to_position_wxyz,
+    transform_vector,
+)
 from ..core.types import Axis, override
 from ..exceptions import NewtonWarning
 from .camera import Camera
@@ -34,13 +41,6 @@ from .image_logger import (
     _validate,
 )
 from .picking import Picking
-from .transform import (
-    transform_assign_position_wxyz,
-    transform_inverse,
-    transform_point,
-    transform_to_position_wxyz,
-    transform_vector,
-)
 from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
@@ -398,6 +398,7 @@ class ViewerViser(ViewerBase):
     def __init__(
         self,
         *,
+        host: str = "0.0.0.0",
         port: int = 8080,
         paused: bool = False,
         label: str | None = None,
@@ -413,6 +414,10 @@ class ViewerViser(ViewerBase):
         It launches a web server that serves an interactive 3D visualization.
 
         Args:
+            host: Address the web server binds to. Defaults to ``"0.0.0.0"``
+                (every interface); use ``"127.0.0.1"`` to keep the viewer local
+                to this machine. Must be an address of this machine; viser
+                does not report bind failures and blocks instead.
             port: Port number for the web server. Defaults to 8080.
             paused: Whether simulation stepping starts paused.
             label: Optional label for the viser server window title.
@@ -496,7 +501,7 @@ class ViewerViser(ViewerBase):
         self._line_versions = {}
 
         # Initialize viser server
-        self._server = viser.ViserServer(port=port, label=label or "Newton Viewer", verbose=verbose)
+        self._server = viser.ViserServer(host=host, port=port, label=label or "Newton Viewer", verbose=verbose)
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._camera_fov_radians: float | None = None
         self._camera_up_axis = 2
@@ -639,13 +644,8 @@ class ViewerViser(ViewerBase):
         self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
         if self.picking is not None:
             self.picking.visible_worlds_mask = self._visible_worlds_mask
-
-        if model is not None:
             try:
-                from ..geometry import raycast as _raycast_module  # noqa: PLC0415
-
-                wp.load_module(module=_raycast_module, device=model.device)
-                wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+                self.picking._load_kernels()
             except Exception:
                 pass
 
@@ -1441,9 +1441,13 @@ class ViewerViser(ViewerBase):
         Returns:
             str: Browser URL for the running viser server.
         """
+        # Match viser's startup URL: a wildcard bind is reachable on localhost.
+        host = self._server.get_host()
+        if host == "0.0.0.0":
+            host = "localhost"
         if self.is_jupyter_notebook:
-            return self._build_browser_url(self._port)
-        return f"http://localhost:{self._port}"
+            return self._build_browser_url(self._port, local_host=host)
+        return f"http://{host}:{self._port}"
 
     @staticmethod
     def _normalize_jupyter_base_url(base_url: str) -> str:

@@ -1061,10 +1061,8 @@ def _get_tetmesh(
             continue
         if name.startswith("primvars:") or name.startswith("xformOp:"):
             continue
-        # Deformable physics-schema attributes are handled by the deformable importer
-        # where supported (e.g. physics:masses) or intentionally skipped (e.g.
-        # physics:restShapePoints, whose rest-shape import is not yet supported and is
-        # warned about by the importer); none are carried as generic mesh data here.
+        # Deformable physics-schema attributes (e.g. physics:masses, physics:restShapePoints)
+        # are handled by the deformable importer; none are carried as generic mesh data here.
         if name.startswith(("physics:", "omniphysics:", "physxDeformableBody:")):
             continue
         if not attr.HasAuthoredValue():

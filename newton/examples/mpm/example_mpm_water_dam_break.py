@@ -90,7 +90,7 @@ class Example:
         )
         if self.world_count > 1:
             builder = newton.ModelBuilder()
-            builder.replicate(world_builder, world_count=self.world_count, spacing=world_spacing)
+            builder.replicate(world_builder, copy_count=self.world_count, spacing=world_spacing)
             self.world_offsets_np = newton.utils.compute_world_offsets(
                 self.world_count, world_spacing, world_builder.up_axis
             )

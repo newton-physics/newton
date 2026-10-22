@@ -13,9 +13,11 @@ import unittest
 import warnings
 
 import numpy as np
+import warp as wp
 
 import newton
 from newton import ShapeFlags
+from newton.exceptions import NewtonWarning
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -32,7 +34,7 @@ from newton.usd import SchemaResolverPhysx
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCloth(unittest.TestCase):
-    """Surface-deformable (cloth) parsing into particles + FEM triangles + bending edges."""
+    """Surface-deformable (cloth) parsing into particles, triangle elements, and bending edges."""
 
     def test_cloth_quad_mesh_is_triangulated(self):
         """Verify that import fan-triangulates quad faces to support n-gons."""
@@ -120,6 +122,269 @@ class TestUSDDeformableCloth(unittest.TestCase):
         expected_color = newton.utils.color_linear_to_srgb((1.0, 0.5, 0.5))
         np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (2, 1)), atol=1e-6, rtol=1e-6)
 
+    def test_cloth_rest_shape_drives_material_state(self):
+        """Import disjoint rest poses, thickness-weighted masses, lengths, and bend angles."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+        live_points = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (2.0, 2.0, 0.0), (0.0, 1.0, 0.0)]
+        mesh.CreatePointsAttr(live_points)
+        mesh.CreateFaceVertexCountsAttr([3, 3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3])
+        mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        mesh.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [
+                (0.0, 0.0, 0.0),
+                (1.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 0.0, 0.0),
+                (1.0, 1.0, 0.0),
+                (0.0, 1.0, 0.0),
+            ]
+        )
+        mesh.GetPrim().CreateAttribute("physics:restTriVertexIndices", Sdf.ValueTypeNames.Int3Array).Set(
+            [(0, 1, 2), (3, 4, 5)]
+        )
+        mesh.GetPrim().CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set("flat")
+        mesh.GetPrim().CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.Int2Array).Set([(0, 1)])
+        mesh.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set([75.0])
+        _bind_deformable_material(stage, mesh.GetPrim(), "/World/Mat", density=1.0)
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [1.0, 2.0], "face")
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        np.testing.assert_allclose(np.asarray(builder.particle_q), live_points, atol=1.0e-6)
+        self.assertAlmostEqual(sum(builder.tri_areas), 1.0, places=6)
+        np.testing.assert_allclose(builder.particle_mass, [0.5, 1.0 / 6.0, 0.5, 1.0 / 3.0])
+        np.testing.assert_allclose(builder.tri_poses[0], [[1.0, -1.0], [0.0, 1.0]])
+        interior_edge = next(i for i, edge in enumerate(builder.edge_indices) if edge[1] != -1)
+        self.assertAlmostEqual(builder.edge_rest_angle[interior_edge], math.radians(75.0), places=6)
+        self.assertAlmostEqual(builder.edge_rest_length[interior_edge], math.sqrt(2.0), places=6)
+
+        # Typed totals override body mass and use rest areas with per-face thickness.
+        _author_deformable_element_array(mesh.GetPrim(), "masses", [9.0], "constant")
+        _apply_deformable_body_api(mesh.GetPrim(), mass=99.0)
+        typed_builder = newton.ModelBuilder()
+        typed_builder.add_usd(stage)
+        np.testing.assert_allclose(typed_builder.particle_mass, [3.0, 1.0, 3.0, 2.0])
+
+    def test_disjoint_rest_topology_keeps_conflicting_edge_lengths(self):
+        """Keep triangle rest poses and masses when shared rest-edge lengths disagree."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+        mesh.CreatePointsAttr([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (2.0, 2.0, 0.0), (0.0, 2.0, 0.0)])
+        mesh.CreateFaceVertexCountsAttr([3, 3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3])
+        mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        mesh.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 0.0, 0.0), (2.0, 2.0, 0.0), (0.0, 1.0, 0.0)]
+        )
+        mesh.GetPrim().CreateAttribute("physics:restTriVertexIndices", Sdf.ValueTypeNames.Int3Array).Set(
+            [(0, 1, 2), (3, 4, 5)]
+        )
+
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        builder = newton.ModelBuilder()
+        _bind_deformable_material(stage, mesh.GetPrim(), "/World/Mat", density=1.0)
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [1.0], "constant")
+        with self.assertLogs("newton", level="WARNING") as caught:
+            builder.add_usd(stage)
+        self.assertTrue(any("inconsistent lengths" in m and "using the last" in m for m in caught.output))
+
+        interior_edge = next(i for i, edge in enumerate(builder.edge_indices) if edge[1] != -1)
+        self.assertAlmostEqual(builder.edge_rest_length[interior_edge], math.sqrt(8.0), places=6)
+        np.testing.assert_allclose(builder.tri_areas, [0.5, 1.0])
+        self.assertAlmostEqual(sum(builder.particle_mass), 1.5)
+        np.testing.assert_allclose(builder.tri_poses[0], [[1.0, -1.0], [0.0, 1.0]])
+
+    def test_disjoint_rest_panels_at_offsets_keep_quiet(self):
+        """Accept float32 rest copies of one edge placed in different panels without a length warning."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+        mesh.CreatePointsAttr([(0.0, 0.0, 0.0), (0.02, 0.0, 0.0), (0.02, 0.02, 0.0), (0.0, 0.02, 0.0)])
+        mesh.CreateFaceVertexCountsAttr([3, 3])
+        mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3])
+        mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        # Both rest copies of the shared edge are 0.01 * sqrt(2) long but round differently in float32.
+        mesh.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [
+                (0.37, 0.61, 0.0),
+                (0.38, 0.61, 0.0),
+                (0.38, 0.62, 0.0),
+                (0.83, 0.29, 0.0),
+                (0.84, 0.30, 0.0),
+                (0.83, 0.30, 0.0),
+            ]
+        )
+        mesh.GetPrim().CreateAttribute("physics:restTriVertexIndices", Sdf.ValueTypeNames.Int3Array).Set(
+            [(0, 1, 2), (3, 4, 5)]
+        )
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(), self.assertNoLogs("newton", level="WARNING"):
+            warnings.simplefilter("error")
+            builder.add_usd(stage)
+
+        interior_edge = next(i for i, edge in enumerate(builder.edge_indices) if edge[1] != -1)
+        self.assertAlmostEqual(builder.edge_rest_length[interior_edge], 0.01 * math.sqrt(2.0), places=6)
+        np.testing.assert_allclose(builder.tri_areas, [0.5e-4, 0.5e-4], rtol=1.0e-5)
+
+    def test_cloth_rest_bend_overrides_keep_valid_entries(self):
+        """Log bad bend entries and duplicate pairs without losing valid angles."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        mesh = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        mesh.GetPrim().CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.Int2Array).Set(
+            [(0, 1), (7, 9), (1, 0), (0, 1)]
+        )
+        mesh.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set(
+            [30.0, 10.0, -75.0, float("nan")]
+        )
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING") as caught:
+            builder.add_usd(stage)
+        messages = caught.output
+        for reason in ("non-adjacent", "non-finite", "duplicate"):
+            self.assertTrue(any("/World/Cloth" in m and reason in m for m in messages), reason)
+        interior_edge = next(i for i, edge in enumerate(builder.edge_indices) if edge[1] != -1)
+        self.assertAlmostEqual(builder.edge_rest_angle[interior_edge], math.radians(-75.0), places=6)
+
+        # A malformed pair must not silently select another edge through integer truncation.
+        prim = mesh.GetPrim()
+        prim.RemoveProperty("physics:restAdjTriPairs")
+        prim.CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.FloatArray).Set([0.9, 1.9])
+        prim.GetAttribute("physics:restBendAngles").Set([75.0])
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(), self.assertLogs("newton", level="WARNING") as caught:
+            warnings.simplefilter("error")
+            builder.add_usd(stage)
+        self.assertTrue(any("invalid authored rest bend angles" in m for m in caught.output))
+        np.testing.assert_array_equal(builder.edge_rest_angle, 0.0)
+
+    def test_cloth_rest_shape_bend_uses_authored_pose(self):
+        """Keep default-time rest corners aligned through handedness and reflection changes."""
+        from pxr import Gf, Sdf, Usd, UsdGeom
+
+        rest_points = np.asarray([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (2.0, 1.0, 0.0), (0.0, 1.0, 1.0)])
+        live_points = rest_points * 2.0
+        live_points[:, 2] = 0.0
+        triangles = np.asarray([(0, 1, 2), (0, 2, 3)])
+        cases = [
+            (False, False, False),
+            *((True, left, reflected) for left in (False, True) for reflected in (False, True)),
+        ]
+        for disjoint, left_handed, reflected in cases:
+            with self.subTest(disjoint=disjoint, left_handed=left_handed, reflected=reflected):
+                stage = _deformable_stage()
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                mesh.GetPointsAttr().Set(live_points)
+                scale = [-1.0 if reflected else 1.0, 1.0, 1.0]
+                mesh.AddScaleOp().Set(Gf.Vec3d(*scale))
+                if left_handed:
+                    mesh.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
+                prim = mesh.GetPrim()
+                rest = prim.CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray)
+                rest.Set(rest_points[triangles].reshape(-1, 3) if disjoint else rest_points)
+                rest.Set(live_points[triangles].reshape(-1, 3) if disjoint else live_points, Usd.TimeCode(1.0))
+                if disjoint:
+                    prim.CreateAttribute("physics:restTriVertexIndices", Sdf.ValueTypeNames.Int3Array).Set(
+                        [(0, 1, 2), (3, 4, 5)]
+                    )
+                prim.CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set("restShape")
+                _author_deformable_element_array(prim, "thicknesses", [0.001], "constant")
+
+                # The builder's welded rest mesh supplies independent pose, length, and signed-angle expectations.
+                reference = newton.ModelBuilder()
+                reference.add_cloth_mesh(
+                    pos=wp.vec3(0.0, 0.0, 0.0),
+                    rot=wp.quat_identity(),
+                    scale=1.0,
+                    vel=wp.vec3(0.0, 0.0, 0.0),
+                    vertices=(rest_points * scale).tolist(),
+                    indices=(triangles[:, ::-1] if left_handed != reflected else triangles).reshape(-1).tolist(),
+                    density=1.0,
+                )
+                interior = next(i for i, edge in enumerate(reference.edge_indices) if edge[1] != -1)
+                self.assertGreater(abs(reference.edge_rest_angle[interior]), 0.1)
+
+                # Seed existing geometry to check that rest assignments respect builder offsets.
+                builder = newton.ModelBuilder()
+                builder.add_builder(reference)
+                builder.add_usd(stage)
+                np.testing.assert_allclose(builder.particle_q[:4], rest_points * scale)
+                np.testing.assert_allclose(builder.particle_q[4:], live_points * scale)
+                for field in ("tri_poses", "tri_areas", "edge_rest_angle", "edge_rest_length"):
+                    expected = np.asarray(getattr(reference, field))
+                    np.testing.assert_allclose(
+                        getattr(builder, field), np.concatenate((expected, expected)), atol=1.0e-7
+                    )
+
+    def test_coincident_cloth_faces_keep_rest_bending(self):
+        """Preserve both sides of coincident faces for rest-shape dihedrals and bend overrides."""
+        from pxr import Sdf
+
+        points = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)]
+        for second_face in ([0, 1, 2], [0, 2, 1]):
+            stage = _deformable_stage()
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            mesh.GetPointsAttr().Set(points)
+            mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2, *second_face])
+            prim = mesh.GetPrim()
+            _author_deformable_element_array(prim, "thicknesses", [0.001], "constant")
+            prim.CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set("restShape")
+            reference = newton.ModelBuilder()
+            reference.add_usd(stage)
+            np.testing.assert_allclose(reference.edge_rest_angle, [math.pi] * 3)
+
+            for mode in ("rest_shape", "override"):
+                with self.subTest(second_face=second_face, mode=mode):
+                    if mode == "rest_shape":
+                        prim.CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(points)
+                        expected = reference.edge_rest_angle
+                    else:
+                        prim.RemoveProperty("physics:restShapePoints")
+                        prim.CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.Int2Array).Set([(0, 1)])
+                        prim.CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set([75.0])
+                        expected = [math.radians(75.0)] * 3
+                    builder = newton.ModelBuilder()
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error")
+                        builder.add_usd(stage)
+                    np.testing.assert_allclose(builder.edge_rest_angle, expected)
+                    np.testing.assert_allclose(builder.edge_rest_length, reference.edge_rest_length)
+                    np.testing.assert_allclose(builder.particle_q, points)
+
+    def test_invalid_live_cloth_rest_basis_skips_without_partial_state(self):
+        """Contain a live triangle that passes the area check but fails rest-basis validation."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        bad = UsdGeom.Mesh.Define(stage, "/World/Bad")
+        bad.CreatePointsAttr([(0.0, 0.0, 0.0), (1.0e-13, 0.0, 0.0), (0.0, 1.0e5, 0.0)])
+        bad.CreateFaceVertexCountsAttr([3])
+        bad.CreateFaceVertexIndicesAttr([0, 1, 2])
+        bad.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+        good = _add_cloth_mesh(stage, "/World/Good")
+        _author_deformable_element_array(good.GetPrim(), "thicknesses", [0.001], "constant")
+        builder = newton.ModelBuilder()
+        with self.assertLogs("newton", level="WARNING") as caught:
+            builder.add_usd(stage)
+        self.assertTrue(any("/World/Bad" in m and "skipping" in m for m in caught.output))
+        self.assertEqual(group_labels(builder, "cloth"), ["/World/Good"])
+        self.assertEqual(builder.particle_count, 4)
+        self.assertEqual(builder.tri_count, 2)
+
     def test_cloth_left_handed_orientation_flips_winding(self):
         """Verify that left-handed cloth flips winding like the rigid-mesh path."""
         from pxr import UsdGeom
@@ -139,9 +404,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
         # The right-handed fan would give the first triangle (0, 1, 2); left-handed reverses it.
         self.assertEqual(list(builder.tri_indices[0]), [2, 1, 0])
 
-    def test_malformed_cloth_topology_warns_and_skips(self):
-        """Malformed cloth topology (short faces, count/index mismatch, out-of-range index)
-        warns and skips the cloth before any builder mutation instead of crashing."""
+    def test_malformed_cloth_topology_logs_and_skips(self):
+        """Log malformed cloth topology and import a valid sibling without partial state."""
         from pxr import UsdGeom
 
         points = [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0)]
@@ -161,12 +425,19 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
                 mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
 
+                good = _add_cloth_mesh(stage, "/World/Good")
+                _author_deformable_element_array(good.GetPrim(), "thicknesses", [0.001], "constant")
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(UserWarning, message):
-                    builder.add_usd(stage)
-                self.assertEqual(group_labels(builder, "cloth"), [])
-                self.assertEqual(builder.particle_count, 0)
-                self.assertEqual(builder.tri_count, 0)
+                with warnings.catch_warnings(), self.assertLogs("newton", level="WARNING") as caught:
+                    warnings.simplefilter("error", NewtonWarning)
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                self.assertEqual(len(caught.output), 1)
+                self.assertIn("/World/Cloth", caught.output[0])
+                self.assertIn(message, caught.output[0])
+                self.assertEqual(group_labels(builder, "cloth"), ["/World/Good"])
+                self.assertNotIn("/World/Cloth", result["path_cloth_map"])
+                self.assertEqual(builder.particle_count, 4)
+                self.assertEqual(builder.tri_count, 2)
 
     def test_current_surface_structural_stiffness_is_thickness_independent(self):
         """Preserve current surface stiffnesses when the authored thickness changes."""
@@ -713,14 +984,54 @@ class TestUSDDeformableCloth(unittest.TestCase):
                     self.assertAlmostEqual(radius, 0.0005, places=7)
 
     def test_cloth_rest_bend_default_is_flat_unless_rest_shape_is_requested(self):
-        """Set missing cloth bend angles flat unless restShape preserves the imported dihedral."""
+        """Set missing cloth bend angles flat unless restShape derives them from the rest pose."""
         from pxr import Sdf, Usd
 
-        for token, expect_flat in ((None, True), ("flat", True), ("restShape", False)):
-            with self.subTest(rest_bend_angles_default=token):
+        points = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0)]
+        rest_points = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, -0.5)]
+        windings = {"consistent": [0, 1, 2, 0, 2, 3], "flipped": [0, 1, 2, 0, 3, 2]}
+        # Invalid rest data must retain the migration notice; valid zero-angle overrides suppress it.
+        rest_cases = {
+            "rest_points": rest_points,
+            "wrong_count": rest_points[:3],
+            "nonfinite_rest": [*rest_points[:3], (0.0, 1.0, float("nan"))],
+            "degenerate_rest": [(0.0, 0.0, 0.0)] * 4,
+        }
+        bend_cases = {
+            "empty_pairs": ([], []),
+            "mismatched_bends": ([(0, 1)], []),
+            "invalid_pair": ([(7, 9)], [30.0]),
+            "nonfinite_bend": ([(0, 1)], [float("nan")]),
+            "zero_bend": ([(0, 1)], [0.0]),
+            "mixed_bends": ([(0, 1), (7, 9)], [0.0, 30.0]),
+        }
+        log_reasons = {
+            "wrong_count": "invalid cloth rest shape",
+            "nonfinite_rest": "invalid cloth rest shape",
+            "degenerate_rest": "invalid cloth rest shape",
+            "mismatched_bends": "invalid authored rest bend angles",
+            "invalid_pair": "non-adjacent face pair",
+            "nonfinite_bend": "non-finite value",
+            "mixed_bends": "non-adjacent face pair",
+        }
+        cases = [
+            (None, "consistent", None),
+            *((None, "consistent", authored) for authored in (*rest_cases, *bend_cases)),
+            ("flat", "consistent", None),
+            ("flat", "consistent", "wrong_count"),
+            ("restShape", "consistent", "wrong_count"),
+            ("invalid", "consistent", None),
+            ("restShape", "consistent", None),
+            ("restShape", "consistent", "rest_points"),
+            ("restShape", "flipped", "rest_points"),
+        ]
+        for token, winding, authored in cases:
+            with self.subTest(rest_bend_angles_default=token, winding=winding, authored=authored):
+                face_indices = windings[winding]
                 stage = _deformable_stage()
                 cloth = _add_cloth_mesh(stage, "/World/Cloth")
-                cloth.GetPointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0)])
+                cloth.GetFaceVertexIndicesAttr().Set(face_indices)
+                cloth.GetPointsAttr().Set(points)
                 # Import must use these default-time points, not the planar animation sample.
                 cloth.GetPointsAttr().Set(
                     [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
@@ -734,16 +1045,40 @@ class TestUSDDeformableCloth(unittest.TestCase):
                     cloth.GetPrim().CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set(
                         token
                     )
+                if authored in rest_cases:
+                    cloth.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                        rest_cases[authored]
+                    )
+                elif authored in bend_cases:
+                    pairs, angles = bend_cases[authored]
+                    cloth.GetPrim().CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.Int2Array).Set(pairs)
+                    cloth.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set(angles)
 
                 builder = newton.ModelBuilder()
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
+                log_reason = (
+                    "invalid physics:restBendAnglesDefault" if token == "invalid" else log_reasons.get(authored)
+                )
+                log_context = (
+                    self.assertLogs("newton", level="WARNING")
+                    if log_reason
+                    else self.assertNoLogs("newton", level="WARNING")
+                )
+                with warnings.catch_warnings(record=True) as caught, log_context as logs:
+                    warnings.simplefilter("always" if token is None else "error", NewtonWarning)
                     builder.add_usd(stage)
+                if log_reason:
+                    self.assertEqual(len(logs.output), 1)
+                    self.assertIn("/World/Cloth", logs.output[0])
+                    self.assertIn(log_reason, logs.output[0])
+                    if token == "invalid":
+                        self.assertIn("using 'flat'", logs.output[0])
                 migration_notices = [
                     str(w.message) for w in caught if "replaces non-planar imported dihedral" in str(w.message)
                 ]
-                self.assertEqual(len(migration_notices), int(token is None))
-                if token is None:
+                expect_notice = token is None and authored not in ("rest_points", "zero_bend", "mixed_bends")
+                self.assertEqual(len(migration_notices), int(expect_notice))
+                self.assertEqual(len(caught), int(expect_notice))
+                if expect_notice:
                     self.assertIn("restShape", migration_notices[0])
                 e0, e1 = group_range(builder, "cloth", "/World/Cloth", "edge")
                 interior_edges = [
@@ -753,10 +1088,74 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 ]
                 self.assertEqual(len(interior_edges), 1)
                 (edge,) = interior_edges
-                if expect_flat:
+                if token != "restShape":
                     self.assertEqual(builder.edge_rest_angle[edge], 0.0)
-                else:
-                    self.assertGreater(abs(builder.edge_rest_angle[edge]), 0.1)
+                    continue
+                # restShape derives the dihedral the builder would compute on the rest pose (the live
+                # pose without one), with the same sign regardless of how the second face is wound.
+                reference = newton.ModelBuilder()
+                reference.add_cloth_mesh(
+                    pos=wp.vec3(0.0, 0.0, 0.0),
+                    rot=wp.quat_identity(),
+                    scale=1.0,
+                    vel=wp.vec3(0.0, 0.0, 0.0),
+                    vertices=rest_points if authored == "rest_points" else points,
+                    indices=face_indices,
+                    density=1.0,
+                )
+                expected = reference.edge_rest_angle[edge - e0]
+                self.assertGreater(abs(expected), 0.1)
+                self.assertAlmostEqual(builder.edge_rest_angle[edge], expected, places=6)
+
+    def test_cloth_rest_bend_pairs_index_polygon_faces(self):
+        """Resolve restAdjTriPairs over authored faces on a fan-triangulated polygon mesh."""
+        from pxr import Sdf, UsdGeom
+
+        cases = {
+            # Two quads: the shared face edge takes the angle; the fan diagonals stay flat.
+            "two_quads": ([4, 4], [0, 1, 4, 3, 1, 2, 5, 4], {(1, 4)}),
+            # A quad and a triangle sharing two edges: both shared edges take the angle.
+            "two_shared_edges": ([4, 3], [0, 1, 4, 3, 3, 4, 1], {(1, 4), (3, 4)}),
+        }
+        for case, (face_counts, face_indices, shared_edges) in cases.items():
+            with self.subTest(case=case):
+                stage = _deformable_stage()
+                mesh = UsdGeom.Mesh.Define(stage, "/World/Cloth")
+                mesh.CreatePointsAttr(
+                    [
+                        (0.0, 0.0, 0.0),
+                        (1.0, 0.0, 0.0),
+                        (2.0, 0.0, 0.0),
+                        (0.0, 1.0, 0.0),
+                        (1.0, 1.0, 0.0),
+                        (2.0, 1.0, 0.0),
+                    ]
+                )
+                mesh.CreateFaceVertexCountsAttr(face_counts)
+                mesh.CreateFaceVertexIndicesAttr(face_indices)
+                mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
+                mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+                _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+                mesh.GetPrim().CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.Int2Array).Set(
+                    [(1, 0), (0, 0)]
+                )
+                mesh.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set(
+                    [45.0, 10.0]
+                )
+
+                builder = newton.ModelBuilder()
+                with self.assertLogs("newton", level="WARNING") as caught:
+                    builder.add_usd(stage)
+                self.assertTrue(any("entry 1 contains non-adjacent" in m for m in caught.output))
+
+                angles = {
+                    tuple(sorted((int(edge[2]), int(edge[3])))): builder.edge_rest_angle[index]
+                    for index, edge in enumerate(builder.edge_indices)
+                    if edge[1] != -1
+                }
+                for shared_edge in shared_edges:
+                    self.assertAlmostEqual(angles.pop(shared_edge), math.radians(45.0), places=6)
+                self.assertEqual(set(angles.values()), {0.0})
 
     def test_planar_cloth_default_rest_bend_needs_no_migration_warning(self):
         """Avoid a migration notice when the flat fallback does not change the imported rest state."""
@@ -771,10 +1170,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
         messages = [str(w.message) for w in caught]
         self.assertFalse(any("replaces non-planar imported dihedral" in message for message in messages))
 
-    def test_degenerate_cloth_triangle_warns_and_skips(self):
-        """A zero-area (collinear) triangle cannot form an FEM element: the cloth is
-        skipped whole with a warning instead of importing particles without their
-        triangle, and a valid cloth in the same stage still imports."""
+    def test_degenerate_cloth_triangle_logs_and_skips(self):
+        """Log and skip a zero-area cloth before builder mutation while importing valid siblings."""
         from pxr import UsdGeom
 
         stage = _deformable_stage()
@@ -784,27 +1181,31 @@ class TestUSDDeformableCloth(unittest.TestCase):
         bad.CreateFaceVertexIndicesAttr([0, 1, 2])
         bad.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
         bad.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
-        _add_cloth_mesh(stage, "/World/Good")
+        good = _add_cloth_mesh(stage, "/World/Good")
+        _author_deformable_element_array(good.GetPrim(), "thicknesses", [0.001], "constant")
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "/World/Bad.*degenerate"):
+        with self.assertLogs("newton", level="WARNING") as caught:
             result = builder.add_usd(stage, return_deformable_results=True)
+        self.assertTrue(any("/World/Bad" in m and "degenerate" in m for m in caught.output))
         self.assertNotIn("/World/Bad", result["path_cloth_map"])
         self.assertIn("/World/Good", result["path_cloth_map"])
         self.assertEqual(builder.particle_count, 4)  # the good quad only
         self.assertEqual(builder.tri_count, 2)
         builder.finalize()
 
-    def test_nonfinite_cloth_vertex_warns_and_skips(self):
+    def test_nonfinite_cloth_vertex_logs_and_skips(self):
         """Skip a cloth with a non-finite point without aborting sibling imports."""
         stage = _deformable_stage()
         bad = _add_cloth_mesh(stage, "/World/Bad")
         bad.GetPointsAttr().Set([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, float("nan"))])
-        _add_cloth_mesh(stage, "/World/Good")
+        good = _add_cloth_mesh(stage, "/World/Good")
+        _author_deformable_element_array(good.GetPrim(), "thicknesses", [0.001], "constant")
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "/World/Bad.*non-finite"):
+        with self.assertLogs("newton", level="WARNING") as caught:
             result = builder.add_usd(stage, return_deformable_results=True)
+        self.assertTrue(any("/World/Bad" in m and "non-finite" in m for m in caught.output))
 
         self.assertNotIn("/World/Bad", result["path_cloth_map"])
         self.assertNotIn("/World/Bad", result["path_cloth_attrs"])

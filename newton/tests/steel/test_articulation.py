@@ -1615,7 +1615,7 @@ def test_replicated_mimics_have_articulation_local_ranges(test, device):
     """Use one compact lookup range per articulation for replicated mimic rows."""
     template, _, _ = _build_two_revolute_chain(coef0=0.0, coef1=1.0)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    builder.replicate(template, world_count=4)
+    builder.replicate(template, copy_count=4)
     solver = SolverSteel(builder.finalize(device=device), solve_mode="matrix_free")
     test.assertEqual(solver._mimic_art_start.numpy().tolist(), [0, 1, 2, 3, 4])
     test.assertEqual(solver._mimic_art_list.numpy().tolist(), [0, 1, 2, 3])

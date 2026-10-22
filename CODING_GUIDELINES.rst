@@ -101,6 +101,25 @@ maturity. Follow the `experimental-feature documentation procedure
 <https://newton-physics.github.io/newton/latest/guide/development.html#experimental-features>`__
 for directive syntax and generated API documentation.
 
+USD schema and importer support
+-------------------------------
+
+New or substantially changed user-authorable simulation features should ship
+with USD schema and importer support. Design the schema alongside the public
+API, and test equivalent behavior in USD-authored and builder-created models,
+including applicable defaults, units, frames, references, and invalid inputs.
+Document the supported subset and limitations.
+
+Reuse standard OpenUSD schemas or AOUSD proposals already supported by Newton;
+extend Newton-owned schemas when needed, with compatible schema-package
+versions. Existing solver-native schemas such as ``mjc:*`` are also supported
+when parsed through OpenUSD without an Omniverse dependency. The normal path
+should require no Omniverse or additional vendor schema packages.
+
+Each feature must state its disposition: supported; deferred with explicit
+review acceptance, reason, issue, owner, and target milestone; or not applicable
+with an explanation that the feature is runtime-only or non-authorable.
+
 Naming
 ------
 
@@ -431,6 +450,7 @@ When reviewing a new or substantially changed public API, check that:
   options, and safe defaults;
 - new categorical types use an enum where the execution boundary supports it;
 - new public nouns are necessary and have clear ownership;
+- authorable features satisfy the schema and importer policy above;
 - optional parameters are keyword-only unless an established idiom justifies
   positional use;
 - reusable Warp-native math is placed at the appropriate ownership layer; and
