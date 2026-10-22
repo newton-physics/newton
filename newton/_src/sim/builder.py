@@ -902,6 +902,7 @@ class ModelBuilder:
         input_processor_classes: tuple = ()  # Tuple of InputProcessorBase subclass types (in order)
         input_processor_shared_kwargs: tuple = ()  # Tuple of dicts: shared kwargs per input processor class
         input_processor_args: list[list[dict[str, Any]]] = field(default_factory=list)  # Per-actuator params
+        actuator_indices: list[int] = field(default_factory=list)  # Per-actuator rows of per-actuator arrays
 
         def __init__(
             self,
@@ -937,6 +938,7 @@ class ModelBuilder:
             self.input_processor_classes = input_processor_classes
             self.input_processor_shared_kwargs = input_processor_shared_kwargs
             self.input_processor_args = input_processor_args if input_processor_args is not None else []
+            self.actuator_indices = []
             if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
                 return
             warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -3166,7 +3168,7 @@ class ModelBuilder:
         input_processors: list[tuple[type[InputProcessorBase], dict[str, Any]]] | None = None,
         controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
-    ) -> None:
+    ) -> int:
         """Add an external actuator for a single DOF.
 
         External actuators apply forces computed outside the physics engine.
@@ -3196,6 +3198,12 @@ class ModelBuilder:
                 actuated joint.
             controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
+
+        Returns:
+            The index of the actuator in per-actuator arrays, e.g. for
+            :meth:`add_battery`. The model stores the world and DOF of each
+            actuator as ``actuator.actuator_world`` and
+            ``actuator.actuator_dof``.
         """
         if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
             if drive_class is not None:
@@ -3303,68 +3311,81 @@ class ModelBuilder:
             ),
         )
 
+        from ..actuators.actuator import register_actuator_frequency  # noqa: PLC0415
+
+        if not self.has_custom_attribute("actuator:actuator_dof"):
+            register_actuator_frequency(self)
+        row = {"actuator:actuator_dof": index}
+        if self.has_custom_attribute("actuator:actuator_battery"):
+            row["actuator:actuator_battery"] = -1
+        actuator = self.add_custom_values(**row)["actuator:actuator_dof"]
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.drive_args.append(drive_array_params)
         entry.clamping_args.append(clamping_array_params_list)
         entry.input_processor_args.append(input_processor_array_params_list)
+        entry.actuator_indices.append(actuator)
+        return actuator
 
     def add_battery(
-        self, joints: Sequence[int | str], *, nominal_voltage: float, sag_gain: float, min_voltage: float
+        self, actuators: Sequence[int], *, nominal_voltage: float, sag_gain: float, min_voltage: float
     ) -> int:
-        """Add a battery shared by the actuators of the given joints in the current world.
+        """Add a battery shared by the given actuators of the current world.
 
         Each step, :func:`~newton.actuators.update_battery_supply` sags its
-        voltage with the total effort on the DOFs of *joints* and writes it into
-        ``control.supply_voltage``, and
+        voltage with the total effort of *actuators* and writes it into
+        ``control.actuator_supply_voltage``, and
         :func:`~newton.actuators.reset_battery_supply` restores the nominal
-        voltage. ``control.supply_voltage`` starts at the nominal voltage.
-        The battery parameters are stored on the :class:`~newton.Model` under
-        the ``actuator`` namespace as ``battery_nominal_voltage``,
+        voltage. ``control.actuator_supply_voltage`` starts at the nominal
+        voltage. The battery parameters are stored on the :class:`~newton.Model`
+        under the ``actuator`` namespace as ``battery_nominal_voltage``,
         ``battery_sag_gain``, ``battery_min_voltage`` and ``battery_world``,
-        and the battery of each DOF as ``joint_dof_battery`` (``-1`` for
+        and the battery of each actuator as ``actuator_battery`` (``-1`` for
         none). :meth:`replicate` copies the batteries into every world.
         :meth:`add_usd` calls this method for each ``NewtonBattery`` prim.
 
         Args:
-            joints: Single-DOF joints that draw from the battery, as joint
-                indices or joint labels of the current world, e.g. after
-                :meth:`add_usd`. They must belong to the current world.
+            actuators: Actuators that draw from the battery, as returned by
+                :meth:`add_actuator`. They must belong to the current world.
             nominal_voltage: Voltage without load [V].
             sag_gain: Voltage drop per unit of total effort [V/N or V/(N·m)].
-            min_voltage: Lower bound of the sagged voltage [V], positive and
-                at most *nominal_voltage*.
+            min_voltage: Lower bound of the sagged voltage [V], at most
+                *nominal_voltage*. 0 means no floor.
 
         Returns:
             The index of the battery.
 
         Raises:
-            ValueError: *min_voltage* is not positive or exceeds
-                *nominal_voltage*, *sag_gain* is negative, or a joint does not exist, is
-                not single-DOF, belongs to another world, or already has a
+            ValueError: *min_voltage* is negative or exceeds
+                *nominal_voltage*, *sag_gain* is negative, or an actuator
+                does not exist, belongs to another world, or already has a
                 battery.
         """
+        from ..actuators.actuator import ACTUATOR_FREQUENCY  # noqa: PLC0415
         from ..actuators.battery import register_battery_attributes  # noqa: PLC0415
 
-        if not 0.0 < min_voltage <= nominal_voltage:
+        if not 0.0 <= min_voltage <= nominal_voltage:
             raise ValueError(
-                f"min_voltage must be positive and at most nominal_voltage, got {min_voltage} and {nominal_voltage}"
+                f"min_voltage must be non-negative and at most nominal_voltage, got {min_voltage} and {nominal_voltage}"
             )
         if sag_gain < 0.0:
             raise ValueError(f"sag_gain must be non-negative, got {sag_gain}")
-        dof_battery = self.custom_attributes.get("actuator:joint_dof_battery")
-        assigned = (dof_battery.values if dof_battery is not None else None) or {}
-        dofs = []
-        for joint_ref in joints:
-            joint = self._resolve_actuator_joint(joint_ref, "add_battery", "joints", world=self.current_world)
-            label = self.joint_label[joint]
-            if self.joint_world[joint] != self.current_world:
-                raise ValueError(f"add_battery: joint '{label}' belongs to world {self.joint_world[joint]}")
-            dof = self.joint_qd_start[joint]
-            if assigned.get(dof, -1) >= 0:
-                raise ValueError(f"add_battery: joint '{label}' already draws from battery {assigned[dof]}")
-            dofs.append(dof)
-        register_battery_attributes(self)
+        actuators = [int(actuator) for actuator in actuators]
+        actuator_count = self._custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0)
+        actuator_world = self.custom_attributes.get("actuator:actuator_world")
+        actuator_battery = self.custom_attributes.get("actuator:actuator_battery")
+        assigned = (actuator_battery.values if actuator_battery is not None else None) or []
+        for actuator in actuators:
+            if not 0 <= actuator < actuator_count:
+                raise ValueError(f"add_battery: actuator {actuator} does not exist")
+            world = actuator_world.values[actuator]
+            if world != self.current_world:
+                raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
+            if actuator < len(assigned) and assigned[actuator] is not None and assigned[actuator] >= 0:
+                raise ValueError(f"add_battery: actuator {actuator} already draws from battery {assigned[actuator]}")
+        if not self.has_custom_attribute("actuator:battery_nominal_voltage"):
+            register_battery_attributes(self)
+            self.custom_attributes["actuator:actuator_battery"].values = [-1] * actuator_count
         battery = self.add_custom_values(
             **{
                 "actuator:battery_nominal_voltage": nominal_voltage,
@@ -3372,11 +3393,11 @@ class ModelBuilder:
                 "actuator:battery_min_voltage": min_voltage,
             }
         )["actuator:battery_nominal_voltage"]
-        if dofs:
+        if actuators:
             self._process_custom_attributes(
-                dofs,
-                {"actuator:joint_dof_battery": battery, "supply_voltage": nominal_voltage},
-                Model.AttributeFrequency.JOINT_DOF,
+                actuators,
+                {"actuator:actuator_battery": battery, "actuator_supply_voltage": nominal_voltage},
+                ACTUATOR_FREQUENCY,
             )
         return battery
 
@@ -4142,11 +4163,13 @@ class ModelBuilder:
 
         for world_index, world in enumerate(worlds.tolist()):
             entity_offsets = {kind: int(starts(kind)[world_index]) for kind in counts}
+            actuator_offset = self._custom_frequency_counts.get("actuator:actuator", 0)
             self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[world_index])
             self._merge_builder_actuators(
                 builder,
                 int(joint_dof_starts[world_index]),
                 int(joint_coord_starts[world_index]),
+                actuator_offset,
             )
 
     @staticmethod
@@ -5635,6 +5658,7 @@ class ModelBuilder:
         builder: ModelBuilder,
         joint_dof_offset: int,
         joint_coord_offset: int,
+        actuator_offset: int,
     ) -> None:
         for entry_key, sub_entry in builder.actuator_entries.items():
             entry = self.actuator_entries.setdefault(
@@ -5654,6 +5678,7 @@ class ModelBuilder:
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
+            entry.actuator_indices.extend(idx + actuator_offset for idx in sub_entry.actuator_indices)
             entry.pos_indices.extend(idx + joint_coord_offset for idx in sub_entry.pos_indices)
             entry.drive_args.extend(sub_entry.drive_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
@@ -15585,8 +15610,25 @@ class ModelBuilder:
                     pos_indices=pos_indices_arg,
                     requires_grad=requires_grad,
                     input_processors=input_processor_objs,
-                    control_computed_output_attr="joint_f_computed",
+                    actuator_indices=self._build_index_array(entry.actuator_indices, device),
+                    control_computed_output_attr="actuator_computed_effort",
                 )
+
+                if "actuator_supply_voltage" in drive.custom_inputs:
+                    actuator_battery = self.custom_attributes.get("actuator:actuator_battery")
+                    assigned = (actuator_battery.values if actuator_battery is not None else None) or []
+                    missing = [
+                        row
+                        for row in entry.actuator_indices
+                        if row >= len(assigned) or assigned[row] is None or assigned[row] < 0
+                    ]
+                    if missing:
+                        warnings.warn(
+                            f"{type(drive).__name__} reads actuator_supply_voltage, but actuator(s) {missing} "
+                            "have no battery; their supply voltage stays 0 V",
+                            NewtonWarning,
+                            stacklevel=2,
+                        )
 
                 actuator.register_custom_attributes(self)
                 m.actuators.append(actuator)
@@ -15659,6 +15701,10 @@ class ModelBuilder:
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
+
+            from ..actuators.battery import finalize_battery_actuators  # noqa: PLC0415
+
+            finalize_battery_actuators(self, m)
 
             m.bvh_build_shapes(
                 m,

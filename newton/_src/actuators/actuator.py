@@ -22,6 +22,7 @@ from .input_processors.input_processor_delay import InputProcessorDelay
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
+    from ..sim.model import Model
 
 _DEPRECATED_UNSET = object()
 _DELAY_KEYWORD_DEPRECATION_MSG = (
@@ -39,10 +40,49 @@ _DELAY_STATE_DEPRECATION_MSG = (
 _CONTROLLER_KEYWORD_DEPRECATION_MSG = (
     "Actuator(controller=...) is deprecated in Newton 1.6; use Actuator(drive=...) instead."
 )
+_CUSTOM_INPUTS_TUPLE_DEPRECATION_MSG = (
+    "{name}.custom_inputs as a tuple of names is deprecated in Newton 1.8; "
+    "map each name to its frequency, e.g. {{name: Model.AttributeFrequency.JOINT_DOF}}."
+)
 _CONTROLLER_ATTRIBUTE_DEPRECATION_MSG = "Actuator.controller is deprecated in Newton 1.6; use Actuator.drive instead."
 _CONTROLLER_STATE_DEPRECATION_MSG = (
     "Actuator.State.controller_state is deprecated in Newton 1.6; use drive_state instead."
 )
+
+
+ACTUATOR_FREQUENCY = "actuator:actuator"
+
+
+def register_actuator_frequency(builder: ModelBuilder) -> None:
+    """Register the per-actuator frequency and its ``actuator_world`` and ``actuator_dof`` attributes.
+
+    :meth:`~newton.ModelBuilder.add_actuator` calls this automatically and
+    registers it with the first actuator.
+
+    Args:
+        builder: Newton model builder on which to register the frequency.
+    """
+    builder.add_custom_frequency(builder.CustomFrequency(name="actuator", namespace="actuator"))
+    builder.add_custom_attribute(
+        builder.CustomAttribute(
+            name="actuator_world",
+            dtype=wp.int32,
+            frequency=ACTUATOR_FREQUENCY,
+            default=-1,
+            references="world",
+            namespace="actuator",
+        )
+    )
+    builder.add_custom_attribute(
+        builder.CustomAttribute(
+            name="actuator_dof",
+            dtype=wp.int32,
+            frequency=ACTUATOR_FREQUENCY,
+            default=-1,
+            references="joint_dof",
+            namespace="actuator",
+        )
+    )
 
 
 @wp.kernel
@@ -50,15 +90,31 @@ def _scatter_add_kernel(
     forces: wp.array[float],
     computed_forces: wp.array[float],
     indices: wp.array[wp.uint32],
+    computed_indices: wp.array[wp.uint32],
+    accumulate_computed: bool,
     output: wp.array[float],
     computed_output: wp.array[float],
 ):
-    """Scatter-add effort into output; optionally scatter computed effort too."""
+    """Scatter-add effort into output; optionally scatter computed effort too, added per DOF or written per actuator."""
     i = wp.tid()
     idx = indices[i]
     output[idx] = output[idx] + forces[i]
     if computed_output:
-        computed_output[idx] = computed_output[idx] + computed_forces[i]
+        j = computed_indices[i]
+        if accumulate_computed:
+            computed_output[j] = computed_output[j] + computed_forces[i]
+        else:
+            computed_output[j] = computed_forces[i]
+
+
+@wp.kernel
+def _gather_kernel(
+    source: wp.array[float],
+    indices: wp.array[wp.uint32],
+    output: wp.array[float],
+):
+    i = wp.tid()
+    output[i] = source[indices[i]]
 
 
 def _assign_state_value(dst: Any, src: Any, name: str) -> None:
@@ -167,6 +223,30 @@ def _require_array(source: Any, name: str) -> Any:
     if value is None:
         raise ValueError(f"'{name}' is None; assign it before stepping the actuator.")
     return value
+
+
+def _custom_input_frequencies(drive: DriveBase) -> dict[str, Model.AttributeFrequency | str]:
+    """Return the drive's custom inputs as ``{name: frequency}``, accepting the deprecated tuple of names."""
+    from ..sim.model import Model  # noqa: PLC0415
+
+    declared = drive.custom_inputs
+    if not isinstance(declared, Mapping):
+        warnings.warn(
+            _CUSTOM_INPUTS_TUPLE_DEPRECATION_MSG.format(name=type(drive).__name__),
+            NewtonDeprecationWarning,
+            stacklevel=3,
+        )
+        declared = dict.fromkeys(declared, Model.AttributeFrequency.JOINT_DOF)
+    frequencies = {}
+    for name, declared_frequency in declared.items():
+        frequency = Model.AttributeFrequency.JOINT_DOF if declared_frequency == "joint_dof" else declared_frequency
+        if frequency not in (Model.AttributeFrequency.JOINT_DOF, ACTUATOR_FREQUENCY):
+            raise ValueError(
+                f"{type(drive).__name__} custom input '{name}' has unsupported frequency {frequency!r}; "
+                f"use Model.AttributeFrequency.JOINT_DOF or '{ACTUATOR_FREQUENCY}'"
+            )
+        frequencies[name] = frequency
+    return frequencies
 
 
 def _collect_custom_inputs(
@@ -359,6 +439,7 @@ class Actuator:
         requires_grad: bool = False,
         *,
         input_processors: list[InputProcessorBase] | None = None,
+        actuator_indices: wp.array[wp.uint32] | None = None,
         controller: DriveBase | object | None = _DEPRECATED_UNSET,
     ):
         """Initialize actuator.
@@ -389,15 +470,19 @@ class Actuator:
             control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
             control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
-                effort. None to skip writing computed effort; the effort is
-                also skipped while the attribute is missing or unset.
-                :class:`~newton.ModelBuilder` sets it to
-                ``"joint_f_computed"``.
+                effort. None to skip writing computed effort. Without
+                *actuator_indices* the effort is added per DOF like the
+                output; with *actuator_indices* it is written per actuator
+                at :attr:`actuator_indices`.
             requires_grad: Allocate intermediate arrays with gradient support
                 for differentiable simulation.
             input_processors: Input processors applied in list order to the
                 state and command inputs before the drive (e.g.
                 :class:`InputProcessorDelay`).
+            actuator_indices: Index of each actuator into per-actuator arrays,
+                i.e. arrays with one entry per actuator of the model rather
+                than per DOF. Required when the drive declares per-actuator
+                :attr:`~DriveBase.custom_inputs`.
             controller: Deprecated in Newton 1.6; use ``drive`` instead.
         """
         if controller is not _DEPRECATED_UNSET:
@@ -416,6 +501,12 @@ class Actuator:
         self.pos_indices = pos_indices if pos_indices is not None else indices
         self.target_pos_indices = target_pos_indices if target_pos_indices is not None else self.pos_indices
         self.effort_indices = effort_indices if effort_indices is not None else indices
+        self.actuator_indices = actuator_indices
+        """Index of each actuator into per-actuator arrays, or ``None``."""
+        if actuator_indices is not None and actuator_indices.shape != indices.shape:
+            raise ValueError(
+                f"actuator_indices shape {actuator_indices.shape} must match indices shape {indices.shape}"
+            )
         if self.pos_indices.shape != indices.shape:
             raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
         if self.target_pos_indices.shape != indices.shape:
@@ -443,6 +534,15 @@ class Actuator:
         self.control_feedforward_attr = control_feedforward_attr
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
+        self._custom_inputs = _custom_input_frequencies(drive)
+        actuator_inputs = [name for name, frequency in self._custom_inputs.items() if frequency == ACTUATOR_FREQUENCY]
+        if actuator_inputs and actuator_indices is None:
+            raise ValueError(
+                f"{type(drive).__name__} declares per-actuator custom inputs, which require actuator_indices"
+            )
+        self._actuator_inputs = {
+            name: wp.zeros(len(indices), dtype=wp.float32, device=indices.device) for name in actuator_inputs
+        }
 
         self.device = indices.device
         self.requires_grad = requires_grad
@@ -489,22 +589,23 @@ class Actuator:
             Container whose slots are the required ``sim_control`` attributes.
 
         Note:
-            Leaving the feedforward field unassigned means no feedforward term,
-            and leaving the computed output field unassigned skips it.
+            Leaving the feedforward field unassigned means no feedforward term.
         """
         fields = self._required_attributes.get("sim_control", ())
         return _input_container_class("sim_control", fields)()
 
     def register_custom_attributes(self, builder: ModelBuilder) -> None:
-        """Register drive inputs and the computed output as custom Newton Control attributes.
+        """Register drive inputs and per-actuator outputs as custom Newton Control attributes.
 
         :class:`~newton.ModelBuilder` calls this method automatically while
-        finalizing its actuators. Every input declared by the drive, and
-        :attr:`control_computed_output_attr` when it differs from
-        :attr:`control_output_attr`, is registered as a ``wp.float32``
-        joint-DOF array on :class:`~newton.Control`. Registration allocates the arrays but does
-        not populate or clear them; the caller must update their values before
-        each actuator evaluation.
+        finalizing its actuators. Every input declared by the drive in
+        :attr:`~DriveBase.custom_inputs` is registered as a ``wp.float32``
+        array on :class:`~newton.Control` with its declared frequency, and
+        :attr:`control_computed_output_attr` too when :attr:`actuator_indices`
+        is set, as a per-actuator array (``actuator:actuator`` frequency).
+        Registration allocates the arrays but does not populate or clear
+        them; the caller must update their values before each actuator
+        evaluation.
 
         This method is a Newton convenience. Other simulation engines should
         provide arrays with the same names through their ``sim_control``
@@ -515,15 +616,15 @@ class Actuator:
         """
         from ..sim.model import Model  # noqa: PLC0415
 
-        names = list(self.drive.custom_inputs)
-        if self.control_computed_output_attr not in (None, self.control_output_attr):
-            names.append(self.control_computed_output_attr)
-        for name in names:
+        frequencies = dict(self._custom_inputs)
+        if self.actuator_indices is not None and self.control_computed_output_attr is not None:
+            frequencies[self.control_computed_output_attr] = ACTUATOR_FREQUENCY
+        for name, frequency in frequencies.items():
             builder.add_custom_attribute(
                 builder.CustomAttribute(
                     name=name,
                     dtype=wp.float32,
-                    frequency=Model.AttributeFrequency.JOINT_DOF,
+                    frequency=frequency,
                     assignment=Model.AttributeAssignment.CONTROL,
                     default=0.0,
                 )
@@ -662,7 +763,7 @@ class Actuator:
         ]
         required = {
             "sim_state": state_attrs,
-            "sim_control": [a for a in control_attrs if a is not None] + list(self.drive.custom_inputs),
+            "sim_control": [a for a in control_attrs if a is not None] + list(self._custom_inputs),
         }
         return {source: tuple(dict.fromkeys(names)) for source, names in required.items() if names}
 
@@ -769,7 +870,21 @@ class Actuator:
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
-        custom_inputs = _collect_custom_inputs(sim_control, self.drive.custom_inputs)
+        custom_inputs = _collect_custom_inputs(
+            sim_control, tuple(name for name in self._custom_inputs if name not in self._actuator_inputs)
+        )
+        for name, gathered in self._actuator_inputs.items():
+            source = _get_attribute(sim_control, name, None)
+            if source is not None:
+                wp.launch(
+                    _gather_kernel,
+                    dim=self.num_actuators,
+                    inputs=[source, self.actuator_indices],
+                    outputs=[gathered],
+                    device=self.device,
+                )
+                source = gathered
+            custom_inputs[name] = source
         output_forces = self._effort_mode.compute_force(
             sim_state,
             inputs.positions,
@@ -796,11 +911,18 @@ class Actuator:
             self.control_computed_output_attr is not None
             and self.control_computed_output_attr != self.control_output_attr
         ):
-            computed_output = _get_attribute(sim_control, self.control_computed_output_attr, None)
+            computed_output = _require_array(sim_control, self.control_computed_output_attr)
+        per_actuator = self.actuator_indices is not None
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=self.num_actuators,
-            inputs=[output_forces, self._computed_forces, self.effort_indices],
+            inputs=[
+                output_forces,
+                self._computed_forces,
+                self.effort_indices,
+                self.actuator_indices if per_actuator else self.effort_indices,
+                not per_actuator,
+            ],
             outputs=[applied_output, computed_output],
             device=self.device,
         )

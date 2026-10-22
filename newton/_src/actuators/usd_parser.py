@@ -332,30 +332,37 @@ def register_actuator_component(
     )
 
 
-def _parse_battery_prim(prim) -> tuple[list[str], dict[str, float]] | None:
-    """Parse a ``NewtonBattery`` prim into its joint paths and :meth:`~newton.ModelBuilder.add_battery` kwargs.
+def _parse_battery_prim(prim) -> dict[str, float] | None:
+    """Parse a ``NewtonBattery`` prim into :meth:`~newton.ModelBuilder.add_battery` kwargs.
 
-    Returns ``None`` if the prim is not a ``NewtonBattery``.
+    ``newton:sagGain`` and ``newton:minVoltage`` fall back to 0. Returns
+    ``None`` if the prim is not a ``NewtonBattery``.
 
     Raises:
-        ValueError: The prim has no ``newton:joints`` targets, or no
-            ``newton:nominalVoltage`` or ``newton:minVoltage``.
+        ValueError: The prim has no ``newton:nominalVoltage``.
     """
     if prim.GetTypeName() != SchemaNames.BATTERY:
         return None
-    joints = _get_relationship_targets(prim, "newton:joints")
-    if not joints:
-        raise ValueError(f"Battery prim '{prim.GetPath()}' has no authored 'newton:joints' relationship")
-    kwargs: dict[str, float] = {}
+    kwargs = {"sag_gain": 0.0, "min_voltage": 0.0}
     for name in ("nominalVoltage", "sagGain", "minVoltage"):
         attr = prim.GetAttribute(f"newton:{name}")
         if attr and attr.HasAuthoredValue():
             kwargs[_camel_to_snake(name)] = float(attr.Get())
-    kwargs.setdefault("sag_gain", 0.0)
-    missing = {"nominal_voltage", "min_voltage"} - set(kwargs)
-    if missing:
-        raise ValueError(f"Battery prim '{prim.GetPath()}' is missing {', '.join(sorted(missing))}")
-    return joints, kwargs
+    if "nominal_voltage" not in kwargs:
+        raise ValueError(f"Battery prim '{prim.GetPath()}' is missing newton:nominalVoltage")
+    return kwargs
+
+
+def _get_actuator_battery(prim) -> str | None:
+    """Return the ``NewtonBattery`` path bound to an actuator prim by ``newton:battery``, or ``None``."""
+    targets = _get_relationship_targets(prim, "newton:battery")
+    if len(targets) > 1:
+        warnings.warn(
+            f"Actuator prim {prim.GetPath()} has {len(targets)} batteries; only the first is used",
+            NewtonWarning,
+            stacklevel=2,
+        )
+    return targets[0] if targets else None
 
 
 def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -> ActuatorParsed | None:

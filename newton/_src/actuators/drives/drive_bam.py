@@ -7,7 +7,6 @@ from typing import Any, ClassVar
 
 import warp as wp
 
-from ..battery import SUPPLY_VOLTAGE_ATTR
 from .base import DriveBase
 
 
@@ -33,8 +32,7 @@ def _bam_effort_kernel(
 
     supply = vin[i]
     if supply_voltage:
-        if supply_voltage[vel_indices[i]] > 0.0:
-            supply = supply_voltage[vel_indices[i]]
+        supply = supply_voltage[i]
 
     duty = (target_pos[target_pos_indices[i]] - positions[pos_indices[i]]) * kp[i]
     if max_current[i] > 0.0 and supply > 0.0:
@@ -69,12 +67,10 @@ class DriveBAM(DriveBase):
     feedforward are ignored: the modelled firmware has no torque input.
 
     The supply voltage is ``vin``. With ``supply_from_control=True`` the
-    drive instead reads it per DOF from the ``supply_voltage`` custom input
-    on ``sim_control`` (see :attr:`DriveBase.custom_inputs
-    <newton.actuators.DriveBase.custom_inputs>`), which
-    :func:`~newton.actuators.update_battery_supply` writes for the
-    batteries added with :meth:`~newton.ModelBuilder.add_battery`. DOFs whose ``supply_voltage`` is
-    not positive, e.g. DOFs without a battery, use ``vin``.
+    drive instead reads it per actuator from the ``actuator_supply_voltage``
+    input on ``sim_control`` (see :attr:`DriveBase.custom_inputs
+    <newton.actuators.DriveBase.custom_inputs>`), e.g. as written by
+    :func:`~newton.actuators.update_battery_supply`.
 
     The torque is not limited beyond the duty cycle and current limits; add
     a :class:`~newton.actuators.ClampingMaxEffort` for a stall-torque bound.
@@ -127,8 +123,7 @@ class DriveBAM(DriveBase):
             max_current: Firmware current limit [A]; 0 disables it. Shape
                 ``(N,)``. ``None`` disables it.
             supply_from_control: Read the supply voltage from the
-                ``supply_voltage`` custom input instead of *vin*, where it
-                is positive.
+                ``actuator_supply_voltage`` input instead of *vin*.
 
         Raises:
             ValueError: An array shape does not match *kp*, or *kt* or
@@ -148,8 +143,9 @@ class DriveBAM(DriveBase):
         self.max_current = max_current if max_current is not None else wp.zeros(n, dtype=float, device=kp.device)
         """Firmware current limit [A], 0 when disabled, shape (N,)."""
         self.supply_from_control = supply_from_control
-        """Whether the supply voltage is read from the ``supply_voltage`` custom input."""
-        self.custom_inputs = (SUPPLY_VOLTAGE_ATTR,) if supply_from_control else ()
+        """Whether the supply voltage is read from the ``actuator_supply_voltage`` input."""
+        # "actuator:actuator" is the per-actuator frequency: one entry per actuator of the model, not per DOF.
+        self.custom_inputs = {"actuator_supply_voltage": "actuator:actuator"} if supply_from_control else {}
         for name in ("kt", "resistance", "vin", "max_pwm", "max_current"):
             shape = getattr(self, name).shape
             if shape != n:
@@ -186,20 +182,22 @@ class DriveBAM(DriveBase):
         """Compute the servo torque.
 
         Args:
-            custom_inputs: Holds the ``joint_qd``-shaped ``supply_voltage``
-                array [V] when :attr:`supply_from_control` is set.
+            custom_inputs: Holds the ``actuator_supply_voltage`` array [V],
+                one entry per slot, when :attr:`supply_from_control` is set.
 
         Raises:
             ValueError: :attr:`supply_from_control` is set and
-                ``supply_voltage`` is missing.
+                ``actuator_supply_voltage`` is missing.
 
         See :meth:`DriveBase.compute` for the other arguments.
         """
         supply_voltage = None
         if self.supply_from_control:
-            supply_voltage = (custom_inputs or {}).get(SUPPLY_VOLTAGE_ATTR)
+            supply_voltage = (custom_inputs or {}).get("actuator_supply_voltage")
             if supply_voltage is None:
-                raise ValueError(f"DriveBAM(supply_from_control=True) requires '{SUPPLY_VOLTAGE_ATTR}' on sim_control.")
+                raise ValueError(
+                    "DriveBAM(supply_from_control=True) requires 'actuator_supply_voltage' on sim_control."
+                )
         wp.launch(
             kernel=_bam_effort_kernel,
             dim=len(forces),

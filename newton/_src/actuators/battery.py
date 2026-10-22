@@ -5,54 +5,48 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import warp as wp
+
+from .actuator import ACTUATOR_FREQUENCY
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
     from ..sim.control import Control
     from ..sim.model import Model
 
-SUPPLY_VOLTAGE_ATTR = "supply_voltage"
+SUPPLY_VOLTAGE_ATTR = "actuator_supply_voltage"
 BATTERY_NAMESPACE = "actuator"
 BATTERY_FREQUENCY = f"{BATTERY_NAMESPACE}:battery"
 
 
-@wp.func
-def _battery_dof_range(world: int, joint_dof_world_start: wp.array[wp.int32]):
-    if world < 0:
-        return 0, joint_dof_world_start[joint_dof_world_start.shape[0] - 1]
-    return joint_dof_world_start[world], joint_dof_world_start[world + 1]
-
-
 @wp.kernel
 def _battery_update_kernel(
-    battery_world: wp.array[wp.int32],
+    battery_actuator_start: wp.array[wp.int32],
+    battery_actuators: wp.array[wp.int32],
     nominal_voltage: wp.array[float],
     sag_gain: wp.array[float],
     min_voltage: wp.array[float],
-    joint_dof_world_start: wp.array[wp.int32],
-    joint_dof_battery: wp.array[wp.int32],
     effort: wp.array[float],
     supply_voltage: wp.array[float],
 ):
     b = wp.tid()
-    start, end = _battery_dof_range(battery_world[b], joint_dof_world_start)
+    start = battery_actuator_start[b]
+    end = battery_actuator_start[b + 1]
     total = float(0.0)
-    for d in range(start, end):
-        if joint_dof_battery[d] == b:
-            total += wp.abs(effort[d])
+    for k in range(start, end):
+        total += wp.abs(effort[battery_actuators[k]])
     voltage = wp.max(nominal_voltage[b] - sag_gain[b] * total, min_voltage[b])
-    for d in range(start, end):
-        if joint_dof_battery[d] == b:
-            supply_voltage[d] = voltage
+    for k in range(start, end):
+        supply_voltage[battery_actuators[k]] = voltage
 
 
 @wp.kernel
 def _battery_reset_kernel(
+    battery_actuator_start: wp.array[wp.int32],
+    battery_actuators: wp.array[wp.int32],
     battery_world: wp.array[wp.int32],
     nominal_voltage: wp.array[float],
-    joint_dof_world_start: wp.array[wp.int32],
-    joint_dof_battery: wp.array[wp.int32],
     world_mask: wp.array[wp.bool],
     supply_voltage: wp.array[float],
 ):
@@ -61,16 +55,14 @@ def _battery_reset_kernel(
     if world_mask:
         if world < 0 or not world_mask[world]:
             return
-    start, end = _battery_dof_range(world, joint_dof_world_start)
-    for d in range(start, end):
-        if joint_dof_battery[d] == b:
-            supply_voltage[d] = nominal_voltage[b]
+    for k in range(battery_actuator_start[b], battery_actuator_start[b + 1]):
+        supply_voltage[battery_actuators[k]] = nominal_voltage[b]
 
 
 def register_battery_attributes(builder: ModelBuilder) -> None:
     """Register the battery frequency and its custom attributes on *builder*.
 
-    :meth:`~newton.ModelBuilder.add_battery` calls this automatically.
+    :meth:`~newton.ModelBuilder.add_battery` calls this with the first battery.
 
     Args:
         builder: Newton model builder on which to register the attributes.
@@ -96,9 +88,9 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
     )
     builder.add_custom_attribute(
         builder.CustomAttribute(
-            name="joint_dof_battery",
+            name="actuator_battery",
             dtype=wp.int32,
-            frequency=Model.AttributeFrequency.JOINT_DOF,
+            frequency=ACTUATOR_FREQUENCY,
             default=-1,
             references=BATTERY_FREQUENCY,
             namespace=BATTERY_NAMESPACE,
@@ -108,15 +100,43 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
         builder.CustomAttribute(
             name=SUPPLY_VOLTAGE_ATTR,
             dtype=wp.float32,
-            frequency=Model.AttributeFrequency.JOINT_DOF,
+            frequency=ACTUATOR_FREQUENCY,
             assignment=Model.AttributeAssignment.CONTROL,
             default=0.0,
         )
     )
 
 
+def finalize_battery_actuators(builder: ModelBuilder, model: Model) -> None:
+    """Store the actuators of each battery on *model*, grouped by battery.
+
+    Sets ``model.actuator.battery_actuator_start`` (one entry per battery plus
+    one) and ``model.actuator.battery_actuators``, so battery ``b`` draws from
+    the actuators ``battery_actuators[battery_actuator_start[b]:battery_actuator_start[b + 1]]``.
+    :meth:`~newton.ModelBuilder.finalize` calls this automatically.
+    """
+    batteries = getattr(model, BATTERY_NAMESPACE, None)
+    if getattr(batteries, "battery_nominal_voltage", None) is None:
+        return
+    battery_count = len(batteries.battery_nominal_voltage)
+    actuator_battery = np.array(
+        [
+            -1 if b is None else b
+            for b in builder.custom_attributes[f"{BATTERY_NAMESPACE}:actuator_battery"].values or ()
+        ],
+        dtype=np.int64,
+    )
+    rows = np.flatnonzero(actuator_battery >= 0)
+    order = np.argsort(actuator_battery[rows], kind="stable")
+    counts = np.bincount(actuator_battery[rows], minlength=battery_count)
+    batteries.battery_actuator_start = wp.array(
+        np.concatenate(([0], np.cumsum(counts))), dtype=wp.int32, device=model.device
+    )
+    batteries.battery_actuators = wp.array(rows[order], dtype=wp.int32, device=model.device)
+
+
 def update_battery_supply(model: Model, control: Control, *, effort: wp.array[float] | None = None) -> None:
-    """Sag each battery's voltage with the effort on its DOFs and write ``control.supply_voltage``.
+    """Sag each battery's voltage with the effort of its actuators and write ``control.actuator_supply_voltage``.
 
     The batteries are added with :meth:`~newton.ModelBuilder.add_battery`. The
     voltage of a battery is
@@ -126,18 +146,17 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
         V = \\max\\big(V_{\\text{nominal}} - g_{\\text{sag}} \\sum |\\tau|,\\;
         V_{\\min}\\big)
 
-    over the DOFs assigned to it, and is written into ``supply_voltage`` for
-    those DOFs. Drives that read the supply voltage, e.g.
-    :class:`~newton.actuators.DriveBAM` with ``supply_from_control=True``,
-    use it on the next actuator step. DOFs without a battery are not
-    written. Each battery sums its DOFs in a fixed order, so the voltage is
-    deterministic.
+    over the actuators assigned to it, and is written into
+    ``actuator_supply_voltage`` for those actuators. Drives that read the
+    supply voltage, e.g. :class:`~newton.actuators.DriveBAM` with
+    ``supply_from_control=True``, use it on the next actuator step.
+    Actuators without a battery are not written. Each battery sums its
+    actuators in a fixed order, so the voltage is deterministic.
 
-    Call once per step, after the actuators have stepped and before the
-    effort is cleared. The effort is ``control.joint_f_computed`` by
-    default: the effort of the actuators before clamping, which actuators
-    built by :class:`~newton.ModelBuilder` accumulate there. Zero it before
-    each actuator step like ``joint_f``.
+    Call once per step, after the actuators have stepped. The effort is
+    ``control.actuator_computed_effort`` by default: the effort of each
+    actuator before clamping, which actuators built by
+    :class:`~newton.ModelBuilder` write there on every step.
 
     The battery parameters are ``model.actuator.battery_nominal_voltage``,
     ``battery_sag_gain`` and ``battery_min_voltage``, indexed by battery;
@@ -146,38 +165,37 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
 
     The supply and the drives form an explicit feedback loop. For
     :class:`~newton.actuators.DriveBAM` it settles only while
-    ``sag_gain * sum(kt * max_pwm / resistance) < 1`` over the DOFs sharing
-    a battery; above that the voltage oscillates between the minimum and the
-    nominal voltage instead of converging.
+    ``sag_gain * sum(kt * max_pwm / resistance) < 1`` over the actuators
+    sharing a battery; above that the voltage oscillates between the minimum
+    and the nominal voltage instead of converging.
 
     Args:
         model: Model with batteries.
-        control: Object carrying ``supply_voltage``, and ``joint_f_computed``
-            when *effort* is ``None``, e.g. :class:`~newton.Control`.
-        effort: Effort drawn from the batteries [N or N·m], shaped like
-            ``joint_qd``. ``None`` reads ``control.joint_f_computed``.
+        control: Object carrying ``actuator_supply_voltage``, and
+            ``actuator_computed_effort`` when *effort* is ``None``, e.g.
+            :class:`~newton.Control`.
+        effort: Effort drawn from the batteries [N or N·m], one entry per
+            actuator. ``None`` reads ``control.actuator_computed_effort``.
 
     Raises:
         ValueError: The model has no batteries, or the effort or
-            ``supply_voltage`` is missing or not shaped like ``joint_qd``.
+            ``actuator_supply_voltage`` is missing or does not have one
+            entry per actuator.
     """
     batteries = _require_batteries(model)
     if effort is None:
-        effort = getattr(control, "joint_f_computed", None)
-    supply_voltage = _require_dof_array(model, control, SUPPLY_VOLTAGE_ATTR)
-    if effort is None or effort.shape != (model.joint_dof_count,):
-        shape = None if effort is None else effort.shape
-        raise ValueError(f"effort shape {shape} must be ({model.joint_dof_count},)")
+        effort = getattr(control, "actuator_computed_effort", None)
+    supply_voltage = _require_actuator_array(model, getattr(control, SUPPLY_VOLTAGE_ATTR, None), SUPPLY_VOLTAGE_ATTR)
+    _require_actuator_array(model, effort, "effort")
     wp.launch(
         _battery_update_kernel,
         dim=len(batteries.battery_nominal_voltage),
         inputs=[
-            batteries.battery_world,
+            batteries.battery_actuator_start,
+            batteries.battery_actuators,
             batteries.battery_nominal_voltage,
             batteries.battery_sag_gain,
             batteries.battery_min_voltage,
-            model.joint_dof_world_start,
-            batteries.joint_dof_battery,
             effort,
         ],
         outputs=[supply_voltage],
@@ -186,35 +204,35 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
 
 
 def reset_battery_supply(model: Model, control: Control, *, world_mask: wp.array[wp.bool] | None = None) -> None:
-    """Restore the nominal voltage of the batteries in ``control.supply_voltage``.
+    """Restore the nominal voltage of the batteries in ``control.actuator_supply_voltage``.
 
     Call after resetting worlds, so their drives start from a full battery.
 
     Args:
         model: Model with batteries.
-        control: Object carrying ``supply_voltage``, e.g.
+        control: Object carrying ``actuator_supply_voltage``, e.g.
             :class:`~newton.Control`.
         world_mask: Boolean mask of length ``world_count``. Batteries in
             ``True`` worlds are reset. ``None`` resets all, including
             batteries added outside any world, which a mask never resets.
 
     Raises:
-        ValueError: The model has no batteries, ``supply_voltage`` is
-            missing or not shaped like ``joint_qd``, or *world_mask* is not
-            shaped ``(world_count,)``.
+        ValueError: The model has no batteries, ``actuator_supply_voltage``
+            is missing or does not have one entry per actuator, or
+            *world_mask* is not shaped ``(world_count,)``.
     """
     batteries = _require_batteries(model)
-    supply_voltage = _require_dof_array(model, control, SUPPLY_VOLTAGE_ATTR)
+    supply_voltage = _require_actuator_array(model, getattr(control, SUPPLY_VOLTAGE_ATTR, None), SUPPLY_VOLTAGE_ATTR)
     if world_mask is not None and world_mask.shape != (model.world_count,):
         raise ValueError(f"world_mask shape {world_mask.shape} must be ({model.world_count},)")
     wp.launch(
         _battery_reset_kernel,
         dim=len(batteries.battery_nominal_voltage),
         inputs=[
+            batteries.battery_actuator_start,
+            batteries.battery_actuators,
             batteries.battery_world,
             batteries.battery_nominal_voltage,
-            model.joint_dof_world_start,
-            batteries.joint_dof_battery,
             world_mask,
         ],
         outputs=[supply_voltage],
@@ -229,9 +247,9 @@ def _require_batteries(model: Model) -> Any:
     return batteries
 
 
-def _require_dof_array(model: Model, control: Any, name: str) -> wp.array[float]:
-    array = getattr(control, name, None)
-    if array is None or array.shape != (model.joint_dof_count,):
+def _require_actuator_array(model: Model, array: Any, name: str) -> wp.array[float]:
+    count = model.custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0)
+    if array is None or array.shape != (count,):
         shape = None if array is None else array.shape
-        raise ValueError(f"control.{name} shape {shape} must be ({model.joint_dof_count},)")
+        raise ValueError(f"{name} shape {shape} must be ({count},), one entry per actuator")
     return array

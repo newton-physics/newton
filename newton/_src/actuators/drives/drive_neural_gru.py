@@ -13,6 +13,7 @@ from typing import Any, ClassVar
 import numpy as np
 import warp as wp
 
+from ...sim.model import Model
 from ...utils.onnx import require_onnx
 from ..utils import load_metadata
 from .base import DriveBase
@@ -609,7 +610,7 @@ class DriveNeuralGRU(DriveBase):
         normalization = metadata["normalization"]
         input_normalization = normalization["inputs"]
         self._input_feature_keys = _parse_input_feature_keys(metadata, self.model_path)
-        self.custom_inputs = _custom_inputs(self._input_feature_keys)
+        self.custom_inputs = dict.fromkeys(_custom_inputs(self._input_feature_keys), Model.AttributeFrequency.JOINT_DOF)
         if self._description.layers[0].input_size != len(self._input_feature_keys):
             raise ValueError(
                 f"DriveNeuralGRU checkpoint '{self.model_path}' GRU input size "
@@ -778,7 +779,7 @@ class DriveNeuralGRU(DriveBase):
         self._next_hidden = None
         custom_input = None
         if self.custom_inputs:
-            name = self.custom_inputs[0]
+            name = next(iter(self.custom_inputs))
             custom_input = (custom_inputs or {}).get(name)
             if custom_input is None:
                 raise RuntimeError(

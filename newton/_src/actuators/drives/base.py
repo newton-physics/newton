@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Any, ClassVar
 
 import warp as wp
+
+from ...sim.model import Model
 
 
 @wp.kernel
@@ -51,14 +55,26 @@ class DriveBase:
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
 
-    custom_inputs: tuple[str, ...] = ()
-    """Names of extra caller-provided Control arrays this drive reads.
+    custom_inputs: Mapping[str, Model.AttributeFrequency | str] = MappingProxyType({})
+    """Extra caller-provided Control arrays this drive reads, mapped to their frequency.
 
     Set in ``__init__`` when the declaration depends on drive configuration.
     :class:`~newton.actuators.Actuator` reads the same-named values from
-    ``sim_control`` and passes them to :meth:`compute` as ``custom_inputs``.
+    ``sim_control`` and passes them to :meth:`compute` as ``custom_inputs``:
+
+    * :attr:`Model.AttributeFrequency.JOINT_DOF <newton.Model.AttributeFrequency.JOINT_DOF>`
+      arrays have one entry per DOF and are passed as they are; the drive
+      indexes them with ``vel_indices``.
+    * ``"actuator:actuator"`` arrays have one entry per actuator of the model.
+      The actuator gathers the entries of its slots through
+      :attr:`~newton.actuators.Actuator.actuator_indices`, so the drive
+      indexes them like its own parameters.
+
     The actuator routes values without validating them; the drive owns
     requiredness, fallback behavior, and validation.
+
+    .. deprecated:: 1.8
+        A tuple of names is still accepted and treated as joint-DOF inputs.
     """
 
     @classmethod

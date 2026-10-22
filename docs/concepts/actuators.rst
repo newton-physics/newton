@@ -615,35 +615,42 @@ See the API documentation for each drive's control-law equations.
 Battery
 ^^^^^^^
 
-* :meth:`~newton.ModelBuilder.add_battery` adds a supply shared by the
-  actuators of the given joints, by index or label, in the current world.
-  Actuators in different groups, e.g. with and without a backlash processor,
-  can share one battery.
-  The battery parameters live on the :class:`~newton.Model` as
+A battery powers one or more actuators, and its voltage sags with their total
+effort.  Batteries belong to actuators, not to DOFs: two actuators on the same
+DOF can draw from different batteries.
+
+* :meth:`~newton.ModelBuilder.add_actuator` returns the index of the actuator
+  in per-actuator arrays.  :meth:`~newton.ModelBuilder.add_battery` takes these
+  indices and adds a battery for those actuators in the current world.  The
+  battery parameters live on the :class:`~newton.Model` as
   ``model.actuator.battery_*``, so :meth:`~newton.ModelBuilder.replicate`
   copies them into every world, and ``model.actuator.battery_world`` maps
   each battery to its world, e.g. to randomize the parameters per world.
-* :func:`update_battery_supply` sags each battery's voltage with the total
-  effort on its DOFs, down to a minimum, and writes it into
-  ``control.supply_voltage``.  Call it once per step after the actuators,
-  before clearing the effort; the drives read the voltage on the next step.
-  The effort is ``control.joint_f_computed`` by default: the effort before
-  clamping, as BAM uses it, which every actuator built by
-  :class:`~newton.ModelBuilder` accumulates there next to ``joint_f``.  Zero
-  it before each actuator step like ``joint_f``.
+  ``model.actuator.actuator_battery``, ``actuator_dof`` and ``actuator_world``
+  give the battery, DOF and world of each actuator.
+* Each actuator built by :class:`~newton.ModelBuilder` writes its effort
+  before clamping to ``control.actuator_computed_effort``, one entry per
+  actuator.  :func:`update_battery_supply` sums it per battery, sags the
+  voltage, down to a minimum, and writes it into
+  ``control.actuator_supply_voltage``.  Call it once per step after the
+  actuators; the drives read the voltage on the next step.
 * :func:`reset_battery_supply` restores the nominal voltage, of all
   batteries or of the batteries in the worlds of a mask.  Batteries added
   outside any world are reset only without a mask.
 
-In USD, a ``NewtonBattery`` prim lists its joints in ``newton:joints`` and
-authors ``newton:nominalVoltage``, ``newton:sagGain`` and
-``newton:minVoltage``; :meth:`~newton.ModelBuilder.add_usd` adds it with
-:meth:`~newton.ModelBuilder.add_battery`, and the :class:`DriveBAM` drives of
-those joints get ``supply_from_control=True``.  Drives that read the
-supply voltage, e.g. :class:`DriveBAM` with ``supply_from_control=True``,
-declare ``supply_voltage`` as a custom input.
-A :class:`DriveBAM` on a DOF whose ``supply_voltage`` is not positive, e.g. a
-DOF without a battery, uses ``vin``.
+:class:`DriveBAM` with ``supply_from_control=True`` reads
+``actuator_supply_voltage`` instead of ``vin``; it declares it in
+:attr:`DriveBase.custom_inputs` with the per-actuator frequency
+``"actuator:actuator"``.
+:meth:`~newton.ModelBuilder.finalize` warns when such an actuator has no
+battery, since its supply voltage stays 0 V.
+
+In USD, a ``NewtonBattery`` prim authors ``newton:nominalVoltage``,
+``newton:sagGain`` and ``newton:minVoltage``, and each ``NewtonActuator`` that
+draws from it names it in its ``newton:battery`` relationship.
+:meth:`~newton.ModelBuilder.add_usd` adds the battery for those actuators with
+:meth:`~newton.ModelBuilder.add_battery`, and their :class:`DriveBAM` drives
+get ``supply_from_control=True``.
 
 Below, the hip and knee share one battery and the ankle draws from another:
 
@@ -653,12 +660,13 @@ Below, the hip and knee share one battery and the ankle draws from another:
    from newton.actuators import DriveBAM, update_battery_supply
 
    builder = newton.ModelBuilder()
+   actuators = []
    for name in ("hip", "knee", "ankle"):
        link = builder.add_link()
        builder.add_shape_box(link, hx=0.1, hy=0.02, hz=0.02)
        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z, label=name)
        builder.add_articulation([joint])
-       builder.add_actuator(
+       actuator = builder.add_actuator(
            DriveBAM,
            index=builder.joint_qd_start[joint],
            kp=5.0,
@@ -668,8 +676,9 @@ Below, the hip and knee share one battery and the ankle draws from another:
            max_pwm=1.0,
            supply_from_control=True,
        )
-   builder.add_battery(["hip", "knee"], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
-   builder.add_battery(["ankle"], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
+       actuators.append(actuator)
+   builder.add_battery(actuators[:2], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
+   builder.add_battery(actuators[2:], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
    model = builder.finalize()
 
    solver = newton.solvers.SolverFeatherstone(model)
@@ -680,7 +689,6 @@ Below, the hip and knee share one battery and the ankle draws from another:
 
    for _ in range(10):
        control.joint_f.zero_()
-       control.joint_f_computed.zero_()
        for actuator in model.actuators:
            actuator.step(state_0, control, dt=dt)
        update_battery_supply(model, control)
