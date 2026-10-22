@@ -370,7 +370,7 @@ class ViewerBase(ABC):
 
         The transform is applied to every drawn position/orientation in the
         layer (shapes, contacts, joints, COM markers, inertia boxes,
-        hydroelastic contact surfaces, gaussians, SDF margin wireframes).
+        hydroelastic contact surfaces, visual meshes, gaussians, SDF margin wireframes).
         It is independent of the per-world spacing controlled by
         :meth:`set_world_offsets`: layer transforms reposition a whole
         layer (e.g. an entire solver's view in a multi-solver comparison)
@@ -3486,8 +3486,8 @@ class ViewerBase(ABC):
 
         Skinning and normal recomputation run on-device through the shared
         :meth:`newton.Model.update_deformable_visuals`;
-        the deformed mesh is emitted through :meth:`log_mesh` so every backend
-        renders it without backend-specific code. Skinned meshes draw in
+        backends receive the deformed geometry through the visual-mesh hook.
+        Skinned meshes draw in
         addition to the raw simulation triangles; toggle ``show_triangles`` and
         ``show_deformable_visual_meshes`` independently from regular visual
         shapes.

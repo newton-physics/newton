@@ -12566,14 +12566,15 @@ class ModelBuilder:
           ``tet_range``. Pass precomputed ``parent`` / ``weights``
           (shape [vertex_count, 4]) to skip the search.
         - ``Kind.BODY`` -- ``bodies`` lists the candidate rigid bodies (e.g. a
-          cable's segment bodies); each vertex binds to the nearest one by a
+          cable's segment bodies); each vertex binds to the nearest body origin by a
           body-local offset. Single-segment binding: seams can show at segment
           boundaries.
 
         Automatic ``TRIANGLE`` / ``TET`` binding uses CPU spatial queries.
         Outside-tet vertices still search all owning tet centroids. Pass
         precomputed ``parent`` / ``weights`` to reuse a binding or avoid setup
-        work. Each barycentric weight row must sum to one.
+        work. Barycentric weights must be nonnegative and each row must sum to
+        one. Accepted roundoff is clamped and normalized during binding.
 
         Args:
             vertices: Visual vertex positions [m], shape [vertex_count, 3].
@@ -12587,7 +12588,7 @@ class ModelBuilder:
             tri_range: Owning ``[start, end)`` triangle range (``Kind.TRIANGLE``).
             tet_range: Owning ``[start, end)`` tetrahedron range (``Kind.TET``).
             bodies: Candidate rigid body indices (``Kind.BODY``).
-            parent: Precomputed per-vertex element index within the owning range
+            parent: Precomputed absolute simulation element index within the owning range
                 (``Kind.TRIANGLE`` / ``Kind.TET``).
             weights: Precomputed barycentric weights matching ``parent``.
             uvs: Per-render-vertex texture coordinates, shape [vertex_count, 2].
@@ -12597,6 +12598,10 @@ class ModelBuilder:
         Returns:
             The invariant index of the new visual mesh in
             :attr:`~newton.Model.deformable_visual_meshes`.
+
+        Raises:
+            ValueError: If geometry, drivers, or weights are invalid, binding
+                arguments do not match ``kind``, or a texture has no UVs.
 
         .. experimental::
 

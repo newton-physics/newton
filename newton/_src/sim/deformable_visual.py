@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 
 class DeformableVisualMesh:
-    """A textured visual mesh skinned from a deformable's simulation state.
+    """A visual mesh skinned from a deformable's simulation state.
 
     Instances are created by :meth:`newton.ModelBuilder.finalize` from meshes
     registered with :meth:`newton.ModelBuilder.add_deformable_visual_mesh` and
@@ -107,7 +107,8 @@ class DeformableVisualMesh:
         self.kind = DeformableVisualMesh.Kind(kind)
         """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
         self.rest_vertices = rest_vertices
-        """Bind-pose visual vertices [m], shape [vertex_count, 3]."""
+        """Authored bind-pose visual vertices [m], shape [vertex_count, 3].
+        Copies retain this frame; evaluated points follow the copied simulation."""
         self.indices = indices
         """Flattened triangle indices into the visual vertices, shape [tri_count*3]."""
         self.parent = parent
@@ -344,11 +345,6 @@ class DeformableVisuals:
         """State used by the most recent update, or ``None`` before the first update."""
         return self._state
 
-    @property
-    def completion_event(self) -> wp.Event | None:
-        """Event recorded after the most recent device update, or ``None`` on CPU."""
-        return self._completion_event
-
     def _mesh_index(self, mesh: DeformableVisualMesh | SupportsIndex) -> int:
         if isinstance(mesh, DeformableVisualMesh):
             index = mesh.index
@@ -406,6 +402,9 @@ class DeformableVisuals:
         Args:
             stream: Consumer stream. Uses the current stream on :attr:`device`
                 when omitted. This method is a no-op on CPU.
+
+        Raises:
+            RuntimeError: If the output has not been updated.
         """
         self._require_updated()
         if self._completion_event is not None:
@@ -422,6 +421,12 @@ class DeformableVisuals:
 
         Returns:
             Zero-copy view of current points [m], shape [mesh.vertex_count, 3].
+
+        Raises:
+            RuntimeError: If the output has not been updated.
+            TypeError: If ``mesh`` is not a visual mesh or integer index.
+            IndexError: If the index is out of range.
+            ValueError: If the mesh belongs to another model.
         """
         self._require_updated()
         start, end = self.mesh_ranges[self._mesh_index(mesh)]
@@ -436,6 +441,12 @@ class DeformableVisuals:
 
         Returns:
             Zero-copy view of unit normals, shape [mesh.vertex_count, 3].
+
+        Raises:
+            RuntimeError: If the output has not been updated.
+            TypeError: If ``mesh`` is not a visual mesh or integer index.
+            IndexError: If the index is out of range.
+            ValueError: If the mesh belongs to another model.
         """
         self._require_updated()
         start, end = self.mesh_ranges[self._mesh_index(mesh)]

@@ -2028,6 +2028,11 @@ class Model:
         Returns:
             The updated ``visuals`` object.
 
+        Raises:
+            TypeError: If ``visuals`` is not :class:`DeformableVisuals`.
+            ValueError: If the output belongs to another model or the required
+                state arrays are missing or on another device.
+
         .. experimental::
 
             This API may change without a formal deprecation cycle while
