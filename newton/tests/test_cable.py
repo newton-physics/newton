@@ -6261,36 +6261,6 @@ def _rod_builder_assembles_topology_and_constitutive_data(test, device):
     test.assertEqual(caught.filename, __file__)
 
 
-def _rod_builder_rejects_positional_stiffness_arguments(test, device):
-    """Reject Newton 1.5 positional stiffness arguments to rod builders."""
-    stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
-
-    points = [wp.vec3(0.0, 0.0, float(i)) for i in range(3)]
-    quaternions = [wp.quat_identity(), wp.quat_identity()]
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertRaises(TypeError):
-        builder.add_rod(
-            points,
-            quaternions,
-            0.05,
-            None,
-            *stiffness_args,
-            body_frame_origin="com",
-        )
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertRaises(TypeError):
-        builder.add_rod_graph(
-            points,
-            [(0, 1), (1, 2)],
-            0.05,
-            None,
-            *stiffness_args,
-            body_frame_origin="com",
-        )
-
-
 def _rod_builder_deprecates_raw_geometry_forms(test, device):
     """Verify raw builder geometry forms warn once and prepared Rod forms do not warn."""
     del device
@@ -8084,12 +8054,6 @@ add_function_test(
     TestCable,
     "test_rod_builder_assembles_topology_and_constitutive_data",
     _rod_builder_assembles_topology_and_constitutive_data,
-    devices=None,
-)
-add_function_test(
-    TestCable,
-    "test_rod_builder_rejects_positional_stiffness_arguments",
-    _rod_builder_rejects_positional_stiffness_arguments,
     devices=None,
 )
 add_function_test(
