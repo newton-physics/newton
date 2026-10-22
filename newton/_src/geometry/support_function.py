@@ -254,7 +254,13 @@ def _support_map_box(geom: GenericShapeData, direction: wp.vec3) -> wp.vec3:
 
 
 # Out of line: GJK/MPR call it at ~150 sites, and inlining each copy dominated compile time.
-@wp.func(inline=False)
+# Warp < 1.18 has no `inline` option and keeps inlining it.
+_support_map_func = (
+    wp.func(inline=False) if tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 18) else wp.func
+)
+
+
+@_support_map_func
 def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Any) -> wp.vec3:
     """
     Return the support point of a primitive in its local frame.
