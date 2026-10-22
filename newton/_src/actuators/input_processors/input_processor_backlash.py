@@ -6,6 +6,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, ClassVar
 
+import numpy as np
 import warp as wp
 
 from .base import InputProcessorBase
@@ -20,7 +21,7 @@ def _backlash_read_kernel(
     out_pos: wp.array[float],
 ):
     i = wp.tid()
-    out_pos[pos_indices[i]] = positions[pos_indices[i]] + sim_positions[backlash_pos_indices[i]]
+    out_pos[i] = positions[pos_indices[i]] + sim_positions[backlash_pos_indices[i]]
 
 
 class InputProcessorBacklash(InputProcessorBase):
@@ -40,9 +41,10 @@ class InputProcessorBacklash(InputProcessorBase):
     actuated joint: it is motor physics, e.g. the back-EMF of
     :class:`~newton.actuators.DriveBAM`, not an encoder reading.
 
-    The sum is written into an array shaped like the incoming positions, at
-    the actuated indices, so :attr:`~newton.actuators.InputProcessorBase.Inputs.pos_indices`
-    stays valid.
+    The sum is written into one entry per actuator slot, and
+    :attr:`~newton.actuators.InputProcessorBase.Inputs.pos_indices` is
+    replaced by the slot indices. Both buffers are allocated in
+    :meth:`finalize`, so the processor can be captured in a CUDA graph.
     """
 
     JOINT_PARAMS: ClassVar[set[str]] = {"backlash_joint"}
@@ -88,8 +90,8 @@ class InputProcessorBacklash(InputProcessorBase):
             )
         self._num_actuators: int = 0
         self._device: wp.Device | None = None
-        self._requires_grad: bool = False
         self._out_pos: wp.array[float] | None = None
+        self._slots: wp.array[wp.uint32] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
         if len(self.backlash_joint_indices) != num_actuators:
@@ -99,13 +101,10 @@ class InputProcessorBacklash(InputProcessorBase):
             )
         self._device = device
         self._num_actuators = num_actuators
-        self._requires_grad = requires_grad
+        self._out_pos = wp.zeros(num_actuators, dtype=wp.float32, device=device, requires_grad=requires_grad)
+        self._slots = wp.array(np.arange(num_actuators, dtype=np.uint32), dtype=wp.uint32, device=device)
 
     def process(self, inputs: InputProcessorBase.Inputs, state: None, dt: float | None) -> InputProcessorBase.Inputs:
-        if self._out_pos is None or self._out_pos.shape != inputs.positions.shape:
-            self._out_pos = wp.zeros(
-                inputs.positions.shape, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad
-            )
         wp.launch(
             kernel=_backlash_read_kernel,
             dim=self._num_actuators,
@@ -113,4 +112,4 @@ class InputProcessorBacklash(InputProcessorBase):
             outputs=[self._out_pos],
             device=self._device,
         )
-        return replace(inputs, positions=self._out_pos)
+        return replace(inputs, positions=self._out_pos, pos_indices=self._slots)
