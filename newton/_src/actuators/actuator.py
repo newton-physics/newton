@@ -89,11 +89,11 @@ def _scatter_add_kernel(
     """Scatter-add effort into output; optionally scatter computed effort too, added per DOF or written per actuator."""
     i = wp.tid()
     idx = indices[i]
-    output[idx] = output[idx] + forces[i]
+    wp.atomic_add(output, idx, forces[i])
     if computed_output:
         j = computed_indices[i]
         if accumulate_computed:
-            computed_output[j] = computed_output[j] + computed_forces[i]
+            wp.atomic_add(computed_output, j, computed_forces[i])
         else:
             computed_output[j] = computed_forces[i]
 

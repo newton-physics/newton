@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from .actuator import ACTUATOR_FREQUENCY, ACTUATOR_NAMESPACE
+from .actuator import ACTUATOR_FREQUENCY, ACTUATOR_NAMESPACE, _get_attribute, _require_array
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -222,14 +222,15 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
             actuator. ``None`` reads ``control.actuator_computed_effort``.
 
     Raises:
-        ValueError: The model has no batteries, or the effort or
-            ``actuator_supply_voltage`` is missing or does not have one
-            entry per actuator.
+        AttributeError: *control* has no ``actuator_supply_voltage``.
+        ValueError: The model has no batteries, the effort is missing,
+            ``actuator_supply_voltage`` is ``None``, or either does not have
+            one entry per actuator.
     """
     batteries = _require_batteries(model)
     if effort is None:
-        effort = getattr(control, "actuator_computed_effort", None)
-    supply_voltage = _require_actuator_array(model, getattr(control, SUPPLY_VOLTAGE_ATTR, None), SUPPLY_VOLTAGE_ATTR)
+        effort = _get_attribute(control, "actuator_computed_effort", None)
+    supply_voltage = _require_actuator_array(model, _require_array(control, SUPPLY_VOLTAGE_ATTR), SUPPLY_VOLTAGE_ATTR)
     _require_actuator_array(model, effort, "effort")
     wp.launch(
         _battery_update_kernel,
@@ -261,12 +262,13 @@ def reset_battery_supply(model: Model, control: Control, *, world_mask: wp.array
             batteries added outside any world, which a mask never resets.
 
     Raises:
+        AttributeError: *control* has no ``actuator_supply_voltage``.
         ValueError: The model has no batteries, ``actuator_supply_voltage``
-            is missing or does not have one entry per actuator, or
+            is ``None`` or does not have one entry per actuator, or
             *world_mask* is not shaped ``(world_count,)``.
     """
     batteries = _require_batteries(model)
-    supply_voltage = _require_actuator_array(model, getattr(control, SUPPLY_VOLTAGE_ATTR, None), SUPPLY_VOLTAGE_ATTR)
+    supply_voltage = _require_actuator_array(model, _require_array(control, SUPPLY_VOLTAGE_ATTR), SUPPLY_VOLTAGE_ATTR)
     if world_mask is not None and world_mask.shape != (model.world_count,):
         raise ValueError(f"world_mask shape {world_mask.shape} must be ({model.world_count},)")
     wp.launch(

@@ -9,7 +9,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import Mesh, Model, ModelBuilder, Rod
+from newton import Axis, Mesh, Model, ModelBuilder, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import DrivePD
 from newton.exceptions import NewtonDeprecationWarning
@@ -1026,6 +1026,34 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 self.assertEqual(specs[name].compaction_policy, "generic")
                 scalar_dtype = getattr(warp_dtype, "_wp_scalar_type_", warp_dtype)
                 self.assertIsNotNone(wp.dtype_to_numpy(scalar_dtype))
+
+    def test_battery_after_builder_without_batteries(self):
+        """Batteries work after merging a builder whose actuators predate any battery.
+
+        The first world's actuator is merged before ``actuator_battery``
+        exists, so the merge leaves its value unset. Finalize and a later
+        ``add_battery`` treat it as having no battery.
+        """
+
+        def robot(with_battery: bool) -> ModelBuilder:
+            builder = ModelBuilder()
+            link = builder.add_link()
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=Axis.Z)
+            builder.add_articulation([joint])
+            actuator = builder.add_actuator(DrivePD, index=builder.joint_qd_start[joint], kp=1.0)
+            if with_battery:
+                builder.add_battery([actuator], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
+            return builder
+
+        builder = ModelBuilder()
+        builder.add_world(robot(False))
+        builder.add_world(robot(True))
+        builder.add_world(robot(True))
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.actuation.actuator_battery.numpy(), [-1, 0, 1])
+        np.testing.assert_array_equal(model.actuation.battery_actuators.numpy(), [1, 2, 0])
+        np.testing.assert_array_equal(model.actuation.battery_actuator_start.numpy(), [0, 1, 2])
 
 
 @wp.kernel
