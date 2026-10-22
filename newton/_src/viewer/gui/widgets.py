@@ -73,6 +73,7 @@ class PhysicsWidgets:
     }
 
     def __init__(self, gui: ViewerGui) -> None:
+        """Bind the GUI and initialize text-alignment and lazy property-tooltip state."""
         self.gui = gui
         self._text_centers: dict[tuple[int, float, str], float] = {}
         self._property_summary: Callable[[], str] | None = None
@@ -99,13 +100,16 @@ class PhysicsWidgets:
 
     @property
     def ui(self) -> ModuleType:
+        """Return the ImGui binding associated with this GUI instance."""
         return self.gui.ui.imgui
 
     @property
     def scale(self) -> float:
+        """Return the GUI DPI scale used to convert logical widget dimensions to pixels."""
         return self.gui.ui.dpi_scale
 
     def color(self, rgba: ArrayLike) -> int:
+        """Pack a float RGBA color using the current ImGui style alpha."""
         return self.ui.get_color_u32(self.ui.ImVec4(*rgba))
 
     def text_top(self, y: float, height: float, *, numeric: bool = False) -> int:
@@ -121,6 +125,7 @@ class PhysicsWidgets:
         return round(y + height / 2 - self._text_centers[key])
 
     def label(self, text: str, *, height: float | None = None, width: float | None = None, muted: bool = False) -> None:
+        """Draw vertically centered text and reserve its requested pixel dimensions in the layout."""
         ui = self.ui
         pos = ui.get_cursor_screen_pos()
         height = ui.get_frame_height() if height is None else height
@@ -133,9 +138,11 @@ class PhysicsWidgets:
         ui.dummy(ui.ImVec2(width, height))
 
     def button(self, label: str, size: imgui.ImVec2 | None = None, *, small: bool = False) -> bool:
+        """Draw a standard or compact button and report a click."""
         return self.ui.small_button(label) if small else self.ui.button(label, size or self.ui.ImVec2(0, 0))
 
     def tab_item(self, label: str, *, flags: int = 0, accent: bool = False) -> tuple[bool, bool | None]:
+        """Begin a tab with optional accent styling; the caller must end the tab when open."""
         ui = self.ui
         if not accent:
             return ui.begin_tab_item(label, flags=flags)
@@ -505,6 +512,12 @@ class PhysicsWidgets:
         show_lock: bool = True,
         flat: bool = False,
     ) -> bool:
+        """Draw a vector-icon action and return whether it was clicked while enabled.
+
+        Size is expressed in logical pixels. Active state and editability are
+        independent: read-only active flags retain their accent and can show a
+        lock. Tooltip text is displayed only when it adds to the caption.
+        """
         ui, s = self.ui, self.scale
         pos = ui.get_cursor_screen_pos()
         button_width = size + (14 if prominent else 0)
@@ -564,6 +577,7 @@ class PhysicsWidgets:
         reason: str = "",
         unit: str = "",
     ) -> None:
+        """Reserve a label column with clipped text, units, lock state, and metadata tooltip on hover."""
         ui, scale = self.ui, self.scale
         pos = ui.get_cursor_screen_pos()
         height = ui.get_frame_height()
@@ -655,6 +669,7 @@ class PhysicsWidgets:
         inline: bool = False,
         width: float | None = None,
     ) -> None:
+        """Draw an inline or stacked property label, skipping hidden ImGui labels and marking read-only values."""
         ui, s = self.ui, self.scale
         if not label or label.startswith("##"):
             return
@@ -988,6 +1003,7 @@ class PhysicsWidgets:
         reason: str = "",
         header: bool = True,
     ) -> PropertyEdit:
+        """Render a flat float vector, defaulting to XYZW component labels when it has at most four elements."""
         values = np.asarray(value, dtype=np.float32).reshape(-1)
         if labels is None and len(values) <= 4:
             labels = tuple("XYZW"[: len(values)])
@@ -996,9 +1012,11 @@ class PhysicsWidgets:
         )
 
     def vec2(self, label: str, value: ArrayLike, **kwargs: Any) -> PropertyEdit:
+        """Validate two components and delegate to the shared vector editor."""
         return self.vector(label, np.asarray(value).reshape(2), **kwargs)
 
     def vec3(self, label: str, value: ArrayLike, **kwargs: Any) -> PropertyEdit:
+        """Validate three components and delegate to the shared vector editor."""
         return self.vector(label, np.asarray(value).reshape(3), **kwargs)
 
     rotation_modes = (
@@ -1073,6 +1091,12 @@ class PhysicsWidgets:
         return (q / length).astype(np.float32)
 
     def quat(self, label: str, value: ArrayLike, *, editable: bool = False, reason: str = "") -> PropertyEdit:
+        """Edit an XYZW quaternion through a cached display representation.
+
+        Retain representation, angular units, and drag continuity by widget ID;
+        alternate representations still return quaternion storage. Reject
+        invalid conversions and preserve quaternion sign continuity where possible.
+        """
         ui, scale = self.ui, self.scale
         original = np.asarray(value, dtype=np.float32).reshape(4)
         cache = getattr(self.gui, "_physics_rotations", None)
@@ -1216,6 +1240,7 @@ class PhysicsWidgets:
     def matrix3(
         self, label: str, value: ArrayLike, *, unit: str = "", editable: bool = False, reason: str = ""
     ) -> PropertyEdit:
+        """Render a 3-by-3 matrix in labeled rows and aggregate component edits without mutating the input."""
         values = np.asarray(value).reshape(3, 3).copy()
         result = PropertyEdit(values)
         self.ui.push_id(label)
@@ -1237,6 +1262,7 @@ class PhysicsWidgets:
         return result
 
     def axis(self, label: str, value: int | ArrayLike, *, editable: bool = False, reason: str = "") -> PropertyEdit:
+        """Render an integer X/Y/Z axis choice and return the selected value as a PropertyEdit."""
         ui = self.ui
         self._label(label, editable, reason=reason, inline=True)
         ui.push_id(label)
@@ -1258,6 +1284,7 @@ class PhysicsWidgets:
     def choice(
         self, label: str, value: int, choices: Mapping[int, str], *, editable: bool = False, reason: str = ""
     ) -> PropertyEdit:
+        """Render integer-backed choices, retaining an unknown current value as an explicit option."""
         ui = self.ui
         self._label(label, editable, reason=reason, inline=True)
         values, names = list(choices), list(choices.values())
@@ -1273,6 +1300,7 @@ class PhysicsWidgets:
     def enum(
         self, label: str, value: int, options: Iterable[IntEnum], *, editable: bool = False, reason: str = ""
     ) -> PropertyEdit:
+        """Render integer enum values using readable names through the shared choice editor."""
         return self.choice(
             label,
             int(value),

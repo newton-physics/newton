@@ -83,6 +83,7 @@ class PropertyInspector:
     }
 
     def __init__(self, workspace: ViewerWorkspace) -> None:
+        """Initialize selection-derived property domains and the active component tab."""
         self.workspace = workspace
         self.context_key = None
         self.domains: list[PropertyDomain] = []
@@ -206,6 +207,12 @@ class PropertyInspector:
         return domains
 
     def _owner(self, domain: PropertyDomain, component: Model.AttributeAssignment) -> Model | State | Control | None:
+        """Resolve the Model, displayed State, or Control for a property domain.
+
+        Historical Control comes from the display snapshot; secondary particle
+        Models can supply their own logged State but do not inherit the primary
+        Model Control. Return None when the component is unavailable.
+        """
         ws = self.workspace
         if component == Assignment.MODEL:
             return domain.model
@@ -220,6 +227,7 @@ class PropertyInspector:
         return next((s.state for s in ws.tree.deformables.sources if s.model is domain.model), None)
 
     def draw(self) -> None:
+        """Draw nonempty component tabs for the selection and offer undo when the recorded edit is writable."""
         ws, ui, w = self.workspace, self.workspace.gui.ui.imgui, self.workspace.widgets
         self._contexts()
         components = {
@@ -270,6 +278,7 @@ class PropertyInspector:
             ui.end_disabled()
 
     def _counts(self) -> dict[str, int]:
+        """Return nonzero Model frequency counts for root or group selection; otherwise return an empty mapping."""
         ws = self.workspace
         if ws.selected and ws.selected[0] not in ("root", "group"):
             return {}
@@ -317,6 +326,7 @@ class PropertyInspector:
         component: Model.AttributeAssignment,
         groups: dict[str | None, list[tuple[PropertyDomain, str, Model.AttributeSpec, object, str, Any]]] | None = None,
     ) -> None:
+        """Draw one component with built-in fields, namespace tabs, and applicable resource or Control actions."""
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         groups = self._collect(component) if groups is None else groups
         single_shape = len(ws.selection) == 1 and ws.selected and ws.selected[0] == "shape"
@@ -390,6 +400,11 @@ class PropertyInspector:
         *,
         flat: bool = False,
     ) -> None:
+        """Render attributes in domain order, paginating selected objects within each attribute.
+
+        Prefetch only visible rows and use stable Model, attribute, and row IDs.
+        Flat groups avoid adding another panel around custom attributes.
+        """
         w, ui = self.workspace.widgets, self.workspace.gui.ui.imgui
         # Attribute groups keep large articulations and meshes bounded and useful:
         # q for all joints together, then qd for all joints, with stable row labels.
@@ -450,6 +465,7 @@ class PropertyInspector:
             cache[(id(source), attr, offset, count)] = values[offset - start : offset - start + count]
 
     def _page(self, indices: Sequence[int] | np.ndarray) -> Sequence[int] | np.ndarray:
+        """Draw pagination when needed and return at most 16 rows, retaining the page in the current ImGui ID scope."""
         ui, w = self.workspace.gui.ui.imgui, self.workspace.widgets
         size = 16
         if len(indices) <= size:
@@ -484,6 +500,12 @@ class PropertyInspector:
         *,
         nested: bool = False,
     ) -> None:
+        """Resolve one frequency row, render its editor, and apply permitted edits with drag-level undo.
+
+        Joint coordinate and DOF domains use joint offset spans rather than
+        fixed row widths. Writes target the live owner only after workspace
+        editability checks; displayed historical data remains read-only.
+        """
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         model = domain.model
         start, count = index * spec.row_width, spec.row_width
@@ -615,6 +637,11 @@ class PropertyInspector:
     def _references(
         self, label: str, values: ArrayLike, spec: Model.AttributeSpec, domain: PropertyDomain, start: int, reason: str
     ) -> None:
+        """Draw integer references with navigation to valid target objects.
+
+        Coordinate and DOF indices, missing targets, and exclusive range ends
+        have no navigation action. Compound references retain frequency labels.
+        """
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         values = np.asarray(values)
         flat = values.reshape(-1)
@@ -656,6 +683,12 @@ class PropertyInspector:
         frequency: Model.AttributeFrequency | str | None = None,
         start: int = 0,
     ) -> PropertyEdit:
+        """Choose widgets from array shape and dtype and return an unapplied PropertyEdit.
+
+        Preserve compound row structure, paginate repeated values, and use
+        specialized physics widgets where the dtype identifies their meaning.
+        The caller owns writing changed values back to the source array.
+        """
         w, ui = self.workspace.widgets, self.workspace.gui.ui.imgui
         values = np.asarray(values)
         args = {"editable": editable, "reason": reason}
@@ -746,6 +779,12 @@ class PropertyInspector:
         editable: bool,
         reason: str,
     ) -> PropertyEdit:
+        """Render a joint span with units, representations, and limits appropriate to its type.
+
+        Use transform, quaternion, or spatial-vector editors when applicable;
+        otherwise distinguish linear and angular components. Finite limits
+        enable bounded sliders; unbounded values use controlled drag speeds.
+        """
         ws, w = self.workspace, self.workspace.widgets
         values = values.reshape(-1)
         coord = attr in ("joint_q", "joint_target_q")

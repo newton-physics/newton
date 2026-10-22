@@ -12,6 +12,7 @@ class FrameCache:
     """Keep a GPU copy of a displayed texture, including across window resize."""
 
     def __init__(self):
+        """Initialize an empty frame cache; allocate GL storage only when a frame is captured."""
         self.texture = 0
         self.width = 0
         self.height = 0

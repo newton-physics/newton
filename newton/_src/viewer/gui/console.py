@@ -41,6 +41,7 @@ class ConsoleEntry:
     search: str
 
     def text(self) -> str:
+        """Format the entry with timestamp, severity, source, and message for copying as plain text."""
         return f"{self.timestamp} {self.severity:<8} {self.source}: {self.message}"
 
 
@@ -54,6 +55,7 @@ class ConsoleBuffer(logging.Handler):
     """
 
     def __init__(self, *, capacity: int = 4000, max_characters: int = 4 * 1024 * 1024, max_lines: int = 20000) -> None:
+        """Initialize a DEBUG-level logging handler bounded by entry count, characters, and rendered lines."""
         super().__init__(logging.DEBUG)
         self.entries: deque[ConsoleEntry] = deque()
         self.capacity = capacity
@@ -64,6 +66,12 @@ class ConsoleBuffer(logging.Handler):
         self.setFormatter(logging.Formatter("%(message)s"))
 
     def emit(self, record: logging.LogRecord) -> None:
+        """Convert a LogRecord to a bounded plain-text entry and evict the oldest entries as needed.
+
+        Format exceptions immediately so retained entries do not keep traceback
+        frames or simulation objects alive. Logging Handler.handle() provides
+        the handler lock around normal emission.
+        """
         try:
             # Format exceptions now; retaining LogRecords would retain entire simulation frames.
             message = _ANSI.sub("", self.format(record)).replace("\r\n", "\n").replace("\r", "\n")
@@ -115,6 +123,7 @@ class ConsoleBuffer(logging.Handler):
             self.release()
 
     def clear(self) -> None:
+        """Clear retained entries and warning state under the handler lock while preserving monotonic sequence IDs."""
         self.acquire()
         try:
             self.entries.clear()
@@ -141,6 +150,7 @@ class ConsoleCapture:
     _owned_level: ClassVar[int | None] = None
 
     def __init__(self) -> None:
+        """Attach a per-viewer Newton log buffer and install the shared warning hook for the first capture."""
         self.buffer = ConsoleBuffer()
         self.logger = logging.getLogger("newton")
         self.closed = False
@@ -156,6 +166,8 @@ class ConsoleCapture:
 
     @classmethod
     def _make_warning_hook(cls, previous: Callable[..., None]) -> Callable[..., None]:
+        """Route eligible Newton warnings to logging and delegate all other warning output to the previous hook."""
+
         def showwarning(
             message: Warning | str,
             category: type[Warning],
@@ -185,11 +197,17 @@ class ConsoleCapture:
     def request_level(self, level: int) -> None:
         # Display filtering never discards already captured records. Enable extra
         # verbosity only when the user explicitly asks to see it.
+        """Lower the Newton logger threshold only when additional verbosity is explicitly requested."""
         if self.logger.getEffectiveLevel() > level:
             self.logger.setLevel(level)
             type(self)._owned_level = level
 
     def close(self) -> None:
+        """Detach this capture and restore shared hooks when the last capture closes.
+
+        Restore only logger levels and warning hooks still owned by these
+        captures, preserving external changes. Repeated close calls are safe.
+        """
         if self.closed:
             return
         self.closed = True
@@ -210,6 +228,7 @@ class ViewerConsole:
     """Present a log drawer without scanning or laying out hidden rows every frame."""
 
     def __init__(self, capture: ConsoleCapture) -> None:
+        """Initialize console presentation state without changing the capture or opening the panel."""
         self.capture = capture
         self.open = False
         self.level = logging.INFO
@@ -245,6 +264,11 @@ class ViewerConsole:
         return True
 
     def refresh(self, *, force: bool = False) -> None:
+        """Rebuild filtered line rows when capture revision or display filters change.
+
+        Throttle incoming-log refreshes to 10 Hz unless forced; filter changes
+        take effect immediately. Captured entries remain untouched.
+        """
         now = time.perf_counter()
         buffer = self.capture.buffer
         key = (buffer.revision, self.level, self.search)
@@ -263,6 +287,7 @@ class ViewerConsole:
 
     @staticmethod
     def color(level: int) -> tuple[float, float, float, float]:
+        """Map logging severity to the console RGBA text palette."""
         if level >= logging.ERROR:
             return (1.0, 0.43, 0.43, 1.0)
         if level >= logging.WARNING:
@@ -272,11 +297,13 @@ class ViewerConsole:
         return (0.58, 0.58, 0.58, 1.0)
 
     def toggle(self) -> None:
+        """Toggle panel visibility and request scrolling to the end when follow mode is enabled."""
         self.open = not self.open
         if self.open:
             self._scroll_to_end = self.follow
 
     def status_button(self, workspace: ViewerWorkspace) -> None:
+        """Draw a vertically centered console toggle with a fixed-width unread-count slot and tooltip."""
         ui, widgets = workspace.gui.ui.imgui, workspace.widgets
         s = widgets.scale
         # Fit the status row itself, independently of the window padding or
@@ -309,6 +336,7 @@ class ViewerConsole:
         ui.same_line(pos.x - ui.get_window_pos().x + width + 18 * s)
 
     def draw(self, workspace: ViewerWorkspace) -> None:
+        """Draw filters and log rows, update read position, and handle entry selection, copy, and context actions."""
         ui, s = workspace.gui.ui.imgui, workspace.widgets.scale
         self.refresh()
         self._last_seen = self.capture.buffer.sequence

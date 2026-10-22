@@ -41,6 +41,12 @@ class ModelTree:
         example: ViewerExample | None = None,
         session: ViewerSession | None = None,
     ) -> None:
+        """Create resource catalogs and world roots, materializing only the initial world.
+
+        Cache world boundary arrays and ownership metadata on the host. Object
+        topology for other worlds remains lazy; the session supplies inspected
+        solver resources without transferring live state here.
+        """
         self.model = model
         self.session = session if session is not None else ViewerSession.from_example(example)
         self.children: defaultdict[TreeKey, list[TreeKey]] = defaultdict(list)
@@ -108,6 +114,7 @@ class ModelTree:
         return [(int(a), int(b)) for a, b in pairs if b > a]
 
     def world_for(self, key: TreeKey) -> int:
+        """Resolve a valid object key to its world index, using -1 for shared objects."""
         kind, index = key
         if "world" in self.meta.get(key, {}):
             return self.meta[key]["world"]
@@ -244,6 +251,7 @@ class ModelTree:
         self.custom.add_world(self, world)
 
     def has_children(self, key: TreeKey) -> bool:
+        """Report whether a node is expandable, including children not yet materialized."""
         if key[0] == "shape" or self.resources.handles(key):
             return self.resources.has_children(self, key)
         if self.collision is not None and (key == self.collision.root or key in self.collision.groups):
@@ -294,6 +302,12 @@ class ModelTree:
         self.labels[key] = f"{frequency.name.replace('_', ' ').title()} {key[1]}"
 
     def rebuild(self) -> None:
+        """Regenerate visible (key, depth) rows from the expansion set or search query.
+
+        Increment the row revision without rebuilding cached Model topology.
+        Name searches inspect host labels; explicit resource or element queries
+        may materialize the referenced world and its containing groups.
+        """
         self.revision += 1
         query = self.query.casefold().strip()
         if query:
@@ -370,6 +384,7 @@ class ModelTree:
         self.rows = rows
 
     def toggle(self, key: TreeKey) -> None:
+        """Toggle a node, lazily populate its children when opening, and rebuild visible rows."""
         if key in self.expanded:
             self.expanded.remove(key)
         else:
@@ -384,12 +399,15 @@ class ModelTree:
         self.rebuild()
 
     def shape_descendants(self, key: TreeKey) -> list[int]:
+        """Return cached shape indices beneath a key, including the key itself if it is a shape."""
         return self._descendants(key, "shape", self._shape_descendants)
 
     def joint_descendants(self, key: TreeKey) -> list[int]:
+        """Return cached joint indices beneath a key, including the key itself if it is a joint."""
         return self._descendants(key, "joint", self._joint_descendants)
 
     def deformable_descendants(self, key: TreeKey) -> list[TreeKey]:
+        """Return deformable-object keys for a world or its deformables group; otherwise return none."""
         world = self.world_for(key)
         self.ensure_world(world)
         if key[0] == "root" or (key[0] == "group" and key[1] % 4 == 3):
@@ -397,6 +415,11 @@ class ModelTree:
         return []
 
     def _descendants(self, key: TreeKey, kind: str, cache: dict[TreeKey, list[int]]) -> list[int]:
+        """Cache a deduplicated traversal for one object kind after loading the owning world.
+
+        Include the starting key when it matches kind. The returned list belongs
+        to the topology cache and must not be mutated by callers.
+        """
         self.ensure_world(self.world_for(key))
         if key not in cache:
             result, seen, pending = [], set(), [key]

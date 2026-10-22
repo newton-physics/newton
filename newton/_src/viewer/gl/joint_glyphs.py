@@ -61,6 +61,7 @@ class JointGlyphShader(ShaderGL):
     """
 
     def __init__(self, gl: ModuleType) -> None:
+        """Compile the glyph shader and allocate a vertex buffer for clip-space positions and colors."""
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         super().__init__()
@@ -104,6 +105,7 @@ class JointGlyphShader(ShaderGL):
             gl.glDepthFunc(gl.GL_LESS)
 
     def destroy(self) -> None:
+        """Release the glyph vertex buffer, vertex array, and shader program."""
         self._gl.glDeleteBuffers(1, self.vbo)
         self._gl.glDeleteVertexArrays(1, self.vao)
         self.shader_program.delete()

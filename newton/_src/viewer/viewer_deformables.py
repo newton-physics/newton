@@ -51,6 +51,7 @@ class ParticleSource:
     """
 
     def __init__(self, model: Model, offset: int) -> None:
+        """Cache world boundaries and assign a disjoint catalog index range without copying particle state."""
         self.model = model
         self.offset = offset
         self.end = offset + model.particle_count
@@ -60,6 +61,7 @@ class ParticleSource:
         self.visibility_key = None
 
     def ranges(self, world: int) -> list[tuple[int, int]]:
+        """Return nonempty Model-local particle ranges for a world, or shared ranges for world -1."""
         starts = self.starts
         pairs = (
             ((0, starts[0]), (starts[-2], starts[-1]))
@@ -71,6 +73,7 @@ class ParticleSource:
         return [(int(a), int(b)) for a, b in pairs if b > a]
 
     def world_for(self, index: int) -> int:
+        """Map a Model-local particle index to its world, returning -1 for shared particles."""
         world = int(np.searchsorted(self.starts, index, side="right")) - 1
         return world if 0 <= world < self.model.world_count else -1
 
@@ -244,6 +247,11 @@ class DeformableCatalog:
     page_size = 256
 
     def __init__(self, model: Model, example: ViewerExample | None = None) -> None:
+        """Discover primary and separately logged particle Models without copying live state.
+
+        Allocate disjoint particle index ranges across sources. Topology,
+        element ordering, and explorer objects are populated on demand.
+        """
         self.model = model
         self.example = example
         self.sources = [ParticleSource(model, 0)]
@@ -272,13 +280,20 @@ class DeformableCatalog:
         self._element_order = {}
 
     def source(self, particle: int) -> ParticleSource:
+        """Find the source containing a valid catalog-wide particle index."""
         return next(source for source in self.sources if source.offset <= particle < source.end)
 
     def world_for(self, particle: int) -> int:
+        """Resolve a catalog-wide particle index through its source to a world or -1."""
         source = self.source(particle)
         return source.world_for(particle - source.offset)
 
     def external_bounds(self) -> np.ndarray:
+        """Reduce visible secondary particle bounds on the device and return a host (2, 3) array.
+
+        Bounds use display coordinates. With no visible secondary points, the
+        lower and upper rows retain their positive and negative sentinel values.
+        """
         bounds = wp.array([[1e30] * 3, [-1e30] * 3], dtype=float, device=self.model.device)
         for source in self.sources[1:]:
             if source.points is not None and not source.hidden:
@@ -294,6 +309,12 @@ class DeformableCatalog:
     def logged_points(
         self, workspace: ViewerWorkspace, points: wp.array[wp.vec3] | None, radii: wp.array[float] | None, hidden: bool
     ) -> tuple[wp.array[wp.vec3] | None, wp.array[float] | None, bool]:
+        """Recognize secondary particle batches and apply display transforms and visibility.
+
+        Identify a source by its Model radius-array identity; unrelated logged
+        points pass through unchanged. Rebuild visibility only when its inputs
+        change and keep transformed positions in reusable device buffers.
+        """
         source = next((source for source in self.sources[1:] if radii is source.model.particle_radius), None)
         if source is None or len(points) != source.model.particle_count:
             return points, radii, hidden
@@ -351,6 +372,7 @@ class DeformableCatalog:
         return source.display_points, source.display_radii, source.hidden
 
     def topology(self, kind: str) -> np.ndarray:
+        """Cache host triangle or tetrahedron indices, preferring existing host adjacency over a device copy."""
         if kind not in self._topology:
             adjacency = self.model.soft_mesh_adjacency
             name = "indices" if kind == "tri" else "tet_indices"
@@ -364,6 +386,7 @@ class DeformableCatalog:
     def elements_in_range(self, kind: str, start: int, end: int) -> np.ndarray:
         # One index for the scene avoids scanning every world's elements each
         # time another world or volume is expanded.
+        """Find elements whose first particle lies in [start, end), using a cached sorted index."""
         if kind not in self._element_order:
             first = self.topology(kind)[:, 0]
             order = np.argsort(first, kind="stable")
@@ -373,6 +396,11 @@ class DeformableCatalog:
         return np.sort(order[a:b])
 
     def add_world(self, tree: ModelTree, world: int) -> None:
+        """Materialize one world from authored deformable records and uncovered topology.
+
+        Group remaining mesh elements into surfaces or volumes and gather loose
+        particles into a single world-level object. Repeated calls are no-ops.
+        """
         if world in self._loaded:
             return
         self._loaded.add(world)
@@ -426,6 +454,7 @@ class DeformableCatalog:
                 self._add(tree, root, DeformableObject("particle_set", "Particles", world, particles, (), ()))
 
     def _add(self, tree: ModelTree, folder: TreeKey, obj: DeformableObject) -> None:
+        """Register an object and lazy particle, triangle, and tetrahedron groups beneath its parent."""
         key = (obj.kind, len(self.objects))
         self.objects.append(obj)
         tree.labels[key] = obj.label
@@ -446,6 +475,7 @@ class DeformableCatalog:
                 tree.children[key].append(group)
 
     def expand(self, tree: ModelTree, key: TreeKey) -> None:
+        """Populate an element group with pages or individual element rows once."""
         if key not in self.groups or tree.children.get(key):
             return
         kind, indices, owner = self.groups[key]
@@ -468,6 +498,7 @@ class DeformableCatalog:
                 tree.parents[child] = key
 
     def owner(self, tree: ModelTree, particle: int) -> TreeKey | None:
+        """Materialize the particle world and return its containing deformable object, or None."""
         world = tree.world_for(("particle", particle))
         tree.ensure_world(world)
         for i, obj in enumerate(self.objects):
@@ -476,6 +507,7 @@ class DeformableCatalog:
         return None
 
     def reveal(self, tree: ModelTree, key: TreeKey) -> None:
+        """Materialize the object and element page containing a particle, triangle, or tetrahedron."""
         kind, index = key
         particle = index if kind == "particle" else int(self.topology(kind)[index, 0])
         owner = self.owner(tree, particle)
@@ -502,6 +534,11 @@ class DeformableCatalog:
         limit: float,
         triangle: bool = False,
     ) -> TreeKey | None:
+        """Return the closest eligible deformable key nearer than the supplied ray-distance limit.
+
+        Compare primary and secondary sources with the existing rigid hit.
+        Selection mode determines whether hits select elements or their objects.
+        """
         viewer = workspace.viewer
         result = None
         # All sources compete with the rigid hit and each other in depth.
@@ -548,6 +585,11 @@ class DeformableCatalog:
         particles: bool,
         limit: float,
     ) -> tuple[int | None, float]:
+        """Ray-test one source on the device and read back only the winning index and distance.
+
+        Honor world visibility and display transforms. Return (None, limit)
+        when no eligible primitive is hit; indices are local to this source.
+        """
         viewer = workspace.viewer
         count = model.particle_count if particles else model.tri_count
         if not count or (not particles and not viewer.show_triangles):
@@ -589,6 +631,7 @@ class DeformableCatalog:
     def elements(
         self, key: TreeKey
     ) -> tuple[Sequence[int] | np.ndarray, Sequence[int] | np.ndarray, Sequence[int] | np.ndarray]:
+        """Resolve a key to particle, triangle, and tetrahedron indices; unsupported keys yield empty sequences."""
         kind, index = key
         if kind in ("surface", "volume", "particle_set"):
             obj = self.objects[index]
@@ -608,6 +651,7 @@ class DeformableCatalog:
         return (), (), ()
 
     def visible(self, tree: ModelTree, key: TreeKey) -> bool:
+        """Resolve object visibility directly or through an element group or owning object."""
         if key[0] in ("surface", "volume", "particle_set"):
             return key not in self.hidden
         owner = tree.meta.get(key, {}).get("owner")
@@ -616,6 +660,7 @@ class DeformableCatalog:
         return owner not in self.hidden
 
     def selection(self, keys: Iterable[TreeKey]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return deduplicated particles, triangles, tetrahedra, and explicit particle markers for selected keys."""
         particles, triangles, tetrahedra, markers = [], [], [], []
         for key in keys:
             p, tri, tet = self.elements(key)
@@ -631,6 +676,7 @@ class DeformableCatalog:
         return tuple(np.unique(v).astype(np.int32) for v in (particles, triangles, tetrahedra, markers))
 
     def properties(self, workspace: ViewerWorkspace, key: TreeKey) -> None:
+        """Draw particle state or deformable topology and material summaries using cached workspace reads."""
         w, ui, model = workspace.widgets, workspace.gui.ui.imgui, self.model
         kind, index = key
         particles, triangles, tets = self.elements(key)
@@ -715,6 +761,11 @@ class DeformableSelection:
     """
 
     def __init__(self, workspace: ViewerWorkspace, keys: Sequence[TreeKey]) -> None:
+        """Allocate selected surfaces and markers from deduplicated catalog indices.
+
+        Include explicit tetrahedron faces without drawing faces shared by
+        overlapping selections twice. Live positions are gathered by update().
+        """
         from .gl.opengl import MeshGL  # noqa: PLC0415
 
         self.viewer, self.catalog = workspace.viewer, workspace.tree.deformables
@@ -759,6 +810,7 @@ class DeformableSelection:
         self.marker_colors = wp.full(len(self.markers), wp.vec3(1.0, 0.43, 0.07), device=device)
 
     def close(self) -> None:
+        """Remove the selection mesh from renderer references and release its GL resources."""
         if self.mesh is not None:
             renderer = self.viewer.renderer
             renderer._selection_instances = tuple(
@@ -768,6 +820,7 @@ class DeformableSelection:
             self.mesh = None
 
     def update(self, workspace: ViewerWorkspace) -> None:
+        """Gather displayed particle positions on the device and refresh selection surfaces and markers."""
         state, viewer, model = workspace.viewer._last_state, self.viewer, workspace.model
         if state is None or not len(self.particles):
             return
@@ -808,6 +861,7 @@ class DeformableSelection:
             )
 
     def bounds(self) -> np.ndarray | None:
+        """Reduce the most recently gathered display positions to host bounds, or return None for an empty selection."""
         if not len(self.particles):
             return None
         bounds = self._bounds
@@ -828,6 +882,7 @@ class DeformableDisplay:
     """
 
     def __init__(self, viewer: ViewerBase) -> None:
+        """Allocate display buffers and cache particle world membership without changing the Model."""
         self.model = viewer.model
         self.points = wp.empty(self.model.particle_count, dtype=wp.vec3, device=viewer.device)
         self.radii = wp.empty(self.model.particle_count, dtype=float, device=viewer.device)
@@ -841,6 +896,11 @@ class DeformableDisplay:
         self.visible = wp.ones(self.model.particle_count, dtype=int, device=viewer.device)
 
     def update(self, viewer: ViewerBase, state: State) -> list[str]:
+        """Refresh transformed particles and visibility-filtered triangle batches; return stale batch names.
+
+        Rebuild topology filtering only when appearance, hidden objects, or
+        visible worlds change. Update particle positions on the device each call.
+        """
         workspace = getattr(viewer.gui, "workspace", None)
         catalog = (
             workspace.tree.deformables
@@ -894,6 +954,11 @@ class DeformableDisplay:
     def particle_batch(self) -> tuple[wp.array[wp.vec3], wp.array[float], wp.array[wp.vec3]]:
         # Keep inactive emitter capacity and hidden worlds out of the draw
         # call, matching the regular viewer's compact particle path.
+        """Return compact visible particle positions, radii, and colors for drawing.
+
+        Reuse device buffers and read back only the active count from a prefix
+        scan, excluding hidden particles and unused emitter capacity.
+        """
         count, device = len(self.points), self.points.device
         if not hasattr(self, "particle_mask"):
             self.particle_mask = wp.empty(count, dtype=int, device=device)

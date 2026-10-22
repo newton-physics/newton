@@ -91,6 +91,7 @@ class ContactLabels(ShaderGL):
     """
 
     def __init__(self, gl: ModuleType) -> None:
+        """Create digit glyphs, a smooth font sampler, and GL buffers for depth-aware contact labels."""
         import pyglet.font
         from pyglet.graphics.shader import Shader, ShaderProgram
 
@@ -253,6 +254,7 @@ class ContactLabels(ShaderGL):
         gl.glBindVertexArray(0)
 
     def destroy(self) -> None:
+        """Release owned sampler, buffers, and shader while leaving the shared font atlas intact."""
         self._gl.glDeleteSamplers(1, self.sampler)
         self._gl.glDeleteBuffers(1, self.vbo)
         self._gl.glDeleteVertexArrays(1, self.vao)

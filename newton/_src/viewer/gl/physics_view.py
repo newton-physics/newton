@@ -109,6 +109,7 @@ class PhysicsSurfaceShader(ShaderShape):
 
     @staticmethod
     def _shader_sources(enable_transparency: bool) -> tuple[str, str]:
+        """Extend the shared surface shaders with proximity opacity, pass filtering, and X-ray shadow coverage."""
         vertex, fragment = ShaderShape._shader_sources(enable_transparency)
         vertex = _proximity_vertex(vertex)
         fragment = (
@@ -176,6 +177,7 @@ class PhysicsSurfaceShader(ShaderShape):
         return vertex, fragment
 
     def __init__(self, gl: ModuleType) -> None:
+        """Compile the transparency-capable surface shader and cache X-ray uniform locations."""
         super().__init__(gl, enable_transparency=True)
         self.locations = {
             name: self._get_uniform_location(name)
@@ -204,6 +206,7 @@ class PhysicsSurfaceShader(ShaderShape):
         oit: bool = False,
         visual: bool = False,
     ) -> None:
+        """Draw visual shells or collision surfaces with X-ray settings and per-object shadow and LOD selection."""
         gl, loc = self._gl, self.locations
         renderer._update_shape_shader(self)
         self.set_oit_enabled(oit)
@@ -244,6 +247,7 @@ class PhysicsContactShader(ShaderGL):
     """Filled loaded contacts and hollow candidate rings, bounded in screen size."""
 
     def __init__(self, gl: ModuleType) -> None:
+        """Compile analytic contact discs with bounded pixel size and selected-contact rings."""
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         super().__init__()
@@ -339,6 +343,12 @@ class PhysicsContactShader(ShaderGL):
         }
 
     def render(self, renderer: RendererGL, objects: Mapping[str, MeshInstancerGL]) -> None:
+        """Draw nonempty contact batches using a lazily allocated shared quad.
+
+        Temporarily substitute the quad for each contact mesh and restore its
+        original buffers afterward. The shader retains scene depth while
+        sizing discs and selection rings in screen pixels.
+        """
         gl, loc = self._gl, self.locations
         if self._quad is None:
             import warp as wp  # noqa: PLC0415
@@ -379,6 +389,7 @@ class PhysicsContactShader(ShaderGL):
             gl.glDisable(gl.GL_BLEND)
 
     def destroy(self) -> None:
+        """Release the shared contact quad, if allocated, and the shader program."""
         if self._quad is not None:
             self._quad.destroy()
         self.shader_program.delete()
@@ -499,6 +510,7 @@ class PhysicsShellShader(ShaderGL):
     """
 
     def __init__(self, gl: ModuleType) -> None:
+        """Compile the wire shader with projected triangle spacing and proximity-based opacity."""
         import re  # noqa: PLC0415
 
         from pyglet.graphics.shader import Shader, ShaderProgram
@@ -545,6 +557,7 @@ class PhysicsShellShader(ShaderGL):
         collision: bool = False,
         wire_only: bool = False,
     ) -> None:
+        """Submit a wire pass only when the relevant rigid or deformable edge overlay is enabled."""
         edges = getattr(renderer, "_xray_collision_edges" if collision else "_xray_edges", True)
         soft_edges = getattr(renderer, "_xray_deformable_edges", True) and any(
             getattr(obj, "_physics_role", None) == "deformable" for _, obj in objects
@@ -561,6 +574,11 @@ class PhysicsShellShader(ShaderGL):
         collision: bool,
         wire_only: bool = False,
     ) -> None:
+        """Draw depth-tested front and back wire edges with per-object opacity and LOD settings.
+
+        Temporarily disable mesh culling so the shader can distinguish front
+        and back faces. Restore mesh culling and fill polygon mode afterward.
+        """
         gl, loc = self._gl, self.locations
         with self:
             gl.glUniformMatrix4fv(loc["view"], 1, gl.GL_FALSE, arr_pointer(renderer._view_matrix))

@@ -29,6 +29,7 @@ class ViewerDockspace:
     plots_name = "Plots###workspace_plots"
 
     def __init__(self, workspace: ViewerWorkspace) -> None:
+        """Initialize viewport and output-window placement state without creating docking nodes."""
         self.workspace = workspace
         self.viewport_visible = True
         self.viewport_hovered = False
@@ -43,6 +44,7 @@ class ViewerDockspace:
         self._focus = None
 
     def reset(self) -> None:
+        """Schedule layout reconstruction for the next draw rather than mutating docking state immediately."""
         self._reset = True
 
     def menu(self) -> None:
@@ -66,6 +68,7 @@ class ViewerDockspace:
             ui.end_popup()
 
     def _place_output(self, ui: ModuleType, name: str) -> None:
+        """Dock a newly seen output beside the viewport once, preserving an already floating viewport."""
         if name in self._placed:
             return
         node = ui.internal.dock_builder_get_node(self._output_node) if self._output_node else None
@@ -197,4 +200,5 @@ class ViewerDockspace:
 
     @staticmethod
     def image_name(name: str) -> str:
+        """Build an ImGui window name with a literal caption and stable image-specific identity."""
         return f"{name.replace('##', '# #')}###workspace_image/{name}"

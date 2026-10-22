@@ -68,14 +68,17 @@ class ViewerSession:
 
     @property
     def control(self) -> Control | None:
+        """Resolve the explicit Control override, including None, or the example fallback."""
         return self._components.get("control", getattr(self._example, "control", None))
 
     @property
     def solver(self) -> SolverBase | None:
+        """Resolve the explicit solver override, including None, or the example fallback."""
         return self._components.get("solver", getattr(self._example, "solver", None))
 
     @property
     def contacts(self) -> Contacts | None:
+        """Return the example contact buffer as a fallback when no frame buffer was logged."""
         return getattr(self._example, "contacts", None)
 
     def owns_control(self, owner: object) -> bool:

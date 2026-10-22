@@ -30,7 +30,20 @@ def attribute_value(model: Model, name: str) -> Any:
 
 
 class FrequencyCatalog:
-    """Expose registered custom frequencies without solver-specific naming rules.
+    """Index solver-defined row types so they can appear as explorer objects.
+
+    An attribute frequency describes what each row belongs to, not how often
+    it updates. Built-in frequencies include BODY and JOINT; a solver can add
+    a custom frequency such as ``mujoco:actuator``. This catalog turns those
+    custom rows into named, selectable objects without hard-coding actuators
+    or other solver concepts into ModelTree.
+
+    ModelTree owns one catalog per Model. The catalog maps each custom row to
+    its label, world, articulation, and paged tree key. PropertyInspector uses
+    that frequency and row index to find matching attributes; it owns value
+    display and editing. The catalog does not fetch values for property display
+    or own simulation state, and assignment to Model/State/Control is a separate
+    concern handled by the attribute inspector.
 
     Ownership arrays are read once for this Model. An explicit articulation
     association takes precedence over a single unambiguous world reference;
@@ -41,6 +54,13 @@ class FrequencyCatalog:
     page_size = 128
 
     def __init__(self, model: Model) -> None:
+        """Index nonempty custom frequencies by world and articulation.
+
+        Read ownership arrays from the device once, retaining host index buckets
+        and references to authored labels. Valid articulation ownership overrides
+        a world reference; unresolved ownership uses -1 for the shared world or
+        no articulation. Tree rows are created later by add_world and expand.
+        """
         self.model = model
         self.counts = {name: count for name, count in model.custom_frequency_counts.items() if count > 0}
         self.worlds = {}
@@ -97,16 +117,25 @@ class FrequencyCatalog:
 
     @staticmethod
     def key(frequency: str, index: int) -> TreeKey:
+        """Encode a frequency name and its zero-based storage row as an explorer key."""
         return "custom:" + frequency, int(index)
 
     @staticmethod
     def frequency(key: TreeKey) -> str | None:
+        """Decode a custom-object key, returning None for other explorer node types."""
         return key[0].removeprefix("custom:") if key[0].startswith("custom:") else None
 
     def world_for(self, key: TreeKey) -> int:
+        """Return the cached world of a valid custom-object key, or -1 for shared data."""
         return int(self.worlds[self.frequency(key)][key[1]])
 
     def label(self, frequency: str, index: int) -> str:
+        """Return an authored nonempty string label or a frequency-and-index fallback.
+
+        The index is the zero-based storage row, not its position within a page.
+        Only host-side label containers are inspected; this does not read a
+        Warp array back from the device.
+        """
         labels = self.labels[frequency]
         if isinstance(labels, (list, tuple, np.ndarray)) and index < len(labels):
             label = labels[index]
@@ -115,6 +144,11 @@ class FrequencyCatalog:
         return f"{frequency.rsplit(':', maxsplit=1)[-1].replace('_', ' ').capitalize()} {index}"
 
     def add_world(self, tree: ModelTree, world: int) -> None:
+        """Attach this world's frequency groups beneath their owning articulations or root.
+
+        Called once when ModelTree materializes a world. Store group keys for
+        later reference navigation; leave individual custom-object rows lazy.
+        """
         for frequency, owner, indices in self.buckets.get(world, ()):
             parent = ("articulation", owner) if owner >= 0 else ("root", world)
             key = self._group(tree, parent, frequency, indices, world, f"{frequency} · {len(indices):,}")
@@ -129,6 +163,7 @@ class FrequencyCatalog:
         world: int,
         label: str,
     ) -> TreeKey:
+        """Register a lazy group and its storage indices, attach it to the tree, and return its key."""
         key = ("frequency", len(self.groups))
         self.groups[key] = frequency, indices
         tree.labels[key] = label
@@ -138,6 +173,12 @@ class FrequencyCatalog:
         return key
 
     def expand(self, tree: ModelTree, key: TreeKey) -> None:
+        """Materialize one level of a custom-frequency group, leaving loaded groups unchanged.
+
+        Split large index sets into recursively paged groups so each expansion
+        adds at most page_size children. Range captions are one-based positions
+        within the group; leaf keys keep their original zero-based storage rows.
+        """
         if key not in self.groups or tree.children.get(key):
             return
         frequency, indices = self.groups[key]
@@ -158,6 +199,12 @@ class FrequencyCatalog:
                 tree.children[key].append(child)
 
     def reveal(self, tree: ModelTree, key: TreeKey) -> None:
+        """Materialize the world and page chain containing a valid custom-object key.
+
+        Descend only into the page containing the storage index. This creates
+        parent links for navigation without expanding every page or changing
+        the tree's visible expansion set.
+        """
         frequency, index = self.frequency(key), key[1]
         world = self.world_for(key)
         tree.ensure_world(world)
@@ -173,6 +220,11 @@ class FrequencyCatalog:
             )
 
     def search(self, query: str) -> Iterator[tuple[TreeKey, str]]:
+        """Yield matching custom-object keys and labels without materializing tree rows.
+
+        The caller supplies a casefolded query. Search authored labels and full
+        namespaced frequency names on the host, including collapsed worlds.
+        """
         for frequency, count in self.counts.items():
             match_frequency = query in frequency.casefold()
             for index in range(count):

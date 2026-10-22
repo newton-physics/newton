@@ -213,6 +213,7 @@ class BvhResource:
     """Optional entry within an owner attribute containing multiple resources."""
 
     def get(self) -> wp.Bvh | wp.Mesh | None:
+        """Resolve the current owner attribute or indexed entry, returning None if unavailable."""
         value = getattr(self.owner, self.attribute, None)
         if self.index is not None:
             value = value[self.index] if value is not None and self.index < len(value) else None
@@ -240,6 +241,7 @@ class BvhResources:
     def __init__(
         self, model: Model, example: ViewerExample | None = None, *, session: ViewerSession | None = None
     ) -> None:
+        """Initialize lazy BVH discovery and per-selection drawing caches for one Model."""
         self.model, self.example = model, example
         self.session = session if session is not None else ViewerSession.from_example(example)
         self.entries = {}
@@ -261,10 +263,12 @@ class BvhResources:
 
     @staticmethod
     def handles(key: TreeKey) -> bool:
+        """Identify tree keys owned by the BVH inspector, including per-shape references."""
         return key is not None and (key[0].startswith("bvh") or key[0] == "shape_bvh")
 
     @staticmethod
     def _node(tree: ModelTree, key: TreeKey, label: str, parent: TreeKey | None = None, *, world: int = -1) -> bool:
+        """Register or refresh node metadata without duplicating its parent link; report whether it is new."""
         fresh = key not in tree.labels
         tree.labels[key] = label
         tree.meta[key] = {"world": world}
@@ -275,6 +279,7 @@ class BvhResources:
         return fresh
 
     def attach(self, tree: ModelTree) -> None:
+        """Add Model-owned query BVHs and a lazy mesh collection to the explorer roots."""
         if not (
             self.model.bvh_shapes
             or self.model.bvh_particles
@@ -298,11 +303,13 @@ class BvhResources:
             self._node(tree, self.meshes, f"Mesh BVHs · {count:,}", self.root)
 
     def _mesh(self, index: int) -> BvhResource:
+        """Resolve a combined mesh index across retained triangle meshes and heightfield meshes."""
         count = len(self.model._mesh_keep_alive)
         attr, local = ("_mesh_keep_alive", index) if index < count else ("heightfield_meshes", index - count)
         return BvhResource(self.model, attr, "Triangle raycasts and collision narrowphase", local=True, index=local)
 
     def expand(self, tree: ModelTree, key: TreeKey) -> None:
+        """Discover root resources or materialize one bounded page of mesh BVH entries."""
         if key == self.root:
             self.attach(tree)
             self._discover(tree)
@@ -328,6 +335,12 @@ class BvhResources:
 
     def _discover(self, tree: ModelTree) -> None:
         # Inspect known owners, never recursively traverse a model's object graph.
+        """Find additional collision and sensor BVHs on known owners.
+
+        Inspect only immediate attributes of the example, Model, and solver;
+        avoid recursively walking their object graphs. Keep owner references so
+        later inspection resolves the current resource rather than a snapshot.
+        """
         seen = set()
         for name, pipeline in self.session.collision_pipelines(self.model):
             detector = pipeline._soft_self_contact_detector
@@ -365,6 +378,7 @@ class BvhResources:
                 self._node(tree, key, f"Gaussian BVH · Shape {shape}", self.root)
 
     def _add_detector(self, tree: ModelTree, detector: object, name: str) -> None:
+        """Attach available triangle and edge BVHs beneath a self-collision detector group."""
         group = ("bvh_collection", ("collision", name))
         self._node(tree, group, name.lstrip("_") + " · Self-collision", self.root)
         for attr, label in (("bvh_tris", "Triangle bounds"), ("bvh_edges", "Edge bounds")):
@@ -374,6 +388,11 @@ class BvhResources:
                 self._node(tree, node, label, group)
 
     def add_shape(self, tree: ModelTree, shape: int) -> None:
+        """Attach a shape-local BVH using a cached page of source pointers.
+
+        Copy source pointers to the host only when their page is first needed;
+        mesh IDs and resource references remain cached for this Model.
+        """
         if self.model.shape_source[shape] is None:
             return
         if self._mesh_ids is None:
@@ -400,6 +419,7 @@ class BvhResources:
             )
 
     def reveal(self, tree: ModelTree, key: TreeKey) -> None:
+        """Materialize the owning shape or mesh-page chain needed to navigate to a resource."""
         if key[0] == "shape_bvh":
             tree.ensure_world(tree.world_for(("shape", key[1])))
             self.add_shape(tree, key[1])
@@ -414,6 +434,12 @@ class BvhResources:
             self.expand(tree, self.root)
 
     def _shape(self, ws: ViewerWorkspace, key: TreeKey, entry: BvhResource, resource: wp.Bvh | wp.Mesh) -> int:
+        """Choose the shape instance used to place a local-space resource in the viewport.
+
+        Return -1 for world-space resources or meshes without an owning shape.
+        Shared meshes lazily build a host inverse index and retain the selected
+        instance, initially preferring the workspace world.
+        """
         if not entry.local:
             return -1
         if key[0] in ("shape_bvh", "bvh_gaussian"):
@@ -431,6 +457,7 @@ class BvhResources:
         return int(owners[min(self._instances[key], len(owners) - 1)])
 
     def draw(self, ws: ViewerWorkspace) -> None:
+        """Draw resource metadata, instance and scope controls, and visualization availability."""
         w, ui, key = ws.widgets, ws.gui.ui.imgui, ws.selected
         if key not in self.entries:
             if w.button("Refresh", small=True):
@@ -513,6 +540,7 @@ class BvhResources:
                     ui.text_wrapped("No shape instance is available for this local-space BVH.")
 
     def overlay(self, ws: ViewerWorkspace) -> None:
+        """Update selected bounds, disabling and releasing the overlay if extraction fails."""
         try:
             self._update_overlay(ws)
         except Exception as error:
@@ -522,12 +550,14 @@ class BvhResources:
             logger.exception("Failed to visualize BVH bounds")
 
     def _group(self, entry: BvhResource, resource: wp.Bvh | wp.Mesh) -> int:
+        """Return the requested BVH world group, the shared-group index, or -1 for all groups."""
         if entry.local or resource.groups is None or self.scope == 1:
             return -1
         return self.model.world_count if self.scope == 2 else self.world
 
     @staticmethod
     def _state(ws: ViewerWorkspace) -> State | None:
+        """Prefer the last displayed State, falling back to conventional example state attributes."""
         return (
             getattr(ws.viewer, "_last_state", None)
             or getattr(ws.example, "state_0", None)
@@ -537,6 +567,7 @@ class BvhResources:
     def _refit(self, resource: wp.Bvh | wp.Mesh, state: State | None) -> None:
         # Most examples never query these model BVHs after finalization. Keep
         # the selected one current, but do not alter solver-owned structures.
+        """Refit only Model-owned shape or particle query bounds to the supplied State."""
         if state is not None:
             if resource is self.model.bvh_shapes:
                 self.model.bvh_refit_shapes(state)
@@ -646,6 +677,12 @@ class BvhResources:
 
     def _update_overlay(self, ws: ViewerWorkspace) -> None:
         # A single batch is hidden immediately on deselection or history playback.
+        """Draw a bounded sample of the selected live BVH in display coordinates.
+
+        Hide the previous batch before checking selection and history state.
+        Reuse device buffers and captured work where compatible; keep primitive
+        bounds on the device rather than reading every box back to the host.
+        """
         if self._line_name in ws.viewer.lines:
             ws.viewer.lines[self._line_name].hidden = True
         key = ws.selected

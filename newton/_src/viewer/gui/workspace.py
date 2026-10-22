@@ -121,6 +121,7 @@ class ViewerWorkspace:
     """
 
     def __init__(self, gui: ViewerGui) -> None:
+        """Initialize panel presenters, selection and edit state, preferences, and lazy Model caches for one GUI."""
         self.gui = gui
         self.widgets = PhysicsWidgets(gui)
         self.viewer = gui._viewer
@@ -218,6 +219,7 @@ class ViewerWorkspace:
         return self._session
 
     def save_preferences(self) -> None:
+        """Retain BVH and timeline display options across example or history rebinding in this workspace."""
         if self.tree is not None:
             bvhs = self.tree.resources.bvhs
             self._bvh_options = {name: getattr(bvhs, name) for name in ("show_bounds", "limit")}
@@ -251,6 +253,7 @@ class ViewerWorkspace:
         self.select(None)
 
     def _bind_timeline(self, timeline: TimelineView | None) -> None:
+        """Switch timeline presentation, saving old options and restoring them on the newly bound view."""
         if timeline is not self._active_timeline:
             self.save_preferences()
             self._active_timeline = timeline
@@ -343,6 +346,12 @@ class ViewerWorkspace:
         self.collision.attach(self.tree)
 
     def select(self, key: TreeKey | None, *, toggle: bool = False, extend: bool = False) -> None:
+        """Replace, toggle, extend, or clear selection and invalidate selection-dependent state.
+
+        Range extension follows visible tree rows. Resolve the active object
+        and descendants, stop camera following, release old deformable drawing
+        resources, and clear property caches and undo state.
+        """
         if key is not None:
             self._ensure_tree()
         self.gui.stop_following_selection()
@@ -433,6 +442,7 @@ class ViewerWorkspace:
         self._live_time = 0
 
     def _camera_motion(self, start: wp.vec3, end: wp.vec3, **kwargs: Any) -> float:
+        """Lazily create the selection-proximity filter and return its camera-motion multiplier."""
         if self._navigation is None:
             from ..viewer_navigation import SelectionNavigation  # noqa: PLC0415
 
@@ -567,6 +577,12 @@ class ViewerWorkspace:
         return cache[key]
 
     def _sync_selection_outline(self) -> None:
+        """Resolve selected shapes and deformables to current renderer instances.
+
+        Cache shape-to-batch mappings until selection or batch identity changes;
+        resolve object handles each frame because display changes can replace
+        buffers. Also install or remove the selection-based navigation filter.
+        """
         viewer = self.viewer
         batches = viewer._shape_to_batch
         sdf_batches = viewer._sdf_isomesh_instances
@@ -753,6 +769,7 @@ class ViewerWorkspace:
         self.show_right = True
 
     def _window(self, name: str, x: float, y: float, w: float, h: float, *, flags: int = 0) -> bool:
+        """Begin a fixed-position workspace window; the caller must call ImGui end() even when it returns False."""
         ui = self.gui.ui.imgui
         ui.set_next_window_pos(ui.ImVec2(x, y))
         ui.set_next_window_size(ui.ImVec2(max(w, 1), max(h, 1)))
@@ -766,6 +783,12 @@ class ViewerWorkspace:
         return ui.begin(name, flags=flags)[0]
 
     def draw(self) -> None:
+        """Coordinate workspace layout, inspector refreshes, and viewport overlays for one UI frame.
+
+        Throttle live property readbacks, but invalidate immediately on paused
+        history scrubbing. Convert the docked viewport rectangle to framebuffer
+        coordinates before synchronizing renderer overlays.
+        """
         started = perf_counter()
         ui = self.gui.ui.imgui
         self.console.poll_warnings()
@@ -1035,6 +1058,7 @@ class ViewerWorkspace:
         minimum: float,
         maximum: float,
     ) -> None:
+        """Draw a panel resize handle and update its logical dimension within the supplied bounds."""
         ui = self.gui.ui.imgui
         ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(0, 0))
         ui.push_style_var(ui.StyleVar_.window_min_size, ui.ImVec2(1, 1))
@@ -1055,6 +1079,7 @@ class ViewerWorkspace:
         ui.pop_style_var(3)
 
     def _header(self) -> None:
+        """Draw panel, framing, selection, reset, and selection-mode actions plus the version label."""
         ui = self.gui.ui.imgui
         if self.widgets.icon_button("##explorer", "tree", "Explorer", active=self.show_left, size=22):
             self.show_left = not self.show_left
@@ -1109,6 +1134,7 @@ class ViewerWorkspace:
         ui.pop_font()
 
     def _transport(self) -> None:
+        """Draw basic play, pause, single-step, and restart controls when no history timeline is used."""
         ui = self.gui.ui.imgui
         if self.widgets.icon_button(
             "##workspace_play",
@@ -1130,6 +1156,7 @@ class ViewerWorkspace:
                 reset()
 
     def _explorer(self) -> None:
+        """Draw Scene and Examples tabs, filtering and clipping browser rows before dispatching example selection."""
         ui = self.gui.ui.imgui
         if not ui.begin_tab_bar("##explorer_tabs"):
             return
@@ -1171,6 +1198,7 @@ class ViewerWorkspace:
         ui.end_tab_bar()
 
     def _scene_tree(self) -> None:
+        """Draw searchable, clipped tree rows with independent name scrolling and background-click deselection."""
         ui = self.gui.ui.imgui
         m = self.model
         if m is None:
@@ -1254,6 +1282,7 @@ class ViewerWorkspace:
             self._tree_scroll_pending = 0.0
 
     def _tree_row(self, key: TreeKey, depth: int) -> None:
+        """Draw a depth-indented explorer row with type icon, expansion, selection, visibility, and applicable flags."""
         ui, widgets, tree = self.gui.ui.imgui, self.widgets, self.tree
         kind, index = key
         resource = tree.resources.handles(key)
@@ -1470,6 +1499,7 @@ class ViewerWorkspace:
         }.get(kind, kind.replace("_", " ").capitalize())
 
     def object_visible(self, key: TreeKey) -> bool:
+        """Resolve effective visibility from world visibility and cached visible shape or deformable descendants."""
         world = self.tree.world_for(key)
         if key[0] == "root" and world >= 0:
             return self.viewer._should_render_world(world)
@@ -1483,6 +1513,12 @@ class ViewerWorkspace:
         return self._visibility_cache[key]
 
     def toggle_visibility(self, key: TreeKey) -> None:
+        """Toggle a world or subtree while preserving world offsets and previous shape opacities.
+
+        Update shape opacity on the device in one batch and read previous values
+        back only when hiding. Invalidate visibility caches and renderer batches
+        when their inputs change.
+        """
         world = self.tree.world_for(key)
         if world >= 0 and (key[0] == "root" or not self.viewer._should_render_world(world)):
             visible = (
@@ -1535,6 +1571,7 @@ class ViewerWorkspace:
         self.viewer.model_changed = True
 
     def _flag_buttons(self, key: TreeKey, *, compact: bool = False) -> None:
+        """Draw body or shape flags with distinct active and read-only states and route permitted edits."""
         ui, widgets = self.gui.ui.imgui, self.widgets
         kind, index = key
         flags = int(self.tree.meta.get(key, {}).get("flags", 0))
@@ -1584,6 +1621,7 @@ class ViewerWorkspace:
                 self.set_flag(kind, index, int(flag))
 
     def _at_live_frame(self) -> bool:
+        """Report whether the displayed timeline is at its latest frame rather than a historical snapshot."""
         timeline = getattr(self.example, "timeline", self.history)
         return not (
             timeline is not None
@@ -1654,6 +1692,11 @@ class ViewerWorkspace:
         return self.session.owns_control(owner)
 
     def set_flag(self, kind: str, index: int, flag: int) -> None:
+        """Set a body motion flag or toggle shape visibility, notifying its solver or renderer.
+
+        Reject unsupported edits and proxy-body changes. Restore the original
+        array value if notification fails, then propagate the exception.
+        """
         array = getattr(self.model, kind + "_flags")
         previous = int(array[index : index + 1].numpy()[0])
         value = flag if kind == "body" else previous ^ flag
@@ -1676,6 +1719,7 @@ class ViewerWorkspace:
         self._live_cache.clear()
 
     def _inspector(self) -> None:
+        """Draw property, environment, solver, and available example tabs with history edit guards."""
         ui = self.gui.ui.imgui
         if ui.begin_tab_bar("##inspector_tabs"):
             if self.widgets.tab_item(
@@ -1745,6 +1789,7 @@ class ViewerWorkspace:
                     wind.direction = edit.value.tolist()
 
     def _breadcrumbs(self) -> None:
+        """Draw a width-bounded ancestor path and optional selection-follow toggle."""
         ui, tree, scale = self.gui.ui.imgui, self.tree, self.widgets.scale
         chain, seen, key = [], set(), self.selected
         while key is not None and key not in seen:
@@ -1821,6 +1866,7 @@ class ViewerWorkspace:
         ui.spacing()
 
     def _properties(self) -> None:
+        """Dispatch selection properties to collision, resource, or generic attribute inspectors."""
         ui, w, m = self.gui.ui.imgui, self.widgets, self.model
         if m is None:
             return
@@ -1858,6 +1904,7 @@ class ViewerWorkspace:
             ui.text_wrapped(self.message)
 
     def _solver_properties(self) -> None:
+        """Show available solver iteration, convergence, and method settings as read-only properties."""
         ui, w = self.gui.ui.imgui, self.widgets
         solver = self.session.solver
         if solver is None:
@@ -1913,6 +1960,7 @@ class ViewerWorkspace:
                         )
 
     def _shape_solver_properties(self, index: int) -> None:
+        """Resolve a shape to its MuJoCo geometry and lazily display effective contact parameters."""
         w = self.widgets
         solver = self.session.solver
         model = getattr(solver, "mjw_model", None)
@@ -1955,6 +2003,7 @@ class ViewerWorkspace:
                 )
 
     def live_state(self) -> State | None:
+        """Resolve the application live State through the session, falling back to the last logged State."""
         return self.session.live_state(getattr(self.viewer, "_last_state", None))
 
     def joint_display_state(self) -> State | SimpleNamespace | None:

@@ -19,6 +19,13 @@ if TYPE_CHECKING:
 
 
 class ViewportControls:
+    """Own viewport display preferences and translate them into renderer settings.
+
+    The workspace retains this presenter across example switches. Model-specific
+    appearance caches are refreshed separately, so rendering choices persist
+    without retaining old geometry. Simulation configuration is not changed.
+    """
+
     modes = (
         ("visual", "sphere", "Visual"),
         ("collision", "collision", "Collision"),
@@ -27,6 +34,7 @@ class ViewportControls:
     )
 
     def __init__(self, workspace: ViewerWorkspace) -> None:
+        """Initialize view-mode preferences, orientation controls, and lazy Model appearance caches."""
         from .orientation import OrientationGizmo  # noqa: PLC0415
 
         self.workspace = workspace
@@ -58,6 +66,7 @@ class ViewportControls:
         self.orientation._animation = None
 
     def set_mode(self, mode: str) -> None:
+        """Apply a visual, collision, wire, or xray mode to viewer visibility and renderer flags."""
         self.mode = mode
         viewer = self.workspace.viewer
         viewer.show_visual = mode in ("visual", "xray", "wire")
@@ -66,6 +75,11 @@ class ViewportControls:
         viewer.renderer._physics_xray = mode == "xray"
 
     def sync(self) -> None:
+        """Propagate viewport preferences and classify shape batches for rendering.
+
+        Recompute inspection scale from host copies only when a new Model first
+        enters X-ray mode. Cache batch roles independently of per-frame motion.
+        """
         viewer = self.workspace.viewer
         if viewer.model is not self._model:
             self._model = viewer.model
@@ -139,6 +153,7 @@ class ViewportControls:
                 obj._surface_grid = grid
 
     def camera_view(self, direction: ArrayLike) -> None:
+        """Place the camera along a direction at its current pivot distance, with a small tilt at up-axis poles."""
         camera = self.workspace.viewer.camera
         direction = np.asarray(direction, dtype=float)
         direction /= max(np.linalg.norm(direction), 1e-12)
@@ -151,6 +166,7 @@ class ViewportControls:
         camera.look_at(pivot)
 
     def draw(self) -> None:
+        """Draw the orientation gizmo and viewport toolbar with fixed-width settings popups."""
         workspace = self.workspace
         self.orientation.draw()
         ui, widgets, viewer = workspace.gui.ui.imgui, workspace.widgets, workspace.viewer
@@ -233,12 +249,18 @@ class ViewportControls:
         ui.end()
 
     def prepare_popup(self, *, width: float = 360) -> None:
+        """Constrain the next popup width and push its padding style.
+
+        Width is in logical pixels and is clamped to the display. The caller
+        must pop one style variable even if the popup does not open.
+        """
         ui, s = self.workspace.gui.ui.imgui, self.workspace.widgets.scale
         width = min(width * s, ui.get_io().display_size.x - 24 * s)
         ui.set_next_window_size_constraints(ui.ImVec2(width, 0), ui.ImVec2(width, ui.get_io().display_size.y - 24 * s))
         ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(10 * s, 10 * s))
 
     def _camera_menu(self) -> None:
+        """Draw framing, axis-view, camera projection, movement, and position actions."""
         workspace = self.workspace
         ui, widgets, camera = workspace.gui.ui.imgui, workspace.widgets, workspace.viewer.camera
         if widgets.button("Frame selection" if workspace.selected else "Frame scene", ui.ImVec2(-1, 0)):
@@ -258,6 +280,7 @@ class ViewportControls:
             camera.translate(type(camera.pos)(*edit.value) - camera.pos)
 
     def _guides_menu(self) -> None:
+        """Draw scene guides and collision-envelope controls while preserving explicit display preferences."""
         workspace = self.workspace
         ui, viewer = workspace.gui.ui.imgui, workspace.viewer
         for title, properties in (
@@ -298,6 +321,7 @@ class ViewportControls:
             viewer.sdf_margin_mode = viewer.SDFMarginMode(edit.value)
 
     def _render_menu(self) -> None:
+        """Dispatch the rendering, contact, joint, and camera settings tabs."""
         workspace = self.workspace
         ui = workspace.gui.ui.imgui
         if ui.begin_tab_bar("##viewer_settings"):
@@ -313,6 +337,7 @@ class ViewportControls:
             ui.end_tab_bar()
 
     def _joint_settings(self) -> None:
+        """Edit the shared joint-glyph scale and optional link-size adaptation."""
         workspace = self.workspace
         ui, widgets = workspace.gui.ui.imgui, workspace.widgets
         ui.separator_text("Selection gizmos")
@@ -327,6 +352,7 @@ class ViewportControls:
             )
 
     def _contact_settings(self) -> None:
+        """Edit contact visibility, glyph sizing, force scaling, labels, and mode-classification thresholds."""
         workspace = self.workspace
         ui, viewer, widgets = workspace.gui.ui.imgui, workspace.viewer, workspace.widgets
         renderer = viewer.renderer
@@ -389,6 +415,7 @@ class ViewportControls:
         ui.end_disabled()
 
     def _camera_settings(self) -> None:
+        """Edit movement speed, selection proximity slowdown, field of view, and ordered clip distances."""
         workspace = self.workspace
         ui, viewer, widgets = workspace.gui.ui.imgui, workspace.viewer, workspace.widgets
         camera = viewer.camera
@@ -434,6 +461,7 @@ class ViewportControls:
             camera.far = edit.value
 
     def _rendering_settings(self) -> None:
+        """Edit X-ray appearance, lighting, synchronization, and advanced renderer controls."""
         workspace = self.workspace
         ui, viewer = workspace.gui.ui.imgui, workspace.viewer
         ui.separator_text("X-ray · Collision")

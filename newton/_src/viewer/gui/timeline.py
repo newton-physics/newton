@@ -31,22 +31,27 @@ class TimelineView:
     """
 
     def __init__(self, history: WorkspaceHistory) -> None:
+        """Bind the presentation to an existing history store without owning simulation snapshots."""
         self.history = history
 
     @property
     def recording(self) -> bool:
+        """Return whether history capture is enabled on the backing store."""
         return self.history.recording
 
     @recording.setter
     def recording(self, value: bool) -> None:
+        """Set the backing recording flag; use history.set_recording() when capture-transition handling is needed."""
         self.history.recording = value
 
     @property
     def playback_speed(self) -> float:
+        """Return the recorded-frame playback multiplier."""
         return self.history.playback_speed
 
     @playback_speed.setter
     def playback_speed(self, value: float) -> None:
+        """Set the recorded-frame playback multiplier on the history store."""
         self.history.playback_speed = value
 
     default_height = 58
@@ -119,6 +124,11 @@ class TimelineView:
         return (np.expm1(contact_scale) if self.contact_log else contact_scale), speed_scale
 
     def _draw_activity_track(self, ui: ModuleType, viewer: ViewerBase) -> None:
+        """Draw contact and motion tracks with a draggable recorded-frame cursor.
+
+        Preserve the drag span in absolute frame numbers so history eviction
+        does not shift the selected interval underneath an active drag.
+        """
         scale = viewer.gui.ui.dpi_scale
         width = max(1, ui.get_content_region_avail().x)
         pos = ui.get_cursor_screen_pos()
@@ -314,6 +324,7 @@ class TimelineView:
             ui.end()
 
     def _draw_transport(self, ui: ModuleType, viewer: ViewerBase, widgets: PhysicsWidgets) -> None:
+        """Draw playback, frame stepping, endpoint, speed, and recording controls with synchronized row alignment."""
         scale = viewer.gui.ui.dpi_scale
         row_y = ui.get_cursor_pos_y()
         ui.push_style_var(ui.StyleVar_.frame_padding, ui.ImVec2(6 * scale, (22 * scale - ui.get_font_size()) / 2))
@@ -384,6 +395,7 @@ class TimelineView:
             ui.text_wrapped(self.history.message)
 
     def _draw_readouts(self, ui: ModuleType, viewer: ViewerBase, widgets: PhysicsWidgets) -> None:
+        """Draw frame and time editors, pausing playback and selecting a retained frame when edited."""
         if not self.history.frames:
             ui.text_disabled("Frame  —")
             ui.text_disabled("Time   —")
@@ -461,6 +473,7 @@ class TimelineView:
         return items
 
     def draw_recording_control(self, ui: ModuleType) -> None:
+        """Draw the recording toggle and route changes through the history capture-transition handler."""
         changed, enabled = ui.checkbox("Record history", self.recording)
         if changed:
             self.history.set_recording(enabled)

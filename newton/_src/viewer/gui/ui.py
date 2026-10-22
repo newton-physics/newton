@@ -18,7 +18,18 @@ logger = logging.getLogger(__name__)
 
 
 class UI:
+    """Adapt a pyglet window to optional ImGui rendering, input, timing, and DPI.
+
+    This backend owns GUI frame setup and recovery; scene inspection and viewer
+    interaction policy live in ViewerGui and its workspace presenters.
+    """
+
     def __init__(self, window):
+        """Create the optional ImGui backend, input callbacks, and DPI-scaled styles for a window.
+
+        Leave is_available false when the optional GUI dependency is absent.
+        A valid GL context is required when the dependency is available.
+        """
         self.key_press_filter = None
         self._file_dialog_result: str | None = None
         self._pending_file_dialog = None
@@ -185,6 +196,7 @@ class UI:
         return max(1.0, scale)
 
     def _window_scale(self) -> float:
+        """Read and normalize the platform window scale, defaulting to 1 when unavailable."""
         try:
             window_scale = self.window.scale
         except AttributeError:
@@ -194,6 +206,7 @@ class UI:
 
     @staticmethod
     def _coerce_dpi_scale(value: float) -> float:
+        """Convert a scale value to a float of at least 1, falling back to 1 for invalid input."""
         try:
             return max(1.0, float(value))
         except (TypeError, ValueError):
@@ -221,6 +234,7 @@ class UI:
         style.font_scale_dpi = self.dpi_scale
 
     def _setup_grey_style(self):
+        """Apply the unscaled alternate gray ImGui style when the backend is available."""
         if not self.is_available:
             return
 
@@ -315,6 +329,7 @@ class UI:
         # fmt: on
 
     def _setup_dark_style(self) -> None:
+        """Apply the unscaled neutral dark palette, spacing, and accent colors used by the viewer."""
         if not self.is_available:
             return
 
@@ -485,6 +500,7 @@ class UI:
                 del self.section_errors[name]
 
     def end_frame(self):
+        """Poll pending file-dialog results, finalize ImGui draw data, and clear frame-recovery state."""
         if not self.is_available:
             return
 
@@ -494,30 +510,35 @@ class UI:
         self._frame_recovery_state = None
 
     def render(self):
+        """Submit finalized ImGui draw data through the platform backend when available."""
         if not self.is_available:
             return
 
         self.impl.render(self.imgui.get_draw_data())
 
     def is_capturing_mouse(self):
+        """Return the raw ImGui mouse-capture request, or False without a GUI backend."""
         if not self.is_available:
             return False
 
         return self.io.want_capture_mouse
 
     def is_capturing_keyboard(self):
+        """Return the raw ImGui keyboard-capture request, before viewer shortcut policy is applied."""
         if not self.is_available:
             return False
 
         return self.io.want_capture_keyboard
 
     def is_capturing(self):
+        """Report whether ImGui requests either mouse or keyboard input."""
         if not self.is_available:
             return False
 
         return self.is_capturing_mouse() or self.is_capturing_keyboard()
 
     def resize(self, width, height):
+        """Refresh window metrics and rebuild scaled style and fonts only when the detected DPI changes."""
         if not self.is_available:
             return
 
@@ -614,6 +635,7 @@ class UI:
             logger.warning("portable_file_dialogs not available")
 
     def shutdown(self):
+        """Release the platform GUI renderer when it was initialized."""
         if not self.is_available:
             return
 

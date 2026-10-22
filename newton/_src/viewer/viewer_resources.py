@@ -35,6 +35,7 @@ class GeometryResources:
     def __init__(
         self, model: Model, example: ViewerExample | None = None, *, session: ViewerSession | None = None
     ) -> None:
+        """Create lazy SDF and BVH catalogs without reading texture payloads or SDF rows."""
         self.model = model
         self.bvhs = BvhResources(model, example, session=session)
         data = model._texture_sdf_data
@@ -46,6 +47,7 @@ class GeometryResources:
 
     @staticmethod
     def handles(key: TreeKey) -> bool:
+        """Recognize geometry-resource and BVH keys that this inspector can display."""
         return BvhResources.handles(key) or (
             key is not None
             and key[0]
@@ -63,9 +65,15 @@ class GeometryResources:
 
     @staticmethod
     def shape_owner(key: TreeKey) -> int | None:
+        """Return the owning shape index for a per-shape resource key, or None otherwise."""
         return key[1] if key[0] in ("shape_sdf", "mesh_sdf", "shape_texture", "shape_bvh") else None
 
     def shape_sdf(self, index: int) -> int:
+        """Resolve a shape to a Model SDF index, returning -1 when no mapping exists.
+
+        Copy only the containing page of shape-to-SDF indices on first access.
+        Cached pages assume the Model layout remains unchanged.
+        """
         array = self.model._shape_sdf_index
         if array is None or index >= len(array):
             return -1
@@ -76,16 +84,19 @@ class GeometryResources:
         return int(self._shape_pages[page][index % self.page_size])
 
     def source(self, shape: int) -> Mesh | Heightfield | Gaussian | None:
+        """Return the Model-owned source geometry for a valid shape index."""
         return self.model.shape_source[shape]
 
     @staticmethod
     def color_texture_loaded(ws: ViewerWorkspace, shape: int) -> bool:
+        """Check whether the shape batch has an uploaded color texture in the GL viewer."""
         batches = ws.viewer._shape_to_batch
         batch = batches[shape] if batches is not None else None
         obj = ws.viewer.objects.get(batch.name) if batch is not None else None
         return getattr(getattr(obj, "mesh", None), "texture_id", None) is not None
 
     def attach(self, tree: ModelTree) -> None:
+        """Attach BVH roots and a shared SDF root, leaving individual resource rows lazy."""
         self.bvhs.attach(tree)
         if self.count:
             tree.roots.append(self.root)
@@ -93,6 +104,7 @@ class GeometryResources:
             tree.meta[self.root] = {"world": -1}
 
     def _node(self, tree: ModelTree, parent: TreeKey, key: TreeKey, label: str, *, world: int = -1) -> None:
+        """Attach or refresh one resource node without duplicating its parent-child link."""
         if key not in tree.parents:
             tree.children[parent].append(key)
         tree.parents[key] = parent
@@ -100,6 +112,7 @@ class GeometryResources:
         tree.meta[key] = {"world": world}
 
     def add_shape(self, tree: ModelTree, shape: int) -> None:
+        """Attach available BVH, mesh SDF, Model SDF, and color-texture references beneath a shape."""
         self.bvhs.add_shape(tree, shape)
         parent = ("shape", shape)
         source, index = self.source(shape), self.shape_sdf(shape)
@@ -112,6 +125,7 @@ class GeometryResources:
             self._node(tree, parent, ("shape_texture", shape), "Color texture · 2D", world=world)
 
     def has_children(self, tree: ModelTree, key: TreeKey) -> bool:
+        """Determine expandability, materializing shape or SDF resource children when needed."""
         if self.bvhs.handles(key):
             return key[0] in ("bvh_collection", "bvh_page") or bool(tree.children.get(key))
         if key[0] == "shape":
@@ -123,6 +137,7 @@ class GeometryResources:
         return bool(tree.children.get(key))
 
     def textures(self, index: int) -> tuple[wp.Texture3D | None, wp.Texture3D | None, wp.array[int] | None]:
+        """Return coarse texture, subgrid texture, and indirection array references for an SDF."""
         model = self.model
         return (
             model._texture_sdf_coarse_textures[index] if index < len(model._texture_sdf_coarse_textures) else None,
@@ -133,6 +148,7 @@ class GeometryResources:
         )
 
     def expand(self, tree: ModelTree, key: TreeKey) -> None:
+        """Populate one bounded page or an SDF entry, reusing already materialized children."""
         if self.bvhs.handles(key):
             self.bvhs.expand(tree, key)
             return
@@ -159,6 +175,7 @@ class GeometryResources:
                 self._node(tree, key, ("sdf_slots", key[1]), "Subgrid indirection")
 
     def reveal(self, tree: ModelTree, key: TreeKey) -> None:
+        """Materialize the page chain or owning shape needed to navigate to a resource key."""
         if self.bvhs.handles(key):
             self.bvhs.reveal(tree, key)
             return
@@ -186,12 +203,14 @@ class GeometryResources:
         self.expand(tree, ("sdf", index))
 
     def row(self, index: int) -> np.void:
+        """Copy one SDF descriptor to the host on first access and return its cached row."""
         if index not in self._rows:
             self._rows[index] = self.model._texture_sdf_data[index : index + 1].numpy()[0]
         return self._rows[index]
 
     @staticmethod
     def sdf_storage(sdf: SDF | None) -> str:
+        """Describe whether an SDF is absent, empty, texture-backed, or NanoVDB-backed."""
         if sdf is None:
             return "Not built"
         if sdf.is_empty():
@@ -199,6 +218,7 @@ class GeometryResources:
         return "3D textures" if sdf.texture_data is not None else "NanoVDB volumes"
 
     def shape_summary(self, ws: ViewerWorkspace, shape: int) -> None:
+        """Draw a shape geometry summary with navigation to its Model SDF and texture status."""
         w, source, index = ws.widgets, self.source(shape), self.shape_sdf(shape)
         with w.group("Geometry resources") as opened:
             if not opened:
@@ -219,6 +239,7 @@ class GeometryResources:
 
     @staticmethod
     def _texture_metadata(w: PhysicsWidgets, texture: wp.Texture3D | None) -> None:
+        """Display texture allocation metadata and estimated texel bytes without reading texels."""
         if texture is None:
             w.text_value("Status", "Not built")
             return
@@ -240,6 +261,7 @@ class GeometryResources:
 
     @staticmethod
     def _array_metadata(w: PhysicsWidgets, array: wp.array[Any] | None) -> None:
+        """Display shape, dtype, device, and payload size for an existing Warp array."""
         w.text_value("Dimensions", " x ".join(str(n) for n in array.shape))
         w.text_value("Dtype", wp.types.type_repr(array.dtype))
         w.text_value("Device", str(array.device))
@@ -247,6 +269,8 @@ class GeometryResources:
 
     @staticmethod
     def _sdf_metadata(w: PhysicsWidgets, data: np.void | TextureSDFData) -> None:
+        """Display sampling, local bounds, and distance encoding from a host SDF descriptor."""
+
         def field(name: str) -> Any:
             return data[name] if isinstance(data, np.void) else getattr(data, name)
 
@@ -268,6 +292,11 @@ class GeometryResources:
                 w.number("Range", float(field("subgrids_sdf_value_range")), unit="m")
 
     def _users(self, ws: ViewerWorkspace, index: int) -> None:
+        """Show paged shape references for an SDF when its usage group is open.
+
+        The first request copies the shape-to-SDF map to the host. Cache inverse
+        references for subsequent pages without repeatedly reading the device.
+        """
         with ws.widgets.group("Used by shapes", default_open=False) as opened:
             if not opened:
                 return
@@ -288,6 +317,7 @@ class GeometryResources:
                     ws.navigate(key)
 
     def draw(self, ws: ViewerWorkspace) -> None:
+        """Render the selected geometry-resource page, delegating BVH properties to its catalog."""
         if self.bvhs.handles(ws.selected):
             self.bvhs.draw(ws)
             return

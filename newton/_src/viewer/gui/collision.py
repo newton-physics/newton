@@ -64,6 +64,8 @@ def _rigid_label_points(
 
 @wp.struct
 class _LiveContactLabel:
+    """Compact device-to-host annotation record for one contact and its displayed witnesses."""
+
     number: int
     sides: int
     point0: wp.vec3
@@ -150,6 +152,7 @@ class CollisionInspector:
     page_size = 128
 
     def __init__(self, workspace: ViewerWorkspace) -> None:
+        """Initialize lazy contact snapshots, pipeline discovery, and viewport-label caches for the workspace."""
         self.workspace = workspace
         self.tree = None
         self.token = None
@@ -171,9 +174,11 @@ class CollisionInspector:
 
     @staticmethod
     def handles(key: TreeKey) -> bool:
+        """Identify pipeline, candidate-pair, and contact keys routed to this inspector."""
         return key is not None and (key[0].startswith("collision") or key[0] in ("contact", "soft_contact"))
 
     def _node(self, key: TreeKey, label: str, parent: TreeKey | None = None) -> None:
+        """Register a collision node and append its parent link to the current tree."""
         tree = self.tree
         tree.labels[key] = label
         tree.meta[key] = {"world": -1}
@@ -182,6 +187,11 @@ class CollisionInspector:
             tree.children[parent].append(key)
 
     def attach(self, tree: ModelTree) -> None:
+        """Synchronize the Collision root with available Python objects without reading device data.
+
+        When sources disappear, remove collision nodes, caches, and any active
+        collision selection. A new tree also resets contact-tab ownership.
+        """
         if self.tree is not tree:
             self.tree, self.token = tree, None
             self.contacts_tab = False
@@ -218,6 +228,7 @@ class CollisionInspector:
         tree.rebuild()
 
     def _contacts_buffer(self) -> Contacts | None:
+        """Prefer explicitly logged Contacts over the example fallback, or return None."""
         ws = self.workspace
         logged = getattr(ws.viewer, "_last_contacts", None)
         bound = ws.session.contacts
@@ -227,10 +238,12 @@ class CollisionInspector:
         return None
 
     def _sources(self) -> list[tuple[str, CollisionPipeline]]:
+        """Resolve collision pipelines associated with the workspace Model through its session."""
         ws = self.workspace
         return ws.session.collision_pipelines(ws.model)
 
     def read(self, owner: object, name: str, start: int = 0, count: int = 1) -> np.ndarray:
+        """Cache a host copy of an array slice until the contact snapshot is invalidated."""
         key = id(owner), name, start, count
         if key not in self.cache:
             array = getattr(owner, name)
@@ -328,6 +341,7 @@ class CollisionInspector:
         tree.rebuild()
 
     def expand(self, key: TreeKey) -> None:
+        """Refresh the collision root or lazily populate a bounded page of contacts or candidate pairs."""
         if key == self.root:
             self.sync(force=True)
         if key not in self.groups or self.tree.children.get(key):
@@ -349,6 +363,7 @@ class CollisionInspector:
                 self._node(child, label, key)
 
     def reveal(self, key: TreeKey) -> None:
+        """Materialize and expand the ancestor pages containing a contact or candidate pair."""
         pair = key[0] == "collision_pair"
         parent = ("collision_pairs", key[1][0]) if pair else ("collision_group", key[0])
         index = key[1][1] if pair else key[1]
@@ -376,6 +391,7 @@ class CollisionInspector:
         return []
 
     def shapes(self, key: TreeKey) -> tuple[int, ...]:
+        """Read shapes referenced by a paused contact or pair; return an empty tuple during playback."""
         if not self.workspace.viewer.is_paused():
             return ()
         kind, index = key
@@ -390,6 +406,7 @@ class CollisionInspector:
         return tuple(int(self.read(self.contacts, name, index)[0]) for name in names)
 
     def world_for(self, key: TreeKey) -> int:
+        """Resolve a contact or pair through its shapes, then soft-contact particles, with -1 for shared data."""
         for shape in self.shapes(key):
             if 0 <= shape < self.workspace.model.shape_count:
                 world = int(self.read(self.workspace.model, "shape_world", shape)[0])
@@ -479,6 +496,7 @@ class CollisionInspector:
         start: int = 0,
         count: int = 1,
     ) -> None:
+        """Render a read-only contact attribute slice with metadata-driven types and reference navigation."""
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         ui.push_id(name)
         if isinstance(value, wp.array):
@@ -566,6 +584,7 @@ class CollisionInspector:
             yield namespace, name, value, spec, row * spec.row_width, spec.row_width
 
     def draw(self, inspector: PropertyInspector) -> None:
+        """Draw the selected collision resource, refreshing its paused snapshot when requested."""
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         self.sync()
         key = ws.selected
@@ -661,6 +680,7 @@ class CollisionInspector:
             ui.text_wrapped("No Newton CollisionPipeline found on this example, model, or solver.")
 
     def draw_contact(self, inspector: PropertyInspector, key: TreeKey) -> None:
+        """Draw contact geometry, matching candidate pairs, and built-in or namespaced custom attributes."""
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         points = self.points(key)
         with w.group("Geometry") as opened:
@@ -757,6 +777,7 @@ class CollisionInspector:
         return self.cache[cache_key]
 
     def number(self, key: TreeKey) -> int:
+        """Return a one-based display number, placing soft contacts after the rigid-contact range."""
         return key[1] + 1 + (self.counts[0] if key[0] == "soft_contact" else 0)
 
     def contact_label(self, key: TreeKey) -> str:
@@ -784,6 +805,7 @@ class CollisionInspector:
         return f"#{self.number(key)} · " + " ↔ ".join(labels)
 
     def draw_object(self, inspector: PropertyInspector, owner: TreeKey) -> None:
+        """Open an object contact view, showing live annotations or an inspectable paused contact list."""
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         self.contacts_tab = True
         self.sync()
@@ -803,6 +825,11 @@ class CollisionInspector:
         self.draw_contact_list(inspector, owner)
 
     def draw_contact_list(self, inspector: PropertyInspector, owner: TreeKey) -> None:
+        """Paginate matching contacts and draw the active contact properties.
+
+        Pagination limits inspector rows only; viewport annotation still covers
+        every matching contact. Changing the list owner clears the active row.
+        """
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         self.contacts_tab = True
         rows = self.object_contacts(owner)
@@ -906,6 +933,12 @@ class CollisionInspector:
         self._live_overlay_key = key
 
     def overlays(self) -> None:
+        """Synchronize renderer contact labels and selection rings with the current inspector context.
+
+        Clear stale annotations when the context is hidden. Keep selection-ring
+        updates independent of label layout and cache paused labels until their
+        contact or display inputs change.
+        """
         ws, viewer = self.workspace, self.workspace.viewer
         renderer = getattr(viewer, "renderer", None)
         if renderer is None:

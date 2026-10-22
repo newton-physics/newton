@@ -94,6 +94,7 @@ class JointSelectionGroup:
     """
 
     def __init__(self, workspace: ViewerWorkspace, indices: Sequence[int] | np.ndarray) -> None:
+        """Cache selected joint metadata and allocate one device buffer for their live frames."""
         self.joints = tuple(JointSelection(workspace, index) for index in sorted(indices))
         device = workspace.model.device
         self.indices = wp.array([joint.index for joint in self.joints], dtype=int, device=device)
@@ -110,6 +111,12 @@ class JointSelectionGroup:
         )
 
     def draw(self, workspace: ViewerWorkspace, *, compact: bool = False) -> None:
+        """Sample selected joint frames and submit batched glyph geometry for the displayed State.
+
+        Copy only selected frames to the host. Reuse generated triangles when
+        frame and view inputs are unchanged; compact mode batches glyphs for
+        large joint selections.
+        """
         viewer, state = workspace.viewer, workspace.viewer._last_state
         if (
             state is None
@@ -317,6 +324,7 @@ class _JointDrawList:
     """Build glyph triangles in logical screen pixels with their original scene depth."""
 
     def __init__(self, workspace: ViewerWorkspace) -> None:
+        """Capture camera and viewport transforms and initialize a shared glyph command buffer."""
         self.renderer, self.scale = workspace.viewer.renderer, workspace.widgets.scale
         self.rect = workspace.rect
         camera = workspace.viewer.camera
@@ -331,6 +339,7 @@ class _JointDrawList:
         self.count = 0
 
     def project(self, points: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
+        """Project display-space points to GUI pixels, returning a depth-validity mask and retaining clip coordinates."""
         x, y, width, height = self.rect
         local = (np.atleast_2d(points) - self.camera) @ self.view[:3, :3].T
         clip = local @ self.projection[:, :3].T + self.projection[:, 3]
@@ -342,9 +351,11 @@ class _JointDrawList:
         return screen, valid
 
     def color(self, rgb: ArrayLike, alpha: float = 1) -> tuple[float, float, float, float]:
+        """Combine an RGB color with alpha into the float RGBA format used by glyph commands."""
         return (*rgb, alpha)
 
     def add(self, kind: str, points: ArrayLike, *args: Any) -> None:
+        """Append a glyph operation and its points to the shared projection batch."""
         points = np.atleast_2d(points)
         end = self.count + len(points)
         self.operations.append((kind, self.count, end, args))
@@ -363,9 +374,15 @@ class _JointDrawList:
         self.add("lines", points.reshape(-1, 3), points.shape[1], colors, thickness, halo, arrow)
 
     def markers(self, points: ArrayLike, colors: np.ndarray, backgrounds: np.ndarray, *, square: bool = False) -> None:
+        """Queue colored circular or square joint markers with their background colors."""
         self.add("markers", points, colors, backgrounds, square)
 
     def flush(self) -> None:
+        """Project queued glyphs and replace the renderer opaque and transparent triangle batches.
+
+        Expand strokes and markers in screen space while retaining clip-space
+        depth, so glyph size is readable without bypassing scene occlusion.
+        """
         if not self.points:
             return
         screen, valid = self.project(np.concatenate(self.points))
@@ -546,6 +563,7 @@ class JointSelection:
     axis_colors = ((0.94, 0.38, 0.38), (0.43, 0.85, 0.53), (0.39, 0.64, 1.0))
 
     def __init__(self, workspace: ViewerWorkspace, index: int) -> None:
+        """Read fixed joint metadata through the workspace cache and precompute its glyph basis."""
         model = workspace.model
         self.index = index
         self.kind = JointType(int(workspace.read(model, "joint_type", index)[0]))
@@ -568,6 +586,7 @@ class JointSelection:
 
     @property
     def limited(self) -> bool:
+        """Report whether the first DOF has ordered finite limits below the unbounded sentinel magnitude."""
         return bool(
             len(self.lower)
             and np.isfinite(self.lower[0])
@@ -578,6 +597,7 @@ class JointSelection:
         )
 
     def draw(self, workspace: ViewerWorkspace, *, draw_list: _JointDrawList, compact: bool = False) -> None:
+        """Queue type-specific axes, limits, and pose markers using frames supplied by JointSelectionGroup."""
         viewer = workspace.viewer
         if viewer.is_rendering_paused() or viewer._layer_force_hidden():
             return

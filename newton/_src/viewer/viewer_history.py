@@ -121,6 +121,7 @@ class HistoryFrame:
 
     @property
     def soft_touching(self) -> int:
+        """Return the combined recorded soft-rigid and soft self-contact counts."""
         return self.soft_shape_contacts + self.soft_self_contacts
 
 
@@ -141,6 +142,7 @@ class WorkspaceHistory:
     soft_contact_fields = ("indices", "particle", "barycentric", "shape", "body_pos", "body_vel", "normal")
 
     def __init__(self, example: ViewerExample) -> None:
+        """Initialize bounded display history for the example without capturing a frame yet."""
         self.example = example
         # Examples may keep their model inside a simulation object. The viewer
         # owns the model for the displayed layer.
@@ -199,12 +201,15 @@ class WorkspaceHistory:
 
     @property
     def replaying(self) -> bool:
+        """Report whether the selected retained frame precedes the newest live frame."""
         return bool(self.frames) and self.index < len(self.frames) - 1
 
     def select(self, index: int) -> None:
+        """Clamp the requested retained-frame index; keep zero when history is empty."""
         self.index = max(0, min(int(index), len(self.frames) - 1))
 
     def advance(self, steps: float = 1) -> None:
+        """Advance playback by speed-scaled steps, carrying fractional progress between calls."""
         self._playback_fraction += steps * self.playback_speed
         steps = int(self._playback_fraction)
         self._playback_fraction -= steps
@@ -231,6 +236,12 @@ class WorkspaceHistory:
 
     @staticmethod
     def _snapshot_observable(array: wp.array[Any], ranges: Sequence[tuple[int, int]]) -> np.ndarray:
+        """Copy active (start, count) row ranges to one contiguous host snapshot.
+
+        Preserve the trailing shape and dtype for empty selections. Reading
+        each Warp slice synchronizes its device data; inactive capacity is not
+        copied into history.
+        """
         parts = [array[start : start + n].numpy() for start, n in ranges if n]
         # Warp rejects a zero-length slice starting at the array's end.
         # Preserve an empty array's dtype/shape without copying inactive rows.
@@ -496,6 +507,7 @@ class WorkspaceHistory:
 
     def record_plot_frame(self, frame: HistoryFrame) -> None:
         # A fixed ring keeps plot work independent of retained state size.
+        """Store the latest frame contact counts and speeds in the fixed-size activity ring."""
         if not hasattr(self, "_plot_values"):
             self._plot_values = np.empty((self.max_frames + 64, 5), dtype=np.float64)
         index = (self.first_frame + len(self.frames) - 1) % len(self._plot_values)
@@ -535,6 +547,7 @@ class WorkspaceHistory:
         return self._plot_cache
 
     def frame_at_time(self, time: float) -> int:
+        """Return the first frame at or after time [s], clamped to the last; return -1 if empty."""
         return min(len(self.frames) - 1, bisect_left(self.frames, time, key=lambda frame: frame.time))
 
     def set_recording(self, enabled: bool) -> None:

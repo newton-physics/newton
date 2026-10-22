@@ -104,10 +104,18 @@ class SelectionNavigation:
     """Reuse device buffers; read one reduced distance only during navigation."""
 
     def __init__(self, workspace: ViewerWorkspace) -> None:
+        """Retain the workspace and defer distance-query buffers until a selection is used."""
         self.workspace = workspace
         self.key = None
 
     def __call__(self, start: wp.vec3, end: wp.vec3, *, reference: float = 0.0) -> float:
+        """Return a camera-motion multiplier from proximity to the selected geometry.
+
+        Measure distance at start in display coordinates relative to reference;
+        end is accepted for the camera callback contract but is not a collision
+        barrier. Read back one reduced distance and keep a positive speed floor
+        so the camera can cross surfaces. Return 1 when slowdown is inapplicable.
+        """
         ws = self.workspace
         strength = max(0.0, float(ws.viewer.camera_slowdown))
         model, state, shapes = ws.model, ws.viewer._last_state, ws._selection_shapes

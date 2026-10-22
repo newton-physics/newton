@@ -19,9 +19,16 @@ if TYPE_CHECKING:
 
 
 class OrientationGizmo:
+    """Present camera orientation and handle view snapping, orbiting, and corner placement.
+
+    ViewportControls owns this presenter; it changes the existing camera rather
+    than maintaining a second camera or scene representation.
+    """
+
     _half_extent = 19.5
 
     def __init__(self, controls: ViewportControls) -> None:
+        """Initialize corner placement, hover fading, drag state, and optional camera animation."""
         self.controls = controls
         self.corner = "bottom_left"
         self._press = None
@@ -33,6 +40,7 @@ class OrientationGizmo:
         self.rect = (0, 0, 0, 0)
 
     def snap(self, direction: ArrayLike) -> None:
+        """Schedule an animated orbit toward a view direction while preserving the current pivot."""
         camera = self.controls.workspace.viewer.camera
         start = camera.yaw, camera.pitch
         position, pivot = camera.pos, camera.pivot
@@ -43,6 +51,7 @@ class OrientationGizmo:
         self._animation = perf_counter(), start, target
 
     def _animate(self) -> None:
+        """Advance the 0.18-second view transition along the shortest yaw arc and clear it on completion."""
         if self._animation is None:
             return
         start_time, start, target = self._animation
@@ -56,6 +65,7 @@ class OrientationGizmo:
             self._animation = None
 
     def draw(self) -> None:
+        """Draw the orientation cube and axes, handle orbit or placement drags, and expose camera context settings."""
         self._animate()
         workspace = self.controls.workspace
         ui, camera, s = workspace.gui.ui.imgui, workspace.viewer.camera, workspace.widgets.scale

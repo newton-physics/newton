@@ -44,6 +44,11 @@ class ViewerGui:
     """Shared ImGui rendering for concrete viewers (GL / RTX)."""
 
     def __init__(self, viewer: ViewerBase, window: Window, *, workspace_enabled: bool = False) -> None:
+        """Initialize the shared GUI backend, input routing, callbacks, and camera interaction state.
+
+        Defer workspace creation until the first UI frame. Workspace-enabled
+        viewers capture Newton logs when the optional GUI backend is available.
+        """
         self._viewer = viewer
         self.ui = UI(window)
         self.ui.key_press_filter = self._filter_gui_key_press
@@ -117,22 +122,27 @@ class ViewerGui:
 
     @property
     def is_available(self) -> bool:
+        """Report whether the optional GUI backend initialized successfully."""
         return bool(self.ui and self.ui.is_available)
 
     @property
     def show_ui(self) -> bool:
+        """Return the viewer GUI visibility preference, defaulting to visible."""
         return bool(getattr(self._viewer, "show_ui", True))
 
     @show_ui.setter
     def show_ui(self, value: bool):
+        """Update the viewer GUI visibility preference."""
         self._viewer.show_ui = bool(value)
 
     def is_capturing(self) -> bool:
+        """Return the raw backend capture request for either mouse or keyboard input."""
         if not self.is_available:
             return False
         return self.ui.is_capturing()
 
     def is_mouse_capturing(self) -> bool:
+        """Resolve mouse ownership, giving loading and gizmos priority while allowing interaction in the docked viewport."""
         if not self.is_available:
             return False
         if (
@@ -148,6 +158,7 @@ class ViewerGui:
         return bool(self.ui.io.want_capture_mouse)
 
     def is_keyboard_capturing(self) -> bool:
+        """Return the backend keyboard-capture request before viewer shortcut exceptions are considered."""
         if not self.is_available:
             return False
         return bool(self.ui.io.want_capture_keyboard)
@@ -170,6 +181,7 @@ class ViewerGui:
 
     @property
     def following_selection(self) -> bool:
+        """Report whether selection following is enabled by the held key or latched GUI toggle."""
         return getattr(self, "_follow_held", False) or getattr(self, "_follow_latched", False)
 
     def stop_following_selection(self) -> None:
@@ -178,11 +190,13 @@ class ViewerGui:
         self._follow_center = None
 
     def _start_follow_selection(self) -> bool:
+        """Cache the selected geometry center as the follow anchor and report whether valid bounds exist."""
         bounds = self.workspace.selection_bounds(include_contacts=False)
         self._follow_center = bounds.mean(axis=0) if bounds is not None else None
         return self._follow_center is not None
 
     def toggle_follow_selection(self) -> None:
+        """Stop latched following or frame an eligible selection and begin following its center."""
         if getattr(self, "_follow_latched", False):
             self.stop_following_selection()
         elif self.workspace is not None and self.workspace.can_follow_selection:
@@ -219,6 +233,7 @@ class ViewerGui:
     def should_ignore_mouse_input(
         self, allow_active_pick_drag: bool = False, *, allow_active_camera_drag: bool = False
     ) -> bool:
+        """Block input for frozen rendering or GUI capture, with explicit exceptions for ongoing drags."""
         if self._viewer.is_rendering_paused():
             return True
         if allow_active_camera_drag or (allow_active_pick_drag and self.is_pick_active()):
@@ -244,6 +259,7 @@ class ViewerGui:
         return state is not None and bool(state.flags & numeric)
 
     def should_ignore_keyboard_input(self) -> bool:
+        """Block shortcuts during loading, popups, or string entry while allowing them in numeric editors."""
         if getattr(self, "_loading_splash_active", False):
             return True
         if not self.is_available or not self.show_ui:
@@ -260,6 +276,7 @@ class ViewerGui:
         return symbol == key.SPACE and not self.should_ignore_keyboard_input()
 
     def is_pick_active(self) -> bool:
+        """Report whether enabled physics picking currently has an active target."""
         viewer = self._viewer
         if not getattr(viewer, "picking_enabled", False):
             return False
@@ -269,6 +286,7 @@ class ViewerGui:
         return bool(picking.is_picking())
 
     def rotate_camera_from_drag(self, dx: float, dy: float, sensitivity: float = 0.1):
+        """Apply mouse deltas to camera yaw and pitch in degrees, clamp pitch, and mark the camera dirty."""
         camera = getattr(self._viewer, "camera", None)
         if camera is None:
             return
@@ -279,6 +297,7 @@ class ViewerGui:
             self._viewer._camera_dirty = True
 
     def adjust_camera_fov_from_scroll(self, scroll_y: float, scale: float = 2.0):
+        """Change field of view in degrees from scroll input, clamped to 15 through 90 degrees."""
         camera = getattr(self._viewer, "camera", None)
         if camera is None:
             return
@@ -487,6 +506,7 @@ class ViewerGui:
             viewer._camera_dirty = True
 
     def map_window_to_target_coords(self, x: float, y: float, window, target_size: tuple[int, int] | None = None):
+        """Scale window coordinates to a target size or framebuffer, leaving coordinates unchanged for unavailable dimensions."""
         if window is None:
             return float(x), float(y)
         win_w, win_h = window.get_size()
@@ -501,6 +521,12 @@ class ViewerGui:
         return float(x) * scale_x, float(y) * scale_y
 
     def start_picking_from_screen(self, x: float, y: float, to_framebuffer_coords) -> bool:
+        """Attempt physics picking against the last displayed State using a viewport-local ray.
+
+        Convert window coordinates through the supplied callback and subtract
+        the docked viewport origin. Return whether picking was attempted, not
+        whether geometry was hit.
+        """
         viewer = self._viewer
         if not getattr(viewer, "picking_enabled", False):
             return False
@@ -517,6 +543,7 @@ class ViewerGui:
         return True
 
     def update_picking_from_screen(self, x: float, y: float, to_framebuffer_coords) -> bool:
+        """Update an active pick with a viewport-local ray; return False if no active picker or camera exists."""
         viewer = self._viewer
         if not self.is_pick_active():
             return False
@@ -533,6 +560,7 @@ class ViewerGui:
         return True
 
     def release_picking(self):
+        """Release the physics picking target when a picker is present."""
         picking = getattr(self._viewer, "picking", None)
         if picking is not None:
             picking.release()
@@ -730,6 +758,7 @@ class ViewerGui:
             close_fn()
 
     def handle_key_release(self, symbol: int) -> None:
+        """Clear the frame-key latch and held follow mode when F is released."""
         from pyglet.window import key
 
         if symbol == key.F:
@@ -844,6 +873,12 @@ class ViewerGui:
         self._loading_splash_text = None
 
     def _render_gizmos(self) -> None:
+        """Draw and update logged transform gizmos in the visible viewport.
+
+        Route ImGuizmo drawing and hover ownership to the docked viewport,
+        track active interactions across frames, and discard state for gizmos
+        that are no longer logged.
+        """
         viewer = self._viewer
         self._gizmo_hovered = False
         if not self.is_available:
@@ -1371,6 +1406,7 @@ class ViewerGui:
         imgui.end()
 
     def _render_camera_info(self):
+        """Draw available camera position and angular settings in the basic GUI panel."""
         imgui = self.ui.imgui
         cam = getattr(self._viewer, "camera", None)
         if cam is None:
@@ -1573,6 +1609,7 @@ class ViewerGui:
             self._render_attribute_values(view, state["selected_attribute"])
 
     def _create_articulation_view(self):
+        """Build an ArticulationView from basic-panel filters, storing any construction error for display."""
         state = self._selection_ui_state
         viewer = self._viewer
         try:
@@ -1598,6 +1635,7 @@ class ViewerGui:
             state["selected_articulation_view"] = None
 
     def _render_attribute_values(self, view: ArticulationView, attribute_name: str):
+        """Read the selected ArticulationView attribute to the host and draw values and statistics in the basic panel."""
         imgui = self.ui.imgui
         viewer = self._viewer
         state = self._selection_ui_state
@@ -1666,6 +1704,7 @@ class ViewerGui:
             imgui.text(f"Error getting attribute: {e!s}")
 
     def _get_attribute_names(self, view: ArticulationView, attribute_name: str):
+        """Resolve coordinate, DOF, or body labels for a basic-panel attribute, returning None when unavailable."""
         try:
             if attribute_name.startswith("joint_q") or attribute_name.startswith("joint_f"):
                 if attribute_name == "joint_q":
@@ -1678,6 +1717,7 @@ class ViewerGui:
             return None
 
     def _render_value_sliders(self, values, names, attribute_name: str, state):
+        """Display basic-panel numeric values as labeled sliders without applying changes to simulation arrays."""
         imgui = self.ui.imgui
 
         if attribute_name.startswith("joint_q"):

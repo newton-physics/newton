@@ -21,6 +21,7 @@ class SelectionSurfaceShader(ShaderGL):
     """Tint selected faces and draw their individual edges in the transparency pass."""
 
     def __init__(self, gl: ModuleType) -> None:
+        """Compile the selected-surface shader with screen-space edge distances and depth-aware transparency."""
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         super().__init__()
@@ -113,9 +114,11 @@ class SelectionSurfaceShader(ShaderGL):
         }
 
     def destroy(self) -> None:
+        """Release the selected-surface shader program."""
         self.shader_program.delete()
 
     def render(self, renderer: RendererGL, meshes: Sequence[MeshGL], *, oit: bool) -> None:
+        """Draw selected surfaces with camera uniforms and a small polygon offset in the requested transparency pass."""
         gl, loc = self._gl, self.locations
         with self:
             gl.glUniformMatrix4fv(loc["view"], 1, gl.GL_FALSE, arr_pointer(renderer._view_matrix))
@@ -212,6 +215,7 @@ class SelectionOutline:
     """
 
     def __init__(self, gl: ModuleType) -> None:
+        """Create mask and outline programs and framebuffer handles; defer texture storage until resize."""
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         self.gl = gl
@@ -231,6 +235,7 @@ class SelectionOutline:
         self.size = None
 
     def destroy(self) -> None:
+        """Release the selection framebuffer, texture, vertex array, and both shader programs."""
         gl = self.gl
         gl.glDeleteFramebuffers(1, self.fbo)
         gl.glDeleteTextures(1, self.texture)
@@ -239,6 +244,11 @@ class SelectionOutline:
         self.outline_shader.delete()
 
     def _resize(self, renderer: RendererGL) -> None:
+        """Bind the selection framebuffer and resize its mask/depth texture when screen dimensions change.
+
+        Leave the framebuffer bound for the caller. Raise RuntimeError if its
+        attachment is incomplete rather than rendering with invalid GL state.
+        """
         gl = self.gl
         size = (renderer._screen_width, renderer._screen_height)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.fbo)

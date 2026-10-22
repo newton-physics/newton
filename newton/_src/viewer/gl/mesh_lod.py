@@ -30,6 +30,12 @@ class SdfMeshLOD:
     """
 
     def __init__(self, viewer: ViewerGL, batch: ViewerBase.ShapeInstances) -> None:
+        """Read one SDF descriptor and initialize lazily generated mesh levels for a shape batch.
+
+        Retain the original mesh as level zero and select valid coarsening
+        strides from the subgrid size. The viewer reference is weak to avoid
+        extending its lifetime through the mesh cache.
+        """
         self.viewer = proxy(viewer)
         self.model = viewer.model
         self.layer = viewer.layer

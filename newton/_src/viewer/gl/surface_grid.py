@@ -20,6 +20,7 @@ class SurfaceGridShader(ShaderGL):
     """Blend grid decades using screen derivatives, without subdividing meshes."""
 
     def __init__(self, gl: ModuleType) -> None:
+        """Compile adaptive plane and box grids using local surface coordinates and camera-relative depth."""
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         super().__init__()
@@ -123,6 +124,7 @@ class SurfaceGridShader(ShaderGL):
         }
 
     def render(self, renderer: RendererGL, objects: Sequence[MeshInstancerGL], *, oit: bool) -> None:
+        """Draw grids in the requested transparency pass, temporarily disabling mesh backface culling."""
         gl, loc = self._gl, self.locations
         with self:
             gl.glUniformMatrix4fv(loc["view"], 1, gl.GL_FALSE, arr_pointer(renderer._view_matrix))
@@ -153,4 +155,5 @@ class SurfaceGridShader(ShaderGL):
                     mesh.backface_culling = cull
 
     def destroy(self) -> None:
+        """Release the adaptive surface-grid shader program."""
         self.shader_program.delete()
