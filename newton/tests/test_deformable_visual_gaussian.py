@@ -109,7 +109,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         np.testing.assert_array_equal(model.shape_world.numpy(), [0, 1])
 
     def test_replicate_offsets_gaussian_drivers(self):
-        """Replicate Gaussian bindings into distinct worlds without copying rest appearance."""
+        """Keep independent bindings across copy modes while sharing rest appearance."""
         source = _soft_builder()
         positions = np.array([[0.2, 0.2, 0.2], [0.4, 0.2, 0.2]], dtype=np.float32)
         gaussian = newton.Gaussian(positions=positions, scales=np.full((2, 3), 0.05, dtype=np.float32))
@@ -122,19 +122,21 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
             label="soft_splats",
         )
 
-        builder = newton.ModelBuilder()
-        builder.replicate(source, 2)
-        model = builder.finalize()
-
-        self.assertEqual(model.deformable_visual_gaussian_count, 2)
-        self.assertEqual([visual.world for visual in model.deformable_visual_gaussians], [0, 1])
-        np.testing.assert_array_equal(model.shape_world.numpy(), [0, 1])
-        np.testing.assert_array_equal(model.deformable_visual_gaussians[0].parent.numpy(), [0, 1])
-        np.testing.assert_array_equal(
-            model.deformable_visual_gaussians[1].parent.numpy(), np.array([0, 1]) + source.tet_count
-        )
-        self.assertIs(model.deformable_visual_gaussians[0].gaussian, gaussian)
-        self.assertIs(model.deformable_visual_gaussians[1].gaussian, gaussian)
+        for mode, worlds in (("separate_worlds", [0, 1]), ("shared_world", [0, 0]), ("global", [-1, -1])):
+            with self.subTest(mode=mode):
+                builder = newton.ModelBuilder()
+                if mode == "shared_world":
+                    builder.begin_world()
+                builder.replicate(source, copy_count=2, separate_worlds=mode == "separate_worlds")
+                if mode == "shared_world":
+                    builder.end_world()
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.deformable_visual_gaussian_count, 2)
+                self.assertEqual([visual.world for visual in model.deformable_visual_gaussians], worlds)
+                np.testing.assert_array_equal(model.shape_world.numpy(), worlds)
+                for i, visual in enumerate(model.deformable_visual_gaussians):
+                    np.testing.assert_array_equal(visual.parent.numpy(), np.array([0, 1]) + i * source.tet_count)
+                    self.assertIs(visual.gaussian, gaussian)
 
     def test_rejects_gaussian_visual_from_closed_world(self):
         """Reject late attachment without leaving a global shape or visual behind."""

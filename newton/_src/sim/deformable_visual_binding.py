@@ -47,24 +47,29 @@ def embed_triangles(
     point = vertices[i]
     p = wp.vec3d(point)
     nearest = wp.mesh_query_point_no_sign(mesh, point, 1.0e30)
-    radius = float(wp.inf)
+    # The builder supplies a nonempty mesh of nondegenerate triangles. Keep a
+    # valid candidate even if the float32 query fails or its bounds round inward.
+    best = int(0)
     if nearest.result:
-        closest = wp.mesh_eval_position(mesh, nearest.face, nearest.u, nearest.v)
-        # Include float32 query roundoff before comparing candidates in float64.
-        padding = 1.0e-5 * (1.0 + wp.max(wp.abs(point[0]), wp.max(wp.abs(point[1]), wp.abs(point[2]))))
-        radius = wp.length(point - closest) + padding
+        best = nearest.face
+    a = wp.vec3d(wp.mesh_get_point(mesh, 3 * best))
+    b = wp.vec3d(wp.mesh_get_point(mesh, 3 * best + 1))
+    c = wp.vec3d(wp.mesh_get_point(mesh, 3 * best + 2))
+    best_weights = _closest_triangle_weights(p, a, b, c)
+    distance = wp.length_sq(p - (best_weights[0] * a + best_weights[1] * b + best_weights[2] * c))
+    radius = float(wp.sqrt(distance))
+    # Query roundoff depends on the distance as well as the point's coordinates.
+    scale = wp.max(radius, wp.max(wp.abs(point[0]), wp.max(wp.abs(point[1]), wp.abs(point[2]))))
+    radius += 1.0e-5 * (1.0 + scale)
     query = wp.mesh_query_aabb(mesh, point - wp.vec3(radius), point + wp.vec3(radius))
     face = int(0)
-    best = int(-1)
-    distance = wp.float64(wp.inf)
-    best_weights = wp.vec3d(0.0)
     while wp.mesh_query_aabb_next(query, face):
         a = wp.vec3d(wp.mesh_get_point(mesh, 3 * face))
         b = wp.vec3d(wp.mesh_get_point(mesh, 3 * face + 1))
         c = wp.vec3d(wp.mesh_get_point(mesh, 3 * face + 2))
         candidate = _closest_triangle_weights(p, a, b, c)
         d = wp.length_sq(p - (candidate[0] * a + candidate[1] * b + candidate[2] * c))
-        if d < distance or (d == distance and (best < 0 or face < best)):
+        if d < distance or (d == distance and face < best):
             best, distance, best_weights = face, d, candidate
     parent[i] = triangle_ids[best]
     weights[i] = wp.vec3(best_weights)

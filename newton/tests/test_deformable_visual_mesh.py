@@ -153,6 +153,32 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         state.particle_q = wp.array(moved, dtype=wp.vec3)
         assert_np_equal(_skin(model, rm, state), moved, tol=1.0e-5)
 
+    def test_triangle_embedding_far_from_surface(self):
+        """Bind distant vertices to the closest surface without losing their weights."""
+        builder = newton.ModelBuilder()
+        for x in (2000.0, 1000.1552):
+            start = builder.particle_count
+            for point in ((x, 0, 0), (x + 1, 0, 0), (x, 1, 0)):
+                builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+            builder.add_triangle(start, start + 1, start + 2)
+        vertices = np.array(
+            [
+                [-0.009496063, 0.39774823, 0.12428024],
+                [0.00046608306, 0.8325083, 0.13732179],
+                [0.0004659774, 0.6846791, 0.16780631],
+            ],
+            dtype=np.float32,
+        )
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(0, 2))
+        model = builder.finalize(device="cpu")
+        mesh = model.deformable_visual_meshes[0]
+        np.testing.assert_array_equal(mesh.parent.numpy(), [1, 1, 1])
+        np.testing.assert_allclose(mesh.weights.numpy().sum(axis=1), 1, atol=1.0e-6)
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(model.state(), visuals)
+        expected = np.column_stack((np.full(3, 1000.1552), vertices[:, 1], np.zeros(3)))
+        np.testing.assert_allclose(visuals.get_points(mesh).numpy(), expected, rtol=1.0e-7, atol=1.0e-6)
+
     def test_triangle_embedding_follows_surface(self):
         """An independently discretized vertex projects onto its closest owning
         triangle (normal offset dropped) and follows the surface; the weights
@@ -457,8 +483,13 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
 
     def test_visual_copy_labels_and_parents(self):
         """Preserve visual records in self-composition and prefixed replication."""
-        for replicate in (False, True):
-            with self.subTest(replicate=replicate):
+        for mode, worlds in (
+            ("self", [-1, -1]),
+            ("separate_worlds", [0, 1]),
+            ("shared_world", [0, 0]),
+            ("global", [-1, -1]),
+        ):
+            with self.subTest(mode=mode):
                 builder = newton.ModelBuilder()
                 vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
                 for point in vertices:
@@ -466,9 +497,18 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                 builder.add_deformable_visual_mesh(
                     vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2], label="skin"
                 )
-                if replicate:
+                if mode != "self":
                     scene = newton.ModelBuilder()
-                    scene.replicate(builder, 2, label_prefixes=["left", "right"])
+                    if mode == "shared_world":
+                        scene.begin_world()
+                    scene.replicate(
+                        builder,
+                        copy_count=2,
+                        separate_worlds=mode == "separate_worlds",
+                        label_prefixes=["left", "right"],
+                    )
+                    if mode == "shared_world":
+                        scene.end_world()
                     builder = scene
                     labels = ["left/skin", "right/skin"]
                 else:
@@ -476,6 +516,7 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                     labels = ["skin", "copy/skin"]
                 model = builder.finalize()
                 self.assertEqual([mesh.label for mesh in model.deformable_visual_meshes], labels)
+                self.assertEqual([mesh.world for mesh in model.deformable_visual_meshes], worlds)
                 state = model.state()
                 positions = state.particle_q.numpy().copy()
                 for i in range(len(labels)):
