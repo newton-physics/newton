@@ -29,6 +29,7 @@ from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import (
     pack_transforms,
     pack_warp_values,
+    quat_rotate_rows,
     store_transform_rows,
     transform_inverse,
     transform_inverse_rows,
@@ -3756,6 +3757,36 @@ class ModelBuilder:
 
         def starts(kind: str) -> np.ndarray:
             return start_arrays[kind]
+
+        visual_parent_kinds = {
+            DeformableVisualMesh.Kind.PARTICLE: "particle",
+            DeformableVisualMesh.Kind.TRIANGLE: "triangle",
+            DeformableVisualMesh.Kind.TET: "tetrahedron",
+            DeformableVisualMesh.Kind.BODY: "body",
+        }
+        # Self-composition must not copy records appended by an earlier world.
+        visual_specs = tuple(builder._deformable_visual_meshes)
+        if visual_specs:
+            for copy_index in range(copy_count):
+                for spec in visual_specs:
+                    merged = dict(spec)
+                    prefix = label_prefixes[copy_index]
+                    if prefix and spec["label"]:
+                        merged["label"] = prefix + "/" + spec["label"]
+                    parent_start = int(starts(visual_parent_kinds[spec["kind"]])[copy_index])
+                    parents = np.asarray(spec["parent"], dtype=np.int32)
+                    merged["parent"] = np.where(parents >= 0, parents + parent_start, parents)
+                    if "_body_worlds" in spec:
+                        merged["_body_worlds"] = np.full(len(parents), worlds[copy_index], dtype=np.int32)
+                    if spec["kind"] == DeformableVisualMesh.Kind.BODY and np.any(parents < 0):
+                        # World-fixed offsets need the same placement as static shapes.
+                        local = np.array(spec["local_offsets"], dtype=np.float32, copy=True)
+                        if xforms[copy_index] is not None:
+                            xform = np.asarray(xforms[copy_index], dtype=np.float32)
+                            fixed = parents < 0
+                            local[fixed] = quat_rotate_rows(xform[3:], local[fixed]) + xform[:3]
+                        merged["local_offsets"] = local
+                    self._deformable_visual_meshes.append(merged)
 
         def extend_referenced(attr: str, dst: list | np.ndarray, values: Sequence[Any], kind: str) -> None:
             if len(values) == 0:
@@ -7762,6 +7793,26 @@ class ModelBuilder:
             else:
                 # If no group was assigned, use default -1
                 self.body_world.append(-1)
+
+        for spec in self._deformable_visual_meshes:
+            if spec["kind"] != DeformableVisualMesh.Kind.BODY:
+                continue
+            parents = np.asarray(spec["parent"], dtype=np.int32)
+            if "_body_worlds" not in spec:
+                spec["_body_worlds"] = np.asarray(original_body_group, dtype=np.int32)[parents]
+            local = np.array(spec["local_offsets"], dtype=np.float32, copy=True)
+            remapped = parents.copy()
+            for parent in np.unique(parents):
+                selected = parents == parent
+                survivor = parent
+                if parent in body_merged_parent:
+                    # The merge transform maps the removed body's local frame to its survivor.
+                    xform = np.asarray(body_merged_transform[parent], dtype=np.float32)
+                    local[selected] = quat_rotate_rows(xform[3:], local[selected]) + xform[:3]
+                    survivor = body_merged_parent[parent]
+                remapped[selected] = body_remap[survivor]
+            spec["parent"] = remapped
+            spec["local_offsets"] = local
 
         # sort joints so they appear in the same order as before
         retained_joints.sort(key=lambda x: x["original_id"])

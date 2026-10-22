@@ -184,6 +184,67 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         assert_np_equal(skinned[:2], verts[:2], tol=1.0e-5)
         assert_np_equal(skinned[2:], rotated, tol=1.0e-5)
 
+    def test_body_visual_survives_unrelated_fixed_joint_collapse(self):
+        """Keep a surviving visual driver when an earlier body is removed."""
+        builder = newton.ModelBuilder()
+        root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        fixed = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        driver = builder.add_link(
+            xform=wp.transform((3.0, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+        )
+        other = builder.add_link(
+            xform=wp.transform((10.0, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+        )
+        builder.add_articulation([builder.add_joint_free(root), builder.add_joint_fixed(root, fixed)])
+        builder.add_articulation([builder.add_joint_free(driver)])
+        builder.add_articulation([builder.add_joint_free(other)])
+        vertices = np.array([[3.0, 0.0, 0.0], [3.0, 1.0, 0.0], [3.0, 0.0, 1.0]], dtype=np.float32)
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="body", bodies=[driver])
+
+        builder.collapse_fixed_joints()
+        model = builder.finalize()
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(model.state(), visuals)
+        assert_np_equal(visuals.points.numpy(), vertices, tol=1.0e-6)
+        self.assertEqual(model.body_count, 3)
+
+    def test_body_visual_follows_merged_driver(self):
+        """Preserve visual points when their driver merges into a body or the world."""
+        vertices = np.array([[2.0, 1.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 1.0]], dtype=np.float32)
+        for fixed_to_world in (False, True):
+            with self.subTest(fixed_to_world=fixed_to_world):
+                builder = newton.ModelBuilder()
+                builder.begin_world()
+                root = -1 if fixed_to_world else builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                pose = wp.transform((2.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), math.pi / 2))
+                child = builder.add_link(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
+                joints = [] if fixed_to_world else [builder.add_joint_free(root)]
+                joints.append(builder.add_joint_fixed(root, child, parent_xform=pose))
+                builder.add_articulation(joints)
+                builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="body", bodies=[child])
+                builder.end_world()
+
+                builder.collapse_fixed_joints()
+                model = builder.finalize()
+                visuals = model.deformable_visuals()
+                model.update_deformable_visuals(model.state(), visuals)
+                assert_np_equal(visuals.points.numpy(), vertices, tol=1.0e-6)
+                self.assertEqual(model.deformable_visual_meshes[0].world, 0)
+                self.assertEqual(model.body_count, 0 if fixed_to_world else 1)
+
+                scene = newton.ModelBuilder()
+                scene.add_body(xform=wp.transform((100.0, 0.0, 0.0), wp.quat_identity()))
+                scene.replicate(
+                    builder, 2, xforms=[wp.transform_identity(), wp.transform((0.0, 0.0, 4.0), wp.quat_identity())]
+                )
+                replicated = scene.finalize()
+                output = replicated.deformable_visuals()
+                replicated.update_deformable_visuals(replicated.state(), output)
+                assert_np_equal(
+                    output.points.numpy(), np.vstack((vertices, vertices + np.array([0, 0, 4]))), tol=1.0e-6
+                )
+                self.assertEqual([mesh.world for mesh in replicated.deformable_visual_meshes], [0, 1])
+
     def test_body_binding_keeps_candidate_order_for_ties(self):
         """Nearest origins select the first candidate, retaining rotated offsets."""
         builder = newton.ModelBuilder()
@@ -358,6 +419,112 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                 np.testing.assert_allclose(_skin(model, mesh, state), initial + translation, rtol=0, atol=1.0e-4)
                 self.assertTrue(np.all(mesh.weights.numpy() >= 0))
                 np.testing.assert_allclose(mesh.weights.numpy().sum(axis=1), 1.0, rtol=0, atol=1.0e-7)
+
+    def test_add_builder_rebases_parents_by_kind(self):
+        """add_builder shifts particle, triangle, tet, and body parents into the
+        merged index space so skinning stays correct."""
+        sub = newton.ModelBuilder()
+        _add_cloth(sub)
+        n = sub.particle_count
+        cloth_verts = np.array(sub.particle_q, dtype=np.float32)
+        sub.add_deformable_visual_mesh(
+            cloth_verts, _QUAD, kind="particle", particles=np.arange(n, dtype=np.int32), label="cloth"
+        )
+        sub.add_deformable_visual_mesh(
+            cloth_verts[:4], _QUAD, kind="triangle", tri_range=(0, sub.tri_count), label="tri"
+        )
+        _add_soft(sub)
+        tet_verts = np.array([[0.25, 0.25, 0.25], [0.5, 0.5, 0.5], [0.75, 0.75, 0.75], [0.4, 0.6, 0.5]], np.float32)
+        sub.add_deformable_visual_mesh(tet_verts, _QUAD, kind="tet", tet_range=(0, sub.tet_count), label="tet")
+        b = sub.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
+        sub.add_shape_sphere(b, radius=0.1)
+        body_verts = np.array([[2.0, 0.1, 0.0], [2.1, 0.0, 0.0], [2.0, 0.0, 0.1], [1.9, 0.0, 0.0]], np.float32)
+        sub.add_deformable_visual_mesh(body_verts, _QUAD, kind="body", bodies=[b], label="body")
+
+        main = newton.ModelBuilder()
+        _add_soft(main)  # pre-existing content shifts every index space
+        b0 = main.add_body(xform=wp.transform(wp.vec3(-5.0, 0.0, 0.0), wp.quat_identity()))
+        main.add_shape_sphere(b0, radius=0.1)
+        main.add_builder(sub, label_prefix="copy")
+        model = main.finalize()
+
+        self.assertEqual(model.deformable_visual_mesh_count, 4)
+        self.assertEqual(
+            [rm.label for rm in model.deformable_visual_meshes], ["copy/cloth", "copy/tri", "copy/tet", "copy/body"]
+        )
+        by_label = {rm.label.removeprefix("copy/"): rm for rm in model.deformable_visual_meshes}
+        state = model.state()
+
+        # Particle and tet meshes reproduce their bind pose at rest.
+        assert_np_equal(_skin(model, by_label["cloth"], state), cloth_verts, tol=1.0e-4)
+        assert_np_equal(_skin(model, by_label["tet"], state), tet_verts, tol=1.0e-4)
+        assert_np_equal(_skin(model, by_label["body"], state), body_verts, tol=1.0e-4)
+        # The triangle mesh reproduces its on-surface projection at rest.
+        tri_rest = _skin(model, by_label["tri"], state)
+        assert_np_equal(tri_rest, cloth_verts[:4], tol=1.0e-4)
+
+    def test_visual_copy_labels_and_parents(self):
+        """Keep distinct drivers when copies share a world or use separate worlds."""
+        for mode, worlds in (
+            ("self", [-1, -1]),
+            ("separate_worlds", [0, 1]),
+            ("shared_world", [0, 0]),
+            ("global", [-1, -1]),
+        ):
+            with self.subTest(mode=mode):
+                builder = newton.ModelBuilder()
+                vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+                for point in vertices:
+                    builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+                builder.add_deformable_visual_mesh(
+                    vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2], label="skin"
+                )
+                if mode != "self":
+                    scene = newton.ModelBuilder()
+                    if mode == "shared_world":
+                        scene.begin_world()
+                    scene.replicate(
+                        builder,
+                        copy_count=2,
+                        separate_worlds=mode == "separate_worlds",
+                        label_prefixes=["left", "right"],
+                    )
+                    if mode == "shared_world":
+                        scene.end_world()
+                    builder = scene
+                    labels = ["left/skin", "right/skin"]
+                else:
+                    builder.add_builder(builder, label_prefix="copy")
+                    labels = ["skin", "copy/skin"]
+                model = builder.finalize()
+                self.assertEqual([mesh.label for mesh in model.deformable_visual_meshes], labels)
+                self.assertEqual([mesh.world for mesh in model.deformable_visual_meshes], worlds)
+                state = model.state()
+                positions = state.particle_q.numpy().copy()
+                for i in range(len(labels)):
+                    positions[3 * i : 3 * i + 3, 2] = i
+                state.particle_q.assign(positions)
+                for i, mesh in enumerate(model.deformable_visual_meshes):
+                    assert_np_equal(mesh.parent.numpy(), np.arange(3 * i, 3 * i + 3, dtype=np.int32))
+                    assert_np_equal(_skin(model, mesh, state), positions[3 * i : 3 * i + 3])
+
+    def test_visual_copy_empty_label_prefix(self):
+        """Keep empty prefixes and unlabeled visual meshes unchanged when copying."""
+        source = newton.ModelBuilder()
+        vertices = np.eye(3, dtype=np.float32)
+        for point in vertices:
+            source.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+        for label in ("skin", None):
+            source.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2], label=label)
+        scene = newton.ModelBuilder()
+        for prefix in (None, "", "copy"):
+            scene.add_builder(source, label_prefix=prefix)
+        scene.replicate(source, copy_count=3, separate_worlds=False, label_prefixes=[None, "", "copy"])
+        model = scene.finalize(device="cpu")
+        self.assertEqual(
+            [mesh.label for mesh in model.deformable_visual_meshes],
+            ["skin", "", "skin", "", "copy/skin", ""] * 2,
+        )
 
     def test_normals_recompute_from_current_positions(self):
         """compute_deformable_visual_mesh_normals yields unit normals for the deformed quad."""
@@ -655,6 +822,26 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
                 builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind=kind, **options)
                 with self.assertRaisesRegex(ValueError, "single world"):
                     builder.finalize(device="cpu")
+
+    def test_replicated_programmatic_mesh_keeps_identity_and_world(self):
+        """Preserve programmatic identity while assigning worlds and shifting drivers."""
+        source = newton.ModelBuilder()
+        _add_cloth(source)
+        n = source.particle_count
+        verts = np.array(source.particle_q, dtype=np.float32)
+        source.add_deformable_visual_mesh(
+            verts, _QUAD, kind="particle", particles=np.arange(n, dtype=np.int32), label="skin"
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(source, 2)
+        model = builder.finalize()
+        self.assertEqual(model.deformable_visual_mesh_count, 2)
+        for world, mesh in enumerate(model.deformable_visual_meshes):
+            with self.subTest(world=world):
+                self.assertEqual(mesh.world, world)
+                self.assertEqual(mesh.label, "skin")
+                expected = np.arange(n, dtype=np.int32) + world * n
+                np.testing.assert_array_equal(mesh.parent.numpy(), expected)
 
 
 if __name__ == "__main__":
