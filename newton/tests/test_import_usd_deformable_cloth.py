@@ -115,8 +115,9 @@ class TestUSDDeformableCloth(unittest.TestCase):
         ).Set([(1.5, 0.5, 0.5)])
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "Clamping imported color"):
+        with self.assertLogs("newton", level="WARNING") as caught:
             builder.add_usd(stage)
+        self.assertTrue(any("Clamping imported color" in m for m in caught.output), caught.output)
 
         self.assertEqual(builder.tri_count, 2)
         expected_color = newton.utils.color_linear_to_srgb((1.0, 0.5, 0.5))

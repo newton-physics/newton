@@ -513,8 +513,9 @@ inherits a color space through ``UsdColorSpaceAPI``, Newton uses
 ``Usd.ColorSpaceAPI.ComputeColorSpaceName`` to determine the effective color
 space. Linear/raw color spaces are converted to display/sRGB; display/sRGB
 colors such as ``srgb_rec709_scene`` are kept as authored. Authored color
-components outside [0, 1] are clamped and non-finite colors are ignored, with a
-warning; imported opacity is handled the same way.
+components outside [0, 1] are clamped and non-finite colors are ignored; Newton
+logs each case at ``WARNING`` on the ``newton`` logger (see :ref:`diagnostics`).
+Imported opacity is handled the same way.
 
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on

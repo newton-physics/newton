@@ -11009,8 +11009,9 @@ def Xform "Body" (
                 cube.GetDisplayColorAttr().Set([authored_color])
 
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, message):
+                with self.assertLogs("newton", level="WARNING") as caught:
                     result = builder.add_usd(stage, load_visual_shapes=True)
+                self.assertTrue(any(message in m for m in caught.output), caught.output)
 
                 color = builder.shape_color[result["path_shape_map"]["/World/Colored"]]
                 np.testing.assert_allclose(color, expected_color, atol=1e-6, rtol=1e-6)
@@ -11390,6 +11391,51 @@ def Xform "Body" (
         self.assertIsNone(loaded_mesh.opacity)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_display_primvars_only_fill_what_the_material_lacks(self):
+        """Read displayColor and displayOpacity only where a bound material leaves color or opacity unset."""
+        from pxr import Sdf, Usd, UsdGeom, UsdShade
+
+        def load(material_color, material_opacity, display_color, display_opacity):
+            stage = Usd.Stage.CreateInMemory()
+            mesh = UsdGeom.Mesh.Define(stage, "/VisualMesh")
+            mesh.CreatePointsAttr().Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)])
+            mesh.CreateFaceVertexCountsAttr().Set([3])
+            mesh.CreateFaceVertexIndicesAttr().Set([0, 1, 2])
+            primvars = UsdGeom.PrimvarsAPI(mesh)
+            primvars.CreatePrimvar("displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1).Set(
+                [display_color]
+            )
+            primvars.CreatePrimvar("displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1).Set(
+                [display_opacity]
+            )
+            material = UsdShade.Material.Define(stage, "/Look")
+            shader = UsdShade.Shader.Define(stage, "/Look/PreviewSurface")
+            shader.CreateIdAttr("UsdPreviewSurface")
+            if material_color is not None:
+                shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(material_color)
+            if material_opacity is not None:
+                shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(material_opacity)
+            material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+            UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+            # The overridden primvar holds an invalid value, so reading it would log a warning.
+            with self.assertNoLogs("newton", level="WARNING"):
+                return usd.get_mesh(mesh.GetPrim())
+
+        nan = float("nan")
+        with self.subTest(name="material_sets_both"):
+            loaded_mesh = load((0.8, 0.2, 0.1), 0.37, (1.5, 0.5, 0.5), nan)
+            np.testing.assert_allclose(loaded_mesh.color, color_linear_to_srgb((0.8, 0.2, 0.1)), atol=1e-6, rtol=1e-6)
+            self.assertAlmostEqual(loaded_mesh.opacity, 0.37, places=6)
+        with self.subTest(name="material_sets_color"):
+            loaded_mesh = load((0.8, 0.2, 0.1), None, (1.5, 0.5, 0.5), 0.5)
+            np.testing.assert_allclose(loaded_mesh.color, color_linear_to_srgb((0.8, 0.2, 0.1)), atol=1e-6, rtol=1e-6)
+            self.assertAlmostEqual(loaded_mesh.opacity, 0.5, places=6)
+        with self.subTest(name="material_sets_opacity"):
+            loaded_mesh = load(None, 0.37, (0.2, 0.4, 0.6), nan)
+            np.testing.assert_allclose(loaded_mesh.color, color_linear_to_srgb((0.2, 0.4, 0.6)), atol=1e-6, rtol=1e-6)
+            self.assertAlmostEqual(loaded_mesh.opacity, 0.37, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_get_mesh_invalid_display_color_is_clamped_or_ignored(self):
         """Clamp an out-of-range displayColor in the mesh from get_mesh and drop a non-finite one."""
         from pxr import Sdf, Usd, UsdGeom
@@ -11409,8 +11455,9 @@ def Xform "Body" (
                     "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
                 ).Set([authored_color])
 
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, message):
+                with self.assertLogs("newton", level="WARNING") as caught:
                     loaded_mesh = usd.get_mesh(mesh.GetPrim())
+                self.assertTrue(any(message in m for m in caught.output), caught.output)
 
                 if expected_color is None:
                     self.assertIsNone(loaded_mesh.color)
@@ -11419,7 +11466,7 @@ def Xform "Body" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_varying_display_opacity_uses_first_value_and_warns(self):
-        """Warn and use the first varying displayOpacity value."""
+        """Log a warning and use the first varying displayOpacity value."""
         from pxr import Sdf, Usd, UsdGeom
 
         stage = Usd.Stage.CreateInMemory()
@@ -11431,8 +11478,9 @@ def Xform "Body" (
             "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.vertex
         ).Set([0.2, 0.6, 0.8])
 
-        with self.assertWarnsRegex(UserWarning, "using the first value"):
+        with self.assertLogs("newton", level="WARNING") as caught:
             loaded_mesh = usd.get_mesh(mesh.GetPrim())
+        self.assertTrue(any("using the first value" in m for m in caught.output), caught.output)
 
         self.assertAlmostEqual(loaded_mesh.opacity, 0.2, places=6)
 
@@ -11498,8 +11546,9 @@ def Xform "Body" (
                 ).Set([authored_color])
 
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, message):
+                with self.assertLogs("newton", level="WARNING") as caught:
                     builder.add_usd(stage)
+                self.assertTrue(any(message in m for m in caught.output), caught.output)
 
                 self.assertEqual(builder.tri_count, 4)
                 np.testing.assert_allclose(builder.tri_color, np.tile(expected_color, (4, 1)), atol=1e-6, rtol=1e-6)
