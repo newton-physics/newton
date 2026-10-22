@@ -593,7 +593,7 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
             kind="tet",
             tet_range=(0, builder.tet_count),
             parent=[0],
-            weights=np.full((1, 4), 0.25, dtype=np.float32),
+            weights=np.full((1, 4), 0.25002, dtype=np.float32),
         )
         model = builder.finalize()
         state = model.state()

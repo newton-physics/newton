@@ -438,6 +438,29 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         assert_np_equal(rm.parent.numpy(), np.zeros(4, dtype=np.int32))
         assert_np_equal(rm.weights.numpy(), np.full((4, 4), 0.25, dtype=np.float32), tol=0.0)
 
+    def test_precomputed_weights_preserve_translation(self):
+        """Normalize accepted rounding errors so bindings preserve translations."""
+        builder = newton.ModelBuilder()
+        _add_soft(builder)
+        for kind, arity, owning_range in (("triangle", 3, {"tri_range": (0, 1)}), ("tet", 4, {"tet_range": (0, 1)})):
+            weights = np.full((3, arity), 1.0 / arity, dtype=np.float32)
+            weights[0, 0] += 9.0e-5
+            weights[1] = 0.0
+            weights[1, :2] = [-1.0e-5, 1.0 + 1.0e-5]
+            builder.add_deformable_visual_mesh(
+                np.zeros((3, 3)), [0, 1, 2], kind=kind, parent=[0, 0, 0], weights=weights, **owning_range
+            )
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        before = [_skin(model, mesh, state) for mesh in model.deformable_visual_meshes]
+        translation = np.array([1000.0, -500.0, 250.0], dtype=np.float32)
+        state.particle_q.assign(state.particle_q.numpy() + translation)
+        for mesh, initial in zip(model.deformable_visual_meshes, before, strict=True):
+            with self.subTest(kind=mesh.kind):
+                np.testing.assert_allclose(_skin(model, mesh, state), initial + translation, rtol=0, atol=1.0e-4)
+                self.assertTrue(np.all(mesh.weights.numpy() >= 0))
+                np.testing.assert_allclose(mesh.weights.numpy().sum(axis=1), 1.0, rtol=0, atol=1.0e-7)
+
     def test_add_builder_rebases_parents_by_kind(self):
         """add_builder shifts particle, triangle, tet, and body parents into the
         merged index space so skinning stays correct."""

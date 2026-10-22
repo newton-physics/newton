@@ -12861,6 +12861,9 @@ class ModelBuilder:
             raise ValueError(f"{operation}: weights must be finite and non-negative")
         if not np.allclose(weights.sum(axis=1), 1.0, rtol=0.0, atol=1.0e-4):
             raise ValueError(f"{operation}: barycentric weights must sum to one")
+        # Accepted roundoff must not scale translations or extrapolate points.
+        np.maximum(weights, 0.0, out=weights)
+        weights /= weights.sum(axis=1, keepdims=True)
         return parent, weights
 
     def _embed_visual_vertices_in_tets(
