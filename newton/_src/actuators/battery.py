@@ -149,7 +149,7 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
     over the actuators assigned to it, and is written into
     ``actuator_supply_voltage`` for those actuators. Drives that read the
     supply voltage, e.g. :class:`~newton.actuators.DriveBAM` with
-    ``supply_from_control=True``, use it on the next actuator step.
+    ``supply_from_battery=True``, use it on the next actuator step.
     Actuators without a battery are not written. Each battery sums its
     actuators in a fixed order, so the voltage is deterministic.
 

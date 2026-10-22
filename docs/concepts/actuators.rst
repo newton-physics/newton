@@ -654,7 +654,7 @@ effort.
   batteries or of the batteries in the worlds of a mask.  Batteries added
   outside any world are reset only without a mask.
 
-:class:`DriveBAM` with ``supply_from_control=True`` reads its supply voltage
+:class:`DriveBAM` with ``supply_from_battery=True`` reads its supply voltage
 from ``control.actuator_supply_voltage``.  The drive lists this array in its
 :attr:`DriveBase.custom_inputs` with the per-actuator frequency
 ``"actuator:actuator"``.
@@ -681,7 +681,7 @@ Below, the hip and knee share one battery and the ankle draws from another:
            resistance=2.0,
            vin=12.0,
            max_pwm=1.0,
-           supply_from_control=True,
+           supply_from_battery=True,
        )
        actuators.append(actuator)
    builder.add_battery(actuators[:2], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)

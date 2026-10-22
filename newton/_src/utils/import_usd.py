@@ -2916,8 +2916,8 @@ def parse_usd(
                     f"Actuator prim {prim.GetPath()}: 'newton:battery' references '{battery_path}', "
                     "which is not a NewtonBattery prim"
                 )
-            if "supply_from_control" in getattr(parsed.drive_class, "SHARED_PARAMS", ()):
-                drive_kwargs["supply_from_control"] = True
+            if "supply_from_battery" in getattr(parsed.drive_class, "SHARED_PARAMS", ()):
+                drive_kwargs["supply_from_battery"] = True
         actuator = builder.add_actuator(
             parsed.drive_class,
             index=dof_index,

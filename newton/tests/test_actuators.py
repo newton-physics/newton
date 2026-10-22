@@ -2741,7 +2741,7 @@ class TestDriveBAM(unittest.TestCase):
             "resistance": resistance,
             "vin": 5.0,
             "max_pwm": max_pwm,
-            "supply_from_control": True,
+            "supply_from_battery": True,
         }
         servos = [
             template.add_actuator(
@@ -2830,7 +2830,7 @@ class TestDriveBAM(unittest.TestCase):
                 resistance=resistance,
                 vin=vin,
                 max_pwm=max_pwm,
-                supply_from_control=True,
+                supply_from_battery=True,
             )
             for dof in (0, 0, 1)
         ]
@@ -2935,7 +2935,7 @@ def Xform "World"
         np.testing.assert_allclose(model.actuator.battery_sag_gain.numpy(), [0.5, 0.5])
         np.testing.assert_allclose(model.actuator.battery_min_voltage.numpy(), [0.0, 0.0])
         np.testing.assert_allclose(model.control().actuator_supply_voltage.numpy(), np.where(on_battery, 6.0, 0.0))
-        by_supply = {actuator.drive.supply_from_control: actuator for actuator in model.actuators}
+        by_supply = {actuator.drive.supply_from_battery: actuator for actuator in model.actuators}
         np.testing.assert_array_equal(
             np.unique(by_supply[True].indices.numpy() % n), sorted([dofs["knee"], dofs["ankle"]])
         )
@@ -3472,7 +3472,7 @@ def Xform "World"
         builder.replicate(template, 2)
         model = builder.finalize()
 
-        self.assertEqual(DriveBAM.SHARED_PARAMS, {"supply_from_control"})
+        self.assertEqual(DriveBAM.SHARED_PARAMS, {"supply_from_battery"})
         self.assertEqual(len(model.actuators), 2)
 
         knee, backlash, ankle, toe = (
