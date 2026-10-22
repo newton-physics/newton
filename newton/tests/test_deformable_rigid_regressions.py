@@ -5,6 +5,7 @@
 
 import sys
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -665,7 +666,11 @@ def test_identical_meshes_share_contact_precomputation(test, device):
     )
     model = builder.finalize(device=device)
     feature_data = mock.Mock(wraps=soft_contacts_mesh._mesh_feature_data)
-    with mock.patch.object(soft_contacts_mesh, "_mesh_feature_data", feature_data):
+    with (
+        mock.patch.object(soft_contacts_mesh, "_mesh_feature_data", feature_data),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
         pipeline = newton.CollisionPipeline(model, enable_rigid_soft_full_surface_contact=True)
     test.assertEqual(feature_data.call_count, 1)
     # Identical instances share the actual adjacency spans, not just feature construction.

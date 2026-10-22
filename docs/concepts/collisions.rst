@@ -1143,6 +1143,19 @@ call outside graph capture raises :class:`RuntimeError`; graph replays alone do 
 Mesh-plane and mesh-convex contacts read the current scale directly and do not trigger
 this diagnostic.
 
+Changing :attr:`~newton.Model.shape_scale` on mesh, convex-mesh, or heightfield shapes also
+requires updating :attr:`~newton.Model.shape_collision_radius`,
+:attr:`~newton.Model.shape_collision_aabb_lower`, and
+:attr:`~newton.Model.shape_collision_aabb_upper` to match the new scale. The local collision
+bounds already include scale, and collision does not rescale them again; stale bounds can
+cause broadphase culling to omit candidate pairs. ``dynamic_shape_scale=True`` changes only
+unbaked texture-SDF queries and does not update these bounds or rebuild baked SDFs or
+heightfield collision data. To rebuild, recreate the affected shapes on a
+:class:`~newton.ModelBuilder` with the new scale, then call
+:meth:`~newton.ModelBuilder.finalize` and construct a new :class:`~newton.CollisionPipeline`.
+For explicitly prebuilt mesh SDFs, first rerun :meth:`~newton.Mesh.build_sdf` with
+the new scale before adding the mesh to the builder.
+
 **Edge simplification.** ``mesh.build_sdf(...)`` also runs a dihedral-angle pre-filter over
 the mesh's manifold edges and caches the surviving subset on the mesh; the SDF-mesh contact
 pipeline picks up that cached set in preference to the unfiltered :attr:`~Mesh.edges`,
@@ -2792,7 +2805,21 @@ specializations. Rebuild the pipeline after modifying or resizing the pair array
 **Narrow phase**
 
 :class:`~geometry.NarrowPhase` accepts the candidate pairs from any broad phase and
-generates contacts:
+generates contacts. Low-level mesh-SDF collision requires packed edge indices and
+per-shape edge ranges; omitting them disables mesh edge contacts. Centers and
+half-vectors are optional acceleration arrays in unscaled mesh coordinates.
+Caller-owned arrays can use the full public :attr:`~newton.Mesh.edges` set and
+zero endpoint-ownership codes, but reproducing the pipeline's simplified edges
+and ownership requires internal data without a stable public accessor. Use
+:class:`~newton.CollisionPipeline` for model collision detection.
+
+.. deprecated:: 1.8
+
+   The ``Model.mesh_edge_indices``, ``Model.mesh_edge_centers``,
+   ``Model.mesh_edge_halves``, and ``Model.shape_edge_range`` aliases expose
+   internal collision acceleration data. They remain readable and writable with
+   :class:`~newton.exceptions.NewtonDeprecationWarning` through Newton 1.8 and
+   will be removed in 1.9. Use :class:`~newton.CollisionPipeline` instead.
 
 .. code-block:: python
 
@@ -2809,7 +2836,7 @@ generates contacts:
         shape_types=...,
         shape_data=...,
         shape_transform=...,
-        # ... remaining geometry arrays from Model
+        # ... remaining geometry arrays and caller-owned mesh edge data
         contact_pair=out_pairs,
         contact_position=out_positions,
         contact_normal=out_normals,
