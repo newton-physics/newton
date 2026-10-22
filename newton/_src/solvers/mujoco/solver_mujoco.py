@@ -9623,7 +9623,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Without damping the weld does not brake the body against the mocap target's zero velocity.
         """
         timeconst = (KINEMATIC_WELD_TIMECONST_STEPS_RK4 if rk4 else KINEMATIC_WELD_TIMECONST_STEPS) * dt
-        return (-KINEMATIC_WELD_SOLIMP[1] / (timeconst * timeconst), 0.0)
+        return (-1.0 / (timeconst * timeconst), 0.0)
 
     def _update_kinematic_welds(self, dt: float) -> float:
         """Scale the kinematic welds to ``dt`` and return how far their targets lead the prescribed pose.

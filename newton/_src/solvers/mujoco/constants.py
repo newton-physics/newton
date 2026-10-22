@@ -18,10 +18,10 @@ HINGE_CONNECT_HALF_SPAN = 0.05
 """Distance [m] along the hinge axis from a revolute loop joint's anchor to each of its two CONNECT points."""
 
 KINEMATIC_WELD_TIMECONST_STEPS = 2.0
-"""Kinematic weld stiffness as a time constant in timesteps; the stiffest MuJoCo's REFSAFE allows."""
+"""Kinematic weld stiffness as a time constant in timesteps."""
 
 KINEMATIC_WELD_TIMECONST_STEPS_RK4 = 8.0
-"""Kinematic weld stiffness time constant in timesteps under RK4, whose intermediate stages destabilize stiffer welds."""
+"""Kinematic weld stiffness time constant in timesteps under RK4, whose intermediate stages track a softer weld more closely."""
 
 KINEMATIC_WELD_SOLIMP = (0.99, 0.99, 0.001, 0.5, 2.0)
 """Constant kinematic weld impedance, independent of the pose error."""

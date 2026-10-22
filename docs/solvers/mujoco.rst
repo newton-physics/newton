@@ -1167,8 +1167,8 @@ equality that is active exactly while the root is kinematic:
   brake the body against the mocap's zero velocity. Under RK4, which
   averages forces over the step, the target leads by half a step.
 - The weld stiffness corresponds to a time constant of two timesteps
-  (eight under RK4, whose intermediate stages destabilize stiffer welds),
-  set from the step size independently of MuJoCo's REFSAFE flag.
+  (eight under RK4, whose intermediate stages track a softer weld more
+  closely), set from the step size independently of MuJoCo's REFSAFE flag.
 
 Kinematic roots keep their real mass, so the weld is not an
 infinite-mass constraint:
