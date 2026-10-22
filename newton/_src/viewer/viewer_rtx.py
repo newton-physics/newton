@@ -45,7 +45,7 @@ from .camera import Camera
 from .gl.frame_cache import FrameCache
 from .gl.icon import set_window_icon
 from .image_logger import ImageLogger, _validate
-from .kernels import detect_shape_color_changes
+from .kernels import detect_shape_color_changes, flag_changed_floats
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
@@ -718,8 +718,7 @@ void main() {
         rp.CreateAttribute("omni:rtx:reflections:denoiser:enabled", Sdf.ValueTypeNames.Bool).Set(False)
         rp.CreateAttribute("omni:rtx:rt:ambientLight:color", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(0.1, 0.1, 0.1))
         rp.CreateAttribute("omni:rtx:rt:demoire", Sdf.ValueTypeNames.Bool).Set(False)
-        if self._uses_fractional_opacity:
-            rp.CreateAttribute("omni:rtx:rt:fractionalOpacity", Sdf.ValueTypeNames.Bool).Set(True)
+        rp.CreateAttribute("omni:rtx:rt:fractionalOpacity", Sdf.ValueTypeNames.Bool).Set(self._uses_fractional_opacity)
         rp.CreateAttribute("omni:rtx:rt:lightcache:spatialCache:dontResolveConflicts", Sdf.ValueTypeNames.Bool).Set(
             True
         )
@@ -869,6 +868,48 @@ void main() {
                 reader.CreateOutput("result", Sdf.ValueTypeNames.Float3)
                 diffuse.ConnectToSource(reader.ConnectableAPI(), "result")
 
+    def _prepare_shape_opacity_materials(self) -> None:
+        """Read per-instance RTX opacity and IOR without changing displayOpacity."""
+        from pxr import Sdf, UsdGeom, UsdShade
+
+        prepared = set()
+        for shapes in self._shape_instances.values():
+            if shapes.geo_type == newton.GeoType.PLANE:
+                continue
+            name = self._qualify(shapes.name)
+            paths = self._instance_prim_paths.get(name, ())
+            if not paths:
+                continue
+            # Keep the model-to-prim mapping aligned with the flat RTX geometry,
+            # even if viewer batches are later repacked into opacity groups.
+            self._shape_opacity_batches[name] = shapes.model_shapes.copy()
+            opacities = self._instance_specs[name][2][2]
+            for path, opacity in zip(paths, opacities, strict=True):
+                prim = self.stage.GetPrimAtPath(path)
+                material, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+                surface = UsdShade.Shader(self.stage.GetPrimAtPath(f"{material.GetPath()}/PreviewSurface"))
+                if not surface:
+                    continue
+                for input_name, primvar_name, value in (
+                    ("opacity", "newton:rtxOpacity", self._preview_surface_opacity_value(opacity)),
+                    ("ior", "newton:rtxIor", self._preview_surface_ior_value(opacity) or 1.5),
+                ):
+                    UsdGeom.PrimvarsAPI(prim).CreatePrimvar(
+                        primvar_name, Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant
+                    ).Set([value])
+                    if material.GetPath() in prepared:
+                        continue
+                    shader_input = surface.CreateInput(input_name, Sdf.ValueTypeNames.Float)
+                    if shader_input.HasConnectedSource():
+                        continue
+                    reader = UsdShade.Shader.Define(self.stage, f"{material.GetPath()}/Shape_{input_name}")
+                    reader.CreateIdAttr("UsdPrimvarReader_float")
+                    reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set(primvar_name)
+                    reader.CreateInput("fallback", Sdf.ValueTypeNames.Float).Set(value)
+                    reader.CreateOutput("result", Sdf.ValueTypeNames.Float)
+                    shader_input.ConnectToSource(reader.ConnectableAPI(), "result")
+                prepared.add(material.GetPath())
+
     def _init_ovrtx(self):
         """Serialise the USD stage, create the OVRTX renderer and load the scene."""
 
@@ -877,6 +918,7 @@ void main() {
         self._use_layered_transform_updates = any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
         if self._borrowed_stage is None and not self._use_layered_transform_updates:
             self._prepare_shape_color_materials()
+            self._prepare_shape_opacity_materials()
         ovrtx_usd_path = None
         if self._borrowed_stage is None:
             # HACK? Export to a unique temp path so OVRTX never uses a cached version
@@ -1318,6 +1360,9 @@ void main() {
     def _populate_shapes(self):
         self._model_shape_colors_device = None
         self._shape_colors_changed_device = None
+        self._model_shape_opacities_device = None
+        self._shape_opacities_changed_device = None
+        # The flat RTX geometry and its model indices survive viewer batch repopulation.
         # A borrowed stage already contains the model's geometry.
         if self._borrowed_stage is None:
             super()._populate_shapes()
@@ -1753,6 +1798,7 @@ void main() {
         self._update_ovrtx_camera()
         self._update_ovrtx_transforms()
         self._update_ovrtx_shape_colors()
+        self._update_ovrtx_shape_opacities()
         self._update_ovrtx_instance_visibility()
         self._update_ovrtx_point_batches()
         self._update_ovrtx_mesh_points()
@@ -2347,6 +2393,58 @@ void main() {
             self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.model.shape_color.device)
         wp.copy(self._model_shape_colors_device, self.model.shape_color)
 
+    def _update_ovrtx_shape_opacities(self) -> None:
+        """Publish changed single-model opacities after the previous render finishes."""
+        if (
+            self._use_layered_transform_updates
+            or self.model is None
+            or self.model.shape_opacity is None
+            or not self._shape_opacity_batches
+        ):
+            return
+        if self._model_shape_opacities_device is not None:
+            self._shape_opacities_changed_device.zero_()
+            wp.launch(
+                kernel=flag_changed_floats,
+                dim=len(self.model.shape_opacity),
+                inputs=[self.model.shape_opacity, self._model_shape_opacities_device],
+                outputs=[self._shape_opacities_changed_device],
+                device=self.model.device,
+                record_tape=False,
+            )
+            if not self._shape_opacities_changed_device.numpy()[0]:
+                return
+        opacities = np.clip(self.model.shape_opacity.numpy(), 0.0, 1.0)
+        had_fractional_opacity = self._uses_fractional_opacity
+        for name, shape_indices in self._shape_opacity_batches.items():
+            batch_opacities = opacities[shape_indices]
+            previous = self._instance_specs.get(name)
+            paths = self._instance_prim_paths.get(name)
+            if previous is None or paths is None:
+                continue
+            if np.array_equal(batch_opacities, previous[2][2]):
+                continue
+            for attribute, values in (
+                ("displayOpacity", batch_opacities),
+                ("newton:rtxOpacity", [self._preview_surface_opacity_value(value) for value in batch_opacities]),
+                ("newton:rtxIor", [self._preview_surface_ior_value(value) or 1.5 for value in batch_opacities]),
+            ):
+                tensors = [np.array([value], dtype=np.float32) for value in values]
+                self._write_runtime_attribute(paths, f"primvars:{attribute}", tensors, is_array=True)
+            self._instance_specs[name] = (previous[0], previous[1], (*previous[2][:2], batch_opacities.copy()))
+        if (
+            self._uses_fractional_opacity
+            and not had_fractional_opacity
+            and "omni:rtx:rt:fractionalOpacity" not in self._rtx_render_settings
+        ):
+            self._write_runtime_attribute(
+                [self._render_product_path], "omni:rtx:rt:fractionalOpacity", np.array([True], dtype=np.bool_)
+            )
+        if self._model_shape_opacities_device is None:
+            self._model_shape_opacities_device = wp.empty_like(self.model.shape_opacity)
+            self._shape_opacities_changed_device = wp.zeros(1, dtype=wp.int32, device=self.model.device)
+        wp.copy(self._model_shape_opacities_device, self.model.shape_opacity)
+
     def _update_ovrtx_instance_visibility(self):
         if self._rtx is None:
             return
@@ -2921,6 +3019,10 @@ void main() {
         self._model_shape_colors_device = None
         self._shape_colors_changed_device = None
         self._shape_color_batches = {}
+        self._model_shape_opacities_device = None
+        self._shape_opacities_changed_device = None
+        self._shape_opacity_batches = {}
+        self._uses_fractional_opacity = False
 
         self._last_state = None
         self._last_control = None

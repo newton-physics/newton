@@ -315,10 +315,10 @@ If you run the examples from a source checkout with uv, use
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>python -m newton.examples controller_joint_impedance_heterogeneous</code>
+      <a href="#joint-impedance-heterogeneous">Run joint impedance heterogeneous</a>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples controller_operational_space_hybrid_force_motion</code>
+      <a href="#operational-space-hybrid-force-and-motion">Run operational space hybrid force/motion</a>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples controller_differential_ik</code>
@@ -864,7 +864,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples franka_cable_ik_pick_place</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples mujoco_franka_vbd_cable_admm_solver</code>
+      <a href="#mujoco-franka-vbd-cable-admm">Run MuJoCo Franka VBD cable ADMM</a>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples vbd_dat_rigid_soft</code>
@@ -1044,6 +1044,39 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
 </table>
+
+#### Joint impedance heterogeneous
+
+<details>
+<summary>Show command</summary>
+
+```sh
+python -m newton.examples controller_joint_impedance_heterogeneous
+```
+
+</details>
+
+#### Operational space hybrid force and motion
+
+<details>
+<summary>Show command</summary>
+
+```sh
+python -m newton.examples controller_operational_space_hybrid_force_motion
+```
+
+</details>
+
+#### MuJoCo Franka VBD cable ADMM
+
+<details>
+<summary>Show command</summary>
+
+```sh
+python -m newton.examples mujoco_franka_vbd_cable_admm_solver
+```
+
+</details>
 
 ### Example Options
 
