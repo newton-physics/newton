@@ -131,6 +131,7 @@ def _launch_contact_allocator(
             float("inf") if gate is None else gate,
             _friction_threshold(enable_friction, friction_gap),
             _disabled_patches(device),
+            0,
         ],
         outputs=[
             outputs["world"],
@@ -203,6 +204,7 @@ def _launch_articulation_pair_contact_allocator(
             float("inf") if gate is None else gate,
             _friction_threshold(enable_friction, friction_gap),
             _disabled_patches(device),
+            0,
         ],
         outputs=[
             wp.full((1,), -9, dtype=wp.int32, device=device),

@@ -23,6 +23,13 @@ import newton
 if TYPE_CHECKING:
     import viser
 
+from ..core.host_transform import (
+    transform_assign_position_wxyz,
+    transform_inverse,
+    transform_point,
+    transform_to_position_wxyz,
+    transform_vector,
+)
 from ..core.types import Axis, override
 from ..exceptions import NewtonWarning
 from .camera import Camera
@@ -34,13 +41,6 @@ from .image_logger import (
     _validate,
 )
 from .picking import Picking
-from .transform import (
-    transform_assign_position_wxyz,
-    transform_inverse,
-    transform_point,
-    transform_to_position_wxyz,
-    transform_vector,
-)
 from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
@@ -644,13 +644,8 @@ class ViewerViser(ViewerBase):
         self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
         if self.picking is not None:
             self.picking.visible_worlds_mask = self._visible_worlds_mask
-
-        if model is not None:
             try:
-                from ..geometry import raycast as _raycast_module  # noqa: PLC0415
-
-                wp.load_module(module=_raycast_module, device=model.device)
-                wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+                self.picking._load_kernels()
             except Exception:
                 pass
 
