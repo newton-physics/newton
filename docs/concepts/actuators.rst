@@ -511,7 +511,7 @@ response update can be captured in one CUDA graph.
 
 :meth:`~newton.actuators.Actuator.set_effort_mode_explicit` switches back to
 explicit mode. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
-solve's iteration count and convergence tolerances.
+solve's iteration count, line-search length and convergence tolerances.
 
 The following built-in drives support the implicit mode (neural drives require
 the ONNX backend):

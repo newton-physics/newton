@@ -445,8 +445,8 @@ def _build_rigid_features(
     edge_rows: list[np.ndarray] = []
     edge_outwards: list[np.ndarray] = []
     cache: dict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
-    edge_ranges = model.shape_edge_range.numpy()
-    packed_edges = model.mesh_edge_indices.numpy()
+    edge_ranges = model._shape_edge_range.numpy()
+    packed_edges = model._mesh_edge_indices.numpy()
 
     for shape, mesh in meshes.items():
         start, count = (int(value) for value in edge_ranges[shape])

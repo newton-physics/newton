@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from .....geometry import ShapeFlags
+from .....sim import JointTargetMode
 from .....sim.model import Model
 from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
@@ -30,7 +31,7 @@ from .joints import (
     JointActuationType,
     JointDoFType,
     JointsModel,
-    _validate_implicit_pd_gains,
+    _has_missing_implicit_pd_gains,
     has_dynamic_cts_wp,
     has_effort_cts_wp,
     has_friction_cts_wp,
@@ -1554,13 +1555,18 @@ def _warn_ignored_free_joint_friction(
     dof_type_np = joint_dof_type.numpy()
     friction_np = model.joint_friction.numpy()
     qd_start_np = model.joint_qd_start.numpy()
-    for jid in range(model.joint_count):
-        if dof_type_np[jid] != JointDoFType.FREE:
-            continue
-        dof_start = int(qd_start_np[jid])
-        dof_end = int(qd_start_np[jid + 1])
-        if np.any(friction_np[dof_start:dof_end] > 0.0):
-            msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+    positive_friction = friction_np > 0.0
+    free_joint_ids = np.flatnonzero(dof_type_np == JointDoFType.FREE)
+    positive_friction_prefix = np.empty(positive_friction.size + 1, dtype=np.intp)
+    positive_friction_prefix[0] = 0
+    np.cumsum(positive_friction, dtype=np.intp, out=positive_friction_prefix[1:])
+    # A prefix increase across a joint's range means at least one DoF has friction.
+    free_joint_has_friction = (
+        positive_friction_prefix[qd_start_np[free_joint_ids + 1]]
+        > positive_friction_prefix[qd_start_np[free_joint_ids]]
+    )
+    for jid in free_joint_ids[free_joint_has_friction].tolist():
+        msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
 
 
 def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
@@ -1568,9 +1574,15 @@ def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
     target_mode = model.joint_target_mode.numpy()
     k_p = model.joint_target_ke.numpy()
     k_d = model.joint_target_kd.numpy()
-    for dof in range(model.joint_dof_count):
+    act_types = np.full(target_mode.shape, -1, dtype=np.int32)
+    for mode in JointTargetMode:
+        act_types[target_mode == mode] = JointActuationType.from_newton(mode)
+    invalid = (act_types < 0) | _has_missing_implicit_pd_gains(act_types, k_p, k_d)
+    if np.any(invalid):
+        dof = int(np.flatnonzero(invalid)[0])
+        # `from_newton` raises for unsupported target modes.
         act_type = JointActuationType.from_newton(target_mode[dof])
-        _validate_implicit_pd_gains(act_type, k_p[dof], k_d[dof], label=f"DoF={dof}")
+        raise ValueError(f"Invalid implicit-PD actuation: {act_type.name} requires a non-zero gain (DoF={dof}).")
 
 
 def convert_joints(

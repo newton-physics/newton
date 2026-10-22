@@ -4650,6 +4650,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if enable_sleeping:
             enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
         self.use_mujoco_cpu = use_mujoco_cpu
+        # Compiled midphase boxes and inertial frames; every BVH refit starts from these.
+        self._canonical_bvh_aabb: np.ndarray | None = None
+        self._canonical_body_ipos: np.ndarray | None = None
+        self._canonical_body_iquat: np.ndarray | None = None
         if use_mujoco_contacts or use_mujoco_cpu:
             mujoco_attrs_for_warn = getattr(model, "mujoco", None)
             solref_mode_attr = (
@@ -5588,6 +5592,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=model.device,
         )
 
+    def _refit_body_bvh_to_inertial_frame(self) -> None:
+        """Re-express the compiled midphase boxes in the current inertial frames, which ``mj_collideTree`` assumes."""
+        if self._canonical_bvh_aabb is None:
+            return
+        mujoco, m = self._mujoco, self.mj_model
+        inv_iquat, dquat, rot, offset = np.empty(4), np.empty(4), np.empty(9), np.empty(3)
+        for body in np.flatnonzero(m.body_bvhnum):
+            mujoco.mju_negQuat(inv_iquat, m.body_iquat[body])
+            mujoco.mju_mulQuat(dquat, inv_iquat, self._canonical_body_iquat[body])
+            mujoco.mju_quat2Mat(rot, dquat)
+            mujoco.mju_rotVecQuat(offset, self._canonical_body_ipos[body] - m.body_ipos[body], inv_iquat)
+            r = rot.reshape(3, 3)
+            adr, num = m.body_bvhadr[body], m.body_bvhnum[body]
+            aabb = self._canonical_bvh_aabb[adr : adr + num]
+            # Rotated boxes grow into their enclosing AABB, so always start from the compiled ones.
+            m.bvh_aabb[adr : adr + num] = np.hstack((aabb[:, :3] @ r.T + offset, aabb[:, 3:] @ np.abs(r).T))
+
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if self.use_mujoco_cpu:
@@ -5677,6 +5698,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # MJWarp re-diagonalizes the inertia, so its moments only hold in its own frame.
                 self.mj_model.body_inertia[:] = self.mjw_model.body_inertia.numpy()[0]
                 self.mj_model.body_iquat[:] = self.mjw_model.body_iquat.numpy()[0]
+                self._refit_body_bvh_to_inertial_frame()
             if update_inertia:
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
             if flags & ModelFlags.BODY_PROPERTIES and self._kinematic_target_eq is not None:
@@ -8710,6 +8732,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             kinematic_target_eq_ids.append(eq.id)
 
         self.mj_model = spec.compile()
+        self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
+        self._canonical_body_ipos = self.mj_model.body_ipos.copy()
+        self._canonical_body_iquat = self.mj_model.body_iquat.copy()
         self.mj_data = mujoco.MjData(self.mj_model)
 
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.

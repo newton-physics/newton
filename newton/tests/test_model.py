@@ -22,8 +22,10 @@ import newton
 import newton.utils
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
+from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
+from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
@@ -38,6 +40,65 @@ def _eq_set_value(builder, name, idx, value):
 
 
 class TestModelAttributeSpecs(unittest.TestCase):
+    def test_collision_edge_aliases_preserve_reads_and_writes(self):
+        """Warn on legacy edge-cache access while preserving array identity and writes."""
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+        model = builder.finalize(device="cpu")
+        for name in ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range"):
+            with self.subTest(attribute=name):
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}.*Newton 1\.8") as warning:
+                    original = getattr(model, name)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(original, getattr(model, f"_{name}"))
+                replacement = wp.clone(original)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    setattr(model, name, replacement)
+                self.assertIs(getattr(model, f"_{name}"), replacement)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    getattr(model, name).zero_()
+                np.testing.assert_array_equal(getattr(model, f"_{name}").numpy(), 0)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    setattr(model, name, None)
+                self.assertIsNone(getattr(model, f"_{name}"))
+
+    def test_collision_edge_aliases_follow_model_view_overrides(self):
+        """Resolve legacy edge-cache aliases through view-local canonical storage."""
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+        model = builder.finalize(device="cpu")
+        view = ModelView(model, "test")
+        for name in ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range"):
+            with self.subTest(attribute=name):
+                private_name = f"_{name}"
+                original = getattr(model, private_name)
+                replacement = wp.clone(original)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}") as warning:
+                    setattr(view, name, replacement)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(getattr(view, private_name), replacement)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}") as warning:
+                    self.assertIs(getattr(view, name), replacement)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(getattr(model, private_name), original)
+                self.assertNotIn(name, dict(model._iter_attribute_specs()))
+                self.assertIn(private_name, dict(model._iter_attribute_specs()))
+                self.assertEqual(model.get_attribute_frequency(name), model.get_attribute_frequency(private_name))
+
+    def test_collision_edge_internal_access_does_not_warn(self):
+        """Finalize and collide with packed edges without triggering legacy aliases."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", NewtonDeprecationWarning)
+            builder = ModelBuilder()
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+            builder.add_shape_mesh(body=body, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+            model = builder.finalize(device="cpu")
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
     def test_attribute_namespace_deprecated_alias_api(self):
         """Retain deprecated namespace aliases through their compatibility window."""
         namespace = newton.Model.AttributeNamespace("test")
@@ -520,8 +581,8 @@ class TestModelMesh(unittest.TestCase):
             collision_mesh.indices.numpy(),
             np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
         )
-        edge_start, edge_count = model.shape_edge_range.numpy()[0]
-        collision_edges = model.mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
+        edge_start, edge_count = model._shape_edge_range.numpy()[0]
+        collision_edges = model._mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
         np.testing.assert_array_equal(
             collision_edges,
             np.array([[0, 1], [1, 2], [0, 2], [2, 3], [0, 3]], dtype=np.int32),
