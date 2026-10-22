@@ -365,8 +365,9 @@ Known gaps of the experimental importer, tracked as follow-ups:
   bind points are used for both the visual mesh and its simulation geometry.
   UV-seam vertex splitting preserves that correspondence. Cable reference frames
   use the simulation bind points without changing the imported physics pose.
-  Missing bind poses fall back to the imported geometry. Invalid bind points warn
-  and skip the affected visual rather than silently using a different reference.
+  Missing bind poses fall back to the imported geometry. Invalid bind points
+  produce a warning-level log and skip the affected visual rather than silently
+  using a different reference.
   When replicating an imported template into cloned USD
   namespaces, pass ``source_path_prefix`` and ``destination_path_prefixes`` to
   :meth:`~newton.ModelBuilder.replicate`; the finalized visual labels and ownership paths

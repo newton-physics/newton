@@ -1521,7 +1521,7 @@ def _get_deformable_bind_pose(prim: Usd.Prim, *, strict: bool = False) -> np.nda
     of the first instance whose ``purposes`` contains ``bindPose``, in authored
     order. Returns ``None`` when no bind pose is authored (the caller falls back to
     the geometry's default ``points``, per the proposal). A bind pose whose length
-    does not match the geometry's ``points`` warns and is ignored unless ``strict``
+    does not match the geometry's ``points`` is logged and ignored unless ``strict``
     is true, in which case malformed data raises with a stable reason name.
     """
     geometry_points = prim.GetAttribute("points").Get() if prim.GetAttribute("points") else None
@@ -1544,10 +1544,7 @@ def _get_deformable_bind_pose(prim: Usd.Prim, *, strict: bool = False) -> np.nda
             )
             if strict:
                 raise ValueError(f"invalid_bind_pose_count: {message}")
-            warnings.warn(
-                f"{message}; ignoring it.",
-                stacklevel=2,
-            )
+            logger.warning("%s; ignoring it.", message)
             continue
         points = np.asarray(points, dtype=np.float64)
         if strict and not np.all(np.isfinite(points)):
