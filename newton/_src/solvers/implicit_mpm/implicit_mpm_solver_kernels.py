@@ -1567,20 +1567,20 @@ def reset_particle_values(
     particle_cells: wp.array2d[int],
     particle_flags: wp.array[wp.int32],
     particle_density: wp.array[float],
-    keep_skipped: bool,
+    keep_massless: bool,
     previous_values: wp.array[Any],
     values: wp.array[Any],
 ):
     """Zero the particle values that quadrature points accumulate into, and carry over the others.
 
     Particles without a cell (e.g. outside the active cells of a rebuildable sparse grid
-    or outside a fixed grid) have no quadrature point to accumulate from, so they keep
-    their previous values. With ``keep_skipped``, so do the inactive and massless particles
-    that ``update_particle_strains`` skips.
+    or outside a fixed grid) and inactive particles have no quadrature point accumulating
+    into them, so they keep their previous values. With ``keep_massless``, so do the massless
+    particles that ``update_particle_strains`` skips.
     """
     p = wp.tid()
-    reset = particle_is_binned(p, particle_cells)
-    if keep_skipped:
+    reset = particle_is_binned(p, particle_cells) and (particle_flags[p] & newton.ParticleFlags.ACTIVE) != 0
+    if keep_massless:
         reset = reset and particle_receives_strain_update(p, particle_flags, particle_density)
     if reset:
         values[p] = values.dtype(0.0)

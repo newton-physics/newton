@@ -368,6 +368,8 @@ def test_colored_contact_default(test, device):
                 state.particle_qd.fill_(wp.vec3(0.0, 0.0, -1.0))
                 solver.step(state, state, None, None, 0.001)
                 test.assertTrue(np.isfinite(state.particle_qd.numpy()).all())
+            # Every contact path stops the penetrating particle, which approached at 1 m/s.
+            test.assertGreater(state.particle_qd.numpy()[0, 2], -0.05)
 
 
 def test_pic_speculative_contact(test, device, capture=False):
@@ -408,6 +410,30 @@ def test_pic_speculative_contact(test, device, capture=False):
                 solver.step(state, state, None, None, dt)
             active = np.linalg.norm(solver._scratchpad.collider_normal_field.dof_values.numpy(), axis=1) > 0.0
             test.assertEqual(bool(active.any()), gap < 0.25)
+            np.testing.assert_allclose(state.particle_qd.numpy()[0], expected, atol=2.0e-4)
+
+
+def test_pic_speculative_contact_adhesion(test, device):
+    """Hold touching particles with adhesion and let particles within the activation band separate freely."""
+    cases = ((0.1, (0.0, 0.0, 0.4), (0.0, 0.0, 0.4)), (-0.05, (0.0, 0.0, 0.4), (0.0, 0.0, 0.0)))
+    for mode, (gap, velocity, expected) in product(("gs", "jacobi"), cases):
+        with test.subTest(solver=mode, gap=gap), wp.ScopedDevice(device):
+            solver, state = _make_solver(
+                device,
+                positions=((0.4, 0.4, 0.45 + gap),),
+                contact=True,
+                collider_basis="pic27",
+                integration_scheme="pic",
+                rheology_solver=mode,
+                gs_colored_contacts=None,
+                solver_class=SolverImplicitMPM,
+                young_modulus=12000.0,
+                air_drag=1.0e-4,
+                max_iterations=50,
+            )
+            solver._mpm_model.collider.material_adhesion.fill_(1.0e4)
+            state.particle_qd.assign((velocity,))
+            solver.step(state, state, None, None, 0.1)
             np.testing.assert_allclose(state.particle_qd.numpy()[0], expected, atol=2.0e-4)
 
 
@@ -492,6 +518,7 @@ for name, func in (
     ("test_colored_contact_velocity_bases", test_colored_contact_velocity_bases),
     ("test_colored_contact_default", test_colored_contact_default),
     ("test_pic_speculative_contact", test_pic_speculative_contact),
+    ("test_pic_speculative_contact_adhesion", test_pic_speculative_contact_adhesion),
     ("test_grid_contact_full_condition", test_grid_contact_full_condition),
     ("test_colored_contact_dynamic_collider", test_colored_contact_dynamic_collider),
 ):

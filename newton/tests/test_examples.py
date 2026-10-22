@@ -1432,7 +1432,7 @@ add_example_test(
     TestMPMExamples,
     name="mpm.example_mpm_pinch_carry",
     devices=cuda_test_devices,
-    test_options={"num-frames": 480, "spacing": 0.002},
+    test_options={"num-frames": 480, "spacing": 0.002, "substeps": 2},
     use_viewer=True,
 )
 

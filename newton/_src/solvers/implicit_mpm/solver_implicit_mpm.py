@@ -1015,9 +1015,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         gs_colored_contacts: bool | None = None
         """Solve particle contacts inside the strain-cell Gauss-Seidel color loop.
 
-        Requires discontinuous grid strain, particle contacts, and GS or GS-SOA.
-        By default (``None``), enable this for supported configurations and use
-        the existing contact solver otherwise. Set ``False`` to opt out.
+        Requires discontinuous grid strain, particle contacts, and GS or GS-SOA as the
+        only rheology solver; sequences such as ``("cr", "gs")`` use the existing contact
+        solver. By default (``None``), enable this for supported configurations and use
+        the existing contact solver otherwise. Set ``False`` to opt out; ``True`` raises
+        :class:`ValueError` for unsupported configurations.
         Reuses the strain-cell coloring for the selected
         velocity basis. With GIMP, contacts remain at particle centers and use
         velocity-basis weights; material transfers still integrate particle-cell overlaps.
@@ -4020,7 +4022,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     dim=model.particle_count,
                     inputs=[
                         scratch.particle_cells,
-                        mpm_model.material_particle_flags,
+                        mpm_model.particle_flags,
                         mpm_model.particle_density,
                         False,
                         previous,

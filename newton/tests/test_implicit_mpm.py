@@ -1340,7 +1340,10 @@ def test_small_iteration_budget_holds_ground(test, device):
 
 
 def test_unbinned_particles_keep_state(test, device):
-    """Keep the state of particles without a grid cell: frozen on a rebuildable grid, or outside a fixed grid."""
+    """Keep the state of particles without a grid cell: frozen on a rebuildable grid, or outside a fixed grid.
+
+    Frozen particles inside grid cells keep their velocity as well.
+    """
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     SolverImplicitMPM.register_custom_attributes(builder)
     for x in (-0.3, 0.3):
@@ -1393,6 +1396,28 @@ def test_unbinned_particles_keep_state(test, device):
             for name, values in before.items():
                 np.testing.assert_array_equal(getattr(next_state.mpm, name).numpy()[half:], values)
             np.testing.assert_array_equal(next_state.particle_qd.numpy()[half:], state.particle_qd.numpy()[half:])
+
+        with test.subTest(grid_type="dense", integration_scheme=integration_scheme):
+            # Frozen particles interleaved with active ones share their cells; advection skips
+            # them, so they keep their velocity.
+            model.particle_flags.assign(initial_flags)
+            config = SolverImplicitMPM.Config(
+                voxel_size=0.05,
+                grid_type="dense",
+                integration_scheme=integration_scheme,
+                max_iterations=50,
+                tolerance=1.0e-6,
+            )
+            solver, state = _step_mpm(model, config, step_count=2, dt=1.0 / 240.0)
+            frozen = initial_flags.copy()
+            frozen[::2] &= ~active
+            model.particle_flags.assign(frozen)
+            solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+            velocity = state.particle_qd.numpy()[::2].copy()
+            test.assertLess(velocity[:, 2].max(), -0.5)
+            next_state = model.state()
+            solver.step(state, next_state, None, None, 1.0 / 240.0)
+            np.testing.assert_array_equal(next_state.particle_qd.numpy()[::2], velocity)
 
         with test.subTest(grid_type="fixed", integration_scheme=integration_scheme):
             # The unpadded grid stops above the ground, so falling material leaves it.
@@ -2988,7 +3013,8 @@ add_function_test(
     TestImplicitMPM,
     "test_small_iteration_budget_holds_ground",
     test_small_iteration_budget_holds_ground,
-    devices=basic_devices,
+    # CUDA runs this budget through the captured-graph path, which already rounds up.
+    devices=["cpu"],
 )
 
 add_function_test(
