@@ -174,6 +174,8 @@ class _SimulationCopy:
 
     def __init__(self, scene: newton.ModelBuilder, solver_options: dict, deterministic: bool):
         builder = newton.ModelBuilder()
+        # The ground plane takes its gap from this builder.
+        builder.rigid_gap = scene.rigid_gap
         builder.replicate(scene, 1)
         builder.add_ground_plane()
         self.model = builder.finalize()
