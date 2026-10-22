@@ -9,6 +9,7 @@ import inspect
 import logging
 import os
 import queue
+import re
 import time
 import warnings
 from collections.abc import Callable, Iterator, Sequence
@@ -208,7 +209,8 @@ class ViewerViser(ViewerBase):
             return max(abs(float(maximum) - float(minimum)) / 100.0, 1.0e-6)
 
         def text(self, value: Any) -> None:
-            content = str(value)
+            # ImGui text is literal; retain that behavior in Markdown widgets.
+            content = re.sub(r"([\\`*_{}\[\]<>()#+.!|~-])", r"\\\1", str(value)).replace("\n", "  \n")
 
             def create(_key):
                 return self._add(lambda: self._viewer._server.gui.add_markdown(content))
@@ -649,8 +651,7 @@ class ViewerViser(ViewerBase):
                 for client_id, client in self._server.get_clients().items():
                     if client_id in client_cameras:
                         with client.atomic():
-                            for name, value in client_cameras[client_id].items():
-                                setattr(client.camera, name, value)
+                            self._apply_attrs(client.camera, client_cameras[client_id])
             self._sync_gui_controls()
 
     @override

@@ -444,6 +444,9 @@ class _ExampleBrowser:
 
     def report_error(self, error: BaseException, module_path: str, *, phase: str, retry_switch: bool = False) -> None:
         """Report the original failure and discard the partial scene, keeping the browser."""
+        # runpy launches CLI examples as __main__, but retains their module spec.
+        module = sys.modules.get(module_path)
+        module_path = getattr(getattr(module, "__spec__", None), "name", None) or module_path
         logger.error("Failed to %s example %s", phase, module_path, exc_info=(type(error), error, error.__traceback__))
         self.load_error = f"Failed to {phase} {module_path}:\n{type(error).__name__}: {error}"
         self.failed_target = module_path if retry_switch else None
@@ -571,6 +574,16 @@ def _throttle_render_fps(
 
 
 def run(example, args):
+    """Run an example, enabling browser recovery in interactive viewers.
+
+    Interactive load, step, render, and GUI failures are logged with their
+    tracebacks and leave the browser available for retry or another example.
+    This also applies to scripts calling ``run()`` directly. Debuggers should
+    break on raised exceptions to stop at the original failure.
+
+    Test, headless, benchmark, and noninteractive runs propagate failures to
+    the caller so automated jobs retain their normal failure exit status.
+    """
     viewer = example.viewer
     example_class = type(example)
     render_fps = getattr(args, "render_fps", None)

@@ -315,7 +315,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     viewer._set_wireframe(False)
                     viewer.set_camera(wp.vec3(-2.0, 1.0, 3.0), pitch=-20.0, yaw=-60.0)
                     if self.fail:
-                        raise SystemExit(2)
+                        raise SystemExit("bad *setting*\n[details]")
 
             browser.switch_target = "test.selected"
             with mock.patch(
@@ -327,7 +327,8 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.viewer.begin_frame(0.0)
                 self.viewer.end_frame()
                 error_widgets = list(self.viewer._example_gui_handles.values())
-                self.assertTrue(any("SystemExit: 2" in getattr(handle, "content", "") for _, handle in error_widgets))
+                error_text = next(handle.content for _, handle in error_widgets if hasattr(handle, "content"))
+                self.assertIn("SystemExit: bad \\*setting\\*  \n\\[details\\]", error_text)
                 retry = next(handle for _, handle in error_widgets if getattr(handle, "label", "").startswith("Retry"))
                 self.update_gui(retry, True)
                 self.wait_for(lambda: bool(self.viewer._example_gui_pending))
