@@ -8981,15 +8981,29 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pair_world = getattr(mujoco_attrs, "pair_world", None) if mujoco_attrs is not None else None
                 if pair_world is not None:
                     pair_world_np = pair_world.numpy()
-                    pairs_per_world = len(pair_world_np) // model.world_count if model.world_count > 0 else 0
+                    nworld_total = model.world_count if model.world_count > 0 else 1
+                    # Build per-world row lists (excluding global rows) so that
+                    # per-world rows are resolved by rank within their world
+                    # rather than by a count-derived stride. This correctly
+                    # handles interleaved global rows.
+                    per_world_rows = {w: [] for w in range(nworld_total)}
+                    for row_idx in range(len(pair_world_np)):
+                        w = int(pair_world_np[row_idx])
+                        if w >= 0:
+                            per_world_rows.setdefault(w, []).append(row_idx)
                     for mjc_pair, newton_pair in self._mjc_pair_to_newton_pair_dict.items():
-                        if pair_world_np[newton_pair] < 0:
-                            # Global rows belong to no world, so every world reads
-                            # them at the absolute index they were authored at.
+                        owner = int(pair_world_np[newton_pair])
+                        if owner < 0:
+                            # Global rows belong to no world, so every world
+                            # reads them at the absolute index they were authored at.
                             mjc_pair_to_newton_pair_np[:, mjc_pair] = newton_pair
                         else:
-                            template_pair = newton_pair % pairs_per_world if pairs_per_world > 0 else newton_pair
-                            mjc_pair_to_newton_pair_np[:, mjc_pair] = world_offsets * pairs_per_world + template_pair
+                            # Rank of this row within its owning world.
+                            rank = per_world_rows[owner].index(newton_pair)
+                            for w in range(nworld_total):
+                                rows = per_world_rows.get(w, [])
+                                if rank < len(rows):
+                                    mjc_pair_to_newton_pair_np[w, mjc_pair] = rows[rank]
                 self.mjc_pair_to_newton_pair = wp.array(mjc_pair_to_newton_pair_np, dtype=wp.int32)
 
             if separate_worlds:
