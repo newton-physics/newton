@@ -1107,53 +1107,6 @@ class TestModelMesh(unittest.TestCase):
             for part, expected in zip(again, first, strict=True):
                 np.testing.assert_array_equal(part, expected)
 
-    def test_mesh_approximation_coacd_thread_limits_by_version(self):
-        """Run CoACD before 1.0.14 on one OpenMP thread and later releases unrestricted."""
-        box = newton.Mesh.create_box(
-            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
-        )
-        active_limits = []
-        limits_during_run = []
-
-        class FakeThreadpoolLimits:
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-
-            def __enter__(self):
-                active_limits.append(self.kwargs)
-
-            def __exit__(self, *exc):
-                active_limits.pop()
-
-        fake_coacd = types.ModuleType("coacd")
-        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
-
-        def run_coacd(cmesh, **kwargs):
-            limits_during_run.append(list(active_limits))
-            return [cmesh]
-
-        fake_coacd.run_coacd = run_coacd
-        fake_threadpoolctl = types.ModuleType("threadpoolctl")
-        fake_threadpoolctl.threadpool_limits = FakeThreadpoolLimits
-
-        def decompose(coacd_version, threadpoolctl):
-            builder = ModelBuilder()
-            shape = builder.add_shape_mesh(body=-1, mesh=box)
-            limits_during_run.clear()
-            with (
-                patch_sys_module("coacd", fake_coacd),
-                patch_sys_module("threadpoolctl", threadpoolctl),
-                mock.patch("importlib.metadata.version", return_value=coacd_version),
-            ):
-                builder.approximate_meshes(method="coacd", shape_indices=[shape])
-            self.assertEqual(active_limits, [])
-            return limits_during_run[0]
-
-        self.assertEqual(decompose("1.0.7", fake_threadpoolctl), [{"limits": 1, "user_api": "openmp"}])
-        self.assertEqual(decompose("1.0.14", fake_threadpoolctl), [])
-        with self.assertWarnsRegex(UserWarning, "coacd<1.0.14"):
-            self.assertEqual(decompose("1.0.13", None), [])
-
     def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
         builder = ModelBuilder()
         box = newton.Mesh.create_box(

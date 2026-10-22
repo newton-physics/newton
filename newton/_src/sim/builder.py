@@ -9,16 +9,14 @@ import copy
 import ctypes
 import functools
 import gc
-import importlib.metadata
 import logging
 import math
-import re
 import warnings
 import weakref
 from bisect import bisect_left
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -212,29 +210,6 @@ _MERGE_VALIDATION_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 Kept out of the builders themselves: this is a memoization table, not model state, and it must
 not show up in builder-state comparisons or survive past either builder's lifetime.
 """
-
-
-def _coacd_thread_limits() -> Callable[[], AbstractContextManager[Any]]:
-    """Return a context factory under which the installed CoACD decomposes repeatably where Newton can enforce it.
-
-    CoACD before 1.0.14 collects parallel results in thread-completion order; OpenMP-backed builds repeat on
-    one OpenMP thread, and C++-threaded builds (macOS wheels 1.0.12-1.0.13) stay unrepeatable.
-    """
-    try:
-        version = re.match(r"(\d+)\.(\d+)\.(\d+)", importlib.metadata.version("coacd"))
-    except importlib.metadata.PackageNotFoundError:
-        version = None
-    if version is None or tuple(int(part) for part in version.groups()) >= (1, 0, 14):
-        return nullcontext
-    try:
-        from threadpoolctl import threadpool_limits
-    except ImportError:
-        warnings.warn(
-            "coacd<1.0.14 can give different decompositions across runs; install coacd>=1.0.14, or threadpoolctl for OpenMP builds.",
-            stacklevel=3,
-        )
-        return nullcontext
-    return functools.partial(threadpool_limits, limits=1, user_api="openmp")
 
 
 def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
@@ -9271,10 +9246,7 @@ class ModelBuilder:
             For ``coacd`` and ``vhacd``, each geometrically connected component
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
-            CoACD decompositions repeat across runs for a fixed ``seed`` with ``coacd`` 1.0.14 or later.
-            OpenMP-backed builds of earlier releases repeat when ``threadpoolctl`` is installed, by running on
-            one OpenMP thread. The macOS wheels of ``coacd`` 1.0.12-1.0.13 use C++ threads that this cannot
-            limit; use ``coacd>=1.0.14`` there.
+            CoACD decompositions repeat across runs for a fixed ``seed``.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -9416,8 +9388,6 @@ class ModelBuilder:
                 if method == "coacd":
                     # convex decomposition using CoACD
                     import coacd
-
-                    coacd_thread_limits = _coacd_thread_limits()
                 else:
                     # convex decomposition using V-HACD
                     import trimesh
@@ -9462,14 +9432,12 @@ class ModelBuilder:
                             for component_vertices, component_faces in split_mesh_components(mesh):
                                 if method == "coacd":
                                     cmesh = coacd.Mesh(component_vertices, component_faces)
-                                    with coacd_thread_limits():
-                                        coacd_parts = coacd.run_coacd(cmesh, **settings)
                                     # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
                                     decomposition.extend(
                                         remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
                                         if 0 < mesh.maxhullvert < len(v)
                                         else (v, f)
-                                        for v, f in coacd_parts
+                                        for v, f in coacd.run_coacd(cmesh, **settings)
                                     )
                                 else:
                                     tmesh = trimesh.Trimesh(component_vertices, component_faces)
