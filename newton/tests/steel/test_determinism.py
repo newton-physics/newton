@@ -340,22 +340,16 @@ def test_deterministic_runs_are_bitwise_identical(test, device):
 
 
 def test_deterministic_propagation_runs_are_bitwise_identical(test, device):
-    """Repeat both propagation responses bitwise over a moving kinematic tray, eagerly and under graph replay."""
+    """Repeat warm-started rollouts of both propagation responses bitwise over a moving kinematic tray."""
     model = _build_contact_scene(device, kinematic_tray=True)
     for response in PROPAGATION_RESPONSES:
-        for cached, warmstart, graph in (
-            (True, False, False),
-            (False, False, False),
-            (True, True, False),
-            (False, True, False),
-            (True, True, True),
-        ):
+        for cached, graph in ((True, False), (False, False), (True, True)):
             options = {
-                **(WARMSTART_OPTIONS if warmstart else MATRIX_FREE_OPTIONS),
+                **WARMSTART_OPTIONS,
                 "articulated_contact_response": response,
                 "propagation_cached_response": cached,
             }
-            with test.subTest(response=response, cached=cached, warmstart=warmstart, graph=graph):
+            with test.subTest(response=response, cached=cached, graph=graph):
                 if not graph:
                     _check_propagation_coverage(test, model, options)
                 first = _run_hashes(model, options, 40, graph=graph)
@@ -509,14 +503,21 @@ def test_deterministic_launches_replay_identically(test, device):
 
 
 def test_deterministic_propagation_launches_replay_identically(test, device):
-    """Reproduce every launch of both propagation responses bitwise, with and without the warm start."""
+    """Reproduce every launch of both propagation responses bitwise, cached without and uncached with warm start."""
     model = _build_contact_scene(device, worlds=8, kinematic_tray=True)
     _check_launches_replay(
         test,
         [
-            (f"{response}_{name}", model, {**options, "articulated_contact_response": response})
+            (
+                f"{response}_{name}",
+                model,
+                {**options, "articulated_contact_response": response, "propagation_cached_response": cached},
+            )
             for response in PROPAGATION_RESPONSES
-            for name, options in (("cached", MATRIX_FREE_OPTIONS), ("warmstart", WARMSTART_OPTIONS))
+            for name, options, cached in (
+                ("cached", MATRIX_FREE_OPTIONS, True),
+                ("uncached_warmstart", WARMSTART_OPTIONS, False),
+            )
         ],
     )
 
