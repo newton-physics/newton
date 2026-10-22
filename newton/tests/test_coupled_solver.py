@@ -1561,7 +1561,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         template.add_articulation([root, shoulder, elbow])
         builder = newton.ModelBuilder()
-        builder.replicate(template, world_count=world_count)
+        builder.replicate(template, copy_count=world_count)
         model = builder.finalize(device="cpu")
 
         bpw, jpw = template.body_count, template.joint_count

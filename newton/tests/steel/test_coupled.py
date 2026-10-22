@@ -964,7 +964,7 @@ def _build_split_arm(device, *, base: bool, world_count: int = 2):
     template.add_articulation(joints)
     template.joint_qd[template.joint_qd_start[elbow]] = 2.0
     builder = newton.ModelBuilder()
-    builder.replicate(template, world_count=world_count)
+    builder.replicate(template, copy_count=world_count)
     return builder.finalize(device=device), template.body_count, template.joint_count
 
 
