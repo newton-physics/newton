@@ -130,6 +130,7 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         viewer = ViewerRTX.__new__(ViewerRTX)
         viewer.stage = mock.Mock()
         viewer._borrowed_stage = None
+        viewer._layers = {}
         viewer._headless = False
         viewer._window = None
         viewer.gui = None
@@ -154,6 +155,7 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         with (
             mock.patch.object(viewer, "_add_camera_lights_and_render_product"),
             mock.patch.object(viewer, "_apply_ground_material"),
+            mock.patch.object(viewer, "_prepare_shape_opacity_materials"),
             mock.patch.object(viewer, "_init_window", side_effect=fail_after_window_creation),
             mock.patch.object(viewer, "_release_runtime_scene"),
             mock.patch.object(viewer, "_destroy_ovrtx"),
@@ -590,6 +592,61 @@ class TestViewerRTXRendering(unittest.TestCase):
                     self.assertIs(viewer.get_frame(output=target), target)
                     np.testing.assert_array_equal(target.numpy(), rgb)
 
+                finally:
+                    viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_runtime_shape_opacities(self):
+        """Update one shared-material instance through transparent and opaque states."""
+        builder = newton.ModelBuilder()
+        for y in (-0.4, 0.4):
+            body = builder.add_body(xform=wp.transform((0.0, y, 0.0), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
+        model = builder.finalize()
+        state = model.state()
+        for asynchronous in (False, True):
+            with self.subTest(async_rendering=asynchronous):
+                model.shape_opacity.fill_(1.0)
+                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=asynchronous)
+                try:
+                    viewer.set_model(model)
+                    viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
+                    opaque_signal = None
+                    for frame_index, opacity in enumerate((1.0, 0.0, 0.5, 0.5, 1.0)):
+                        if frame_index == 4:
+                            viewer.set_visible_worlds(None)
+                            self.assertIsNone(viewer._model_shape_opacities_device)
+                        model.shape_opacity.assign([opacity, 1.0])
+                        if frame_index == 2:
+                            viewer.set_rendering_paused(True)
+                            viewer.begin_frame(frame_index / 60.0)
+                            viewer.log_state(state)
+                            viewer.end_frame()
+                            viewer.set_rendering_paused(False)
+                        viewer.begin_frame(frame_index / 60.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        rgb = viewer.get_frame().numpy().astype(np.float32)
+                        signal = np.maximum(rgb[:, :, 0] - np.maximum(rgb[:, :, 1], rgb[:, :, 2]), 0.0)
+                        left, right = signal[:, :32].sum(), signal[:, 32:].sum()
+                        if opaque_signal is None:
+                            opaque_signal = left
+                            self.assertGreater(opaque_signal, 1000.0)
+                        self.assertGreater(right, 0.7 * opaque_signal)
+                        if opacity == 0.0:
+                            self.assertLess(left, 0.1 * opaque_signal)
+                        elif opacity == 1.0:
+                            self.assertGreater(left, 0.7 * opaque_signal)
+                        else:
+                            self.assertGreater(left, 0.1 * opaque_signal)
+                            self.assertLess(left, 0.85 * opaque_signal)
+                        if frame_index == 3:
+                            self.assertEqual(viewer._shape_opacities_changed_device.numpy()[0], 0)
+                    viewer.clear_model()
+                    self.assertIsNone(viewer._model_shape_opacities_device)
+                    self.assertIsNone(viewer._shape_opacities_changed_device)
+                    self.assertFalse(viewer._shape_opacity_batches)
+                    self.assertFalse(viewer._uses_fractional_opacity)
                 finally:
                     viewer.close()
 
