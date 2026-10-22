@@ -9,7 +9,9 @@ before opening. Test mode checks grip retention and release on the ground.
 Uses four substeps with up to 50 solver iterations each. No external assets are required.
 
 Run ``--viewer null --num-frames 480 --test`` for the full eight-second
-sequence at the default 60 frames per second.
+sequence at the default 60 frames per second. ``--travel-scale`` shortens the
+lift, carry, and lowering at unchanged speeds; at 0.25 the sequence lasts five
+seconds (300 frames).
 """
 
 from __future__ import annotations
@@ -40,6 +42,9 @@ PHASES = (
     ("release", 0.5, 1.4, 0.0, 0.1),
     ("settle released", 0.5, 1.4, 0.0, 0.1),
 )
+
+# Phases whose duration scales with --travel-scale, keeping the lift and carry speeds.
+TRAVEL_PHASES = ("lift", "carry", "lower")
 
 
 @wp.kernel
@@ -155,12 +160,19 @@ class Example:
         axis = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0)}[args.carry_axis]
         self.pad_center = wp.vec3(float(center[0]), float(center[1]), float(center[2]))
         self.carry_axis = wp.vec3(*axis)
-        ends = np.cumsum([duration for _, duration, *_ in PHASES])
-        self.phase_names = [name for name, *_ in PHASES]
+        scale = args.travel_scale
+        phases = [
+            (name, duration * scale if name in TRAVEL_PHASES else duration, gap, scale * lift, scale * carry)
+            for name, duration, gap, lift, carry in PHASES
+        ]
+        self.lift_height = max(phase[3] for phase in phases)
+        self.carry_distance = max(phase[4] for phase in phases)
+        ends = np.cumsum([duration for _, duration, *_ in phases])
+        self.phase_names = [name for name, *_ in phases]
         self.phase_end = wp.array(ends, dtype=float)
-        self.gap = wp.array([PHASES[0][2] * self.width] + [g * self.width for *_, g, _, _ in PHASES], dtype=float)
-        self.lift = wp.array([0.0] + [lift for *_, lift, _ in PHASES], dtype=float)
-        self.carry = wp.array([0.0] + [carry for *_, carry in PHASES], dtype=float)
+        self.gap = wp.array([phases[0][2] * self.width] + [g * self.width for *_, g, _, _ in phases], dtype=float)
+        self.lift = wp.array([0.0] + [lift for *_, lift, _ in phases], dtype=float)
+        self.carry = wp.array([0.0] + [carry for *_, carry in phases], dtype=float)
         self.time = wp.zeros(1, dtype=float)
         self.duration = float(ends[-1])
 
@@ -172,8 +184,8 @@ class Example:
         self.viewer.set_model(self.model)
         self.viewer.show_particles = True
         # View across the grip and center the full lift/carry path.
-        camera_target = center + 0.5 * max(phase[4] for phase in PHASES) * np.asarray(axis)
-        camera_target[2] = 0.5 * (center[2] + max(phase[3] for phase in PHASES) + PAD_HALF_EXTENTS[2])
+        camera_target = center + 0.5 * self.carry_distance * np.asarray(axis)
+        camera_target[2] = 0.5 * (center[2] + self.lift_height + PAD_HALF_EXTENTS[2])
         self.viewer.set_camera(pos=wp.vec3(*camera_target) + wp.vec3(0.12, -0.03, 0.06), pitch=-26.0, yaw=166.0)
 
         self.graph = None
@@ -277,10 +289,10 @@ class Example:
         if not held or min(r["relative_height"] for r in held) < -0.01:
             raise AssertionError("The object dropped before release")
         carried = [r for r in self.records if r["phase"] == "hold carried"][-1]
-        if carried["object_height"] - self.initial_center[2] < 0.035:
-            raise AssertionError("The object did not reach the 50 mm lift")
-        if carried["travel"] < 0.08:
-            raise AssertionError("The object did not follow the 100 mm carry")
+        if carried["object_height"] - self.initial_center[2] < 0.7 * self.lift_height:
+            raise AssertionError(f"The object did not reach the {1000 * self.lift_height:.1f} mm lift")
+        if carried["travel"] < 0.8 * self.carry_distance:
+            raise AssertionError(f"The object did not follow the {1000 * self.carry_distance:.1f} mm carry")
         lowered = [r for r in self.records if r["phase"] == "lower"][-1]
         if lowered["object_height"] > self.initial_center[2] + 0.003:
             raise AssertionError("The object did not reach the ground before release")
@@ -332,6 +344,9 @@ class Example:
         parser.add_argument("--fps", type=float, default=60.0)
         parser.add_argument("--substeps", type=int, default=4, help="Solver steps per frame (240 Hz by default).")
         parser.add_argument("--carry-axis", choices=["x", "y"], default="y", help="y is the squeeze axis.")
+        parser.add_argument(
+            "--travel-scale", type=float, default=1.0, help="Scale the lift and carry distances and their durations."
+        )
         parser.add_argument("--pad-friction", type=float, default=1.0)
         parser.add_argument(
             "--project-outside", action="store_true", help="Project particles out of the pads each step."
