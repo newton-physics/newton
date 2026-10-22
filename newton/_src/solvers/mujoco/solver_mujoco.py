@@ -10958,7 +10958,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # --- Check entity count homogeneity ---
         # Count entities per world (excluding global shapes)
-        non_global_shapes = shape_world[shape_world >= 0]
         non_global_pairs = pair_world[pair_world >= 0]
 
         for entity_name, world_arr in [
