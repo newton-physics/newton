@@ -456,6 +456,64 @@ After importing the USD file, attributes are accessible following the same patte
 
 For more information about USD integration and the schema resolver system, see :doc:`usd_parsing`.
 
+.. _usd_deformable_custom_values:
+
+Values per deformable object
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+USD imports record curves, surfaces, and volumes, but do not yet read custom
+values at ``CURVE``, ``SURFACE``, or ``VOLUME`` frequency. Unassigned rows keep
+the registered attribute's default. This limitation does not affect ordinary
+deformable material parsing or the supported per-particle, per-tetrahedron,
+and per-triangle custom arrays on a ``TetMesh``.
+
+Assign per-object values through the builder after :meth:`ModelBuilder.add_usd`
+and before :meth:`ModelBuilder.finalize`. For example, suppose ``stage`` contains
+a volume at ``/World/Soft/sim`` with an authored ``newton:volume_temperature``
+value of 310 K:
+
+.. testsetup:: custom-deformable-usd
+
+   from pxr import Sdf, Usd, UsdGeom
+
+   stage = Usd.Stage.CreateInMemory()
+   UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+   UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+   body = UsdGeom.Xform.Define(stage, "/World/Soft")
+   body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
+   volume = UsdGeom.TetMesh.Define(stage, "/World/Soft/sim")
+   volume.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+   volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+   volume.CreatePointsAttr([(0, 0, 1), (0.2, 0, 1), (0, 0.2, 1), (0, 0, 1.2)])
+   volume.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+   volume.GetPrim().CreateAttribute("newton:volume_temperature", Sdf.ValueTypeNames.Float).Set(310.0)
+
+.. testcode:: custom-deformable-usd
+
+   import newton
+   import warp as wp
+
+   builder = newton.ModelBuilder()
+   builder.add_custom_attribute(newton.ModelBuilder.CustomAttribute(
+       name="volume_temperature",
+       dtype=wp.float32,
+       frequency=newton.Model.AttributeFrequency.VOLUME,
+       default=293.0,
+   ))
+   builder.add_usd(stage)
+
+   volume_path = "/World/Soft/sim"
+   volume_index = builder.volume_label.index(volume_path)
+   temperature = stage.GetPrimAtPath(volume_path).GetAttribute("newton:volume_temperature").Get()
+   builder.custom_attributes["volume_temperature"].values[volume_index] = float(temperature)
+
+   model = builder.finalize(device="cpu")
+   assert model.volume_temperature.numpy().tolist() == [310.0]
+
+This is an explicit assignment, not automatic USD import. Automatic import
+remains follow-up work. For welded graphs, it also needs a rule for combining
+values from several source curve prims.
+
 MJCF and URDF Integration
 --------------------------
 

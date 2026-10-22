@@ -903,6 +903,10 @@ Custom Attributes from USD
 USD assets can define custom attributes that become part of the model/state/control attributes, see :ref:`custom_attributes` for more information.
 Besides the programmatic way of defining custom attributes through the :meth:`newton.ModelBuilder.add_custom_attribute` method, Newton's USD importer also supports declaring custom attributes from within a USD stage.
 
+Custom values at ``CURVE``, ``SURFACE``, or ``VOLUME`` frequency are not imported
+automatically yet. See :ref:`usd_deformable_custom_values` for a builder
+assignment example after import.
+
 **Overview:**
 
 Custom attributes enable users to:
