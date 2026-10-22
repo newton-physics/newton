@@ -3774,10 +3774,12 @@ class ModelBuilder:
             builder._deformable_visual_meshes,
             builder._deformable_visual_gaussians,
         )
-        for prefixes in path_prefixes:
-            if prefixes is None:
+        for specs in deformable_visual_specs:
+            if not specs:
                 continue
-            for specs in deformable_visual_specs:
+            for prefixes in path_prefixes:
+                if prefixes is None:
+                    continue
                 for spec in specs:
                     for name in ("body_path", "sim_path", "graphics_path"):
                         rebase_path(spec.get(name), prefixes, required=True)
@@ -3838,8 +3840,10 @@ class ModelBuilder:
             (tuple(builder._deformable_visual_meshes), self._deformable_visual_meshes),
             (tuple(builder._deformable_visual_gaussians), self._deformable_visual_gaussians),
         )
-        for copy_index in range(copy_count):
-            for source_specs, destination_specs in visual_specs:
+        for source_specs, destination_specs in visual_specs:
+            if not source_specs:
+                continue
+            for copy_index in range(copy_count):
                 for spec in source_specs:
                     merged = dict(spec)
                     parent_start = int(starts(visual_parent_kinds[spec["kind"]])[copy_index])
