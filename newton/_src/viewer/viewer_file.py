@@ -1327,6 +1327,12 @@ class ViewerFile(ViewerBase):
             self._model_recorded = True
 
     @override
+    def _log_deformable_visual_meshes(self, state: State):
+        # Record simulation data; playback evaluates visuals when it renders.
+        if type(self).log_mesh is not ViewerFile.log_mesh:
+            super()._log_deformable_visual_meshes(state)
+
+    @override
     def log_state(self, state: State):
         """Record a state snapshot in addition to the base viewer processing.
 

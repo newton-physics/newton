@@ -568,9 +568,9 @@ materials and lights instead of building a scene from the model. The stage prese
   :meth:`~newton.viewer.ViewerRTX.set_model` infers the model-to-stage transform from the root bodies, whose poses must
   still match the stage's. Bodies then stay at their authored poses, and the camera and debug geometry follow the
   model's frame. Without bound root bodies, the viewer assumes both frames coincide.
-- **Other geometry**: The viewer generates no geometry for the model's shapes, cloth, or particles, and does not
-  update the stage's deformable prims. ``show_triangles``, which is off by default here, and ``show_particles`` draw
-  the simulated cloth and particles as debug overlays.
+- **Other geometry**: Model shapes come from the supplied stage. The viewer does not update its authored
+  deformable prims. ``show_triangles``, ``show_deformable_visual_meshes``, and ``show_particles`` enable separate
+  overlays, all off by default here. Hidden overlay geometry may still be registered in the viewer's subtree.
 - **Stage ownership**: The viewer keeps its camera, render product, and debug geometry under ``/__newton_viewer`` and
   never clears the stage. :meth:`~newton.viewer.ViewerRTX.set_model` and each
   :meth:`~newton.viewer.ViewerRTX.end_frame` write above the stage's current write floor and then advance it, so finish

@@ -1119,6 +1119,17 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         viewer._frame(model.state(), 1.0)
         self.assertIs(viewer._deformable_visual_mesh_null_offsets, offsets)
 
+    def test_null_viewer_does_not_evaluate_visuals(self):
+        """Leave shared visual output unevaluated when no renderer consumes it."""
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize(device="cpu")
+        visuals = model.deformable_visuals()
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        viewer.set_deformable_visuals(visuals)
+        viewer.log_state(model.state())
+        self.assertIsNone(visuals.state)
+
     def test_viewer_file_roundtrips_deformable_visual_mesh(self):
         """Replay replicated skins with shared RGBA images and path textures."""
         builder = newton.ModelBuilder()
@@ -1152,7 +1163,10 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                     file_path = str(Path(directory) / f"recording.{suffix}")
                     recorder = ViewerFile(file_path, auto_save=False)
                     recorder.set_model(model)
+                    visuals = model.deformable_visuals()
+                    recorder.set_deformable_visuals(visuals)
                     recorder.log_state(state)
+                    self.assertIsNone(visuals.state)
                     recorder.save_recording()
                     playback = ViewerFile(file_path, auto_save=False)
                     playback.load_recording()
