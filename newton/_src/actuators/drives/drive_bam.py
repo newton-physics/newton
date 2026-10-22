@@ -96,17 +96,19 @@ class DriveBAM(DriveBase):
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        missing = {"kp", "kt", "resistance", "vin", "max_pwm"} - set(args)
+        supply_from_battery = bool(args.get("supply_from_battery", False))
+        required = {"kp", "kt", "resistance", "max_pwm"} | (set() if supply_from_battery else {"vin"})
+        missing = required - set(args)
         if missing:
             raise ValueError(f"DriveBAM is missing parameter(s): {', '.join(sorted(missing))}")
         resolved = {
             "kp": args["kp"],
             "kt": args["kt"],
             "resistance": args["resistance"],
-            "vin": args["vin"],
+            "vin": args.get("vin", 0.0),
             "max_pwm": args["max_pwm"],
             "max_current": args.get("max_current", 0.0),
-            "supply_from_battery": bool(args.get("supply_from_battery", False)),
+            "supply_from_battery": supply_from_battery,
         }
         for name in ("kt", "resistance"):
             if resolved[name] <= 0.0:
@@ -132,8 +134,9 @@ class DriveBAM(DriveBase):
             kp: Duty cycle per position error [1/rad or 1/m]. Shape ``(N,)``.
             kt: Torque constant [N·m/A]. Shape ``(N,)``.
             resistance: Motor resistance [Ω]. Shape ``(N,)``.
-            vin: Supply voltage [V]. Required; ignored when
-                *supply_from_battery* is set.
+            vin: Supply voltage [V]. Ignored when *supply_from_battery* is
+                set; :meth:`~newton.ModelBuilder.add_actuator` then does not
+                require it.
                 Shape ``(N,)``.
             max_pwm: Largest duty cycle magnitude. Shape ``(N,)``.
             max_current: Firmware current limit [A]; 0 disables it. Shape

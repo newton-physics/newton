@@ -19,45 +19,6 @@ SUPPLY_VOLTAGE_ATTR = "actuator_supply_voltage"
 BATTERY_FREQUENCY = f"{ACTUATOR_NAMESPACE}:battery"
 
 
-@wp.kernel
-def _battery_update_kernel(
-    battery_actuator_start: wp.array[wp.int32],
-    battery_actuators: wp.array[wp.int32],
-    nominal_voltage: wp.array[float],
-    sag_gain: wp.array[float],
-    min_voltage: wp.array[float],
-    effort: wp.array[float],
-    supply_voltage: wp.array[float],
-):
-    b = wp.tid()
-    start = battery_actuator_start[b]
-    end = battery_actuator_start[b + 1]
-    total = float(0.0)
-    for k in range(start, end):
-        total += wp.abs(effort[battery_actuators[k]])
-    voltage = wp.max(nominal_voltage[b] - sag_gain[b] * total, min_voltage[b])
-    for k in range(start, end):
-        supply_voltage[battery_actuators[k]] = voltage
-
-
-@wp.kernel
-def _battery_reset_kernel(
-    battery_actuator_start: wp.array[wp.int32],
-    battery_actuators: wp.array[wp.int32],
-    battery_world: wp.array[wp.int32],
-    nominal_voltage: wp.array[float],
-    world_mask: wp.array[wp.bool],
-    supply_voltage: wp.array[float],
-):
-    b = wp.tid()
-    world = battery_world[b]
-    if world_mask:
-        if world < 0 or not world_mask[world]:
-            return
-    for k in range(battery_actuator_start[b], battery_actuator_start[b + 1]):
-        supply_voltage[battery_actuators[k]] = nominal_voltage[b]
-
-
 def register_battery_attributes(builder: ModelBuilder) -> None:
     """Register the battery frequency and its attributes on *builder*.
 
@@ -173,6 +134,45 @@ def _finalize_battery_actuators(builder: ModelBuilder, model: Model, attribute: 
         attribute.namespace,
         attribute.references,
     )
+
+
+@wp.kernel
+def _battery_update_kernel(
+    battery_actuator_start: wp.array[wp.int32],
+    battery_actuators: wp.array[wp.int32],
+    nominal_voltage: wp.array[float],
+    sag_gain: wp.array[float],
+    min_voltage: wp.array[float],
+    effort: wp.array[float],
+    supply_voltage: wp.array[float],
+):
+    b = wp.tid()
+    start = battery_actuator_start[b]
+    end = battery_actuator_start[b + 1]
+    total = float(0.0)
+    for k in range(start, end):
+        total += wp.abs(effort[battery_actuators[k]])
+    voltage = wp.max(nominal_voltage[b] - sag_gain[b] * total, min_voltage[b])
+    for k in range(start, end):
+        supply_voltage[battery_actuators[k]] = voltage
+
+
+@wp.kernel
+def _battery_reset_kernel(
+    battery_actuator_start: wp.array[wp.int32],
+    battery_actuators: wp.array[wp.int32],
+    battery_world: wp.array[wp.int32],
+    nominal_voltage: wp.array[float],
+    world_mask: wp.array[wp.bool],
+    supply_voltage: wp.array[float],
+):
+    b = wp.tid()
+    world = battery_world[b]
+    if world_mask:
+        if world < 0 or not world_mask[world]:
+            return
+    for k in range(battery_actuator_start[b], battery_actuator_start[b + 1]):
+        supply_voltage[battery_actuators[k]] = nominal_voltage[b]
 
 
 def update_battery_supply(model: Model, control: Control, *, effort: wp.array[float] | None = None) -> None:

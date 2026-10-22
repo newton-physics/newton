@@ -91,7 +91,7 @@ class InputProcessorBacklash(InputProcessorBase):
         self._num_actuators: int = 0
         self._device: wp.Device | None = None
         self._out_pos: wp.array[float] | None = None
-        self._slots: wp.array[wp.uint32] | None = None
+        self._sequential_indices: wp.array[wp.uint32] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
         if len(self.backlash_joint_indices) != num_actuators:
@@ -102,7 +102,7 @@ class InputProcessorBacklash(InputProcessorBase):
         self._device = device
         self._num_actuators = num_actuators
         self._out_pos = wp.zeros(num_actuators, dtype=wp.float32, device=device, requires_grad=requires_grad)
-        self._slots = wp.array(np.arange(num_actuators, dtype=np.uint32), dtype=wp.uint32, device=device)
+        self._sequential_indices = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
 
     def process(self, inputs: InputProcessorBase.Inputs, state: None, dt: float | None) -> InputProcessorBase.Inputs:
         wp.launch(
@@ -112,4 +112,4 @@ class InputProcessorBacklash(InputProcessorBase):
             outputs=[self._out_pos],
             device=self._device,
         )
-        return replace(inputs, positions=self._out_pos, pos_indices=self._slots)
+        return replace(inputs, positions=self._out_pos, pos_indices=self._sequential_indices)

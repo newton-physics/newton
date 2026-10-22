@@ -679,7 +679,6 @@ Below, the hip and knee share one battery and the ankle draws from another:
            kp=5.0,
            kt=0.5,
            resistance=2.0,
-           vin=12.0,
            max_pwm=1.0,
            supply_from_battery=True,
        )

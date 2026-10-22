@@ -243,9 +243,31 @@ def _custom_input_frequencies(drive: DriveBase) -> dict[str, Model.AttributeFreq
 def _collect_custom_inputs(
     sim_control: Any,
     declared: tuple[str, ...],
+    gathered: dict[str, wp.array[float]],
+    actuator_indices: wp.array[wp.uint32] | None,
+    device: wp.Device,
 ) -> dict[str, Any]:
-    """Read declared Control values without validating them, keyed by attribute."""
-    return {attribute: _get_attribute(sim_control, attribute, None) for attribute in declared}
+    """Read declared Control values without validating them, keyed by attribute.
+
+    A value with a buffer in *gathered* is a per-actuator array: its entries
+    for the actuator's slots are gathered through *actuator_indices* into that
+    buffer, which is passed on instead.
+    """
+    inputs = {}
+    for attribute in declared:
+        value = _get_attribute(sim_control, attribute, None)
+        buffer = gathered.get(attribute)
+        if value is not None and buffer is not None:
+            wp.launch(
+                _gather_kernel,
+                dim=len(buffer),
+                inputs=[value, actuator_indices],
+                outputs=[buffer],
+                device=device,
+            )
+            value = buffer
+        inputs[attribute] = value
+    return inputs
 
 
 @functools.cache
@@ -864,20 +886,8 @@ class Actuator:
         # --- 2+3. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
         custom_inputs = _collect_custom_inputs(
-            sim_control, tuple(name for name in self._custom_inputs if name not in self._actuator_inputs)
+            sim_control, tuple(self._custom_inputs), self._actuator_inputs, self.actuator_indices, self.device
         )
-        for name, gathered in self._actuator_inputs.items():
-            source = _get_attribute(sim_control, name, None)
-            if source is not None:
-                wp.launch(
-                    _gather_kernel,
-                    dim=self.num_actuators,
-                    inputs=[source, self.actuator_indices],
-                    outputs=[gathered],
-                    device=self.device,
-                )
-                source = gathered
-            custom_inputs[name] = source
         output_forces = self._effort_mode.compute_force(
             sim_state,
             inputs.positions,
