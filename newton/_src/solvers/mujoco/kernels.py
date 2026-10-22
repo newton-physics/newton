@@ -981,10 +981,10 @@ def convert_warp_coords_to_mj_kernel(
     ``jnt_mocap`` maps template joints to the mocap body posed from their child:
     the child itself for fixed and massless kinematic roots, or the weld target
     of a kinematic root (``-1`` if none). Weld targets (``jnt_mocap_lead``) lead
-    the prescribed pose by ``kinematic_lookahead`` so the weld's spring cancels
-    its damping against the mocap's zero velocity. With ``write_state`` False
-    only mocap poses are written. ``mocap_root_moved`` flags worlds whose mocap
-    roots moved, since MuJoCo does not wake trees resting on a moving mocap body.
+    the prescribed pose by ``kinematic_lookahead``. With ``write_state`` False,
+    as after a joint-frame notification without a state, only fixed-root poses
+    are written. ``mocap_root_moved`` flags worlds whose mocap roots moved, since
+    MuJoCo does not wake trees resting on a moving mocap body.
     """
     worldid, jntid = wp.tid()
 
@@ -995,9 +995,11 @@ def convert_warp_coords_to_mj_kernel(
 
     if jnt_mocap:
         mocap = jnt_mocap[jntid]
-        if mocap >= 0:
+        # Without a state only fixed roots, whose pose does not depend on joint coordinates, are current.
+        if mocap >= 0 and (write_state or joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1] == 0):
+            lead = jnt_mocap_lead[jntid]
             lookahead = float(0.0)
-            if jnt_mocap_lead[jntid]:
+            if lead:
                 lookahead = kinematic_lookahead
             X_j, v_j = eval_joint_motion(
                 joint_type[joint_id],
@@ -1021,7 +1023,7 @@ def convert_warp_coords_to_mj_kernel(
                 lookahead,
             )
             quat = quat_xyzw_to_wxyz(target.q)
-            if mocap_root_moved and lookahead == 0.0:
+            if mocap_root_moved and not lead:
                 old_quat = mocap_quat[worldid, mocap]
                 delta = wp.length(target.p - mocap_pos[worldid, mocap]) + wp.length(
                     wp.vec4(quat[0] - old_quat[0], quat[1] - old_quat[1], quat[2] - old_quat[2], quat[3] - old_quat[3])

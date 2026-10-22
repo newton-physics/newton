@@ -1143,9 +1143,10 @@ by joint type:
   remain ordinary static MuJoCo geometry rather than mocap bodies.
 
 Mocap bodies posed from Newton joints, both fixed roots and massless
-kinematic roots, are updated together with the joint state. MuJoCo does not
-wake sleeping bodies resting on a moving mocap body, so when sleeping is
-enabled, moving one of these roots wakes its world.
+kinematic roots, are updated together with the joint state; a joint-frame
+notification re-poses fixed roots immediately. MuJoCo does not wake sleeping
+bodies resting on a moving mocap body, so when sleeping is enabled, moving one
+of these roots wakes its world.
 
 If you edit :attr:`~newton.Model.joint_X_p` or :attr:`~newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
@@ -1162,12 +1163,12 @@ equality that is active exactly while the root is kinematic:
 
 - Whenever the joint state is pushed into MuJoCo, the target is moved to
   the pose prescribed by :attr:`~newton.State.joint_q` and
-  :attr:`~newton.State.joint_qd`. The target leads the prescribed pose by
-  the weld's damping-to-stiffness ratio so the weld does not drag the body
-  toward the mocap's zero velocity during the step.
-- The weld time constant is two timesteps (eight under RK4, whose
-  intermediate stages destabilize stiffer welds), set from the step size
-  independently of MuJoCo's REFSAFE flag.
+  :attr:`~newton.State.joint_qd`. The weld has no damping, so it does not
+  brake the body against the mocap's zero velocity. Under RK4, which
+  averages forces over the step, the target leads by half a step.
+- The weld stiffness corresponds to a time constant of two timesteps
+  (eight under RK4, whose intermediate stages destabilize stiffer welds),
+  set from the step size independently of MuJoCo's REFSAFE flag.
 
 Kinematic roots keep their real mass, so the weld is not an
 infinite-mass constraint:

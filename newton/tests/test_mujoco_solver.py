@@ -2484,6 +2484,40 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         body_q = state_0.body_q.numpy()
         self.assertLess(float(body_q[box, 2] - body_q[platform, 2]), 0.16)
 
+    def test_joint_frame_notification_keeps_kinematic_roots_between_pushes(self):
+        """Leave kinematic roots alone on a joint-frame notification; only a state push moves them."""
+        dt = 0.002
+        for massless, use_mujoco_cpu in itertools.product((False, True), (False, True)):
+            with self.subTest(massless=massless, use_mujoco_cpu=use_mujoco_cpu):
+                positions = []
+                for notify in (False, True):
+                    builder = newton.ModelBuilder()
+                    body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), is_kinematic=True)
+                    cfg = newton.ModelBuilder.ShapeConfig(density=0.0 if massless else 1000.0)
+                    builder.add_shape_box(body, hx=0.2, hy=0.2, hz=0.05, cfg=cfg)
+                    model = builder.finalize()
+                    solver = SolverMuJoCo(
+                        model, use_mujoco_cpu=use_mujoco_cpu, update_data_interval=10, disable_contacts=True
+                    )
+                    state_0, state_1, control = model.state(), model.state(), model.control()
+                    for i in range(30):
+                        q = state_0.joint_q.numpy()
+                        qd = state_0.joint_qd.numpy()
+                        q[0], qd[0] = i * dt, 1.0
+                        state_0.joint_q.assign(q)
+                        state_0.joint_qd.assign(qd)
+                        if notify and i == 21:
+                            solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+                        solver.step(state_0, state_1, control, None, dt)
+                        state_0, state_1 = state_1, state_0
+                    if use_mujoco_cpu:
+                        solver._mujoco.mj_kinematics(solver.mj_model, solver.mj_data)
+                        positions.append(solver.mj_data.xpos[1].copy())
+                    else:
+                        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+                        positions.append(solver.mjw_data.xpos.numpy()[0, 1])
+                np.testing.assert_allclose(positions[1], positions[0], atol=1.0e-6)
+
     def test_kinematic_targets_update_in_captured_step(self):
         """Replaying a captured step moves the mocap target with the prescribed state."""
         if wp.get_cuda_device_count() == 0:
@@ -2504,10 +2538,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 state_0.joint_q.fill_(x)
                 state_0.joint_qd.fill_(0.5)
                 wp.capture_launch(capture.graph)
-                # The target leads the prescribed pose by the weld's 4 * dt look-ahead.
-                np.testing.assert_allclose(
-                    solver.mjw_data.mocap_pos.numpy()[0, mocap], (x + 0.5 * 4.0 * dt, 0.0, 1.0), atol=1.0e-6
-                )
+                np.testing.assert_allclose(solver.mjw_data.mocap_pos.numpy()[0, mocap], (x, 0.0, 1.0), atol=1.0e-6)
 
     @staticmethod
     def _mocap_pose(solver: SolverMuJoCo, mocap: int) -> tuple[np.ndarray, np.ndarray]:

@@ -55,7 +55,6 @@ from .collision_masks import (
 )
 from .constants import (
     DEFAULT_LIMIT_SOLREF,
-    KINEMATIC_WELD_DAMPRATIO,
     KINEMATIC_WELD_SOLIMP,
     KINEMATIC_WELD_TIMECONST_STEPS,
     KINEMATIC_WELD_TIMECONST_STEPS_RK4,
@@ -6047,7 +6046,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         jnt_mocap = self._jnt_mocap if mjw_data is not None else None
         lookahead = 0.0
         if self._kinematic_target_eq is not None and mjw_data is not None and dt > 0.0:
-            lookahead = self._update_kinematic_weld_solref(dt)
+            lookahead = self._update_kinematic_welds(dt)
         sleep_redirect = is_mjwarp and self.enable_sleeping and write_state
         mocap_root_moved = self._mocap_root_moved if is_mjwarp and jnt_mocap is not None else None
         if mocap_root_moved is not None:
@@ -8704,8 +8703,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             eq.name1 = root_body.name
             eq.name2 = target.name
             eq.data[0:11] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
-            # The time constant is reset from the step size on the first step.
-            eq.solref = (KINEMATIC_WELD_TIMECONST_STEPS * spec.option.timestep, KINEMATIC_WELD_DAMPRATIO)
+            # Rescaled to the step size on the first step.
+            eq.solref = self._kinematic_weld_solref(spec.option.timestep, False)
             eq.solimp = KINEMATIC_WELD_SOLIMP
             kinematic_target_names.append(target.name)
             kinematic_target_eq_ids.append(eq.id)
@@ -9617,31 +9616,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _update_kinematic_weld_solref(self, dt: float) -> float:
-        """Scale the kinematic welds to ``dt`` and return how far their targets must lead.
+    @staticmethod
+    def _kinematic_weld_solref(dt: float, rk4: bool) -> tuple[float, float]:
+        """Return the direct-form solref of an undamped kinematic weld for step size ``dt``.
 
-        The target leads by the weld's damping-to-stiffness ratio so its spring
-        cancels its damping against the mocap's zero velocity. RK4 averages
-        forces over the step, half a step past where the target was placed.
+        Without damping the weld does not brake the body against the mocap target's zero velocity.
+        """
+        timeconst = (KINEMATIC_WELD_TIMECONST_STEPS_RK4 if rk4 else KINEMATIC_WELD_TIMECONST_STEPS) * dt
+        return (-KINEMATIC_WELD_SOLIMP[1] / (timeconst * timeconst), 0.0)
+
+    def _update_kinematic_welds(self, dt: float) -> float:
+        """Scale the kinematic welds to ``dt`` and return how far their targets lead the prescribed pose.
+
+        Only RK4 needs a lead: it averages forces over the step, half a step past the pushed pose.
         """
         rk4 = self.mj_model.opt.integrator == self._mujoco.mjtIntegrator.mjINT_RK4
-        timeconst = (KINEMATIC_WELD_TIMECONST_STEPS_RK4 if rk4 else KINEMATIC_WELD_TIMECONST_STEPS) * dt
         if dt != self._kinematic_weld_dt:
             self._kinematic_weld_dt = dt
-            solref = wp.vec2(timeconst, KINEMATIC_WELD_DAMPRATIO)
+            solref = self._kinematic_weld_solref(dt, rk4)
             wp.launch(
                 update_kinematic_weld_solref_kernel,
                 dim=(self.mjw_model.eq_solref.shape[0], self._kinematic_target_eq.shape[0]),
-                inputs=[self._kinematic_target_eq, solref],
+                inputs=[self._kinematic_target_eq, wp.vec2(*solref)],
                 outputs=[self.mjw_model.eq_solref],
                 device=self.model.device,
             )
             if self.use_mujoco_cpu:
-                self.mj_model.eq_solref[self._kinematic_target_eq.numpy()] = (timeconst, KINEMATIC_WELD_DAMPRATIO)
-        lookahead = 2.0 * timeconst * KINEMATIC_WELD_DAMPRATIO**2
-        if rk4:
-            lookahead += 0.5 * dt
-        return lookahead
+                self.mj_model.eq_solref[self._kinematic_target_eq.numpy()] = solref
+        return 0.5 * dt if rk4 else 0.0
 
     def _update_joint_dof_friction_damping_properties(self):
         """Publish friction, damping, and their solver parameters with one scatter kernel."""
