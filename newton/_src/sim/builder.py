@@ -4519,8 +4519,8 @@ class ModelBuilder:
         Args:
             source: The file path to the USD file, or an existing USD stage instance.
             xform: The transform to apply to the entire scene.
-                If ``parent_body`` is set, ``xform`` is expressed in that body's frame
-                instead of the world frame.
+                If ``parent_body`` is set, imported bodies are placed relative to that
+                body's frame; static shapes still use ``xform`` in the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -4881,8 +4881,8 @@ class ModelBuilder:
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.
-                If ``parent_body`` is set, ``xform`` is expressed in that body's frame
-                instead of the world frame.
+                If ``parent_body`` is set, imported bodies are placed relative to that
+                body's frame; static shapes still use ``xform`` in the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
