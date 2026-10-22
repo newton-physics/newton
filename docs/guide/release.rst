@@ -156,9 +156,11 @@ Code freeze and release branch creation
        maintainers, verify that Newton and the converters resolve and install
        together in a clean target integration environment, then smoke-test
        conversion and loading.  Check runtime compatibility as well as
-       package metadata, including newly introduced MuJoCo options
-       used by Newton.  Record exact tested versions and results before
-       tagging the RC.
+       package metadata, including MJCF features used by Newton or the
+       converters.  Assess and record compatibility gaps when only one
+       supports a feature; new features unused by both need not block the
+       release.  Record exact tested versions and results before tagging
+       the RC.
    * - ☐
      - Run the ``release-audit`` skill in **release-candidate mode** against
        ``release-X.Y``; address or acknowledge flagged entries before
