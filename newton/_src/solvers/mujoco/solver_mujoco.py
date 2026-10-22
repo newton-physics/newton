@@ -9599,6 +9599,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self.jnt_connect_constraint_q_rel,
                     self.jnt_connect_constraint_t_rel,
                 )
+                self._recompute_jnt_eq_anchor1()
         wrote_eq_data = False
         if self.has_connect_constraints and (update_anchor_rel_xform_at_ref_pose or update_anchors):
             SolverMuJoCo._update_connect_constraint_anchors(
@@ -9609,8 +9610,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.connect_constraint_t_rel,
             )
             wrote_eq_data = True
-        if update_anchor_rel_xform_at_ref_pose and self.has_jnt_connect_constraints:
-            self._recompute_jnt_eq_anchor1()
+        if self.has_jnt_connect_constraints:
             SolverMuJoCo._update_jnt_connect_constraint_anchors(
                 self.model,
                 self.mjw_model,
