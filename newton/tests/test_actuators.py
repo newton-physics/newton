@@ -22,6 +22,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.actuators import effort_mode_implicit
 from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
@@ -408,6 +409,28 @@ def _build_two_link(
     if worlds == 1:
         return template.finalize(device=device)
     builder = newton.ModelBuilder(gravity=_IN_PLANE_GRAVITY if gravity else _NO_GRAVITY)
+    builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
+    return builder.finalize(device=device)
+
+
+def _build_chain(device: wp.Device, links: int = 8, worlds: int = 2) -> newton.Model:
+    """Revolute chain with alternating axes, large enough for the CUDA tile inverse and block solve."""
+    template = newton.ModelBuilder(gravity=_NO_GRAVITY)
+    parent = -1
+    joints = []
+    for i in range(links):
+        body = template.add_link(com=wp.vec3(0.0, 0.0, -0.05), inertia=_POINT_MASS_INERTIA, mass=0.2 + 0.05 * i)
+        joints.append(
+            template.add_joint_revolute(
+                parent=parent,
+                child=body,
+                axis=(newton.Axis.X, newton.Axis.Y, newton.Axis.Z)[i % 3],
+                parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.1 if parent >= 0 else 0.0), wp.quat_identity()),
+            )
+        )
+        parent = body
+    template.add_articulation(joints)
+    builder = newton.ModelBuilder(gravity=_NO_GRAVITY)
     builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
     return builder.finalize(device=device)
 
@@ -3687,6 +3710,52 @@ class TestActuatorImplicit(unittest.TestCase):
     to the implicit solve.
     """
 
+    def test_block_solve_matches_per_thread_solve(self):
+        """The CUDA block solve gives the per-thread solve's efforts on a clamped 8-DOF chain."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("the block solve runs on CUDA only")
+        h = 0.004
+        model = _build_chain(device)
+        n = model.joint_dof_count
+        rng = np.random.default_rng(0)
+        state = model.state()
+        state.joint_q.assign(rng.uniform(-0.4, 0.4, n).astype(np.float32))
+        state.joint_qd.assign(rng.uniform(-2.0, 2.0, n).astype(np.float32))
+        control = model.control()
+        control.joint_target_q.assign(rng.uniform(-0.5, 0.5, n).astype(np.float32))
+
+        def run() -> tuple[np.ndarray, bool]:
+            response = JointSpaceResponse(model)
+            actuator = Actuator(
+                indices=wp.array(_arm_dofs(model), dtype=wp.uint32, device=device),
+                drive=DrivePD(
+                    kp=wp.full(n, 500.0, dtype=float, device=device),
+                    kd=wp.full(n, 10.0, dtype=float, device=device),
+                ),
+                clamping=[
+                    ClampingDCMotor(
+                        saturation_effort=wp.full(n, 40.0, dtype=float, device=device),
+                        velocity_limit=wp.full(n, 3.0, dtype=float, device=device),
+                        max_motor_effort=wp.full(n, 30.0, dtype=float, device=device),
+                    )
+                ],
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            actuator.set_effort_mode_implicit(response)
+            control.joint_f.zero_()
+            _refresh_and_step(actuator, response, state, control, h)
+            return control.joint_f.numpy().copy(), actuator._effort_mode._block_kernel is not None
+
+        block, used_block = run()
+        with patch.object(effort_mode_implicit, "_BLOCK_SOLVE_MAX_ROWS", 0):
+            per_thread, used_block_after_patch = run()
+        self.assertTrue(used_block)
+        self.assertFalse(used_block_after_patch)
+        self.assertGreater(np.max(np.abs(per_thread)), 1.0)
+        np.testing.assert_allclose(block, per_thread, rtol=1e-3, atol=1e-3)
+
     def test_unsupported_drive_raises(self):
         """A drive without evaluate_force is rejected at construction."""
         device = wp.get_device()
@@ -3731,7 +3800,7 @@ class TestActuatorImplicit(unittest.TestCase):
             actuator.step(model.state(), model.control())
 
     def test_validation_rejects_bad_options(self):
-        """dt, warm_start and fd_epsilon are validated rather than silently misbehaving."""
+        """dt, warm_start, fd_epsilon and ls_iterations are validated rather than silently misbehaving."""
         device = wp.get_device()
         model = _build_pendulum(device)
         kp = wp.array([100.0], dtype=float, device=device)
@@ -3745,6 +3814,11 @@ class TestActuatorImplicit(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fd_epsilon"):
             _make_implicit_actuator(
                 model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(fd_epsilon=0.0)
+            )
+
+        with self.assertRaisesRegex(ValueError, "ls_iterations"):
+            _make_implicit_actuator(
+                model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(ls_iterations=-1)
             )
 
         actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
@@ -3975,6 +4049,85 @@ class TestActuatorImplicit(unittest.TestCase):
         self.assertGreater(np.max(np.abs(single - converged)), 0.5 * np.max(np.abs(converged)))
         np.testing.assert_allclose(run(2)[0], converged, rtol=1e-6, atol=1e-6)
 
+    def test_dc_motor_solve_converges_where_full_newton_steps_oscillate(self):
+        """The line search lets the solve converge where full Newton steps jump between the DC-motor limits."""
+        device = wp.get_device()
+        h = 0.01
+        kp, kd, sat, vel_lim, max_e = 12.3365, 0.209173, 3.24316, 0.373749, 4.52314
+        q0 = np.array([0.144578, -0.0894171])
+        qd0 = np.array([-1.10118, 0.0430172])
+        target = np.array([-0.747263, -0.989789])
+
+        model = _build_two_link(device)
+        state = model.state()
+        state.joint_q.assign(q0.astype(np.float32))
+        state.joint_qd.assign(qd0.astype(np.float32))
+        control = model.control()
+        control.joint_target_q.assign(target.astype(np.float32))
+        response = JointSpaceResponse(model)
+        response_matrix = _response_at_state(model, state).astype(np.float64)
+
+        def solve(ls_iterations: int) -> tuple[np.ndarray, np.ndarray]:
+            actuator = Actuator(
+                indices=wp.array([0, 1], dtype=wp.uint32, device=device),
+                drive=DrivePD(
+                    kp=wp.full(2, kp, dtype=float, device=device),
+                    kd=wp.full(2, kd, dtype=float, device=device),
+                ),
+                clamping=[
+                    ClampingDCMotor(
+                        saturation_effort=wp.full(2, sat, dtype=float, device=device),
+                        velocity_limit=wp.full(2, vel_lim, dtype=float, device=device),
+                        max_motor_effort=wp.full(2, max_e, dtype=float, device=device),
+                    )
+                ],
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            actuator.set_effort_mode_implicit(
+                response=response, options=Actuator.ImplicitOptions(ls_iterations=ls_iterations)
+            )
+            control.joint_f.zero_()
+            _refresh_and_step(actuator, response, state, control, h)
+
+            effort = control.joint_f.numpy().astype(np.float64)
+            qd_p = qd0 + response_matrix @ (h * effort)
+            q_p = q0 + h * qd_p
+            bounds = np.array([_dc_bounds(sat, vel_lim, max_e, v) for v in qd_p])
+            expected = np.clip(kp * (target - q_p) - kd * qd_p, bounds[:, 0], bounds[:, 1])
+            return effort, expected
+
+        effort, expected = solve(ls_iterations=8)
+        np.testing.assert_allclose(effort, expected, rtol=1e-3, atol=1e-3)
+
+        # Same iteration budget without backtracking: full steps keep jumping between the limits.
+        effort, expected = solve(ls_iterations=0)
+        self.assertGreater(np.max(np.abs(effort - expected)), 1e-2)
+
+    def test_small_efforts_still_take_a_newton_step(self):
+        """Efforts below the residual tolerance are solved implicitly, not returned as the explicit warm start."""
+        device = wp.get_device()
+        h = 0.01
+        model = _build_pendulum(device)
+        state = model.state()
+        alpha = float(_response_at_state(model, state)[0, 0])
+        # kd makes the implicit effort half the explicit one; kp keeps the explicit impulse below residual_tol.
+        kp, kd, target = 1.0, 1.0 / (alpha * h), 1.0e-4
+        control = model.control()
+        control.joint_target_q.assign([target])
+        actuator, response = _make_implicit_actuator(
+            model,
+            device,
+            kp=wp.array([kp], dtype=float, device=device),
+            kd=wp.array([kd], dtype=float, device=device),
+        )
+        control.joint_f.zero_()
+        _refresh_and_step(actuator, response, state, control, h)
+
+        expected = _expected_implicit_pd(model, state, kp, kd, target, h)
+        self.assertLess(h * kp * target, Actuator.ImplicitOptions().residual_tol)
+        np.testing.assert_allclose(control.joint_f.numpy()[0], expected, rtol=1e-3)
+
     def test_warm_start_zero_reaches_the_same_solution(self):
         """``warm_start="zero"`` converges to the same effort as the explicit start.
 
@@ -4056,6 +4209,33 @@ class TestJointSpaceResponse(unittest.TestCase):
 
         expected = 1.0 / np.finfo(np.float32).eps
         self.assertAlmostEqual(float(response.inverse_blocks.numpy()[0, 0, 0]), expected)
+
+    def test_tile_inverse_matches_dense_inverse(self):
+        """The CUDA tile inverse matches a dense inverse, and a singular block falls back to the floored kernel."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("the tile inverse runs on CUDA only")
+        model = _build_chain(device)
+        n = model.joint_dof_count // model.world_count
+        state = model.state()
+        state.joint_q.assign(np.random.default_rng(1).uniform(-0.6, 0.6, model.joint_dof_count).astype(np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        response = JointSpaceResponse(model)
+        self.assertIsNotNone(response._tile)
+
+        response.refresh(state)
+
+        H = newton.eval_mass_matrix(model, state).numpy()
+        blocks = response.inverse_blocks.numpy()
+        for art in range(model.articulation_count):
+            expected = np.linalg.inv(H[art, :n, :n].astype(np.float64))
+            np.testing.assert_allclose(blocks[art, :n, :n], expected, rtol=1e-3, atol=1e-3 * np.abs(expected).max())
+
+        # A zero block makes the tile Cholesky fail; the repair redoes it with floored pivots.
+        response._H.zero_()
+        response._invert_blocks()
+        expected = np.eye(n) / np.finfo(np.float32).eps
+        np.testing.assert_allclose(response.inverse_blocks.numpy()[0, :n, :n], expected, rtol=1e-5)
 
     def test_inverse_blocks_match_dense_inverse(self):
         """refresh() fills the full per-articulation inverse mass block.
@@ -5356,6 +5536,11 @@ class TestActuatorStateAssign(unittest.TestCase):
             Actuator.State(drive_state=state).assign(Actuator.State())
 
 
+@wp.kernel
+def _noop_kernel():
+    pass
+
+
 @unittest.skipUnless(
     wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
     "CUDA graph capture requires CUDA device with memory pools",
@@ -5428,6 +5613,8 @@ class TestDriveStateGraphCapture(unittest.TestCase):
                 key = id(s0) if parity_graphs else None
                 if key not in graphs:
                     with wp.ScopedCapture(device) as capture:
+                        # Graphs rooted at a memset can start before prior stream work on R570 Ada GPUs (#4786).
+                        wp.launch(_noop_kernel, dim=1, device=device)
                         after = run(s0, s1, steps_per_graph, boundary_assign=not parity_graphs)
                     graphs[key] = (capture.graph, after)
                 graph, (s0, s1) = graphs[key]

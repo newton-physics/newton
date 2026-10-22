@@ -774,8 +774,8 @@ solvers = {
     "steel_matrix_free": lambda model: newton.solvers.SolverSteel(model, solve_mode="matrix_free"),
     "steel_split": lambda model: newton.solvers.SolverSteel(model, solve_mode="split"),
     "steel_propagation": lambda model: newton.solvers.SolverSteel(model, articulated_contact_response="propagation"),
-    "steel_propagation_fused": lambda model: newton.solvers.SolverSteel(
-        model, articulated_contact_response="propagation_fused"
+    "steel_propagation_colored": lambda model: newton.solvers.SolverSteel(
+        model, articulated_contact_response="propagation_colored"
     ),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
@@ -791,7 +791,7 @@ for device in devices:
             "mujoco_warp",
             "steel_matrix_free",
             "steel_propagation",
-            "steel_propagation_fused",
+            "steel_propagation_colored",
         ):
             continue
 

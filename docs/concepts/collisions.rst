@@ -528,7 +528,7 @@ out many copies of a template environment builder into separate worlds in one ca
     # Combined builder: global geometry + 1024 replicated worlds
     main = newton.ModelBuilder()
     main.add_ground_plane()  # global (world -1), shared across all worlds
-    main.replicate(env_builder, world_count=1024)
+    main.replicate(env_builder, copy_count=1024)
     model = main.finalize()
 
 .. note::
@@ -2286,6 +2286,72 @@ Example:
         restitution=0.5,  # Bouncy where supported
     )
 
+.. _Contact friction gain and adhesion:
+
+Friction gain and adhesion
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This section covers rigid shape-shape contacts in the penalty contact model of
+:class:`~newton.solvers.SolverSemiImplicit` and
+:class:`~newton.solvers.SolverFeatherstone`, which average ``ke``, ``kd``,
+``kf``, ``ka`` and ``mu`` of the two shapes. Particle-shape contacts in these
+solvers work differently: ``kf`` is averaged with ``Model.soft_contact_kf``, the
+shape's ``ka`` is ignored in favor of ``Model.particle_adhesion``, and damping
+and friction also act inside the adhesion zone. For
+:class:`~newton.solvers.SolverMuJoCo`, see
+:ref:`mujoco-contact-friction-solreffriction`.
+
+Let :math:`d` be the contact-space distance :math:`d = s - m` from
+:ref:`margin and gap semantics <margin-gap-semantics>`, where :math:`s` is the
+surface distance and :math:`m` the pair margin, so :math:`d` is negative once
+the surfaces come within the pair margin. Let :math:`v_n` and :math:`v_t` be the
+normal and tangential relative velocities. Per contact, the normal force
+:math:`f_n` acts along the contact normal and is negative (repulsive) for
+:math:`d < 0` and positive (attractive) inside the adhesion zone:
+
+.. math::
+
+   f_n &= k_e \, d \qquad (d < k_a) \\
+   f_d &= k_d \, \min(v_n, 0) \qquad (d < 0) \\
+   \lVert f_t \rVert &= k_f \, \lVert v_t \rVert \qquad (d < 0, \text{ low slip speed})
+
+**Friction gain** ``kf`` **[N·s/m]** is the slope of a viscous regularization
+of Coulomb friction: at low slip speed the friction force is
+:math:`k_f \lVert v_t \rVert`, so a body at rest on a slope creeps instead of
+sticking. With :math:`N` contacts carrying the load, the creep speed is roughly
+:math:`m g \sin\theta / (N k_f)`. At higher slip speed the force is capped by a
+term proportional to ``mu``. The exact cap is under review in
+`#4796 <https://github.com/newton-physics/newton/issues/4796>`__.
+
+- Larger ``kf`` gives less creep but stiffens the friction force. With these
+  explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
+  where :math:`m_\text{eff}` is the effective mass of the lightest contact pair,
+  or reduce the time step.
+- Smaller ``kf`` is more stable but makes contacts slide and objects creep.
+- ``kf = 0`` disables friction.
+
+**Adhesion distance** ``ka`` **[m]** lets the normal force act before the
+surfaces come within the pair margin. Contacts are processed while
+:math:`d < k_a` instead of :math:`d < 0`, so the adhesion zone is
+:math:`m \le s < m + k_a`. For :math:`0 \le d < k_a`, :math:`f_n = k_e \, d` is
+attractive and grows linearly with :math:`d` up to about :math:`k_e \, k_a`
+per contact just inside :math:`d = k_a`. At :math:`d \ge k_a` the contact applies
+no force. Damping and friction only act while :math:`d < 0`.
+
+- ``ka = 0`` (the default) disables adhesion.
+- Use a small nonzero value for sticky or suction-like contacts, for example to
+  hold a light object against a gripper pad. Choose ``ka`` so that
+  :math:`N k_e \, k_a` exceeds the force you want to resist.
+- Adhesion only acts on contacts the collision pipeline reports, so the pair
+  gap ``gap_a + gap_b`` (see :ref:`margin and gap semantics <margin-gap-semantics>`)
+  must be at least the pair's averaged ``ka``.
+- The force jumps from about :math:`k_e \, k_a` to zero at the cutoff. Shapes
+  that enter the zone are pulled in and bounce, and damping only acts for
+  :math:`d < 0`, so large values make contacts lively. Explicit stepping across
+  the cutoff also adds an error of order :math:`k_e \, k_a \, |v_n| \, \Delta t`
+  per step, which can add or remove energy. Keep ``ka`` small relative to the
+  shape size.
+
 .. _USD Collision:
 
 USD Integration
@@ -2405,6 +2471,14 @@ contributions across threads:
 
 Together these give bit-exact repeatability across runs on the same GPU
 architecture when the consuming solver is deterministic as well.
+For example, :class:`~newton.solvers.SolverSteel` reserves its constraint rows
+in contact-buffer order when constructed with
+``deterministic=wp.DeterministicMode.RUN_TO_RUN``:
+
+.. code-block:: python
+
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    solver = newton.solvers.SolverSteel(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
 
 .. note::
 

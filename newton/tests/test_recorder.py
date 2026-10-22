@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
 import tempfile
 import unittest
@@ -683,7 +684,7 @@ def test_mesh_recording_keeps_distinct_appearance(test: TestRecorder, device):
     mesh_b.vertices = mesh_a.vertices
     mesh_b.indices = mesh_a.indices
 
-    serialized = pointer_as_key([mesh_a, mesh_b, mesh_a], cache=ArrayCache())
+    serialized = json.loads(json.dumps(pointer_as_key([mesh_a, mesh_b, mesh_a], cache=ArrayCache())))
     restored = depointer_as_key(serialized, cache=ArrayCache())
 
     test.assertIs(restored[0], restored[2])
