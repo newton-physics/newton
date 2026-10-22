@@ -4033,7 +4033,7 @@ class ModelBuilder:
                 specs[name] = Model.AttributeSpec(
                     group,
                     references=reference,
-                    compaction_policy="start" if suffix.endswith("_start") else "end",
+                    compaction_policy="range_start" if suffix.endswith("_start") else "end",
                 )
                 declared_builder_attributes.add(name)
 

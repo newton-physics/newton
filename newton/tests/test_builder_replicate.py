@@ -876,6 +876,15 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertIs(specs["shape_body"], Model._CORE_ATTRIBUTE_SPECS["shape_body"])
         self.assertEqual(specs["joint_target_q"].frequency, Model.AttributeFrequency.JOINT_COORD)
 
+        for family, references in ModelBuilder._BUILDER_GROUP_REFERENCES.items():
+            for suffix in references:
+                name = f"{family}_{suffix}"
+                with self.subTest(attribute=name):
+                    builder_spec = specs[f"_{name}"]
+                    model_spec = Model._CORE_ATTRIBUTE_SPECS[name]
+                    self.assertEqual(builder_spec.references, model_spec.references)
+                    self.assertEqual(builder_spec.compaction_policy, model_spec.compaction_policy)
+
         base_attributes, base_lists = ModelBuilder._base_builder_attributes()
 
         added = {"_missing_merge_metadata"}
