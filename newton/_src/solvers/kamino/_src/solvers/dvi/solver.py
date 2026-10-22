@@ -339,6 +339,7 @@ class DVISolver:
 
         solver_type = first_config.bilateral_solver_type
         kwargs = dict(first_config.bilateral_solver_kwargs)
+        kwargs.setdefault("failed_pivot_shift", BILATERAL_FAILED_PIVOT_SHIFT)
         if solver_type == "LLTB":
             # A larger factorization tile reduces panel count, while the
             # single-RHS solve benefits from more threads on its smaller tile.
@@ -346,7 +347,6 @@ class DVISolver:
             kwargs.setdefault("solve_block_dim", 256)
             solver_class = LLTBlockedSolver
         else:
-            kwargs.setdefault("failed_pivot_shift", BILATERAL_FAILED_PIVOT_SHIFT)
             kwargs.setdefault("capacity_stride", True)
             if self._device.is_cuda and model.size.num_worlds >= 2048:
                 kwargs.setdefault("solve_block_dim", 128)

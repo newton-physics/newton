@@ -4506,7 +4506,7 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
         builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25)
 
     replicated_builder = newton.ModelBuilder()
-    replicated_builder.replicate(builder, world_count=768)
+    replicated_builder.replicate(builder, copy_count=768)
     model = replicated_builder.finalize(device=device)
     split = newton.CollisionPipeline(
         model,
@@ -7509,6 +7509,10 @@ def test_mesh_midphase_many_pairs(test, device):
     if device.is_cuda:
         test.assertIsNotNone(narrow_phase._midphase_narrow_kernel)
         test.assertGreater(mesh_pairs, narrow_phase.num_tile_blocks)
+
+    triangle_count = int(narrow_phase.triangle_pairs_count.numpy()[0])
+    triangle_pairs = narrow_phase.triangle_pairs.numpy()[:triangle_count]
+    test.assertEqual(len(np.unique(triangle_pairs, axis=0)), triangle_count)
 
     count = int(contacts.rigid_contact_count.numpy()[0])
     shape0 = contacts.rigid_contact_shape0.numpy()[:count]

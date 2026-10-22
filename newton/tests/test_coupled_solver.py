@@ -2890,7 +2890,7 @@ class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
         template.add_articulation([jfree])
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        builder.replicate(template, world_count=world_count)
+        builder.replicate(template, copy_count=world_count)
         builder.color()
         model = builder.finalize(device="cpu")
 
