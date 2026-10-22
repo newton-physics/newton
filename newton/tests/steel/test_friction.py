@@ -942,6 +942,80 @@ add_function_test(
 )
 
 
+def _resting_box(device, mode, articulated, steps=120):
+    """Step a box placed flat on a static floor with zero contact gap.
+
+    Returns the box's largest angular speed and the fewest contacts generated in a step.
+    """
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0, restitution=0.0, density=500.0)
+    builder.add_shape_box(
+        -1, xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), hx=2.0, hy=2.0, hz=0.05, cfg=cfg
+    )
+    pose = wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
+    box = (builder.add_link if articulated else builder.add_body)(xform=pose)
+    if articulated:
+        joint = builder.add_joint_d6(
+            parent=-1,
+            child=box,
+            parent_xform=pose,
+            linear_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+            angular_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
+        )
+        builder.add_articulation([joint])
+    builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.05, cfg=cfg)
+    model = builder.finalize(device=device)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        articulated_contact_response="immediate",
+        friction_mode=mode,
+        friction_anchor_beta=0.0,
+        iterations=32,
+        free_body_constraint_max=64,
+        articulation_constraint_max=64,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+    )
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=32, deterministic=True)
+    contacts = pipeline.contacts()
+    state, next_state, control = model.state(), model.state(), model.control()
+    max_spin, min_contacts = 0.0, 4
+    for _ in range(steps):
+        state.clear_forces()
+        pipeline.collide(state, contacts)
+        min_contacts = min(min_contacts, int(contacts.rigid_contact_count.numpy()[0]))
+        solver.step(state, next_state, control, contacts, 1.0 / 240.0)
+        state, next_state = next_state, state
+        max_spin = max(max_spin, float(np.linalg.norm(state.body_qd.numpy()[box, 3:])))
+    return max_spin, min_contacts
+
+
+def test_resting_box_keeps_its_contacts(test, device):
+    """A box resting on four zero-gap contacts stays still in every coupled mode, free and articulated.
+
+    A box lifted by one float32 ulp loses its zero-gap contacts on the next step and falls, so this checks
+    that the coupled normal solve reaches the support load as exactly as fixed_normal does.
+    """
+    for mode in MODES[1:]:
+        for articulated in (False, True):
+            with test.subTest(mode=mode, articulated=articulated):
+                max_spin, min_contacts = _resting_box(device, mode, articulated)
+                test.assertEqual(min_contacts, 4)
+                test.assertLess(max_spin, 1.0e-6)
+
+
+class TestSteelCoupledFrictionRest(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestSteelCoupledFrictionRest,
+    "test_resting_box_keeps_its_contacts",
+    test_resting_box_keeps_its_contacts,
+    devices=cuda_devices,
+)
+
+
 @wp.kernel(enable_backward=False)
 def _pose_motion_probe(
     before: wp.array[wp.transform],
