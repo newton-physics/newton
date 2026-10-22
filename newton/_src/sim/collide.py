@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import operator
 import warnings
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -1985,6 +1984,7 @@ class CollisionPipeline:
         except ImportError as error:
             raise ImportError("Creating a CollisionPipeline from USD requires usd-core.") from error
 
+        from ..usd import _collision_pipeline as usd_cp  # noqa: PLC0415
         from ..usd import require_newton_usd_schemas  # noqa: PLC0415
         from ..usd import utils as usd  # noqa: PLC0415
 
@@ -2020,161 +2020,98 @@ class CollisionPipeline:
                 "Set metersPerUnit to 1.0 before import."
             )
 
-        def authored(name: str) -> Any:
-            attr = prim.GetAttribute(name)
-            if not attr or not attr.HasAuthoredValue():
-                return None
-            value = attr.Get()
-            if value is None:
-                raise ValueError(f"{path}: authored attribute {name!r} has no value.")
-            return value
-
-        def integer(name: str, value: Any, *, allow_minus_one: bool = False, disallow_zero: bool = False) -> int:
-            if isinstance(value, (bool, np.bool_)):
-                raise ValueError(f"{path}: {name} must be an integer, got {value!r}.")
-            try:
-                result = operator.index(value)
-            except TypeError as error:
-                raise ValueError(f"{path}: {name} must be an integer, got {value!r}.") from error
-            if result < 0 and not (allow_minus_one and result == -1):
-                suffix = " or -1" if allow_minus_one else ""
-                raise ValueError(f"{path}: {name} must be non-negative{suffix}, got {result}.")
-            if result == 0 and disallow_zero:
-                suffix = " or -1" if allow_minus_one else ""
-                raise ValueError(f"{path}: {name} must be a positive integer{suffix}, got {result}.")
-            return result
-
-        def token(name: str, value: Any, allowed: set[str]) -> str:
-            result = str(value)
-            if result not in allowed:
-                raise ValueError(f"{path}: {name} must be one of {sorted(allowed)}, got {result!r}.")
-            return result
-
-        def finite_float(name: str, value: Any, *, minimum: float | None = None, maximum: float | None = None) -> float:
-            try:
-                result = float(value)
-            except (TypeError, ValueError) as error:
-                raise ValueError(f"{path}: {name} must be a number, got {value!r}.") from error
-            out_of_range = (minimum is not None and result < minimum) or (maximum is not None and result > maximum)
-            if not math.isfinite(result) or out_of_range:
-                bounds = ""
-                if minimum is not None and maximum is not None:
-                    bounds = f" in [{minimum}, {maximum}]"
-                elif minimum is not None:
-                    bounds = f" >= {minimum}"
-                elif maximum is not None:
-                    bounds = f" <= {maximum}"
-                raise ValueError(f"{path}: {name} must be a finite number{bounds}, got {value!r}.")
-            return result
-
-        def optional_finite_float(name: str, value: Any, *, minimum: float) -> float | None:
-            """Parse a float attribute using the ``-inf`` sentinel convention for "unset".
-
-            A value below ``minimum`` warns and falls back to "unset" instead of
-            raising, mirroring the soft-limit convention used for
-            ``newton:hydroelasticStiffness``.
-            """
-            try:
-                numeric = float(value)
-            except (TypeError, ValueError) as error:
-                raise ValueError(f"{path}: {name} must be a number, got {value!r}.") from error
-            if numeric == float("-inf"):
-                return None
-            if not math.isfinite(numeric) or numeric < minimum:
-                warnings.warn(
-                    f"{path}: {name}={numeric!r} is invalid (must be >= {minimum}); falling back to default.",
-                    stacklevel=2,
-                )
-                return None
-            return numeric
-
         kwargs: dict[str, Any] = {}
 
-        value = authored("newton:collisionPipeline:broadPhase")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:broadPhase")
         if value is not None:
-            kwargs["broad_phase"] = token("newton:collisionPipeline:broadPhase", value, {"nxn", "sap", "explicit"})
-
-        value = authored("newton:collisionPipeline:maxTrianglePairs")
-        if value is not None:
-            kwargs["max_triangle_pairs"] = integer(
-                "newton:collisionPipeline:maxTrianglePairs", value, disallow_zero=True
+            kwargs["broad_phase"] = usd_cp.token(
+                path, "newton:collisionPipeline:broadPhase", value, {"nxn", "sap", "explicit"}
             )
 
-        value = authored("newton:collisionPipeline:maxRigidContacts")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:maxTrianglePairs")
         if value is not None:
-            result = integer("newton:collisionPipeline:maxRigidContacts", value, allow_minus_one=True)
+            kwargs["max_triangle_pairs"] = usd_cp.integer(
+                path, "newton:collisionPipeline:maxTrianglePairs", value, disallow_zero=True
+            )
+
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:maxRigidContacts")
+        if value is not None:
+            result = usd_cp.integer(path, "newton:collisionPipeline:maxRigidContacts", value, allow_minus_one=True)
             if result != -1:
                 kwargs["rigid_contact_max"] = result
 
-        value = authored("newton:collisionPipeline:reduceContacts")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:reduceContacts")
         if value is not None:
             kwargs["reduce_contacts"] = bool(value)
 
-        value = authored("newton:collisionPipeline:maxSoftContacts")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:maxSoftContacts")
         if value is not None:
-            result = integer("newton:collisionPipeline:maxSoftContacts", value, allow_minus_one=True)
+            result = usd_cp.integer(path, "newton:collisionPipeline:maxSoftContacts", value, allow_minus_one=True)
             if result != -1:
                 kwargs["soft_contact_max"] = result
 
-        value = authored("newton:collisionPipeline:softContactGap")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:softContactGap")
         if value is not None:
-            gap = optional_finite_float("newton:collisionPipeline:softContactGap", value, minimum=0.0)
+            gap = usd_cp.optional_finite_float(path, "newton:collisionPipeline:softContactGap", value, minimum=0.0)
             if gap is not None:
                 kwargs["soft_contact_gap"] = gap * linear_unit
 
-        value = authored("newton:collisionPipeline:enableRigidSoftFullSurfaceContact")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:enableRigidSoftFullSurfaceContact")
         if value is not None:
             kwargs["enable_rigid_soft_full_surface_contact"] = bool(value)
 
-        value = authored("newton:collisionPipeline:requiresGrad")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:requiresGrad")
         if value is not None:
-            result = token("newton:collisionPipeline:requiresGrad", value, {"inherit", "true", "false"})
+            result = usd_cp.token(path, "newton:collisionPipeline:requiresGrad", value, {"inherit", "true", "false"})
             if result != "inherit":
                 kwargs["requires_grad"] = result == "true"
 
-        value = authored("newton:collisionPipeline:deterministic")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:deterministic")
         if value is not None:
             kwargs["deterministic"] = bool(value)
 
-        value = authored("newton:collisionPipeline:includeStaticKinematicPairs")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:includeStaticKinematicPairs")
         if value is not None:
             kwargs["include_static_kinematic_pairs"] = bool(value)
 
-        value = authored("newton:collisionPipeline:maxShapePairs")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:maxShapePairs")
         if value is not None:
-            result = integer("newton:collisionPipeline:maxShapePairs", value, allow_minus_one=True, disallow_zero=True)
+            result = usd_cp.integer(
+                path, "newton:collisionPipeline:maxShapePairs", value, allow_minus_one=True, disallow_zero=True
+            )
             if result != -1:
                 kwargs["shape_pairs_max"] = result
 
-        value = authored("newton:collisionPipeline:contactMatching")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:contactMatching")
         if value is not None:
-            kwargs["contact_matching"] = token(
-                "newton:collisionPipeline:contactMatching", value, {"disabled", "latest", "sticky"}
+            kwargs["contact_matching"] = usd_cp.token(
+                path, "newton:collisionPipeline:contactMatching", value, {"disabled", "latest", "sticky"}
             )
 
-        value = authored("newton:collisionPipeline:contactMatchingPosThreshold")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:contactMatchingPosThreshold")
         if value is not None:
             kwargs["contact_matching_pos_threshold"] = (
-                finite_float("newton:collisionPipeline:contactMatchingPosThreshold", value, minimum=0.0) * linear_unit
+                usd_cp.finite_float(path, "newton:collisionPipeline:contactMatchingPosThreshold", value, minimum=0.0)
+                * linear_unit
             )
 
-        value = authored("newton:collisionPipeline:contactMatchingNormalDotThreshold")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:contactMatchingNormalDotThreshold")
         if value is not None:
-            kwargs["contact_matching_normal_dot_threshold"] = finite_float(
-                "newton:collisionPipeline:contactMatchingNormalDotThreshold", value, minimum=-1.0, maximum=1.0
+            kwargs["contact_matching_normal_dot_threshold"] = usd_cp.finite_float(
+                path, "newton:collisionPipeline:contactMatchingNormalDotThreshold", value, minimum=-1.0, maximum=1.0
             )
 
-        value = authored("newton:collisionPipeline:contactReport")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:contactReport")
         if value is not None:
             kwargs["contact_report"] = bool(value)
 
-        value = authored("newton:collisionPipeline:verifyBuffers")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:verifyBuffers")
         if value is not None:
             kwargs["verify_buffers"] = bool(value)
 
-        value = authored("newton:collisionPipeline:contactReductionHashtableSizeFactor")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:contactReductionHashtableSizeFactor")
         if value is not None:
-            result = finite_float("newton:collisionPipeline:contactReductionHashtableSizeFactor", value)
+            result = usd_cp.finite_float(path, "newton:collisionPipeline:contactReductionHashtableSizeFactor", value)
             if not math.isfinite(result) or result <= 0.0:
                 raise ValueError(
                     f"{path}: newton:collisionPipeline:contactReductionHashtableSizeFactor must be a "
@@ -2182,9 +2119,11 @@ class CollisionPipeline:
                 )
             kwargs["contact_reduction_hashtable_size_factor"] = result
 
-        value = authored("newton:collisionPipeline:maxSpeculativeContactGap")
+        value = usd_cp.authored(prim, path, "newton:collisionPipeline:maxSpeculativeContactGap")
         if value is not None:
-            gap_max = optional_finite_float("newton:collisionPipeline:maxSpeculativeContactGap", value, minimum=0.0)
+            gap_max = usd_cp.optional_finite_float(
+                path, "newton:collisionPipeline:maxSpeculativeContactGap", value, minimum=0.0
+            )
             if gap_max is not None:
                 kwargs["speculative_contact_gap_max"] = gap_max * linear_unit
 
