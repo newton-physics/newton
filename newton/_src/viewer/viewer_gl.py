@@ -223,10 +223,10 @@ class ViewerGL(ViewerBase):
         """Disable CUDA-OpenGL interoperability for render geometry."""
 
         DYNAMIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=True``."""
+        """Meshes logged with ``dynamic=True`` and model-owned skinned meshes."""
 
         STATIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=False``."""
+        """Meshes logged with ``dynamic=False``, including model-owned skinned meshes."""
 
         POINTS = enum.auto()
         """Point instance-transform buffers."""
@@ -971,7 +971,16 @@ class ViewerGL(ViewerBase):
         if hidden and existing is not None:
             existing.hidden = True
             return
-        self._log_mesh(name, points, indices, hidden=hidden, reuse_texture=True, **kwargs)
+        # Skinning changes vertices, not topology. Keep indices fixed with either mesh interop flag.
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            hidden=hidden,
+            reuse_texture=True,
+            cuda_interop_category=self.CudaInterop.DYNAMIC_MESH | self.CudaInterop.STATIC_MESH,
+            **kwargs,
+        )
 
     def _log_mesh(
         self,
@@ -990,6 +999,7 @@ class ViewerGL(ViewerBase):
         opacity=None,
         *,
         reuse_texture=False,
+        cuda_interop_category: CudaInterop | None = None,
     ):
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
@@ -1009,6 +1019,8 @@ class ViewerGL(ViewerBase):
 
         updated = False
         if replace:
+            if cuda_interop_category is None:
+                cuda_interop_category = self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
             point_capacity = len(points)
             index_capacity = len(indices)
             if existing is not None and existing.dynamic and dynamic:
@@ -1021,9 +1033,7 @@ class ViewerGL(ViewerBase):
                 hidden=hidden,
                 backface_culling=backface_culling,
                 dynamic=dynamic,
-                enable_cuda_interop=self._cuda_interop_enabled(
-                    self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
-                ),
+                enable_cuda_interop=self._cuda_interop_enabled(cuda_interop_category),
             )
             if existing is not None:
                 replacement.color = existing.color
