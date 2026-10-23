@@ -77,6 +77,16 @@ class DriveBase:
         A tuple of names is still accepted and treated as joint-DOF inputs.
     """
 
+    custom_outputs: Mapping[str, wp.array[float]] = MappingProxyType({})
+    """Arrays this drive writes in :meth:`compute`, keyed by the per-actuator Control array they go to.
+
+    Set in ``__init__``. Each array has one entry per slot. After each step,
+    :class:`~newton.actuators.Actuator` writes the entries into the same-named
+    ``"actuation:actuator"`` array on ``sim_control`` at
+    :attr:`~newton.actuators.Actuator.actuator_indices`, skipping a missing or
+    ``None`` array.
+    """
+
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         """Resolve user-provided arguments with defaults.

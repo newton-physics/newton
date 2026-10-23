@@ -341,7 +341,7 @@ def register_actuator_component(
 def parse_battery_prim(prim) -> dict[str, float] | None:
     """Parse a USD ``NewtonBattery`` prim into keyword arguments for :meth:`~newton.ModelBuilder.add_battery`.
 
-    ``newton:sagGain`` and ``newton:minVoltage`` fall back to 0. The
+    ``newton:resistance`` and ``newton:minVoltage`` fall back to 0. The
     actuators that draw from the battery name it in their ``newton:battery``
     relationship; :func:`parse_actuator_prim` reports it as
     :attr:`ActuatorParsed.battery_path`.
@@ -350,7 +350,7 @@ def parse_battery_prim(prim) -> dict[str, float] | None:
         prim: USD prim to parse.
 
     Returns:
-        ``{"nominal_voltage": ..., "sag_gain": ..., "min_voltage": ...}``, or
+        ``{"nominal_voltage": ..., "resistance": ..., "min_voltage": ...}``, or
         ``None`` if the prim is not a ``NewtonBattery``.
 
     Raises:
@@ -358,8 +358,8 @@ def parse_battery_prim(prim) -> dict[str, float] | None:
     """
     if prim.GetTypeName() != SchemaNames.BATTERY:
         return None
-    kwargs = {"sag_gain": 0.0, "min_voltage": 0.0}
-    for name in ("nominalVoltage", "sagGain", "minVoltage"):
+    kwargs = {"resistance": 0.0, "min_voltage": 0.0}
+    for name in ("nominalVoltage", "resistance", "minVoltage"):
         attr = prim.GetAttribute(f"newton:{name}")
         if attr and attr.HasAuthoredValue():
             kwargs[_camel_to_snake(name)] = float(attr.Get())
@@ -372,12 +372,10 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
     """Parse a USD Actuator prim into a composed actuator specification.
 
     Each detected schema directly maps to a component class with its
-    extracted params. Input processors keep the order of the prim's
-    ``apiSchemas``, which is the order they run in. A joint parameter of an
-    input processor (see
+    extracted params. A joint parameter of an input processor (see
     :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`) is read from
-    the relationship of the same name, e.g. ``newton:backlashJoint``. Returns ``None`` if the prim is not a
-    ``NewtonActuator``.
+    the relationship of the same name, e.g. ``newton:backlashJoint``.
+    Returns ``None`` if the prim is not a ``NewtonActuator``.
 
     Args:
         prim: USD prim to parse.

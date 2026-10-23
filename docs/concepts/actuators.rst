@@ -632,8 +632,9 @@ in sequence.
 Battery
 -------
 
-A battery powers one or more actuators, and its voltage sags with their total
-effort.
+A battery powers one or more actuators.  As in `BAM
+<https://github.com/Rhoban/bam>`_, it is an ideal voltage source behind a
+resistance, so its voltage drops with the total current of its actuators.
 
 * :meth:`~newton.ModelBuilder.add_actuator` returns the index of the actuator
   in per-actuator arrays.  :meth:`~newton.ModelBuilder.add_battery` takes these
@@ -646,18 +647,24 @@ effort.
   and DOF of each actuator.
 * Each actuator built by :class:`~newton.ModelBuilder` writes its effort
   before clamping to ``control.actuator_computed_effort``, one entry per
-  actuator.  :func:`update_battery_supply` sums its magnitude per battery, sags the
-  voltage, down to a minimum, and writes it into
+  actuator, and a drive that draws from a battery writes its battery current
+  per unit of effort to ``control.actuator_supply_current_gain``.
+  :func:`update_battery_supply` multiplies the two, sums the current per
+  battery, drops the voltage, down to a minimum, and writes it into
   ``control.actuator_supply_voltage``.  Call it once per step after the
-  actuators; the drives read the voltage on the next step.
+  actuators; the drives read the voltage on the next step.  To use another
+  effort, e.g. after a clamp that models a motor current limit, pass it as
+  ``effort``.
 * :func:`reset_battery_supply` restores the nominal voltage, of all
   batteries or of the batteries in the worlds of a mask.  Batteries added
   outside any world are reset only without a mask.
 
 :class:`DriveBAM` with ``supply_from_battery=True`` reads its supply voltage
-from ``control.actuator_supply_voltage``.  The drive lists this array in its
+from ``control.actuator_supply_voltage`` and writes
+``control.actuator_supply_current_gain``.  The drive lists these arrays in its
 :attr:`DriveBase.custom_inputs` with the per-actuator frequency
-``"actuation:actuator"``.
+``"actuation:actuator"`` and in its :attr:`DriveBase.custom_outputs`.  Only
+actuators that draw from a battery this way can be added to a battery.
 
 Below, the hip and knee share one battery and the ankle draws from another:
 
@@ -683,8 +690,8 @@ Below, the hip and knee share one battery and the ankle draws from another:
            supply_from_battery=True,
        )
        actuators.append(actuator)
-   builder.add_battery(actuators[:2], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
-   builder.add_battery(actuators[2:], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
+   builder.add_battery(actuators[:2], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
+   builder.add_battery(actuators[2:], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
    model = builder.finalize()
 
    solver = newton.solvers.SolverFeatherstone(model)

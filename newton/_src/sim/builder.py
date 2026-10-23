@@ -3404,18 +3404,18 @@ class ModelBuilder:
         return actuator
 
     def add_battery(
-        self, actuators: Sequence[int], *, nominal_voltage: float, sag_gain: float, min_voltage: float
+        self, actuators: Sequence[int], *, nominal_voltage: float, resistance: float, min_voltage: float
     ) -> int:
         """Add a battery shared by the given actuators of the current world.
 
-        Each step, :func:`~newton.actuators.update_battery_supply` sags its
-        voltage with the total effort of *actuators* and writes it into
+        Each step, :func:`~newton.actuators.update_battery_supply` drops its
+        voltage with the total current of *actuators* and writes it into
         ``control.actuator_supply_voltage``, and
         :func:`~newton.actuators.reset_battery_supply` restores the nominal
         voltage. ``control.actuator_supply_voltage`` starts at the nominal
         voltage. The battery parameters are stored on the :class:`~newton.Model`
         under the ``actuation`` namespace as ``battery_nominal_voltage``,
-        ``battery_sag_gain``, ``battery_min_voltage`` and ``battery_world``,
+        ``battery_resistance``, ``battery_min_voltage`` and ``battery_world``,
         and the battery of each actuator as ``actuator_battery`` (``-1`` for
         none). :meth:`replicate` copies the batteries into every world.
         :meth:`add_usd` calls this method for each ``NewtonBattery`` prim.
@@ -3423,10 +3423,12 @@ class ModelBuilder:
         Args:
             actuators: Actuators that draw from the battery, as returned by
                 :meth:`add_actuator`, so the actuators are added first. At
-                least one is required, and they must belong to the current
-                world.
+                least one is required, they must belong to the current
+                world, and they must draw from a battery, e.g.
+                :class:`~newton.actuators.DriveBAM` actuators added with
+                ``supply_from_battery=True``.
             nominal_voltage: Voltage without load [V].
-            sag_gain: Voltage drop per unit of total effort [V/N or V/(N·m)].
+            resistance: Internal resistance of the battery and its wiring [Ω].
             min_voltage: Lower bound of the sagged voltage [V], at most
                 *nominal_voltage*. With 0 the voltage only stays non-negative.
 
@@ -3435,9 +3437,9 @@ class ModelBuilder:
 
         Raises:
             ValueError: *actuators* is empty, *min_voltage* is negative or exceeds
-                *nominal_voltage*, *sag_gain* is negative, or an actuator
-                does not exist, belongs to another world, or already has a
-                battery.
+                *nominal_voltage*, *resistance* is negative, or an actuator
+                does not exist, belongs to another world, does not draw from
+                a battery, or already has a battery.
         """
         from ..actuators.actuator import ACTUATOR_FREQUENCY, ACTUATOR_NAMESPACE  # noqa: PLC0415
         from ..actuators.battery import register_battery_attributes  # noqa: PLC0415
@@ -3446,8 +3448,8 @@ class ModelBuilder:
             raise ValueError(
                 f"min_voltage must be non-negative and at most nominal_voltage, got {min_voltage} and {nominal_voltage}"
             )
-        if sag_gain < 0.0:
-            raise ValueError(f"sag_gain must be non-negative, got {sag_gain}")
+        if resistance < 0.0:
+            raise ValueError(f"resistance must be non-negative, got {resistance}")
         actuators = [int(actuator) for actuator in actuators]
         if not actuators:
             raise ValueError("add_battery: at least one actuator is required")
@@ -3465,13 +3467,26 @@ class ModelBuilder:
             world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
             if world != self.current_world:
                 raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
+            drive_args = next(
+                (
+                    args
+                    for entry in self.actuator_entries.values()
+                    for row, args in zip(entry.actuator_indices, entry.drive_args, strict=False)
+                    if row == actuator
+                ),
+                {},
+            )
+            if not drive_args.get("supply_from_battery"):
+                raise ValueError(
+                    f"add_battery: actuator {actuator} does not draw from a battery; add it with supply_from_battery=True"
+                )
             battery = self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values[actuator]
             if battery is not None and battery >= 0:
                 raise ValueError(f"add_battery: actuator {actuator} already draws from battery {battery}")
         battery = self.add_custom_values(
             **{
                 f"{ACTUATOR_NAMESPACE}:battery_nominal_voltage": nominal_voltage,
-                f"{ACTUATOR_NAMESPACE}:battery_sag_gain": sag_gain,
+                f"{ACTUATOR_NAMESPACE}:battery_resistance": resistance,
                 f"{ACTUATOR_NAMESPACE}:battery_min_voltage": min_voltage,
             }
         )[f"{ACTUATOR_NAMESPACE}:battery_nominal_voltage"]

@@ -2726,19 +2726,21 @@ class TestDriveBAM(unittest.TestCase):
         np.testing.assert_allclose(forces.numpy(), expected, rtol=1e-5)
 
     def test_battery_supply(self):
-        """Each servo reads the voltage its battery sagged to under the previous step's draw.
+        """Each servo reads the voltage its battery dropped to under the previous step's current.
 
         Per world, the knee servo, which has a backlash processor, and an
         ankle servo share battery 0, and a second ankle servo draws from
         battery 1. The knee is its own actuator group and the ankle servos
         share one, so a battery spans groups and two servos of one group act
-        on one DOF. Batteries draw the effort before clamping, ``joint_f``
-        gets the clamped efforts, and battery 0 reaches its minimum voltage.
-        ``replicate`` gives each world its own batteries, and a masked reset
-        restores the nominal voltage of world 0 only.
+        on one DOF. A servo draws ``duty * effort / kt`` with the effort
+        before clamping, and ``joint_f`` gets the clamped efforts. In world 0
+        the ankle regenerates: it offsets the knee's current on battery 0 and
+        leaves battery 1 at its nominal voltage. In world 1 battery 0 reaches
+        its minimum voltage. ``replicate`` gives each world its own batteries,
+        and a masked reset restores the nominal voltage of world 0 only.
         """
         kp, kt, resistance, max_pwm, max_effort, target, dt = 0.5, 0.6, 2.0, 0.9, 0.8, 1.0, 0.01
-        nominal_voltage, min_voltage, sag_gain = np.array([6.0, 4.0]), np.array([5.4, 3.0]), 0.5
+        nominal_voltage, min_voltage, battery_resistance = np.array([6.0, 4.0]), np.array([5.4, 3.0]), 0.5
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         links = [template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3)]
         joints = [
@@ -2770,7 +2772,7 @@ class TestDriveBAM(unittest.TestCase):
         for servos, nominal, minimum in zip(
             ([knee_servo, ankle_servos[0]], [ankle_servos[1]]), nominal_voltage, min_voltage, strict=True
         ):
-            template.add_battery(servos, nominal_voltage=nominal, sag_gain=sag_gain, min_voltage=minimum)
+            template.add_battery(servos, nominal_voltage=nominal, resistance=battery_resistance, min_voltage=minimum)
         builder = newton.ModelBuilder()
         builder.replicate(template, 2)
         model = builder.finalize()
@@ -2779,9 +2781,11 @@ class TestDriveBAM(unittest.TestCase):
         np.testing.assert_array_equal(model.actuation.actuator_battery.numpy(), battery)
 
         q = np.array([0.3, 0.015, -0.1, -0.2, -0.017, 0.4], dtype=np.float32)
+        qd = np.array([0.0, 0.0, 6.0, 0.0, 0.0, 0.0], dtype=np.float32)
         state = model.state()
         control = model.control()
         state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
         control.joint_target_q.fill_(target)
         dof = model.actuation.actuator_dof.numpy()
         knees = dof % template.joint_dof_count == knee
@@ -2791,25 +2795,29 @@ class TestDriveBAM(unittest.TestCase):
         nominal, minimum = np.tile(nominal_voltage, 2), np.tile(min_voltage, 2)
 
         drawn = np.zeros(4)
-        for _ in range(4):
+        for step in range(4):
             control.joint_f.zero_()
             for actuator in model.actuators:
                 actuator.step(state, control, dt=dt)
 
-            voltage = np.maximum(nominal - sag_gain * drawn, minimum)[battery]
+            voltage = np.maximum(nominal - battery_resistance * np.maximum(drawn, 0.0), minimum)[battery]
             np.testing.assert_allclose(control.actuator_supply_voltage.numpy(), voltage, rtol=1e-5)
-            computed = kt * voltage * duty / resistance
+            computed = kt * (voltage * duty - kt * qd[dof]) / resistance
             np.testing.assert_allclose(control.actuator_computed_effort.numpy(), computed, rtol=1e-5)
+            np.testing.assert_allclose(control.actuator_supply_current_gain.numpy(), duty / kt, rtol=1e-5)
             applied = np.zeros(model.joint_dof_count)
             np.add.at(applied, dof, np.clip(computed, -max_effort, max_effort))
             np.testing.assert_allclose(control.joint_f.numpy(), applied, rtol=1e-5)
             update_battery_supply(model, control)
-            drawn = np.bincount(battery, np.abs(computed), minlength=4)
+            drawn = np.bincount(battery, duty * computed / kt, minlength=4)
+            if step == 0:
+                self.assertTrue(0.0 < drawn[0] < duty[0] * computed[0] / kt and drawn[1] < 0.0)
+        self.assertAlmostEqual(control.actuator_supply_voltage.numpy()[3], min_voltage[0], places=5)
 
         reset_battery_supply(model, control, world_mask=wp.array([True, False], dtype=wp.bool))
-        sagged = np.maximum(nominal - sag_gain * drawn, minimum)
+        dropped = np.maximum(nominal - battery_resistance * np.maximum(drawn, 0.0), minimum)
         np.testing.assert_allclose(
-            control.actuator_supply_voltage.numpy(), np.where(np.arange(4) < 2, nominal, sagged)[battery], rtol=1e-5
+            control.actuator_supply_voltage.numpy(), np.where(np.arange(4) < 2, nominal, dropped)[battery], rtol=1e-5
         )
 
 
@@ -4966,20 +4974,22 @@ class TestActuatorBuilder(unittest.TestCase):
         builder.add_world(template)
         builder.begin_world()
         builder.add_builder(template)
-        builder.add_battery([1], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
+        builder.add_actuator(DrivePD, index=builder.joint_qd_start[-1], kp=1.0)
+        builder.add_battery([1], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
 
         cases = {
             "at least one": ([], 12.0, 0.5, 9.0),
             "min_voltage": ([1], 12.0, 0.5, 13.0),
-            "sag_gain": ([1], 12.0, -0.5, 9.0),
+            "resistance": ([1], 12.0, -0.5, 9.0),
             "already draws": ([1], 12.0, 0.5, 9.0),
-            "does not exist": ([2], 12.0, 0.5, 9.0),
+            "does not draw from a battery": ([2], 12.0, 0.5, 9.0),
+            "does not exist": ([3], 12.0, 0.5, 9.0),
             "belongs to world 0": ([0], 12.0, 0.5, 9.0),
         }
-        for message, (actuators, nominal_voltage, sag_gain, min_voltage) in cases.items():
+        for message, (actuators, nominal_voltage, resistance, min_voltage) in cases.items():
             with self.subTest(message), self.assertRaisesRegex(ValueError, message):
                 builder.add_battery(
-                    actuators, nominal_voltage=nominal_voltage, sag_gain=sag_gain, min_voltage=min_voltage
+                    actuators, nominal_voltage=nominal_voltage, resistance=resistance, min_voltage=min_voltage
                 )
         builder.end_world()
         with self.assertWarnsRegex(NewtonWarning, r"actuator\(s\) \[0\] have no battery"):
@@ -5003,7 +5013,7 @@ class TestActuatorBuilder(unittest.TestCase):
         stage = Usd.Stage.Open(usd_path)
         self.assertEqual(
             parse_battery_prim(stage.GetPrimAtPath("/World/Robot/Battery")),
-            {"nominal_voltage": 6.0, "sag_gain": 0.5, "min_voltage": 0.0},
+            {"nominal_voltage": 6.0, "resistance": 0.5, "min_voltage": 0.0},
         )
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parse_usd(template, stage)

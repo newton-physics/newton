@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..sim.model import Model
 
 SUPPLY_VOLTAGE_ATTR = "actuator_supply_voltage"
+SUPPLY_CURRENT_GAIN_ATTR = "actuator_supply_current_gain"
 BATTERY_FREQUENCY = f"{ACTUATOR_NAMESPACE}:battery"
 
 
@@ -24,7 +25,8 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
 
     Registers the battery frequency ``actuation:battery`` with the battery
     parameters, the battery of each actuator ``actuator_battery`` (``-1`` for
-    none) and the per-actuator supply voltage on Control. It also registers ``battery_actuator_start`` (one entry per battery plus
+    none) and the per-actuator supply voltage and supply current gain on
+    Control. It also registers ``battery_actuator_start`` (one entry per battery plus
     one) and ``battery_actuators`` (all actuators, sorted by battery), which
     :meth:`~newton.ModelBuilder.finalize` builds from ``actuator_battery`` so
     that battery ``b`` draws from the actuators
@@ -48,7 +50,7 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
             namespace=ACTUATOR_NAMESPACE,
         )
     )
-    for name in ("battery_nominal_voltage", "battery_sag_gain", "battery_min_voltage"):
+    for name in ("battery_nominal_voltage", "battery_resistance", "battery_min_voltage"):
         builder.add_custom_attribute(
             builder.CustomAttribute(
                 name=name, dtype=wp.float32, frequency=BATTERY_FREQUENCY, default=0.0, namespace=ACTUATOR_NAMESPACE
@@ -89,15 +91,16 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
     builder._add_custom_attribute_model_finalizer(
         f"{ACTUATOR_NAMESPACE}:battery_actuators", _finalize_battery_actuators
     )
-    builder.add_custom_attribute(
-        builder.CustomAttribute(
-            name=SUPPLY_VOLTAGE_ATTR,
-            dtype=wp.float32,
-            frequency=ACTUATOR_FREQUENCY,
-            assignment=Model.AttributeAssignment.CONTROL,
-            default=0.0,
+    for name in (SUPPLY_VOLTAGE_ATTR, SUPPLY_CURRENT_GAIN_ATTR):
+        builder.add_custom_attribute(
+            builder.CustomAttribute(
+                name=name,
+                dtype=wp.float32,
+                frequency=ACTUATOR_FREQUENCY,
+                assignment=Model.AttributeAssignment.CONTROL,
+                default=0.0,
+            )
         )
-    )
 
 
 def _battery_actuator_order(builder: ModelBuilder, model: Model) -> tuple[np.ndarray, np.ndarray]:
@@ -145,18 +148,20 @@ def _battery_update_kernel(
     battery_actuator_start: wp.array[wp.int32],
     battery_actuators: wp.array[wp.int32],
     nominal_voltage: wp.array[float],
-    sag_gain: wp.array[float],
+    resistance: wp.array[float],
     min_voltage: wp.array[float],
+    current_gain: wp.array[float],
     effort: wp.array[float],
     supply_voltage: wp.array[float],
 ):
     b = wp.tid()
     start = battery_actuator_start[b]
     end = battery_actuator_start[b + 1]
-    total = float(0.0)
+    current = float(0.0)
     for k in range(start, end):
-        total += wp.abs(effort[battery_actuators[k]])
-    voltage = wp.max(nominal_voltage[b] - sag_gain[b] * total, min_voltage[b])
+        a = battery_actuators[k]
+        current += current_gain[a] * effort[a]
+    voltage = wp.max(nominal_voltage[b] - resistance[b] * wp.max(current, 0.0), min_voltage[b])
     for k in range(start, end):
         supply_voltage[battery_actuators[k]] = voltage
 
@@ -180,17 +185,23 @@ def _battery_reset_kernel(
 
 
 def update_battery_supply(model: Model, control: Control, *, effort: wp.array[float] | None = None) -> None:
-    """Sag each battery's voltage with the effort of its actuators and write ``control.actuator_supply_voltage``.
+    """Drop each battery's voltage with the current of its actuators and write ``control.actuator_supply_voltage``.
 
-    The batteries are added with :meth:`~newton.ModelBuilder.add_battery`. The
-    voltage of a battery is
+    The batteries are added with :meth:`~newton.ModelBuilder.add_battery`. A
+    battery is an ideal voltage source behind a resistance, as in
+    `BAM <https://github.com/Rhoban/bam>`_. Its voltage is
 
     .. math::
 
-        V = \\max\\big(V_{\\text{nominal}} - g_{\\text{sag}} \\sum |\\tau|,\\;
+        V = \\max\\big(V_{\\text{nominal}} - R \\max(0, \\textstyle\\sum g\\, \\tau),\\;
         V_{\\min}\\big)
 
-    over the actuators assigned to it, and is written into
+    over the actuators assigned to it, where :math:`g \\tau` is the current an
+    actuator draws from the battery: :math:`g` is
+    ``control.actuator_supply_current_gain``, written by the drive, e.g.
+    :math:`d / k_t` for :class:`~newton.actuators.DriveBAM`. The sum is signed,
+    so a regenerating actuator offsets a driving one, and regeneration does
+    not raise the voltage above nominal. The voltage is written into
     ``actuator_supply_voltage`` for those actuators. Drives that read the
     supply voltage, e.g. :class:`~newton.actuators.DriveBAM` with
     ``supply_from_battery=True``, use it on the next actuator step.
@@ -200,37 +211,43 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
     Call once per step, after the actuators have stepped. The effort is
     ``control.actuator_computed_effort`` by default: the effort of each
     actuator before clamping, which actuators built by
-    :class:`~newton.ModelBuilder` write there on every step.
+    :class:`~newton.ModelBuilder` write there on every step. Pass *effort*
+    when a later stage represents the motor effort better, e.g. after a
+    clamp that models a motor current limit.
 
     The battery parameters are ``model.actuation.battery_nominal_voltage``,
-    ``battery_sag_gain`` and ``battery_min_voltage``, indexed by battery;
+    ``battery_resistance`` and ``battery_min_voltage``, indexed by battery;
     ``model.actuation.battery_world`` gives the world of each battery, e.g.
     to randomize the parameters per world.
 
     The supply and the drives form an explicit feedback loop. For
     :class:`~newton.actuators.DriveBAM` it settles only while
-    ``sag_gain * sum(kt * max_pwm / resistance) < 1`` over the actuators
-    sharing a battery; above that the voltage oscillates between the minimum
-    and the nominal voltage instead of converging.
+    ``battery_resistance * sum(max_pwm**2 / resistance) < 1`` over the
+    actuators sharing a battery; above that the voltage oscillates instead
+    of converging.
 
     Args:
         model: Model with batteries.
-        control: Object carrying ``actuator_supply_voltage``, and
-            ``actuator_computed_effort`` when *effort* is ``None``, e.g.
-            :class:`~newton.Control`.
-        effort: Effort drawn from the batteries [N or N·m], one entry per
-            actuator. ``None`` reads ``control.actuator_computed_effort``.
+        control: Object carrying ``actuator_supply_voltage`` and
+            ``actuator_supply_current_gain``, and ``actuator_computed_effort``
+            when *effort* is ``None``, e.g. :class:`~newton.Control`.
+        effort: Effort of each actuator [N or N·m], one entry per actuator.
+            ``None`` reads ``control.actuator_computed_effort``.
 
     Raises:
-        AttributeError: *control* has no ``actuator_supply_voltage``.
+        AttributeError: *control* has no ``actuator_supply_voltage`` or
+            ``actuator_supply_current_gain``.
         ValueError: The model has no batteries, the effort is missing,
-            ``actuator_supply_voltage`` is ``None``, or either does not have
-            one entry per actuator.
+            ``actuator_supply_voltage`` or ``actuator_supply_current_gain``
+            is ``None``, or any of them does not have one entry per actuator.
     """
     batteries = _require_batteries(model)
     if effort is None:
         effort = _get_attribute(control, "actuator_computed_effort", None)
     supply_voltage = _require_actuator_array(model, _require_array(control, SUPPLY_VOLTAGE_ATTR), SUPPLY_VOLTAGE_ATTR)
+    current_gain = _require_actuator_array(
+        model, _require_array(control, SUPPLY_CURRENT_GAIN_ATTR), SUPPLY_CURRENT_GAIN_ATTR
+    )
     _require_actuator_array(model, effort, "effort")
     wp.launch(
         _battery_update_kernel,
@@ -239,8 +256,9 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
             batteries.battery_actuator_start,
             batteries.battery_actuators,
             batteries.battery_nominal_voltage,
-            batteries.battery_sag_gain,
+            batteries.battery_resistance,
             batteries.battery_min_voltage,
+            current_gain,
             effort,
         ],
         outputs=[supply_voltage],

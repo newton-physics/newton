@@ -137,14 +137,14 @@ def Xform "World"
         def NewtonBattery "Battery"
         {
             float newton:nominalVoltage = 6.0
-            float newton:sagGain = 0.5
+            float newton:resistance = 0.5
         }
 
         # Battery no actuator draws from, which is not imported
         def NewtonBattery "SpareBattery"
         {
             float newton:nominalVoltage = 12.0
-            float newton:sagGain = 0.1
+            float newton:resistance = 0.1
         }
     }
 }

@@ -27,6 +27,7 @@ def _bam_effort_kernel(
     supply_from_battery: wp.array[float],
     supply_voltage: wp.array[float],
     efforts: wp.array[float],
+    supply_current_gain: wp.array[float],
 ):
     i = wp.tid()
     vel = velocities[vel_indices[i]]
@@ -44,6 +45,8 @@ def _bam_effort_kernel(
 
     current = (supply * duty - kt[i] * vel) / resistance[i]
     efforts[i] = kt[i] * current
+    if supply_current_gain:
+        supply_current_gain[i] = duty / kt[i]
 
 
 class DriveBAM(DriveBase):
@@ -75,7 +78,11 @@ class DriveBAM(DriveBase):
     ``sim_control`` (see :attr:`DriveBase.custom_inputs
     <newton.actuators.DriveBase.custom_inputs>`), which
     :func:`~newton.actuators.update_battery_supply` writes every step, and
-    ignores ``vin``.
+    ignores ``vin``. It then also writes :math:`d / k_t` into the
+    ``actuator_supply_current_gain`` output (see :attr:`DriveBase.custom_outputs
+    <newton.actuators.DriveBase.custom_outputs>`): times the effort, it gives
+    the current the actuator draws from the battery, since the battery
+    supplies the motor current only during the PWM on-time.
 
     .. hint::
 
@@ -172,6 +179,10 @@ class DriveBAM(DriveBase):
         # ACTUATOR_FREQUENCY is the per-actuator frequency: one entry per actuator of the model, not per DOF.
         uses_battery = bool(self.supply_from_battery.numpy().any())
         self.custom_inputs = {"actuator_supply_voltage": ACTUATOR_FREQUENCY} if uses_battery else {}
+        self.supply_current_gain = wp.zeros(n, dtype=float, device=kp.device) if uses_battery else None
+        """Battery current per unit of effort [A/(N·m) or A/N] of the last :meth:`compute`, or ``None`` without a
+        battery, shape (N,)."""
+        self.custom_outputs = {"actuator_supply_current_gain": self.supply_current_gain} if uses_battery else {}
         for name in ("kt", "resistance", "vin", "max_pwm", "max_current", "supply_from_battery"):
             shape = getattr(self, name).shape
             if shape != n:
@@ -242,6 +253,6 @@ class DriveBAM(DriveBase):
                 self.supply_from_battery,
                 supply_voltage,
             ],
-            outputs=[forces],
+            outputs=[forces, self.supply_current_gain],
             device=device,
         )

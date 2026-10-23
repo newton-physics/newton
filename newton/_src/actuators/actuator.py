@@ -99,6 +99,16 @@ def _scatter_add_kernel(
 
 
 @wp.kernel
+def _scatter_kernel(
+    source: wp.array[float],
+    indices: wp.array[wp.uint32],
+    output: wp.array[float],
+):
+    i = wp.tid()
+    output[indices[i]] = source[i]
+
+
+@wp.kernel
 def _gather_kernel(
     source: wp.array[float],
     indices: wp.array[wp.uint32],
@@ -496,7 +506,8 @@ class Actuator:
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
                 than per DOF. Required when the drive declares per-actuator
-                :attr:`~DriveBase.custom_inputs`.
+                :attr:`~DriveBase.custom_inputs` or any
+                :attr:`~DriveBase.custom_outputs`.
             controller: Deprecated in Newton 1.6; use ``drive`` instead.
         """
         if controller is not _DEPRECATED_UNSET:
@@ -554,6 +565,8 @@ class Actuator:
             raise ValueError(
                 f"{type(drive).__name__} declares per-actuator custom inputs, which require actuator_indices"
             )
+        if drive.custom_outputs and actuator_indices is None:
+            raise ValueError(f"{type(drive).__name__} declares custom outputs, which require actuator_indices")
         self._actuator_inputs = {
             name: wp.zeros(len(indices), dtype=wp.float32, device=indices.device) for name in actuator_inputs
         }
@@ -615,9 +628,11 @@ class Actuator:
         :class:`~newton.ModelBuilder` calls this method automatically while
         finalizing its actuators. Every input declared by the drive in
         :attr:`~DriveBase.custom_inputs` is registered as a ``wp.float32``
-        array on :class:`~newton.Control` with its declared frequency, and
+        array on :class:`~newton.Control` with its declared frequency. The
+        drive's :attr:`~DriveBase.custom_outputs` are registered as
+        per-actuator arrays (``actuation:actuator`` frequency), and
         :attr:`control_computed_output_attr` too when :attr:`actuator_indices`
-        is set, as a per-actuator array (``actuation:actuator`` frequency).
+        is set.
         Registration allocates the arrays but does not populate or clear
         them; the caller must update the declared inputs before each actuator
         evaluation.
@@ -632,6 +647,7 @@ class Actuator:
         from ..sim.model import Model  # noqa: PLC0415
 
         frequencies = dict(self._custom_inputs)
+        frequencies.update(dict.fromkeys(self.drive.custom_outputs, ACTUATOR_FREQUENCY))
         if self.actuator_indices is not None and self.control_computed_output_attr is not None:
             frequencies[self.control_computed_output_attr] = ACTUATOR_FREQUENCY
         for name, frequency in frequencies.items():
@@ -766,7 +782,7 @@ class Actuator:
     def _required_attributes(self) -> dict[str, tuple[str, ...]]:
         """Attributes this actuator reads, keyed by ``sim_state`` or ``sim_control``.
 
-        Covers the standard arrays and the drive's custom inputs.
+        Covers the standard arrays and the drive's custom inputs and outputs.
         """
         state_attrs = [self.state_pos_attr, self.state_vel_attr]
         control_attrs = [
@@ -778,7 +794,9 @@ class Actuator:
         ]
         required = {
             "sim_state": state_attrs,
-            "sim_control": [a for a in control_attrs if a is not None] + list(self._custom_inputs),
+            "sim_control": [a for a in control_attrs if a is not None]
+            + list(self._custom_inputs)
+            + list(self.drive.custom_outputs),
         }
         return {source: tuple(dict.fromkeys(names)) for source, names in required.items() if names}
 
@@ -806,6 +824,8 @@ class Actuator:
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
+           The drive's :attr:`~DriveBase.custom_outputs` are written per
+           actuator.
         5. **Drive state update** — write the drive's ``next_state``.
 
         Args:
@@ -929,6 +949,16 @@ class Actuator:
             outputs=[applied_output, computed_output],
             device=self.device,
         )
+        for name, source in self.drive.custom_outputs.items():
+            output = _get_attribute(sim_control, name, None)
+            if output is not None:
+                wp.launch(
+                    kernel=_scatter_kernel,
+                    dim=self.num_actuators,
+                    inputs=[source, self.actuator_indices],
+                    outputs=[output],
+                    device=self.device,
+                )
 
         # --- 5. State updates (write to next_state) ---
         if self.drive.is_stateful():
