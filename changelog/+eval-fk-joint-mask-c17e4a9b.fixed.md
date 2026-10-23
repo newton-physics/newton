@@ -1,1 +1,1 @@
-Fix serial forward kinematics evaluating children before their parents when articulation joints were created out of topological order, including masked calls, autodiff, and trees wider than the tiled kernel's capacity.
+Fix serial forward kinematics evaluating children before their parents when articulation joints were created out of topological order, including masked calls, autodiff, trees wider than the tiled kernel's capacity, and models where other articulations disable the tiled schedule.
