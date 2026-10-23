@@ -173,7 +173,13 @@ jobs:
   codecov-upload:
     name: Upload test results to Codecov
     needs: warp-nightly-tests
-    if: ${{ !cancelled() && needs.warp-nightly-tests.result != 'skipped' }}
+    # Codecov only tracks main: manual dispatches from other branches skip the
+    # upload. Nightly dispatches on main upload.
+    if: >-
+      !cancelled() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.warp-nightly-tests.result != 'skipped'
     runs-on: ubuntu-latest
     # Same-run artifact downloads use the runtime token, not GITHUB_TOKEN.
     permissions: {}
@@ -202,9 +208,10 @@ jobs:
       - name: Upload test results to Codecov
         if: ${{ steps.download-test-results.outcome == 'success' }}
         continue-on-error: true
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           disable_search: true
+          fail_ci_if_error: true
           files: ./rspec.xml
           flags: warp-nightly
           report_type: test_results
