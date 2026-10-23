@@ -183,6 +183,8 @@ def fill_line_vertex_data(
 class MeshGL:
     """Encapsulates mesh data and OpenGL buffers for a shape."""
 
+    _DEFAULT_COLOR = (0.7, 0.5, 0.3)
+
     def __init__(
         self,
         num_points,
@@ -272,7 +274,8 @@ class MeshGL:
         gl.glBindVertexArray(0)
 
         # Per-mesh albedo and material (applied in render()).
-        self.color = (0.7, 0.5, 0.3)
+        self.color = self._DEFAULT_COLOR
+        self._color_is_default = True
         self.material = (0.5, 0.0, 0.0, 0.0)
 
         self.vertex_cuda_buffer = None

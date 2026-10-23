@@ -1098,7 +1098,8 @@ roundoff is clamped and normalized once during binding.
 
 Textured visuals require UVs. Textures are asset data. Replace the texture
 source to change it; do not edit image contents in place. GL reuses the upload
-while the mesh deforms. Rerun and Viser reuse decoded path textures. Failed paths
+while the mesh deforms and does not multiply the texture by its default mesh color.
+Rerun and Viser reuse decoded path textures. Failed paths
 are not retried each frame; replacing the source or resetting the model clears
 the cached result. Viser rebuilds and sends the full GLB asset on each textured
 mesh update, including topology and texture. It does not provide vertex-only

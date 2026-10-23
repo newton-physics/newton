@@ -1027,6 +1027,7 @@ class ViewerGL(ViewerBase):
             )
             if existing is not None:
                 replacement.color = existing.color
+                replacement._color_is_default = existing._color_is_default
                 replacement.material = existing.material
             try:
                 replacement.update(points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture)
@@ -1049,11 +1050,16 @@ class ViewerGL(ViewerBase):
         self.objects[name].backface_culling = backface_culling
         if reuse_texture:
             # Model-owned visuals opt in without changing ordinary log_mesh materials.
-            r, m, c, _t = self.objects[name].material
-            self.objects[name].material = (r, m, c, 1.0 if self.objects[name].texture_id else 0.0)
+            mesh = self.objects[name]
+            r, m, c, _t = mesh.material
+            mesh.material = (r, m, c, 1.0 if mesh.texture_id else 0.0)
+            if mesh._color_is_default:
+                # Textures supply their own albedo; retain explicit tints across updates.
+                mesh.color = (1.0, 1.0, 1.0) if mesh.texture_id else MeshGL._DEFAULT_COLOR
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
+            self.objects[name]._color_is_default = False
 
         if roughness is not None or metallic is not None:
             r, m, c, t = self.objects[name].material
