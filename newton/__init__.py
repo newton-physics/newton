@@ -148,7 +148,8 @@ del _install_console_fallback
 if _sys.version_info < (3, 11):
     # Show the interpreter migration notice even under Python's default filters.
     with _warnings.catch_warnings():
-        _warnings.simplefilter("default", exceptions.NewtonDeprecationWarning)
+        if not _sys.warnoptions:
+            _warnings.simplefilter("default", exceptions.NewtonDeprecationWarning)
         _warnings.warn(
             "Support for Python 3.10 is deprecated and will be removed in Newton 1.9. "
             "Please upgrade to Python 3.11 or newer.",
