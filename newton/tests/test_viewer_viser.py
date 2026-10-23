@@ -23,7 +23,6 @@ import newton
 from newton._src.geometry.types import SH_C0
 from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_basic_pendulum import Example as PendulumExample
-from newton.exceptions import NewtonWarning
 from newton.viewer import ViewerViser
 
 
@@ -390,14 +389,11 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.assertEqual(material["alphaMode"], "BLEND")
                 self.assertAlmostEqual(material["pbrMetallicRoughness"]["baseColorFactor"][3], opacity)
 
-    def test_deformable_texture_reuse_and_replacement(self):
-        """Keep textures and current geometry when toggling skinned meshes through the GUI."""
-        import trimesh
-        from PIL import Image
-
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "red.png"
+    def test_deformable_visual_meshes_are_unsupported(self):
+        """Reject visible skins, but let Viser display their simulation geometry."""
+        for texture in (None, np.full((2, 2, 3), 255, dtype=np.uint8)):
             builder = newton.ModelBuilder()
+            builder.begin_world()
             vertices = ((0, 0, 0), (1, 0, 0), (0, 1, 0))
             for point in vertices:
                 builder.add_particle(point, (0, 0, 0), mass=1.0)
@@ -407,76 +403,37 @@ class TestViewerViserInteraction(unittest.TestCase):
                 kind="particle",
                 particles=(0, 1, 2),
                 uvs=((0, 0), (1, 0), (0, 1)),
-                texture=path,
+                texture=texture,
             )
+            builder.end_world()
             model = builder.finalize(device="cpu")
             state = model.state()
             self.viewer.activate("skin")
             self.viewer.set_model(model)
             name = "/layers/skin/model/deformable_visual_meshes/mesh_0"
-            control = self.viewer._viewer_option_handles["show_deformable_visual_meshes"]
-
-            # Hidden visuals must not load their missing texture or create geometry.
-            self.update_gui(control, False)
-            self.wait_for(lambda: not self.viewer.show_deformable_visual_meshes)
-            with warnings.catch_warnings():
-                warnings.simplefilter("error")
+            self.viewer.show_deformable_visual_meshes = True
+            with self.assertRaisesRegex(ValueError, "Viser.*skinned meshes"):
                 self.viewer.log_state(state)
+            self.assertIsNone(self.viewer._deformable_visuals)
+
+            # Supplying evaluated output must not bypass the backend limitation.
+            self.viewer.set_deformable_visuals(model.deformable_visuals())
+            with self.assertRaisesRegex(ValueError, "Viser.*skinned meshes"):
+                self.viewer.log_state(state)
+            self.viewer.set_deformable_visuals(None)
+
+            self.viewer.show_deformable_visual_meshes = False
+            self.viewer.log_state(state)
+            self.viewer.show_deformable_visual_meshes = True
+            self.viewer.set_visible_worlds([])
+            self.viewer.log_state(state)
+            self.viewer.set_visible_worlds(None)
+            self.viewer.set_layer_visible("skin", False)
+            self.viewer.log_state(state)
+            self.viewer.set_layer_visible("skin", True)
             self.assertIsNone(self.server.scene.get_handle_by_name(name))
-
-            self.update_gui(control, True)
-            self.wait_for(lambda: self.viewer.show_deformable_visual_meshes)
-            for source, color in ((path, (255, 0, 0, 255)), (Path(directory) / "green.png", (0, 255, 0, 255))):
-                Image.new("RGBA", (2, 2), color).save(source)
-                model.deformable_visual_meshes[0].texture = str(source)
-                self.viewer.log_state(state)
-                source.unlink()
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error")
-                    self.viewer.log_state(state)
-                handle = self.server.scene.get_handle_by_name(name)
-                scene = trimesh.load_scene(io.BytesIO(handle.glb_data), file_type="glb", process=False)
-                mesh = next(iter(scene.geometry.values()))
-                np.testing.assert_array_equal(np.asarray(mesh.visual.material.baseColorTexture)[0, 0], color)
-                np.testing.assert_allclose(mesh.vertices, state.particle_q.numpy())
-
-                if source == path:
-                    self.viewer.activate("other")
-                    other_model = self.make_model()
-                    self.viewer.log_state(other_model.state())
-                    other_handles = [h for n, h in self.viewer._scene_handles.items() if n.startswith("/layers/other/")]
-                    self.assertTrue(other_handles)
-                    self.viewer.activate("skin")
-                    self.update_gui(self.viewer._viewer_option_handles["show_visual"], False)
-                    self.wait_for(lambda: not self.viewer.show_visual)
-                    self.viewer.log_state(state)
-                    self.assertTrue(self.server.scene.get_handle_by_name(name).visible)
-
-                self.update_gui(control, False)
-                self.wait_for(lambda: not self.viewer.show_deformable_visual_meshes)
-                positions = state.particle_q.numpy()
-                positions[:, 2] += 1.0
-                state.particle_q.assign(positions)
-                self.viewer.log_state(state)
-                self.assertFalse(self.server.scene.get_handle_by_name(name).visible)
-                self.assertTrue(all(h.visible for h in other_handles))
-                self.update_gui(control, True)
-                self.wait_for(lambda: self.viewer.show_deformable_visual_meshes)
-                self.viewer.log_state(state)
-                handle = self.server.scene.get_handle_by_name(name)
-                self.assertTrue(handle.visible)
-                scene = trimesh.load_scene(io.BytesIO(handle.glb_data), file_type="glb", process=False)
-                np.testing.assert_allclose(next(iter(scene.geometry.values())).vertices, state.particle_q.numpy())
-
-            model.deformable_visual_meshes[0].texture = str(Path(directory) / "missing.png")
-            with self.assertWarnsRegex(NewtonWarning, "Failed to load texture image"):
-                self.viewer.log_state(state)
-            with warnings.catch_warnings():
-                warnings.simplefilter("error")
-                self.viewer.log_state(state)
-            self.viewer.set_model(model)
-            with self.assertWarnsRegex(NewtonWarning, "Failed to load texture image"):
-                self.viewer.log_state(state)
+            self.assertIsNone(self.viewer._deformable_visuals)
+        self.assertNotIn("show_deformable_visual_meshes", self.viewer._viewer_option_handles)
 
     def test_textured_batches_update_uniform_opacity(self):
         """Keep opaque textured models quiet and update their real GLB material on opacity changes."""

@@ -1044,7 +1044,7 @@ within ``tri_range``:
     state = model.state()
 
 Viewers evaluate these meshes during :meth:`~newton.viewer.ViewerBase.log_state`.
-In GL, RTX, and Viser, **Show Skinned Meshes** controls
+In GL and RTX, **Show Skinned Meshes** controls
 ``viewer.show_deformable_visual_meshes`` independently of **Show Cloth** and
 **Show Visual**. Hide the simulation triangles with ``viewer.show_triangles =
 False`` when they obscure the visual surface. Replicated meshes use separate
@@ -1137,11 +1137,16 @@ CPU models, unavailable interop, and ``enable_cuda_interop=ViewerGL.CudaInterop.
 use host uploads. Interop overhead can outweigh the transfer savings for small
 meshes; measure the effect on your scene.
 
-Rerun and Viser reuse decoded path textures. Failed paths
+Rerun reuses decoded path textures. Failed paths
 are not retried each frame; replacing the source or resetting the model clears
-the cached result. Viser rebuilds and sends the full GLB asset on each textured
-mesh update, including topology and texture. It does not provide vertex-only
-updates for these assets, so dense textured skins can be expensive in that viewer.
+the cached result.
+
+Viser does not support these skinned meshes. Its textured mesh path resends the
+full GLB asset, including topology and texture, on each update. Use GL or RTX
+for skinned meshes. To inspect the simulation geometry in Viser, set
+``viewer.show_deformable_visual_meshes = False`` before calling ``log_state()``.
+Ordinary Viser meshes, particles, and simulation triangles are unchanged.
+
 Untextured skins use the viewer's default appearance; per-mesh color and opacity
 are not exposed here. USD visual import, camera consumption, and Gaussian
 skinning are not supported by this API yet. Remaining work is tracked in

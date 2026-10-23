@@ -756,7 +756,6 @@ class ViewerViser(ViewerBase):
         self._simulation_gui_handles = {"pause": pause, "step": step, "reset": reset}
 
         options = (
-            ("show_deformable_visual_meshes", "Show Skinned Meshes", None),
             ("show_visual", "Show Visual", None),
             ("show_collision", "Show Collision", None),
             (
@@ -1810,14 +1809,16 @@ class ViewerViser(ViewerBase):
             self._sync_gizmo_handles(entry)
 
     @override
-    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, texture=None, **kwargs):
-        name = self._qualify(name)
-        if hidden:
-            handle = self._scene_handles.get(name)
-            if handle is not None:
-                handle.visible = False
+    def _log_deformable_visual_meshes(self, state):
+        # Viser's textured GLB path resends topology and textures on every update.
+        if not self.show_deformable_visual_meshes or self._layer_force_hidden():
             return
-        self.log_mesh(name, points, indices, texture=self._deformable_visual_texture(name, texture), **kwargs)
+        meshes = getattr(self.model, "deformable_visual_meshes", ())
+        if any(self._should_render_world(mesh.world) for mesh in meshes):
+            raise ValueError(
+                "Viser does not support skinned meshes. Use GL or RTX, or set "
+                "viewer.show_deformable_visual_meshes = False to display the simulation geometry."
+            )
 
     @override
     def log_mesh(
