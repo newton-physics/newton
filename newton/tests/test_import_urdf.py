@@ -2593,7 +2593,7 @@ class TestUrdfJointFriction(unittest.TestCase):
                     self.assertEqual(builder.body_count, 0)
 
     def test_drive_joint_damping_mapping(self):
-        """Import legacy drive damping without deprecation or doubled passive damping."""
+        """Import drive damping without deprecation or doubled passive damping."""
         for urdf, expected in (
             (FRICTION_URDF, [1.0, 2.0]),
             (FRICTION_URDF.replace('damping="1.0"', 'damping="0.0"'), [0.0, 2.0]),
