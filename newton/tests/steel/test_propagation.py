@@ -1471,6 +1471,27 @@ def test_shared_dof_feet_split_their_whole_response(test, device):
             np.testing.assert_allclose(split, 3.0 * exact, rtol=1.0e-5, atol=1.0e-7)
 
 
+def test_shared_root_split_matches_across_kernels(test, device):
+    """Split only the shared free root of four feet with private leg joints, alike on the native and generic kernels."""
+    model = _quadruped_model(device)
+    feet = [1, 2, 3, 4]
+    responses = []
+    for tree_kernel in ("auto", "generic"):
+        with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
+            solver = _coupled_solver(model, "propagation", 1)
+        test.assertEqual(solver._propagation_native_tree[solver._propagation_tree_sizes[0]], tree_kernel == "auto")
+        list(_rollout(model, solver, np.zeros(model.joint_dof_count, dtype=np.float32), 1))
+        np.testing.assert_array_equal(solver._propagation_joint_split.numpy(), [4, 1, 1, 1, 1])
+        exact = solver._propagation_body_response.numpy()[feet]
+        split = solver._propagation_body_response_split.numpy()[feet]
+        # The split lies strictly between the exact response and the whole-response split.
+        test.assertGreater(float(np.abs(split - exact).max()), 1.0e-3 * float(np.abs(exact).max()))
+        test.assertGreater(float(np.abs(4.0 * exact - split).max()), 1.0e-3 * float(np.abs(exact).max()))
+        responses.append((exact, split))
+    for native, generic in zip(*responses, strict=True):
+        np.testing.assert_allclose(generic, native, rtol=1.0e-4, atol=1.0e-5 * float(np.abs(native).max()))
+
+
 def test_regularized_feet_reach_immediate_equilibrium(test, device):
     """Keep the regularized contact fixed point of three coupled feet under the split."""
     model = _three_foot_slider_model(device)
@@ -1538,14 +1559,14 @@ def test_linkage_gripper_holds_lifted_box(test, device):
                     solver.step(source, target, control, contacts, 1.0 / 800.0)
             joint_target = model.joint_target_q.numpy()
             grasped = None
-            for tick in range(260):
-                # Close the driver, then lift by 0.2 m along a smoothstep.
-                joint_target[2] = 0.8 if tick >= 40 else 0.0
-                lift = min(max(tick - 120, 0) / 100.0, 1.0)
+            # Close the driver, then lift by 0.2 m along a smoothstep and hold.
+            joint_target[2] = 0.8
+            for tick in range(110):
+                lift = min(max(tick - 40, 0) / 50.0, 1.0)
                 joint_target[0] = 0.2 * lift * lift * (3.0 - 2.0 * lift)
                 control.joint_target_q.assign(joint_target)
                 wp.capture_launch(capture.graph)
-                if tick == 119:
+                if tick == 39:
                     grasped = box_below_palm(state)
             test.assertLess(abs(grasped - box_below_palm(state)), 0.01)
 
@@ -1570,6 +1591,7 @@ class TestSteelPropagationCoupledContacts(unittest.TestCase):
 for _fn in (
     test_shared_dof_feet_reach_rest,
     test_shared_dof_feet_split_their_whole_response,
+    test_shared_root_split_matches_across_kernels,
     test_regularized_feet_reach_immediate_equilibrium,
     test_graph_replay_matches_eager_steps,
     test_linkage_gripper_holds_lifted_box,
