@@ -55,9 +55,11 @@ class ViewerGui:
         self._camera_orbit_sensitivity = 0.1
         self._camera_dolly_scroll_sensitivity = 0.15
         self._camera_dolly_drag_sensitivity = 0.01
+        self._camera_drag_buttons = 0
 
         # Gizmo active-frame tracking (handles snap_to on release)
         self._gizmo_active = {}
+        self._gizmo_hovered = False
         self._frame_prepared = False
 
         # FPS tracking
@@ -105,7 +107,10 @@ class ViewerGui:
     def is_mouse_capturing(self) -> bool:
         if not self.is_available:
             return False
-        return bool(self.ui.io.want_capture_mouse)
+        return bool(
+            self.ui.io.want_capture_mouse
+            or (self.show_ui and (self._gizmo_hovered or getattr(self._viewer, "gizmo_is_using", False)))
+        )
 
     def is_keyboard_capturing(self) -> bool:
         if not self.is_available:
@@ -115,13 +120,17 @@ class ViewerGui:
     def on_rendering_paused(self) -> None:
         """Release camera motion and gizmos when the displayed image freezes."""
         self._cam_vel.fill(0.0)
+        self._camera_drag_buttons = 0
         self._gizmo_active.clear()
+        self._gizmo_hovered = False
         self._viewer.gizmo_is_using = False
 
-    def should_ignore_mouse_input(self, allow_active_pick_drag: bool = False) -> bool:
+    def should_ignore_mouse_input(
+        self, allow_active_pick_drag: bool = False, *, allow_active_camera_drag: bool = False
+    ) -> bool:
         if self._viewer.is_rendering_paused():
             return True
-        if allow_active_pick_drag and self.is_pick_active():
+        if allow_active_camera_drag or (allow_active_pick_drag and self.is_pick_active()):
             return False
         return self.is_mouse_capturing()
 
@@ -326,12 +335,15 @@ class ViewerGui:
             self._viewer._camera_dirty = True
 
     def handle_mouse_press(self, x: float, y: float, button: int, to_framebuffer_coords) -> None:
-        """Handle mouse button press: start picking on right-click."""
+        """Handle mouse button press: start camera navigation or right-click picking."""
+        self._camera_drag_buttons &= ~button
         if self.should_ignore_mouse_input():
             return
         import pyglet
 
         viewer = self._viewer
+        if button in (pyglet.window.mouse.LEFT, pyglet.window.mouse.MIDDLE):
+            self._camera_drag_buttons |= button
         if (
             button == pyglet.window.mouse.RIGHT
             and getattr(viewer, "picking_enabled", False)
@@ -340,9 +352,10 @@ class ViewerGui:
             self.start_picking_from_screen(x, y, to_framebuffer_coords)
 
     def handle_mouse_release(self, x: float, y: float, button: int) -> None:
-        """Handle mouse button release: end picking on right-click."""
+        """Handle mouse button release: end camera navigation or right-click picking."""
         import pyglet
 
+        self._camera_drag_buttons &= ~button
         if button == pyglet.window.mouse.RIGHT and getattr(self._viewer, "picking", None) is not None:
             self.release_picking()
 
@@ -380,12 +393,18 @@ class ViewerGui:
             and getattr(self._viewer, "picking_enabled", False)
             and self.is_pick_active()
         )
-        if self.should_ignore_mouse_input(allow_active_pick_drag=allow_active_pick_drag):
+        camera_buttons = buttons & self._camera_drag_buttons
+        # ImGuizmo can request ImGui mouse capture even when only hovered.
+        # Keep navigation that began in the scene active until its release.
+        if self.should_ignore_mouse_input(
+            allow_active_pick_drag=allow_active_pick_drag,
+            allow_active_camera_drag=bool(camera_buttons),
+        ):
             return
         viewer = self._viewer
         camera = getattr(viewer, "camera", None)
 
-        if buttons & pyglet.window.mouse.MIDDLE and camera is not None:
+        if camera_buttons & pyglet.window.mouse.MIDDLE and camera is not None:
             if modifiers & pyglet.window.key.MOD_CTRL:
                 camera.dolly(dy * self._camera_dolly_drag_sensitivity)
             elif modifiers & pyglet.window.key.MOD_SHIFT:
@@ -400,7 +419,7 @@ class ViewerGui:
                 viewer._camera_dirty = True
             return
 
-        if buttons & pyglet.window.mouse.LEFT:
+        if camera_buttons & pyglet.window.mouse.LEFT:
             self.rotate_camera_from_drag(dx, dy)
             if camera is not None:
                 camera.sync_pivot_to_view()
@@ -516,8 +535,9 @@ class ViewerGui:
         self._loading_splash_active = False
         self._loading_splash_text = None
 
-    def _render_gizmos(self):
+    def _render_gizmos(self) -> None:
         viewer = self._viewer
+        self._gizmo_hovered = False
         if not self.is_available:
             return
         if viewer.is_rendering_paused():
@@ -614,19 +634,19 @@ class ViewerGui:
             M = transform_to_matrix(transform)
             M_ = m44_to_mat16(M)
 
-            op_modified = False
+            # The binding requires named operations, so render each separately.
+            # Use stable per-operation IDs and retain state before the next call.
+            op_modified = is_active = False
             for op in ops:
-                op_modified = safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)) or op_modified
-
-            any_gizmo_is_using = safe_bool(giz.is_using_any())
-            if hasattr(giz, "is_using"):
-                is_active = safe_bool(giz.is_using()) and any_gizmo_is_using
-            else:
-                is_active = op_modified or (was_active and any_gizmo_is_using)
+                giz.push_id(int(op))
+                op_modified |= safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None))
+                self._gizmo_hovered |= safe_bool(giz.is_over(op))
+                is_active |= safe_bool(giz.is_using())
+                giz.pop_id()
 
             if was_active and not is_active and snap_to is not None:
                 transform_assign(transform, snap_to)
-            else:
+            elif op_modified:
                 M[:] = M_.values.reshape(4, 4, order="F")
                 transform_assign_matrix(transform, M)
 
