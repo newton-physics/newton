@@ -142,6 +142,11 @@ def reset_log_level():
     get_default_logger().setLevel(logging.NOTSET)
 
 
+def is_enabled_for(level: LogLevel) -> bool:
+    """Return whether the default logger would emit a message at ``level``."""
+    return get_default_logger().isEnabledFor(level)
+
+
 def set_log_header(header: str):
     """Set the header for the logger."""
     Logger.HEADER = header

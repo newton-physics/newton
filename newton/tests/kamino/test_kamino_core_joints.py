@@ -43,8 +43,8 @@ class TestCoreJoints(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -57,13 +57,13 @@ class TestCoreJoints(unittest.TestCase):
         doftype = JointDoFType.REVOLUTE
 
         # Optional verbose output
-        msg.info(f"doftype: {doftype}")
-        msg.info(f"doftype.value: {doftype.value}")
-        msg.info(f"doftype.name: {doftype.name}")
-        msg.info(f"doftype.num_cts: {doftype.num_cts}")
-        msg.info(f"doftype.num_dofs: {doftype.num_dofs}")
-        msg.info(f"doftype.cts_axes: {doftype.cts_axes}")
-        msg.info(f"doftype.dofs_axes: {doftype.dofs_axes}")
+        msg.debug(f"doftype: {doftype}")
+        msg.debug(f"doftype.value: {doftype.value}")
+        msg.debug(f"doftype.name: {doftype.name}")
+        msg.debug(f"doftype.num_cts: {doftype.num_cts}")
+        msg.debug(f"doftype.num_dofs: {doftype.num_dofs}")
+        msg.debug(f"doftype.cts_axes: {doftype.cts_axes}")
+        msg.debug(f"doftype.dofs_axes: {doftype.dofs_axes}")
 
         # Check the enum values
         self.assertEqual(doftype.value, JointDoFType.REVOLUTE)

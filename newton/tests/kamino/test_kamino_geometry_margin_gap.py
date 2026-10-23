@@ -86,7 +86,7 @@ class TestMarginGapNarrowphase(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         if test_context.verbose:
-            msg.set_log_level(msg.LogLevel.INFO)
+            msg.set_log_level(msg.LogLevel.DEBUG)
         else:
             msg.reset_log_level()
 
@@ -383,7 +383,7 @@ class TestMarginGapSolver(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         if test_context.verbose:
-            msg.set_log_level(msg.LogLevel.INFO)
+            msg.set_log_level(msg.LogLevel.DEBUG)
         else:
             msg.reset_log_level()
 

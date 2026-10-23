@@ -18,6 +18,7 @@ from newton._src.solvers.kamino._src.core.materials import (
     MaterialPairProperties,
     make_get_mixed_material_pair_property,
 )
+from newton._src.solvers.kamino._src.utils import logger as msg
 
 # Test utilities
 from newton.tests.kamino import setup_tests, test_context
@@ -58,6 +59,17 @@ class TestMaterials(unittest.TestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
+        else:
+            msg.reset_log_level()
+
+    def tearDown(self):
+        if self.verbose:
+            msg.reset_log_level()
 
     def test_00_default_material_properties(self):
         # Create a default-constructed surface material
@@ -342,12 +354,10 @@ class TestMaterials(unittest.TestCase):
         self.assertEqual(dym[tril_index(2, 0)], 0.9)
         self.assertEqual(dym[tril_index(2, 1)], 0.5)
         self.assertEqual(dym[tril_index(2, 2)], 0.3)
-
         # Optional verbose output
-        if self.verbose:
-            print(f"\nRestitution Matrix:\n{rm}")
-            print(f"\nStatic Friction Matrix:\n{fm}")
-            print(f"\nDynamic Friction Matrix:\n{dym}")
+        msg.debug(f"\nRestitution Matrix:\n{rm}")
+        msg.debug(f"\nStatic Friction Matrix:\n{fm}")
+        msg.debug(f"\nDynamic Friction Matrix:\n{dym}")
 
     def test_04_material_manager_merge(self):
         # Create a two material managers

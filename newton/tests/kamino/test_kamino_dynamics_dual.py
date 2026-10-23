@@ -13,10 +13,11 @@ import warp as wp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.linalg import ConjugateGradientSolver
+from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, update_containers
-from newton.tests.kamino.utils.print import print_model_info
+from newton.tests.kamino.utils.print import debug_print_model_info
 from newton.tests.utils.basics import make_basics_heterogeneous_builder
 
 ###
@@ -30,6 +31,13 @@ class TestDualProblem(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for detailed output
         self.default_device = wp.get_device(test_context.device)
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
+        else:
+            msg.reset_log_level()
 
     def tearDown(self):
         self.default_device = None
@@ -59,23 +67,22 @@ class TestDualProblem(unittest.TestCase):
             jacobians=jacobians,
             solver=ConjugateGradientSolver,
         )
-
         # Optional verbose output
-        if self.verbose:
-            print("\n")  # Print a blank line for better readability
-            print(f"problem.data.config: {problem.data.config}")
-            print(f"problem.data.maxdim: {problem.data.maxdim}")
-            print(f"problem.data.dim: {problem.data.dim}")
-            print(f"problem.data.mio: {problem.data.mio}")
-            print(f"problem.data.vio: {problem.data.vio}")
-            print(f"problem.data.u_f (shape): {problem.data.u_f.shape}")
-            print(f"problem.data.v_b (shape): {problem.data.v_b.shape}")
-            print(f"problem.data.v_i (shape): {problem.data.v_i.shape}")
-            print(f"problem.data.v_f (shape): {problem.data.v_f.shape}")
-            print(f"problem.data.mu (shape): {problem.data.mu.shape}")
-            print(f"problem.data.bound_lower (shape): {problem.data.bound_lower.shape}")
-            print(f"problem.data.bound_upper (shape): {problem.data.bound_upper.shape}")
-            print(f"problem.data.D (shape): {problem.data.D.shape}")
+        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+            msg.debug("\n")  # Print a blank line for better readability
+            msg.debug(f"problem.data.config: {problem.data.config}")
+            msg.debug(f"problem.data.maxdim: {problem.data.maxdim}")
+            msg.debug(f"problem.data.dim: {problem.data.dim}")
+            msg.debug(f"problem.data.mio: {problem.data.mio}")
+            msg.debug(f"problem.data.vio: {problem.data.vio}")
+            msg.debug(f"problem.data.u_f (shape): {problem.data.u_f.shape}")
+            msg.debug(f"problem.data.v_b (shape): {problem.data.v_b.shape}")
+            msg.debug(f"problem.data.v_i (shape): {problem.data.v_i.shape}")
+            msg.debug(f"problem.data.v_f (shape): {problem.data.v_f.shape}")
+            msg.debug(f"problem.data.mu (shape): {problem.data.mu.shape}")
+            msg.debug(f"problem.data.bound_lower (shape): {problem.data.bound_lower.shape}")
+            msg.debug(f"problem.data.bound_upper (shape): {problem.data.bound_upper.shape}")
+            msg.debug(f"problem.data.D: {problem.data.D}")
 
         # Extract expected allocation sizes
         nw = model.info.num_worlds
@@ -124,8 +131,7 @@ class TestDualProblem(unittest.TestCase):
 
         # Update the containers
         update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
-        if self.verbose:
-            print_model_info(model)
+        debug_print_model_info(model)
 
         # Create the Delassus operator
         problem = DualProblem(
@@ -151,26 +157,26 @@ class TestDualProblem(unittest.TestCase):
         v_f_np = extract_problem_vector(problem.delassus, vector=v_f_wp_np, only_active_dims=True)
 
         # Optional verbose output
-        if self.verbose:
-            print("")  # Print a blank line for better readability
-            print(f"problem.data.maxdim: {problem.data.maxdim}")
-            print(f"problem.data.dim: {problem.data.dim}")
-            print(f"problem.data.mio: {problem.data.mio}")
-            print(f"problem.data.vio: {problem.data.vio}")
-            print(f"problem.data.D: {problem.data.D.shape}")
-            print(f"problem.data.u_f:\n{problem.data.u_f}")
-            print(f"problem.data.v_b:\n{problem.data.v_b}")
-            print(f"problem.data.v_i:\n{problem.data.v_i}")
-            print(f"problem.data.v_f:\n{problem.data.v_f}")
-            print(f"problem.data.mu:\n{problem.data.mu}")
-            print(f"problem.data.bound_lower:\n{problem.data.bound_lower}")
-            print(f"problem.data.bound_upper:\n{problem.data.bound_upper}")
+        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+            msg.debug("")  # Print a blank line for better readability
+            msg.debug(f"problem.data.maxdim: {problem.data.maxdim}")
+            msg.debug(f"problem.data.dim: {problem.data.dim}")
+            msg.debug(f"problem.data.mio: {problem.data.mio}")
+            msg.debug(f"problem.data.vio: {problem.data.vio}")
+            msg.debug(f"problem.data.D: {problem.data.D}")
+            msg.debug(f"problem.data.u_f:\n{problem.data.u_f}")
+            msg.debug(f"problem.data.v_b:\n{problem.data.v_b}")
+            msg.debug(f"problem.data.v_i:\n{problem.data.v_i}")
+            msg.debug(f"problem.data.v_f:\n{problem.data.v_f}")
+            msg.debug(f"problem.data.mu:\n{problem.data.mu}")
+            msg.debug(f"problem.data.bound_lower:\n{problem.data.bound_lower}")
+            msg.debug(f"problem.data.bound_upper:\n{problem.data.bound_upper}")
             for w in range(num_worlds):
-                print(f"problem.data.v_b[{w}]:\n{v_b_np[w]}")
+                msg.debug(f"problem.data.v_b[{w}]:\n{v_b_np[w]}")
             for w in range(num_worlds):
-                print(f"problem.data.v_i[{w}]:\n{v_i_np[w]}")
+                msg.debug(f"problem.data.v_i[{w}]:\n{v_i_np[w]}")
             for w in range(num_worlds):
-                print(f"problem.data.v_f[{w}]:\n{v_f_np[w]}")
+                msg.debug(f"problem.data.v_f[{w}]:\n{v_f_np[w]}")
 
         # Check the problem data
         # TODO

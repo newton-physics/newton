@@ -46,8 +46,8 @@ class TestToWarpInt32Array(unittest.TestCase):
         self.verbose = test_context.verbose
 
         if self.verbose:
-            print("\n")
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")
         else:
             msg.reset_log_level()
 
@@ -163,8 +163,8 @@ class TestAssignToWarpInt32Array(unittest.TestCase):
         self.verbose = test_context.verbose
 
         if self.verbose:
-            print("\n")
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")
         else:
             msg.reset_log_level()
 

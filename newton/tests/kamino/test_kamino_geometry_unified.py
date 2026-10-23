@@ -117,7 +117,7 @@ def test_unified_pipeline(
     if broadphase_modes is None:
         broadphase_modes = ["nxn", "sap", "explicit"]
     for bp_mode in broadphase_modes:
-        msg.info("Testing unified CD on '%s' using '%s'", case, bp_mode)
+        msg.debug("Testing unified CD on '%s' using '%s'", case, bp_mode)
 
         # Create a pipeline
         pipeline = CollisionPipelineUnifiedKamino(
@@ -233,7 +233,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.INFO)
+            msg.set_log_level(msg.LogLevel.DEBUG)
         else:
             msg.reset_log_level()
 
@@ -257,7 +257,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
 
         # Define the specific shape pair to test
         shape_pair = ("cylinder", "ellipsoid")
-        msg.info(f"Testing narrow-phase tests with exact boundaries on {shape_pair}")
+        msg.debug(f"Testing narrow-phase tests with exact boundaries on {shape_pair}")
 
         # Define any special kwargs for specific shape pairs
         kwargs = {
@@ -283,7 +283,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         Tests the unified collision pipeline on each supported primitive
         shape pair when placed exactly at their contact boundaries.
         """
-        msg.info("Testing unified pipeline tests with exact boundaries")
+        msg.debug("Testing unified pipeline tests with exact boundaries")
 
         # Global builder and expected contacts dictionary
         builder = ModelBuilder()
@@ -329,7 +329,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         Tests the unified collision pipeline on each
         supported primitive shape pair when placed apart.
         """
-        msg.info("Testing unified pipeline tests with shapes apart")
+        msg.debug("Testing unified pipeline tests with shapes apart")
 
         # Global builder and expected contacts dictionary
         builder = ModelBuilder()
@@ -361,7 +361,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
         Tests the unified collision pipeline on each supported
         primitive shape pair when placed apart but with contact margin.
         """
-        msg.info("Testing unified pipeline tests with shapes apart")
+        msg.debug("Testing unified pipeline tests with shapes apart")
 
         # Global builder and expected contacts dictionary
         builder = ModelBuilder()

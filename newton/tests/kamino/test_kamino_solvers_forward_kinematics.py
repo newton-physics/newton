@@ -17,6 +17,7 @@ from newton._src.solvers.kamino._src.core.joints import JointActuationType, Join
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.solvers.fk import ForwardKinematicsSolver
+from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.diff_check import diff_check
 from newton.tests.kamino.utils.joints import (
@@ -245,7 +246,7 @@ def solve_and_check_fk_random_poses(
                 body_u_before_np[b0:b1], body_u_after_np[b0:b1]
             ):
                 inactive_untouched = False
-                print(f"Inactive world {wid} was modified by the solver for pose {pose_id}")
+                msg.error(f"Inactive world {wid} was modified by the solver for pose {pose_id}")
                 break
         if not inactive_untouched:
             success_flags.append(False)
@@ -280,7 +281,7 @@ def solve_and_check_fk_random_poses(
             if r1 > r0:
                 residual_ct_pos = max(residual_ct_pos, float(np.max(np.abs(r_j_np[r0:r1]))))
         if residual_ct_pos > epsilon:
-            print(f"Large constraint residual ({residual_ct_pos}) for pose {pose_id}")
+            msg.error(f"Large constraint residual ({residual_ct_pos}) for pose {pose_id}")
             success_flags[-1] = False
         actuator_q_check = extract_segments(data.joints.q_j.numpy(), active_coord_offsets, active_coord_sizes)
         actuator_q_check = standardize_actuated_coords(actuator_q_check, active_coord_sizes, active_dof_types)
@@ -288,7 +289,7 @@ def solve_and_check_fk_random_poses(
         actuator_q_ref = standardize_actuated_coords(actuator_q_ref, active_coord_sizes, active_dof_types)
         residual_actuator_q = float(np.max(np.abs(actuator_q_check - actuator_q_ref))) if actuator_q_check.size else 0.0
         if residual_actuator_q > epsilon:
-            print(f"Large error on prescribed actuator coordinates ({residual_actuator_q}) for pose {pose_id}")
+            msg.error(f"Large error on prescribed actuator coordinates ({residual_actuator_q}) for pose {pose_id}")
             success_flags[-1] = False
 
         # Validate velocities computation on active worlds
@@ -300,18 +301,18 @@ def solve_and_check_fk_random_poses(
             if r1 > r0:
                 residual_ct_vel = max(residual_ct_vel, float(np.max(np.abs(dr_j_np[r0:r1]))))
         if residual_ct_vel > epsilon:
-            print(f"Large constraint velocity residual ({residual_ct_vel}) for pose {pose_id}")
+            msg.error(f"Large constraint velocity residual ({residual_ct_vel}) for pose {pose_id}")
             success_flags[-1] = False
         actuator_u_check = extract_segments(data.joints.dq_j.numpy(), active_dof_offsets, active_dof_sizes)
         actuator_u_ref = extract_segments(actuator_u_np[pose_id], active_ref_dof_offsets, active_dof_sizes)
         residual_actuator_u = float(np.max(np.abs(actuator_u_check - actuator_u_ref))) if actuator_u_check.size else 0.0
         if residual_actuator_u > epsilon:
-            print(f"Large error on prescribed actuator velocities ({residual_actuator_u}) for pose {pose_id}")
+            msg.error(f"Large error on prescribed actuator velocities ({residual_actuator_u}) for pose {pose_id}")
             success_flags[-1] = False
 
     success = np.sum(success_flags) == num_poses
     if not success:
-        print(f"Random poses simulation & validation failed, {np.sum(success_flags)}/{num_poses} poses successful")
+        msg.error(f"Random poses simulation & validation failed, {np.sum(success_flags)}/{num_poses} poses successful")
 
     return success
 

@@ -12,6 +12,7 @@ from newton._src.solvers.kamino._src.dynamics.delassus import BlockSparseMatrixF
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.utils import logger as msg
 
 ###
 # Module configs
@@ -75,7 +76,6 @@ def extract_cts_jacobians(
     contacts: ContactsKamino | None,
     jacobians: DenseSystemJacobians | SparseSystemJacobians,
     only_active_cts: bool = False,
-    verbose: bool = False,
 ) -> list[np.ndarray]:
     if isinstance(jacobians, SparseSystemJacobians):
         return jacobians._J_cts.bsm.numpy()
@@ -117,15 +117,14 @@ def extract_cts_jacobians(
         J_cts_mat.append(J_cts_flat[start:end].reshape((ncts, num_bdofs[w])))
 
     # Optional verbose output
-    if verbose:
-        print(f"J_cts_flat_total_size: {J_cts_flat_total_size}")
-        print(f"sum(J_cts_flat_sizes): {sum(J_cts_flat_sizes)}")
-        print(f"J_cts_flat_sizes: {J_cts_flat_sizes}")
-        print(f"J_cts_flat_offsets: {J_cts_flat_offsets}")
-        print("")  # Add a newline for better readability
+    if msg.is_enabled_for(msg.LogLevel.DEBUG):
+        msg.debug(f"J_cts_flat_total_size: {J_cts_flat_total_size}")
+        msg.debug(f"sum(J_cts_flat_sizes): {sum(J_cts_flat_sizes)}")
+        msg.debug(f"J_cts_flat_sizes: {J_cts_flat_sizes}")
+        msg.debug(f"J_cts_flat_offsets: {J_cts_flat_offsets}")
         for w in range(num_worlds):
-            print(f"{w}: start={J_cts_flat_offsets[w]}, end={J_cts_flat_offsets[w] + J_cts_flat_sizes[w]}")
-            print(f"J_cts_mat[{w}] ({J_cts_mat[w].shape}):\n{J_cts_mat[w]}\n")
+            msg.debug(f"{w}: start={J_cts_flat_offsets[w]}, end={J_cts_flat_offsets[w] + J_cts_flat_sizes[w]}")
+            msg.debug(f"J_cts_mat[{w}] ({J_cts_mat[w].shape}):\n{J_cts_mat[w]}\n")
 
     # Return the extracted Jacobians
     return J_cts_mat
@@ -134,7 +133,6 @@ def extract_cts_jacobians(
 def extract_dofs_jacobians(
     model: ModelKamino,
     jacobians: DenseSystemJacobians | SparseSystemJacobians,
-    verbose: bool = False,
 ) -> list[np.ndarray]:
     if isinstance(jacobians, SparseSystemJacobians):
         j_dofs = jacobians._J_dofs.bsm.numpy()
@@ -167,15 +165,14 @@ def extract_dofs_jacobians(
         J_dofs_mat.append(J_dofs_flat[start:end].reshape((num_jdofs[i], num_bdofs[i])))
 
     # Optional verbose output
-    if verbose:
-        print(f"J_dofs_flat_total_size: {J_dofs_flat_total_size}")
-        print(f"sum(J_dofs_flat_sizes): {sum(J_dofs_flat_sizes)}")
-        print(f"J_dofs_flat_sizes: {J_dofs_flat_sizes}")
-        print(f"J_dofs_flat_offsets: {J_dofs_flat_offsets}")
-        print("")  # Add a newline for better readability
+    if msg.is_enabled_for(msg.LogLevel.DEBUG):
+        msg.debug(f"J_dofs_flat_total_size: {J_dofs_flat_total_size}")
+        msg.debug(f"sum(J_dofs_flat_sizes): {sum(J_dofs_flat_sizes)}")
+        msg.debug(f"J_dofs_flat_sizes: {J_dofs_flat_sizes}")
+        msg.debug(f"J_dofs_flat_offsets: {J_dofs_flat_offsets}")
         for i in range(num_worlds):
-            print(f"{i}: start={J_dofs_flat_offsets[i]}, end={J_dofs_flat_offsets[i] + J_dofs_flat_sizes[i]}")
-            print(f"J_dofs_mat[{i}] ({J_dofs_mat[i].shape}):\n{J_dofs_mat[i]}\n")
+            msg.debug(f"{i}: start={J_dofs_flat_offsets[i]}, end={J_dofs_flat_offsets[i] + J_dofs_flat_sizes[i]}")
+            msg.debug(f"J_dofs_mat[{i}] ({J_dofs_mat[i].shape}):\n{J_dofs_mat[i]}\n")
 
     # Return the extracted Jacobians
     return J_dofs_mat

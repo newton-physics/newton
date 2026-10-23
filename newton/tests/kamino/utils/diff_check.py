@@ -11,6 +11,8 @@ from collections.abc import Callable
 
 import numpy as np
 
+from newton._src.solvers.kamino._src.utils import logger as msg
+
 ###
 # Module interface
 ###
@@ -111,15 +113,15 @@ def diff_check(
     success = abs_test or rel_test
 
     if not success:
-        print("DIFF CHECK FAILED")
-        print("DERIVATIVE: ")
-        print(derivative)
-        print("DERIVATIVE_FD")
-        print(derivative_fd)
+        msg.debug("DIFF CHECK FAILED")
+        msg.debug("DERIVATIVE: ")
+        msg.debug(derivative)
+        msg.debug("DERIVATIVE_FD")
+        msg.debug(derivative_fd)
         if not abs_test:
-            print(f"Absolute test failed, error={np.max(np.abs(error))}, tolerance={tolerance_abs}")
+            msg.debug(f"Absolute test failed, error={np.max(np.abs(error))}, tolerance={tolerance_abs}")
         if not rel_test:
-            print(
+            msg.debug(
                 f"Relative test failed, error={np.linalg.norm(error)}, tolerance={tolerance_rel * np.linalg.norm(derivative_fd)}"
             )
 

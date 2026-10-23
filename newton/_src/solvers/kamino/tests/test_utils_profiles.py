@@ -21,12 +21,12 @@ class TestUtilsPerformanceProfiles(unittest.TestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
-        self.plots = test_context.verbose  # Set to True to generate plots
+        self.plots = False  # Set to True to generate plots
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
