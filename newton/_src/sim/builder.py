@@ -9774,11 +9774,11 @@ class ModelBuilder:
         self,
         positions: list[Vec3],
         *,
-        quaternions: list[Quat] | None,
+        quaternions: list[Quat],
         rest_positions: list[Vec3] | np.ndarray | None = None,
         rest_quaternions: list[Quat] | np.ndarray | None = None,
         rest_straight: bool = False,
-        radius: float | None,
+        radius: float,
         cfg: ShapeConfig | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
@@ -9788,30 +9788,15 @@ class ModelBuilder:
         bend_damping: float | None,
         twist_stiffness: float | None,
         twist_damping: float | None,
-        closed: bool | None,
+        closed: bool,
         label: str | None,
         wrap_in_articulation: bool,
         color: Vec3 | None,
         body_frame_origin: Literal["start", "com"],
     ) -> tuple[list[int], list[int]]:
         """Add an ordered point chain through the established graph path."""
-        self._validate_rod_stiffness_inputs(
-            "add_rod",
-            stretch_stiffness=stretch_stiffness,
-            shear_stiffness=shear_stiffness,
-            bend_stiffness=bend_stiffness,
-            twist_stiffness=twist_stiffness,
-        )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
-        closed = False if closed is None else closed
-
-        radius = 0.1 if radius is None else radius
         if cfg is None:
             cfg = self.default_shape_cfg
-        if rest_straight and (rest_positions is not None or rest_quaternions is not None):
-            raise ValueError(
-                "add_rod: rest_straight=True cannot be combined with explicit rest_positions or rest_quaternions"
-            )
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -9822,51 +9807,12 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         num_segments = len(positions) - 1
-        if num_segments < 1:
-            raise ValueError("add_rod: positions must contain at least 2 points")
 
-        # Coerce all input positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
-        # always operate on Warp vector types even if the caller passed tuples/lists.
-        positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in positions]
         rest_positions_wp = (
-            positions_wp if rest_positions is None else [axis_to_vec3(position) for position in rest_positions]
+            positions if rest_positions is None else [axis_to_vec3(position) for position in rest_positions]
         )
-        if len(rest_positions_wp) != len(positions_wp):
-            raise ValueError(
-                f"add_rod: rest_positions must have {len(positions_wp)} elements to match positions, "
-                f"got {len(rest_positions_wp)}"
-            )
 
-        if quaternions is not None and len(quaternions) != num_segments:
-            raise ValueError(
-                f"add_rod: quaternions must have {num_segments} elements for {num_segments} segments, "
-                f"got {len(quaternions)} quaternions"
-            )
-        if rest_quaternions is not None and len(rest_quaternions) != num_segments:
-            raise ValueError(
-                f"add_rod: rest_quaternions must have {num_segments} elements for {num_segments} segments, "
-                f"got {len(rest_quaternions)} quaternions"
-            )
-
-        if num_segments < 2:
-            # A "rod" in this API is defined as multiple capsules coupled by rod joints.
-            # If you want a single capsule, create a body + capsule shape directly.
-            raise ValueError(
-                f"add_rod: requires at least 2 segments (got {num_segments}); "
-                "for a single capsule, create a body and add a capsule shape instead."
-            )
         if closed:
-            closure_gap = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[0]))
-            first_length = float(wp.length(rest_positions_wp[1] - rest_positions_wp[0]))
-            last_length = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[-2]))
-            if not all(math.isfinite(value) for value in (closure_gap, first_length, last_length)):
-                raise ValueError("add_rod: closed structural-rest centerline must have finite endpoint segments")
-            closure_tolerance = max(1.0e-9, 1.0e-3 * min(first_length, last_length))
-            if closure_gap > closure_tolerance:
-                raise ValueError(
-                    "add_rod: closed structural-rest centerline must have coincident first and last points "
-                    f"(gap={closure_gap:.3e}, tolerance={closure_tolerance:.3e})"
-                )
             rest_positions_wp[-1] = rest_positions_wp[0]
 
         # Build linear graph edges: (0, 1), (1, 2), ..., (N-1, N)
@@ -9875,7 +9821,7 @@ class ModelBuilder:
 
         # The graph builder creates the bodies, internal joints, and optional articulation.
         link_bodies, link_joints = self._add_rod_graph(
-            node_positions=positions_wp,
+            node_positions=positions,
             edges=edges,
             rest_node_positions=rest_positions_wp if rest_positions is not None else None,
             radius=radius,
@@ -9942,16 +9888,11 @@ class ModelBuilder:
                             rest_dir,
                         )
 
-                    initial_dir, _ = self._rod_segment_direction(positions_wp[segment], positions_wp[segment + 1])
-                    initial_argument = (
-                        f"quaternions[{segment}]"
-                        if quaternions is not None
-                        else f"derived quaternion at segment {segment}"
-                    )
+                    initial_dir, _ = self._rod_segment_direction(positions[segment], positions[segment + 1])
                     initial_q = self._rod_frame_for_direction(
                         "add_rod",
-                        initial_argument,
-                        None if quaternions is None else quaternions[segment],
+                        f"quaternions[{segment}]",
+                        quaternions[segment],
                         initial_dir,
                     )
                     return self._transport_rod_frame(
@@ -10098,7 +10039,6 @@ class ModelBuilder:
                 non-finite or too-short edges, or invalid frame alignment.
             ValueError: If the structural-rest centerline of a closed chain does not close.
             ValueError: If the Rod uses ``rest_straight`` with explicit rest inputs or a graph.
-            ValueError: If the ordered point-list form has fewer than 2 segments.
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
             ValueError: If automatic section-rigidity discretization is requested
                 for branching topology or for a wrapped explicit cycle.
@@ -10186,35 +10126,35 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         self._validate_rod_stiffness_inputs(
-            "add_rod_graph",
+            "add_rod",
             stretch_stiffness=stretch_stiffness,
             shear_stiffness=shear_stiffness,
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod_graph", body_frame_origin)
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
         if len(node_positions) < 2:
-            raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
+            raise ValueError("add_rod: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
-            raise ValueError("add_rod_graph: edges must contain at least 1 edge")
+            raise ValueError("add_rod: edges must contain at least 1 edge")
 
         num_nodes = len(node_positions)
         num_edges = len(edges)
         if articulation_root_node is not None:
             if articulation_root_joint_factory is None:
-                raise ValueError("add_rod_graph: articulation_root_node requires an articulation root joint factory")
+                raise ValueError("add_rod: articulation_root_node requires an articulation root joint factory")
             if articulation_root_node < 0 or articulation_root_node >= num_nodes:
                 raise ValueError(
-                    f"add_rod_graph: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
+                    f"add_rod: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
                 )
         if quaternions is not None and len(quaternions) != num_edges:
             raise ValueError(
-                f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"add_rod: quaternions must have {num_edges} elements for {num_edges} edges, "
                 f"got {len(quaternions)} quaternions"
             )
         if rest_quaternions is not None and len(rest_quaternions) != num_edges:
             raise ValueError(
-                f"add_rod_graph: rest_quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"add_rod: rest_quaternions must have {num_edges} elements for {num_edges} edges, "
                 f"got {len(rest_quaternions)} quaternions"
             )
 
@@ -10232,7 +10172,7 @@ class ModelBuilder:
         )
         if len(rest_node_positions_wp) != num_nodes:
             raise ValueError(
-                f"add_rod_graph: rest_node_positions must have {num_nodes} elements to match node_positions, "
+                f"add_rod: rest_node_positions must have {num_nodes} elements to match node_positions, "
                 f"got {len(rest_node_positions_wp)}"
             )
 
@@ -10252,18 +10192,16 @@ class ModelBuilder:
         # Validate all edge geometry and frames before adding bodies.
         for e_idx, (u, v) in enumerate(edges):
             if u < 0 or u >= num_nodes or v < 0 or v >= num_nodes:
-                raise ValueError(
-                    f"add_rod_graph: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes"
-                )
+                raise ValueError(f"add_rod: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes")
             if u == v:
-                raise ValueError(f"add_rod_graph: edge {e_idx} connects a node to itself ({u} -> {v})")
+                raise ValueError(f"add_rod: edge {e_idx} connects a node to itself ({u} -> {v})")
 
             p0 = node_positions_wp[u]
             p1 = node_positions_wp[v]
             seg_dir, seg_length = self._rod_segment_direction(p0, p1)
             if not math.isfinite(seg_length) or seg_length <= min_segment_length:
                 raise ValueError(
-                    f"add_rod_graph: edge {e_idx} has a too-small or non-finite length "
+                    f"add_rod: edge {e_idx} has a too-small or non-finite length "
                     f"(length={seg_length:.3e}); segment length must be finite and > {min_segment_length:.1e}"
                 )
 
@@ -10271,7 +10209,7 @@ class ModelBuilder:
                 f"quaternions[{e_idx}]" if quaternions is not None else f"derived quaternion at edge {e_idx}"
             )
             q = self._rod_frame_for_direction(
-                "add_rod_graph",
+                "add_rod",
                 initial_argument,
                 None if quaternions is None else quaternions[e_idx],
                 seg_dir,
@@ -10283,7 +10221,7 @@ class ModelBuilder:
                 )
                 if not math.isfinite(rest_seg_length) or rest_seg_length <= min_segment_length:
                     raise ValueError(
-                        f"add_rod_graph: rest edge {e_idx} has a too-small or non-finite length "
+                        f"add_rod: rest edge {e_idx} has a too-small or non-finite length "
                         f"(length={rest_seg_length:.3e}); rest segment length must be finite and "
                         f"> {min_segment_length:.1e}"
                     )
@@ -10293,14 +10231,14 @@ class ModelBuilder:
 
             if rest_quaternions is not None:
                 q_rest = self._rod_frame_for_direction(
-                    "add_rod_graph",
+                    "add_rod",
                     f"rest_quaternions[{e_idx}]",
                     rest_quaternions[e_idx],
                     rest_seg_dir,
                 )
             elif has_separate_rest_positions:
                 q_rest = self._transport_rod_frame(
-                    "add_rod_graph",
+                    "add_rod",
                     f"derived rest quaternion at edge {e_idx}",
                     q,
                     seg_dir,
@@ -10360,7 +10298,7 @@ class ModelBuilder:
             elif node_idx == edge_v[e_idx]:
                 z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
-                raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
+                raise RuntimeError("add_rod: internal error (node not incident to edge)")
             rotation = _reverse_tangent_rotation if reverse_tangent else _identity_rotation
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), rotation)
 
@@ -10412,7 +10350,7 @@ class ModelBuilder:
                 for child_edge in inc[1:]:
                     child_body = edge_bodies[child_edge]
                     if parent_body == child_body:
-                        raise RuntimeError("add_rod_graph: internal error (self-connection)")
+                        raise RuntimeError("add_rod: internal error (self-connection)")
 
                     child_xform = _edge_anchor_xform(child_edge, node_idx)
 
@@ -10452,9 +10390,7 @@ class ModelBuilder:
             if articulation_root_node is not None:
                 root_edges = node_incidence[articulation_root_node]
                 if not root_edges:
-                    raise ValueError(
-                        f"add_rod_graph: articulation_root_node {articulation_root_node} has no incident edge"
-                    )
+                    raise ValueError(f"add_rod: articulation_root_node {articulation_root_node} has no incident edge")
                 start_edges.remove(root_edges[0])
                 start_edges.insert(0, root_edges[0])
 
@@ -10499,7 +10435,7 @@ class ModelBuilder:
 
                             child_body = edge_bodies[child_edge]
                             if parent_body == child_body:
-                                raise RuntimeError("add_rod_graph: internal error (self-connection)")
+                                raise RuntimeError("add_rod: internal error (self-connection)")
 
                             # Anchors at the shared node on each edge body
                             parent_reversed = shared_node == edge_u[parent_edge]

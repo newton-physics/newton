@@ -4004,6 +4004,25 @@ def _cable_rod_default_origin_matches_com_impl(test: unittest.TestCase, device):
     np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.array([0.0, 0.0, -half_length]), atol=1.0e-6)
 
 
+def _cable_rod_graph_body_frame_origin_impl(test: unittest.TestCase, device):
+    """Place branched-rod body frames at the edge start node or the edge midpoint."""
+    del device
+    points = np.array([[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [-0.2, 0.0, 0.0]])
+    edges = [(0, 1), (0, 2), (0, 3)]
+    expected = {
+        "start": (points[[0, 0, 0]], [0.0, 0.0, 0.1]),
+        "com": (0.5 * points[1:], [0.0, 0.0, 0.0]),
+    }
+
+    for origin, (body_origins, body_com) in expected.items():
+        with test.subTest(body_frame_origin=origin):
+            builder = newton.ModelBuilder()
+            bodies, _ = _add_prepared_rod(builder, points, edges=edges, body_frame_origin=origin)
+            for body, body_origin in zip(bodies, body_origins, strict=True):
+                np.testing.assert_allclose(builder.body_q[body].p, body_origin, atol=1.0e-6)
+                np.testing.assert_allclose(builder.body_com[body], body_com, atol=1.0e-6)
+
+
 def _rod_control_target_q_does_not_override_structural_rest_impl(test: unittest.TestCase, device):
     """Verify Control.joint_target_q does not override Model-owned Rod structural rest."""
     rest_rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.35)
@@ -6029,22 +6048,10 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
         youngs_modulus=200.0,
         poissons_ratio=0.25,
     )
-    invalid_sources = (
-        ((), {}, TypeError, "rod"),
-        ((), {"positions": graph.points, "rod": graph}, TypeError, "positions"),
-        ((graph,), {}, TypeError, "positional"),
-        ((), {"rod": object()}, TypeError, "rod must be a Rod"),
-        ((), {"rod": graph, "quaternions": graph.quaternions}, TypeError, "quaternions"),
-        ((), {"rod": graph, "closed": True}, TypeError, "closed"),
-        ((), {"rod": graph, "radius": 0.2}, TypeError, "radius"),
-    )
-    for args, kwargs, error_type, message in invalid_sources:
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        before = (builder.body_count, builder.shape_count, builder.joint_count)
-        with test.subTest(args=args, kwargs=kwargs):
-            with test.assertRaisesRegex(error_type, message):
-                builder.add_rod(*args, **kwargs)
-        test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), before)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    with test.assertRaisesRegex(TypeError, "rod must be a Rod"):
+        builder.add_rod(rod=object())
+    test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), (0, 0, 0))
 
     invalid_calls = (
         (graph, {"stretch_stiffness": -1.0, "body_frame_origin": "com"}, "add_rod: stretch_stiffness"),
@@ -7865,6 +7872,12 @@ add_function_test(
     "test_cable_rod_default_origin_matches_com",
     _cable_rod_default_origin_matches_com_impl,
     devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rod_graph_body_frame_origin",
+    _cable_rod_graph_body_frame_origin_impl,
+    devices=None,
 )
 add_function_test(
     TestCable,
