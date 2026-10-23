@@ -836,25 +836,17 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
     @wp.func
     def point_in_contact_polygon(
-        point: wp.vec3,
-        polygon: _SamplePoints,
+        point: wp.vec2,
+        polygon: wp.array[wp.vec2],
         count: int,
-        cross_vector_1: wp.vec3,
-        cross_vector_2: wp.vec3,
     ) -> bool:
-        """Return whether a point projects inside a convex polygon of any winding, within EPS [m].
-
-        The point and the polygon vertices are projected onto the contact plane spanned by
-        the cross vectors.
-        """
-        planar = wp.vec2(wp.dot(cross_vector_1, point), wp.dot(cross_vector_2, point))
+        """Test a projected point against a convex polygon of either winding, within EPS [m]."""
         side = float(0.0)
         inside = count >= 3
         for k in range(count):
-            start = wp.vec2(wp.dot(cross_vector_1, polygon[k]), wp.dot(cross_vector_2, polygon[k]))
-            end_point = polygon[(k + 1) % count]
-            edge = wp.vec2(wp.dot(cross_vector_1, end_point), wp.dot(cross_vector_2, end_point)) - start
-            cross = edge[0] * (planar[1] - start[1]) - edge[1] * (planar[0] - start[0])
+            start = polygon[k]
+            edge = polygon[(k + 1) % count] - start
+            cross = edge[0] * (point[1] - start[1]) - edge[1] * (point[0] - start[0])
             if cross * cross > EPS * EPS * wp.length_sq(edge):
                 if side == 0.0:
                     side = wp.sign(cross)
@@ -865,15 +857,14 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
     @wp.func
     def write_vertex_face_contacts(
         vertex_points: _SamplePoints,
+        vertex_polygon: wp.array[wp.vec2],
         vertex_count: int,
         vertex_anchor: wp.vec3,
         vertex_on_a: bool,
         face_projector: BodyProjector,
-        face_points: _SamplePoints,
+        face_points: wp.array[wp.vec2],
         face_count: int,
         normal_local: wp.vec3,
-        cross_vector_1: wp.vec3,
-        cross_vector_2: wp.vec3,
         orientation_a: wp.quat,
         position_a_world: wp.vec3,
         normal_world: wp.vec3,
@@ -897,11 +888,12 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         Args:
             vertex_points: Sampled support points of the non-planar feature in A-local frame.
+            vertex_polygon: Support samples projected into the contact plane.
             vertex_count: Number of valid rows in ``vertex_points``.
             vertex_anchor: Deepest witness on the non-planar shape in A-local frame.
             vertex_on_a: True when the non-planar feature belongs to shape A.
             face_projector: Plane of the verified face in A-local frame.
-            face_points: Sampled support points of the face in A-local frame.
+            face_points: Face samples projected into the contact plane.
             face_count: Number of valid rows in ``face_points``.
 
         Returns:
@@ -920,7 +912,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             if i < vertex_count:
                 vertex = vertex_points[i]
                 if wp.length_sq(vertex - vertex_anchor) > EPS * EPS and point_in_contact_polygon(
-                    vertex, face_points, face_count, cross_vector_1, cross_vector_2
+                    vertex_polygon[i], face_points, face_count
                 ):
                     on_face = body_projector_project(face_projector, vertex, normal_local)
                     signed_distance = wp.dot(on_face - vertex, normal_local)
@@ -1117,17 +1109,19 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             if planar_a and planar_b and feature_a_flat != feature_b_flat:
                 face_on_b = feature_b_flat
                 vertex_points = points_a
+                vertex_polygon = a_buffer
                 vertex_count = a_count
                 vertex_anchor = p_a
-                face_points = points_b
+                face_points = wp.array(ptr=b_buffer.ptr, shape=(5,), dtype=wp.vec2)
                 face_count = b_count
                 face_tracker = plane_tracker_b
                 face_anchor = p_b
                 if not face_on_b:
                     vertex_points = points_b
+                    vertex_polygon = wp.array(ptr=b_buffer.ptr, shape=(5,), dtype=wp.vec2)
                     vertex_count = b_count
                     vertex_anchor = p_b
-                    face_points = points_a
+                    face_points = a_buffer
                     face_count = a_count
                     face_tracker = plane_tracker_a
                     face_anchor = p_a
@@ -1157,6 +1151,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                     if face_supported:
                         count_out = write_vertex_face_contacts(
                             vertex_points,
+                            vertex_polygon,
                             vertex_count,
                             vertex_anchor,
                             face_on_b,
@@ -1164,8 +1159,6 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                             face_points,
                             face_count,
                             normal,
-                            tangent_a,
-                            tangent_b,
                             orientation_a,
                             position_a_world,
                             normal_world,
