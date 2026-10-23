@@ -61,7 +61,16 @@ class TestUtilsLogger(unittest.TestCase):
             self.assertEqual(logging.getLogger(name).handlers, handlers[name])
             self.assertEqual(len(handlers[name]), 1)
 
-    def test_03_console_yields_to_application_handlers(self):
+    def test_03_enable_for_custom_names(self):
+        """Attach a single console handler to loggers outside the Kamino tree."""
+        name = "kamino_test_custom_logger"
+        custom_logger = logging.getLogger(name)
+        self.addCleanup(setattr, custom_logger, "handlers", custom_logger.handlers[:])
+        enable_console_logging(color=False, names=(name,))
+        enable_console_logging(color=False, names=(name,))
+        self.assertEqual(len(custom_logger.handlers), 1)
+
+    def test_04_console_yields_to_application_handlers(self):
         """Leave records to handlers configured by the application, e.g. ``assertLogs``."""
         enable_console_logging(color=False)
         stderr = io.StringIO()
