@@ -1959,8 +1959,10 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
             else:
                 builder.add_shape_capsule(body, radius=radius, half_height=0.02)
             if on_heightfield:
-                # shift the heightfield so the sphere's lowest point is off its grid lines and cell diagonal
-                offset = wp.vec3(0.013, 0.017, -(radius + gap))
+                # shift the heightfield (0.05 m cells, split along a diagonal) so the sphere's lowest point is at the
+                # incenter of a triangle, 14.6 mm from its edges: no neighbouring triangle is within the summed gap
+                inset = 0.05 * (1.0 - math.sqrt(0.5))
+                offset = wp.vec3(inset, 0.05 - inset, -(radius + gap))
             elif placement == "face":
                 offset = wp.vec3(0.0, -(radius + gap + half[1]), 0.0)
             else:
@@ -1978,38 +1980,27 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
                 else:
                     builder.add_shape_mesh(other, mesh=hull)
             cases.append((probe, target, placement, gap))
-        model = builder.finalize()
+        with warnings.catch_warnings():
+            # the builder warns for any two heightfields, even static ones that never need to collide
+            warnings.filterwarnings(
+                "ignore", "Heightfield-vs-heightfield collision is not supported", newton.exceptions.NewtonWarning
+            )
+            model = builder.finalize()
         state = model.state()
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float)
+        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
 
         n = int(contacts.rigid_contact_count.numpy()[0])
         shape0 = contacts.rigid_contact_shape0.numpy()[:n]
         shape1 = contacts.rigid_contact_shape1.numpy()[:n]
-        point0 = contacts.rigid_contact_point0.numpy()[:n]
-        point1 = contacts.rigid_contact_point1.numpy()[:n]
-        normal = contacts.rigid_contact_normal.numpy()[:n]
-        margin0 = contacts.rigid_contact_margin0.numpy()[:n]
-        margin1 = contacts.rigid_contact_margin1.numpy()[:n]
-        body_q = state.body_q.numpy()
-        shape_body = model.shape_body.numpy()
-
-        def to_world(point, shape):
-            if shape_body[shape] < 0:  # static shape (the heightfield): contact points are in world frame
-                return np.array(point)
-            q = body_q[shape_body[shape]]
-            return q[:3] + np.array(wp.quat_rotate(wp.quat(*q[3:7]), wp.vec3(*point)))
-
-        rows = []
-        for k in range(n):
-            separation = float(
-                np.dot(normal[k], to_world(point1[k], shape1[k]) - to_world(point0[k], shape0[k]))
-                - margin0[k]
-                - margin1[k]
-            )
-            # each case adds exactly two shapes, the probe then its target, so shape // 2 is the case index
-            rows.append((*cases[min(shape0[k], shape1[k]) // 2], separation))
+        # each case adds exactly two shapes, the probe then its target, so shape // 2 is the case index
+        rows = [
+            (*cases[min(shape0[k], shape1[k]) // 2], float(separation))
+            for k, separation in enumerate(distance.numpy()[:n])
+        ]
         return rows, cases
 
 
@@ -2019,11 +2010,10 @@ def test_rounded_convex_contact_separation(test, device):
     The GJK/MPR path shrinks a sphere or capsule to its core plus a small inflation radius and restores the rest of
     the radius afterwards, so the written separation must equal the geometric surface gap. Each probe sits at a known
     gap from a box face, and from a convex hull and a triangle mesh of the same box: deep enough that its core
-    overlaps the target (MPR),
-    penetrating, touching, and separated within the contact gap. Off a box edge, a probe just inside the summed contact
-    gap must be admitted and one just beyond it rejected. The tolerance is far below the inflation radius, so restoring
-    the whole radius instead of the remainder fails. A sphere-only model runs the lean post-processor
-    (``post_process_minkowski_only``); a capsule selects the full one.
+    overlaps the target (MPR), penetrating, touching, and separated within the contact gap. Off a box edge, a probe
+    just inside the summed contact gap must be admitted and one just beyond it rejected. The tolerance is far below
+    the inflation radius, so restoring the whole radius instead of the remainder fails. A sphere-only model runs the
+    lean post-processor (``post_process_minkowski_only``); a capsule selects the full one.
     """
     rigid_gap = 0.002
     summed_gap = 2.0 * rigid_gap
@@ -2044,8 +2034,8 @@ def test_rounded_convex_contact_separation(test, device):
             for probe, target, placement, gap, separation in rows:
                 msg = f"{probe} vs {target} {placement} at gap {gap}"
                 test.assertNotEqual((placement, gap), outside, f"{msg}: admitted beyond the summed contact gap")
-                # GJK/MPR's own error reaches a few um (a sphere against the hull's edge, deep MPR): a tenth of
-                # the inflation radius still separates it from the radius-restore error
+                # MPR's own error reaches about 2 um (a sphere deep in the hull): a tenth of the inflation radius
+                # still separates it from the radius-restore error
                 test.assertAlmostEqual(separation, gap, delta=1.0e-5, msg=msg)
             seen = {row[:4] for row in rows}
             test.assertEqual(seen, {case for case in cases if case[2:] != outside}, "every admitted probe must contact")
@@ -2075,8 +2065,8 @@ def test_rounded_heightfield_contact_separation(test, device):
     for probe, target, placement, gap, separation in rows:
         msg = f"{probe} vs {target} at gap {gap}"
         test.assertNotEqual((placement, gap), outside, f"{msg}: admitted beyond the summed contact gap")
-        # GJK stops ~12 um long on the sphere just inside the summed gap (with or without this fix); still a fifth
-        # of the inflation radius
+        # MPR lands about 13 um short on one penetrating capsule-triangle pair (with or without this fix); still a
+        # fifth of the inflation radius
         test.assertAlmostEqual(separation, gap, delta=2.0e-5, msg=msg)
     seen = {row[:4] for row in rows}
     test.assertEqual(seen, {case for case in cases if case[2:] != outside}, "every admitted probe must contact")
