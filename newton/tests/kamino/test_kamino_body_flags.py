@@ -497,7 +497,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
         np.testing.assert_array_equal(state_out.body_qd.numpy(), state_in.body_qd.numpy())
 
     def test_proxy_body_is_simulated(self):
-        """A PROXY body (via ModelView) keeps its inv-mass and incident joints."""
+        """Keep the inverse mass and incident joints of PROXY bodies (via ModelView)."""
         builder, parent, child, _ = _build_two_body_articulation(add_fixed_root=False)
         model = builder.finalize(device=self.default_device)
         view = _mark_proxy(model, [parent, child])

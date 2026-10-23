@@ -1494,7 +1494,7 @@ def convert_rigid_bodies(
     q_i_0 = wp.empty((model.body_count,), dtype=wp.transformf, device=model.device)
     convert_body_origin_to_com(model.body_com, model.body_q, q_i_0)
 
-    # Bake Kamino's per-body immovability decision once (kinematic/proxy or
+    # Bake Kamino's per-body immovability decision once (kinematic or
     # already massless) and mask its owned inverse mass / inertia copies with
     # it. See ``is_immovable_for_kamino`` for the predicate. Newton's arrays
     # are never mutated. Runtime flips are rejected via
