@@ -50,6 +50,43 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_nonfinite_contact_materials_rejected_at_finalize(self):
+        """Reject imported NaN contact materials while preserving finite values and shape labels."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        material = UsdShade.Material.Define(stage, "/World/Material")
+        physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+        friction = physics_material.CreateDynamicFrictionAttr(0.4)
+        restitution = physics_material.CreateRestitutionAttr(0.2)
+        for path in ("/World/Valid", "/World/Invalid"):
+            cube = UsdGeom.Cube.Define(stage, path)
+            UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+            if path == "/World/Invalid":
+                UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(material, materialPurpose="physics")
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, load_visual_shapes=False)
+        shape = result["path_shape_map"]["/World/Invalid"]
+        model = builder.finalize(device="cpu")
+        self.assertAlmostEqual(model.shape_material_mu.numpy()[shape], 0.4, places=6)
+        self.assertAlmostEqual(model.shape_material_restitution.numpy()[shape], 0.2, places=6)
+
+        for usd_attr, attribute in ((friction, "shape_material_mu"), (restitution, "shape_material_restitution")):
+            with self.subTest(attribute=attribute):
+                original = usd_attr.Get()
+                usd_attr.Set(float("nan"))
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, load_visual_shapes=False)
+                shape = result["path_shape_map"]["/World/Invalid"]
+                self.assertTrue(math.isnan(getattr(builder, attribute)[shape]))
+                with self.assertRaisesRegex(ValueError, rf"{attribute}.*shape {shape}.*/World/Invalid.*finite"):
+                    builder.finalize(device="cpu")
+                usd_attr.Set(original)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_legacy_unit_flags_warn_when_enabled(self):
         """Deprecate each enabled legacy unit flag without warning for defaults."""
         from pxr import Usd
