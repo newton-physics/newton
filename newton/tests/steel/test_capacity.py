@@ -835,11 +835,15 @@ def _build_model(world_link_counts: list[int], device, root_height: float = 1.0,
     return scene.finalize(device=device)
 
 
-def _final_joint_q(model, steps=60, solve_mode="matrix_free", response="immediate", from_fk=False):
+def _final_joint_q(model, steps=60, solve_mode="matrix_free", response="immediate", from_fk=False, deterministic=False):
     solver = SolverSteel(
-        model, solve_mode=solve_mode, articulation_constraint_max=64, articulated_contact_response=response
+        model,
+        solve_mode=solve_mode,
+        articulation_constraint_max=64,
+        articulated_contact_response=response,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN if deterministic else None,
     )
-    pipeline = newton.CollisionPipeline(model)
+    pipeline = newton.CollisionPipeline(model, deterministic=deterministic)
     contacts = pipeline.contacts()
     state_0, state_1 = model.state(), model.state()
     if from_fk:
@@ -906,7 +910,8 @@ def test_hetero_propagation_matches_isolated_worlds(test, device):
 
     def run(link_counts, free_box, response):
         model = _build_model(link_counts, device, 0.35, free_box)
-        return _final_joint_q(model, response=response, from_fk=True)
+        # Run to run, the sweep's rounding can tip these chains onto a different contact outcome.
+        return _final_joint_q(model, response=response, from_fk=True, deterministic=True)
 
     for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response):
