@@ -415,7 +415,7 @@ class PerformanceProfile:
             import matplotlib.pyplot as plt
             from cycler import cycler  # noqa: PLC0415
         except Exception as exc:  # pragma: no cover - optional dependency
-            msg.error(f"`matplotlib` is required to plot profiles: {exc}")
+            msg.error("`matplotlib` is required to plot profiles: %s", exc)
             return
 
         # Names default to indices
@@ -499,7 +499,7 @@ class PerformanceProfile:
 
             if path is not None:
                 plt.savefig(path, bbox_inches="tight", dpi=300)
-                msg.info(f"Profile plot saved to: {path}")
+                msg.info("Profile plot saved to: %s", path)
 
             if show:
                 plt.show()

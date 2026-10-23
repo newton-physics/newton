@@ -883,8 +883,9 @@ class MaterialManager:
                     restitution[ij] = self._pair_properties[i][j].restitution
                 else:
                     msg.debug(
-                        f"Material-pair properties not set for materials:"
-                        f"({self.materials[i].name}, {self.materials[j].name})"
+                        "Material-pair properties not set for materials:(%s, %s)",
+                        self.materials[i].name,
+                        self.materials[j].name,
                     )
 
         # Return the restitution matrix as a numpy array
@@ -933,8 +934,9 @@ class MaterialManager:
                     static_friction[ij] = self._pair_properties[i][j].static_friction
                 else:
                     msg.debug(
-                        f"Material-pair properties not set for materials:"
-                        f"({self.materials[i].name}, {self.materials[j].name})"
+                        "Material-pair properties not set for materials:(%s, %s)",
+                        self.materials[i].name,
+                        self.materials[j].name,
                     )
 
         # Return the friction matrix as a numpy array
@@ -983,8 +985,9 @@ class MaterialManager:
                     dynamic_friction[ij] = self._pair_properties[i][j].dynamic_friction
                 else:
                     msg.debug(
-                        f"Material-pair properties not set for materials:"
-                        f"({self.materials[i].name}, {self.materials[j].name})"
+                        "Material-pair properties not set for materials:(%s, %s)",
+                        self.materials[i].name,
+                        self.materials[j].name,
                     )
 
         # Return the friction matrix as a numpy array

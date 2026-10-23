@@ -134,7 +134,7 @@ def get_default_logger() -> logging.Logger:
 def set_log_level(level: LogLevel):
     """Set the logging level for the default logger."""
     get_default_logger().setLevel(level)
-    get_default_logger().debug(f"Log level set to: {logging.getLevelName(level)}")
+    get_default_logger().debug("Log level set to: %s", logging.getLevelName(level))
 
 
 def reset_log_level():

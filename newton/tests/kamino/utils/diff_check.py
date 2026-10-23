@@ -119,10 +119,12 @@ def diff_check(
         msg.debug("DERIVATIVE_FD")
         msg.debug(derivative_fd)
         if not abs_test:
-            msg.debug(f"Absolute test failed, error={np.max(np.abs(error))}, tolerance={tolerance_abs}")
+            msg.debug("Absolute test failed, error=%s, tolerance=%s", np.max(np.abs(error)), tolerance_abs)
         if not rel_test:
             msg.debug(
-                f"Relative test failed, error={np.linalg.norm(error)}, tolerance={tolerance_rel * np.linalg.norm(derivative_fd)}"
+                "Relative test failed, error=%s, tolerance=%s",
+                np.linalg.norm(error),
+                tolerance_rel * np.linalg.norm(derivative_fd),
             )
 
     return success

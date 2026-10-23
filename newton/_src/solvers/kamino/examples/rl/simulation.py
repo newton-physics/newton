@@ -339,8 +339,8 @@ class RigidBodySim:
             use_newton_collisions=use_newton_cd,
         )
         self.model: ModelKamino = self.sim.model
-        msg.debug(f"Model size: {self.sim.model.size}")
-        msg.debug(f"Contacts capacity: {self.sim.contacts.model_max_contacts_host}")
+        msg.debug("Model size: %s", self.sim.model.size)
+        msg.debug("Contacts capacity: %s", self.sim.contacts.model_max_contacts_host)
 
         # Apply body pose offset to initial body poses (affects all resets).
         # Kamino q_i stores COM positions, so we offset the COM directly.
@@ -593,7 +593,7 @@ class RigidBodySim:
                 self._actuated_dof_indices, device=self._device, dtype=wp.int32
             )
 
-        msg.debug(f"Actuated joints ({self.num_actuated}): {self._actuated_joint_names}")
+        msg.debug("Actuated joints (%s): %s", self.num_actuated, self._actuated_joint_names)
 
         # Body names
         self._body_names: list[str] = [lbl.rsplit("/", 1)[-1] for lbl in self.sim.model.bodies.label[:max_bodies]]
@@ -776,7 +776,7 @@ class RigidBodySim:
 
         frame_files = sorted(glob.glob(os.path.join(self._video_folder, "*.png")))
         if not frame_files:
-            msg.warning(f"No PNG frames found in {self._video_folder}")
+            msg.warning("No PNG frames found in %s", self._video_folder)
             return False
 
         # Read first frame to get dimensions; ensure even for libx264 yuv420p
@@ -788,7 +788,7 @@ class RigidBodySim:
         needs_pad = even_w != w or even_h != h
         size = (even_w, even_h)
 
-        msg.info(f"Generating video from {len(frame_files)} frames at {even_w}x{even_h}...")
+        msg.info("Generating video from %s frames at %sx%s...", len(frame_files), even_w, even_h)
         try:
             writer = ffmpeg.write_frames(
                 output_filename,
@@ -808,7 +808,7 @@ class RigidBodySim:
                     frame = padded
                 writer.send(frame)
             writer.close()
-            msg.info(f"Video generated: {output_filename}")
+            msg.info("Video generated: %s", output_filename)
 
             if not keep_frames:
                 for frame_path in frame_files:
@@ -817,7 +817,7 @@ class RigidBodySim:
 
             return True
         except Exception as e:
-            msg.warning(f"Failed to generate video: {e}")
+            msg.warning("Failed to generate video: %s", e)
             return False
 
     @property

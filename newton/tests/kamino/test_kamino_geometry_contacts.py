@@ -387,8 +387,8 @@ class TestGeometryContactFrames(unittest.TestCase):
 
         # Compute the contact frames
         compute_contact_frame_znorm(normal=normals, frame=frames, num_threads=len(test_normals))
-        msg.debug(f"normals:\n{normals}\n")
-        msg.debug(f"frames:\n{frames}\n")
+        msg.debug("normals:\n%s\n", normals)
+        msg.debug("frames:\n%s\n", frames)
 
         # Extract numpy arrays for comparison
         frames_np = frames.numpy()
@@ -436,8 +436,8 @@ class TestGeometryContactFrames(unittest.TestCase):
 
         # Compute the contact frames
         compute_contact_frame_xnorm(normal=normals, frame=frames, num_threads=len(test_normals))
-        msg.debug(f"normals:\n{normals}\n")
-        msg.debug(f"frames:\n{frames}\n")
+        msg.debug("normals:\n%s\n", normals)
+        msg.debug("frames:\n%s\n", frames)
 
         # Extract numpy arrays for comparison
         frames_np = frames.numpy()
@@ -473,7 +473,7 @@ class TestGeometryContactMode(unittest.TestCase):
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
-        msg.debug(f"mode: {mode} (int: {int(mode_int32)})")
+        msg.debug("mode: %s (int: %s)", mode, int(mode_int32))
         self.assertEqual(mode, ContactMode.OPENING)
 
     def test_02_contact_mode_sticking(self):
@@ -482,7 +482,7 @@ class TestGeometryContactMode(unittest.TestCase):
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
-        msg.debug(f"mode: {mode} (int: {int(mode_int32)})")
+        msg.debug("mode: %s (int: %s)", mode, int(mode_int32))
         self.assertEqual(mode, ContactMode.STICKING)
 
     def test_03_contact_mode_slipping(self):
@@ -491,7 +491,7 @@ class TestGeometryContactMode(unittest.TestCase):
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
-        msg.debug(f"mode: {mode} (int: {int(mode_int32)})")
+        msg.debug("mode: %s (int: %s)", mode, int(mode_int32))
         self.assertEqual(mode, ContactMode.SLIDING)
 
 

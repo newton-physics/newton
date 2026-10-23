@@ -187,8 +187,9 @@ class SolverKaminoImpl(SolverBase):
         # sparsity is enabled but the provided solver is not iterative
         if not uses_lox and self._config.sparse_dynamics and not issubclass(linear_solver_type, IterativeSolver):
             msg.warning(
-                f"Sparse dynamics requires an iterative solver, but got '{linear_solver_type.__name__}'."
-                " Defaulting to 'ConjugateResidualSolver' as the PADMM linear solver."
+                "Sparse dynamics requires an iterative solver, but got '%s'."
+                " Defaulting to 'ConjugateResidualSolver' as the PADMM linear solver.",
+                linear_solver_type.__name__,
             )
             linear_solver_type = ConjugateResidualSolver
 

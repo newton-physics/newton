@@ -35,8 +35,8 @@ class TestContactAggregation(unittest.TestCase):
 
         self.build_func = basics.build_boxes_nunchaku
         self.expected_contacts = 9  # NOTE: specialized to build_boxes_nunchaku
-        msg.debug(f"build_func: {self.build_func.__name__}")
-        msg.debug(f"expected_contacts: {self.expected_contacts}")
+        msg.debug("build_func: %s", self.build_func.__name__)
+        msg.debug("expected_contacts: %s", self.expected_contacts)
 
     def tearDown(self):
         self.default_device = None
@@ -79,7 +79,7 @@ class TestContactAggregation(unittest.TestCase):
             cwid = int(wid_np[c])
             bid_A = max(-1, int(bid_AB_np[c, 0]) - world_body_start[cwid])
             bid_B = max(-1, int(bid_AB_np[c, 1]) - world_body_start[cwid])
-            msg.debug(f"Contact {c}: wid={cwid}, bid_A={bid_A}, bid_B={bid_B}")
+            msg.debug("Contact %s: wid=%s, bid_A=%s, bid_B=%s", c, cwid, bid_A, bid_B)
             # First nunchaku box body
             if bid_B == 0 and bid_A == -1:
                 contact_reaction_np[c, :] = np.array([1.0, 0.0, 0.0])  # Force in +x direction

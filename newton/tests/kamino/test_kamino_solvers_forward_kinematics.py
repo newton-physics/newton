@@ -246,7 +246,7 @@ def solve_and_check_fk_random_poses(
                 body_u_before_np[b0:b1], body_u_after_np[b0:b1]
             ):
                 inactive_untouched = False
-                msg.error(f"Inactive world {wid} was modified by the solver for pose {pose_id}")
+                msg.error("Inactive world %s was modified by the solver for pose %s", wid, pose_id)
                 break
         if not inactive_untouched:
             success_flags.append(False)
@@ -281,7 +281,7 @@ def solve_and_check_fk_random_poses(
             if r1 > r0:
                 residual_ct_pos = max(residual_ct_pos, float(np.max(np.abs(r_j_np[r0:r1]))))
         if residual_ct_pos > epsilon:
-            msg.error(f"Large constraint residual ({residual_ct_pos}) for pose {pose_id}")
+            msg.error("Large constraint residual (%s) for pose %s", residual_ct_pos, pose_id)
             success_flags[-1] = False
         actuator_q_check = extract_segments(data.joints.q_j.numpy(), active_coord_offsets, active_coord_sizes)
         actuator_q_check = standardize_actuated_coords(actuator_q_check, active_coord_sizes, active_dof_types)
@@ -289,7 +289,7 @@ def solve_and_check_fk_random_poses(
         actuator_q_ref = standardize_actuated_coords(actuator_q_ref, active_coord_sizes, active_dof_types)
         residual_actuator_q = float(np.max(np.abs(actuator_q_check - actuator_q_ref))) if actuator_q_check.size else 0.0
         if residual_actuator_q > epsilon:
-            msg.error(f"Large error on prescribed actuator coordinates ({residual_actuator_q}) for pose {pose_id}")
+            msg.error("Large error on prescribed actuator coordinates (%s) for pose %s", residual_actuator_q, pose_id)
             success_flags[-1] = False
 
         # Validate velocities computation on active worlds
@@ -301,18 +301,20 @@ def solve_and_check_fk_random_poses(
             if r1 > r0:
                 residual_ct_vel = max(residual_ct_vel, float(np.max(np.abs(dr_j_np[r0:r1]))))
         if residual_ct_vel > epsilon:
-            msg.error(f"Large constraint velocity residual ({residual_ct_vel}) for pose {pose_id}")
+            msg.error("Large constraint velocity residual (%s) for pose %s", residual_ct_vel, pose_id)
             success_flags[-1] = False
         actuator_u_check = extract_segments(data.joints.dq_j.numpy(), active_dof_offsets, active_dof_sizes)
         actuator_u_ref = extract_segments(actuator_u_np[pose_id], active_ref_dof_offsets, active_dof_sizes)
         residual_actuator_u = float(np.max(np.abs(actuator_u_check - actuator_u_ref))) if actuator_u_check.size else 0.0
         if residual_actuator_u > epsilon:
-            msg.error(f"Large error on prescribed actuator velocities ({residual_actuator_u}) for pose {pose_id}")
+            msg.error("Large error on prescribed actuator velocities (%s) for pose %s", residual_actuator_u, pose_id)
             success_flags[-1] = False
 
     success = np.sum(success_flags) == num_poses
     if not success:
-        msg.error(f"Random poses simulation & validation failed, {np.sum(success_flags)}/{num_poses} poses successful")
+        msg.error(
+            "Random poses simulation & validation failed, %s/%s poses successful", np.sum(success_flags), num_poses
+        )
 
     return success
 

@@ -718,7 +718,7 @@ class TestSolverMetrics(unittest.TestCase):
         metrics_np = compute_metrics_numpy(test.problem, solver.data)
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
             for key, value in metrics_np.items():
-                msg.debug(f"{key}: {value}")
+                msg.debug("%s: %s", key, value)
         np.testing.assert_allclose(metrics_np["r_v_plus"], metrics.data.r_v_plus.numpy(), rtol=rtol, atol=atol)
         np.testing.assert_allclose(metrics_np["f_ccp"], metrics.data.f_ccp.numpy(), rtol=rtol, atol=atol)
         np.testing.assert_allclose(metrics_np["f_ncp"], metrics.data.f_ncp.numpy(), rtol=rtol, atol=atol)

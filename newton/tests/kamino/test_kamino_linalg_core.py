@@ -44,44 +44,44 @@ class TestLinAlgCoreMakeTolerance(unittest.TestCase):
 
     def test_00_make_tolerance_from_defaults(self):
         tol = make_dtype_tolerance()
-        msg.debug(f"tol = {tol} (type: {type(tol)})")
+        msg.debug("tol = %s (type: %s)", tol, type(tol))
         self.assertIsInstance(tol, wp.float32)
         self.assertAlmostEqual(tol, wp.float32(np.finfo(np.float32).eps), places=7)
 
     def test_01_make_tolerance_default_for_wp_float64(self):
         tol = make_dtype_tolerance(dtype=wp.float64)
-        msg.debug(f"tol = {tol} (type: {type(tol)})")
+        msg.debug("tol = %s (type: %s)", tol, type(tol))
         self.assertIsInstance(tol, wp.float64)
         self.assertAlmostEqual(tol, wp.float64(np.finfo(np.float64).eps), places=23)
 
     def test_02_make_tolerance_default_for_wp_float32(self):
         tol = make_dtype_tolerance(dtype=wp.float32)
-        msg.debug(f"tol = {tol} (type: {type(tol)})")
+        msg.debug("tol = %s (type: %s)", tol, type(tol))
         self.assertIsInstance(tol, wp.float32)
         self.assertAlmostEqual(tol, wp.float32(np.finfo(np.float32).eps), places=7)
 
     def test_03_make_tolerance_from_np_float64_to_wp_float64(self):
         tol = make_dtype_tolerance(tol=np.float64(1e-5), dtype=wp.float64)
-        msg.debug(f"tol = {tol} (type: {type(tol)})")
+        msg.debug("tol = %s (type: %s)", tol, type(tol))
         self.assertIsInstance(tol, wp.float64)
         self.assertAlmostEqual(tol, wp.float64(np.float64(1e-5)), places=23)
 
     def test_04_make_tolerance_from_np_float64_to_wp_float32(self):
         tol = make_dtype_tolerance(tol=np.float64(1e-5), dtype=wp.float32)
-        msg.debug(f"tol = {tol} (type: {type(tol)})")
+        msg.debug("tol = %s (type: %s)", tol, type(tol))
         self.assertIsInstance(tol, wp.float32)
         self.assertAlmostEqual(tol, wp.float32(np.float64(1e-5)), places=7)
 
     def test_05_make_tolerance_from_float_to_wp_float32(self):
         tol = make_dtype_tolerance(tol=1e-6, dtype=wp.float32)
-        msg.debug(f"tol = {tol} (type: {type(tol)})")
+        msg.debug("tol = %s (type: %s)", tol, type(tol))
         self.assertIsInstance(tol, wp.float32)
         self.assertAlmostEqual(tol, wp.float32(1e-6), places=7)
 
     def test_06_make_tolerance_smaller_than_eps(self):
         with self.assertLogs(level="WARNING") as logs:
             tol = make_dtype_tolerance(tol=1e-10, dtype=wp.float32)
-        msg.debug(f"tol = {tol} (type: {type(tol)})")
+        msg.debug("tol = %s (type: %s)", tol, type(tol))
         self.assertTrue(any("is smaller than machine epsilon" in message for message in logs.output))
         self.assertIsInstance(tol, wp.float32)
         self.assertAlmostEqual(tol, wp.float32(np.finfo(np.float32).eps), places=7)

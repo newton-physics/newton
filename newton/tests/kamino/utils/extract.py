@@ -118,13 +118,13 @@ def extract_cts_jacobians(
 
     # Optional verbose output
     if msg.is_enabled_for(msg.LogLevel.DEBUG):
-        msg.debug(f"J_cts_flat_total_size: {J_cts_flat_total_size}")
-        msg.debug(f"sum(J_cts_flat_sizes): {sum(J_cts_flat_sizes)}")
-        msg.debug(f"J_cts_flat_sizes: {J_cts_flat_sizes}")
-        msg.debug(f"J_cts_flat_offsets: {J_cts_flat_offsets}")
+        msg.debug("J_cts_flat_total_size: %s", J_cts_flat_total_size)
+        msg.debug("sum(J_cts_flat_sizes): %s", sum(J_cts_flat_sizes))
+        msg.debug("J_cts_flat_sizes: %s", J_cts_flat_sizes)
+        msg.debug("J_cts_flat_offsets: %s", J_cts_flat_offsets)
         for w in range(num_worlds):
-            msg.debug(f"{w}: start={J_cts_flat_offsets[w]}, end={J_cts_flat_offsets[w] + J_cts_flat_sizes[w]}")
-            msg.debug(f"J_cts_mat[{w}] ({J_cts_mat[w].shape}):\n{J_cts_mat[w]}\n")
+            msg.debug("%s: start=%s, end=%s", w, J_cts_flat_offsets[w], J_cts_flat_offsets[w] + J_cts_flat_sizes[w])
+            msg.debug("J_cts_mat[%s] (%s):\n%s\n", w, J_cts_mat[w].shape, J_cts_mat[w])
 
     # Return the extracted Jacobians
     return J_cts_mat
@@ -166,13 +166,13 @@ def extract_dofs_jacobians(
 
     # Optional verbose output
     if msg.is_enabled_for(msg.LogLevel.DEBUG):
-        msg.debug(f"J_dofs_flat_total_size: {J_dofs_flat_total_size}")
-        msg.debug(f"sum(J_dofs_flat_sizes): {sum(J_dofs_flat_sizes)}")
-        msg.debug(f"J_dofs_flat_sizes: {J_dofs_flat_sizes}")
-        msg.debug(f"J_dofs_flat_offsets: {J_dofs_flat_offsets}")
+        msg.debug("J_dofs_flat_total_size: %s", J_dofs_flat_total_size)
+        msg.debug("sum(J_dofs_flat_sizes): %s", sum(J_dofs_flat_sizes))
+        msg.debug("J_dofs_flat_sizes: %s", J_dofs_flat_sizes)
+        msg.debug("J_dofs_flat_offsets: %s", J_dofs_flat_offsets)
         for i in range(num_worlds):
-            msg.debug(f"{i}: start={J_dofs_flat_offsets[i]}, end={J_dofs_flat_offsets[i] + J_dofs_flat_sizes[i]}")
-            msg.debug(f"J_dofs_mat[{i}] ({J_dofs_mat[i].shape}):\n{J_dofs_mat[i]}\n")
+            msg.debug("%s: start=%s, end=%s", i, J_dofs_flat_offsets[i], J_dofs_flat_offsets[i] + J_dofs_flat_sizes[i])
+            msg.debug("J_dofs_mat[%s] (%s):\n%s\n", i, J_dofs_mat[i].shape, J_dofs_mat[i])
 
     # Return the extracted Jacobians
     return J_dofs_mat

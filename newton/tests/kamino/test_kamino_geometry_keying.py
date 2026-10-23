@@ -66,31 +66,31 @@ class TestPairKeyOps(unittest.TestCase):
 
         # Test make_bitmask for valid inputs
         bitmask_1_Bits = make_bitmask(1)
-        msg.debug(f"bitmask_1_Bits: {bitmask_1_Bits:#0{4}x} ({bitmask_1_Bits})")
+        msg.debug("bitmask_1_Bits: %#04x (%s)", bitmask_1_Bits, bitmask_1_Bits)
         self.assertEqual(bitmask_1_Bits, 0x1)
 
         bitmask_3_Bits = make_bitmask(3)
-        msg.debug(f"bitmask_3_Bits: {bitmask_3_Bits:#0{4}x} ({bitmask_3_Bits})")
+        msg.debug("bitmask_3_Bits: %#04x (%s)", bitmask_3_Bits, bitmask_3_Bits)
         self.assertEqual(bitmask_3_Bits, 0x7)
 
         bitmask_7_Bits = make_bitmask(7)
-        msg.debug(f"bitmask_7_Bits: {bitmask_7_Bits:#0{4}x} ({bitmask_7_Bits})")
+        msg.debug("bitmask_7_Bits: %#04x (%s)", bitmask_7_Bits, bitmask_7_Bits)
         self.assertEqual(bitmask_7_Bits, 0x7F)
 
         bitmask_8_Bits = make_bitmask(8)
-        msg.debug(f"bitmask_8_Bits: {bitmask_8_Bits:#0{4}x} ({bitmask_8_Bits})")
+        msg.debug("bitmask_8_Bits: %#04x (%s)", bitmask_8_Bits, bitmask_8_Bits)
         self.assertEqual(bitmask_8_Bits, 0xFF)
 
         bitmask_23_Bits = make_bitmask(23)
-        msg.debug(f"bitmask_23_Bits: {bitmask_23_Bits:#0{8}x} ({bitmask_23_Bits})")
+        msg.debug("bitmask_23_Bits: %#08x (%s)", bitmask_23_Bits, bitmask_23_Bits)
         self.assertEqual(bitmask_23_Bits, 0x7FFFFF)
 
         bitmask_32_Bits = make_bitmask(32)
-        msg.debug(f"bitmask_32_Bits: {bitmask_32_Bits:#0{10}x} ({bitmask_32_Bits})")
+        msg.debug("bitmask_32_Bits: %#010x (%s)", bitmask_32_Bits, bitmask_32_Bits)
         self.assertEqual(bitmask_32_Bits, 0xFFFFFFFF)
 
         bitmask_64_Bits = make_bitmask(64)
-        msg.debug(f"bitmask_64_Bits: {bitmask_64_Bits:#0{18}x} ({bitmask_64_Bits})")
+        msg.debug("bitmask_64_Bits: %#018x (%s)", bitmask_64_Bits, bitmask_64_Bits)
         self.assertEqual(bitmask_64_Bits, 0xFFFFFFFFFFFFFFFF)
 
     def test_01_build_pair_key2(self):
@@ -142,7 +142,7 @@ class TestPairKeyOps(unittest.TestCase):
         msg.debug("Output: keys: %s", keys_np)
         for i, (index_A, index_B) in enumerate(test_cases):
             expected_key = (index_A << 32) | index_B
-            msg.debug(f"build_pair_key2({index_A}, {index_B}): {keys_np[i]} (expected: {expected_key})")
+            msg.debug("build_pair_key2(%s, %s): %s (expected: %s)", index_A, index_B, keys_np[i], expected_key)
             self.assertEqual(keys_np[i], expected_key)
 
     def test_02_build_pair_key3(self):
@@ -222,10 +222,9 @@ class TestPairKeyOps(unittest.TestCase):
                     | ((index_B_val & MAIN_BITMASK) << aux_key_bits)
                     | (index_C_val & AUX_BITMASK)
                 )
-                msg.debug(f"expected_key: {expected_key:#0{10}x}")
+                msg.debug("expected_key: %#010x", expected_key)
                 msg.debug(
-                    f"build_pair_key3({index_A_val:#0{10}x}, {index_B_val:#0{10}x}, {index_C_val:#0{10}x}): "
-                    f"{keys_np[i]:#0{10}x}"
+                    "build_pair_key3(%#010x, %#010x, %#010x): %#010x", index_A_val, index_B_val, index_C_val, keys_np[i]
                 )
                 self.assertEqual(keys_np[i], expected_key)
 
@@ -300,7 +299,7 @@ class TestBinarySearchOps(unittest.TestCase):
         target_idxs_np = target_idxs.numpy()
         msg.debug("target_idxs: %s", target_idxs_np)
         for i, expected_index in enumerate(expected_idxs):
-            msg.debug(f"target {target_pairs_list[i]} at index: {target_idxs_np[i]} (expected: {expected_index})")
+            msg.debug("target %s at index: %s (expected: %s)", target_pairs_list[i], target_idxs_np[i], expected_index)
             self.assertEqual(target_idxs_np[i], expected_index)
 
     def test_02_binary_search_find_range_start(self):
@@ -353,7 +352,9 @@ class TestBinarySearchOps(unittest.TestCase):
         target_start_idxs_np = target_start_idxs.numpy()
         msg.debug("target_start_idxs: %s", target_start_idxs_np)
         for i, expected in enumerate(expected_range_start_idxs):
-            msg.debug(f"target {target_keys_list[i]} start index: {target_start_idxs_np[i]} (expected: {expected})")
+            msg.debug(
+                "target %s start index: %s (expected: %s)", target_keys_list[i], target_start_idxs_np[i], expected
+            )
             self.assertEqual(target_start_idxs_np[i], expected)
 
 
@@ -425,10 +426,12 @@ class TestKeySorter(unittest.TestCase):
         msg.debug("sorter.sorted_keys: %s", sorted_keys_np)
         msg.debug("sorter.sorted_to_unsorted_map: %s", sorted_to_unsorted_map_np)
         for i in range(num_active_keys_const):
-            msg.debug(f"sorted_keys[{i}]: {sorted_keys_np[i]} (expected: {expected_sorted_keys[i]})")
+            msg.debug("sorted_keys[%s]: %s (expected: %s)", i, sorted_keys_np[i], expected_sorted_keys[i])
             msg.debug(
-                f"sorted_to_unsorted_map[{i}]: {sorted_to_unsorted_map_np[i]} "
-                f"(expected: {expected_sorted_to_unsorted_map[i]})"
+                "sorted_to_unsorted_map[%s]: %s (expected: %s)",
+                i,
+                sorted_to_unsorted_map_np[i],
+                expected_sorted_to_unsorted_map[i],
             )
             self.assertEqual(sorted_keys_np[i], expected_sorted_keys[i])
             self.assertEqual(sorted_to_unsorted_map_np[i], expected_sorted_to_unsorted_map[i])
@@ -471,10 +474,12 @@ class TestKeySorter(unittest.TestCase):
         msg.debug("sorter.sorted_keys: %s", sorted_keys_np.tolist())
         msg.debug("sorter.sorted_to_unsorted_map: %s", sorted_to_unsorted_map_np.tolist())
         for i in range(num_active_keys_const):
-            msg.debug(f"sorted_keys[{i}]: {sorted_keys_np[i]} (expected: {expected_sorted_keys_np[i]})")
+            msg.debug("sorted_keys[%s]: %s (expected: %s)", i, sorted_keys_np[i], expected_sorted_keys_np[i])
             msg.debug(
-                f"sorted_to_unsorted_map[{i}]: {sorted_to_unsorted_map_np[i]} "
-                f"(expected: {expected_sorted_to_unsorted_map_np[i]})"
+                "sorted_to_unsorted_map[%s]: %s (expected: %s)",
+                i,
+                sorted_to_unsorted_map_np[i],
+                expected_sorted_to_unsorted_map_np[i],
             )
             self.assertEqual(sorted_keys_np[i], expected_sorted_keys_np[i])
             self.assertEqual(sorted_to_unsorted_map_np[i], expected_sorted_to_unsorted_map_np[i])

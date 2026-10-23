@@ -77,8 +77,8 @@ class TestGeometryCollisionDetector(unittest.TestCase):
 
         self.build_func = basics.build_boxes_nunchaku
         self.expected_contacts = 9  # NOTE: specialized to build_boxes_nunchaku
-        msg.debug(f"build_func: {self.build_func.__name__}")
-        msg.debug(f"expected_contacts: {self.expected_contacts}")
+        msg.debug("build_func: %s", self.build_func.__name__)
+        msg.debug("expected_contacts: %s", self.expected_contacts)
 
     def tearDown(self):
         self.default_device = None

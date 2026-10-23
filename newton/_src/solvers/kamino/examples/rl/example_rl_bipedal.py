@@ -89,7 +89,7 @@ def _build_normalization(joint_names: list[str]):
         if name in _BIPEDAL_JOINT_NORMALIZATION:
             o, s = _BIPEDAL_JOINT_NORMALIZATION[name]
         else:
-            msg.warning(f"Joint '{name}' not in BIPEDAL normalization dict -- using identity.")
+            msg.warning("Joint '%s' not in BIPEDAL normalization dict -- using identity.", name)
             o, s = 0.0, 1.0
         offsets.append(o)
         scales.append(s)
@@ -250,7 +250,7 @@ class Example:
             dt=self.env_dt,
             num_joints=len(self.joint_pos_offset),
         )
-        msg.debug(f"Observation dim: {self.obs.num_observations}")
+        msg.debug("Observation dim: %s", self.obs.num_observations)
 
         # Joystick / keyboard command controller
         self.joystick = JoystickController(
@@ -392,7 +392,7 @@ if __name__ == "__main__":
     else:
         device = wp.get_preferred_device()
 
-    msg.debug(f"device: {device}")
+    msg.debug("device: %s", device)
 
     # Convert warp device to torch device string for checkpoint loading
     torch_device = "cuda" if device.is_cuda else "cpu"
@@ -401,7 +401,7 @@ if __name__ == "__main__":
     POLICY_PATH = os.path.join(_ASSETS_DIR, "bipedal", "model.pt")
     PHASE_RATE_POLICY_PATH = os.path.join(_ASSETS_DIR, "bipedal", "phase_rate.pt")
     policy = _load_policy_checkpoint(POLICY_PATH, device=torch_device)
-    msg.info(f"Loaded policy from: {POLICY_PATH}")
+    msg.info("Loaded policy from: %s", POLICY_PATH)
 
     example = Example(
         device=device,
@@ -415,7 +415,7 @@ if __name__ == "__main__":
             msg.info("Running in headless mode...")
             run_headless(example, progress=True)
         else:
-            msg.info(f"Running in Viewer mode ({args.mode})...")
+            msg.info("Running in Viewer mode (%s)...", args.mode)
             if hasattr(example.viewer, "set_camera"):
                 example.viewer.set_camera(wp.vec3(0.6, 0.6, 0.3), -10.0, 225.0)
             SimulationRunner(example, mode=args.mode, render_fps=args.render_fps).run()

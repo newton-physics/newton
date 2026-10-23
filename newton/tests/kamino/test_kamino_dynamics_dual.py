@@ -70,19 +70,19 @@ class TestDualProblem(unittest.TestCase):
         # Optional verbose output
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
             msg.debug("\n")  # Print a blank line for better readability
-            msg.debug(f"problem.data.config: {problem.data.config}")
-            msg.debug(f"problem.data.maxdim: {problem.data.maxdim}")
-            msg.debug(f"problem.data.dim: {problem.data.dim}")
-            msg.debug(f"problem.data.mio: {problem.data.mio}")
-            msg.debug(f"problem.data.vio: {problem.data.vio}")
-            msg.debug(f"problem.data.u_f (shape): {problem.data.u_f.shape}")
-            msg.debug(f"problem.data.v_b (shape): {problem.data.v_b.shape}")
-            msg.debug(f"problem.data.v_i (shape): {problem.data.v_i.shape}")
-            msg.debug(f"problem.data.v_f (shape): {problem.data.v_f.shape}")
-            msg.debug(f"problem.data.mu (shape): {problem.data.mu.shape}")
-            msg.debug(f"problem.data.bound_lower (shape): {problem.data.bound_lower.shape}")
-            msg.debug(f"problem.data.bound_upper (shape): {problem.data.bound_upper.shape}")
-            msg.debug(f"problem.data.D: {problem.data.D}")
+            msg.debug("problem.data.config: %s", problem.data.config)
+            msg.debug("problem.data.maxdim: %s", problem.data.maxdim)
+            msg.debug("problem.data.dim: %s", problem.data.dim)
+            msg.debug("problem.data.mio: %s", problem.data.mio)
+            msg.debug("problem.data.vio: %s", problem.data.vio)
+            msg.debug("problem.data.u_f (shape): %s", problem.data.u_f.shape)
+            msg.debug("problem.data.v_b (shape): %s", problem.data.v_b.shape)
+            msg.debug("problem.data.v_i (shape): %s", problem.data.v_i.shape)
+            msg.debug("problem.data.v_f (shape): %s", problem.data.v_f.shape)
+            msg.debug("problem.data.mu (shape): %s", problem.data.mu.shape)
+            msg.debug("problem.data.bound_lower (shape): %s", problem.data.bound_lower.shape)
+            msg.debug("problem.data.bound_upper (shape): %s", problem.data.bound_upper.shape)
+            msg.debug("problem.data.D: %s", problem.data.D)
 
         # Extract expected allocation sizes
         nw = model.info.num_worlds
@@ -159,24 +159,24 @@ class TestDualProblem(unittest.TestCase):
         # Optional verbose output
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
             msg.debug("")  # Print a blank line for better readability
-            msg.debug(f"problem.data.maxdim: {problem.data.maxdim}")
-            msg.debug(f"problem.data.dim: {problem.data.dim}")
-            msg.debug(f"problem.data.mio: {problem.data.mio}")
-            msg.debug(f"problem.data.vio: {problem.data.vio}")
-            msg.debug(f"problem.data.D: {problem.data.D}")
-            msg.debug(f"problem.data.u_f:\n{problem.data.u_f}")
-            msg.debug(f"problem.data.v_b:\n{problem.data.v_b}")
-            msg.debug(f"problem.data.v_i:\n{problem.data.v_i}")
-            msg.debug(f"problem.data.v_f:\n{problem.data.v_f}")
-            msg.debug(f"problem.data.mu:\n{problem.data.mu}")
-            msg.debug(f"problem.data.bound_lower:\n{problem.data.bound_lower}")
-            msg.debug(f"problem.data.bound_upper:\n{problem.data.bound_upper}")
+            msg.debug("problem.data.maxdim: %s", problem.data.maxdim)
+            msg.debug("problem.data.dim: %s", problem.data.dim)
+            msg.debug("problem.data.mio: %s", problem.data.mio)
+            msg.debug("problem.data.vio: %s", problem.data.vio)
+            msg.debug("problem.data.D: %s", problem.data.D)
+            msg.debug("problem.data.u_f:\n%s", problem.data.u_f)
+            msg.debug("problem.data.v_b:\n%s", problem.data.v_b)
+            msg.debug("problem.data.v_i:\n%s", problem.data.v_i)
+            msg.debug("problem.data.v_f:\n%s", problem.data.v_f)
+            msg.debug("problem.data.mu:\n%s", problem.data.mu)
+            msg.debug("problem.data.bound_lower:\n%s", problem.data.bound_lower)
+            msg.debug("problem.data.bound_upper:\n%s", problem.data.bound_upper)
             for w in range(num_worlds):
-                msg.debug(f"problem.data.v_b[{w}]:\n{v_b_np[w]}")
+                msg.debug("problem.data.v_b[%s]:\n%s", w, v_b_np[w])
             for w in range(num_worlds):
-                msg.debug(f"problem.data.v_i[{w}]:\n{v_i_np[w]}")
+                msg.debug("problem.data.v_i[%s]:\n%s", w, v_i_np[w])
             for w in range(num_worlds):
-                msg.debug(f"problem.data.v_f[{w}]:\n{v_f_np[w]}")
+                msg.debug("problem.data.v_f[%s]:\n%s", w, v_f_np[w])
 
         # Check the problem data
         # TODO

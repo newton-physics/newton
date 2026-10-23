@@ -237,34 +237,34 @@ def make_test_problem(
         set_state_fn(model=model, data=data)
     if msg.is_enabled_for(msg.LogLevel.DEBUG):
         wp.synchronize()
-        msg.debug(f"data.bodies.q_i:\n {data.bodies.q_i}")
-        msg.debug(f"data.bodies.u_i:\n\n {data.bodies.u_i}")
+        msg.debug("data.bodies.q_i:\n %s", data.bodies.q_i)
+        msg.debug("data.bodies.u_i:\n\n %s", data.bodies.u_i)
 
     # Compute the joints state
     compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
     if msg.is_enabled_for(msg.LogLevel.DEBUG):
         wp.synchronize()
-        msg.debug(f"data.joints.p_j:\n {data.joints.p_j}")
-        msg.debug(f"data.joints.r_j:\n {data.joints.r_j}")
-        msg.debug(f"data.joints.dr_j:\n {data.joints.dr_j}")
-        msg.debug(f"data.joints.q_j:\n {data.joints.q_j}")
-        msg.debug(f"data.joints.dq_j:\n\n {data.joints.dq_j}")
+        msg.debug("data.joints.p_j:\n %s", data.joints.p_j)
+        msg.debug("data.joints.r_j:\n %s", data.joints.r_j)
+        msg.debug("data.joints.dr_j:\n %s", data.joints.dr_j)
+        msg.debug("data.joints.q_j:\n %s", data.joints.q_j)
+        msg.debug("data.joints.dq_j:\n\n %s", data.joints.dq_j)
 
     # Run limit detection to generate active limits
     if with_limits:
         limits.detect(q_j=data.joints.q_j)
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
             wp.synchronize()
-            msg.debug(f"limits.world_active_limits: {limits.world_active_limits}")
-            msg.debug(f"data.info.num_limits: {data.info.num_limits}\n\n")
+            msg.debug("limits.world_active_limits: %s", limits.world_active_limits)
+            msg.debug("data.info.num_limits: %s\n\n", data.info.num_limits)
 
     # Run collision detection to generate active contacts
     if with_contacts:
         detector.collide(data)
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
             wp.synchronize()
-            msg.debug(f"contacts.world_active_contacts: {detector.contacts.world_active_contacts}")
-            msg.debug(f"data.info.num_contacts: {data.info.num_contacts}\n\n")
+            msg.debug("contacts.world_active_contacts: %s", detector.contacts.world_active_contacts)
+            msg.debug("data.info.num_contacts: %s\n\n", data.info.num_contacts)
 
     # Update the constraints info
     update_constraints_info(model=model, data=data)

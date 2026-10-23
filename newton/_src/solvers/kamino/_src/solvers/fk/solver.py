@@ -2581,9 +2581,11 @@ class ForwardKinematicsSolver:
             num_active_worlds = self.model.size.num_worlds if world_mask is None else world_mask.numpy().sum()
             if verbose:
                 msg.info(
-                    f"Newton success for {success.sum()}/{num_active_worlds} worlds; "
-                    f"num iterations={iterations.max()}; "
-                    f"max residual={max_residual.max()}"
+                    "Newton success for %s/%s worlds; num iterations=%s; max residual=%s",
+                    success.sum(),
+                    num_active_worlds,
+                    iterations.max(),
+                    max_residual.max(),
                 )
 
         # Return solver status
