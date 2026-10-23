@@ -13,6 +13,8 @@ import newton
 import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
+from newton._src.solvers.kamino._src.integrators.euler import _integrate_semi_implicit_euler_inplace
+from newton._src.solvers.kamino._src.integrators.moreau import _integrate_moreau_jean_second_inplace
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
@@ -446,6 +448,47 @@ class _LOXTestCase(unittest.TestCase):
 
 
 class TestSolverKaminoLOX(_LOXTestCase):
+    def test_integrators_keep_prescribed_twist_of_rotated_singular_body(self):
+        """Keep the LOX twist of a rotated body with mass and a rank-deficient inverse inertia."""
+        rotation = np.array(wp.quat_to_matrix(wp.quat_rpy(0.3, -0.7, 1.1)), dtype=np.float32).reshape(3, 3)
+        inverse_inertia = np.diag([1.0, 1.0, 0.0]).astype(np.float32)
+        twist = wp.spatial_vectorf(0.1, -0.2, 0.3, 1.0, 2.0, -3.0)
+        for kernel in (_integrate_semi_implicit_euler_inplace, _integrate_moreau_jean_second_inplace):
+            with self.subTest(kernel=kernel.key):
+                velocity = wp.array([twist], dtype=wp.spatial_vectorf, device=self.default_device)
+                wp.launch(
+                    kernel,
+                    dim=1,
+                    inputs=[
+                        0.1,
+                        True,
+                        wp.array([0.01], dtype=wp.float32, device=self.default_device),
+                        wp.array([wp.vec3f(0.0, 0.0, -9.81)], dtype=wp.vec3f, device=self.default_device),
+                        wp.zeros(1, dtype=wp.int32, device=self.default_device),
+                        wp.array([0.5], dtype=wp.float32, device=self.default_device),
+                        wp.array(
+                            [rotation @ np.diag([1.0, 1.0, 0.0]) @ rotation.T],
+                            dtype=wp.mat33f,
+                            device=self.default_device,
+                        ),
+                        wp.array([inverse_inertia], dtype=wp.mat33f, device=self.default_device),
+                        wp.array(
+                            [rotation @ inverse_inertia @ rotation.T], dtype=wp.mat33f, device=self.default_device
+                        ),
+                        wp.array(
+                            [wp.spatial_vectorf(1.0, 2.0, 3.0, 4.0, 5.0, 6.0)],
+                            dtype=wp.spatial_vectorf,
+                            device=self.default_device,
+                        ),
+                    ],
+                    outputs=[
+                        wp.array([wp.transform_identity()], dtype=wp.transformf, device=self.default_device),
+                        velocity,
+                    ],
+                    device=self.default_device,
+                )
+                np.testing.assert_array_equal(velocity.numpy()[0], np.array(twist))
+
     def test_free_fall_uses_each_world_time_step(self):
         """Advance each rigid world with its configured device-side time step."""
         builder = build_box_on_plane(ground=False)
