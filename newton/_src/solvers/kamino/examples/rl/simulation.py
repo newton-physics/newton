@@ -285,7 +285,7 @@ class RigidBodySim:
             settings = self.default_settings(sim_dt)
 
         # ----- Build Newton model (needed for ViewerGL) -----
-        msg.notif("Constructing builder from imported USD ...")
+        msg.info("Constructing builder from imported USD ...")
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
@@ -322,7 +322,7 @@ class RigidBodySim:
             self._newton_model.set_gravity((0.0, 0.0, -9.81))
 
         # ----- Create Kamino simulator from Newton model -----
-        msg.notif("Building Kamino simulator ...")
+        msg.info("Building Kamino simulator ...")
 
         # Cap contact counts to limit Delassus matrix size
         if max_contacts_per_pair is not None:
@@ -339,8 +339,8 @@ class RigidBodySim:
             use_newton_collisions=use_newton_cd,
         )
         self.model: ModelKamino = self.sim.model
-        msg.info(f"Model size: {self.sim.model.size}")
-        msg.info(f"Contacts capacity: {self.sim.contacts.model_max_contacts_host}")
+        msg.debug(f"Model size: {self.sim.model.size}")
+        msg.debug(f"Contacts capacity: {self.sim.contacts.model_max_contacts_host}")
 
         # Apply body pose offset to initial body poses (affects all resets).
         # Kamino q_i stores COM positions, so we offset the COM directly.
@@ -366,7 +366,7 @@ class RigidBodySim:
         self._newton_state: newton.State | None = None
         self._render_config = render_config or ViewerConfig()
         if not headless:
-            msg.notif("Creating the 3D viewer ...")
+            msg.info("Creating the 3D viewer ...")
             self.viewer = ViewerGL()
             self.viewer.set_model(self._newton_model)
             # Newton state used only for rendering (body_q synced from Kamino each frame)
@@ -593,7 +593,7 @@ class RigidBodySim:
                 self._actuated_dof_indices, device=self._device, dtype=wp.int32
             )
 
-        msg.info(f"Actuated joints ({self.num_actuated}): {self._actuated_joint_names}")
+        msg.debug(f"Actuated joints ({self.num_actuated}): {self._actuated_joint_names}")
 
         # Body names
         self._body_names: list[str] = [lbl.rsplit("/", 1)[-1] for lbl in self.sim.model.bodies.label[:max_bodies]]
@@ -618,7 +618,7 @@ class RigidBodySim:
             msg.warning("CUDA graphs requested but not available (need CUDA device with mempool). Using kernels.")
             return
 
-        msg.notif("Capturing CUDA graphs ...")
+        msg.info("Capturing CUDA graphs ...")
         with wp.ScopedCapture(device=self._device) as reset_capture:
             self._reset_worlds()
         self._reset_graph = reset_capture.graph

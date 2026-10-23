@@ -40,6 +40,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
+from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.examples.rl.input_utils import (
     RateLimitedValue,
     _deadband,
@@ -193,11 +194,11 @@ class JoystickController:
 
             self._controller = Xbox360Controller(0, axis_threshold=0.015)
             self._mode = "joystick"
-            print("Joystick connected.")
+            msg.info("Joystick connected.")
         except Exception:
             if viewer is not None and hasattr(viewer, "is_key_down"):
                 self._mode = "keyboard"
-                print(
+                msg.info(
                     "No joystick found. Using keyboard controls:\n"
                     "  I/K — forward/backward    J/L — strafe left/right\n"
                     "  U/O — turn left/right     T/G — look up/down\n"
@@ -205,7 +206,7 @@ class JoystickController:
                     "  P   — reset"
                 )
             else:
-                print("No joystick or keyboard available. Commands will be zero.")
+                msg.info("No joystick or keyboard available. Commands will be zero.")
 
     def _read_input(self) -> tuple[float, float, float, float, float]:
         """Read controller input as semantic axes.

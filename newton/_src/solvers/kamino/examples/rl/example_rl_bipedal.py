@@ -250,7 +250,7 @@ class Example:
             dt=self.env_dt,
             num_joints=len(self.joint_pos_offset),
         )
-        msg.info(f"Observation dim: {self.obs.num_observations}")
+        msg.debug(f"Observation dim: {self.obs.num_observations}")
 
         # Joystick / keyboard command controller
         self.joystick = JoystickController(
@@ -385,7 +385,6 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     np.set_printoptions(linewidth=20000, precision=6, threshold=10000, suppress=True)
-    msg.set_log_level(msg.LogLevel.INFO)
 
     if args.device:
         device = wp.get_device(args.device)
@@ -393,7 +392,7 @@ if __name__ == "__main__":
     else:
         device = wp.get_preferred_device()
 
-    msg.info(f"device: {device}")
+    msg.debug(f"device: {device}")
 
     # Convert warp device to torch device string for checkpoint loading
     torch_device = "cuda" if device.is_cuda else "cpu"
@@ -413,10 +412,10 @@ if __name__ == "__main__":
 
     try:
         if args.headless:
-            msg.notif("Running in headless mode...")
+            msg.info("Running in headless mode...")
             run_headless(example, progress=True)
         else:
-            msg.notif(f"Running in Viewer mode ({args.mode})...")
+            msg.info(f"Running in Viewer mode ({args.mode})...")
             if hasattr(example.viewer, "set_camera"):
                 example.viewer.set_camera(wp.vec3(0.6, 0.6, 0.3), -10.0, 225.0)
             SimulationRunner(example, mode=args.mode, render_fps=args.render_fps).run()
