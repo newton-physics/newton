@@ -1085,12 +1085,12 @@ Caveats
   Newton's :attr:`~newton.Model.joint_velocity_limit` has no MuJoCo equivalent and is
   ignored.
 
-**Kinematic-root armature override.**
-  DOFs of kinematic articulation roots have their
-  :attr:`~newton.Model.joint_armature` replaced with a very large
-  internal value (``1e10``) so MuJoCo treats them as effectively
-  prescribed. The user-supplied armature on those DOFs is silently
-  discarded. See `Kinematic links and fixed roots`_.
+**Kinematic roots are welded, not infinitely massive.**
+  MuJoCo has no prescribed degrees of freedom, so kinematic roots keep
+  their authored mass and are held by a stiff weld to a mocap target.
+  Contacts on a light kinematic body carrying a heavy load are softer
+  than an infinite-mass collider's, and only roots that are kinematic when
+  the solver is created can be switched at runtime. See `Kinematic welds`_.
 
 **Collision filtering has a 32-bit capacity.**
   The solver creates MuJoCo masks that reproduce Newton's allowed collision
@@ -1125,23 +1125,110 @@ During Newton-to-MuJoCo conversion (at
 by joint type:
 
 - **Kinematic roots with non-fixed joints** become ordinary MuJoCo
-  joints with the same Newton joint type and DOFs. A very large
-  internal armature is assigned to those DOFs so MuJoCo treats them
-  as prescribed, effectively infinite-mass coordinates.
+  joints with the same Newton joint type, DOFs, mass, and armature, held
+  by a weld to a mocap target; see `Kinematic welds`_.
 - **Roots attached to world with a fixed joint** become MuJoCo mocap
   bodies (whether kinematic or not). MuJoCo has no joint coordinates
   for a fixed root, so Newton drives the pose through
   ``mjData.mocap_pos`` and ``mjData.mocap_quat`` instead. A D6 root
   with all axes locked (e.g. imported from a generic USD
   ``PhysicsJoint``) is treated the same way.
+- **Kinematic roots without mass or inertia** also become mocap bodies
+  without MuJoCo joints, posed from :attr:`~newton.State.joint_q` every
+  step. MuJoCo requires mass of movable bodies, so such a root can never
+  be dynamic. Mocap bodies have zero velocity in MuJoCo: contact friction
+  against the root and its dynamic descendants do not see its motion.
+  Give the body mass if that coupling matters.
 - **World-attached shapes that are not part of an articulation**
   remain ordinary static MuJoCo geometry rather than mocap bodies.
+
+Mocap bodies posed from Newton joints, both fixed roots and massless
+kinematic roots, are updated together with the joint state; a joint-frame
+notification re-poses fixed roots immediately. MuJoCo does not wake sleeping
+bodies resting on a moving mocap body, so when sleeping is enabled, moving one
+of these roots wakes its world.
 
 If you edit :attr:`~newton.Model.joint_X_p` or :attr:`~newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
 :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
 :attr:`~newton.ModelFlags.JOINT_PROPERTIES` flag to
 synchronize the updated fixed-root poses into MuJoCo.
+
+Kinematic welds
+~~~~~~~~~~~~~~~
+
+MuJoCo has no prescribed degrees of freedom. Following its idiom for
+scripted bodies, each kinematic root gets a mocap target body and a weld
+equality that is active exactly while the root is kinematic:
+
+- Whenever the joint state is pushed into MuJoCo, the target is moved to
+  the pose prescribed by :attr:`~newton.State.joint_q` and
+  :attr:`~newton.State.joint_qd`. The weld has no damping, so it does not
+  brake the body against the mocap's zero velocity. Under RK4, which
+  averages forces over the step, the target leads by half a step.
+- The weld stiffness corresponds to a time constant of two timesteps
+  (eight under RK4, whose intermediate stages track a softer weld more
+  closely), set from the step size independently of MuJoCo's REFSAFE flag.
+
+Kinematic roots keep their real mass, so the weld is not an
+infinite-mass constraint:
+
+- Contacts on a kinematic body use its mass for their softness, so a
+  light kinematic body under a heavy load penetrates more than an
+  infinite-mass collider would.
+- The body's own weight and loads from contacts and dynamic descendants
+  act through the weld, which yields slightly within each step. Newton's
+  output state always reports the prescribed motion.
+
+.. _mujoco-kinematic-switching:
+
+Switching kinematic roots at runtime
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+MuJoCo cannot add bodies or constraints to a compiled model, and all MuJoCo
+Warp worlds share one model, so a root can only be kinematic in
+:class:`~newton.solvers.SolverMuJoCo` if it was kinematic in some world when
+the solver was created. :attr:`~newton.Model.body_flags` can switch such roots
+between kinematic and dynamic in either direction, per world, followed by
+``notify_model_changed(ModelFlags.BODY_PROPERTIES)``. To start a root dynamic
+and make it kinematic later, mark it kinematic before creating the solver and
+switch it to dynamic right after:
+
+.. testcode:: mujoco-kinematic-switching
+
+   from newton.solvers import SolverMuJoCo
+
+   builder = newton.ModelBuilder()
+   crate = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), is_kinematic=True)
+   builder.add_shape_box(crate, hx=0.1, hy=0.1, hz=0.1)
+   model = builder.finalize()
+   solver = SolverMuJoCo(model)
+
+   # Start dynamic.
+   body_flags = model.body_flags.numpy()
+   body_flags[crate] = int(newton.BodyFlags.DYNAMIC)
+   model.body_flags.assign(body_flags)
+   solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+   # Later: take over the crate's motion.
+   body_flags[crate] = int(newton.BodyFlags.KINEMATIC)
+   model.body_flags.assign(body_flags)
+   solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+Each such root adds a mocap body and a weld to the exported MuJoCo model, and
+the default ``njmax`` reserves the six constraint rows of each weld that is
+inactive in the first world.
+
+Errors and warnings
+~~~~~~~~~~~~~~~~~~~
+
+- Making a root kinematic that was not kinematic in any world when the solver
+  was created, or any non-root body, raises :class:`ValueError`, as does
+  making a massless kinematic root dynamic. These checks run on eager
+  notifications; inside CUDA graph capture an invalid flag is not detected.
+- An explicit ``njmax`` too small for the welds that are inactive in the
+  first world issues a :class:`~newton.exceptions.NewtonWarning`;
+  constraints may overflow once those roots turn kinematic.
 
 
 Updating joint force properties

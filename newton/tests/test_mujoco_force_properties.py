@@ -152,9 +152,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 transforms = model.joint_X_p.numpy()
                 transforms[0, 0] += 0.1
                 model.joint_X_p.assign(transforms)
-                with patch.object(
-                    solver, "_set_const_0_with_physical_meaninertia", side_effect=AssertionError("recomputed constants")
-                ):
+                with patch.object(solver, "_set_const_0", side_effect=AssertionError("recomputed constants")):
                     solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
                 for name, values in before.items():
                     np.testing.assert_array_equal(getattr(solver.mjw_model, name).numpy(), values)
@@ -167,7 +165,9 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 with self.subTest(cpu=cpu, kinematic=kinematic):
                     model = _make_model(worlds=1)
                     if kinematic:
-                        model.body_flags.fill_(int(newton.BodyFlags.KINEMATIC))
+                        body_flags = model.body_flags.numpy()
+                        body_flags[0] = int(newton.BodyFlags.KINEMATIC)
+                        model.body_flags.assign(body_flags)
                     solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                     armature = solver.mjw_model.dof_armature.numpy().copy()
                     meaninertia = (
@@ -213,9 +213,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
             np.testing.assert_array_equal(solver.mjw_model.dof_damping.numpy(), damping)
 
         with (
-            patch.object(
-                solver, "_set_const_0_with_physical_meaninertia", side_effect=AssertionError("recomputed constants")
-            ),
+            patch.object(solver, "_set_const_0", side_effect=AssertionError("recomputed constants")),
             patch.object(
                 solver._mujoco_warp, "set_length_range", side_effect=AssertionError("recomputed length range")
             ),
@@ -408,7 +406,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 self.assertGreater(solver.mj_model.nu, 0)
                 with ExitStack() as stack:
                     for name in (
-                        "_set_const_0_with_physical_meaninertia",
+                        "_set_const_0",
                         "_invalidate_contact_fast_path",
                         "_update_joint_dof_configuration_properties",
                         "_notify_connect_constraints_changed",
