@@ -1484,7 +1484,7 @@ def test_shared_root_split_matches_across_kernels(test, device):
         np.testing.assert_array_equal(solver._propagation_joint_split.numpy(), [4, 1, 1, 1, 1])
         exact = solver._propagation_body_response.numpy()[feet]
         split = solver._propagation_body_response_split.numpy()[feet]
-        # The split lies strictly between the exact response and the whole-response split.
+        # The split differs from both the exact response and the whole-response split.
         test.assertGreater(float(np.abs(split - exact).max()), 1.0e-3 * float(np.abs(exact).max()))
         test.assertGreater(float(np.abs(4.0 * exact - split).max()), 1.0e-3 * float(np.abs(exact).max()))
         responses.append((exact, split))
