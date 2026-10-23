@@ -20,6 +20,7 @@ from ..geometry import Gaussian, Mesh
 from ..sim import Model, State
 from ..sim.deformable_visual import DeformableVisualBinding, DeformableVisualGaussian, DeformableVisualMesh
 from ..sim.shape_contact_pairs import _ShapeContactPairs
+from ..utils.color import ColorSpace
 from .viewer import ViewerBase
 
 # Optional CBOR2 support
@@ -621,6 +622,7 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                         "opacities",
                         "sh_coeffs",
                         "sh_degree",
+                        "sh_color_space",
                         "min_response",
                         "sorting_mode",
                     )
@@ -862,6 +864,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                 for attr, value in data["attributes"].items()
             }
             return Gaussian(
+                sh_color_space=attributes.get("sh_color_space", ColorSpace.SRGB),
                 **{
                     name: attributes.get(name, attributes.get(f"_{name}"))
                     for name in (
@@ -874,7 +877,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                         "min_response",
                         "sorting_mode",
                     )
-                }
+                },
             )
 
         if type_name == "DeformableVisualGaussian" and data.get("__module__") == DeformableVisualGaussian.__module__:

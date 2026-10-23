@@ -4,6 +4,7 @@
 """Tests for Gaussian visual payloads embedded in deformable bodies."""
 
 import importlib.util
+import json
 import math
 import tempfile
 import unittest
@@ -411,10 +412,15 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         )
         local_scale = np.array([0.12, 0.04, 0.02], dtype=np.float32)
         gaussian.GetAttribute("scales").Set([Gf.Vec3f(*[float(value) for value in local_scale])])
+        radiance = gaussian.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array)
+        radiance.Set([(0.0, -0.5, 0.5)])
+        radiance.SetColorSpace("lin_rec709_scene")
 
         builder = newton.ModelBuilder()
         builder.add_usd(stage, root_path="/World")
         imported = builder.finalize().deformable_visual_gaussians[0].gaussian
+        self.assertEqual(imported.sh_color_space, newton.utils.ColorSpace.LINEAR)
+        np.testing.assert_allclose(imported.sh_coeffs, [[0.0, -0.5, 0.5]])
 
         linear = np.diag([2.0, 1.0, 0.5]).astype(np.float32)
         local_axes = _quat_matrix(local_rotation) @ np.diag(local_scale)
@@ -502,6 +508,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                     np.testing.assert_allclose(axes @ axes.T, expected_axes @ expected_axes.T, atol=1.0e-7, rtol=1.0e-4)
 
     def test_recording_restores_gaussian_visual_and_camera(self):
+        """Preserve skinned geometry, color spaces, and RGB/depth output during playback."""
         from pxr import Sdf
 
         stage = self._stage()
@@ -515,7 +522,13 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         tet.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
             bind.tolist()
         )
-        self._add_gaussian(stage, "/World/Soft/Gaussian", [(0.2, 0.2, 0.2)])
+        for name, x, color_space in (("Gaussian", 0.2, "lin_rec709_scene"), ("SRGB", 0.5, "srgb_rec709_scene")):
+            gaussian = self._add_gaussian(stage, f"/World/Soft/{name}", [(x, 0.2, 0.2)])
+            radiance = gaussian.CreateAttribute(
+                "radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array
+            )
+            radiance.Set([(0.0, -0.5, 0.5)])
+            radiance.SetColorSpace(color_space)
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
         builder.add_shape_box(-1, xform=wp.transform(wp.vec3(3, 0, 0), wp.quat_identity()))
@@ -528,7 +541,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         expected = model.deformable_visuals()
         model.update_deformable_visuals(state, expected)
 
-        def camera_depth(render_model, render_state):
+        def camera_images(render_model, render_state):
             sensor = SensorCamera(
                 render_model,
                 default_render_config=SensorCamera.RenderConfig(
@@ -543,10 +556,13 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                 [wp.transform(wp.vec3(0.4, 0.4, 3), wp.quat_identity())], dtype=wp.transform, device=render_model.device
             )
             depth = sensor.allocate_image_depth(render_model.world_count, 16, 16)
-            sensor.update(render_state, cameras, rays, depth_image=depth)
-            return depth.numpy()
+            rgb = sensor.allocate_image_color_hdr(render_model.world_count, 16, 16)
+            sensor.update(render_state, cameras, rays, depth_image=depth, hdr_color_image=rgb)
+            return depth.numpy(), rgb.numpy()
 
-        expected_depth = camera_depth(model, state)
+        expected_depth, expected_rgb = camera_images(model, state)
+        self.assertGreater(np.max(expected_rgb), 0.0)
+        self.assertGreater(np.max(np.ptp(expected_rgb, axis=-1)), 0.01)
         for suffix in (".json", ".bin"):
             with self.subTest(format=suffix), tempfile.TemporaryDirectory() as directory:
                 if suffix == ".bin" and importlib.util.find_spec("cbor2") is None:
@@ -562,6 +578,10 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                 playback.load_model(restored)
                 self.assertIsInstance(restored.deformable_visual_gaussians[0], newton.DeformableVisualGaussian)
                 self.assertEqual(restored.deformable_visual_gaussians[0].graphics_path, "/World/Soft/Gaussian")
+                self.assertEqual(
+                    [visual.gaussian.sh_color_space for visual in restored.deformable_visual_gaussians],
+                    [newton.utils.ColorSpace.LINEAR, newton.utils.ColorSpace.SRGB],
+                )
                 restored_state = restored.state()
                 playback.load_state(restored_state, 0)
                 ViewerNull().set_model(restored)
@@ -574,7 +594,29 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                     actual.gaussian_scales.numpy(), expected.gaussian_scales.numpy(), atol=1.0e-6
                 )
                 restored.bvh_build_shapes(restored_state)
-                np.testing.assert_allclose(camera_depth(restored, restored_state), expected_depth, atol=1.0e-5)
+                actual_depth, actual_rgb = camera_images(restored, restored_state)
+                np.testing.assert_allclose(actual_depth, expected_depth, atol=1.0e-5)
+                np.testing.assert_allclose(actual_rgb, expected_rgb, atol=1.0e-5)
+
+                if suffix == ".json":
+                    # Older recordings lack this metadata. Use Gaussian's sRGB default.
+                    def without_color_space(value):
+                        if isinstance(value, dict):
+                            value.pop("sh_color_space", None)
+                        return value
+
+                    data = json.loads(Path(path).read_text(), object_hook=without_color_space)
+                    Path(path).write_text(json.dumps(data))
+                    playback.load_recording()
+                    legacy = newton.Model(device=model.device)
+                    playback.load_model(legacy)
+                    self.assertEqual(len(legacy.deformable_visual_gaussians), 2)
+                    self.assertTrue(
+                        all(
+                            v.gaussian.sh_color_space == newton.utils.ColorSpace.SRGB
+                            for v in legacy.deformable_visual_gaussians
+                        )
+                    )
 
 
 class TestDeformableVisualGaussianEvaluation(unittest.TestCase):

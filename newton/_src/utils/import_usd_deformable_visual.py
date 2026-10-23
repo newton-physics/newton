@@ -150,6 +150,7 @@ def _gaussian_in_world(ctx: _DeformableImportContext, prim, gaussian):
         opacities=gaussian.opacities,
         sh_coeffs=gaussian.sh_coeffs,
         sh_degree=gaussian.sh_degree,
+        sh_color_space=gaussian.sh_color_space,
         min_response=gaussian.min_response,
         sorting_mode=gaussian.sorting_mode,
     )

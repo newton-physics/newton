@@ -206,6 +206,8 @@ orientations, and scales deform; opacity and spherical-harmonic appearance do
 not. :class:`~newton.sensors.SensorCamera` renders these fields. GL, RTX, and
 Viser do not yet draw the evaluated Gaussian data through ``log_state()``;
 show the camera image instead. Static Gaussian rendering is unchanged.
+USD import preserves the authored spherical-harmonic color space when it
+transforms the field into the simulation frame.
 
 Add a Gaussian visual in the same world scope as its driving tetrahedra,
 before :meth:`~newton.ModelBuilder.end_world`. For replicated scenes, attach
@@ -240,8 +242,9 @@ still upload image changes. Texture projection for UV-less skinned meshes is
 not supported yet; provide texture coordinates for textured visuals.
 
 :class:`~newton.viewer.ViewerFile` preserves mesh and Gaussian records in JSON
-and binary recordings. Loading rebuilds Gaussian device data. Before camera
-rendering a loaded model, build its shape BVH with
+and binary recordings, including Gaussian color-space metadata. Older recordings
+without that metadata use the Gaussian default, sRGB. Loading rebuilds Gaussian
+device data. Before camera rendering a loaded model, build its shape BVH with
 :meth:`~newton.Model.bvh_build_shapes` and its particle BVH if particles are
 enabled. See :ref:`usd_parsing` for imported graphics and bind-pose support.
 
