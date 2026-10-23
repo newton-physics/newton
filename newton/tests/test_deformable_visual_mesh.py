@@ -728,6 +728,33 @@ class TestDeformableVisuals(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not belong"):
             visuals_a.get_points(model_b.deformable_visual_meshes[0])
 
+    def test_rejects_short_state_arrays(self):
+        """Reject short particle and body arrays before changing visual output."""
+        builder = newton.ModelBuilder()
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        for point in vertices:
+            builder.add_particle(point, wp.vec3(0), mass=1.0)
+        body = builder.add_body()
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2])
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="body", bodies=[body])
+        # Unused final drivers keep the pre-fix regression safe to execute.
+        builder.add_particle(wp.vec3(2), wp.vec3(0), mass=1.0)
+        builder.add_body()
+        model = builder.finalize()
+        state = model.state()
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(state, visuals)
+        before = visuals.points.numpy().copy()
+
+        for attribute in ("particle_q", "body_q"):
+            with self.subTest(attribute=attribute):
+                short_state = model.state()
+                setattr(short_state, attribute, getattr(short_state, attribute)[:-1])
+                with self.assertRaisesRegex(ValueError, f"State.{attribute}.*at least"):
+                    model.update_deformable_visuals(short_state, visuals)
+                assert_np_equal(visuals.points.numpy(), before, tol=0.0)
+                self.assertIs(visuals.state, state)
+
 
 class TestDeformableVisualMeshValidation(unittest.TestCase):
     """Input validation and ownership errors."""

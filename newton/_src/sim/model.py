@@ -2031,7 +2031,7 @@ class Model:
         Raises:
             TypeError: If ``visuals`` is not :class:`DeformableVisuals`.
             ValueError: If the output belongs to another model or the required
-                state arrays are missing or on another device.
+                state arrays are missing, too short, or on another device.
 
         .. experimental::
 
@@ -2058,6 +2058,12 @@ class Model:
             )
         if needs_bodies and state.body_q.device != self.device:
             raise ValueError(f"State body device {state.body_q.device} does not match model device {self.device}")
+        if needs_particles and len(state.particle_q) < self.particle_count:
+            raise ValueError(
+                f"State.particle_q must contain at least {self.particle_count} particles; got {len(state.particle_q)}"
+            )
+        if needs_bodies and len(state.body_q) < self.body_count:
+            raise ValueError(f"State.body_q must contain at least {self.body_count} bodies; got {len(state.body_q)}")
 
         visuals.normals.zero_()
         for mesh, (start, end) in zip(self.deformable_visual_meshes, visuals.mesh_ranges, strict=True):
