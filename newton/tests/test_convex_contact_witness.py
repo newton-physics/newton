@@ -112,6 +112,9 @@ def _create_witness_kernel(distance_query=None, *, refinement_normal=None):
                 ray_normal,
                 penetration,
                 False,
+                False,
+                wp.vec3(0.0),
+                0.0,
                 max_iter,
             )
         else:

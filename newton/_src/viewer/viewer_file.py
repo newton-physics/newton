@@ -18,6 +18,7 @@ from warp._src import types as warp_types
 from ..core.types import override
 from ..geometry import Mesh
 from ..sim import Model, State
+from ..sim.shape_contact_pairs import _ShapeContactPairs
 from .viewer import ViewerBase
 
 # Optional CBOR2 support
@@ -470,6 +471,14 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
 
         # Custom object — serialize attributes
         if hasattr(obj, "__dict__"):
+            attributes = vars(obj)
+            if isinstance(obj, Model):
+                attributes = dict(attributes)
+                attributes["shape_contact_pairs"] = attributes.pop("_shape_contact_pairs", None)
+                pair_count = attributes.pop("_shape_contact_pair_count", None)
+                if pair_count is not None:
+                    attributes["shape_contact_pair_count"] = pair_count
+                attributes.pop("_shape_contact_pair_counts", None)
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,
@@ -477,7 +486,7 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                     attr: serialize(
                         value, callback, _visited, f"{_path}.{attr}" if _path else attr, format_type, cache=cache
                     )
-                    for attr, value in vars(obj).items()
+                    for attr, value in attributes.items()
                 },
             }
 
@@ -603,7 +612,7 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 "is_solid": x.is_solid,
                 "has_inertia": x.has_inertia,
                 "maxhullvert": x.maxhullvert,
-                "color": x.color,
+                "color": None if x.color is None else [float(x.color[0]), float(x.color[1]), float(x.color[2])],
                 "opacity": x.opacity,
                 "mass": x.mass,
                 "com": [float(x.com[0]), float(x.com[1]), float(x.com[2])],
@@ -642,6 +651,7 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     user-defined keys, so a namespace target accepts every source key. When the source
     carries a ``Model.AttributeNamespace`` (reconstructed by :func:`deserialize`) that the
     target lacks, it is installed wholesale so namespaces like ``model.mujoco`` roundtrip.
+    Model collision-edge storage also accepts private keys and their legacy public names.
 
     Args:
         source_dict: Mapping-like decoded values to transfer from deserialization.
@@ -656,13 +666,31 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
         return
 
     target_is_namespace = isinstance(target_obj, Model.AttributeNamespace)
+    target_is_model = isinstance(target_obj, Model)
 
     for attr_name, source_value in source_dict.items():
-        if isinstance(target_obj, Model) and attr_name in {
+        if target_is_model and attr_name in {
             "_shape_collision_filter_pairs",
             "shape_collision_filter_pairs",
         }:
             target_obj._set_shape_collision_filter_pairs(source_value)  # pyright: ignore[reportPrivateUsage]
+            continue
+
+        if target_is_model and attr_name in {
+            "shape_contact_pairs",
+            "_shape_contact_pairs",
+            "shape_contact_pair_count",
+            "_shape_contact_pair_count",
+        }:
+            continue
+
+        if target_is_model and attr_name.removeprefix("_") in {
+            "mesh_edge_indices",
+            "mesh_edge_centers",
+            "mesh_edge_halves",
+            "shape_edge_range",
+        }:
+            setattr(target_obj, f"_{attr_name.removeprefix('_')}", source_value)
             continue
 
         if attr_name.startswith("_"):
@@ -712,6 +740,23 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
             setattr(target_obj, attr_name, source_value)
         except (AttributeError, TypeError):
             pass
+
+    if target_is_model:
+        # Restore pair storage and topology; the count is derived from their contents.
+        pairs = source_dict.get("shape_contact_pairs", source_dict.get("_shape_contact_pairs", _MISSING))
+        if pairs is not _MISSING:
+            target_obj.shape_contact_pairs = pairs
+        data = source_dict.get("_shape_contact_pair_data")
+        if isinstance(data, Mapping):
+            target_obj._shape_contact_pair_data = _ShapeContactPairs(  # pyright: ignore[reportPrivateUsage]
+                data["shape_body"],
+                data["shape_world"],
+                data["shape_group"],
+                data["shape_flags"],
+                data["filter_pairs"],
+                data["world_count"],
+            )
+            target_obj._shape_contact_pair_count = int(target_obj._shape_contact_pair_data.counts.sum())  # pyright: ignore[reportPrivateUsage]
 
     if post_load_init_callback is not None:
         post_load_init_callback(target_obj, _path)

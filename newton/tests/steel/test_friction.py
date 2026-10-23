@@ -791,7 +791,7 @@ def test_unsupported_combinations_raise(test, device):
     for mode in MODES[1:]:
         with test.subTest(mode=mode):
             # An omitted friction_anchor_beta selects point friction, with a warning.
-            with test.assertWarnsRegex(UserWarning, "point friction"):
+            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "point friction"):
                 solver = SolverSteel(model, friction_mode=mode)
             test.assertEqual(solver.friction_anchor_beta, 0.0)
             with test.assertRaisesRegex(ValueError, "friction_mode='fixed_normal'"):
@@ -802,7 +802,7 @@ def test_unsupported_combinations_raise(test, device):
             set_torsion_radius(model, 0.0)
             with test.assertRaisesRegex(ValueError, "friction_mode"):
                 SolverSteel(model, friction_mode=mode, friction_anchor_beta=0.0, contact_compliance=True)
-            for response in ("propagation", "propagation_fused"):
+            for response in ("propagation", "propagation_colored"):
                 with test.assertRaisesRegex(NotImplementedError, "friction_mode"):
                     SolverSteel(model, friction_mode=mode, articulated_contact_response=response)
 

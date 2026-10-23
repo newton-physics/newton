@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+from time import perf_counter
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,7 @@ class UI:
     def __init__(self, window):
         self._file_dialog_result: str | None = None
         self._pending_file_dialog = None
+        self._frame_time: float | None = None
         # DPI scale applied to ImGui style and fonts. Updated by ``_apply_dpi_scaling``
         # whenever the framebuffer-to-window ratio changes (e.g. moving the window
         # between displays with different DPI).
@@ -75,8 +77,7 @@ class UI:
         self._refresh_io_metrics()
         self.dpi_scale = self._detect_dpi_scale()
 
-        # ``_apply_dpi_scaling`` resets to the base dark style and then scales
-        # it; no need to call ``_setup_dark_style`` separately here.
+        # Reset to ImGui defaults, apply the dark theme, then scale style and fonts.
         self._apply_dpi_scaling()
 
     def _refresh_io_metrics(self) -> None:
@@ -155,12 +156,14 @@ class UI:
 
         ``display_size`` is set to the framebuffer size, so ImGui works in
         framebuffer pixels. Without this rescale every widget would render at
-        ~half size on Retina/4K displays. Re-applying first restores the base
-        style (``_setup_dark_style``) so repeated calls do not compound.
+        ~half size on Retina/4K displays. Re-applying first resets to ImGui
+        defaults, then applies the dark theme (``_setup_dark_style``) before
+        scaling, so fields outside the theme do not compound either.
         """
         if not self.is_available:
             return
 
+        self.imgui.get_current_context().style = self.imgui.Style()
         self._setup_dark_style()
         style = self.imgui.get_style()
         if self.dpi_scale != 1.0:
@@ -360,16 +363,17 @@ class UI:
         style.set_color_(self.imgui.Col_.modal_window_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
         # fmt: on
 
-    def begin_frame(self):
+    def begin_frame(self) -> None:
         """Renders a single frame of the UI. This should be called from the main render loop."""
         if not self.is_available:
             return
 
-        try:
-            self.impl.process_inputs()
-        except AttributeError:
-            # Older integrations may not require this
-            pass
+        # Pyglet's process_inputs() only sets timing, but treats clock.tick()
+        # durations as timestamps. Input uses callbacks; avoid ticking the
+        # shared Pyglet clock again here.
+        now = perf_counter()
+        self.io.delta_time = max(now - self._frame_time, 1e-6) if self._frame_time is not None else 1.0 / 60.0
+        self._frame_time = now
 
         self.imgui.new_frame()
         self.giz.begin_frame()

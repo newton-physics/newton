@@ -7,9 +7,10 @@ import os
 import tempfile
 import warnings
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Literal
 from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 import numpy as np
 import warp as wp
@@ -41,6 +42,33 @@ try:
     from resolve_robotics_uri_py import resolve_robotics_uri
 except ImportError:
     resolve_robotics_uri = None
+
+
+def _resolve_urdf_uri(uri: str, package_dirs: list[str]) -> str:
+    local_path = None
+    if uri.lower().startswith("file:"):
+        parsed = urlsplit(uri)
+        # The resolver ignores authorities, so reject remote hosts and network shares first.
+        if (
+            parsed.netloc.lower() not in ("", "localhost")
+            or not parsed.path.startswith("/")
+            or unquote(parsed.path).replace("\\", "/").startswith("//")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(f'Invalid local file URI: "{uri}"')
+        local_path = url2pathname(parsed.path)
+        if not PurePath(local_path).is_absolute():
+            raise ValueError(f'Invalid local file URI "{uri}"; expected an absolute filesystem path.')
+        uri = "file:" + uri[5:]
+    if resolve_robotics_uri is None:
+        raise ImportError(
+            f'Cannot resolve URI "{uri}" without resolve-robotics-uri-py. '
+            "Install it with: pip install 'newton[importers]'"
+        )
+    resolved = resolve_robotics_uri(uri, package_dirs=package_dirs)
+    # Preserve symlinks so relative assets use the same directory as a plain file path.
+    return local_path if local_path is not None else os.fspath(resolved)
 
 
 def _download_file(dst, url: str) -> None:
@@ -86,14 +114,21 @@ def parse_urdf(
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
     joint_damping_mode: Literal["passive", "drive"] | None = None,
+    package_dirs: list[str] | None = None,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
-        source: The filename of the URDF file to parse, or the URDF XML string content.
+        source: URDF filename, local ``file:`` URI, ``package://`` or ``model://`` URI, or XML content.
+        package_dirs: Extra package roots for source and asset URIs; for ``package://robot/...``,
+            supply the directory containing ``robot``. Requires ``newton[importers]``.
+            Roots supplement environment paths without guaranteed precedence or restricting access.
+            Plain relative paths use the URDF directory; file URIs require an absolute local path.
         xform: The transform to apply to the root body. If None, the transform is set to identity.
+            If ``parent_body`` is set, ``xform`` is expressed in that body's frame
+            instead of the world frame.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
@@ -219,23 +254,14 @@ def parse_urdf(
         xform = wp.transform(*xform) * axis_xform
 
     source = os.fspath(source) if hasattr(source, "__fspath__") else source
+    package_dirs = [os.fspath(path) for path in package_dirs] if package_dirs is not None else []
+    if package_dirs and resolve_robotics_uri is None:
+        raise ImportError(
+            "package_dirs requires resolve-robotics-uri-py. Install it with: pip install 'newton[importers]'"
+        )
 
-    if source.startswith(("package://", "model://")):
-        if resolve_robotics_uri is not None:
-            try:
-                source = resolve_robotics_uri(source)
-            except FileNotFoundError:
-                raise FileNotFoundError(
-                    f'Could not resolve URDF source URI "{source}". '
-                    f"Check that the package is installed and that relevant environment variables "
-                    f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
-                    f"See https://github.com/ami-iit/resolve-robotics-uri-py for details."
-                ) from None
-        else:
-            raise ImportError(
-                f'Cannot resolve URDF source URI "{source}" without resolve-robotics-uri-py. '
-                f"Install it with: pip install resolve-robotics-uri-py"
-            )
+    if source.startswith(("package://", "model://")) or source.lower().startswith("file:"):
+        source = _resolve_urdf_uri(source, package_dirs)
 
     if os.path.isfile(source):
         file = ET.parse(source)
@@ -281,18 +307,19 @@ def parse_urdf(
             return None, None
 
         file_tmp = None
-        if filename.startswith(("package://", "model://")):
-            if resolve_robotics_uri is not None:
+        if filename.startswith(("package://", "model://")) or filename.lower().startswith("file:"):
+            if resolve_robotics_uri is not None or filename.lower().startswith("file:"):
                 try:
-                    if filename.startswith("package://"):
-                        fn = filename.replace("package://", "")
+                    asset_package_dirs = list(package_dirs)
+                    if filename.startswith("package://") and os.path.isfile(source):
                         parent_urdf_folder = os.path.abspath(
                             os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir)
                         )
-                        package_dirs = [parent_urdf_folder]
-                    else:
-                        package_dirs = []
-                    filename = resolve_robotics_uri(filename, package_dirs=package_dirs)
+                        asset_package_dirs.append(parent_urdf_folder)
+                    filename = _resolve_urdf_uri(filename, asset_package_dirs)
+                except ImportError as exc:
+                    warnings.warn(str(exc), NewtonWarning, stacklevel=2)
+                    return None, None
                 except FileNotFoundError:
                     warnings.warn(
                         f'Could not resolve URI "{filename}". '

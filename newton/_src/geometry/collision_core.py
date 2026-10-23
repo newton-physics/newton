@@ -25,9 +25,6 @@ from .types import GeoType
 # Configuration flag for multi-contact generation
 ENABLE_MULTI_CONTACT = True
 
-# Configuration flag for tiled BVH queries (experimental)
-ENABLE_TILE_BVH_QUERY = True
-
 # Type definitions for multi-contact manifolds
 _mat53f = wp.types.matrix((5, 3), wp.float32)
 
@@ -964,13 +961,59 @@ def transform_normal_with_scale(
 
 @wp.func
 def convex_mesh_interior_point(mesh_id: wp.uint64, scale: wp.vec3) -> wp.vec3:
-    """Return the scaled vertex mean, which always lies inside the convex hull."""
+    """Return the scaled volume centroid of a convex hull, which lies inside it.
+
+    Unlike the vertex mean, the centroid does not depend on how densely each region
+    of the hull is tessellated. Degenerate hulls fall back to the vertex mean.
+    """
     hull = wp.mesh_get(mesh_id)
     num_verts = hull.points.shape[0]
-    center = wp.vec3(0.0, 0.0, 0.0)
+    mean = wp.vec3(0.0, 0.0, 0.0)
     for i in range(num_verts):
-        center += hull.points[i]
-    return wp.cw_mul(center, scale) / float(wp.max(num_verts, 1))
+        mean += hull.points[i]
+    mean = mean / float(wp.max(num_verts, 1))
+    # Fan the faces from the interior vertex mean into tetrahedra.
+    volume = float(0.0)
+    weighted = wp.vec3(0.0, 0.0, 0.0)
+    for tri in range(hull.indices.shape[0] // 3):
+        a = hull.points[hull.indices[3 * tri + 0]] - mean
+        b = hull.points[hull.indices[3 * tri + 1]] - mean
+        c = hull.points[hull.indices[3 * tri + 2]] - mean
+        tet = wp.abs(wp.dot(a, wp.cross(b, c)))
+        volume += tet
+        weighted += tet * (a + b + c)
+    center = mean
+    if volume > 0.0:
+        center = mean + weighted / (4.0 * volume)
+    return wp.cw_mul(center, scale)
+
+
+@wp.func
+def _query_aabb_to_bvh(
+    lower: wp.vec3,
+    upper: wp.vec3,
+    X_mesh_shape: wp.transform,
+    mesh_data: wp.vec4,
+    contact_threshold: float,
+    center: wp.vec3,
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+    """Convert scaled mesh-local query bounds to the unscaled mesh-BVH frame.
+
+    Pads the bounds by the world-space contact threshold and maps the shape's
+    interior point ``center`` into the same frame for back-face culling. Both
+    midphase bound builders use this so their query boxes stay identical.
+    """
+    mesh_scale = wp.vec3(mesh_data[0], mesh_data[1], mesh_data[2])
+    lower_bvh, upper_bvh, inv_scale = aabb_to_unscaled(lower, upper, mesh_scale)
+    margin_vec = wp.vec3(
+        contact_threshold / wp.max(wp.abs(mesh_scale[0]), 1.0e-12),
+        contact_threshold / wp.max(wp.abs(mesh_scale[1]), 1.0e-12),
+        contact_threshold / wp.max(wp.abs(mesh_scale[2]), 1.0e-12),
+    )
+    # Cull against an interior point. A hull's origin and AABB center can
+    # both lie outside it, which discards triangles touching the hull.
+    center_in_bvh = wp.cw_mul(wp.transform_point(X_mesh_shape, center), inv_scale)
+    return lower_bvh - margin_vec, upper_bvh + margin_vec, center_in_bvh
 
 
 @wp.func
@@ -1009,19 +1052,9 @@ def _compute_mesh_vs_convex_query_aabb(
         generic_shape_data, orientation_in_mesh, pos_in_mesh, data_provider
     )
 
-    # Convert the bounds and world-space threshold to the unscaled BVH frame.
-    mesh_scale_vec4 = shape_data[mesh_shape]
-    mesh_scale = wp.vec3(mesh_scale_vec4[0], mesh_scale_vec4[1], mesh_scale_vec4[2])
-    aabb_lower_bvh, aabb_upper_bvh, inv_scale = aabb_to_unscaled(aabb_lower, aabb_upper, mesh_scale)
-    margin_vec = wp.vec3(
-        contact_threshold / wp.max(wp.abs(mesh_scale[0]), 1.0e-12),
-        contact_threshold / wp.max(wp.abs(mesh_scale[1]), 1.0e-12),
-        contact_threshold / wp.max(wp.abs(mesh_scale[2]), 1.0e-12),
+    return _query_aabb_to_bvh(
+        aabb_lower, aabb_upper, X_mesh_shape, shape_data[mesh_shape], contact_threshold, non_mesh_center
     )
-    # Cull against an interior point. A hull's origin and AABB center can
-    # both lie outside it, which discards triangles touching the hull.
-    center_in_bvh = wp.cw_mul(wp.transform_point(X_mesh_shape, non_mesh_center), inv_scale)
-    return aabb_lower_bvh - margin_vec, aabb_upper_bvh + margin_vec, center_in_bvh
 
 
 @wp.func
@@ -1042,6 +1075,46 @@ def _mesh_triangle_is_front_facing_local(
     face_normal = wp.cross(v1 - v0, v2 - v0)
     center_dist = wp.dot(face_normal, center_in_bvh - v0)
     return not (center_dist < 0.0)
+
+
+@wp.func
+def _compute_mesh_vs_hull_query_aabb_tiled(
+    mesh_shape: int,
+    hull_shape: int,
+    X_mesh_ws: wp.transform,
+    X_ws: wp.transform,
+    shape_data: wp.array[wp.vec4],
+    shape_source_ptr: wp.array[wp.uint64],
+    contact_threshold: float,
+    hull_center: wp.vec3,
+    lane: int,
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+    """Compute :func:`_compute_mesh_vs_convex_query_aabb` bounds for a hull with all block threads.
+
+    Every thread of the block must call this for the same pair. Min and max
+    reductions are order independent, so the bounds match the serial scan.
+    """
+    X_mesh_shape = wp.transform_multiply(wp.transform_inverse(X_mesh_ws), X_ws)
+    pos_in_mesh = wp.transform_get_translation(X_mesh_shape)
+    rot_mat_t = wp.transpose(wp.quat_to_matrix(wp.transform_get_rotation(X_mesh_shape)))
+    data_vec4 = shape_data[hull_shape]
+    scale = wp.vec3(data_vec4[0], data_vec4[1], data_vec4[2])
+    # Pre-scale axes: dot(local_axis, scale*v) == dot(scale*local_axis, v)
+    scaled_x = wp.cw_mul(wp.vec3(rot_mat_t[0, 0], rot_mat_t[1, 0], rot_mat_t[2, 0]), scale)
+    scaled_y = wp.cw_mul(wp.vec3(rot_mat_t[0, 1], rot_mat_t[1, 1], rot_mat_t[2, 1]), scale)
+    scaled_z = wp.cw_mul(wp.vec3(rot_mat_t[0, 2], rot_mat_t[1, 2], rot_mat_t[2, 2]), scale)
+    mesh = wp.mesh_get(shape_source_ptr[hull_shape])
+    lower = wp.vec3(1.0e10)
+    upper = wp.vec3(-1.0e10)
+    for i in range(lane, mesh.points.shape[0], wp.block_dim()):
+        p = mesh.points[i]
+        projection = wp.vec3(wp.dot(p, scaled_x), wp.dot(p, scaled_y), wp.dot(p, scaled_z))
+        lower = wp.min(lower, projection)
+        upper = wp.max(upper, projection)
+    lower = wp.tile_reduce(wp.min, wp.tile(lower, preserve_type=True))[0] + pos_in_mesh
+    upper = wp.tile_reduce(wp.max, wp.tile(upper, preserve_type=True))[0] + pos_in_mesh
+
+    return _query_aabb_to_bvh(lower, upper, X_mesh_shape, shape_data[mesh_shape], contact_threshold, hull_center)
 
 
 @wp.func
@@ -1085,7 +1158,20 @@ def mesh_vs_convex_midphase(
     aabb_lower = wp.vec3(0.0)
     aabb_upper = wp.vec3(0.0)
     center_in_bvh = wp.vec3(0.0)
-    if wp.static(ENABLE_TILE_BVH_QUERY):
+    if shape_type[non_mesh_shape] == GeoType.CONVEX_MESH:
+        # A hull's bounds scan every vertex; split that scan across the block.
+        aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_hull_query_aabb_tiled(
+            mesh_shape,
+            non_mesh_shape,
+            X_mesh_ws,
+            X_ws,
+            shape_data,
+            shape_source_ptr,
+            contact_threshold,
+            non_mesh_center,
+            idx_in_thread_block,
+        )
+    else:
         # All lanes query the same pair, so compute the bounds once per block.
         if idx_in_thread_block == 0:
             aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_convex_query_aabb(
@@ -1116,56 +1202,33 @@ def mesh_vs_convex_midphase(
         aabb_lower = wp.vec3(bounds[0, 0], bounds[0, 1], bounds[0, 2])
         aabb_upper = wp.vec3(bounds[1, 0], bounds[1, 1], bounds[1, 2])
         center_in_bvh = wp.vec3(bounds[2, 0], bounds[2, 1], bounds[2, 2])
-    else:
-        aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_convex_query_aabb(
-            mesh_shape,
-            non_mesh_shape,
-            X_mesh_ws,
-            X_ws,
-            shape_type,
-            shape_data,
-            shape_source_ptr,
-            contact_threshold,
-            non_mesh_center,
-        )
 
-    if wp.static(ENABLE_TILE_BVH_QUERY):
-        # Query mesh BVH for overlapping triangles in mesh local space using tiled version
-        query = wp.tile_mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
+    # Query mesh BVH for overlapping triangles in mesh local space using tiled version
+    query = wp.tile_mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
 
-        while wp.tile_query_valid(query):
-            result_tile = wp.tile_mesh_query_aabb_next(query)
-            tri_index = wp.untile(result_tile)
-            if tri_index >= 0 and not _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
-                tri_index = -1
+    while wp.tile_query_valid(query):
+        result_tile = wp.tile_mesh_query_aabb_next(query)
+        tri_index = wp.untile(result_tile)
+        if tri_index >= 0 and not _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
+            tri_index = -1
 
-            # Add this triangle pair to the output buffer if valid
-            # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
-            has_tri = 0
-            if tri_index >= 0:
-                has_tri = 1
-            count_tile = wp.tile(has_tri)
-            inclusive_scan = wp.tile_scan_inclusive(count_tile)
-            offset = 0
-            if idx_in_thread_block == wp.block_dim() - 1:
-                offset = wp.atomic_add(triangle_pairs_count, 0, inclusive_scan[wp.block_dim() - 1])
-            offset_broadcast_tile = wp.tile(offset)
-            offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
+        # Add this triangle pair to the output buffer if valid
+        # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
+        has_tri = 0
+        if tri_index >= 0:
+            has_tri = 1
+        count_tile = wp.tile(has_tri)
+        inclusive_scan = wp.tile_scan_inclusive(count_tile)
+        offset = 0
+        if idx_in_thread_block == wp.block_dim() - 1:
+            offset = wp.atomic_add(triangle_pairs_count, 0, inclusive_scan[wp.block_dim() - 1])
+        offset_broadcast_tile = wp.tile(offset)
+        offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
 
-            if tri_index >= 0:
-                out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
-                if out_idx < triangle_pairs.shape[0]:
-                    triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
-    else:
-        query = wp.mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
-        tri_index = wp.int32(0)
-        while wp.mesh_query_aabb_next(query, tri_index):
-            # Add this triangle pair to the output buffer if valid
-            # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
-            if tri_index >= 0 and _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
-                out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
-                if out_idx < triangle_pairs.shape[0]:
-                    triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
+        if tri_index >= 0:
+            out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
+            if out_idx < triangle_pairs.shape[0]:
+                triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
 
 
 @wp.func
