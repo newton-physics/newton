@@ -1111,7 +1111,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.particle_q_prev = wp.zeros_like(
             model.particle_q, device=self.device
         )  # per-substep previous q (for velocity)
-        # Particle pose at the start of the entry_step_per_iteration, paired with
+        # Particle pose at the start of the coupled entry step, paired with
         # ``_coupling_body_q_prev_snapshot`` by the coupling harvest hooks.
         self._coupling_particle_q_prev_snapshot = wp.clone(model.particle_q, device=self.device)
         self.inertia = wp.zeros_like(model.particle_q, device=self.device)  # inertial target positions
@@ -1561,7 +1561,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Convert input body pose updates into VBD-compatible history updates.
 
         Also snapshots the input particle pose, which the coupling harvest hooks
-        pair with the body pose history over the whole entry_step_per_iteration.
+        pair with the body pose history over the whole coupled entry step (all substeps).
         """
         self._apply_module_options()
         flags = int(flags)
@@ -1666,7 +1666,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if contacts is None:
             return
 
-        # Both pose histories span the whole entry_step_per_iteration, matching the coupled ``dt``;
+        # Both pose histories span the whole coupled entry step, matching the coupled ``dt``;
         # ``particle_q_prev`` and ``body_q_prev`` cover only the last substep of a sub-stepped entry.
         body_q_prev = self._coupling_body_q_prev_snapshot
         particle_q_prev = self._coupling_particle_q_prev_snapshot
@@ -1774,7 +1774,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max
         ):
             # Contacts are evaluated at the solved poses in ``state_out``, with histories at the
-            # entry_step_per_iteration start pose, matching the coupled ``dt``.
+            # coupled entry step start pose, matching the coupled ``dt``.
             if self.integrate_with_external_rigid_solver:
                 body_q_for_particles = state_out.body_q
                 body_q_prev_for_particles = state.body_q
