@@ -1614,8 +1614,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         # Create a single-instance system
         single_builder = build_boxes_fourbar(ground=False)
         for i, (q_i_0, u_i_0) in enumerate(zip(single_builder.body_q, single_builder.body_qd, strict=True)):
-            msg.debug(f"[single]: [builder]: body {i}: q_i: {q_i_0}")
-            msg.debug(f"[single]: [builder]: body {i}: u_i: {u_i_0}")
+            msg.debug("[single]: [builder]: body %s: q_i: %s", i, q_i_0)
+            msg.debug("[single]: [builder]: body %s: u_i: %s", i, u_i_0)
 
         # Create a model and states from the builder
         single_model = ModelKamino.from_newton(single_builder.finalize(device=self.default_device))
@@ -1634,16 +1634,16 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Optional verbose output
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[single]: [init]: model.size:\n{single_model.size}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.q_i:\n{single_state_p.q_i}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.u_i:\n{single_state_p.u_i}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.w_i:\n{single_state_p.w_i}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.q_j:\n{single_state_p.q_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.lambda_f_j:\n{single_state_p.lambda_f_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.lambda_tau_j:\n{single_state_p.lambda_tau_j}\n\n")
+            msg.debug("[single]: [init]: model.size:\n%s\n\n", single_model.size)
+            msg.debug("[single]: [init]: single_state_p.q_i:\n%s\n\n", single_state_p.q_i)
+            msg.debug("[single]: [init]: single_state_p.u_i:\n%s\n\n", single_state_p.u_i)
+            msg.debug("[single]: [init]: single_state_p.w_i:\n%s\n\n", single_state_p.w_i)
+            msg.debug("[single]: [init]: single_state_p.q_j:\n%s\n\n", single_state_p.q_j)
+            msg.debug("[single]: [init]: single_state_p.dq_j:\n%s\n\n", single_state_p.dq_j)
+            msg.debug("[single]: [init]: single_state_p.lambda_kin_j:\n%s\n\n", single_state_p.lambda_kin_j)
+            msg.debug("[single]: [init]: single_state_p.lambda_dyn_j:\n%s\n\n", single_state_p.lambda_dyn_j)
+            msg.debug("[single]: [init]: single_state_p.lambda_f_j:\n%s\n\n", single_state_p.lambda_f_j)
+            msg.debug("[single]: [init]: single_state_p.lambda_tau_j:\n%s\n\n", single_state_p.lambda_tau_j)
 
         # Create simulator and check if the initial state is consistent with the contents of the builder
         single_solver = SolverKaminoImpl(model=single_model)
@@ -1664,16 +1664,20 @@ class TestSolverKaminoImpl(unittest.TestCase):
         initial_lambda_kin_j = single_state_p.lambda_kin_j.numpy().copy()
         initial_lambda_dyn_j = single_state_p.lambda_dyn_j.numpy().copy()
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[samples]: [single]: [init]: q_i (shape={initial_q_i.shape}):\n{initial_q_i}\n")
-            msg.debug(f"[samples]: [single]: [init]: u_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
-            msg.debug(f"[samples]: [single]: [init]: w_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
-            msg.debug(f"[samples]: [single]: [init]: q_j (shape={initial_q_j.shape}):\n{initial_q_j}\n")
-            msg.debug(f"[samples]: [single]: [init]: dq_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
+            msg.debug("[samples]: [single]: [init]: q_i (shape=%s):\n%s\n", initial_q_i.shape, initial_q_i)
+            msg.debug("[samples]: [single]: [init]: u_i (shape=%s):\n%s\n", initial_u_i.shape, initial_u_i)
+            msg.debug("[samples]: [single]: [init]: w_i (shape=%s):\n%s\n", initial_u_i.shape, initial_u_i)
+            msg.debug("[samples]: [single]: [init]: q_j (shape=%s):\n%s\n", initial_q_j.shape, initial_q_j)
+            msg.debug("[samples]: [single]: [init]: dq_j (shape=%s):\n%s\n", initial_dq_j.shape, initial_dq_j)
             msg.debug(
-                f"[samples]: [single]: [init]: lambda_kin_j (shape={initial_lambda_kin_j.shape}):\n{initial_lambda_kin_j}\n"
+                "[samples]: [single]: [init]: lambda_kin_j (shape=%s):\n%s\n",
+                initial_lambda_kin_j.shape,
+                initial_lambda_kin_j,
             )
             msg.debug(
-                f"[samples]: [single]: [init]: lambda_dyn_j (shape={initial_lambda_dyn_j.shape}):\n{initial_lambda_dyn_j}\n"
+                "[samples]: [single]: [init]: lambda_dyn_j (shape=%s):\n%s\n",
+                initial_lambda_dyn_j.shape,
+                initial_lambda_dyn_j,
             )
 
         # Set a simple control callback that applies control inputs
@@ -1681,7 +1685,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         single_solver.set_pre_step_callback(test_prestep_callback)
 
         # Run the simulation for the specified number of steps
-        msg.debug(f"[single]: Executing {num_steps} single-world steps")
+        msg.debug("[single]: Executing %s single-world steps", num_steps)
         start_time = time.time()
         for step in range(num_steps):
             # Execute a single simulation step
@@ -1701,22 +1705,28 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_lambda_f_j = single_state_n.lambda_f_j.numpy().copy()
         final_lambda_tau_j = single_state_n.lambda_tau_j.numpy().copy()
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
-            msg.debug(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
-            msg.debug(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
-            msg.debug(f"[samples]: [single]: [final]: q_j (shape={final_q_j.shape}):\n{final_q_j}\n")
-            msg.debug(f"[samples]: [single]: [final]: dq_j (shape={final_dq_j.shape}):\n{final_dq_j}\n")
+            msg.debug("[samples]: [single]: [final]: q_i (shape=%s):\n%s\n", final_q_i.shape, final_q_i)
+            msg.debug("[samples]: [single]: [final]: u_i (shape=%s):\n%s\n", final_u_i.shape, final_u_i)
+            msg.debug("[samples]: [single]: [final]: w_i (shape=%s):\n%s\n", final_w_i.shape, final_w_i)
+            msg.debug("[samples]: [single]: [final]: q_j (shape=%s):\n%s\n", final_q_j.shape, final_q_j)
+            msg.debug("[samples]: [single]: [final]: dq_j (shape=%s):\n%s\n", final_dq_j.shape, final_dq_j)
             msg.debug(
-                f"[samples]: [single]: [final]: lambda_kin_j (shape={final_lambda_kin_j.shape}):\n{final_lambda_kin_j}\n"
+                "[samples]: [single]: [final]: lambda_kin_j (shape=%s):\n%s\n",
+                final_lambda_kin_j.shape,
+                final_lambda_kin_j,
             )
             msg.debug(
-                f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+                "[samples]: [single]: [final]: lambda_dyn_j (shape=%s):\n%s\n",
+                final_lambda_dyn_j.shape,
+                final_lambda_dyn_j,
             )
             msg.debug(
-                f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n"
+                "[samples]: [single]: [final]: lambda_f_j (shape=%s):\n%s\n", final_lambda_f_j.shape, final_lambda_f_j
             )
             msg.debug(
-                f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
+                "[samples]: [single]: [final]: lambda_tau_j (shape=%s):\n%s\n",
+                final_lambda_tau_j.shape,
+                final_lambda_tau_j,
             )
 
         # Tile the collected states for comparison against the multi-instance simulator
@@ -1729,23 +1739,23 @@ class TestSolverKaminoImpl(unittest.TestCase):
         multi_final_q_j = np.tile(final_q_j, (num_worlds, 1)).reshape(-1)
         multi_final_dq_j = np.tile(final_dq_j, (num_worlds, 1)).reshape(-1)
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[samples]: [multi] [init]: q_i (shape={multi_init_q_i.shape}):\n{multi_init_q_i}\n")
-            msg.debug(f"[samples]: [multi] [init]: u_i (shape={multi_init_u_i.shape}):\n{multi_init_u_i}\n")
-            msg.debug(f"[samples]: [multi] [init]: q_j (shape={multi_init_q_j.shape}):\n{multi_init_q_j}\n")
-            msg.debug(f"[samples]: [multi] [init]: dq_j (shape={multi_init_dq_j.shape}):\n{multi_init_dq_j}\n")
-            msg.debug(f"[samples]: [multi] [final]: q_i (shape={multi_final_q_i.shape}):\n{multi_final_q_i}\n")
-            msg.debug(f"[samples]: [multi] [final]: u_i (shape={multi_final_u_i.shape}):\n{multi_final_u_i}\n")
-            msg.debug(f"[samples]: [multi] [final]: q_j (shape={multi_final_q_j.shape}):\n{multi_final_q_j}\n")
-            msg.debug(f"[samples]: [multi] [final]: dq_j (shape={multi_final_dq_j.shape}):\n{multi_final_dq_j}\n")
+            msg.debug("[samples]: [multi] [init]: q_i (shape=%s):\n%s\n", multi_init_q_i.shape, multi_init_q_i)
+            msg.debug("[samples]: [multi] [init]: u_i (shape=%s):\n%s\n", multi_init_u_i.shape, multi_init_u_i)
+            msg.debug("[samples]: [multi] [init]: q_j (shape=%s):\n%s\n", multi_init_q_j.shape, multi_init_q_j)
+            msg.debug("[samples]: [multi] [init]: dq_j (shape=%s):\n%s\n", multi_init_dq_j.shape, multi_init_dq_j)
+            msg.debug("[samples]: [multi] [final]: q_i (shape=%s):\n%s\n", multi_final_q_i.shape, multi_final_q_i)
+            msg.debug("[samples]: [multi] [final]: u_i (shape=%s):\n%s\n", multi_final_u_i.shape, multi_final_u_i)
+            msg.debug("[samples]: [multi] [final]: q_j (shape=%s):\n%s\n", multi_final_q_j.shape, multi_final_q_j)
+            msg.debug("[samples]: [multi] [final]: dq_j (shape=%s):\n%s\n", multi_final_dq_j.shape, multi_final_dq_j)
 
         # Create a multi-instance system by replicating the single-instance builder
         multi_builder = newton.ModelBuilder()
         multi_builder.replicate(builder=build_boxes_fourbar(ground=False), copy_count=num_worlds)
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
             for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
-                msg.debug(f"[multi]: [builder]: body {i}: bid: {i}")
-                msg.debug(f"[multi]: [builder]: body {i}: q_i: {q_i_0}")
-                msg.debug(f"[multi]: [builder]: body {i}: u_i: {u_i_0}")
+                msg.debug("[multi]: [builder]: body %s: bid: %s", i, i)
+                msg.debug("[multi]: [builder]: body %s: q_i: %s", i, q_i_0)
+                msg.debug("[multi]: [builder]: body %s: u_i: %s", i, u_i_0)
 
         # Create a model and states from the builder
         multi_model = ModelKamino.from_newton(multi_builder.finalize(device=self.default_device))
@@ -1767,16 +1777,16 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Optional verbose output
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[multi]: [init]: sim.model.size:\n{multi_model.size}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state_previous.q_i:\n{multi_state_p.q_i}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state_previous.u_i:\n{multi_state_p.u_i}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state_previous.q_j:\n{multi_state_p.q_j}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state_previous.dq_j:\n{multi_state_p.dq_j}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state.q_i:\n{multi_state_n.q_i}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state.u_i:\n{multi_state_n.u_i}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state.q_j:\n{multi_state_n.q_j}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state.dq_j:\n{multi_state_n.dq_j}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.control.tau_j:\n{multi_control.tau_j}\n\n")
+            msg.debug("[multi]: [init]: sim.model.size:\n%s\n\n", multi_model.size)
+            msg.debug("[multi]: [init]: sim.model.state_previous.q_i:\n%s\n\n", multi_state_p.q_i)
+            msg.debug("[multi]: [init]: sim.model.state_previous.u_i:\n%s\n\n", multi_state_p.u_i)
+            msg.debug("[multi]: [init]: sim.model.state_previous.q_j:\n%s\n\n", multi_state_p.q_j)
+            msg.debug("[multi]: [init]: sim.model.state_previous.dq_j:\n%s\n\n", multi_state_p.dq_j)
+            msg.debug("[multi]: [init]: sim.model.state.q_i:\n%s\n\n", multi_state_n.q_i)
+            msg.debug("[multi]: [init]: sim.model.state.u_i:\n%s\n\n", multi_state_n.u_i)
+            msg.debug("[multi]: [init]: sim.model.state.q_j:\n%s\n\n", multi_state_n.q_j)
+            msg.debug("[multi]: [init]: sim.model.state.dq_j:\n%s\n\n", multi_state_n.dq_j)
+            msg.debug("[multi]: [init]: sim.model.control.tau_j:\n%s\n\n", multi_control.tau_j)
 
         # Check if the multi-instance simulator has initial states matching the tiled samples
         np.testing.assert_allclose(multi_state_p.q_i.numpy(), multi_init_q_i, rtol=rtol, atol=atol)
@@ -1793,7 +1803,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         multi_solver.set_pre_step_callback(test_prestep_callback)
 
         # Step the multi-instance simulator for the same number of steps
-        msg.debug(f"[multi]: Executing {num_steps} multi-world steps")
+        msg.debug("[multi]: Executing %s multi-world steps", num_steps)
         start_time = time.time()
         for step in range(num_steps):
             # Execute a single simulation step
@@ -1804,10 +1814,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Optional verbose output
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[multi]: [final]: multi_state_n.q_i:\n{multi_state_n.q_i}\n\n")
-            msg.debug(f"[multi]: [final]: multi_state_n.u_i:\n{multi_state_n.u_i}\n\n")
-            msg.debug(f"[multi]: [final]: multi_state_n.q_j:\n{multi_state_n.q_j}\n\n")
-            msg.debug(f"[multi]: [final]: multi_state_n.dq_j:\n{multi_state_n.dq_j}\n\n")
+            msg.debug("[multi]: [final]: multi_state_n.q_i:\n%s\n\n", multi_state_n.q_i)
+            msg.debug("[multi]: [final]: multi_state_n.u_i:\n%s\n\n", multi_state_n.u_i)
+            msg.debug("[multi]: [final]: multi_state_n.q_j:\n%s\n\n", multi_state_n.q_j)
+            msg.debug("[multi]: [final]: multi_state_n.dq_j:\n%s\n\n", multi_state_n.dq_j)
 
         # Check that the next states match the collected samples
         np.testing.assert_allclose(multi_state_n.q_i.numpy(), multi_final_q_i, rtol=rtol, atol=atol)
@@ -1824,8 +1834,8 @@ class TestSolverKaminoImpl(unittest.TestCase):
         single_builder = build_boxes_fourbar(ground=True)
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
             for i, (q_i_0, u_i_0) in enumerate(zip(single_builder.body_q, single_builder.body_qd, strict=True)):
-                msg.debug(f"[single]: [builder]: body {i}: q_i: {q_i_0}")
-                msg.debug(f"[single]: [builder]: body {i}: u_i: {u_i_0}")
+                msg.debug("[single]: [builder]: body %s: q_i: %s", i, q_i_0)
+                msg.debug("[single]: [builder]: body %s: u_i: %s", i, u_i_0)
 
         # Create a model and states from the builder
         single_model = ModelKamino.from_newton(single_builder.finalize(device=self.default_device))
@@ -1844,16 +1854,16 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Optional verbose output
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[single]: [init]: model.size:\n{single_model.size}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.q_i:\n{single_state_p.q_i}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.u_i:\n{single_state_p.u_i}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.w_i:\n{single_state_p.w_i}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.q_j:\n{single_state_p.q_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.dq_j:\n{single_state_p.dq_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.lambda_kin_j:\n{single_state_p.lambda_kin_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.lambda_dyn_j:\n{single_state_p.lambda_dyn_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.lambda_f_j:\n{single_state_p.lambda_f_j}\n\n")
-            msg.debug(f"[single]: [init]: single_state_p.lambda_tau_j:\n{single_state_p.lambda_tau_j}\n\n")
+            msg.debug("[single]: [init]: model.size:\n%s\n\n", single_model.size)
+            msg.debug("[single]: [init]: single_state_p.q_i:\n%s\n\n", single_state_p.q_i)
+            msg.debug("[single]: [init]: single_state_p.u_i:\n%s\n\n", single_state_p.u_i)
+            msg.debug("[single]: [init]: single_state_p.w_i:\n%s\n\n", single_state_p.w_i)
+            msg.debug("[single]: [init]: single_state_p.q_j:\n%s\n\n", single_state_p.q_j)
+            msg.debug("[single]: [init]: single_state_p.dq_j:\n%s\n\n", single_state_p.dq_j)
+            msg.debug("[single]: [init]: single_state_p.lambda_kin_j:\n%s\n\n", single_state_p.lambda_kin_j)
+            msg.debug("[single]: [init]: single_state_p.lambda_dyn_j:\n%s\n\n", single_state_p.lambda_dyn_j)
+            msg.debug("[single]: [init]: single_state_p.lambda_f_j:\n%s\n\n", single_state_p.lambda_f_j)
+            msg.debug("[single]: [init]: single_state_p.lambda_tau_j:\n%s\n\n", single_state_p.lambda_tau_j)
         # Create a contacts container for the single-instance system
         single_contacts = ContactsKamino(model=single_model)
 
@@ -1874,19 +1884,19 @@ class TestSolverKaminoImpl(unittest.TestCase):
         initial_q_j = single_state_p.q_j.numpy().copy()
         initial_dq_j = single_state_p.dq_j.numpy().copy()
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[samples]: [single]: [init]: q_i (shape={initial_q_i.shape}):\n{initial_q_i}\n")
-            msg.debug(f"[samples]: [single]: [init]: u_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
-            msg.debug(f"[samples]: [single]: [init]: w_i (shape={initial_u_i.shape}):\n{initial_u_i}\n")
-            msg.debug(f"[samples]: [single]: [init]: q_j (shape={initial_q_j.shape}):\n{initial_q_j}\n")
-            msg.debug(f"[samples]: [single]: [init]: dq_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
-            msg.debug(f"[samples]: [single]: [init]: lambda_kin_j (shape={initial_dq_j.shape}):\n{initial_dq_j}\n")
+            msg.debug("[samples]: [single]: [init]: q_i (shape=%s):\n%s\n", initial_q_i.shape, initial_q_i)
+            msg.debug("[samples]: [single]: [init]: u_i (shape=%s):\n%s\n", initial_u_i.shape, initial_u_i)
+            msg.debug("[samples]: [single]: [init]: w_i (shape=%s):\n%s\n", initial_u_i.shape, initial_u_i)
+            msg.debug("[samples]: [single]: [init]: q_j (shape=%s):\n%s\n", initial_q_j.shape, initial_q_j)
+            msg.debug("[samples]: [single]: [init]: dq_j (shape=%s):\n%s\n", initial_dq_j.shape, initial_dq_j)
+            msg.debug("[samples]: [single]: [init]: lambda_kin_j (shape=%s):\n%s\n", initial_dq_j.shape, initial_dq_j)
 
         # Set a simple control callback that applies control inputs
         # NOTE: We use this to disturb the system from its initial state
         single_solver.set_pre_step_callback(test_prestep_callback)
 
         # Run the simulation for the specified number of steps
-        msg.debug(f"[single]: Executing {num_steps} single-world steps")
+        msg.debug("[single]: Executing %s single-world steps", num_steps)
         start_time = time.time()
         for step in range(num_steps):
             # Execute a single simulation step
@@ -1906,22 +1916,28 @@ class TestSolverKaminoImpl(unittest.TestCase):
         final_lambda_f_j = single_state_n.lambda_f_j.numpy().copy()
         final_lambda_tau_j = single_state_n.lambda_tau_j.numpy().copy()
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[samples]: [single]: [final]: q_i (shape={final_q_i.shape}):\n{final_q_i}\n")
-            msg.debug(f"[samples]: [single]: [final]: u_i (shape={final_u_i.shape}):\n{final_u_i}\n")
-            msg.debug(f"[samples]: [single]: [final]: w_i (shape={final_w_i.shape}):\n{final_w_i}\n")
-            msg.debug(f"[samples]: [single]: [final]: q_j (shape={final_q_j.shape}):\n{final_q_j}\n")
-            msg.debug(f"[samples]: [single]: [final]: dq_j (shape={final_dq_j.shape}):\n{final_dq_j}\n")
+            msg.debug("[samples]: [single]: [final]: q_i (shape=%s):\n%s\n", final_q_i.shape, final_q_i)
+            msg.debug("[samples]: [single]: [final]: u_i (shape=%s):\n%s\n", final_u_i.shape, final_u_i)
+            msg.debug("[samples]: [single]: [final]: w_i (shape=%s):\n%s\n", final_w_i.shape, final_w_i)
+            msg.debug("[samples]: [single]: [final]: q_j (shape=%s):\n%s\n", final_q_j.shape, final_q_j)
+            msg.debug("[samples]: [single]: [final]: dq_j (shape=%s):\n%s\n", final_dq_j.shape, final_dq_j)
             msg.debug(
-                f"[samples]: [single]: [final]: lambda_kin_j (shape={final_lambda_kin_j.shape}):\n{final_lambda_kin_j}\n"
+                "[samples]: [single]: [final]: lambda_kin_j (shape=%s):\n%s\n",
+                final_lambda_kin_j.shape,
+                final_lambda_kin_j,
             )
             msg.debug(
-                f"[samples]: [single]: [final]: lambda_dyn_j (shape={final_lambda_dyn_j.shape}):\n{final_lambda_dyn_j}\n"
+                "[samples]: [single]: [final]: lambda_dyn_j (shape=%s):\n%s\n",
+                final_lambda_dyn_j.shape,
+                final_lambda_dyn_j,
             )
             msg.debug(
-                f"[samples]: [single]: [final]: lambda_f_j (shape={final_lambda_f_j.shape}):\n{final_lambda_f_j}\n"
+                "[samples]: [single]: [final]: lambda_f_j (shape=%s):\n%s\n", final_lambda_f_j.shape, final_lambda_f_j
             )
             msg.debug(
-                f"[samples]: [single]: [final]: lambda_tau_j (shape={final_lambda_tau_j.shape}):\n{final_lambda_tau_j}\n"
+                "[samples]: [single]: [final]: lambda_tau_j (shape=%s):\n%s\n",
+                final_lambda_tau_j.shape,
+                final_lambda_tau_j,
             )
 
         # Tile the collected states for comparison against the multi-instance simulator
@@ -1934,23 +1950,23 @@ class TestSolverKaminoImpl(unittest.TestCase):
         multi_final_q_j = np.tile(final_q_j, (num_worlds, 1)).reshape(-1)
         multi_final_dq_j = np.tile(final_dq_j, (num_worlds, 1)).reshape(-1)
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[samples]: [multi] [init]: q_i (shape={multi_init_q_i.shape}):\n{multi_init_q_i}\n")
-            msg.debug(f"[samples]: [multi] [init]: u_i (shape={multi_init_u_i.shape}):\n{multi_init_u_i}\n")
-            msg.debug(f"[samples]: [multi] [init]: q_j (shape={multi_init_q_j.shape}):\n{multi_init_q_j}\n")
-            msg.debug(f"[samples]: [multi] [init]: dq_j (shape={multi_init_dq_j.shape}):\n{multi_init_dq_j}\n")
-            msg.debug(f"[samples]: [multi] [final]: q_i (shape={multi_final_q_i.shape}):\n{multi_final_q_i}\n")
-            msg.debug(f"[samples]: [multi] [final]: u_i (shape={multi_final_u_i.shape}):\n{multi_final_u_i}\n")
-            msg.debug(f"[samples]: [multi] [final]: q_j (shape={multi_final_q_j.shape}):\n{multi_final_q_j}\n")
-            msg.debug(f"[samples]: [multi] [final]: dq_j (shape={multi_final_dq_j.shape}):\n{multi_final_dq_j}\n")
+            msg.debug("[samples]: [multi] [init]: q_i (shape=%s):\n%s\n", multi_init_q_i.shape, multi_init_q_i)
+            msg.debug("[samples]: [multi] [init]: u_i (shape=%s):\n%s\n", multi_init_u_i.shape, multi_init_u_i)
+            msg.debug("[samples]: [multi] [init]: q_j (shape=%s):\n%s\n", multi_init_q_j.shape, multi_init_q_j)
+            msg.debug("[samples]: [multi] [init]: dq_j (shape=%s):\n%s\n", multi_init_dq_j.shape, multi_init_dq_j)
+            msg.debug("[samples]: [multi] [final]: q_i (shape=%s):\n%s\n", multi_final_q_i.shape, multi_final_q_i)
+            msg.debug("[samples]: [multi] [final]: u_i (shape=%s):\n%s\n", multi_final_u_i.shape, multi_final_u_i)
+            msg.debug("[samples]: [multi] [final]: q_j (shape=%s):\n%s\n", multi_final_q_j.shape, multi_final_q_j)
+            msg.debug("[samples]: [multi] [final]: dq_j (shape=%s):\n%s\n", multi_final_dq_j.shape, multi_final_dq_j)
 
         # Create a multi-instance system by replicating the single-instance builder
         multi_builder = newton.ModelBuilder()
         multi_builder.replicate(builder=build_boxes_fourbar(ground=False), copy_count=num_worlds)
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
             for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
-                msg.debug(f"[multi]: [builder]: body {i}: bid: {i}")
-                msg.debug(f"[multi]: [builder]: body {i}: q_i: {q_i_0}")
-                msg.debug(f"[multi]: [builder]: body {i}: u_i: {u_i_0}")
+                msg.debug("[multi]: [builder]: body %s: bid: %s", i, i)
+                msg.debug("[multi]: [builder]: body %s: q_i: %s", i, q_i_0)
+                msg.debug("[multi]: [builder]: body %s: u_i: %s", i, u_i_0)
 
         # Create a model and states from the builder
         multi_model = ModelKamino.from_newton(multi_builder.finalize(device=self.default_device))
@@ -1975,16 +1991,16 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Optional verbose output
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[multi]: [init]: sim.model.size:\n{multi_model.size}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state_previous.q_i:\n{multi_state_p.q_i}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state_previous.u_i:\n{multi_state_p.u_i}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state_previous.q_j:\n{multi_state_p.q_j}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state_previous.dq_j:\n{multi_state_p.dq_j}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state.q_i:\n{multi_state_n.q_i}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state.u_i:\n{multi_state_n.u_i}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state.q_j:\n{multi_state_n.q_j}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.state.dq_j:\n{multi_state_n.dq_j}\n\n")
-            msg.debug(f"[multi]: [init]: sim.model.control.tau_j:\n{multi_control.tau_j}\n\n")
+            msg.debug("[multi]: [init]: sim.model.size:\n%s\n\n", multi_model.size)
+            msg.debug("[multi]: [init]: sim.model.state_previous.q_i:\n%s\n\n", multi_state_p.q_i)
+            msg.debug("[multi]: [init]: sim.model.state_previous.u_i:\n%s\n\n", multi_state_p.u_i)
+            msg.debug("[multi]: [init]: sim.model.state_previous.q_j:\n%s\n\n", multi_state_p.q_j)
+            msg.debug("[multi]: [init]: sim.model.state_previous.dq_j:\n%s\n\n", multi_state_p.dq_j)
+            msg.debug("[multi]: [init]: sim.model.state.q_i:\n%s\n\n", multi_state_n.q_i)
+            msg.debug("[multi]: [init]: sim.model.state.u_i:\n%s\n\n", multi_state_n.u_i)
+            msg.debug("[multi]: [init]: sim.model.state.q_j:\n%s\n\n", multi_state_n.q_j)
+            msg.debug("[multi]: [init]: sim.model.state.dq_j:\n%s\n\n", multi_state_n.dq_j)
+            msg.debug("[multi]: [init]: sim.model.control.tau_j:\n%s\n\n", multi_control.tau_j)
 
         # Check if the multi-instance simulator has initial states matching the tiled samples
         np.testing.assert_allclose(multi_state_p.q_i.numpy(), multi_init_q_i, rtol=rtol, atol=atol)
@@ -2001,7 +2017,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         multi_solver.set_pre_step_callback(test_prestep_callback)
 
         # Step the multi-instance simulator for the same number of steps
-        msg.debug(f"[multi]: Executing {num_steps} multi-world steps")
+        msg.debug("[multi]: Executing %s multi-world steps", num_steps)
         start_time = time.time()
         for step in range(num_steps):
             # Execute a single simulation step
@@ -2012,10 +2028,10 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Optional verbose output
         if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug(f"[multi]: [final]: multi_state_n.q_i:\n{multi_state_n.q_i}\n\n")
-            msg.debug(f"[multi]: [final]: multi_state_n.u_i:\n{multi_state_n.u_i}\n\n")
-            msg.debug(f"[multi]: [final]: multi_state_n.q_j:\n{multi_state_n.q_j}\n\n")
-            msg.debug(f"[multi]: [final]: multi_state_n.dq_j:\n{multi_state_n.dq_j}\n\n")
+            msg.debug("[multi]: [final]: multi_state_n.q_i:\n%s\n\n", multi_state_n.q_i)
+            msg.debug("[multi]: [final]: multi_state_n.u_i:\n%s\n\n", multi_state_n.u_i)
+            msg.debug("[multi]: [final]: multi_state_n.q_j:\n%s\n\n", multi_state_n.q_j)
+            msg.debug("[multi]: [final]: multi_state_n.dq_j:\n%s\n\n", multi_state_n.dq_j)
 
         # Check that the next states match the collected samples
         np.testing.assert_allclose(multi_state_n.q_i.numpy(), multi_final_q_i, rtol=rtol, atol=atol)

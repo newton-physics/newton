@@ -44,7 +44,7 @@ def run_test(num_worlds: int, num_steps: int, device):
     asset_path = newton.utils.download_asset("disneyresearch")
     usd_path = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
 
-    msg.info(f"--- Testing {num_worlds} environments ---")
+    msg.info("--- Testing %s environments ---", num_worlds)
 
     # Build model
     msg.info("Building model...")
@@ -62,8 +62,8 @@ def run_test(num_worlds: int, num_steps: int, device):
     sim = Simulator(model=model, config=settings)
     sim.set_control_callback(lambda _: None)
 
-    msg.debug(f"Model size: {sim.model.size}")
-    msg.debug(f"Contacts capacity: {sim.contacts.model_max_contacts_host}")
+    msg.debug("Model size: %s", sim.model.size)
+    msg.debug("Contacts capacity: %s", sim.contacts.model_max_contacts_host)
 
     # Warm-up: step without CUDA graphs to compile kernels
     msg.info("Stepping (warmup)...")
@@ -72,7 +72,7 @@ def run_test(num_worlds: int, num_steps: int, device):
         wp.synchronize()
         msg.info("Warmup step 1 OK")
     except Exception as e:
-        msg.error(f"Warmup step 1 FAILED: {e}")
+        msg.error("Warmup step 1 FAILED: %s", e)
         return False
 
     # Reset
@@ -82,14 +82,14 @@ def run_test(num_worlds: int, num_steps: int, device):
     msg.info("Reset OK")
 
     # Step multiple times
-    msg.info(f"Stepping {num_steps} times...")
+    msg.info("Stepping %s times...", num_steps)
     t0 = time.perf_counter()
     for _i in range(num_steps):
         sim.step()
     wp.synchronize()
     t1 = time.perf_counter()
 
-    msg.info(f"OK: {num_worlds} envs x {num_steps} steps in {t1 - t0:.2f}s ({num_steps / (t1 - t0):.0f} steps/s)")
+    msg.info("OK: %s envs x %s steps in %.2fs (%.0f steps/s)", num_worlds, num_steps, t1 - t0, num_steps / (t1 - t0))
     return True
 
 
@@ -109,7 +109,7 @@ if __name__ == "__main__":
     for nw in args.num_worlds:
         ok = run_test(nw, args.num_steps, device)
         if not ok:
-            msg.error(f"FAILED at {nw} envs")
+            msg.error("FAILED at %s envs", nw)
             break
 
     msg.info("Done!")

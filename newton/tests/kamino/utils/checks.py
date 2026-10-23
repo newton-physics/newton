@@ -60,7 +60,9 @@ def assert_array_attributes_equal(
         has_attr0 = hasattr(obj0, attr)
         has_attr1 = hasattr(obj1, attr)
         if not has_attr0 and not has_attr1:
-            msg.debug(f"Skipping attribute '{attr}' comparison for {obj_name} because it is missing in both objects.")
+            msg.debug(
+                "Skipping attribute '%s' comparison for %s because it is missing in both objects.", attr, obj_name
+            )
             continue
         elif not has_attr0 or not has_attr1:
             test.fail(
@@ -75,8 +77,16 @@ def assert_array_attributes_equal(
         attr1_is_array = hasattr(attr1, "shape")
         if not attr0_is_array and not attr1_is_array:
             msg.debug(
-                f"\nSkipping attribute '{obj_name}.{attr}' comparison: both of the objects are not array-like: "
-                f"\n0: {obj_name}.{attr}: {type(attr0)}\n1: {obj_name}.{attr}: {type(attr1)}"
+                "\nSkipping attribute '%s.%s' comparison: both of the objects are not array-like: "
+                "\n0: %s.%s: %s\n1: %s.%s: %s",
+                obj_name,
+                attr,
+                obj_name,
+                attr,
+                type(attr0),
+                obj_name,
+                attr,
+                type(attr1),
             )
             continue
         elif not attr0_is_array or not attr1_is_array:

@@ -580,8 +580,11 @@ def make_dtype_tolerance(tol: FloatType | float | None = None, dtype: FloatType 
         # Issue warning if the provided tolerance is smaller than machine epsilon
         if float(tol) < eps:
             msg.warning(
-                f"tolerance 'tol' = {tol} is smaller than machine epsilon "
-                f"for the specified dtype '{dtype}' (eps = {eps}). Clamping to eps."
+                "tolerance 'tol' = %s is smaller than machine epsilon "
+                "for the specified dtype '%s' (eps = %s). Clamping to eps.",
+                tol,
+                dtype,
+                eps,
             )
 
         # Return the tolerance clamped to machine epsilon for the specified dtype

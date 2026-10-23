@@ -90,9 +90,9 @@ class TestLinalgConjugate(unittest.TestCase):
         x_wp_np = x_wp.numpy()
         for block_idx, block_act in enumerate(problem.dims):
             x_found = get_vector_block(block_idx, x_wp_np, problem.dims, problem.maxdims)[:block_act]
-            msg.debug(f"Cur iter: {cur_iter}")
-            msg.debug(f"R norm sq {r_norm_sq}")
-            msg.debug(f"Atol sq: {atol_sq}")
+            msg.debug("Cur iter: %s", cur_iter)
+            msg.debug("R norm sq %s", r_norm_sq)
+            msg.debug("Atol sq: %s", atol_sq)
             if sum(problem.dims) < 20:
                 msg.debug("x:")
                 msg.debug(x_found)
@@ -345,7 +345,7 @@ class TestLinalgConjugate(unittest.TestCase):
             x_d = x_dense_np[offset : offset + dim]
             x_s = x_sparse_np[offset : offset + dim]
             x_ref = x_ref_list[m]
-            msg.debug(f"World {m}:")
+            msg.debug("World %s:", m)
             debug_print_error_stats("x_dense vs ref", x_d, x_ref, dim)
             debug_print_error_stats("x_sparse vs ref", x_s, x_ref, dim)
             debug_print_error_stats("x_dense vs x_sparse", x_d, x_s, dim)
@@ -515,11 +515,11 @@ class TestLinalgConjugate(unittest.TestCase):
             recovered_trimmed = recovered[:dim, :dim].astype(np.float32)
 
             if msg.is_enabled_for(msg.LogLevel.DEBUG):
-                msg.debug(f"World {w} (dim={dim}):")
-                msg.debug(f"  Original non-zeros: {np.count_nonzero(orig_trimmed)}")
-                msg.debug(f"  Recovered non-zeros: {np.count_nonzero(recovered_trimmed)}")
+                msg.debug("World %s (dim=%s):", w, dim)
+                msg.debug("  Original non-zeros: %s", np.count_nonzero(orig_trimmed))
+                msg.debug("  Recovered non-zeros: %s", np.count_nonzero(recovered_trimmed))
                 max_diff = np.abs(orig_trimmed - recovered_trimmed).max()
-                msg.debug(f"  Max abs diff: {max_diff:.2e}")
+                msg.debug("  Max abs diff: %.2e", max_diff)
 
             self.assertTrue(
                 np.allclose(orig_trimmed, recovered_trimmed, rtol=1e-5, atol=1e-6),
@@ -578,7 +578,7 @@ class TestLinalgConjugate(unittest.TestCase):
 
         for block_idx, block_act in enumerate(problem.dims):
             x_found = get_vector_block(block_idx, x_wp_np, problem.dims, problem.maxdims)[:block_act]
-            msg.debug(f"Block {block_idx}:")
+            msg.debug("Block %s:", block_idx)
             debug_print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
             np.testing.assert_allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4, err_msg="x")
 
@@ -669,7 +669,7 @@ class TestLinalgConjugate(unittest.TestCase):
 
         for block_idx, block_act in enumerate(problem.dims):
             x_found = get_vector_block(block_idx, x_wp_np, problem.dims, problem.maxdims)[:block_act]
-            msg.debug(f"Block {block_idx}:")
+            msg.debug("Block %s:", block_idx)
             debug_print_error_stats("x", x_found, problem.x_np[block_idx], problem.dims[block_idx])
             np.testing.assert_allclose(x_found, problem.x_np[block_idx][:block_act], rtol=1e-5, atol=1e-4, err_msg="x")
 
@@ -740,7 +740,7 @@ class TestLinalgConjugate(unittest.TestCase):
         for w, dim in enumerate(dims_list):
             x_found = x_np[vio_np[w] : vio_np[w] + dim]
             x_ref = x_ref_list[w]
-            msg.debug(f"World {w} (dim={dim}): max error = {np.abs(x_found - x_ref).max():.2e}")
+            msg.debug("World %s (dim=%s): max error = %.2e", w, dim, np.abs(x_found - x_ref).max())
             self.assertTrue(
                 np.allclose(x_found, x_ref, rtol=1e-3, atol=1e-4),
                 f"World {w}: solve failed, max error={np.abs(x_found - x_ref).max():.2e}",
@@ -756,7 +756,7 @@ class TestLinalgConjugate(unittest.TestCase):
 
             x_sparse = x_wp.numpy()
             x_dense = x_dense_wp.numpy()
-            msg.debug(f"Sparse vs dense max diff: {np.abs(x_sparse - x_dense).max():.2e}")
+            msg.debug("Sparse vs dense max diff: %.2e", np.abs(x_sparse - x_dense).max())
             self.assertTrue(
                 np.allclose(x_sparse, x_dense, rtol=1e-5, atol=1e-6),
                 f"Sparse and dense solutions differ: max diff={np.abs(x_sparse - x_dense).max():.2e}",

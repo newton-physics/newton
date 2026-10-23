@@ -355,9 +355,9 @@ class TestMaterials(unittest.TestCase):
         self.assertEqual(dym[tril_index(2, 1)], 0.5)
         self.assertEqual(dym[tril_index(2, 2)], 0.3)
         # Optional verbose output
-        msg.debug(f"\nRestitution Matrix:\n{rm}")
-        msg.debug(f"\nStatic Friction Matrix:\n{fm}")
-        msg.debug(f"\nDynamic Friction Matrix:\n{dym}")
+        msg.debug("\nRestitution Matrix:\n%s", rm)
+        msg.debug("\nStatic Friction Matrix:\n%s", fm)
+        msg.debug("\nDynamic Friction Matrix:\n%s", dym)
 
     def test_04_material_manager_merge(self):
         # Create a two material managers

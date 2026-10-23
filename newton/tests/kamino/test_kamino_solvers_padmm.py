@@ -167,19 +167,28 @@ def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: D
             print_dual_problem_summary(D_true, v_f_true)
             msg.debug(
                 "\n---------"
-                f"\nconverged: {converged}"
-                f"\niterations: {iterations}"
+                "\nconverged: %s"
+                "\niterations: %s"
                 "\n---------"
-                f"\nr_p: {r_p}"
-                f"\nr_d: {r_d}"
-                f"\nr_c: {r_c}"
+                "\nr_p: %s"
+                "\nr_d: %s"
+                "\nr_c: %s"
                 "\n---------"
-                f"\nerror_dual_abs_l2: {error_dual_abs_l2}"
-                f"\nerror_dual_abs_inf: {error_dual_abs_inf}"
+                "\nerror_dual_abs_l2: %s"
+                "\nerror_dual_abs_inf: %s"
                 "\n---------"
-                f"\nsolution: lambda: {lambdas_wp_np[w]}"
-                f"\nsolution: v_plus: {v_plus_wp_np[w]}"
-                "\n---------\n"
+                "\nsolution: lambda: %s"
+                "\nsolution: v_plus: %s"
+                "\n---------\n",
+                converged,
+                iterations,
+                r_p,
+                r_d,
+                r_c,
+                error_dual_abs_l2,
+                error_dual_abs_inf,
+                lambdas_wp_np[w],
+                v_plus_wp_np[w],
             )
 
         # Check results
@@ -356,31 +365,31 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None):
     # Optional verbose output
     if msg.is_enabled_for(msg.LogLevel.DEBUG):
         for w in range(nw):
-            msg.debug(f"[World {w}] =======================================================================")
-            msg.debug(f"solver.info.num_rho_updates: {num_rho_updates_np[w]}")
-            msg.debug(f"solver.info.norm_s: {norm_s_np[w]}")
-            msg.debug(f"solver.info.norm_x: {norm_x_np[w]}")
-            msg.debug(f"solver.info.norm_y: {norm_y_np[w]}")
-            msg.debug(f"solver.info.norm_z: {norm_z_np[w]}")
-            msg.debug(f"solver.info.f_ccp: {f_ccp_np[w]}")
-            msg.debug(f"solver.info.f_ncp: {f_ncp_np[w]}")
-            msg.debug(f"solver.info.r_dx: {r_dx_np[w]}")
-            msg.debug(f"solver.info.r_dy: {r_dy_np[w]}")
-            msg.debug(f"solver.info.r_dz: {r_dz_np[w]}")
-            msg.debug(f"solver.info.r_primal: {r_primal_np[w]}")
-            msg.debug(f"solver.info.r_dual: {r_dual_np[w]}")
-            msg.debug(f"solver.info.r_compl: {r_compl_np[w]}")
-            msg.debug(f"solver.info.r_pd: {r_pd_np[w]}")
-            msg.debug(f"solver.info.r_dp: {r_dp_np[w]}")
-            msg.debug(f"solver.info.r_ncp_primal: {r_ncp_primal_np[w]}")
-            msg.debug(f"solver.info.r_ncp_dual: {r_ncp_dual_np[w]}")
-            msg.debug(f"solver.info.r_ncp_compl: {r_ncp_compl_np[w]}")
-            msg.debug(f"solver.info.r_ncp_natmap: {r_ncp_natmap_np[w]}")
+            msg.debug("[World %s] =======================================================================", w)
+            msg.debug("solver.info.num_rho_updates: %s", num_rho_updates_np[w])
+            msg.debug("solver.info.norm_s: %s", norm_s_np[w])
+            msg.debug("solver.info.norm_x: %s", norm_x_np[w])
+            msg.debug("solver.info.norm_y: %s", norm_y_np[w])
+            msg.debug("solver.info.norm_z: %s", norm_z_np[w])
+            msg.debug("solver.info.f_ccp: %s", f_ccp_np[w])
+            msg.debug("solver.info.f_ncp: %s", f_ncp_np[w])
+            msg.debug("solver.info.r_dx: %s", r_dx_np[w])
+            msg.debug("solver.info.r_dy: %s", r_dy_np[w])
+            msg.debug("solver.info.r_dz: %s", r_dz_np[w])
+            msg.debug("solver.info.r_primal: %s", r_primal_np[w])
+            msg.debug("solver.info.r_dual: %s", r_dual_np[w])
+            msg.debug("solver.info.r_compl: %s", r_compl_np[w])
+            msg.debug("solver.info.r_pd: %s", r_pd_np[w])
+            msg.debug("solver.info.r_dp: %s", r_dp_np[w])
+            msg.debug("solver.info.r_ncp_primal: %s", r_ncp_primal_np[w])
+            msg.debug("solver.info.r_ncp_dual: %s", r_ncp_dual_np[w])
+            msg.debug("solver.info.r_ncp_compl: %s", r_ncp_compl_np[w])
+            msg.debug("solver.info.r_ncp_natmap: %s", r_ncp_natmap_np[w])
             if solver_has_acceleration:
-                msg.debug(f"solver.info.num_restarts: {num_restarts_np[w]}")
-                msg.debug(f"solver.info.a: {a_np[w]}")
-                msg.debug(f"solver.info.r_comb: {r_comb_np[w]}")
-                msg.debug(f"solver.info.r_comb_ratio: {r_comb_ratio_np[w]}")
+                msg.debug("solver.info.num_restarts: %s", num_restarts_np[w])
+                msg.debug("solver.info.a: %s", a_np[w])
+                msg.debug("solver.info.r_comb: %s", r_comb_np[w])
+                msg.debug("solver.info.r_comb_ratio: %s", r_comb_ratio_np[w])
 
     # List of (label, data) for plotting
     info_list = [

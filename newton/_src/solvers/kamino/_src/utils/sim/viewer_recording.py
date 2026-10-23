@@ -152,7 +152,7 @@ def enable_recording(
     get_frame = getattr(viewer, "get_frame", None)
     if get_frame is None or getattr(get_frame, "__func__", None) is ViewerBase.get_frame:
         msg.warning(
-            f"enable_recording: viewer {type(viewer).__name__} does not support frame capture; recording disabled."
+            "enable_recording: viewer %s does not support frame capture; recording disabled.", type(viewer).__name__
         )
         return False
 
@@ -246,7 +246,7 @@ def _finish_clip(self):
     captured = recording.img_idx - recording.num_skipped_frames
     recording.recording_active = False
     recording.recording_stopped = True
-    msg.info(f"Clip captured: {captured} frames")
+    msg.info("Clip captured: %s frames", captured)
 
     _flush_save_futures(recording)
 
@@ -256,7 +256,7 @@ def _finish_clip(self):
         fps=recording.clip_fps,
         keep_frames=recording.clip_keep_frames,
     ):
-        msg.info(f"Video saved: {out_path}")
+        msg.info("Video saved: %s", out_path)
 
     on_done = recording.clip_on_done
     recording.clip_max_frames = None
@@ -289,7 +289,7 @@ def _reset_recording(self, video_folder: str | None = None) -> None:
 
     removed = _clear_pngs(recording.default_video_folder)
     if removed:
-        msg.info(f"reset_recording: cleared {removed} PNG frames in {recording.default_video_folder}")
+        msg.info("reset_recording: cleared %s PNG frames in %s", removed, recording.default_video_folder)
 
     recording.img_idx = 0
     recording.recording_stopped = False
@@ -334,7 +334,7 @@ def _start_clip(
     recording.clip_fps = fps
     recording.recording_active = True
     frame_limit = f"{max_frames} frames" if max_frames is not None else "until viewer close"
-    msg.info(f"Recording started: {output_path} ({frame_limit} -> {recording.default_video_folder})")
+    msg.info("Recording started: %s (%s -> %s)", output_path, frame_limit, recording.default_video_folder)
 
 
 def _close_with_record(self):
@@ -456,12 +456,15 @@ def _generate_video(
     missing = [f for f in frame_files if not os.path.exists(f)]
     if missing:
         msg.warning(
-            f"Expected {num_captured} PNG frames in {recording.default_video_folder} "
-            f"but {len(missing)} are missing (first missing: {os.path.basename(missing[0])})"
+            "Expected %s PNG frames in %s but %s are missing (first missing: %s)",
+            num_captured,
+            recording.default_video_folder,
+            len(missing),
+            os.path.basename(missing[0]),
         )
         return False
 
-    msg.info(f"Generating video from {num_captured} frames...")
+    msg.info("Generating video from %s frames...", num_captured)
     try:
         with Image.open(frame_files[0]) as first_frame:
             size = first_frame.size
@@ -481,7 +484,7 @@ def _generate_video(
             writer.send(frame_array)
 
         writer.close()
-        msg.info(f"Video generated successfully: {output_filename}")
+        msg.info("Video generated successfully: %s", output_filename)
 
         if not keep_frames:
             msg.info("Deleting png frames...")
@@ -497,7 +500,7 @@ def _generate_video(
         return True
 
     except Exception as e:
-        msg.warning(f"Failed to generate video: {e}")
+        msg.warning("Failed to generate video: %s", e)
         return False
 
 

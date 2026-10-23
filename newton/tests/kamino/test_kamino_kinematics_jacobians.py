@@ -66,17 +66,17 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Create the model from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         msg.debug("")  # Add a newline for better readability
-        msg.debug(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
-        msg.debug(f"model.size.sum_of_num_joints: {model.size.sum_of_num_joints}")
-        msg.debug(f"model.size.sum_of_num_bilateral_joint_cts: {model.size.sum_of_num_bilateral_joint_cts}")
-        msg.debug(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
+        msg.debug("model.size.sum_of_num_bodies: %s", model.size.sum_of_num_bodies)
+        msg.debug("model.size.sum_of_num_joints: %s", model.size.sum_of_num_joints)
+        msg.debug("model.size.sum_of_num_bilateral_joint_cts: %s", model.size.sum_of_num_bilateral_joint_cts)
+        msg.debug("model.size.sum_of_num_joint_dofs: %s", model.size.sum_of_num_joint_dofs)
 
         # Create the Jacobians container
         jacobians = DenseSystemJacobians(model=model)
-        msg.debug(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
-        msg.debug(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
-        msg.debug(f"J_cts_data: shape={jacobians.data.J_cts_data.shape}")
-        msg.debug(f"J_dofs_data: shape={jacobians.data.J_dofs_data.shape}")
+        msg.debug("J_cts_offsets (shape=%s): %s", jacobians.data.J_cts_offsets.shape, jacobians.data.J_cts_offsets)
+        msg.debug("J_dofs_offsets (shape=%s): %s", jacobians.data.J_dofs_offsets.shape, jacobians.data.J_dofs_offsets)
+        msg.debug("J_cts_data: shape=%s", jacobians.data.J_cts_data.shape)
+        msg.debug("J_dofs_data: shape=%s", jacobians.data.J_dofs_data.shape)
 
         # Check the allocations of Jacobians
         model_num_cts = model.size.sum_of_num_bilateral_joint_cts + model.size.sum_of_num_bounded_joint_cts
@@ -96,22 +96,22 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Create the model from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         msg.debug("")  # Add a newline for better readability
-        msg.debug(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
-        msg.debug(f"model.size.sum_of_num_joints: {model.size.sum_of_num_joints}")
-        msg.debug(f"model.size.sum_of_num_bilateral_joint_cts: {model.size.sum_of_num_bilateral_joint_cts}")
-        msg.debug(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
+        msg.debug("model.size.sum_of_num_bodies: %s", model.size.sum_of_num_bodies)
+        msg.debug("model.size.sum_of_num_joints: %s", model.size.sum_of_num_joints)
+        msg.debug("model.size.sum_of_num_bilateral_joint_cts: %s", model.size.sum_of_num_bilateral_joint_cts)
+        msg.debug("model.size.sum_of_num_joint_dofs: %s", model.size.sum_of_num_joint_dofs)
 
         # Construct and allocate the limits container
         limits = LimitsKamino(model=model)
-        msg.debug(f"limits.model_max_limits_host:  {limits.model_max_limits_host}")
-        msg.debug(f"limits.world_max_limits_host:  {limits.world_max_limits_host}")
+        msg.debug("limits.model_max_limits_host:  %s", limits.model_max_limits_host)
+        msg.debug("limits.world_max_limits_host:  %s", limits.world_max_limits_host)
 
         # Create the Jacobians container
         jacobians = DenseSystemJacobians(model=model, limits=limits)
-        msg.debug(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
-        msg.debug(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
-        msg.debug(f"J_dofs_data: shape={jacobians.data.J_dofs_data.shape}")
-        msg.debug(f"J_cts_data: shape={jacobians.data.J_cts_data.shape}")
+        msg.debug("J_dofs_offsets (shape=%s): %s", jacobians.data.J_dofs_offsets.shape, jacobians.data.J_dofs_offsets)
+        msg.debug("J_cts_offsets (shape=%s): %s", jacobians.data.J_cts_offsets.shape, jacobians.data.J_cts_offsets)
+        msg.debug("J_dofs_data: shape=%s", jacobians.data.J_dofs_data.shape)
+        msg.debug("J_cts_data: shape=%s", jacobians.data.J_cts_data.shape)
 
         # Check the allocations of Jacobians
         model_num_cts = (
@@ -138,27 +138,27 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Create the model from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         msg.debug("")  # Add a newline for better readability
-        msg.debug(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
-        msg.debug(f"model.size.sum_of_num_joints: {model.size.sum_of_num_joints}")
-        msg.debug(f"model.size.sum_of_num_bilateral_joint_cts: {model.size.sum_of_num_bilateral_joint_cts}")
-        msg.debug(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
+        msg.debug("model.size.sum_of_num_bodies: %s", model.size.sum_of_num_bodies)
+        msg.debug("model.size.sum_of_num_joints: %s", model.size.sum_of_num_joints)
+        msg.debug("model.size.sum_of_num_bilateral_joint_cts: %s", model.size.sum_of_num_bilateral_joint_cts)
+        msg.debug("model.size.sum_of_num_joint_dofs: %s", model.size.sum_of_num_joint_dofs)
 
         # Set the contact allocation capacities
         required_world_max_contacts = [max_world_contacts] * builder.world_count
-        msg.debug(f"required_world_max_contacts:  {required_world_max_contacts}")
+        msg.debug("required_world_max_contacts:  %s", required_world_max_contacts)
 
         # Construct and allocate the contacts container
         contacts = ContactsKamino(capacity=required_world_max_contacts, device=self.default_device)
-        msg.debug(f"contacts.default_max_world_contacts:  {contacts.default_max_world_contacts}")
-        msg.debug(f"contacts.model_max_contacts_host:  {contacts.model_max_contacts_host}")
-        msg.debug(f"contacts.world_max_contacts_host:  {contacts.world_max_contacts_host}")
+        msg.debug("contacts.default_max_world_contacts:  %s", contacts.default_max_world_contacts)
+        msg.debug("contacts.model_max_contacts_host:  %s", contacts.model_max_contacts_host)
+        msg.debug("contacts.world_max_contacts_host:  %s", contacts.world_max_contacts_host)
 
         # Create the Jacobians container
         jacobians = DenseSystemJacobians(model=model, contacts=contacts)
-        msg.debug(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
-        msg.debug(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
-        msg.debug(f"J_dofs_data: shape={jacobians.data.J_dofs_data.shape}")
-        msg.debug(f"J_cts_data: shape={jacobians.data.J_cts_data.shape}")
+        msg.debug("J_dofs_offsets (shape=%s): %s", jacobians.data.J_dofs_offsets.shape, jacobians.data.J_dofs_offsets)
+        msg.debug("J_cts_offsets (shape=%s): %s", jacobians.data.J_cts_offsets.shape, jacobians.data.J_cts_offsets)
+        msg.debug("J_dofs_data: shape=%s", jacobians.data.J_dofs_data.shape)
+        msg.debug("J_cts_data: shape=%s", jacobians.data.J_cts_data.shape)
 
         # Check the allocations of Jacobians
         model_num_cts = (
@@ -185,32 +185,32 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Create the model from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         msg.debug("")  # Add a newline for better readability
-        msg.debug(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
-        msg.debug(f"model.size.sum_of_num_joints: {model.size.sum_of_num_joints}")
-        msg.debug(f"model.size.sum_of_num_bilateral_joint_cts: {model.size.sum_of_num_bilateral_joint_cts}")
-        msg.debug(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
+        msg.debug("model.size.sum_of_num_bodies: %s", model.size.sum_of_num_bodies)
+        msg.debug("model.size.sum_of_num_joints: %s", model.size.sum_of_num_joints)
+        msg.debug("model.size.sum_of_num_bilateral_joint_cts: %s", model.size.sum_of_num_bilateral_joint_cts)
+        msg.debug("model.size.sum_of_num_joint_dofs: %s", model.size.sum_of_num_joint_dofs)
 
         # Construct and allocate the limits container
         limits = LimitsKamino(model=model)
-        msg.debug(f"limits.model_max_limits_host:  {limits.model_max_limits_host}")
-        msg.debug(f"limits.world_max_limits_host:  {limits.world_max_limits_host}")
+        msg.debug("limits.model_max_limits_host:  %s", limits.model_max_limits_host)
+        msg.debug("limits.world_max_limits_host:  %s", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
         required_world_max_contacts = [max_world_contacts] * builder.world_count
-        msg.debug(f"required_world_max_contacts:  {required_world_max_contacts}")
+        msg.debug("required_world_max_contacts:  %s", required_world_max_contacts)
 
         # Construct and allocate the contacts container
         contacts = ContactsKamino(capacity=required_world_max_contacts, device=self.default_device)
-        msg.debug(f"contacts.default_max_world_contacts:  {contacts.default_max_world_contacts}")
-        msg.debug(f"contacts.model_max_contacts_host:  {contacts.model_max_contacts_host}")
-        msg.debug(f"contacts.world_max_contacts_host:  {contacts.world_max_contacts_host}")
+        msg.debug("contacts.default_max_world_contacts:  %s", contacts.default_max_world_contacts)
+        msg.debug("contacts.model_max_contacts_host:  %s", contacts.model_max_contacts_host)
+        msg.debug("contacts.world_max_contacts_host:  %s", contacts.world_max_contacts_host)
 
         # Create the Jacobians container
         jacobians = DenseSystemJacobians(model=model, limits=limits, contacts=contacts)
-        msg.debug(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
-        msg.debug(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
-        msg.debug(f"J_dofs_data: shape={jacobians.data.J_dofs_data.shape}")
-        msg.debug(f"J_cts_data: shape={jacobians.data.J_cts_data.shape}")
+        msg.debug("J_dofs_offsets (shape=%s): %s", jacobians.data.J_dofs_offsets.shape, jacobians.data.J_dofs_offsets)
+        msg.debug("J_cts_offsets (shape=%s): %s", jacobians.data.J_cts_offsets.shape, jacobians.data.J_cts_offsets)
+        msg.debug("J_dofs_data: shape=%s", jacobians.data.J_dofs_data.shape)
+        msg.debug("J_cts_data: shape=%s", jacobians.data.J_cts_data.shape)
 
         # Check the allocations of Jacobians
         model_num_cts = (
@@ -240,44 +240,44 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Create the model from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         msg.debug("")  # Add a newline for better readability
-        msg.debug(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
-        msg.debug(f"model.size.sum_of_num_joints: {model.size.sum_of_num_joints}")
-        msg.debug(f"model.size.sum_of_num_bilateral_joint_cts: {model.size.sum_of_num_bilateral_joint_cts}")
-        msg.debug(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
+        msg.debug("model.size.sum_of_num_bodies: %s", model.size.sum_of_num_bodies)
+        msg.debug("model.size.sum_of_num_joints: %s", model.size.sum_of_num_joints)
+        msg.debug("model.size.sum_of_num_bilateral_joint_cts: %s", model.size.sum_of_num_bilateral_joint_cts)
+        msg.debug("model.size.sum_of_num_joint_dofs: %s", model.size.sum_of_num_joint_dofs)
 
         # Construct and allocate the limits container
         limits = LimitsKamino(model=model)
-        msg.debug(f"limits.model_max_limits_host:  {limits.model_max_limits_host}")
-        msg.debug(f"limits.world_max_limits_host:  {limits.world_max_limits_host}")
+        msg.debug("limits.model_max_limits_host:  %s", limits.model_max_limits_host)
+        msg.debug("limits.world_max_limits_host:  %s", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
         required_world_max_contacts = [max_world_contacts] * builder.world_count
-        msg.debug(f"required_world_max_contacts:  {required_world_max_contacts}")
+        msg.debug("required_world_max_contacts:  %s", required_world_max_contacts)
 
         # Construct and allocate the contacts container
         contacts = ContactsKamino(capacity=required_world_max_contacts, device=self.default_device)
-        msg.debug(f"contacts.default_max_world_contacts:  {contacts.default_max_world_contacts}")
-        msg.debug(f"contacts.model_max_contacts_host:  {contacts.model_max_contacts_host}")
-        msg.debug(f"contacts.world_max_contacts_host:  {contacts.world_max_contacts_host}")
-        msg.debug(f"contacts.world_max_contacts_host:  {contacts.world_max_contacts_host}")
+        msg.debug("contacts.default_max_world_contacts:  %s", contacts.default_max_world_contacts)
+        msg.debug("contacts.model_max_contacts_host:  %s", contacts.model_max_contacts_host)
+        msg.debug("contacts.world_max_contacts_host:  %s", contacts.world_max_contacts_host)
+        msg.debug("contacts.world_max_contacts_host:  %s", contacts.world_max_contacts_host)
 
         # Build model info
         make_unilateral_constraints_info(model, model.data(), limits, contacts)
 
         # Create the Jacobians container
         jacobians = DenseSystemJacobians(model=model, limits=limits, contacts=contacts)
-        msg.debug(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
-        msg.debug(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
-        msg.debug(f"J_dofs_data: shape={jacobians.data.J_dofs_data.shape}")
-        msg.debug(f"J_cts_data: shape={jacobians.data.J_cts_data.shape}")
+        msg.debug("J_dofs_offsets (shape=%s): %s", jacobians.data.J_dofs_offsets.shape, jacobians.data.J_dofs_offsets)
+        msg.debug("J_cts_offsets (shape=%s): %s", jacobians.data.J_cts_offsets.shape, jacobians.data.J_cts_offsets)
+        msg.debug("J_dofs_data: shape=%s", jacobians.data.J_dofs_data.shape)
+        msg.debug("J_cts_data: shape=%s", jacobians.data.J_cts_data.shape)
 
         # Compute the total maximum number of constraints
         num_body_dofs = model.info.num_body_dofs.numpy().tolist()
         num_joint_dofs = model.info.num_joint_dofs.numpy().tolist()
         max_total_cts = model.info.max_total_cts.numpy().tolist()
-        msg.debug(f"num_body_dofs:  {num_body_dofs}")
-        msg.debug(f"max_total_cts:  {max_total_cts}")
-        msg.debug(f"num_joint_dofs:  {num_joint_dofs}")
+        msg.debug("num_body_dofs:  %s", num_body_dofs)
+        msg.debug("max_total_cts:  %s", max_total_cts)
+        msg.debug("num_joint_dofs:  %s", num_joint_dofs)
 
         # Compute Jacobian sizes
         J_dofs_size: list[int] = [0] * num_worlds
@@ -312,43 +312,43 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
         # Create the model from the builder
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         msg.debug("")  # Add a newline for better readability
-        msg.debug(f"model.size.sum_of_num_bodies: {model.size.sum_of_num_bodies}")
-        msg.debug(f"model.size.sum_of_num_joints: {model.size.sum_of_num_joints}")
-        msg.debug(f"model.size.sum_of_num_bilateral_joint_cts: {model.size.sum_of_num_bilateral_joint_cts}")
-        msg.debug(f"model.size.sum_of_num_joint_dofs: {model.size.sum_of_num_joint_dofs}")
+        msg.debug("model.size.sum_of_num_bodies: %s", model.size.sum_of_num_bodies)
+        msg.debug("model.size.sum_of_num_joints: %s", model.size.sum_of_num_joints)
+        msg.debug("model.size.sum_of_num_bilateral_joint_cts: %s", model.size.sum_of_num_bilateral_joint_cts)
+        msg.debug("model.size.sum_of_num_joint_dofs: %s", model.size.sum_of_num_joint_dofs)
 
         # Construct and allocate the limits container
         limits = LimitsKamino(model=model)
-        msg.debug(f"limits.model_max_limits_host:  {limits.model_max_limits_host}")
-        msg.debug(f"limits.world_max_limits_host:  {limits.world_max_limits_host}")
+        msg.debug("limits.model_max_limits_host:  %s", limits.model_max_limits_host)
+        msg.debug("limits.world_max_limits_host:  %s", limits.world_max_limits_host)
 
         # Set the contact allocation capacities
         required_world_max_contacts = [max_world_contacts] * builder.world_count
-        msg.debug(f"required_world_max_contacts:  {required_world_max_contacts}")
+        msg.debug("required_world_max_contacts:  %s", required_world_max_contacts)
 
         # Construct and allocate the contacts container
         contacts = ContactsKamino(capacity=required_world_max_contacts, device=self.default_device)
-        msg.debug(f"contacts.default_max_world_contacts:  {contacts.default_max_world_contacts}")
-        msg.debug(f"contacts.model_max_contacts_host:  {contacts.model_max_contacts_host}")
-        msg.debug(f"contacts.world_max_contacts_host:  {contacts.world_max_contacts_host}")
+        msg.debug("contacts.default_max_world_contacts:  %s", contacts.default_max_world_contacts)
+        msg.debug("contacts.model_max_contacts_host:  %s", contacts.model_max_contacts_host)
+        msg.debug("contacts.world_max_contacts_host:  %s", contacts.world_max_contacts_host)
 
         # Build model info
         make_unilateral_constraints_info(model, model.data(), limits, contacts)
 
         # Create the Jacobians container
         jacobians = DenseSystemJacobians(model=model, limits=limits, contacts=contacts)
-        msg.debug(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
-        msg.debug(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
-        msg.debug(f"J_dofs_data: shape={jacobians.data.J_dofs_data.shape}")
-        msg.debug(f"J_cts_data: shape={jacobians.data.J_cts_data.shape}")
+        msg.debug("J_dofs_offsets (shape=%s): %s", jacobians.data.J_dofs_offsets.shape, jacobians.data.J_dofs_offsets)
+        msg.debug("J_cts_offsets (shape=%s): %s", jacobians.data.J_cts_offsets.shape, jacobians.data.J_cts_offsets)
+        msg.debug("J_dofs_data: shape=%s", jacobians.data.J_dofs_data.shape)
+        msg.debug("J_cts_data: shape=%s", jacobians.data.J_cts_data.shape)
 
         # Compute the total maximum number of constraints
         num_body_dofs = model.info.num_body_dofs.numpy().tolist()
         num_joint_dofs = model.info.num_joint_dofs.numpy().tolist()
         max_total_cts = model.info.max_total_cts.numpy().tolist()
-        msg.debug(f"num_body_dofs:  {num_body_dofs}")
-        msg.debug(f"max_total_cts:  {max_total_cts}")
-        msg.debug(f"num_joint_dofs:  {num_joint_dofs}")
+        msg.debug("num_body_dofs:  %s", num_body_dofs)
+        msg.debug("max_total_cts:  %s", max_total_cts)
+        msg.debug("num_joint_dofs:  %s", num_joint_dofs)
 
         # Compute Jacobian sizes
         J_dofs_size: list[int] = [0] * num_worlds
@@ -413,12 +413,12 @@ class TestKinematicsDenseSystemJacobians(unittest.TestCase):
             + 3 * contacts.model_max_contacts_host,
         )
         self.assertEqual(njd, model.size.sum_of_num_joint_dofs)
-        msg.debug(f"J_cts_offsets (shape={jacobians.data.J_cts_offsets.shape}): {jacobians.data.J_cts_offsets}")
-        msg.debug(f"J_cts_flat (shape={J_cts_flat.shape}):\n{J_cts_flat}")
-        msg.debug(f"J_cts_mat (shape={J_cts_mat.shape}):\n{J_cts_mat}")
-        msg.debug(f"J_dofs_offsets (shape={jacobians.data.J_dofs_offsets.shape}): {jacobians.data.J_dofs_offsets}")
-        msg.debug(f"J_dofs_flat (shape={J_dofs_flat.shape}):\n{J_dofs_flat}")
-        msg.debug(f"J_dofs_mat (shape={J_dofs_mat.shape}):\n{J_dofs_mat}")
+        msg.debug("J_cts_offsets (shape=%s): %s", jacobians.data.J_cts_offsets.shape, jacobians.data.J_cts_offsets)
+        msg.debug("J_cts_flat (shape=%s):\n%s", J_cts_flat.shape, J_cts_flat)
+        msg.debug("J_cts_mat (shape=%s):\n%s", J_cts_mat.shape, J_cts_mat)
+        msg.debug("J_dofs_offsets (shape=%s): %s", jacobians.data.J_dofs_offsets.shape, jacobians.data.J_dofs_offsets)
+        msg.debug("J_dofs_flat (shape=%s):\n%s", J_dofs_flat.shape, J_dofs_flat)
+        msg.debug("J_dofs_mat (shape=%s):\n%s", J_dofs_mat.shape, J_dofs_mat)
 
     def test_08_build_homogeneous_dense_system_jacobians(self):
         # Construct the test problem
@@ -611,8 +611,8 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
             diff_J_cts = J_cts_row_major[mat_id] - J_cts_col_major[mat_id]
             max_diff = np.max(np.abs(diff_J_cts))
             if msg.is_enabled_for(msg.LogLevel.DEBUG):
-                msg.debug(f"[{mat_id}] J_cts_row_major:\n{J_cts_row_major[mat_id]}")
-                msg.debug(f"[{mat_id}] J_cts_col_major:\n{J_cts_col_major[mat_id]}")
+                msg.debug("[%s] J_cts_row_major:\n%s", mat_id, J_cts_row_major[mat_id])
+                msg.debug("[%s] J_cts_col_major:\n%s", mat_id, J_cts_col_major[mat_id])
             self.assertLess(max_diff, self.epsilon)
 
     ###
@@ -633,12 +633,14 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
         jacobians = SparseSystemJacobians(model=model)
         self.assertIs(jacobians._J_cts.bsm.device, model.device)
         self.assertIs(jacobians._J_cts.device, model.device)
-        msg.debug(f"J_cts max_dims (shape={jacobians._J_cts.bsm.max_dims.shape}): {jacobians._J_cts.bsm.max_dims}")
-        msg.debug(f"J_cts dims (shape={jacobians._J_cts.bsm.dims.shape}): {jacobians._J_cts.bsm.dims}")
-        msg.debug(f"J_cts max_nzb (shape={jacobians._J_cts.bsm.max_nzb.shape}): {jacobians._J_cts.bsm.max_nzb}")
-        msg.debug(f"J_dofs max_dims (shape={jacobians._J_dofs.bsm.max_dims.shape}): {jacobians._J_dofs.bsm.max_dims}")
-        msg.debug(f"J_dofs dims (shape={jacobians._J_dofs.bsm.dims.shape}): {jacobians._J_dofs.bsm.dims}")
-        msg.debug(f"J_dofs max_nzb (shape={jacobians._J_dofs.bsm.max_nzb.shape}): {jacobians._J_dofs.bsm.max_nzb}")
+        msg.debug("J_cts max_dims (shape=%s): %s", jacobians._J_cts.bsm.max_dims.shape, jacobians._J_cts.bsm.max_dims)
+        msg.debug("J_cts dims (shape=%s): %s", jacobians._J_cts.bsm.dims.shape, jacobians._J_cts.bsm.dims)
+        msg.debug("J_cts max_nzb (shape=%s): %s", jacobians._J_cts.bsm.max_nzb.shape, jacobians._J_cts.bsm.max_nzb)
+        msg.debug(
+            "J_dofs max_dims (shape=%s): %s", jacobians._J_dofs.bsm.max_dims.shape, jacobians._J_dofs.bsm.max_dims
+        )
+        msg.debug("J_dofs dims (shape=%s): %s", jacobians._J_dofs.bsm.dims.shape, jacobians._J_dofs.bsm.dims)
+        msg.debug("J_dofs max_nzb (shape=%s): %s", jacobians._J_dofs.bsm.max_nzb.shape, jacobians._J_dofs.bsm.max_nzb)
 
         # Check the allocation of Jacobians
         model_num_cts = model.size.sum_of_num_bilateral_joint_cts + model.size.sum_of_num_bounded_joint_cts
@@ -661,12 +663,14 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
 
         # Create the Jacobians container
         jacobians = SparseSystemJacobians(model=model, limits=limits)
-        msg.debug(f"J_cts max_dims (shape={jacobians._J_cts.bsm.max_dims.shape}): {jacobians._J_cts.bsm.max_dims}")
-        msg.debug(f"J_cts dims (shape={jacobians._J_cts.bsm.dims.shape}): {jacobians._J_cts.bsm.dims}")
-        msg.debug(f"J_cts max_nzb (shape={jacobians._J_cts.bsm.max_nzb.shape}): {jacobians._J_cts.bsm.max_nzb}")
-        msg.debug(f"J_dofs max_dims (shape={jacobians._J_dofs.bsm.max_dims.shape}): {jacobians._J_dofs.bsm.max_dims}")
-        msg.debug(f"J_dofs dims (shape={jacobians._J_dofs.bsm.dims.shape}): {jacobians._J_dofs.bsm.dims}")
-        msg.debug(f"J_dofs max_nzb (shape={jacobians._J_dofs.bsm.max_nzb.shape}): {jacobians._J_dofs.bsm.max_nzb}")
+        msg.debug("J_cts max_dims (shape=%s): %s", jacobians._J_cts.bsm.max_dims.shape, jacobians._J_cts.bsm.max_dims)
+        msg.debug("J_cts dims (shape=%s): %s", jacobians._J_cts.bsm.dims.shape, jacobians._J_cts.bsm.dims)
+        msg.debug("J_cts max_nzb (shape=%s): %s", jacobians._J_cts.bsm.max_nzb.shape, jacobians._J_cts.bsm.max_nzb)
+        msg.debug(
+            "J_dofs max_dims (shape=%s): %s", jacobians._J_dofs.bsm.max_dims.shape, jacobians._J_dofs.bsm.max_dims
+        )
+        msg.debug("J_dofs dims (shape=%s): %s", jacobians._J_dofs.bsm.dims.shape, jacobians._J_dofs.bsm.dims)
+        msg.debug("J_dofs max_nzb (shape=%s): %s", jacobians._J_dofs.bsm.max_nzb.shape, jacobians._J_dofs.bsm.max_nzb)
 
         # Check the allocation of Jacobians
         model_num_cts = (
@@ -694,12 +698,14 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
 
         # Create the Jacobians container
         jacobians = SparseSystemJacobians(model=model, contacts=contacts)
-        msg.debug(f"J_cts max_dims (shape={jacobians._J_cts.bsm.max_dims.shape}): {jacobians._J_cts.bsm.max_dims}")
-        msg.debug(f"J_cts dims (shape={jacobians._J_cts.bsm.dims.shape}): {jacobians._J_cts.bsm.dims}")
-        msg.debug(f"J_cts max_nzb (shape={jacobians._J_cts.bsm.max_nzb.shape}): {jacobians._J_cts.bsm.max_nzb}")
-        msg.debug(f"J_dofs max_dims (shape={jacobians._J_dofs.bsm.max_dims.shape}): {jacobians._J_dofs.bsm.max_dims}")
-        msg.debug(f"J_dofs dims (shape={jacobians._J_dofs.bsm.dims.shape}): {jacobians._J_dofs.bsm.dims}")
-        msg.debug(f"J_dofs max_nzb (shape={jacobians._J_dofs.bsm.max_nzb.shape}): {jacobians._J_dofs.bsm.max_nzb}")
+        msg.debug("J_cts max_dims (shape=%s): %s", jacobians._J_cts.bsm.max_dims.shape, jacobians._J_cts.bsm.max_dims)
+        msg.debug("J_cts dims (shape=%s): %s", jacobians._J_cts.bsm.dims.shape, jacobians._J_cts.bsm.dims)
+        msg.debug("J_cts max_nzb (shape=%s): %s", jacobians._J_cts.bsm.max_nzb.shape, jacobians._J_cts.bsm.max_nzb)
+        msg.debug(
+            "J_dofs max_dims (shape=%s): %s", jacobians._J_dofs.bsm.max_dims.shape, jacobians._J_dofs.bsm.max_dims
+        )
+        msg.debug("J_dofs dims (shape=%s): %s", jacobians._J_dofs.bsm.dims.shape, jacobians._J_dofs.bsm.dims)
+        msg.debug("J_dofs max_nzb (shape=%s): %s", jacobians._J_dofs.bsm.max_nzb.shape, jacobians._J_dofs.bsm.max_nzb)
 
         # Check the allocation of Jacobians
         model_num_cts = (
@@ -727,12 +733,14 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
 
         # Create the Jacobians container
         jacobians = SparseSystemJacobians(model=model, limits=limits, contacts=contacts)
-        msg.debug(f"J_cts max_dims (shape={jacobians._J_cts.bsm.max_dims.shape}): {jacobians._J_cts.bsm.max_dims}")
-        msg.debug(f"J_cts dims (shape={jacobians._J_cts.bsm.dims.shape}): {jacobians._J_cts.bsm.dims}")
-        msg.debug(f"J_cts max_nzb (shape={jacobians._J_cts.bsm.max_nzb.shape}): {jacobians._J_cts.bsm.max_nzb}")
-        msg.debug(f"J_dofs max_dims (shape={jacobians._J_dofs.bsm.max_dims.shape}): {jacobians._J_dofs.bsm.max_dims}")
-        msg.debug(f"J_dofs dims (shape={jacobians._J_dofs.bsm.dims.shape}): {jacobians._J_dofs.bsm.dims}")
-        msg.debug(f"J_dofs max_nzb (shape={jacobians._J_dofs.bsm.max_nzb.shape}): {jacobians._J_dofs.bsm.max_nzb}")
+        msg.debug("J_cts max_dims (shape=%s): %s", jacobians._J_cts.bsm.max_dims.shape, jacobians._J_cts.bsm.max_dims)
+        msg.debug("J_cts dims (shape=%s): %s", jacobians._J_cts.bsm.dims.shape, jacobians._J_cts.bsm.dims)
+        msg.debug("J_cts max_nzb (shape=%s): %s", jacobians._J_cts.bsm.max_nzb.shape, jacobians._J_cts.bsm.max_nzb)
+        msg.debug(
+            "J_dofs max_dims (shape=%s): %s", jacobians._J_dofs.bsm.max_dims.shape, jacobians._J_dofs.bsm.max_dims
+        )
+        msg.debug("J_dofs dims (shape=%s): %s", jacobians._J_dofs.bsm.dims.shape, jacobians._J_dofs.bsm.dims)
+        msg.debug("J_dofs max_nzb (shape=%s): %s", jacobians._J_dofs.bsm.max_nzb.shape, jacobians._J_dofs.bsm.max_nzb)
 
         # Check the allocation of Jacobians
         model_num_cts = (
@@ -761,12 +769,14 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
 
         # Create the Jacobians container
         jacobians = SparseSystemJacobians(model=model, limits=limits, contacts=contacts)
-        msg.debug(f"J_cts max_dims (shape={jacobians._J_cts.bsm.max_dims.shape}): {jacobians._J_cts.bsm.max_dims}")
-        msg.debug(f"J_cts dims (shape={jacobians._J_cts.bsm.dims.shape}): {jacobians._J_cts.bsm.dims}")
-        msg.debug(f"J_cts max_nzb (shape={jacobians._J_cts.bsm.max_nzb.shape}): {jacobians._J_cts.bsm.max_nzb}")
-        msg.debug(f"J_dofs max_dims (shape={jacobians._J_dofs.bsm.max_dims.shape}): {jacobians._J_dofs.bsm.max_dims}")
-        msg.debug(f"J_dofs dims (shape={jacobians._J_dofs.bsm.dims.shape}): {jacobians._J_dofs.bsm.dims}")
-        msg.debug(f"J_dofs max_nzb (shape={jacobians._J_dofs.bsm.max_nzb.shape}): {jacobians._J_dofs.bsm.max_nzb}")
+        msg.debug("J_cts max_dims (shape=%s): %s", jacobians._J_cts.bsm.max_dims.shape, jacobians._J_cts.bsm.max_dims)
+        msg.debug("J_cts dims (shape=%s): %s", jacobians._J_cts.bsm.dims.shape, jacobians._J_cts.bsm.dims)
+        msg.debug("J_cts max_nzb (shape=%s): %s", jacobians._J_cts.bsm.max_nzb.shape, jacobians._J_cts.bsm.max_nzb)
+        msg.debug(
+            "J_dofs max_dims (shape=%s): %s", jacobians._J_dofs.bsm.max_dims.shape, jacobians._J_dofs.bsm.max_dims
+        )
+        msg.debug("J_dofs dims (shape=%s): %s", jacobians._J_dofs.bsm.dims.shape, jacobians._J_dofs.bsm.dims)
+        msg.debug("J_dofs max_nzb (shape=%s): %s", jacobians._J_dofs.bsm.max_nzb.shape, jacobians._J_dofs.bsm.max_nzb)
 
         # Check the allocation of Jacobians
         num_body_dofs = model.info.num_body_dofs.numpy().tolist()
@@ -802,12 +812,14 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
 
         # Create the Jacobians container
         jacobians = SparseSystemJacobians(model=model, limits=limits, contacts=contacts)
-        msg.debug(f"J_cts max_dims (shape={jacobians._J_cts.bsm.max_dims.shape}): {jacobians._J_cts.bsm.max_dims}")
-        msg.debug(f"J_cts dims (shape={jacobians._J_cts.bsm.dims.shape}): {jacobians._J_cts.bsm.dims}")
-        msg.debug(f"J_cts max_nzb (shape={jacobians._J_cts.bsm.max_nzb.shape}): {jacobians._J_cts.bsm.max_nzb}")
-        msg.debug(f"J_dofs max_dims (shape={jacobians._J_dofs.bsm.max_dims.shape}): {jacobians._J_dofs.bsm.max_dims}")
-        msg.debug(f"J_dofs dims (shape={jacobians._J_dofs.bsm.dims.shape}): {jacobians._J_dofs.bsm.dims}")
-        msg.debug(f"J_dofs max_nzb (shape={jacobians._J_dofs.bsm.max_nzb.shape}): {jacobians._J_dofs.bsm.max_nzb}")
+        msg.debug("J_cts max_dims (shape=%s): %s", jacobians._J_cts.bsm.max_dims.shape, jacobians._J_cts.bsm.max_dims)
+        msg.debug("J_cts dims (shape=%s): %s", jacobians._J_cts.bsm.dims.shape, jacobians._J_cts.bsm.dims)
+        msg.debug("J_cts max_nzb (shape=%s): %s", jacobians._J_cts.bsm.max_nzb.shape, jacobians._J_cts.bsm.max_nzb)
+        msg.debug(
+            "J_dofs max_dims (shape=%s): %s", jacobians._J_dofs.bsm.max_dims.shape, jacobians._J_dofs.bsm.max_dims
+        )
+        msg.debug("J_dofs dims (shape=%s): %s", jacobians._J_dofs.bsm.dims.shape, jacobians._J_dofs.bsm.dims)
+        msg.debug("J_dofs max_nzb (shape=%s): %s", jacobians._J_dofs.bsm.max_nzb.shape, jacobians._J_dofs.bsm.max_nzb)
 
         # Check the allocation of Jacobians
         num_body_dofs = model.info.num_body_dofs.numpy().tolist()

@@ -41,7 +41,7 @@ def get_examples_output_path() -> str:
         path = os.path.join(pkg_dir, "output")
     except OSError:
         path = os.path.join(os.getcwd(), "kamino_examples_output")
-    msg.info(f"Kamino examples output folder: {path}")
+    msg.info("Kamino examples output folder: %s", path)
     return path
 
 
@@ -52,7 +52,7 @@ def get_examples_output_path() -> str:
 
 def run_headless(example, progress: bool = True):
     """Run the simulation in headless mode for a fixed number of steps."""
-    msg.info(f"Running for {example.max_steps} steps...")
+    msg.info("Running for %s steps...", example.max_steps)
     start_time = time.time()
     for i in range(example.max_steps):
         example.step_once()

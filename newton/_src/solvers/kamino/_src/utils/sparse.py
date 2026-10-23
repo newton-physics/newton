@@ -41,7 +41,7 @@ def sparseplot(
         from matplotlib.cm import ScalarMappable
         from matplotlib.colors import Normalize
     except Exception as exc:  # pragma: no cover - optional dependency
-        msg.error(f"`matplotlib` is required to plot profiles: {exc}")
+        msg.error("`matplotlib` is required to plot profiles: %s", exc)
         return
 
     # Check if the input is a 2D NumPy array

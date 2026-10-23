@@ -132,7 +132,7 @@ def run_test_single_joint_examples(
         single_test_success = test_fun(model)
         success &= single_test_success
         if not single_test_success:
-            msg.debug(f"{test_name} failed for {unary_binary_str} {passive_actuated_str} {joint_type_str} joint")
+            msg.debug("%s failed for %s %s %s joint", test_name, unary_binary_str, passive_actuated_str, joint_type_str)
     return success
 
 

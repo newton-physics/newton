@@ -92,8 +92,10 @@ class SimulationLogger:
             self._nja = 0
             self._njaq = 0
             msg.warning(
-                f"Number of actuated joint coordinates ({self._njaq}) does not match "
-                f"number of actuated joints ({self._nja}), skipping joint logging."
+                "Number of actuated joint coordinates (%s) does not match "
+                "number of actuated joints (%s), skipping joint logging.",
+                self._njaq,
+                self._nja,
             )
         else:
             joint_target_mode_np = sim.model_newton.joint_target_mode.numpy()

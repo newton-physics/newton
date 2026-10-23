@@ -257,7 +257,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
 
         # Define the specific shape pair to test
         shape_pair = ("cylinder", "ellipsoid")
-        msg.debug(f"Testing narrow-phase tests with exact boundaries on {shape_pair}")
+        msg.debug("Testing narrow-phase tests with exact boundaries on %s", shape_pair)
 
         # Define any special kwargs for specific shape pairs
         kwargs = {

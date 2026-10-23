@@ -57,13 +57,13 @@ class TestCoreJoints(unittest.TestCase):
         doftype = JointDoFType.REVOLUTE
 
         # Optional verbose output
-        msg.debug(f"doftype: {doftype}")
-        msg.debug(f"doftype.value: {doftype.value}")
-        msg.debug(f"doftype.name: {doftype.name}")
-        msg.debug(f"doftype.num_cts: {doftype.num_cts}")
-        msg.debug(f"doftype.num_dofs: {doftype.num_dofs}")
-        msg.debug(f"doftype.cts_axes: {doftype.cts_axes}")
-        msg.debug(f"doftype.dofs_axes: {doftype.dofs_axes}")
+        msg.debug("doftype: %s", doftype)
+        msg.debug("doftype.value: %s", doftype.value)
+        msg.debug("doftype.name: %s", doftype.name)
+        msg.debug("doftype.num_cts: %s", doftype.num_cts)
+        msg.debug("doftype.num_dofs: %s", doftype.num_dofs)
+        msg.debug("doftype.cts_axes: %s", doftype.cts_axes)
+        msg.debug("doftype.dofs_axes: %s", doftype.dofs_axes)
 
         # Check the enum values
         self.assertEqual(doftype.value, JointDoFType.REVOLUTE)
