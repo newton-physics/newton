@@ -17,6 +17,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...geometry.types import GeoType
 from ...sim import (
     Contacts,
@@ -771,7 +772,15 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._config = config
 
         # Create a Kamino model from the Newton model
-        self._model_kamino = self._kamino.ModelKamino.from_newton(model)
+        collision_config = config.collision_detector
+        include_shape_contact_pairs = config.use_collision_detector and (
+            collision_config is None
+            or collision_config.pipeline == "primitive"
+            or collision_config.broadphase == "explicit"
+        )
+        self._model_kamino = self._kamino.ModelKamino.from_newton(
+            model, include_shape_contact_pairs=include_shape_contact_pairs
+        )
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
         q_min = self._model_kamino.joints.q_j_min.numpy()
@@ -1296,7 +1305,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             warnings.warn(
                 "SolverKamino.update_contacts() force export is deprecated in Newton 1.7; request "
                 "SolverBase.ObservableKind.CONTACT_F and pass SolverBase.Observables to step().",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
         self._populate_contact_observables(contacts, state, contacts.force)
@@ -1466,17 +1475,14 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Check for unsupported joint types
         if model.joint_count > 0:
             joint_type_np = model.joint_type.numpy()
-
-            unsupported_joint_types = {}
-
-            for j in range(model.joint_count):
-                joint_type = int(joint_type_np[j])
-
-                # Check for explicitly unsupported joint types
-                if joint_type == JointType.DISTANCE:
-                    unsupported_joint_types["DISTANCE"] = unsupported_joint_types.get("DISTANCE", 0) + 1
-                elif joint_type == JointType.ROD:
-                    unsupported_joint_types["ROD"] = unsupported_joint_types.get("ROD", 0) + 1
+            unsupported_joint_types = {
+                name: count
+                for name, count in (
+                    ("DISTANCE", int(np.count_nonzero(joint_type_np == JointType.DISTANCE))),
+                    ("ROD", int(np.count_nonzero(joint_type_np == JointType.ROD))),
+                )
+                if count > 0
+            }
             if len(unsupported_joint_types) > 0:
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
@@ -1522,7 +1528,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         inv_mass = model.body_inv_mass.numpy()
         inv_inertia = model.body_inv_inertia.numpy()
-        singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
+        # Inverse inertia tensors are symmetric, so the Hermitian rank path can use
+        # eigenvalues instead of a general singular-value decomposition.
+        singular_inertia = np.linalg.matrix_rank(inv_inertia, hermitian=True) < 3
         singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
         if not singular:
             return []

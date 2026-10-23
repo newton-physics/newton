@@ -70,7 +70,7 @@ leaving room to approach a bottle that is already dented and has bulged sideways
 The default 17 mm opening per finger gives a 34 mm closed plate gap.
 
 Material and permanent creases
------------------------------
+------------------------------
 
 The body material inputs are thickness :math:`t = 0.3` mm, Young's modulus
 :math:`E = 3` GPa, and yield stress :math:`\sigma_y = 55` MPa. Poisson ratio
@@ -109,8 +109,9 @@ the normal input/output State buffers and supports CUDA graph replay.
 ``solver.reset(state, flags=newton.StateFlags.PARTICLE_Q)`` clears the selected
 worlds' plastic offsets with their positions; velocity-only resets retain them.
 The mode is an ideal bending-only law with no hardening or automatic
-differentiation. Yield angles are procedural runtime values indexed by generated
-hinges; no USD mesh material schema is introduced.
+differentiation. Yield angles are builder-authored material inputs indexed by
+generated hinges. USD schema and importer support is not implemented; plastic
+offsets are runtime State history.
 
 Updating resting curvature after yield follows the simple shell plasticity
 approach in `TRACKS: Toward Directable Thin Shells, section 4.4

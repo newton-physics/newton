@@ -193,8 +193,9 @@ class TestConvexSupportAcceleration(unittest.TestCase):
             vertices=mesh.vertices,
             indices=np.delete(np.asarray(mesh.indices, dtype=np.int32).reshape(-1, 3), 1, axis=0),
         )
-        with self.assertWarnsRegex(RuntimeWarning, "complete closed hull topology"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             self.assertIsNone(_build_convex_support_acceleration(incomplete))
+        self.assertIn("complete closed hull topology", logs.output[0])
 
     def test_small_hulls_do_not_allocate_acceleration(self):
         """Skip support acceleration for small convex hulls."""

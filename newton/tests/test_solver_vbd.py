@@ -13,7 +13,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
+from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
+from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -2223,6 +2224,7 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 contact_normal,
                 wp.zeros(0, dtype=float, device=device),
                 wp.zeros(4, dtype=wp.vec3, device=device),  # barycentric (unused on the particle path)
+                _SoftContactFilterData(),
             ],
             outputs=[forces, hessians],
             device=device,
@@ -2346,6 +2348,7 @@ def _launch_particle_contact_gather(data, contact_count, contact_head, contact_n
                 contact_head,
                 contact_next,
                 *_particle_contact_gather_material_inputs(data),
+                _SoftContactFilterData(),
             ],
             outputs=[forces, hessians],
             device=device,
@@ -2407,6 +2410,7 @@ def _particle_contact_gather_order_pinned(test, device):
                     rev_head_wp,
                     rev_next_wp,
                     *_particle_contact_gather_material_inputs(data),
+                    _SoftContactFilterData(),
                 ],
                 outputs=[forces_rev, hessians_rev],
                 device=device,
@@ -2646,6 +2650,7 @@ def _launch_particle_contact_scatter(data, contact_count, worker_count, forces, 
                 data["particle_radius"],
                 data["contact_indices"],
                 contact_count,
+                _SoftContactFilterData(),
                 data["capacity"],
                 worker_count,
                 *_particle_contact_gather_material_inputs(data),
@@ -2844,6 +2849,7 @@ def _launch_body_particle_dual_prefix(data, contact_count, capacity, beta, penal
         dim=capacity,
         inputs=[
             contact_count,
+            _SoftContactFilterData(),
             data["indices"],
             data["shape"],
             data["body_pos"],
@@ -6006,7 +6012,7 @@ def _bending_plasticity_validation(test, device):
 def _bending_plasticity_coupled_reset(test, device):
     """Gather and reset plastic material history through the native proxy coupler."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.replicate(_plastic_hinge_builder(), world_count=2, spacing=(2.0, 0.0, 0.0))
+    builder.replicate(_plastic_hinge_builder(), copy_count=2, spacing=(2.0, 0.0, 0.0))
     builder.add_builder(_plastic_hinge_builder(), xform=wp.transform((4.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
     model = builder.finalize(device=device)
@@ -6048,6 +6054,13 @@ def _bending_plasticity_coupled_reset(test, device):
         wp.capture_launch(capture.graph)
         np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.8, -0.5, 0.6], atol=1.0e-6)
     mask = wp.array([True, False, False], dtype=wp.bool, device=device)
+    for flags in (newton.StateFlags.PARTICLE_QD, 0):
+        for history in ((0.8, -0.5, 0.6), (0.35, -0.65, 0.7)):
+            with test.subTest(flags=flags, history=history):
+                b.vbd.edge_plastic_angle.assign(np.array(history, dtype=np.float32))
+                solver.reset(b, world_mask=mask, flags=flags)
+                np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), history, atol=1.0e-6)
+    b.vbd.edge_plastic_angle.assign(np.array([0.8, -0.5, 0.6], dtype=np.float32))
     solver.reset(b, world_mask=mask, flags=newton.StateFlags.PARTICLE_Q)
     np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.0, -0.5, 0.6], atol=1.0e-6)
     if device.is_cuda:
@@ -6061,7 +6074,7 @@ def _bending_plasticity_coupled_reset(test, device):
 def _bending_plasticity_reset_worlds(test, device):
     """Reset selected worlds' creases with particle positions and preserve other worlds."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.replicate(_plastic_hinge_builder(), world_count=2, spacing=(2.0, 0.0, 0.0))
+    builder.replicate(_plastic_hinge_builder(), copy_count=2, spacing=(2.0, 0.0, 0.0))
     builder.add_builder(_plastic_hinge_builder(), xform=wp.transform((4.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
     model = builder.finalize(device=device)
@@ -6917,6 +6930,7 @@ def _run_face_section2(device, shape_margin):
             contacts.soft_contact_normal,
             shape_margin,
             contacts.soft_contact_barycentric,
+            _SoftContactFilterData(),
         ],
         outputs=[forces, hessians],
         device=device,
@@ -7353,7 +7367,7 @@ def _run_soft_self_dat_truncation(
             wp.array(displacements, dtype=wp.vec3, device=device),
             wp.array(triangles, dtype=wp.int32, ndim=2, device=device),
             wp.array(edges, dtype=wp.int32, ndim=2, device=device),
-            wp.array([collision_info], dtype=TriMeshCollisionInfo, device=device),
+            collision_info,
             0.85,
         ],
         outputs=[truncation_t],

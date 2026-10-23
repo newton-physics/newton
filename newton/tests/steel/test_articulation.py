@@ -244,7 +244,10 @@ def test_unsupported_loop_joints_are_rejected(test, device):
     """Reject non-BALL loop joints and closures between two dynamic articulations."""
     b = _build_four_bar()
     _expect_one_warning(
-        test, UserWarning, "another joint already connects these bodies", lambda: b.add_joint_fixed(parent=1, child=2)
+        test,
+        newton.exceptions.NewtonWarning,
+        "another joint already connects these bodies",
+        lambda: b.add_joint_fixed(parent=1, child=2),
     )
     with test.assertRaisesRegex(NotImplementedError, "only BALL loop-closing joints"):
         SolverSteel(b.finalize(device=device), solve_mode="matrix_free")
@@ -491,7 +494,7 @@ def test_imported_connect_equality_is_enforced(test, device):
             # The converted CONNECT becomes a BALL loop joint parallel to the hinge.
             _expect_one_warning(
                 test,
-                UserWarning,
+                newton.exceptions.NewtonWarning,
                 "another joint already connects these bodies",
                 functools.partial(b.add_mjcf, mjcf, convert_mjc_equality_constraints=True),
             )
@@ -1217,7 +1220,7 @@ def test_rows_remain_allocated(test, device):
 def test_prescribed_parent_closure_warns_and_falls_back(test, device):
     """Disable elimination for the whole solver when a closure has a kinematic or world parent."""
     b, _, _, _ = _build_carried_load()
-    with test.assertWarnsRegex(UserWarning, "kinematic or world parent.*whole solver"):
+    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "kinematic or world parent.*whole solver"):
         solver = SolverSteel(b.finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True)
     test.assertFalse(solver._preelim_active)
     test.assertEqual(solver._connect_count, 3)
@@ -1233,7 +1236,7 @@ def test_prescribed_parent_closure_warns_and_falls_back(test, device):
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*another joint already connects these bodies")
         b.add_joint_ball(-1, load, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.5), wp.quat_identity()))
-    with test.assertWarnsRegex(UserWarning, "whole solver"):
+    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "whole solver"):
         mixed = SolverSteel(b.finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True)
     test.assertFalse(mixed._preelim_active)
     test.assertEqual(mixed._preelim_count, 0)
@@ -1335,9 +1338,9 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
     """Keep iterative mimic rows with the propagation responses; pre-elimination falls back with a warning."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
-    for response in ("propagation", "propagation_fused", "propagation_colored"):
+    for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response):
-            with test.assertWarnsRegex(UserWarning, "propagation"):
+            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "propagation"):
                 solver = SolverSteel(model, articulated_contact_response=response, enable_bilateral_preelimination=True)
             test.assertFalse(solver._preelim_active)
             test.assertGreater(solver._mimic_count, 0)
@@ -1346,7 +1349,7 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
 def test_propagation_rejects_loop_joints(test, device):
     """Reject loop-closing joints with the propagation responses."""
     model = _build_four_bar().finalize(device=device)
-    for response in ("propagation", "propagation_fused", "propagation_colored"):
+    for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(NotImplementedError, "Loop-closing joints.*articulated_contact_response"):
                 SolverSteel(model, articulated_contact_response=response)
@@ -1612,7 +1615,7 @@ def test_replicated_mimics_have_articulation_local_ranges(test, device):
     """Use one compact lookup range per articulation for replicated mimic rows."""
     template, _, _ = _build_two_revolute_chain(coef0=0.0, coef1=1.0)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    builder.replicate(template, world_count=4)
+    builder.replicate(template, copy_count=4)
     solver = SolverSteel(builder.finalize(device=device), solve_mode="matrix_free")
     test.assertEqual(solver._mimic_art_start.numpy().tolist(), [0, 1, 2, 3, 4])
     test.assertEqual(solver._mimic_art_list.numpy().tolist(), [0, 1, 2, 3])
@@ -1768,7 +1771,7 @@ def _construct(test, model, *, solve_mode, expect_warning):
     messages = [f"{w.category.__name__}: {w.message}" for w in caught]
     test.assertEqual(len(caught), int(expect_warning), messages)
     if expect_warning:
-        test.assertIs(caught[0].category, UserWarning)
+        test.assertIs(caught[0].category, newton.exceptions.NewtonWarning)
         test.assertRegex(str(caught[0].message), _SPRING_WARNING)
     return solver
 

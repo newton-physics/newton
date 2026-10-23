@@ -1128,6 +1128,18 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
         np.testing.assert_array_equal(solver._model_kamino.joints.act_type.numpy(), before)
 
+    def test_missing_implicit_pd_gain_raises(self):
+        """Reject implicit-PD target modes without an effective gain at construction."""
+        cases = (
+            (newton.JointTargetMode.POSITION, 0.0, 0.0),
+            (newton.JointTargetMode.VELOCITY, 1.0, 0.0),
+        )
+        for mode, ke, kd in cases:
+            with self.subTest(mode=mode.name):
+                model = _build_revolute(actuator_mode=mode, target_ke=ke, target_kd=kd)
+                with self.assertRaisesRegex(ValueError, rf"{mode.name} requires a non-zero gain \(DoF=0\)"):
+                    SolverKamino(model)
+
 
 if __name__ == "__main__":
     unittest.main()

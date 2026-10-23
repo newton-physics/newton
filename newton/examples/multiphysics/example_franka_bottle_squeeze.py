@@ -542,8 +542,8 @@ class Example:
         self.surface_triangle_count = 0
         self.shell_graphs = []
         if args.cuda_graph:
-            # Capture each shell buffer direction separately. Keep fluid grids
-            # eager: Warp 1.18 shares host grid metadata with reconstruction.
+            # Capture each shell buffer direction separately. The fluid loop
+            # and surface reconstruction execute outside these graphs.
             for _ in range(2):
                 with wp.ScopedCapture(device=self.model.device) as capture:
                     self._simulate_shell()

@@ -13,6 +13,8 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..utils.color import ColorSpace
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
@@ -231,7 +233,7 @@ class Mesh:
         self._validate_indices(self._vertices, self._indices)
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
-        self._color: Vec3 | None = None
+        self._color: wp.vec3 | None = None
         self.color = color
         self._opacity: float | None = None
         self.opacity = opacity
@@ -796,6 +798,8 @@ class Mesh:
         """
         Create a copy of this mesh, optionally with new vertices or indices.
 
+        Mesh data is copied independently; the SDF is shared when ``vertices`` and ``indices`` are omitted.
+
         Args:
             vertices: New vertices to use (default: current vertices).
             indices: New indices to use (default: current indices).
@@ -831,9 +835,9 @@ class Mesh:
             texture_transform=self._texture_transform,
         )
         if not recompute_inertia:
-            m.inertia = self.inertia
+            m.inertia = wp.mat33(self.inertia)
             m.mass = self.mass
-            m.com = self.com
+            m.com = wp.vec3(self.com)
             m.has_inertia = self.has_inertia
         # Only carry mesh-topology-derived caches forward when the geometry
         # is unchanged. ``_collision_edges`` indexes the original vertex
@@ -1543,13 +1547,13 @@ class Mesh:
         return self._uvs
 
     @property
-    def color(self) -> Vec3 | None:
+    def color(self) -> wp.vec3 | None:
         """Optional display RGB color with values in [0, 1]."""
         return self._color
 
     @color.setter
     def color(self, value: Vec3 | None):
-        self._color = value
+        self._color = wp.vec3(value) if value is not None else None
 
     @property
     def opacity(self) -> float | None:
@@ -2296,6 +2300,7 @@ class TetMesh:
                 warnings.warn(
                     f"Custom attribute '{name}' with frequency {freq} cannot be saved to meshio format "
                     f"(only PARTICLE and TETRAHEDRON are supported). Skipping.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -2516,6 +2521,10 @@ class Heightfield:
         return self._cached_hash
 
 
+SH_C0 = 0.28209479177387814
+"""Zeroth-order real spherical-harmonics basis constant, :math:`1 / (2\\sqrt{\\pi})`."""
+
+
 class Gaussian:
     """Represents a Gaussian splat asset for rendering and rigid body attachment.
 
@@ -2558,6 +2567,7 @@ class Gaussian:
         scales: wp.array[wp.vec3f]
         opacities: wp.array[wp.float32]
         sh_coeffs: wp.array2d[wp.float32]
+        sh_color_space: wp.int32
         bvh_id: wp.uint64
         min_response: wp.float32
         sorting_mode: wp.int32
@@ -2578,6 +2588,8 @@ class Gaussian:
         sh_degree: int | None = None,
         min_response: float = 0.1,
         sorting_mode: SortingMode = SortingMode.RAY_HIT_DISTANCE,
+        *,
+        sh_color_space: ColorSpace = ColorSpace.SRGB,
     ):
         """Construct a Gaussian splat asset from arrays.
 
@@ -2597,6 +2609,11 @@ class Gaussian:
             sorting_mode: Sorting strategy for depth-ordering Gaussian
                 intersections along each ray before alpha compositing
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
+            sh_color_space: Color space of evaluated SH radiance. Defaults to
+                sRGB (display-encoded); pass :attr:`~newton.utils.ColorSpace.LINEAR`
+                for scene-linear radiance. Only :class:`~newton.sensors.SensorCamera`
+                honors this; the deprecated :class:`~newton.sensors.SensorTiledCamera`
+                ignores it.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2632,6 +2649,7 @@ class Gaussian:
         self._min_response = float(min_response)
 
         self._sorting_mode = sorting_mode
+        self._sh_color_space = ColorSpace(sh_color_space)
 
         self._cached_hash = None
         self._positions.setflags(write=False)
@@ -2689,6 +2707,11 @@ class Gaussian:
         return self._sh_degree
 
     @property
+    def sh_color_space(self) -> ColorSpace:
+        """Color space of evaluated spherical-harmonics radiance."""
+        return self._sh_color_space
+
+    @property
     def min_response(self) -> float:
         """Min response, float."""
         return self._min_response
@@ -2715,12 +2738,12 @@ class Gaussian:
         .. deprecated:: 1.6
             Use the :class:`Data` object returned by :meth:`finalize` instead.
         """
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._warp_data
 
     @warp_data.setter
     def warp_data(self, value: "Gaussian.Data | None") -> None:
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._warp_data = value
 
     @property
@@ -2730,12 +2753,12 @@ class Gaussian:
         .. deprecated:: 1.6
             Use :attr:`bvh` instead.
         """
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._warp_bvh
 
     @warp_bvh.setter
     def warp_bvh(self, value: wp.Bvh | None) -> None:
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._warp_bvh = value
 
     def _find_sh_degree(self) -> int:
@@ -2769,6 +2792,7 @@ class Gaussian:
             warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
             warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
             warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            warp_data.sh_color_space = int(self._sh_color_space)
             warp_data.min_response = self.min_response
             warp_data.sorting_mode = self.sorting_mode
             warp_data.num_points = warp_data.transforms.shape[0]
@@ -2817,17 +2841,23 @@ class Gaussian:
     # ---- Factory methods -----------------------------------------------------
 
     @staticmethod
-    def create_from_ply(filename: str, min_response: float = 0.1) -> "Gaussian":
+    def create_from_ply(
+        filename: str, min_response: float = 0.1, *, sh_color_space: ColorSpace = ColorSpace.SRGB
+    ) -> "Gaussian":
         """Load Gaussian splat data from a ``.ply`` file (standard 3DGS format).
 
         Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
         (``scale_0..2``, stored as log-scale), opacities (logit-space),
         and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
-        and logit-opacity to linear values. Requires Open3D 0.20 or newer.
+        and logit-opacity to linear values. SH radiance is treated as sRGB
+        unless ``sh_color_space`` says otherwise. Requires Open3D 0.20 or newer.
 
         Args:
             filename: Path to a ``.ply`` file in standard 3DGS format.
             min_response: Min response (default = 0.1).
+            sh_color_space: Color space of the SH radiance (default:
+                :attr:`~newton.utils.ColorSpace.SRGB`, as 3DGS assets are
+                display-referred).
 
         Returns:
             A new :class:`Gaussian` instance.
@@ -2880,6 +2910,7 @@ class Gaussian:
             opacities=opacities,
             sh_coeffs=sh_coeffs,
             min_response=min_response,
+            sh_color_space=sh_color_space,
         )
 
     @staticmethod
@@ -2887,6 +2918,11 @@ class Gaussian:
         """Load Gaussian splat data from a USD prim.
 
         Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+        The (possibly inherited) USD color space of the SH radiance selects :attr:`sh_color_space`:
+        untagged, ``srgb_rec709_scene`` and ``srgb_rec709_display`` radiance is :attr:`~newton.utils.ColorSpace.SRGB`, and
+        ``lin_rec709_scene`` and other Rec.709 linear names are :attr:`~newton.utils.ColorSpace.LINEAR`.
+        Other color spaces are imported without conversion and a warning is logged; see the
+        USD parsing documentation for the full list of supported names.
 
         Args:
             prim: A USD prim containing Gaussian splat data.
@@ -2972,6 +3008,7 @@ class Gaussian:
                     self._sh_coeffs.data.tobytes(),
                     float(self._min_response),
                     int(self._sorting_mode),
+                    int(self._sh_color_space),
                 )
             )
         return self._cached_hash
@@ -2988,4 +3025,5 @@ class Gaussian:
             and np.array_equal(self._sh_coeffs, other._sh_coeffs)
             and self._min_response == other._min_response
             and self._sorting_mode == other._sorting_mode
+            and self._sh_color_space == other._sh_color_space
         )
