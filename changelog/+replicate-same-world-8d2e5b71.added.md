@@ -1,0 +1,1 @@
+Add `separate_worlds` to `ModelBuilder.replicate()`. Pass `separate_worlds=False` to add all copies to the current world context in one batched pass, for example to build a pile of colliding bodies, instead of calling `ModelBuilder.add_builder()` once per copy.

@@ -12,7 +12,6 @@ import warp as wp
 from ..core.types import MAXVAL, Devicelike
 from ..geometry.collision_convex import ConvexQueryResult, create_write_convex_query_result
 from ..geometry.collision_core import (
-    ENABLE_TILE_BVH_QUERY,
     check_infinite_plane_bsphere_overlap,
     compute_bounding_sphere_from_aabb,
     compute_tight_aabb_from_support,
@@ -3359,13 +3358,16 @@ class NarrowPhase:
                 used to cull back-facing mesh triangles and seed triangle contacts. If
                 ``None``, convex-mesh volume centroids are computed on each launch.
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
+                Required with ``shape_edge_range`` for mesh edge contacts; omitting these
+                arrays disables mesh edge contacts rather than extracting edges from meshes.
             mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
                 unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
-                Layout matches :attr:`~newton.Model.mesh_edge_centers`.
+                Each radius is the length of the corresponding unscaled half-vector.
             mesh_edge_halves: Packed precomputed mesh edge half-vectors (xyz) in unscaled mesh
-                coordinates [m] and endpoint-ownership codes (w). Layout matches
-                :attr:`~newton.Model.mesh_edge_halves`.
+                coordinates [m] and endpoint-ownership codes (w). Set the ownership code to zero
+                to allow both endpoints.
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
+                Required with ``mesh_edge_indices`` for mesh edge contacts.
             hydroelastic_shape_sdf_data_prepared: Whether finalized hydroelastic SDF descriptors were cached upstream.
             shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.
             shape_angular_velocity: Shape angular velocities [rad/s]. Required in speculative mode.
@@ -3553,8 +3555,7 @@ class NarrowPhase:
                 ]
             else:
                 midphase_kernel = narrow_phase_find_mesh_triangle_overlaps_kernel
-                second_dim = self.tile_size_mesh_convex if ENABLE_TILE_BVH_QUERY else 1
-                midphase_dim = [self.num_tile_blocks, second_dim]
+                midphase_dim = [self.num_tile_blocks, self.tile_size_mesh_convex]
                 midphase_inputs = [
                     shape_types,
                     shape_transform,
@@ -3590,7 +3591,7 @@ class NarrowPhase:
                 midphase_inputs[-1] = narrow_blocks
                 wp.launch(
                     kernel=self._midphase_narrow_kernel,
-                    dim=[narrow_blocks, _MIDPHASE_NARROW_TILE_SIZE if ENABLE_TILE_BVH_QUERY else 1],
+                    dim=[narrow_blocks, _MIDPHASE_NARROW_TILE_SIZE],
                     inputs=midphase_inputs,
                     outputs=[
                         self.triangle_pairs,
@@ -4057,6 +4058,16 @@ class NarrowPhase:
             shape_interior_point: Optional scaled local-space point inside each shape [m],
                 used to cull back-facing mesh triangles and seed triangle contacts. If
                 ``None``, convex-mesh volume centroids are computed on each launch.
+            mesh_edge_indices: Packed mesh edge vertex pairs, passed through ``kwargs``.
+                Required with ``shape_edge_range`` for mesh edge contacts; omitting either
+                disables mesh edge contacts.
+            shape_edge_range: Per-shape (start, count) into ``mesh_edge_indices``,
+                passed through ``kwargs``.
+            mesh_edge_centers: Optional packed unscaled edge centers (xyz) and half-lengths
+                (w) [m], passed through ``kwargs``. Omit with ``mesh_edge_halves`` to read
+                endpoints from meshes using the supplied indices and ranges.
+            mesh_edge_halves: Optional packed unscaled edge half-vectors (xyz) [m] and
+                endpoint-ownership codes (w), passed through ``kwargs``. Zero allows both endpoints.
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
