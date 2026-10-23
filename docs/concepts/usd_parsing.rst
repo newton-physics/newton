@@ -37,36 +37,11 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
-Joint Units and Migration to Newton 1.8
---------------------------------------
-
-Newton converts resolved joint-state angular velocities from degrees/s to
-radians/s when initializing ``joint_qd``. This applies to
-``state:angular:physics:velocity`` on revolute joints and
-``state:rot*:physics:velocity`` on rotational D6 axes, including revolute joints
-merged into D6 joints. Joint-state attributes must be recognized by the selected
-schema resolver. Linear joint velocities retain their usual units.
-
-After :meth:`newton.solvers.SolverMuJoCo.register_custom_attributes` is called,
-revolute ``mjc:springref`` values use the PhysicsScene's ``mjc:compiler:angle``
-setting, as ``mjc:ref`` does. An unauthored setting or absent PhysicsScene defaults
-to degrees; ``"radian"`` selects radians. Newton stores the resulting spring
-references in radians. Prismatic spring references retain their length units.
-
-Newton 1.8 removes the ``legacy_angular_velocity_units`` and
-``legacy_springref_units`` arguments deprecated in Newton 1.7. Remove these
-arguments from :meth:`newton.ModelBuilder.add_usd` calls, including arguments set
-to ``False``. Passing either argument raises ``TypeError``.
-
-To migrate code and assets that compensated for the importer before Newton 1.7:
-
-* Remove application code that manually converts imported joint-state angular
-  velocities to radians/s. If an asset stored radians/s in the degree-based
-  joint-state attributes, multiply those authored values by ``180 / pi``.
-* If an asset stored revolute ``mjc:springref`` values in radians under a degree
-  compiler setting, multiply those values by ``180 / pi``. Alternatively, author
-  ``mjc:compiler:angle = "radian"`` only when all attributes governed by that
-  setting, including ``mjc:ref``, use radians.
+**USD angular units:** Newton uses radians internally. UsdPhysics joint angles
+and resolved joint-state angular velocities use degrees and degrees/s, respectively.
+Revolute ``mjc:ref`` and ``mjc:springref`` instead follow the PhysicsScene's
+``mjc:compiler:angle`` setting (degrees by default). The importer converts these
+values to radians or radians/s.
 
 Particle Simulation Geometry
 ----------------------------
