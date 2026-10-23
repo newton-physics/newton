@@ -757,6 +757,7 @@ class ViewerViser(ViewerBase):
         self._simulation_gui_handles = {"pause": pause, "step": step, "reset": reset}
 
         options = (
+            ("show_deformable_visual_meshes", "Show Skinned Meshes", None),
             ("show_visual", "Show Visual", None),
             ("show_collision", "Show Collision", None),
             (
