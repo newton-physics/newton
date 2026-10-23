@@ -361,7 +361,11 @@ Known gaps of the experimental importer, tracked as follow-ups:
 * **Collision and graphics geometry** -- separate collision or render geometry under a
   deformable body is not simulated or driven by the importer yet. Procedural visual
   binding is available through :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`;
-  importing those bindings is deferred to a later slice. Untagged
+  importing those bindings is not supported yet. Import is deferred so the native
+  binding and update code can be reviewed first. The remaining work is tracked in
+  `issue #3223 <https://github.com/newton-physics/newton/issues/3223>`__, owned by
+  ``@mzamoramora-nvidia`` and targeted for **1.8 Release**. The deferral still needs
+  explicit maintainer acceptance. Untagged
   PointBased graphics geometry warns and is skipped (a static import would leave a frozen
   copy behind), and a dedicated point-based collider (every one warns) only toggles the
   simulation geometry's collision as described above and never becomes a separate rigid
