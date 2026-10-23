@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Level-scheduled block-sparse Cholesky, ported from the DVI sparse LDL solver.
+"""Level-scheduled block-sparse LDL transpose factorization for SPD systems.
 
-The factor is LL^T, with six-row identity-padded blocks. Symbolic elimination
-and allocation happen at finalize time; numeric operations are capturable on
-CUDA and also run on CPU. No physics-specific types are used here.
+The reordered matrix is L D L^T: L is unit lower triangular and D is stored
+separately as six scalar pivots per identity-padded block. Numeric elimination
+uses no square roots or numerical pivoting. Symbolic elimination and allocation
+happen at finalize time; numeric operations are capturable on CUDA and also
+run on CPU. No physics-specific types are used here.
 """
 
 from __future__ import annotations
@@ -83,50 +85,70 @@ def _factor_level(
     row_idx: wp.array[wp.int32],
     row_ptr: wp.array[wp.int32],
     row_slots: wp.array[wp.int32],
+    block_j: wp.array[wp.int32],
     pred_ptr: wp.array[wp.int32],
     pred_left: wp.array[wp.int32],
     pred_right: wp.array[wp.int32],
     values: wp.array3d[wp.float32],
     factors: wp.array3d[wp.float32],
+    diagonal: wp.array2d[wp.float32],
     pivot_count: int,
     retry: bool,
     failed: wp.array[wp.int32],
     shift: float,
 ):
-    """Factor independent pivots using the source solver's left-looking tile updates."""
+    """Apply left-looking L D L^T updates, then factor each six-row pivot block."""
     j = pivots[offset + wp.tid()]
     world = worlds[j]
     if retry and failed[world] == 0:
         return
-    diagonal = wp.tile_reshape(wp.tile_load(values, shape=(1, 6, 6), offset=(j, 0, 0)), (6, 6))
+    schur = wp.tile_reshape(wp.tile_load(values, shape=(1, 6, 6), offset=(j, 0, 0)), (6, 6))
     if retry:
         identity = wp.tile_zeros(shape=(6, 6), dtype=wp.float32)
         for r in range(6):
             if rows[j, r] >= 0 and rows[j, r] < dim[world]:
                 identity[r, r] = shift
-        diagonal += identity
+        schur += identity
     for p in range(row_ptr[j], row_ptr[j + 1]):
         slot = row_slots[p]
         block = wp.tile_reshape(wp.tile_load(factors, shape=(1, 6, 6), offset=(slot, 0, 0)), (6, 6))
-        wp.tile_matmul(block, wp.tile_transpose(block), diagonal, alpha=-1.0)
-    wp.tile_cholesky_inplace(diagonal)
-    wp.tile_store(factors, wp.tile_reshape(diagonal, (1, 6, 6)), offset=(j, 0, 0))
+        d = wp.tile_load(diagonal, shape=(1, 6), offset=(block_j[slot], 0))
+        weighted = wp.tile_map(wp.mul, block, wp.tile_broadcast(d, shape=(6, 6)))
+        wp.tile_matmul(weighted, wp.tile_transpose(block), schur, alpha=-1.0)
+    lower = wp.tile_zeros(shape=(6, 6), dtype=wp.float32)
+    d = wp.tile_zeros(shape=(1, 6), dtype=wp.float32)
+    for c in range(6):
+        pivot = schur[c, c]
+        for k in range(c):
+            pivot -= lower[c, k] * d[0, k] * lower[c, k]
+        d[0, c] = pivot
+        lower[c, c] = wp.float32(1.0)
+        for r in range(c + 1, 6):
+            value = schur[r, c]
+            for k in range(c):
+                value -= lower[r, k] * d[0, k] * lower[c, k]
+            lower[r, c] = value / pivot
+    wp.tile_store(diagonal, d, offset=(j, 0))
+    wp.tile_store(factors, wp.tile_reshape(lower, (1, 6, 6)), offset=(j, 0, 0))
     for entry in range(col_ptr[j], col_ptr[j + 1]):
         slot = pivot_count + entry
         block = wp.tile_reshape(wp.tile_load(values, shape=(1, 6, 6), offset=(slot, 0, 0)), (6, 6))
         for p in range(pred_ptr[entry], pred_ptr[entry + 1]):
             left = wp.tile_reshape(wp.tile_load(factors, shape=(1, 6, 6), offset=(pred_left[p], 0, 0)), (6, 6))
             right = wp.tile_reshape(wp.tile_load(factors, shape=(1, 6, 6), offset=(pred_right[p], 0, 0)), (6, 6))
-            wp.tile_matmul(left, wp.tile_transpose(right), block, alpha=-1.0)
+            previous_d = wp.tile_load(diagonal, shape=(1, 6), offset=(block_j[pred_left[p]], 0))
+            weighted = wp.tile_map(wp.mul, left, wp.tile_broadcast(previous_d, shape=(6, 6)))
+            wp.tile_matmul(weighted, wp.tile_transpose(right), block, alpha=-1.0)
         transposed = wp.tile_transpose(block)
-        wp.tile_lower_solve_inplace(diagonal, transposed)
-        wp.tile_store(factors, wp.tile_reshape(wp.tile_transpose(transposed), (1, 6, 6)), offset=(slot, 0, 0))
+        wp.tile_lower_solve_inplace(lower, transposed)
+        off_diagonal = wp.tile_map(wp.div, wp.tile_transpose(transposed), wp.tile_broadcast(d, shape=(6, 6)))
+        wp.tile_store(factors, wp.tile_reshape(off_diagonal, (1, 6, 6)), offset=(slot, 0, 0))
 
 
 @wp.kernel
-def _check_factors(worlds: wp.array[wp.int32], factors: wp.array3d[wp.float32], failed: wp.array[wp.int32]):
+def _check_factors(worlds: wp.array[wp.int32], diagonal: wp.array2d[wp.float32], failed: wp.array[wp.int32]):
     pivot, row = wp.tid()
-    value = factors[pivot, row, row]
+    value = diagonal[pivot, row]
     if not wp.isfinite(value) or value <= 0.0:
         wp.atomic_max(failed, worlds[pivot], 1)
 
@@ -195,13 +217,36 @@ def _make_solve_kernel(forward: bool, serial: bool):
                     r = 5 - step
                     for c in range(r + 1, 6):
                         v[r] -= factors[i, c, r] * v[c]
-                v[r] /= factors[i, r, r]
             for r in range(6):
                 row = rows[i, r]
                 if row >= 0 and row < n:
                     result[start + row * stride + column] = v[r]
 
     return solve_kernel
+
+
+@wp.kernel
+def _solve_diagonal(
+    worlds: wp.array[wp.int32],
+    rows: wp.array2d[wp.int32],
+    diagonal: wp.array2d[wp.float32],
+    dim: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    strides: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    inverse_sqrt: bool,
+    source: wp.array[wp.float32],
+    result: wp.array[wp.float32],
+):
+    pivot, r, column = wp.tid()
+    world, row = worlds[pivot], rows[pivot, r]
+    if row < 0 or row >= dim[world] or column >= columns[world]:
+        return
+    index = offsets[world] + row * strides[world] + column
+    d = diagonal[pivot, r]
+    if inverse_sqrt:
+        d = wp.sqrt(d)
+    result[index] = source[index] / d
 
 
 @wp.func
@@ -235,6 +280,7 @@ def _reconstruct(
     col_idx: wp.array[wp.int32],
     slots: wp.array[wp.int32],
     factors: wp.array3d[wp.float32],
+    diagonal: wp.array2d[wp.float32],
     result: wp.array[wp.float32],
 ):
     world, row, col = wp.tid()
@@ -245,19 +291,26 @@ def _reconstruct(
     value = wp.float32(0.0)
     for k in range(n):
         kc = inverse[vio[world] + k]
-        value += _factor_entry(ir // 6, ir % 6, kc // 6, kc % 6, row_ptr, col_idx, slots, factors) * _factor_entry(
-            jc // 6, jc % 6, kc // 6, kc % 6, row_ptr, col_idx, slots, factors
+        value += (
+            _factor_entry(ir // 6, ir % 6, kc // 6, kc % 6, row_ptr, col_idx, slots, factors)
+            * diagonal[kc // 6, kc % 6]
+            * _factor_entry(jc // 6, jc % 6, kc // 6, kc % 6, row_ptr, col_idx, slots, factors)
         )
     result[mio[world] + row * n + col] = value
 
 
-class LLTBlockSparseSolver(DirectSolver):
+class LDLBlockSparseSolver(DirectSolver):
     """Factor independent SPD matrices with a fixed block sparsity pattern.
 
     ``block_rows[w]`` partitions world ``w`` into groups of one to six scalar
     rows. ``block_edges[w]`` contains its undirected block edges. Omitting both
     uses contiguous six-row blocks and a full pattern, suitable for changing
     active dimensions in dense operators. Numeric zeros never define topology.
+
+    ``factors`` stores the unit-lower L blocks, including unit-diagonal blocks.
+    ``diagonal`` stores the scalar entries of D in block order, with ones for
+    padded rows. The permutation is described by ``rows``. No numerical
+    pivoting is performed; this backend targets positive-definite systems.
     """
 
     def __init__(
@@ -279,11 +332,11 @@ class LLTBlockSparseSolver(DirectSolver):
 
     def _allocate_impl(self, operator: DenseLinearOperatorData) -> None:
         if not isinstance(operator.info, DenseSquareMultiLinearInfo):
-            raise ValueError("LLT factorization requires a square matrix.")
+            raise ValueError("LDL factorization requires a square matrix.")
         if operator.info.dtype != wp.float32:
-            raise ValueError("LLTBlockSparseSolver supports float32 matrices.")
+            raise ValueError("LDLBlockSparseSolver supports float32 matrices.")
         if operator.info.itype != wp.int32:
-            raise ValueError("LLTBlockSparseSolver supports int32 indices.")
+            raise ValueError("LDLBlockSparseSolver supports int32 indices.")
         info = operator.info
         self._device = info.dim.device
         capacities = info.maxdim.numpy().tolist()
@@ -370,6 +423,7 @@ class LLTBlockSparseSolver(DirectSolver):
         self._pivots, self._inverse = ints(level_indices), ints(inverse)
         self.values = wp.zeros((len(block_i), 6, 6), dtype=wp.float32, device=self.device)
         self.factors = wp.zeros_like(self.values)
+        self.diagonal = wp.zeros((self.pivot_count, 6), dtype=wp.float32, device=self.device)
         self.failed = wp.zeros(len(capacities), dtype=wp.int32, device=self.device)
         self._ones = wp.ones(len(capacities), dtype=wp.int32, device=self.device)
         self._has_factors = False
@@ -414,7 +468,7 @@ class LLTBlockSparseSolver(DirectSolver):
             wp.launch(
                 _check_factors,
                 dim=(self.pivot_count, 6),
-                inputs=[self.worlds, self.factors, self.failed],
+                inputs=[self.worlds, self.diagonal, self.failed],
                 device=self.device,
             )
             self._factor_levels(True)
@@ -435,11 +489,13 @@ class LLTBlockSparseSolver(DirectSolver):
                     self._row_idx,
                     self._row_ptr,
                     self._row_slots,
+                    self.block_j,
                     self._pred_ptr,
                     self._pred_left,
                     self._pred_right,
                     self.values,
                     self.factors,
+                    self.diagonal,
                     self.pivot_count,
                     retry,
                     self.failed,
@@ -461,9 +517,19 @@ class LLTBlockSparseSolver(DirectSolver):
         forward_only: bool = False,
         active_dim: wp.array[wp.int32] | None = None,
     ) -> None:
-        """Solve row-major multiple RHS, returning rows in their original order."""
+        """Solve L D L^T for multiple RHS, or only L when forward_only is set."""
         self._check_has_factorization()
         for forward in (True,) if forward_only else (True, False):
+            if not forward:
+                self.solve_diagonal(
+                    x,
+                    x,
+                    offsets=offsets,
+                    strides=strides,
+                    columns=columns,
+                    max_columns=max_columns,
+                    active_dim=active_dim,
+                )
             self.solve_triangular(
                 b if forward else x,
                 x,
@@ -487,7 +553,7 @@ class LLTBlockSparseSolver(DirectSolver):
         max_columns: int,
         active_dim: wp.array[wp.int32] | None = None,
     ) -> None:
-        """Apply one triangular solve in original row order, optionally in place."""
+        """Solve with unit-lower L or L^T in original row order, without D scaling."""
         self._check_has_factorization()
         starts, neighbors, slots = (
             (self._row_ptr, self._col_idx, self._row_slots)
@@ -524,6 +590,38 @@ class LLTBlockSparseSolver(DirectSolver):
                 device=self.device,
             )
 
+    def solve_diagonal(
+        self,
+        b: wp.array[wp.float32],
+        x: wp.array[wp.float32],
+        *,
+        offsets: wp.array[wp.int32],
+        strides: wp.array[wp.int32],
+        columns: wp.array[wp.int32],
+        max_columns: int,
+        inverse_sqrt: bool = False,
+        active_dim: wp.array[wp.int32] | None = None,
+    ) -> None:
+        """Apply D^-1, or D^-1/2 for a whitened response, optionally in place."""
+        self._check_has_factorization()
+        wp.launch(
+            _solve_diagonal,
+            dim=(self.pivot_count, 6, max_columns),
+            inputs=[
+                self.worlds,
+                self.rows,
+                self.diagonal,
+                self.operator.info.dim if active_dim is None else active_dim,
+                offsets,
+                strides,
+                columns,
+                inverse_sqrt,
+                b,
+                x,
+            ],
+            device=self.device,
+        )
+
     def _solve_impl(self, b: wp.array[wp.float32], x: wp.array[wp.float32]) -> None:
         self.solve_matrix(b, x, offsets=self.operator.info.vio, strides=self._ones, columns=self._ones, max_columns=1)
 
@@ -544,6 +642,7 @@ class LLTBlockSparseSolver(DirectSolver):
                 self._col_idx,
                 self._row_slots,
                 self.factors,
+                self.diagonal,
                 A,
             ],
             device=self.device,

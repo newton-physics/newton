@@ -354,14 +354,14 @@ class Example:
         )
         parser.add_argument(
             "--linear-solver-type",
-            choices=("LLTB", "LLTBRCM", "LLTBS", "CR"),
+            choices=("LLTB", "LLTBRCM", "LDL", "CR"),
             default="LLTB",
             type=str.upper,
             help="Kamino dynamics linear solver to use.",
         )
         parser.add_argument(
             "--bilateral-solver-type",
-            choices=("LLTB", "LLTBRCM", "LLTBS"),
+            choices=("LLTB", "LLTBRCM", "LDL"),
             default="LLTBRCM",
             type=str.upper,
             help="DVI bilateral solver (this example retains its tuned RCM preset).",

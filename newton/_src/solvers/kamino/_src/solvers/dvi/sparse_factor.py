@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Kamino assembly and response adapters for the sparse Cholesky backend."""
+"""Kamino assembly and response adapters for the sparse LDL transpose backend."""
 
 import warp as wp
 
@@ -319,7 +319,13 @@ def response_sparse(path, problem, compact):
     }
     # Keep forward-only columns separately because some worlds may exceed compact capacity.
     solver.solve_triangular(state.bilateral_response_factor, state.bilateral_response_factor, forward=True, **layout)
-    solver.solve_triangular(state.bilateral_response_factor, state.bilateral_response, forward=False, **layout)
+    solver.solve_diagonal(state.bilateral_response_factor, state.bilateral_response, **layout)
+    solver.solve_triangular(state.bilateral_response, state.bilateral_response, forward=False, **layout)
+    if compact:
+        # Z = D^-1/2 L^-1 B gives Z^T Z = B^T A^-1 B for the compact Schur product.
+        solver.solve_diagonal(
+            state.bilateral_response_factor, state.bilateral_response_factor, inverse_sqrt=True, **layout
+        )
     wp.launch(
         _finish_response,
         dim=dims,

@@ -9,13 +9,13 @@ from .core import (
     DenseRectangularMultiLinearInfo,
     DenseSquareMultiLinearInfo,
 )
+from .factorize.ldl_sparse import LDLBlockSparseSolver
 
 # Import the RCM-reordered semi-sparse blocked LLT solver here (rather than
 # from .linear) to avoid a circular import: .factorize.llt_blocked_rcm_solver
 # imports DirectSolver from .linear, so .linear cannot import it back.
 # At this point .linear has been fully resolved, so the downstream import is safe.
 from .factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
-from .factorize.llt_sparse import LLTBlockSparseSolver
 from .linear import (
     ConjugateGradientSolver,
     ConjugateResidualSolver,
@@ -34,8 +34,8 @@ from .linear import (
 # ConstrainedDynamicsConfig.linear_solver_type.
 LinearSolverNameToType["LLTBRCM"] = LLTBlockedRCMSolver
 LinearSolverTypeToName[LLTBlockedRCMSolver] = "LLTBRCM"
-LinearSolverNameToType["LLTBS"] = LLTBlockSparseSolver
-LinearSolverTypeToName[LLTBlockSparseSolver] = "LLTBS"
+LinearSolverNameToType["LDL"] = LDLBlockSparseSolver
+LinearSolverTypeToName[LDLBlockSparseSolver] = "LDL"
 
 # Widen the LinearSolverType alias to include the additional backends. This
 # matters because `delassus.py` performs a runtime
@@ -44,7 +44,7 @@ LinearSolverType = (
     LLTSequentialSolver
     | LLTBlockedSolver
     | LLTBlockedRCMSolver
-    | LLTBlockSparseSolver
+    | LDLBlockSparseSolver
     | ConjugateGradientSolver
     | ConjugateResidualSolver
     | ConjugateResidualSolverFused
@@ -63,7 +63,7 @@ __all__ = [
     "DenseSquareMultiLinearInfo",
     "DirectSolver",
     "IterativeSolver",
-    "LLTBlockSparseSolver",
+    "LDLBlockSparseSolver",
     "LLTBlockedRCMSolver",
     "LLTBlockedSolver",
     "LLTSequentialSolver",

@@ -22,7 +22,7 @@ from newton._src.solvers.kamino._src.geometry.keying import KeySorter
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions, update_constraints_info
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians
-from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlockedSolver, LLTBlockSparseSolver
+from newton._src.solvers.kamino._src.linalg import LDLBlockSparseSolver, LLTBlockedRCMSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
@@ -444,7 +444,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertIsNone(default_config.dvi.use_schur_complement)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
         self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
-        self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTBS")
+        self.assertEqual(default_config.dvi.bilateral_solver_type, "LDL")
         self.assertEqual(default_config.dvi.bilateral_solver_kwargs, {})
 
         dense_config = SolverKamino.Config(
@@ -793,7 +793,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertTrue(np.all(np.isfinite(body_q)))
         self.assertTrue(np.all(np.isfinite(body_qd)))
         self.assertIsInstance(solver._solver_kamino.solver_fd, DVISolver)
-        self.assertIsInstance(solver._solver_kamino.solver_fd._bilateral_solver, LLTBlockSparseSolver)
+        self.assertIsInstance(solver._solver_kamino.solver_fd._bilateral_solver, LDLBlockSparseSolver)
         self.assertIsNone(solver._solver_kamino.solver_fd.data.bilateral_operator.mat)
         self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
         self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
@@ -1384,7 +1384,7 @@ class TestDVISolver(NewtonTestCase):
 
     def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
-        for backend in ("LLTB", "LLTBS"):
+        for backend in ("LLTB", "LDL"):
             with self.subTest(backend=backend):
                 self._check_sparse_bilateral_intervals(backend)
 
@@ -1449,7 +1449,7 @@ class TestDVISolver(NewtonTestCase):
         # Sweeps stay fused; only the final solution matvec applies J^T separately.
         self.assertEqual(body_products.call_count, 1)
         self.assertIs(body_products.call_args.args[1], problem.delassus._vec_temp_body_space)
-        # LLTB fuses the CUDA solve; LLTBS uses its level-scheduled triangular solves.
+        # LLTB fuses the CUDA solve; LDL uses its level-scheduled triangular solves.
         self.assertEqual(separate_bilateral_solves.call_count, 0 if self.device.is_cuda and backend == "LLTB" else 4)
 
         joint_dims = problem.data.njc.numpy()
@@ -2135,7 +2135,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertIsInstance(solver._solver_kamino.solver_fd, DVISolver)
 
     def test_08a_public_solver_heterogeneous_contact_rollout_with_dvi(self):
-        """Use Cholesky for heterogeneous dense and sparse DVI rollouts."""
+        """Use LDL for heterogeneous dense and sparse DVI rollouts."""
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
         basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
@@ -2177,7 +2177,7 @@ class TestDVISolver(NewtonTestCase):
                 self.assertLess(float(np.max(np.abs(state_in.body_qd.numpy()))), 100.0)
                 self.assertIsInstance(dvi_solver, DVISolver)
                 self.assertIsInstance(
-                    dvi_solver._bilateral_solver, (LLTBlockedSolver, LLTBlockedRCMSolver, LLTBlockSparseSolver)
+                    dvi_solver._bilateral_solver, (LLTBlockedSolver, LLTBlockedRCMSolver, LDLBlockSparseSolver)
                 )
                 joint_dims = solver._solver_kamino._model.info.num_joint_bilateral_cts.numpy()
                 self.assertTrue(np.any(joint_dims == 0))
@@ -3270,7 +3270,7 @@ class TestDVISolver(NewtonTestCase):
     def test_09_dr_legs_dvi_first_contact_remains_finite(self):
         if not self.device.is_cuda:
             self.skipTest("Dr Legs DVI first-contact regression uses the CUDA graph path")
-        for backend in ("LLTBRCM", "LLTBS"):
+        for backend in ("LLTBRCM", "LDL"):
             with self.subTest(backend=backend):
                 self._check_dr_legs_first_contact(backend)
 

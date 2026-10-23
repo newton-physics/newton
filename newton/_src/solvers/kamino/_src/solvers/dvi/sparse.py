@@ -18,7 +18,7 @@ from ...geometry.contacts import ContactsKamino
 from ...geometry.keying import KeySorter
 from ...kinematics.jacobians import SparseSystemJacobians
 from ...kinematics.limits import LimitsKamino
-from ...linalg import LLTBlockedRCMSolver, LLTBlockedSolver, LLTBlockSparseSolver
+from ...linalg import LDLBlockSparseSolver, LLTBlockedRCMSolver, LLTBlockedSolver
 from ...linalg.factorize.llt_blocked_rcm import make_llt_blocked_rcm_solve_kernel
 from . import sparse_factor
 from .coupling import PackedCoupling
@@ -222,7 +222,7 @@ class SparseDVIPath:
         if self.bilateral_solver is not None and self.data.bilateral_operator is not None:
             _build_sparse_bilateral_pairs(self, problem)
             _build_sparse_bilateral_row_nzb_topology(self, problem)
-            if isinstance(self.bilateral_solver, LLTBlockSparseSolver):
+            if isinstance(self.bilateral_solver, LDLBlockSparseSolver):
                 sparse_factor.prepare_sparse(self)
             elif isinstance(self.bilateral_solver, LLTBlockedRCMSolver):
                 self.bilateral_solver.configure_sparse_assembly(
@@ -1024,7 +1024,7 @@ def _sparse_bilateral_matvec(path: SparseDVIPath, problem: DualProblem) -> None:
 def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) -> None:
     operator = path.data.bilateral_operator
     operator.info.dim = path.data.bilateral_dim
-    if isinstance(path.bilateral_solver, LLTBlockSparseSolver):
+    if isinstance(path.bilateral_solver, LDLBlockSparseSolver):
         sparse_factor.factor_sparse(path, problem)
     elif isinstance(path.bilateral_solver, LLTBlockedRCMSolver):
         path.bilateral_solver.compute_sparse(
@@ -1602,7 +1602,7 @@ def _solve_sparse_with_bilateral_schur_complement(
     _solve_sparse_bilateral_block(
         path, problem, forward_only=forward_bilateral, compact_coupling=enable_compact_schur, joint_blocks=joint_blocks
     )
-    if isinstance(path.bilateral_solver, LLTBlockSparseSolver):
+    if isinstance(path.bilateral_solver, LDLBlockSparseSolver):
         sparse_factor.response_sparse(path, problem, enable_compact_schur)
     else:
         factor_offsets = path.data.bilateral_operator.info.mio

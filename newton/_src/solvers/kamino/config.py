@@ -372,7 +372,7 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Defaults to `True`.
     """
 
-    linear_solver_type: Literal["LLTB", "LLTBRCM", "LLTBS", "CR", "CRF"] = "LLTB"
+    linear_solver_type: Literal["LLTB", "LLTBRCM", "LDL", "CR", "CRF"] = "LLTB"
     """
     The type of linear solver to use for the dynamics problem.\n
     See :class:`LinearSolverType` for available options.\n
@@ -380,7 +380,8 @@ class ConstrainedDynamicsConfig(ConfigBase):
     RCM-reordered semi-sparse variant is available as 'LLTBRCM'
     (:class:`LLTBlockedRCMSolver`) and is currently opt-in pending further
     performance optimization.
-    ``LLTBS`` selects block-sparse Cholesky. Dense PADMM uses a full block
+    ``LDL`` selects block-sparse LDL transpose with an explicit diagonal D.
+    Dense PADMM uses a full block
     pattern to accommodate changing contacts; sparse PADMM does not support it.
     """
 
@@ -984,11 +985,13 @@ class DVISolverConfig:
     Defaults to `0.97`.
     """
 
-    bilateral_solver_type: Literal["LLTB", "LLTBRCM", "LLTBS"] = "LLTBS"
+    bilateral_solver_type: Literal["LLTB", "LLTBRCM", "LDL"] = "LDL"
     """
     Direct linear solver used for the bilateral constraint block.
-    Defaults to ``LLTBS``, a block-sparse Cholesky factorization with one
-    padded block per joint. ``LLTB`` selects dense blocked Cholesky and
+    Defaults to ``LDL``, a block-sparse LDL transpose factorization with
+    unit-lower L, explicit diagonal D, and one padded block per joint.
+    It requires a positive-definite matrix and uses no numerical pivoting.
+    ``LLTB`` selects dense blocked Cholesky and
     ``LLTBRCM`` selects the RCM-reordered semi-sparse implementation.
     """
 
@@ -1079,9 +1082,9 @@ class DVISolverConfig:
             raise ValueError(
                 f"Invalid tangential warmstart scale: {self.tangential_warmstart_scale}. Must be in the range [0, 1]."
             )
-        if self.bilateral_solver_type not in {"LLTB", "LLTBRCM", "LLTBS"}:
+        if self.bilateral_solver_type not in {"LLTB", "LLTBRCM", "LDL"}:
             raise ValueError(
-                f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM', 'LLTBS']."
+                f"Invalid bilateral solver type: {self.bilateral_solver_type}. Must be one of ['LLTB', 'LLTBRCM', 'LDL']."
             )
         WarmStartMode.from_string(self.warmstart_mode)
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)

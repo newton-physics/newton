@@ -13,7 +13,7 @@ from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions
-from newton._src.solvers.kamino._src.linalg import ConjugateResidualSolver, LLTBlockedSolver, LLTBlockSparseSolver
+from newton._src.solvers.kamino._src.linalg import ConjugateResidualSolver, LDLBlockSparseSolver, LLTBlockedSolver
 from newton._src.solvers.kamino._src.linalg.utils.matrix import SquareSymmetricMatrixProperties
 from newton._src.solvers.kamino._src.linalg.utils.range import in_range_via_gaussian_elimination
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver, PADMMWarmStartMode
@@ -510,7 +510,7 @@ class TestPADMMSolver(unittest.TestCase):
         """
         Tests the Proximal-ADMM (PADMM) solver with default config on the reference problem.
         """
-        for linear_solver in (LLTBlockedSolver, LLTBlockSparseSolver):
+        for linear_solver in (LLTBlockedSolver, LDLBlockSparseSolver):
             with self.subTest(linear_solver=linear_solver.__name__):
                 # Create the test problem
                 test = TestSetup(
@@ -879,7 +879,7 @@ class TestPADMMSolver(unittest.TestCase):
         combined-residual formula, the restart bookkeeping, and the rule that a restart
         rewinds only the extrapolation while keeping the current iterate.
         """
-        for linear_solver in (LLTBlockedSolver, LLTBlockSparseSolver):
+        for linear_solver in (LLTBlockedSolver, LDLBlockSparseSolver):
             with self.subTest(linear_solver=linear_solver.__name__):
                 self._check_apadmm_restart_reference(linear_solver)
 

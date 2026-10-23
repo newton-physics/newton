@@ -19,9 +19,9 @@ from ...kinematics.limits import LimitsKamino
 from ...linalg import (
     DenseLinearOperatorData,
     DenseSquareMultiLinearInfo,
+    LDLBlockSparseSolver,
     LLTBlockedRCMSolver,
     LLTBlockedSolver,
-    LLTBlockSparseSolver,
 )
 from ..common import (
     WarmStartMode,
@@ -125,7 +125,7 @@ class DVISolver:
         self._collect_info: bool = False
         self._size: SizeKamino | None = None
         self._data: DVIData | None = None
-        self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | LLTBlockSparseSolver | None = None
+        self._bilateral_solver: LLTBlockedSolver | LLTBlockedRCMSolver | LDLBlockSparseSolver | None = None
         self._use_schur_complement: bool = False
         self._max_alternating_iterations: int = 1
         self._bilateral_solve_after_block: tuple[bool, ...] = ()
@@ -360,7 +360,7 @@ class DVISolver:
                 kwargs.setdefault("solve_block_dim", 128)
             solver_class = LLTBlockedRCMSolver
         else:
-            solver_class = LLTBlockSparseSolver
+            solver_class = LDLBlockSparseSolver
 
         bilateral_joint_cts_per_world = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
         # LLT metadata requires positive blocks; assembly makes zero-row worlds disconnected identities.
@@ -376,7 +376,7 @@ class DVISolver:
         operator.info.finalize(capacities, dtype=float32, device=self._device)
         self._data.bilateral_dim = wp.array(factor_dims, dtype=wp.int32, device=self._device)
         operator.info.dim = self._data.bilateral_dim
-        if solver_type == "LLTBS":
+        if solver_type == "LDL":
             rows, edges = sparse_factor.joint_block_pattern(model, capacities)
             kwargs.update(block_rows=rows, block_edges=edges)
         else:
@@ -388,7 +388,7 @@ class DVISolver:
         )
         self._data.bilateral_operator = operator
         self._bilateral_solver = solver_class(operator=operator, device=self._device, **kwargs)
-        if solver_type == "LLTBS":
+        if solver_type == "LDL":
             sparse_factor.allocate_response(self._data.state, model.size.num_worlds, self._device)
 
     @staticmethod
@@ -926,7 +926,7 @@ class DVISolver:
         """Extract, symmetrically scale, and factor the bilateral block ``D_bb``."""
         operator = self._data.bilateral_operator
         operator.info.dim = self._data.bilateral_dim
-        if isinstance(self._bilateral_solver, LLTBlockSparseSolver):
+        if isinstance(self._bilateral_solver, LDLBlockSparseSolver):
             sparse_factor.factor_dense(self._bilateral_solver, problem, self._data.state.bilateral_preconditioner)
             return
         wp.launch(
@@ -1061,7 +1061,7 @@ class DVISolver:
         permutation = self._bilateral_solver.P if use_permutation else self._data.state.projected_mio
         unilateral_begin = 0
         unilateral_count = self._max_unilateral_rows
-        if isinstance(self._bilateral_solver, LLTBlockSparseSolver):
+        if isinstance(self._bilateral_solver, LDLBlockSparseSolver):
             sparse_factor.response_dense(self, problem)
         else:
             wp.launch(

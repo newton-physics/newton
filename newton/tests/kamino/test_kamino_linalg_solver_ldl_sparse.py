@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Numerical contracts for the block-sparse Cholesky backend."""
+"""Numerical contracts for the block-sparse LDL transpose backend."""
 
 import unittest
 
@@ -9,10 +9,10 @@ import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.linalg import DenseLinearOperatorData, DenseSquareMultiLinearInfo
-from newton._src.solvers.kamino._src.linalg.factorize.llt_sparse import LLTBlockSparseSolver
+from newton._src.solvers.kamino._src.linalg.factorize.ldl_sparse import LDLBlockSparseSolver
 
 
-class TestLLTBlockSparseSolver(unittest.TestCase):
+class TestLDLBlockSparseSolver(unittest.TestCase):
     def test_dense_capacity_refresh(self):
         """Refresh changing active dimensions and matrix sparsity under a fixed capacity."""
         rng = np.random.default_rng(312)
@@ -23,7 +23,7 @@ class TestLLTBlockSparseSolver(unittest.TestCase):
                 matrix = wp.zeros(13 * 13, device=device)
                 rhs = wp.array(rng.normal(size=13).astype(np.float32), device=device)
                 x = wp.full(13, -123.0, device=device)
-                solver = LLTBlockSparseSolver(operator=DenseLinearOperatorData(info=info, mat=matrix))
+                solver = LDLBlockSparseSolver(operator=DenseLinearOperatorData(info=info, mat=matrix))
                 solver.compute(matrix)
                 graph = None
                 if device.is_cuda:
@@ -79,7 +79,7 @@ class TestLLTBlockSparseSolver(unittest.TestCase):
                 info.finalize([8, 4, 1], dtype=wp.float32, device=device)
                 source = np.concatenate([a.ravel() for a in matrices])
                 a = wp.array(source, device=device)
-                solver = LLTBlockSparseSolver(block_rows=groups, block_edges=edges, device=device)
+                solver = LDLBlockSparseSolver(block_rows=groups, block_edges=edges, device=device)
                 solver.finalize(DenseLinearOperatorData(info=info, mat=a))
                 # The cycle adds one fill block; the disconnected second graph adds none.
                 self.assertEqual(solver.values.shape[0], 9 + 4 + 1)
@@ -87,6 +87,34 @@ class TestLLTBlockSparseSolver(unittest.TestCase):
                 b = wp.array(rhs, device=device)
                 x = wp.full(13, -123.0, device=device)
                 solver.compute(a)
+                # LDL stores unit-lower L separately from its diagonal D.
+                factors = solver.factors.numpy()
+                np.testing.assert_array_equal(np.diagonal(factors[: solver.pivot_count], axis1=1, axis2=2), 1.0)
+                diagonal = solver.diagonal.numpy()
+                self.assertEqual(diagonal.shape, (solver.pivot_count, 6))
+                self.assertTrue(np.all(diagonal > 0.0))
+                rows = solver.rows.numpy()
+                worlds = solver.worlds.numpy()
+                block_i, block_j = solver.block_i.numpy(), solver.block_j.numpy()
+                for world, original in enumerate(matrices):
+                    n = len(original)
+                    lower = np.zeros((n, n), dtype=np.float64)
+                    d = np.empty(n, dtype=np.float64)
+                    permutation = []
+                    for pivot in np.flatnonzero(worlds == world):
+                        live = rows[pivot] >= 0
+                        permutation.extend(rows[pivot, live])
+                        d[rows[pivot, live]] = diagonal[pivot, live]
+                        np.testing.assert_array_equal(diagonal[pivot, ~live], 1.0)
+                    for slot, (i, j) in enumerate(zip(block_i, block_j, strict=True)):
+                        if worlds[i] == world:
+                            ri, cj = rows[i] >= 0, rows[j] >= 0
+                            lower[np.ix_(rows[i, ri], rows[j, cj])] = factors[slot][np.ix_(ri, cj)]
+                    ordered = lower[np.ix_(permutation, permutation)]
+                    np.testing.assert_array_equal(ordered, np.tril(ordered))
+                    np.testing.assert_array_equal(np.diag(ordered), 1.0)
+                    # Reconstruct independently of solver.reconstruct(), using explicit D.
+                    np.testing.assert_allclose((lower * d) @ lower.T, original, rtol=2e-6, atol=2e-6)
                 solver.solve(b, x)
                 for i, offset in enumerate((0, 8, 12)):
                     n = len(matrices[i])
@@ -111,13 +139,16 @@ class TestLLTBlockSparseSolver(unittest.TestCase):
                     "max_columns": 3,
                 }
                 solver.solve_triangular(rhs_matrix_wp, forward, forward=True, **layout)
-                solver.solve_triangular(forward, result, forward=False, **layout)
+                solver.solve_diagonal(forward, result, **layout)
+                solver.solve_triangular(result, result, forward=False, **layout)
+                whitened = wp.full(65, -123.0, device=device)
+                solver.solve_diagonal(forward, whitened, inverse_sqrt=True, **layout)
                 for i, (offset, width) in enumerate(((0, 3), (8, 2), (12, 1))):
                     n = len(matrices[i])
                     b_matrix = rhs_matrix[offset : offset + n, :width].astype(np.float64)
                     expected = np.linalg.solve(matrices[i].astype(np.float64), b_matrix)
                     actual = result.numpy().reshape(13, 5)[offset : offset + n]
-                    y = forward.numpy().reshape(13, 5)[offset : offset + n, :width]
+                    y = whitened.numpy().reshape(13, 5)[offset : offset + n, :width]
                     np.testing.assert_allclose(actual[:, :width], expected, rtol=2e-6, atol=2e-6)
                     np.testing.assert_allclose(y.T @ y, b_matrix.T @ expected, rtol=3e-6, atol=3e-6)
                     np.testing.assert_array_equal(actual[:, width:], -123.0)
@@ -151,7 +182,7 @@ class TestLLTBlockSparseSolver(unittest.TestCase):
                 matrices = np.stack([np.eye(96, dtype=np.float32)] * 2)
                 matrices[1, 0, 0] = -1e-6
                 a = wp.array(matrices.ravel(), device=device)
-                solver = LLTBlockSparseSolver(
+                solver = LDLBlockSparseSolver(
                     operator=DenseLinearOperatorData(info=info, mat=a),
                     block_rows=groups,
                     block_edges=edges,
@@ -159,6 +190,10 @@ class TestLLTBlockSparseSolver(unittest.TestCase):
                 )
                 self.assertLess(solver.values.size, a.size // 4)
                 solver.compute(a)
+                np.testing.assert_array_equal(solver.failed.numpy(), [0, 1])
+                d = solver.diagonal.numpy()
+                np.testing.assert_array_equal(d[:16], 1.0)
+                np.testing.assert_allclose(d[16, 0], 9e-6, rtol=2e-6)
                 x = wp.ones(192, device=device)
                 solver.solve_inplace(x)
                 np.testing.assert_array_equal(x.numpy()[:96], 1.0)
