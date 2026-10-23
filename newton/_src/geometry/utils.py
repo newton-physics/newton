@@ -879,7 +879,7 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
     alignment = np.einsum("ij,ij->i", normal, offset)
     # Summation order can flip the sign of a near-zero dot product, so faces within a few float32
     # rounding errors of zero, or whose terms can overflow float32, take the scalar np.dot decision.
-    # That keeps hulls bit-identical to a per-face np.dot winding, so cached convex decomposition parts stay valid.
+    # Preserve the scalar winding decision on these faces for convex-decomposition cache compatibility.
     magnitude = np.einsum("ij,ij->i", np.abs(normal).astype(np.float64), np.abs(offset).astype(np.float64))
     tolerance = 8.0 * np.finfo(np.float32).eps * magnitude
     scalar_faces = ~(np.abs(alignment) > tolerance) | (magnitude > np.finfo(np.float32).max)
