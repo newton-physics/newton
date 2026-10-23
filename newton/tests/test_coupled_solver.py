@@ -2780,18 +2780,23 @@ def _harvest_comoving_proxy_contact(vbd_substeps, contact_kd, speed=1.0, depth=1
     return harvested[-1]
 
 
-def _harvest_comoving_proxy_particle_contact(vbd_substeps, contact_kd, speed=1.0, depth=1.0e-3, radius=0.05, dt=0.01):
-    """Harvest the force on one proxy particle riding on a VBD box that moves up at ``speed``.
+def _harvest_comoving_proxy_particle_contact(
+    vbd_substeps, contact_kd, speed=1.0, particle_speed=None, depth=1.0e-3, radius=0.05, dt=0.01
+):
+    """Harvest the force on one proxy particle resting on a VBD box that moves up at ``speed``.
 
     Mirrors :func:`_harvest_comoving_proxy_contact` with the roles swapped: the particle is the
-    proxy and the box is simulated by the VBD destination entry.
+    proxy and the box is simulated by the VBD destination entry. The particle moves up at
+    ``particle_speed``, which defaults to ``speed`` (no relative motion).
     """
+    if particle_speed is None:
+        particle_speed = speed
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, kd=contact_kd, mu=0.0)
     body = builder.add_body(mass=1.0e3, inertia=wp.mat33(np.eye(3) * 1.0e3))
     builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.1, cfg=shape_cfg)
     builder.body_qd[body] = (0.0, 0.0, speed, 0.0, 0.0, 0.0)
-    builder.add_particle(pos=(0.0, 0.0, 0.1 + radius - depth), vel=(0.0, 0.0, speed), mass=1.0, radius=radius)
+    builder.add_particle(pos=(0.0, 0.0, 0.1 + radius - depth), vel=(0.0, 0.0, particle_speed), mass=1.0, radius=radius)
     builder.color()
     model = builder.finalize(device="cpu")
     model.soft_contact_kd = contact_kd
@@ -2852,8 +2857,11 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
         np.testing.assert_allclose(capped["wrench"], full["wrench"], rtol=1.0e-5, atol=1.0e-6)
 
     def test_proxy_wrench_harvest_ignores_damping_without_relative_motion(self):
-        # Sub-stepping the destination entry must not turn the proxy's motion over the whole
-        # coupled step into a relative approach velocity against the last substep's particle motion.
+        """Harvest the same proxy-body wrench with and without contact damping for a co-moving contact.
+
+        Sub-stepping the destination entry must not turn the proxy's motion over the whole
+        coupled step into a relative approach velocity against the last substep's particle motion.
+        """
         for substeps in (1, 2):
             with self.subTest(substeps=substeps):
                 undamped = _harvest_comoving_proxy_contact(substeps, contact_kd=0.0)
@@ -2862,13 +2870,27 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
                 np.testing.assert_allclose(damped, undamped, rtol=1.0e-2, atol=1.0e-3)
 
     def test_proxy_particle_harvest_ignores_damping_without_relative_motion(self):
-        # The proxy-particle harvest pairs the particle history with the coupled step as well.
+        """Harvest the same proxy-particle force with and without contact damping for a co-moving contact."""
         for substeps in (1, 2):
             with self.subTest(substeps=substeps):
                 undamped = _harvest_comoving_proxy_particle_contact(substeps, contact_kd=0.0)
                 damped = _harvest_comoving_proxy_particle_contact(substeps, contact_kd=1.0e3)
                 self.assertGreater(undamped[2], 0.0, "the box top must push the particle up")
                 np.testing.assert_allclose(damped, undamped, rtol=1.0e-2, atol=1.0e-3)
+
+    def test_proxy_particle_harvest_reads_solved_pose_with_substeps(self):
+        """Harvest the proxy-particle force at the solved pose of a sub-stepped destination entry.
+
+        The box moves up into a resting particle, so the contact force grows over the step. A
+        sub-stepped entry steps its own scratch states, and the harvest reads the solved pose from
+        ``state_out``; the result then stays close to the single-substep harvest.
+        """
+        for contact_kd in (0.0, 1.0e3):
+            with self.subTest(contact_kd=contact_kd):
+                single = _harvest_comoving_proxy_particle_contact(1, contact_kd=contact_kd, particle_speed=0.0)
+                substepped = _harvest_comoving_proxy_particle_contact(2, contact_kd=contact_kd, particle_speed=0.0)
+                self.assertGreater(single[2], 0.0, "the box top must push the particle up")
+                np.testing.assert_allclose(substepped, single, rtol=0.15, atol=1.0e-3)
 
     def test_external_rigid_solver_harvests_particle_soft_contacts(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
