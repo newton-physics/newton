@@ -148,7 +148,7 @@ class TestRemeshConvexHullFull3D(unittest.TestCase):
         self.assertTrue(_has_outward_winding(verts_limited, faces_limited))
 
     def test_matches_per_face_reference(self):
-        """Faces and vertices equal a per-face scalar ``np.dot`` winding of the same Qhull hull, bit for bit."""
+        """Verify that faces and vertices equal a per-face ``np.dot`` winding of the same Qhull hull, bit for bit."""
         from scipy.spatial import ConvexHull
 
         rng = np.random.default_rng(7)
