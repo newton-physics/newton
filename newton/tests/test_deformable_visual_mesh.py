@@ -679,7 +679,7 @@ class TestDeformableVisuals(unittest.TestCase):
         assert_np_equal(visuals_b.get_points(0).numpy(), moved_b[particle_indices], tol=1.0e-6)
 
     def test_update_is_cuda_graph_capturable(self):
-        """Replay captured skinning after changing the simulation state."""
+        """Keep captured outputs tied to their source states across replay."""
         model, _particle_indices, _vertices = self._model()
         if not model.device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device")
@@ -699,6 +699,43 @@ class TestDeformableVisuals(unittest.TestCase):
 
         for mesh in model.deformable_visual_meshes:
             assert_np_equal(visuals.get_points(mesh).numpy(), moved[mesh.parent.numpy()], tol=1.0e-6)
+
+        other_state = model.state()
+        other_positions = other_state.particle_q.numpy()
+        other_positions[:, 2] += 3.0
+        other_state.particle_q.assign(other_positions)
+        before_points = visuals.points.numpy().copy()
+        before_normals = visuals.normals.numpy().copy()
+        for capturing in (False, True):
+            with self.subTest(capturing=capturing):
+                with wp.ScopedCapture(model.device) if capturing else contextlib.nullcontext():
+                    with self.assertRaisesRegex(ValueError, "captured.*another state"):
+                        model.update_deformable_visuals(other_state, visuals)
+                self.assertIs(visuals.state, state)
+                assert_np_equal(visuals.points.numpy(), before_points, tol=0.0)
+                assert_np_equal(visuals.normals.numpy(), before_normals, tol=0.0)
+
+        other_visuals = model.deformable_visuals()
+        model.update_deformable_visuals(other_state, other_visuals)
+        with wp.ScopedCapture(model.device) as other_capture:
+            model.update_deformable_visuals(other_state, other_visuals)
+
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        for graph, source, output, expected in (
+            (capture.graph, state, visuals, moved),
+            (other_capture.graph, other_state, other_visuals, other_positions),
+            (capture.graph, state, visuals, moved),
+        ):
+            wp.capture_launch(graph)
+            self.assertIs(output.state, source)
+            viewer.set_deformable_visuals(output)
+            viewer._frame(source)
+            for mesh in model.deformable_visual_meshes:
+                call = viewer.calls[f"/model/deformable_visual_meshes/mesh_{mesh.index}_{mesh.label}"]
+                assert_np_equal(call["points"], expected[mesh.parent.numpy()], tol=1.0e-6)
+            with self.assertRaisesRegex(ValueError, "another state"):
+                viewer.log_state(other_state if source is state else state)
 
     def test_rejects_results_and_meshes_from_another_model(self):
         """Output buffers and mesh handles cannot be used with another model."""

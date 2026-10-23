@@ -140,8 +140,9 @@ class DeformableVisuals:
 
     Allocate this result with :meth:`newton.Model.deformable_visuals` and
     populate it with :meth:`newton.Model.update_deformable_visuals`. One result
-    can be reused as simulation states are swapped. Allocate separate results
-    when multiple states must remain available simultaneously.
+    can be reused as simulation states are swapped outside CUDA capture. Once
+    an update is captured, that result is tied to its source State. Allocate
+    separate results for different captured states or simultaneous snapshots.
     These output buffers do not support differentiation through skinning.
 
     .. experimental::
@@ -177,6 +178,7 @@ class DeformableVisuals:
         """Current visual unit normals, shape [vertex_count, 3]."""
 
         self._state: State | None = None
+        self._captured_state: State | None = None
         self._completion_event = wp.Event(self.device) if self.device.is_cuda else None
 
     @property
@@ -216,10 +218,19 @@ class DeformableVisuals:
         if self._model is not model:
             raise ValueError("DeformableVisuals was created for another model.")
 
+    def _validate_state(self, state: State) -> None:
+        if self._captured_state is not None and self._captured_state is not state:
+            raise ValueError(
+                "DeformableVisuals has a captured update from another state; allocate separate outputs for each state."
+            )
+
     def _mark_updated(self, state: State) -> None:
         self._state = state
         if self._completion_event is not None:
             stream = wp.get_stream(self.device)
+            # Python state tracking does not run on replay, so its identity must stay fixed.
+            if stream.is_capturing:
+                self._captured_state = state
             stream.record_event(self._completion_event, external=stream.is_capturing)
 
     def wait(self, stream: wp.Stream | None = None) -> None:

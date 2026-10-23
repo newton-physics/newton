@@ -1076,8 +1076,30 @@ and can run in a CUDA graph. A different consumer stream must call
 buffers before capture. Explicit shared buffers must be updated whenever the
 state changes. Log the same State that was evaluated. The viewer can detect a
 different State or output that was never evaluated, but not in-place changes
-to the same State. One output can be reused across swapped states; use separate
-buffers only when retaining several snapshots. Calling ``set_model()`` resets
+to the same State. Outside capture, one output can be reused across swapped
+states. Once an update is captured, its output is tied to that source State,
+even for later updates outside capture. Python state tracking does not run on
+graph replay. Use a separate output for each captured source State:
+
+.. code-block:: python
+
+    visuals_a = model.deformable_visuals()
+    visuals_b = model.deformable_visuals()
+    model.update_deformable_visuals(state_a, visuals_a)  # Warm up before capture.
+    model.update_deformable_visuals(state_b, visuals_b)
+    with wp.ScopedCapture(model.device) as capture_a:
+        model.update_deformable_visuals(state_a, visuals_a)
+    with wp.ScopedCapture(model.device) as capture_b:
+        model.update_deformable_visuals(state_b, visuals_b)
+
+    # The source arrays can change in place between replays.
+    wp.capture_launch(capture_a.graph)
+    viewer.set_deformable_visuals(visuals_a)
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state_a)
+    viewer.end_frame()
+
+Use separate outputs to retain simultaneous snapshots too. Calling ``set_model()`` resets
 the viewer's shared-output binding. Passing ``None`` to ``set_deformable_visuals``
 restores automatic viewer updates. Differentiating through these visual-output buffers is not
 supported by this API.
