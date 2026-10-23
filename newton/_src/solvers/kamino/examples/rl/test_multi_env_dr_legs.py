@@ -44,7 +44,7 @@ def run_test(num_worlds: int, num_steps: int, device):
     asset_path = newton.utils.download_asset("disneyresearch")
     usd_path = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
 
-    msg.notif(f"--- Testing {num_worlds} environments ---")
+    msg.info(f"--- Testing {num_worlds} environments ---")
 
     # Build model
     msg.info("Building model...")
@@ -62,15 +62,15 @@ def run_test(num_worlds: int, num_steps: int, device):
     sim = Simulator(model=model, config=settings)
     sim.set_control_callback(lambda _: None)
 
-    msg.info(f"Model size: {sim.model.size}")
-    msg.info(f"Contacts capacity: {sim.contacts.model_max_contacts_host}")
+    msg.debug(f"Model size: {sim.model.size}")
+    msg.debug(f"Contacts capacity: {sim.contacts.model_max_contacts_host}")
 
     # Warm-up: step without CUDA graphs to compile kernels
     msg.info("Stepping (warmup)...")
     try:
         sim.step()
         wp.synchronize()
-        msg.notif("Warmup step 1 OK")
+        msg.info("Warmup step 1 OK")
     except Exception as e:
         msg.error(f"Warmup step 1 FAILED: {e}")
         return False
@@ -79,7 +79,7 @@ def run_test(num_worlds: int, num_steps: int, device):
     msg.info("Resetting...")
     sim.reset()
     wp.synchronize()
-    msg.notif("Reset OK")
+    msg.info("Reset OK")
 
     # Step multiple times
     msg.info(f"Stepping {num_steps} times...")
@@ -89,7 +89,7 @@ def run_test(num_worlds: int, num_steps: int, device):
     wp.synchronize()
     t1 = time.perf_counter()
 
-    msg.notif(f"OK: {num_worlds} envs x {num_steps} steps in {t1 - t0:.2f}s ({num_steps / (t1 - t0):.0f} steps/s)")
+    msg.info(f"OK: {num_worlds} envs x {num_steps} steps in {t1 - t0:.2f}s ({num_steps / (t1 - t0):.0f} steps/s)")
     return True
 
 
@@ -99,8 +99,6 @@ if __name__ == "__main__":
     parser.add_argument("--num-worlds", type=int, nargs="+", default=[2048])
     parser.add_argument("--num-steps", type=int, default=10)
     args = parser.parse_args()
-
-    msg.set_log_level(msg.LogLevel.INFO)
 
     if args.device:
         device = wp.get_device(args.device)
@@ -114,4 +112,4 @@ if __name__ == "__main__":
             msg.error(f"FAILED at {nw} envs")
             break
 
-    msg.notif("Done!")
+    msg.info("Done!")

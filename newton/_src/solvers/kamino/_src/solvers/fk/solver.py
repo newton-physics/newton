@@ -9,8 +9,6 @@ See the :mod:`newton._src.solvers.kamino._src.solvers.fk` module for a detailed 
 
 from __future__ import annotations
 
-import sys
-
 import numpy as np
 import warp as wp
 
@@ -2582,9 +2580,11 @@ class ForwardKinematicsSolver:
             max_residual = self.data.gauss_newton.max_residual.numpy().copy()
             num_active_worlds = self.model.size.num_worlds if world_mask is None else world_mask.numpy().sum()
             if verbose:
-                sys.__stdout__.write(f"Newton success for {success.sum()}/{num_active_worlds} worlds; ")
-                sys.__stdout__.write(f"num iterations={iterations.max()}; ")
-                sys.__stdout__.write(f"max residual={max_residual.max()}\n")
+                msg.info(
+                    f"Newton success for {success.sum()}/{num_active_worlds} worlds; "
+                    f"num iterations={iterations.max()}; "
+                    f"max residual={max_residual.max()}"
+                )
 
         # Return solver status
         if return_status:

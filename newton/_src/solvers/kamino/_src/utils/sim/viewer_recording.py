@@ -246,7 +246,7 @@ def _finish_clip(self):
     captured = recording.img_idx - recording.num_skipped_frames
     recording.recording_active = False
     recording.recording_stopped = True
-    msg.notif(f"Clip captured: {captured} frames")
+    msg.info(f"Clip captured: {captured} frames")
 
     _flush_save_futures(recording)
 
@@ -256,7 +256,7 @@ def _finish_clip(self):
         fps=recording.clip_fps,
         keep_frames=recording.clip_keep_frames,
     ):
-        msg.notif(f"Video saved: {out_path}")
+        msg.info(f"Video saved: {out_path}")
 
     on_done = recording.clip_on_done
     recording.clip_max_frames = None
@@ -334,7 +334,7 @@ def _start_clip(
     recording.clip_fps = fps
     recording.recording_active = True
     frame_limit = f"{max_frames} frames" if max_frames is not None else "until viewer close"
-    msg.notif(f"Recording started: {output_path} ({frame_limit} -> {recording.default_video_folder})")
+    msg.info(f"Recording started: {output_path} ({frame_limit} -> {recording.default_video_folder})")
 
 
 def _close_with_record(self):

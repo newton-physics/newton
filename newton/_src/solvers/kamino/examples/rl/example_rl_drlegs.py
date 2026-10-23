@@ -515,10 +515,9 @@ if __name__ == "__main__":
     parser.add_argument("--render-fps", type=float, default=30.0, help="Target render rate in async mode")
     args = parser.parse_args()
 
-    msg.set_log_level(msg.LogLevel.INFO)
     device = wp.get_device(args.device) if args.device else wp.get_preferred_device()
     wp.set_device(device)
-    msg.info(f"device: {device}")
+    msg.debug(f"device: {device}")
 
     asset_path = newton.utils.download_asset("disneyresearch", ref=_DRLEGS_ASSET_REF)
     config = _load_drlegs_config(asset_path)
@@ -545,10 +544,10 @@ if __name__ == "__main__":
     example = Example(config=config, device=device, policy=policy, headless=args.headless, max_steps=args.num_steps)
     try:
         if args.headless:
-            msg.notif("Running in headless mode...")
+            msg.info("Running in headless mode...")
             run_headless(example, progress=True)
         else:
-            msg.notif(f"Running in Viewer mode ({args.mode})...")
+            msg.info(f"Running in Viewer mode ({args.mode})...")
             if hasattr(example.viewer, "set_camera"):
                 example.viewer.set_camera(wp.vec3(0.6, 0.6, 0.3), -10.0, 225.0)
             SimulationRunner(example, mode=args.mode, render_fps=args.render_fps).run()

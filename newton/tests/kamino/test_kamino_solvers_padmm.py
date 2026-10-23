@@ -165,7 +165,7 @@ def check_padmm_solution(
         if verbose:
             print_dual_problem_summary(D, v_f_wp_np[w], "(preconditioned)")
             print_dual_problem_summary(D_true, v_f_true)
-            msg.notif(
+            msg.info(
                 "\n---------"
                 f"\nconverged: {converged}"
                 f"\niterations: {iterations}"
@@ -542,7 +542,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            msg.info("Generating solver info plots...")
             path = self.output_path / "test_02_padmm_solve.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -587,7 +587,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            msg.info("Generating solver info plots...")
             path = self.output_path / "test_03_padmm_solve_with_acceleration.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -640,7 +640,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            msg.info("Generating solver info plots...")
             path = self.output_path / "test_04_padmm_solve_with_internal_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -688,7 +688,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            msg.info("Generating solver info plots...")
             path = self.output_path / "test_05_padmm_solve_with_container_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -736,7 +736,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            msg.info("Generating solver info plots...")
             path = self.output_path / "test_06_padmm_solve_with_acceleration_and_internal_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -785,7 +785,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.notif("Generating solver info plots...")
+            msg.info("Generating solver info plots...")
             path = self.output_path / "test_07_padmm_solve_with_acceleration_and_container_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -808,7 +808,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig and solver.data.info is not None:
-            msg.notif("Generating solver info plots...")
+            msg.info("Generating solver info plots...")
             path = self.output_path / "test_08_padmm_solve.pdf"
             save_solver_info(solver=solver, path=str(path))
 

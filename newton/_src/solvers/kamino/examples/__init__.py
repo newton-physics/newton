@@ -41,7 +41,7 @@ def get_examples_output_path() -> str:
         path = os.path.join(pkg_dir, "output")
     except OSError:
         path = os.path.join(os.getcwd(), "kamino_examples_output")
-    msg.notif(f"Kamino examples output folder: {path}")
+    msg.info(f"Kamino examples output folder: {path}")
     return path
 
 
@@ -52,14 +52,14 @@ def get_examples_output_path() -> str:
 
 def run_headless(example, progress: bool = True):
     """Run the simulation in headless mode for a fixed number of steps."""
-    msg.notif(f"Running for {example.max_steps} steps...")
+    msg.info(f"Running for {example.max_steps} steps...")
     start_time = time.time()
     for i in range(example.max_steps):
         example.step_once()
         wp.synchronize()
         if progress:
             print_progress_bar(i + 1, example.max_steps, start_time, prefix="Progress", suffix="")
-    msg.notif("Finished headless run")
+    msg.info("Finished headless run")
 
 
 def print_progress_bar(iteration, total, start_time, length=40, prefix="", suffix=""):

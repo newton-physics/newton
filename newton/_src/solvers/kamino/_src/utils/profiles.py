@@ -499,7 +499,7 @@ class PerformanceProfile:
 
             if path is not None:
                 plt.savefig(path, bbox_inches="tight", dpi=300)
-                msg.debug(f"Profile plot saved to: {path}")
+                msg.info(f"Profile plot saved to: {path}")
 
             if show:
                 plt.show()

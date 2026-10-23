@@ -125,9 +125,6 @@ def compute_and_compare_dense_sparse_jacobian_wrenches(
     w_l_i_sparse_np = data.bodies.w_l_i.numpy().copy()
     w_c_i_sparse_np = data.bodies.w_c_i.numpy().copy()
 
-    # TODO
-    np.set_printoptions(precision=12, suppress=True, linewidth=20000, threshold=20000)
-
     # Extract the number of bodies and constraints for each world
     num_bodies_np = model.info.num_bodies.numpy().astype(int).tolist()
     num_bilateral_joint_cts_np = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
