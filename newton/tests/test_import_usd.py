@@ -12,7 +12,6 @@ import tempfile
 import types
 import unittest
 import warnings
-from contextlib import nullcontext
 from typing import ClassVar
 from unittest import mock
 from urllib.parse import urlparse
@@ -50,28 +49,20 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_unit_flags_warn_when_enabled(self):
-        """Deprecate each enabled legacy unit flag without warning for defaults."""
+    def test_removed_unit_flags(self):
+        """Reject removed unit options at both USD import entry points."""
         from pxr import Usd
 
-        for kwargs, expected_flags in (
-            ({}, ()),
-            ({"legacy_angular_velocity_units": False, "legacy_springref_units": False}, ()),
-            ({"legacy_angular_velocity_units": True}, ("legacy_angular_velocity_units",)),
-            ({"legacy_springref_units": True}, ("legacy_springref_units",)),
-            (
-                {"legacy_angular_velocity_units": True, "legacy_springref_units": True},
-                ("legacy_angular_velocity_units", "legacy_springref_units"),
-            ),
-        ):
-            with self.subTest(kwargs=kwargs):
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always", DeprecationWarning)
-                    newton.ModelBuilder().add_usd(Usd.Stage.CreateInMemory(), **kwargs)
-                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
-                self.assertEqual(len(deprecations), len(expected_flags))
-                for warning, flag in zip(deprecations, expected_flags, strict=True):
-                    self.assertRegex(str(warning.message), rf"{flag}.*deprecated.*1\.8")
+        from newton._src.utils.import_usd import parse_usd  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        builder = newton.ModelBuilder()
+        for flag in ("legacy_angular_velocity_units", "legacy_springref_units"):
+            for value in (False, True):
+                for importer in (builder.add_usd, lambda source, **kwargs: parse_usd(builder, source, **kwargs)):
+                    with self.subTest(flag=flag, value=value, importer=importer):
+                        with self.assertRaisesRegex(TypeError, flag):
+                            importer(stage, **{flag: value})
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_binding_outside_import_root(self):
@@ -148,12 +139,6 @@ class TestImportUsdPhysics(unittest.TestCase):
         for bodies_follow_joint_ordering in (False, True):
             with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
                 self._check_rigid_body_velocity(bodies_follow_joint_ordering=bodies_follow_joint_ordering)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_rigid_body_velocity_units(self):
-        """Keep rigid-body velocity conversion unchanged by the deprecated flag."""
-        with self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8"):
-            self._check_rigid_body_velocity(legacy_angular_velocity_units=True)
 
     def _check_rigid_body_velocity(self, **import_kwargs):
         """Import a rotated body and check its body and joint velocities."""
@@ -236,36 +221,23 @@ class TestImportUsdPhysics(unittest.TestCase):
         merged_hinge.CreateBody1Rel().SetTargets(["/World/Merged"])
         set_state(merged_hinge.GetPrim(), "angular", 90.0, 180.0)
 
-        # Reuse the stage and builder to catch options leaking across imports.
         builder = newton.ModelBuilder()
-        for kwargs, angular_velocity in (
-            ({"legacy_angular_velocity_units": True}, 180.0),
-            ({}, np.pi),
-            ({"legacy_angular_velocity_units": False}, np.pi),
+        result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()])
+        joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
+        for path, offset, position, velocity in (
+            ("/World/Revolute", 0, 0.5 * np.pi, np.pi),
+            ("/World/Prismatic", 0, 0.25, 0.5),
+            ("/World/D6", 0, 0.5 * np.pi, np.pi),
         ):
-            with self.subTest(kwargs=kwargs):
-                warning = (
-                    self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8")
-                    if kwargs.get("legacy_angular_velocity_units")
-                    else nullcontext()
-                )
-                with warning:
-                    result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()], **kwargs)
-                joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
-                for path, offset, position, velocity in (
-                    ("/World/Revolute", 0, 0.5 * np.pi, angular_velocity),
-                    ("/World/Prismatic", 0, 0.25, 0.5),
-                    ("/World/D6", 0, 0.5 * np.pi, angular_velocity),
-                ):
-                    with self.subTest(joint=path):
-                        joint = result["path_joint_map"][path]
-                        self.assertAlmostEqual(joint_q[builder.joint_q_start[joint] + offset], position, places=5)
-                        self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint] + offset], velocity, places=5)
+            with self.subTest(joint=path):
+                joint = result["path_joint_map"][path]
+                self.assertAlmostEqual(joint_q[builder.joint_q_start[joint] + offset], position, places=5)
+                self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint] + offset], velocity, places=5)
 
-                merged = result["path_joint_map"]["/World/MergedHinge"]
-                self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
-                qd_start = builder.joint_qd_start[merged]
-                np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, angular_velocity], atol=1e-5)
+        merged = result["path_joint_map"]["/World/MergedHinge"]
+        self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
+        qd_start = builder.joint_qd_start[merged]
+        np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, np.pi], atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
@@ -5220,8 +5192,8 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.joint_target_q.numpy()[target_idx], np.deg2rad(20.0), places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_springref_units(self):
-        """Restore raw springrefs without changing refs, lengths, or later imports."""
+    def test_springref_compiler_angle_units(self):
+        """Convert revolute springrefs using compiler units, including merged D6 joints."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         for angle_units in (None, "degree", "radian", "no_scene"):
@@ -5254,37 +5226,26 @@ def Xform "Articulation" (
 
             builder = newton.ModelBuilder()
             SolverMuJoCo.register_custom_attributes(builder)
-            for kwargs, legacy in (
-                ({"legacy_springref_units": True}, True),
-                ({}, False),
-                ({"legacy_springref_units": False}, False),
-            ):
-                with self.subTest(angle_units=angle_units, kwargs=kwargs):
-                    warning = (
-                        self.assertWarnsRegex(DeprecationWarning, r"legacy_springref_units.*1\.8")
-                        if legacy
-                        else nullcontext()
-                    )
-                    with warning:
-                        result = builder.add_usd(stage, **kwargs)
-                    model = builder.finalize(device="cpu")
-                    springref = model.mujoco.dof_springref.numpy()
-                    reference = model.mujoco.dof_ref.numpy()
-                    angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
-                    expected_springref = 30.0 if legacy else 30.0 * angular_factor
+            with self.subTest(angle_units=angle_units):
+                result = builder.add_usd(stage)
+                model = builder.finalize(device="cpu")
+                springref = model.mujoco.dof_springref.numpy()
+                reference = model.mujoco.dof_ref.numpy()
+                angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
+                expected_springref = 30.0 * angular_factor
 
-                    for path, offset, expected_spring, expected_ref in (
-                        ("Revolute", 0, expected_springref, 15.0 * angular_factor),
-                        ("Prismatic", 0, 0.25, 0.1),
-                        ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
-                        ("MergedSlide", 0, 0.25, 0.1),
-                    ):
-                        joint = result["path_joint_map"][f"/World/{path}"]
-                        dof = builder.joint_qd_start[joint] + offset
-                        self.assertAlmostEqual(springref[dof], expected_spring, places=5)
-                        self.assertAlmostEqual(reference[dof], expected_ref, places=5)
+                for path, offset, expected_spring, expected_ref in (
+                    ("Revolute", 0, expected_springref, 15.0 * angular_factor),
+                    ("Prismatic", 0, 0.25, 0.1),
+                    ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
+                    ("MergedSlide", 0, 0.25, 0.1),
+                ):
+                    joint = result["path_joint_map"][f"/World/{path}"]
+                    dof = builder.joint_qd_start[joint] + offset
+                    self.assertAlmostEqual(springref[dof], expected_spring, places=5)
+                    self.assertAlmostEqual(reference[dof], expected_ref, places=5)
 
-                    self.assertEqual(stage.GetPrimAtPath("/World/Revolute").GetAttribute("mjc:springref").Get(), 30.0)
+                self.assertEqual(stage.GetPrimAtPath("/World/Revolute").GetAttribute("mjc:springref").Get(), 30.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):

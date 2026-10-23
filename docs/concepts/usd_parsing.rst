@@ -37,6 +37,12 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+**USD angular units:** Newton uses radians internally. UsdPhysics joint angles
+and resolved joint-state angular velocities use degrees and degrees/s, respectively.
+Revolute ``mjc:ref`` and ``mjc:springref`` instead follow the PhysicsScene's
+``mjc:compiler:angle`` setting (degrees by default). The importer converts these
+values to radians or radians/s.
+
 Particle Simulation Geometry
 ----------------------------
 
