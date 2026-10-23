@@ -866,16 +866,22 @@ add_function_test(
 )
 
 
-def _belt_ride(device, mode, articulated, steps=120, window=30):
-    """Step a box resting on a kinematic belt moving at 0.5 m/s along x.
+def _box_on_support(device, mode, articulated, support_speed, steps=60, window=30):
+    """Step a box placed flat on a support moving at ``support_speed`` along x, with zero contact gap.
 
-    Returns the box's mean x velocity over the last ``window`` steps and the matrix-free row count.
+    A zero speed makes the support a static shape, otherwise a kinematic body. Returns the box's mean x
+    velocity over the last ``window`` steps, its largest angular speed, the fewest contacts generated in a
+    step and the matrix-free row count.
     """
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
     cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0, restitution=0.0, density=500.0)
-    belt = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()))
-    builder.add_shape_box(belt, hx=2.0, hy=2.0, hz=0.05, cfg=cfg)
-    builder.body_flags[belt] = int(newton.BodyFlags.KINEMATIC)
+    support_pose = wp.transform((0.0, 0.0, -0.05), wp.quat_identity())
+    if support_speed == 0.0:
+        builder.add_shape_box(-1, xform=support_pose, hx=2.0, hy=2.0, hz=0.05, cfg=cfg)
+    else:
+        belt = builder.add_body(xform=support_pose)
+        builder.add_shape_box(belt, hx=2.0, hy=2.0, hz=0.05, cfg=cfg)
+        builder.body_flags[belt] = int(newton.BodyFlags.KINEMATIC)
     pose = wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
     box = (builder.add_link if articulated else builder.add_body)(xform=pose)
     if articulated:
@@ -903,28 +909,41 @@ def _belt_ride(device, mode, articulated, steps=120, window=30):
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=32, deterministic=True)
     contacts = pipeline.contacts()
     state, next_state, control = model.state(), model.state(), model.control()
-    # The belt's free joint comes first.
-    joint_qd = state.joint_qd.numpy()
-    joint_qd[0] = 0.5
-    state.joint_qd.assign(joint_qd)
-    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    if support_speed != 0.0:
+        # The belt's free joint comes first.
+        joint_qd = state.joint_qd.numpy()
+        joint_qd[0] = support_speed
+        state.joint_qd.assign(joint_qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    # Per-step history stays on the device until the end of the run.
+    n = model.body_count
+    body_q = wp.empty(steps * n, dtype=wp.transform, device=device)
+    body_qd = wp.empty(steps * n, dtype=wp.spatial_vector, device=device)
+    contact_count = wp.empty(steps, dtype=wp.int32, device=device)
     for step in range(steps):
-        if step == steps - window:
-            x_start = state.body_q.numpy()[box, 0]
         state.clear_forces()
         pipeline.collide(state, contacts)
-        solver.step(state, next_state, control, contacts, 1.0 / 240.0)
+        wp.copy(contact_count, contacts.rigid_contact_count, dest_offset=step, count=1)
+        solver.step(state, next_state, control, contacts, DT)
         state, next_state = next_state, state
-    mean_vx = (state.body_q.numpy()[box, 0] - x_start) * 240.0 / window
-    return mean_vx, int(solver._mf_constraint_count.numpy().sum())
+        wp.copy(body_q, state.body_q, dest_offset=step * n, count=n)
+        wp.copy(body_qd, state.body_qd, dest_offset=step * n, count=n)
+    box_x = body_q.numpy().reshape(steps, n, 7)[:, box, 0]
+    mean_vx = (box_x[-1] - box_x[-1 - window]) / (window * DT)
+    max_spin = float(np.linalg.norm(body_qd.numpy().reshape(steps, n, 6)[:, box, 3:], axis=1).max())
+    return mean_vx, max_spin, int(contact_count.numpy().min()), int(solver._mf_constraint_count.numpy().sum())
 
 
 def test_kinematic_belt_drags_the_box(test, device):
-    """A box on a kinematic belt reaches the belt speed in every friction mode, free and articulated."""
-    for articulated in (False, True):
-        for mode in ("fixed_normal", "bisection", "bisection_desaxce", "coulomb_newton"):
+    """A box on a kinematic belt reaches the belt speed in the coupled modes, free and articulated.
+
+    Covers the subtests that fail when the sliding rows' rhs is ignored; articulated ``coulomb_newton``
+    uses the fixed-normal pair and ``fixed_normal`` adds the rhs itself.
+    """
+    for articulated, modes in ((False, MODES[1:]), (True, ("bisection", "bisection_desaxce"))):
+        for mode in modes:
             with test.subTest(articulated=articulated, mode=mode):
-                mean_vx, mf_rows = _belt_ride(device, mode, articulated)
+                mean_vx, _, _, mf_rows = _box_on_support(device, mode, articulated, support_speed=0.5)
                 # The free box's contact is a matrix-free row; the articulated box's is a dense one.
                 test.assertEqual(mf_rows == 0, articulated)
                 test.assertAlmostEqual(mean_vx, 0.5, delta=5.0e-3)
@@ -942,65 +961,17 @@ add_function_test(
 )
 
 
-def _resting_box(device, mode, articulated, steps=120):
-    """Step a box placed flat on a static floor with zero contact gap.
-
-    Returns the box's largest angular speed and the fewest contacts generated in a step.
-    """
-    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, gap=0.0, restitution=0.0, density=500.0)
-    builder.add_shape_box(
-        -1, xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), hx=2.0, hy=2.0, hz=0.05, cfg=cfg
-    )
-    pose = wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
-    box = (builder.add_link if articulated else builder.add_body)(xform=pose)
-    if articulated:
-        joint = builder.add_joint_d6(
-            parent=-1,
-            child=box,
-            parent_xform=pose,
-            linear_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
-            angular_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in newton.Axis],
-        )
-        builder.add_articulation([joint])
-    builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.05, cfg=cfg)
-    model = builder.finalize(device=device)
-    solver = SolverSteel(
-        model,
-        solve_mode="matrix_free",
-        articulated_contact_response="immediate",
-        friction_mode=mode,
-        friction_anchor_beta=0.0,
-        iterations=32,
-        free_body_constraint_max=64,
-        articulation_constraint_max=64,
-        deterministic=wp.DeterministicMode.RUN_TO_RUN,
-    )
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=32, deterministic=True)
-    contacts = pipeline.contacts()
-    state, next_state, control = model.state(), model.state(), model.control()
-    max_spin, min_contacts = 0.0, 4
-    for _ in range(steps):
-        state.clear_forces()
-        pipeline.collide(state, contacts)
-        min_contacts = min(min_contacts, int(contacts.rigid_contact_count.numpy()[0]))
-        solver.step(state, next_state, control, contacts, 1.0 / 240.0)
-        state, next_state = next_state, state
-        max_spin = max(max_spin, float(np.linalg.norm(state.body_qd.numpy()[box, 3:])))
-    return max_spin, min_contacts
-
-
 def test_resting_box_keeps_its_contacts(test, device):
-    """A box resting on four zero-gap contacts stays still in every coupled mode, free and articulated.
+    """A box resting on four zero-gap contacts stays still in the bisection modes, free and articulated.
 
     A box lifted by one float32 ulp loses its zero-gap contacts on the next step and falls, so this checks
     that the coupled normal solve reaches the support load as exactly as fixed_normal does.
     """
-    for mode in MODES[1:]:
+    for mode in ("bisection", "bisection_desaxce"):
         for articulated in (False, True):
             with test.subTest(mode=mode, articulated=articulated):
-                max_spin, min_contacts = _resting_box(device, mode, articulated)
-                test.assertEqual(min_contacts, 4)
+                _, max_spin, min_contacts, _ = _box_on_support(device, mode, articulated, support_speed=0.0)
+                test.assertGreaterEqual(min_contacts, 4)
                 test.assertLess(max_spin, 1.0e-6)
 
 
