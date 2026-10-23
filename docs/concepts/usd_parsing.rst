@@ -638,6 +638,19 @@ The table below shows PhysX attribute remapping examples:
    * - ``physxArticulation:enabledSelfCollisions``
      - ``self_collision_enabled`` (per articulation)
      - Direct mapping
+   * - ``physxRigidBody:disableGravity``
+     - ``gravity_enabled`` (per body)
+     - Negate; the importer translates this to registered ``mujoco:gravcomp``.
+
+When :class:`newton.usd.SchemaResolverPhysx` is enabled and
+:meth:`newton.solvers.SolverMuJoCo.register_custom_attributes` has registered
+MuJoCo's body attributes, an authored ``physxRigidBody:disableGravity`` maps
+to ``mujoco:gravcomp`` (1.0 when ``disableGravity`` is true, 0.0 when false). An explicitly
+authored ``mjc:gravcomp`` takes precedence, including partial compensation
+and an explicit zero. This mapping uses MuJoCo's existing gravity compensation;
+it does not add per-body gravity support to other solvers. If MuJoCo's body
+attributes are not registered, authored gravity exclusions are skipped and
+logged once per import at ``WARNING`` level.
 
 For mesh colliders with ``physics:approximation = "convexDecomposition"`` and
 ``PhysxConvexDecompositionCollisionAPI`` applied, enabling
