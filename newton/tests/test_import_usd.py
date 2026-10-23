@@ -51,8 +51,8 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_nonfinite_contact_materials_rejected_at_finalize(self):
-        """Reject imported NaN contact materials while preserving finite values and shape labels."""
-        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+        """Reject imported non-finite contact materials while preserving finite values and shape labels."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
@@ -66,6 +66,8 @@ class TestImportUsdPhysics(unittest.TestCase):
             UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
             if path == "/World/Invalid":
                 UsdShade.MaterialBindingAPI.Apply(cube.GetPrim()).Bind(material, materialPurpose="physics")
+                kh = cube.GetPrim().CreateAttribute("newton:hydroelasticStiffness", Sdf.ValueTypeNames.Float)
+                kh.Set(1.0e5)
 
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, load_visual_shapes=False)
@@ -73,18 +75,24 @@ class TestImportUsdPhysics(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertAlmostEqual(model.shape_material_mu.numpy()[shape], 0.4, places=6)
         self.assertAlmostEqual(model.shape_material_restitution.numpy()[shape], 0.2, places=6)
+        self.assertEqual(model.shape_material_kh.numpy()[shape], 1.0e5)
 
-        for usd_attr, attribute in ((friction, "shape_material_mu"), (restitution, "shape_material_restitution")):
-            with self.subTest(attribute=attribute):
-                original = usd_attr.Get()
-                usd_attr.Set(float("nan"))
-                builder = newton.ModelBuilder()
-                result = builder.add_usd(stage, load_visual_shapes=False)
-                shape = result["path_shape_map"]["/World/Invalid"]
-                self.assertTrue(math.isnan(getattr(builder, attribute)[shape]))
-                with self.assertRaisesRegex(ValueError, rf"{attribute}.*shape {shape}.*/World/Invalid.*finite"):
-                    builder.finalize(device="cpu")
-                usd_attr.Set(original)
+        for usd_attr, attribute in (
+            (friction, "shape_material_mu"),
+            (restitution, "shape_material_restitution"),
+            (kh, "shape_material_kh"),
+        ):
+            original = usd_attr.Get()
+            for value in (float("nan"), float("inf")):
+                with self.subTest(attribute=attribute, value=value):
+                    usd_attr.Set(value)
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(stage, load_visual_shapes=False)
+                    shape = result["path_shape_map"]["/World/Invalid"]
+                    self.assertFalse(math.isfinite(getattr(builder, attribute)[shape]))
+                    with self.assertRaisesRegex(ValueError, rf"{attribute}.*shape {shape}.*/World/Invalid.*finite"):
+                        builder.finalize(device="cpu")
+            usd_attr.Set(original)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_legacy_unit_flags_warn_when_enabled(self):

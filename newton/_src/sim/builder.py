@@ -13216,6 +13216,7 @@ class ModelBuilder:
                     "shape_material_restitution",
                     "shape_material_mu_torsional",
                     "shape_material_mu_rolling",
+                    "shape_material_kh",
                 ):
                     values = np.asarray(getattr(self, name))
                     invalid = colliding & ~np.isfinite(values)

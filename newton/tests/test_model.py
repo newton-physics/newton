@@ -4444,7 +4444,7 @@ class TestModelValidation(unittest.TestCase):
             )
             builder.add_shape_sphere(body=-1, cfg=cfg, label=f"collider_{builder.shape_count}")
 
-        for name in ("ke", "kd", "kf", "ka", "mu", "restitution", "mu_torsional", "mu_rolling"):
+        for name in ("ke", "kd", "kf", "ka", "mu", "restitution", "mu_torsional", "mu_rolling", "kh"):
             attribute = f"shape_material_{name}"
             values = getattr(builder, attribute)
             for shape in (1, 2):
@@ -4469,12 +4469,14 @@ class TestModelValidation(unittest.TestCase):
                 builder = ModelBuilder()
                 cfg = ModelBuilder.ShapeConfig(
                     mu=float("nan"),
+                    kh=float("nan"),
                     has_shape_collision=bool(kwargs),
                     has_particle_collision=False,
                 )
                 builder.add_shape_sphere(body=-1, cfg=cfg)
                 model = builder.finalize(device="cpu", **kwargs)
                 self.assertTrue(np.isnan(model.shape_material_mu.numpy()[0]))
+                self.assertTrue(np.isnan(model.shape_material_kh.numpy()[0]))
 
     def test_finalize_contact_material_validation_replicated(self):
         """Validate replicated material arrays without materializing them as lists."""
@@ -4482,17 +4484,20 @@ class TestModelValidation(unittest.TestCase):
         source.add_shape_sphere(body=-1, label="sphere")
         builder = ModelBuilder()
         builder.replicate(source, 3)
-        with builder._raw_array_access():
-            values = builder.shape_material_mu
-        self.assertIsInstance(values, np.ndarray)
-        values[2] = float("nan")
-        with self.assertRaisesRegex(ValueError, "shape_material_mu.*shape 2.*sphere.*finite"):
-            builder.finalize(device="cpu")
-        with builder._raw_array_access():
-            self.assertIs(builder.shape_material_mu, values)
-        values[2] = 0.4
+        for attribute, restored in (("shape_material_mu", 0.4), ("shape_material_kh", 1.0e5)):
+            with self.subTest(attribute=attribute):
+                with builder._raw_array_access():
+                    values = getattr(builder, attribute)
+                self.assertIsInstance(values, np.ndarray)
+                values[2] = float("nan")
+                with self.assertRaisesRegex(ValueError, rf"{attribute}.*shape 2.*sphere.*finite"):
+                    builder.finalize(device="cpu")
+                with builder._raw_array_access():
+                    self.assertIs(getattr(builder, attribute), values)
+            values[2] = restored
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.shape_material_mu.numpy(), [1.0, 1.0, 0.4])
+        np.testing.assert_allclose(model.shape_material_kh.numpy(), [1.0e10, 1.0e10, 1.0e5])
 
     def test_add_particles_rejects_mismatched_lengths(self):
         valid = {
