@@ -301,7 +301,7 @@ def test_noncontiguous_bodies_and_external_parent(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     external_parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-    builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    shared_child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     child_joint = builder.add_joint_revolute(parent=root, child=child, axis=newton.Axis.Y)
     root_joint = builder.add_joint_revolute(parent=external_parent, child=root, axis=newton.Axis.Z)
@@ -326,6 +326,25 @@ def test_noncontiguous_bodies_and_external_parent(test, device):
             newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=joint_mask)
             assert_np_equal(state.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
             assert_np_equal(state.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
+
+    # Sharing a child across other articulations disables the tiled schedule,
+    # but must not change the selected articulation's serial traversal order.
+    for parent in (-1, external_parent):
+        joint = builder.add_joint_fixed(parent=parent, child=shared_child)
+        builder.add_articulation([joint])
+    fallback_model = builder.finalize(device=device)
+    test.assertIsNone(fallback_model._fk_articulation_level_start)
+    joint_mask = wp.array([True] * fallback_model.joint_count, dtype=bool, device=device)
+    for selection in (
+        {"indices": wp.array([0], dtype=int, device=device)},
+        {"mask": wp.array([True, False, False], dtype=bool, device=device)},
+    ):
+        state = fallback_model.state()
+        state.joint_q.assign(model.joint_q)
+        state.joint_qd.assign(model.joint_qd)
+        newton.eval_fk(fallback_model, state.joint_q, state.joint_qd, state, joint_mask=joint_mask, **selection)
+        assert_np_equal(state.body_q.numpy(), state_parallel.body_q.numpy(), tol=1.0e-6)
+        assert_np_equal(state.body_qd.numpy(), state_parallel.body_qd.numpy(), tol=1.0e-6)
 
 
 def test_body_flag_filter(test, device):

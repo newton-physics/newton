@@ -15209,6 +15209,30 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
+
+            # Serial ordering is local to each articulation, even when shared
+            # bodies or non-tree articulations disable the tiled schedule.
+            joint_indices = np.arange(self.joint_count, dtype=np.int32)
+            unordered_articulations = np.unique(
+                joint_articulation_np[(joint_articulation_np >= 0) & (parent_joint > joint_indices)]
+            )
+            if len(unordered_articulations):
+                from ..utils import topological_sort  # noqa: PLC0415
+
+                fk_joint_order = joint_indices.copy()
+                for art_idx in unordered_articulations:
+                    start, end = articulation_start[art_idx], articulation_end[art_idx]
+                    joints = [(int(joint_parent_np[i]), int(joint_child_np[i])) for i in range(start, end)]
+                    try:
+                        order = topological_sort(joints, custom_indices=range(start, end), use_dfs=False)
+                    except ValueError:
+                        # Preserve the legacy order for non-tree articulations.
+                        continue
+                    if len(order) == end - start:
+                        fk_joint_order[start:end] = order
+                if not np.array_equal(fk_joint_order, joint_indices):
+                    m._fk_joint_order = wp.array(fk_joint_order, dtype=wp.int32)
+
             from .articulation_cuda import FK_TILE_MAX_LEVEL_WIDTH  # noqa: PLC0415
 
             fk_topology = _build_fk_level_topology(
@@ -15226,17 +15250,6 @@ class ModelBuilder:
                     fk_level_joints,
                     fk_level_parent_pos,
                 ) = fk_topology
-                # Preserve joint IDs while visiting parents first in serial FK.
-                # Already ordered models need no permutation or indexed reads.
-                if np.any((joint_articulation_np >= 0) & (parent_joint > np.arange(self.joint_count))):
-                    fk_joint_order = np.arange(self.joint_count, dtype=np.int32)
-                    for art_idx in range(self.articulation_count):
-                        first = fk_level_joint_start[fk_articulation_level_start[art_idx]]
-                        last = fk_level_joint_start[fk_articulation_level_start[art_idx + 1]]
-                        fk_joint_order[articulation_start[art_idx] : articulation_end[art_idx]] = fk_level_joints[
-                            first:last
-                        ]
-                    m._fk_joint_order = wp.array(fk_joint_order, dtype=wp.int32)
                 fk_level_capacity = int(np.max(np.diff(fk_level_joint_start), initial=1))
                 if fk_level_capacity <= FK_TILE_MAX_LEVEL_WIDTH:
                     m._fk_articulation_level_start = wp.array(fk_articulation_level_start, dtype=wp.int32)
