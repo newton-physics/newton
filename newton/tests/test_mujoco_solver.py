@@ -9170,6 +9170,183 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
         )
 
+    def test_pair_properties_world_zero_only_rows_rejected(self):
+        """Verify that pair rows authored for a single world are rejected.
+
+        ``_init_pairs`` compiles only template-world and global rows, so rows owned
+        by world 0 alone would silently give every other world MuJoCo's defaults.
+        Rows meant for every world use ``pair_world = -1``, so the homogeneity check
+        rejects the single-world layout instead of reading out of bounds for it.
+        """
+        world_count = 2
+        pairs_per_world = 2
+
+        template_builder = newton.ModelBuilder()
+        body_idx = template_builder.add_body()
+        shape1_idx = template_builder.add_shape_box(body=body_idx, hx=0.1, hy=0.1, hz=0.1)
+        shape2_idx = template_builder.add_shape_sphere(body=body_idx, radius=0.1)
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_plane()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(world_count):
+            builder.add_world(template_builder, xform=wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity()))
+
+        # Only the template world's rows, so world 1 would inherit none of them.
+        for pair in range(pairs_per_world):
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": 0,
+                    "mujoco:pair_geom1": shape1_idx,
+                    "mujoco:pair_geom2": shape2_idx,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.002 + pair * 0.001,
+                }
+            )
+        model = builder.finalize()
+
+        with self.assertRaisesRegex(ValueError, "homogeneous worlds.*contact pairs"):
+            SolverMuJoCo(model, iterations=1, disable_sensors=True)
+
+    def _build_pair_worlds(self, world_count, pair_rows):
+        """Build a replicated model whose pair rows are authored by ``pair_rows``.
+
+        Args:
+            world_count: Number of replicated worlds.
+            pair_rows: One ``(pair_world, gap)`` tuple per authored row.
+
+        Returns:
+            The finalized Newton model.
+        """
+        template_builder = newton.ModelBuilder()
+        body_idx = template_builder.add_body()
+        shape1_idx = template_builder.add_shape_box(body=body_idx, hx=0.1, hy=0.1, hz=0.1)
+        shape2_idx = template_builder.add_shape_sphere(body=body_idx, radius=0.1)
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_plane()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(world_count):
+            builder.add_world(template_builder, xform=wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity()))
+
+        shapes_per_world = template_builder.shape_count
+        for pair_world, gap in pair_rows:
+            world_shape_offset = 1  # +1 for ground plane
+            if pair_world >= 0:
+                world_shape_offset += pair_world * shapes_per_world
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": pair_world,
+                    "mujoco:pair_geom1": shape1_idx + world_shape_offset,
+                    "mujoco:pair_geom2": shape2_idx + world_shape_offset,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": gap,
+                }
+            )
+        return builder.finalize()
+
+    def _solved_pair_gaps(self, model):
+        """Build a solver for ``model`` and return its per-world pair gaps."""
+        solver = SolverMuJoCo(model, iterations=1, disable_sensors=True)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        wp.synchronize()
+        return solver.mjw_model.pair_gap.numpy()
+
+    def test_pair_properties_global_rows_reach_every_world(self):
+        """Verify that global pair rows reach every world.
+
+        A global row (``pair_world = -1``) belongs to no world, so every world reads
+        it at the absolute index it was authored at. The row count alone cannot
+        express this: it matches the per-world layout exactly, and the arithmetic
+        that inferred the row gave world 1 the wrong row and then read past the end
+        of the arrays for its last pair.
+        """
+        world_count = 2
+        pair_rows = [(-1, 0.002), (-1, 0.003)]
+        model = self._build_pair_worlds(world_count, pair_rows)
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), len(pair_rows))
+
+        expected = np.array(pair_rows, dtype=np.float32)[:, 1]
+        np.testing.assert_allclose(
+            self._solved_pair_gaps(model),
+            np.broadcast_to(expected, (world_count, len(pair_rows))),
+        )
+
+    def test_pair_properties_mixed_per_world_and_global_rows(self):
+        """Verify per-world and global pair rows resolving independently.
+
+        One row per world plus one global row: the compiled pairs are the
+        template-world row and the global row, so world 0 must read its own row for
+        the first pair and the global row for the second. Inferring the row from
+        counts gave world 0 the global row's neighbour instead.
+        """
+        world_count = 2
+        pair_rows = [(0, 0.01), (1, 0.01), (-1, 0.05)]
+        model = self._build_pair_worlds(world_count, pair_rows)
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), len(pair_rows))
+
+        # Both per-world rows hold the same gap, so only the global column can tell
+        # the two layouts apart.
+        np.testing.assert_allclose(
+            self._solved_pair_gaps(model),
+            np.array([[0.01, 0.05], [0.01, 0.05]], dtype=np.float32),
+        )
+
+    def test_pair_properties_skipped_row_does_not_shift_later_rows(self):
+        """Verify that a row ``_init_pairs`` skips does not shift the rows after it.
+
+        Each world authors two rows, the first naming geoms outside the mapping so
+        ``_init_pairs`` skips it. Only world 0's second row compiles, so one MuJoCo
+        pair exists, and the mapping resolves it to row 1 for world 0 and row 3 for
+        world 1. Inferring the row from counts read rows 0 and 2 instead, which are
+        the skipped rows, so the surviving pair took the discarded row's gap.
+        """
+        world_count = 2
+        template_builder = newton.ModelBuilder()
+        body_idx = template_builder.add_body()
+        shape1_idx = template_builder.add_shape_box(body=body_idx, hx=0.1, hy=0.1, hz=0.1)
+        shape2_idx = template_builder.add_shape_sphere(body=body_idx, radius=0.1)
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_plane()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(world_count):
+            builder.add_world(template_builder, xform=wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity()))
+
+        shapes_per_world = template_builder.shape_count
+        for w in range(world_count):
+            offset = 1 + w * shapes_per_world
+            # A row whose geoms are unmapped, ahead of the row that must still
+            # resolve, authored once per world so the worlds stay homogeneous.
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": -1,
+                    "mujoco:pair_geom2": -1,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.5,
+                }
+            )
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": w,
+                    "mujoco:pair_geom1": shape1_idx + offset,
+                    "mujoco:pair_geom2": shape2_idx + offset,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.01 + w * 0.02,
+                }
+            )
+        model = builder.finalize()
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            gaps = self._solved_pair_gaps(model)
+
+        # Only world 0's second row compiles, and each world reads the row
+        # it authored for it rather than the skipped row in front of it.
+        self.assertEqual(gaps.shape, (world_count, 1))
+        np.testing.assert_allclose(gaps, np.array([[0.01], [0.03]], dtype=np.float32))
+
     def test_global_pair_exported_to_spec(self):
         """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.
 
