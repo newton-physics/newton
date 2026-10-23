@@ -743,6 +743,28 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         offset = wp.dot(direction, point) + plane_d
         return offset * offset <= EPS * EPS * wp.length_sq(direction)
 
+    @wp.func
+    def feature_plane_is_supporting(
+        geom: Any,
+        projector: BodyProjector,
+        normal: wp.vec3,
+        on_b: bool,
+        relative_orientation_b: wp.quat,
+        relative_position_b: wp.vec3,
+        provider: Any,
+    ) -> bool:
+        """Orient an A-local feature plane outward and certify it in the shape's frame."""
+        direction = projector.normal
+        plane_d = projector.plane_d
+        alignment = wp.dot(direction, normal)
+        if (on_b and alignment > 0.0) or (not on_b and alignment < 0.0):
+            direction = -direction
+            plane_d = -plane_d
+        if on_b:
+            plane_d += wp.dot(direction, relative_position_b)
+            direction = wp.quat_rotate_inv(relative_orientation_b, direction)
+        return contact_plane_is_supporting(geom, direction, plane_d, provider)
+
     if _support_funcs is not None:
         _support_map_b = _support_funcs[0]
     else:
@@ -928,9 +950,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         Each sampled support point lies on its shape's surface. Its projection along the contact
         normal onto the face plane lies on the face when it falls inside the face's sampled
-        polygon, so both witnesses stay on their surfaces and each depth is exact. Only
-        penetrating samples are written, at most four, skipping the deepest witness, which
-        the caller writes.
+        polygon, so both witnesses stay on their surfaces and each depth is exact. Submit
+        at most four samples to the writer, which applies its contact gap policy, skipping
+        the deepest witness, which the caller writes.
 
         Args:
             vertex_points: Sampled support points of the non-planar feature in A-local frame.
@@ -941,16 +963,22 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             face_projector: Plane of the verified face in A-local frame.
             face_points: Face samples projected into the contact plane.
             face_count: Number of valid rows in ``face_points``.
+            normal_local: Contact normal from A to B in A-local frame.
+            orientation_a: Rotation from A-local frame to world frame.
+            position_a_world: Origin of A-local frame in world coordinates.
+            normal_world: Contact normal from A to B in world frame.
+            writer_data: Output buffers and contact admission policy data.
+            contact_template: Pair metadata shared by all candidate contacts.
+            geom_a: Geometry of shape A.
+            geom_b: Geometry of shape B.
+            position_a: World position of shape A for contact postprocessing.
+            position_b: World position of shape B for contact postprocessing.
+            quaternion_a: World orientation of shape A for contact postprocessing.
+            quaternion_b: World orientation of shape B for contact postprocessing.
 
         Returns:
-            Number of contact points written (0-4).
+            Number of contact candidates submitted to the writer (0-4).
         """
-        separation_needed = (
-            contact_template.radius_eff_a
-            + contact_template.radius_eff_b
-            + contact_template.margin_a
-            + contact_template.margin_b
-        )
         distances = _SampleDistances()
         candidates = int(0)
         for i in range(5):
@@ -964,10 +992,9 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                     signed_distance = wp.dot(on_face - vertex, normal_local)
                     if not vertex_on_a:
                         signed_distance = -signed_distance
-                    if signed_distance < separation_needed:
-                        distances[i] = signed_distance
-                        candidates += 1
-        # Five candidates means every sample penetrates; keep the four deepest.
+                    distances[i] = signed_distance
+                    candidates += 1
+        # Keep the four deepest candidates; the writer applies gap filtering.
         if candidates > 4:
             shallowest = int(0)
             for i in range(1, 5):
@@ -1178,22 +1205,26 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                     face_supported = not excess_normal_deviation(normal, face_projector.normal)
                     if face_supported:
                         # Certify the face plane against the complete shape, as for manifolds.
-                        direction = face_projector.normal
-                        plane_d = face_projector.plane_d
                         if face_on_b:
-                            if wp.dot(direction, normal) > 0.0:
-                                direction = -direction
-                                plane_d = -plane_d
-                            local_direction_b = wp.quat_rotate_inv(relative_orientation_b, direction)
-                            local_plane_d_b = plane_d + wp.dot(direction, relative_position_b)
-                            face_supported = contact_plane_is_supporting(
-                                geom_b, local_direction_b, local_plane_d_b, data_provider
+                            face_supported = feature_plane_is_supporting(
+                                geom_b,
+                                face_projector,
+                                normal,
+                                True,
+                                relative_orientation_b,
+                                relative_position_b,
+                                data_provider,
                             )
                         else:
-                            if wp.dot(direction, normal) < 0.0:
-                                direction = -direction
-                                plane_d = -plane_d
-                            face_supported = contact_plane_is_supporting(geom_a, direction, plane_d, data_provider)
+                            face_supported = feature_plane_is_supporting(
+                                geom_a,
+                                face_projector,
+                                normal,
+                                False,
+                                relative_orientation_b,
+                                relative_position_b,
+                                data_provider,
+                            )
                     if face_supported:
                         count_out = write_vertex_face_contacts(
                             vertex_points,
@@ -1230,25 +1261,17 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
                 and planar_a
                 and (plane_tracker_a.largest_area_sq == 0.0 or wp.length_sq(wp.cross(normal, projector_a.normal)) > 0.0)
             ):
-                direction_a = projector_a.normal
-                plane_d_a = projector_a.plane_d
-                if wp.dot(direction_a, normal) < 0.0:
-                    direction_a = -direction_a
-                    plane_d_a = -plane_d_a
-                valid_planes = contact_plane_is_supporting(geom_a, direction_a, plane_d_a, data_provider)
+                valid_planes = feature_plane_is_supporting(
+                    geom_a, projector_a, normal, False, relative_orientation_b, relative_position_b, data_provider
+                )
             if (
                 valid_planes
                 and planar_b
                 and (plane_tracker_b.largest_area_sq == 0.0 or wp.length_sq(wp.cross(normal, projector_b.normal)) > 0.0)
             ):
-                direction_b = projector_b.normal
-                plane_d_b = projector_b.plane_d
-                if wp.dot(direction_b, normal) > 0.0:
-                    direction_b = -direction_b
-                    plane_d_b = -plane_d_b
-                local_direction_b = wp.quat_rotate_inv(relative_orientation_b, direction_b)
-                local_plane_d_b = plane_d_b + wp.dot(direction_b, relative_position_b)
-                valid_planes = contact_plane_is_supporting(geom_b, local_direction_b, local_plane_d_b, data_provider)
+                valid_planes = feature_plane_is_supporting(
+                    geom_b, projector_b, normal, True, relative_orientation_b, relative_position_b, data_provider
+                )
             if not valid_planes:
                 count_out = 0
                 normal_dot = 0.0

@@ -393,17 +393,55 @@ def test_convex_contact_near_planar_face(test, device):
                 contacts = pipeline.contacts()
                 pipeline.collide(state, contacts)
                 count = int(contacts.rigid_contact_count.numpy()[0])
-                distances = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
-                newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances)
+                distances_array = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+                newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances_array)
                 shape0 = contacts.rigid_contact_shape0.numpy()[:count]
                 points = [contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]]
                 hull_points = np.where((shape0 == int(swap))[:, None], points[0], points[1])
-                distances = distances.numpy()[:count]
+                distances = distances_array.numpy()[:count]
                 for corner, corner_depth in zip(corners, corner_depths, strict=True):
                     nearest = int(np.argmin(np.linalg.norm(hull_points - corner, axis=1)))
                     np.testing.assert_allclose(hull_points[nearest], corner, atol=1.0e-5)
                     test.assertAlmostEqual(float(distances[nearest]), -corner_depth, delta=1.0e-6)
                 test.assertTrue(np.all(distances < 0.0))
+
+                # Reuse the pair across touching, separated, and out-of-gap
+                # states. The writer must apply the same gap policy as for a
+                # planar manifold, including rejecting just the raised corner.
+                gap = 1.0e-4
+                model.shape_gap.fill_(gap)
+                for separation in (0.0, 5.0e-5, 1.9e-4, 2.1e-4):
+                    with test.subTest(separation=separation):
+                        poses = state.body_q.numpy()
+                        poses[slab_body, 2] = -separation - half[2] - 0.1
+                        state.body_q.assign(poses)
+                        pipeline.collide(state, contacts)
+                        count = int(contacts.rigid_contact_count.numpy()[0])
+                        expected = separation + corners[:, 2] + half[2] < 2.0 * gap
+                        if not np.any(expected):
+                            test.assertEqual(count, 0)
+                            continue
+                        test.assertGreaterEqual(count, int(np.sum(expected)))
+                        test.assertLessEqual(count, 5)
+                        shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+                        points = [
+                            contacts.rigid_contact_point0.numpy()[:count],
+                            contacts.rigid_contact_point1.numpy()[:count],
+                        ]
+                        hull_points = np.where((shape0 == int(swap))[:, None], points[0], points[1])
+                        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances_array)
+                        measured = distances_array.numpy()[:count]
+                        test.assertTrue(np.all(measured < 2.0 * gap))
+                        for corner in corners[expected]:
+                            nearest = int(np.argmin(np.linalg.norm(hull_points - corner, axis=1)))
+                            np.testing.assert_allclose(hull_points[nearest], corner, atol=1.0e-5)
+                            test.assertAlmostEqual(
+                                float(measured[nearest]), separation + corner[2] + half[2], delta=1.0e-6
+                            )
+                # Restore the penetrating state before testing the other kernel.
+                poses[slab_body, 2] = depth - half[2] - 0.1
+                state.body_q.assign(poses)
+                model.shape_gap.zero_()
 
 
 def test_convex_contact_bounded_refinement(test, device):
