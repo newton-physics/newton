@@ -25,10 +25,11 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_TORSION,
+    WARP_DETERMINISM_OFF,
 )
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, **WARP_DETERMINISM_OFF})
 
 _TOUCH_TOLERANCE = 1.0e-5
 _NORMAL_COSINE = 0.999
@@ -483,6 +484,8 @@ def torque_sweep_source(dofs):
                         float t2 = s_lam_dense[n + 2] * scale;
                         float delta1 = t1 - s_lam_dense[n + 1];
                         float delta2 = t2 - s_lam_dense[n + 2];
+                        // Every lane has read the tangent pair before lane 0 rescales it.
+                        __syncwarp();
                         if (delta1 != 0.0f || delta2 != 0.0f) {{
                             iteration_changed = 1;
                             if (lane == 0) {{
@@ -514,6 +517,8 @@ def torque_sweep_source(dofs):
                 float trial = diagonal > 0.0f ? old - omega * residual / diagonal : 0.0f;
                 float next = fminf(fmaxf(trial, -bound), bound);
                 float delta = next - old;
+                // Every lane has read the torsion impulse before lane 0 overwrites it.
+                __syncwarp();
                 if (delta != 0.0f) {{
                     iteration_changed = 1;
                     if (lane == 0) s_lam_dense[spin] = next;
