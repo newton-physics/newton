@@ -1557,16 +1557,16 @@ class SolverVBD(SolverBase, CouplingInterface):
             and contacts.soft_contact_shape is not None
             and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max
         ):
-            # The particle history is the entry_step_per_iteration start pose, matching the coupled ``dt``
-            # and the body histories below.
+            # Contacts are evaluated at the solved poses in ``state_out``, with histories at the
+            # entry_step_per_iteration start pose, matching the coupled ``dt``.
             if self.integrate_with_external_rigid_solver:
                 body_q_for_particles = state_out.body_q
                 body_q_prev_for_particles = state.body_q
                 body_qd_for_particles = state_out.body_qd
             else:
-                body_q_for_particles = state.body_q
+                body_q_for_particles = state_out.body_q
                 body_q_prev_for_particles = self._coupling_body_q_prev_snapshot if self.model.body_count > 0 else None
-                body_qd_for_particles = state.body_qd
+                body_qd_for_particles = state_out.body_qd
 
             wp.launch(
                 _harvest_vbd_proxy_particle_body_contact_forces_kernel,
@@ -1574,7 +1574,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                 inputs=[
                     float(dt),
                     particle_local_to_proxy_global,
-                    state.particle_q,
+                    state_out.particle_q,
                     self._coupling_particle_q_prev_snapshot,
                     self.model.particle_flags,
                     self.model.particle_inv_mass,
@@ -1614,7 +1614,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     float(dt),
                     particle_local_to_proxy_global,
                     self._coupling_particle_q_prev_snapshot,
-                    state.particle_q,
+                    state_out.particle_q,
                     self.model.particle_flags,
                     self.model.particle_inv_mass,
                     int(ParticleFlags.ACTIVE),
