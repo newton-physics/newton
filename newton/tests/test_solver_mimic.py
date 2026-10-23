@@ -344,6 +344,8 @@ class TestSolverMimic(unittest.TestCase):
 
         def assert_rejected(follower, reference, **kwargs):
             """Finalize a model and check the constructor's ownership diagnostic."""
+            # These cases deliberately leave mimic joints outside articulations.
+            kwargs.setdefault("skip_validation_joints", True)
             model = builder.finalize(device="cpu", **kwargs)
             with self.assertRaisesRegex(ValueError, "same articulation") as caught:
                 newton.solvers.SolverFeatherstone(model)
@@ -383,7 +385,7 @@ class TestSolverMimic(unittest.TestCase):
                 assert_rejected(fixed_follower, fixed_reference)
         builder.set_joint_mimic(joints[1], None)
         with self.subTest(membership="unsupported_only"):
-            model = builder.finalize(device="cpu")
+            model = builder.finalize(device="cpu", skip_validation_joints=True)
             with self.assertWarnsRegex(UserWarning, "unsupported follower joint indices"):
                 newton.solvers.SolverFeatherstone(model)
 

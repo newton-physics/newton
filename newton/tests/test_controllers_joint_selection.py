@@ -443,7 +443,7 @@ class TestSelectJoints(unittest.TestCase):
         controlled = builder.add_link()
         j_controlled = builder.add_joint_revolute(parent=-1, child=controlled, axis=wp.vec3(0.0, 0.0, 1.0))
         builder.add_articulation([j_controlled], label="robot")
-        model = builder.finalize(device=device)
+        model = builder.finalize(device=device, skip_validation_joints=True)
         with self.assertRaises(ValueError):
             select_joints(model, joints=[0])  # joint 0 is the loose joint
         # The articulated joint still resolves correctly.
@@ -467,7 +467,7 @@ class TestSelectJoints(unittest.TestCase):
         l1 = builder.add_link()
         j1 = builder.add_joint_revolute(parent=-1, child=l1, axis=wp.vec3(0.0, 0.0, 1.0))
         builder.add_articulation([j1], label="robot1")
-        model = builder.finalize(device=device)
+        model = builder.finalize(device=device, skip_validation_joints=True)
         with self.assertRaises(ValueError):
             select_joints(model, joints=[1])  # joint 1 is the loose joint
         # Both articulated joints still resolve correctly.
@@ -488,7 +488,7 @@ class TestSelectJoints(unittest.TestCase):
         builder.add_articulation([j0], label="robot")
         loose = builder.add_link()
         builder.add_joint_revolute(parent=-1, child=loose, axis=wp.vec3(0.0, 0.0, 1.0))
-        model = builder.finalize(device=device)
+        model = builder.finalize(device=device, skip_validation_joints=True)
         with self.assertRaises(ValueError):
             select_joints(model, joints=[1])  # joint 1 is the trailing loose joint
         # The articulated joint still resolves correctly.

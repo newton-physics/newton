@@ -1319,7 +1319,8 @@ class TestTendonCapstan(unittest.TestCase):
         self.assertEqual(builder.body_count, 2)
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.tendon_guide_body, [0, 1])
-        model = builder.finalize()
+        # The fixed anchor joint is deliberately outside every articulation.
+        model = builder.finalize(skip_validation_joints=True)
         newton.solvers.SolverXPBD(model, iterations=1)
 
     def test_rejects_cross_world_tendon(self):
