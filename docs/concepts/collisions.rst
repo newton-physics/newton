@@ -2337,10 +2337,17 @@ sticking. With :math:`N` contacts carrying the load, the creep speed is roughly
 relative motion. For positive ``kf``, the transition speed is
 :math:`\mu |f_n + f_d| / k_f`.
 
-The solver argument ``friction_smoothing`` is deprecated in Newton 1.8 and
-ignored. Remove it from solver construction; use ``kf`` to control the
-low-speed slope and ``mu`` to control the Coulomb limit. The viscous branch is
-evaluated directly so its velocity derivative remains well-defined at rest.
+The viscous branch evaluates :math:`k_f v_t` directly, so its velocity
+derivative remains well-defined at rest without a separate smoothing
+parameter. The force is continuous at the Coulomb limit, where its derivative
+changes between the viscous and capped branches.
+
+The solver argument and attribute ``friction_smoothing`` are deprecated in
+Newton 1.8 and have no effect on friction. Explicit constructor values and
+attribute reads or assignments emit a deprecation warning. Constructor calls
+and attribute access remain supported, and the attribute retains its last
+assigned value; all values use the corrected force law above. Remove its use
+and configure ``kf`` for the low-speed slope and ``mu`` for the Coulomb limit.
 
 - Larger ``kf`` gives less creep but stiffens the friction force. With these
   explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,

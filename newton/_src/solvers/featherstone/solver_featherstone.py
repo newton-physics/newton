@@ -59,6 +59,11 @@ from .kernels import (
     zero_kinematic_joint_qdd,
 )
 
+_FRICTION_SMOOTHING_DEPRECATION_MSG = (
+    "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
+    "Remove its use; configure shape material kf for the low-speed friction slope and mu for the Coulomb limit."
+)
+
 
 def _group_view(array: wp.array, start: int, shape: tuple[int, int, int]) -> wp.array:
     """View a contiguous size group of a flat matrix array as a batched 3D array."""
@@ -233,12 +238,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         self.update_mass_matrix_interval = update_mass_matrix_interval
         if friction_smoothing is not None:
             warnings.warn(
-                "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
-                "Remove this argument; use shape material kf for the low-speed friction slope and mu for the Coulomb limit.",
+                _FRICTION_SMOOTHING_DEPRECATION_MSG,
                 NewtonDeprecationWarning,
                 stacklevel=2,
             )
-        self.friction_smoothing = 1.0 if friction_smoothing is None else friction_smoothing
+        self._friction_smoothing = 1.0 if friction_smoothing is None else friction_smoothing
         self.use_tile_gemm = use_tile_gemm
         self.fuse_cholesky = fuse_cholesky
 
@@ -256,6 +260,23 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             else:
                 create_kernel = create_inertia_matrix_kernel
             self._tile_kernels_by_size = {size: create_kernel(*size) for size in self._group_to_art}
+
+    @property
+    def friction_smoothing(self) -> float:
+        """Legacy value retained for attribute access; it has no effect on friction.
+
+        .. deprecated:: 1.8
+            Reading or assigning this attribute warns. Use shape material ``kf``
+            for the low-speed friction slope and ``mu`` for the Coulomb limit.
+        """
+        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        return self._friction_smoothing
+
+    @friction_smoothing.setter
+    def friction_smoothing(self, value: float) -> None:
+        """Store the legacy value without changing the friction force."""
+        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        self._friction_smoothing = value
 
     def _update_kinematic_state(self):
         """Recompute cached solver flags and effective joint armature."""

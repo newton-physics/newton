@@ -32,6 +32,11 @@ from .kernels_particle import (
     eval_triangle_forces,
 )
 
+_FRICTION_SMOOTHING_DEPRECATION_MSG = (
+    "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
+    "Remove its use; configure shape material kf for the low-speed friction slope and mu for the Coulomb limit."
+)
+
 
 class SolverSemiImplicit(SolverBase, CouplingInterface):
     """A semi-implicit integrator using symplectic Euler.
@@ -136,12 +141,11 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         self.angular_damping = angular_damping
         if friction_smoothing is not None:
             warnings.warn(
-                "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
-                "Remove this argument; use shape material kf for the low-speed friction slope and mu for the Coulomb limit.",
+                _FRICTION_SMOOTHING_DEPRECATION_MSG,
                 NewtonDeprecationWarning,
                 stacklevel=2,
             )
-        self.friction_smoothing = 1.0 if friction_smoothing is None else friction_smoothing
+        self._friction_smoothing = 1.0 if friction_smoothing is None else friction_smoothing
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
         for name, value in (("joint_mimic_ke", joint_mimic_ke), ("joint_mimic_kd", joint_mimic_kd)):
@@ -156,6 +160,23 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         if model.particle_count > 1 and model.particle_grid is not None:
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
+
+    @property
+    def friction_smoothing(self) -> float:
+        """Legacy value retained for attribute access; it has no effect on friction.
+
+        .. deprecated:: 1.8
+            Reading or assigning this attribute warns. Use shape material ``kf``
+            for the low-speed friction slope and ``mu`` for the Coulomb limit.
+        """
+        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        return self._friction_smoothing
+
+    @friction_smoothing.setter
+    def friction_smoothing(self, value: float) -> None:
+        """Store the legacy value without changing the friction force."""
+        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        self._friction_smoothing = value
 
     @override
     def step(

@@ -864,6 +864,14 @@ def test_penalty_friction_solver_step(test, device):
                 else:
                     with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "friction_smoothing"):
                         solver = solver_type(model, friction_smoothing=smoothing)
+                with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "friction_smoothing") as warning:
+                    test.assertEqual(solver.friction_smoothing, 1.0 if smoothing is None else smoothing)
+                test.assertEqual(warning.filename, __file__)
+                with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "friction_smoothing") as warning:
+                    solver.friction_smoothing = 2.0
+                test.assertEqual(warning.filename, __file__)
+                with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "friction_smoothing"):
+                    test.assertEqual(solver.friction_smoothing, 2.0)
                 state_in.clear_forces()
                 solver.step(state_in, state_out, None, contacts, dt)
                 delta_v = state_out.body_qd.numpy()[0, :3] - velocity[:3]
