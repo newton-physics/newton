@@ -13175,7 +13175,7 @@ class ModelBuilder:
             )
 
     def _validate_shapes(self) -> bool:
-        """Validate shape gaps for stable broad phase detection.
+        """Validate finite contact materials and shape gaps for stable collision handling.
 
         Margin is an outward offset from a shape's surface [m], while broad phase uses
         ``margin + gap`` [m] for expansion/filtering. For reliable detection, ``gap`` [m]
@@ -13185,8 +13185,12 @@ class ModelBuilder:
         This check only considers shapes that participate in collisions (with the
         `COLLIDE_SHAPES` or `COLLIDE_PARTICLES` flag).
 
+        Raises:
+            ValueError: If a colliding shape has a non-finite contact material value
+                or insufficient hydroelastic SDF padding.
+
         Warns:
-            UserWarning: If any colliding shape has ``gap < 0``.
+            NewtonWarning: If any colliding shape has ``gap < 0``.
 
         Returns:
             Whether all colliding shapes have non-negative gaps.
@@ -13194,6 +13198,28 @@ class ModelBuilder:
         collision_flags_mask = ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES
         shapes_with_bad_gap = []
         with self._raw_array_access():
+            colliding = (np.asarray(self.shape_flags, dtype=np.int32) & int(collision_flags_mask)) != 0
+            if np.any(colliding):
+                # Validate resolved builder arrays so imported and directly authored materials share the same checks.
+                for name in (
+                    "shape_material_ke",
+                    "shape_material_kd",
+                    "shape_material_kf",
+                    "shape_material_ka",
+                    "shape_material_mu",
+                    "shape_material_restitution",
+                    "shape_material_mu_torsional",
+                    "shape_material_mu_rolling",
+                    "shape_material_kh",
+                ):
+                    values = np.asarray(getattr(self, name))
+                    invalid = colliding & ~np.isfinite(values)
+                    if np.any(invalid):
+                        idx = int(np.flatnonzero(invalid)[0])
+                        label = self.shape_label[idx] or f"shape_{idx}"
+                        raise ValueError(
+                            f"Invalid {name} for shape {idx} ('{label}'): expected a finite value, got {values[idx]}."
+                        )
             shape_flags = _list_for_iteration(self.shape_flags)
             shape_margin = _list_for_iteration(self.shape_margin)
             shape_gap = _list_for_iteration(self.shape_gap)
@@ -13919,7 +13945,8 @@ class ModelBuilder:
             skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
                 joints cannot connect separate articulations, and non-root joints must belong to an articulation or
                 close a loop; standalone world-root joints are allowed.
-            skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+            skip_validation_shapes: If True, skips validation of finite contact materials, contact gaps, and
+                hydroelastic SDF padding on colliding shapes. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
                 particle topology, array lengths, monotonicity). Default is False.
             skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
@@ -13927,6 +13954,9 @@ class ModelBuilder:
 
         Returns:
             A fully constructed Model object containing all simulation data on the specified device.
+
+        Raises:
+            ValueError: If an enabled validation fails, including non-finite contact material values on colliding shapes.
 
         Notes:
             - Performs validation and correction of rigid body inertia and mass properties.
@@ -13951,7 +13981,7 @@ class ModelBuilder:
             if not skip_all_validations and not skip_validation_joints:
                 self._validate_joints()
 
-            # validate shapes have valid contact margins
+            # validate contact materials, gaps, and hydroelastic SDF padding
             if not skip_all_validations and not skip_validation_shapes:
                 self._validate_shapes()
 
