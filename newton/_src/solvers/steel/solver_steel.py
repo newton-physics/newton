@@ -21061,7 +21061,8 @@ _DENSE_BISECTION_FRICTION_SOURCE = """
                     // Every lane has read the old impulses before lane 0 overwrites them.
                     __syncwarp();
                     if (lane == 0) {
-                        float u_n = 0.0f, u_t1 = 0.0f, u_t2 = 0.0f;
+                        // The friction rows' rhs carries a prescribed body's tangential velocity.
+                        float u_n = 0.0f, u_t1 = s_rhs_dense[i_t1], u_t2 = s_rhs_dense[i_t2];
                         float G_nn = 0.0f, G_nt1 = 0.0f, G_nt2 = 0.0f;
                         float G_t1t1 = 0.0f, G_t1t2 = 0.0f, G_t2t2 = 0.0f;
 
@@ -21089,7 +21090,9 @@ _DENSE_BISECTION_FRICTION_SOURCE = """
                         // __DENSE_DESAXCE_BIAS__
 
                         if (G_nn >= 1.0e-20f) {
-                            float u_n_at_zero = u_n + G_nn * (0.0f - old_lambda_n);
+                            // At zero load the cone also zeroes the sliding pair.
+                            float u_n_at_zero = u_n - G_nn * old_lambda_n
+                                - G_nt1 * old_lambda_t1 - G_nt2 * old_lambda_t2;
                             if (u_n_at_zero >= target_vel_n) {
                                 new_lambda_n = 0.0f;
                                 new_lambda_t1 = 0.0f;
@@ -21100,6 +21103,7 @@ _DENSE_BISECTION_FRICTION_SOURCE = """
                                     old_lambda_n * 2.0f,
                                     (target_vel_n - u_n) / G_nn + old_lambda_n);
                                 hi = fmaxf(hi, 1.0f);
+                                float f_lo = u_n_at_zero - target_vel_n, f_hi = -1.0f;
 
                                 for (int _bi = 0; _bi < 20; _bi++) {
                                     float mid = 0.5f * (lo + hi);
@@ -21129,11 +21133,12 @@ _DENSE_BISECTION_FRICTION_SOURCE = """
                                     float u_n_trial = u_n + G_nn * d_n
                                         + G_nt1 * d_t1_actual
                                         + G_nt2 * d_t2_actual;
-                                    if (u_n_trial < target_vel_n) lo = mid;
-                                    else hi = mid;
+                                    if (u_n_trial < target_vel_n) { lo = mid; f_lo = u_n_trial - target_vel_n; }
+                                    else { hi = mid; f_hi = u_n_trial - target_vel_n; }
                                 }
 
-                                new_lambda_n = 0.5f * (lo + hi);
+                                // Interpolate the root in the final bracket, whose width scales with the initial one.
+                                new_lambda_n = f_hi >= 0.0f ? lo - f_lo * (hi - lo) / (f_hi - f_lo) : 0.5f * (lo + hi);
                                 float d_n_final = new_lambda_n - old_lambda_n;
                                 float ut1_f = u_t1 + G_nt1 * d_n_final;
                                 float ut2_f = u_t2 + G_nt2 * d_n_final;
@@ -21230,6 +21235,9 @@ _MF_BISECTION_FRICTION_SOURCE = """
                                 u_t2 += mf_J_b.data[t2_mf6 + k] * vb;
                             }
                         }
+                        // The friction rows' rhs carries a prescribed body's tangential velocity.
+                        u_t1 += __int_as_float(mf_meta.data[off_meta + i_t1 * 4 + 2]);
+                        u_t2 += __int_as_float(mf_meta.data[off_meta + i_t2 * 4 + 2]);
 
                         // __DESAXCE_BIAS__
 
@@ -21269,7 +21277,9 @@ _MF_BISECTION_FRICTION_SOURCE = """
                         }
 
                         if (G_nn >= 1.0e-20f) {
-                            float u_n_at_zero = u_n + G_nn * (0.0f - old_lambda_n);
+                            // At zero load the cone also zeroes the sliding pair.
+                            float u_n_at_zero = u_n - G_nn * old_lambda_n
+                                - G_nt1 * old_lambda_t1 - G_nt2 * old_lambda_t2;
                             if (u_n_at_zero >= target_vel_n) {
                                 new_lambda_n = 0.0f;
                                 new_lambda_t1 = 0.0f;
@@ -21280,6 +21290,7 @@ _MF_BISECTION_FRICTION_SOURCE = """
                                     old_lambda_n * 2.0f,
                                     (target_vel_n - u_n) / G_nn + old_lambda_n);
                                 hi = fmaxf(hi, 1.0f);
+                                float f_lo = u_n_at_zero - target_vel_n, f_hi = -1.0f;
 
                                 for (int _bi = 0; _bi < 20; _bi++) {
                                     float mid = 0.5f * (lo + hi);
@@ -21309,10 +21320,11 @@ _MF_BISECTION_FRICTION_SOURCE = """
                                     float u_n_trial = u_n + G_nn * d_n
                                         + G_nt1 * d_t1_actual
                                         + G_nt2 * d_t2_actual;
-                                    if (u_n_trial < target_vel_n) lo = mid;
-                                    else hi = mid;
+                                    if (u_n_trial < target_vel_n) { lo = mid; f_lo = u_n_trial - target_vel_n; }
+                                    else { hi = mid; f_hi = u_n_trial - target_vel_n; }
                                 }
-                                new_lambda_n = 0.5f * (lo + hi);
+                                // Interpolate the root in the final bracket, whose width scales with the initial one.
+                                new_lambda_n = f_hi >= 0.0f ? lo - f_lo * (hi - lo) / (f_hi - f_lo) : 0.5f * (lo + hi);
 
                                 float d_n_final = new_lambda_n - old_lambda_n;
                                 float ut1_f = u_t1 + G_nt1 * d_n_final;
@@ -21426,6 +21438,9 @@ _MF_COULOMB_NEWTON_FRICTION_SOURCE = """
                                 u_t2 += mf_J_b.data[t2_mf6 + k] * vb;
                             }
                         }
+                        // The friction rows' rhs carries a prescribed body's tangential velocity.
+                        u_t1 += __int_as_float(mf_meta.data[off_meta + i_t1 * 4 + 2]);
+                        u_t2 += __int_as_float(mf_meta.data[off_meta + i_t2 * 4 + 2]);
 
                         float G_nn = 0.0f, G_nt1 = 0.0f, G_nt2 = 0.0f;
                         float G_t1t1 = 0.0f, G_t1t2 = 0.0f, G_t2t2 = 0.0f;
