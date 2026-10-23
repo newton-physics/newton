@@ -49,7 +49,8 @@ from ...utils.mesh import (
 )
 
 # TODO: Grab changes from Warp that has fixed the backward pass
-wp.set_module_options({"enable_backward": False})
+# fast math also approximates sin/cos/tan/exp/log/pow; keep those out of this module
+wp.set_module_options({"enable_backward": False, "fast_math": True})
 
 VBD_DEBUG_PRINTING_OPTIONS = {
     # "elasticity_force_hessian",
@@ -2513,7 +2514,7 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
     # _warp_half_reduce_sum hardcodes a width-16 shuffle ladder.
     assert TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE == 16
 
-    @wp.kernel(module="unique")
+    @wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": True})
     def solve_elasticity_tile_kernel(
         dt: float,
         particle_ids_in_color: wp.array[wp.int32],
@@ -2714,8 +2715,6 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                 )
                 particle_displacements[particle_index] = particle_displacements[particle_index] + h_inv * f_total
 
-    # module="unique" kernels do not inherit this file's module options.
-    wp.set_module_options({"enable_backward": False}, module=solve_elasticity_tile_kernel.module)
     return solve_elasticity_tile_kernel
 
 

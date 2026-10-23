@@ -63,7 +63,10 @@ _SMALL_LENGTH_EPS = wp.constant(1.0e-9)
 """Small length tolerance (e.g., segment length checks)"""
 
 _USE_SMALL_ANGLE_APPROX = wp.constant(True)
-"""If True use first-order small-angle rotation approximation; if False use closed-form rotation update"""
+"""If True use first-order small-angle rotation approximation; if False use closed-form rotation update.
+
+The closed form needs accurate small-angle sin/cos, which the fast-math rigid kernels don't provide.
+"""
 
 _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
 """Deadband threshold for hysteresis direction selection"""
@@ -6257,7 +6260,8 @@ def compute_body_particle_contact_forces(
 def create_solve_rigid_body(has_tendons: bool):
     """Specialize the body solve to exclude tendon assembly for tendon-free models."""
 
-    @wp.kernel(module="unique", enable_backward=False)
+    # fast math: approximate sin/cos are inaccurate for small angles; keep them out of reachable code here
+    @wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": True})
     def solve_rigid_body(
         dt: float,
         body_ids_in_color: wp.array[wp.int32],
@@ -6586,7 +6590,8 @@ def create_solve_rigid_body(has_tendons: bool):
     return solve_rigid_body
 
 
-@wp.kernel
+# fast math: approximate sin/cos are inaccurate for small angles; keep them out of reachable code here
+@wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": True})
 def update_duals_joint(
     # Inputs
     joint_type: wp.array[int],

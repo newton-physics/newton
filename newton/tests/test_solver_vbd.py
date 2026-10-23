@@ -5844,13 +5844,13 @@ def _rigid_hinge_multiturn_limits(test, device):
 
 class TestSolverVBD(unittest.TestCase):
     def test_contact_kernel_modules_follow_deterministic_mode(self):
-        """Apply VBD deterministic options to rigid contact kernels."""
+        """Apply VBD deterministic options to the separately compiled rigid kernels."""
         builder = newton.ModelBuilder()
         builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.color()
         model = builder.finalize(device="cpu")
 
-        newton.solvers.SolverVBD(
+        solver = newton.solvers.SolverVBD(
             model,
             deterministic=wp.DeterministicMode.RUN_TO_RUN,
             rigid_compliant_alm=True,
@@ -5860,9 +5860,12 @@ class TestSolverVBD(unittest.TestCase):
             accumulate_body_body_contacts_per_body,
             compute_rigid_contact_forces,
             update_duals_body_body_contacts,
+            update_duals_joint,
+            solver._solve_rigid_body_kernel,
         )
         for kernel in kernels:
-            options = wp.get_module_options(module=kernel.module)
+            # Kernel-level options override module options at build time.
+            options = wp.get_module_options(module=kernel.module) | kernel.options
             self.assertEqual(options["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
             self.assertFalse(options["enable_backward"])
 
