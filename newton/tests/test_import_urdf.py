@@ -2558,8 +2558,8 @@ FRICTION_URDF = """
 
 
 class TestUrdfJointFriction(unittest.TestCase):
-    def test_joint_damping_mode_default_matches_passive(self):
-        """Import passive damping by default through both entry points without deprecation."""
+    def test_joint_damping_mode_default_is_passive(self):
+        """Import passive damping by default through both entry points."""
         for source, expected in (
             (FRICTION_URDF, [1.0, 2.0]),
             (
@@ -2569,18 +2569,15 @@ class TestUrdfJointFriction(unittest.TestCase):
             (FRICTION_URDF.replace(' damping="1.0"', "").replace(' damping="2.0"', ""), [0.5, 0.5]),
         ):
             for importer in (newton.ModelBuilder.add_urdf, direct_parse_urdf):
-                for kwargs in ({}, {"joint_damping_mode": "passive"}):
-                    with self.subTest(expected=expected, importer=importer.__qualname__, kwargs=kwargs):
-                        builder = newton.ModelBuilder()
-                        builder.default_joint_cfg.damping = 0.5
-                        builder.default_joint_cfg.target_kd = 3.0
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("error", DeprecationWarning)
-                            importer(builder, source, **kwargs)
-                        model = builder.finalize(device="cpu")
-                        np.testing.assert_allclose(model.joint_damping.numpy(), expected)
-                        np.testing.assert_allclose(model.joint_target_kd.numpy(), [3.0, 3.0])
-                        np.testing.assert_allclose(model.joint_friction.numpy(), [0.25, 0.75])
+                with self.subTest(expected=expected, importer=importer.__qualname__):
+                    builder = newton.ModelBuilder()
+                    builder.default_joint_cfg.damping = 0.5
+                    builder.default_joint_cfg.target_kd = 3.0
+                    importer(builder, source)
+                    model = builder.finalize(device="cpu")
+                    np.testing.assert_allclose(model.joint_damping.numpy(), expected)
+                    np.testing.assert_allclose(model.joint_target_kd.numpy(), [3.0, 3.0])
+                    np.testing.assert_allclose(model.joint_friction.numpy(), [0.25, 0.75])
 
     def test_joint_damping_mode_invalid_does_not_modify_builder(self):
         """Reject unknown damping modes before importing any bodies."""
@@ -2593,7 +2590,7 @@ class TestUrdfJointFriction(unittest.TestCase):
                     self.assertEqual(builder.body_count, 0)
 
     def test_drive_joint_damping_mapping(self):
-        """Import drive damping without deprecation or doubled passive damping."""
+        """Import drive damping without doubling passive damping."""
         for urdf, expected in (
             (FRICTION_URDF, [1.0, 2.0]),
             (FRICTION_URDF.replace('damping="1.0"', 'damping="0.0"'), [0.0, 2.0]),
@@ -2603,9 +2600,7 @@ class TestUrdfJointFriction(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 builder.default_joint_cfg.damping = 0.5
                 builder.default_joint_cfg.target_kd = 3.0
-                with warnings.catch_warnings():
-                    warnings.simplefilter("error", DeprecationWarning)
-                    parse_urdf(urdf, builder, joint_damping_mode="drive")
+                parse_urdf(urdf, builder, joint_damping_mode="drive")
                 model = builder.finalize(device="cpu")
                 np.testing.assert_allclose(model.joint_target_kd.numpy(), expected)
                 np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5])
