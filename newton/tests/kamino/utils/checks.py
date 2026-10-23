@@ -5,6 +5,7 @@
 KAMINO: UNIT TESTS: COMPARISON UTILITIES
 """
 
+import logging
 import unittest
 from typing import Any
 
@@ -17,7 +18,8 @@ from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.state import StateKamino
-from newton._src.solvers.kamino._src.utils import logger as msg
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -60,7 +62,7 @@ def assert_array_attributes_equal(
         has_attr0 = hasattr(obj0, attr)
         has_attr1 = hasattr(obj1, attr)
         if not has_attr0 and not has_attr1:
-            msg.debug(
+            logger.debug(
                 "Skipping attribute '%s' comparison for %s because it is missing in both objects.", attr, obj_name
             )
             continue
@@ -76,7 +78,7 @@ def assert_array_attributes_equal(
         attr0_is_array = hasattr(attr0, "shape")
         attr1_is_array = hasattr(attr1, "shape")
         if not attr0_is_array and not attr1_is_array:
-            msg.debug(
+            logger.debug(
                 "\nSkipping attribute '%s.%s' comparison: both of the objects are not array-like: "
                 "\n0: %s.%s: %s\n1: %s.%s: %s",
                 obj_name,
@@ -115,7 +117,7 @@ def assert_array_attributes_equal(
         # CI turns into a test error via --strict-warnings.
         with np.errstate(invalid="ignore"):
             diff = actual - desired
-        msg.debug("Comparing %s:\nactual:\n%s\ndesired:\n%s\ndiff:\n%s", f"{obj_name}.{attr}", actual, desired, diff)
+        logger.debug("Comparing %s:\nactual:\n%s\ndesired:\n%s\ndiff:\n%s", f"{obj_name}.{attr}", actual, desired, diff)
         np.testing.assert_allclose(
             actual=actual,
             desired=desired,

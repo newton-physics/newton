@@ -3,6 +3,7 @@
 
 """Unit tests for the LLTBlockedSolver from linalg/linear.py"""
 
+import logging
 import unittest
 
 import numpy as np
@@ -17,11 +18,13 @@ from newton._src.solvers.kamino._src.linalg.factorize import (
     make_llt_blocked_solve_inplace_kernel,
     make_llt_blocked_solve_kernel,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import get_matrix_block, get_vector_block
 from newton.tests.kamino.utils.print import debug_print_error_stats
 from newton.tests.kamino.utils.rand import RandomProblemLLT
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -39,10 +42,10 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
         # Set the tile block size for the blocked LLT kernels
         self.block_size = 16
@@ -55,7 +58,7 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_single_problem_dims_all_active(self):
         """
@@ -75,24 +78,24 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         )
 
         # Optional verbose output
-        msg.debug("Problem:\n%s\n", problem)
-        msg.debug("b_np:\n%s\n", problem.b_np[0])
-        msg.debug("A_np:\n%s\n", problem.A_np[0])
-        msg.debug("X_np:\n%s\n", problem.X_np[0])
-        msg.debug("y_np:\n%s\n", problem.y_np[0])
-        msg.debug("x_np:\n%s\n", problem.x_np[0])
-        msg.debug("A_wp (%s):\n%s\n", problem.A_wp.shape, problem.A_wp.numpy().reshape((N, N)))
-        msg.debug("b_wp (%s):\n%s\n", problem.b_wp.shape, problem.b_wp.numpy().reshape((N,)))
+        logger.debug("Problem:\n%s\n", problem)
+        logger.debug("b_np:\n%s\n", problem.b_np[0])
+        logger.debug("A_np:\n%s\n", problem.A_np[0])
+        logger.debug("X_np:\n%s\n", problem.X_np[0])
+        logger.debug("y_np:\n%s\n", problem.y_np[0])
+        logger.debug("x_np:\n%s\n", problem.x_np[0])
+        logger.debug("A_wp (%s):\n%s\n", problem.A_wp.shape, problem.A_wp.numpy().reshape((N, N)))
+        logger.debug("b_wp (%s):\n%s\n", problem.b_wp.shape, problem.b_wp.numpy().reshape((N,)))
 
         # Create the linear operator meta-data
         opinfo = DenseSquareMultiLinearInfo()
         opinfo.finalize(dimensions=problem.dims, dtype=problem.wp_dtype, device=self.default_device)
-        msg.debug("opinfo:\n%s", opinfo)
+        logger.debug("opinfo:\n%s", opinfo)
 
         # Create the linear operator data structure
         operator = DenseLinearOperatorData(info=opinfo, mat=problem.A_wp)
-        msg.debug("operator.info:\n%s\n", operator.info)
-        msg.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N, N)))
+        logger.debug("operator.info:\n%s\n", operator.info)
+        logger.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N, N)))
 
         # Allocate LLT data arrays
         L_wp = wp.zeros_like(problem.A_wp, device=self.default_device)
@@ -114,14 +117,14 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
 
         # Check matrix factorization against numpy
         L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
+        logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
         debug_print_error_stats("L", L_wp_np, problem.X_np[0], problem.dims[0])
         np.testing.assert_allclose(L_wp_np, problem.X_np[0], rtol=1e-3, atol=1e-4, err_msg="L")
 
         # Check matrix reconstruction against original matrix
         A_wp_np = L_wp_np @ L_wp_np.T
-        msg.debug("A_np (%s):\n%s\n", problem.A_np[0].shape, problem.A_np[0])
-        msg.debug("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
+        logger.debug("A_np (%s):\n%s\n", problem.A_np[0].shape, problem.A_np[0])
+        logger.debug("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
         debug_print_error_stats("A", A_wp_np, problem.A_np[0], problem.dims[0])
         np.testing.assert_allclose(A_wp_np, problem.A_np[0], rtol=1e-3, atol=1e-4, err_msg="A")
 
@@ -148,10 +151,10 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         # Convert the warp array to numpy for verification
         y_wp_np = get_vector_block(0, y_wp.numpy(), problem.dims, problem.maxdims)
         x_wp_np = get_vector_block(0, x_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("y_np (%s):\n%s\n", problem.y_np[0].shape, problem.y_np[0])
-        msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-        msg.debug("x_np (%s):\n%s\n", problem.x_np[0].shape, problem.x_np[0])
-        msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
+        logger.debug("y_np (%s):\n%s\n", problem.y_np[0].shape, problem.y_np[0])
+        logger.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
+        logger.debug("x_np (%s):\n%s\n", problem.x_np[0].shape, problem.x_np[0])
+        logger.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
 
         # Assert the result is as expected
         debug_print_error_stats("y", y_wp_np, problem.y_np[0], problem.dims[0])
@@ -182,8 +185,8 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         # Convert the warp array to numpy for verification
         y_wp_np = get_vector_block(0, y_wp.numpy(), problem.dims, problem.maxdims)
         x_wp_np = get_vector_block(0, x_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-        msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
+        logger.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
+        logger.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
 
         # Assert the result is as expected
         debug_print_error_stats("y", y_wp_np, problem.y_np[0], problem.dims[0])
@@ -212,24 +215,24 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         )
 
         # Optional verbose output
-        msg.debug("Problem:\n%s\n", problem)
-        msg.debug("b_np:\n%s\n", problem.b_np[0])
-        msg.debug("A_np:\n%s\n", problem.A_np[0])
-        msg.debug("X_np:\n%s\n", problem.X_np[0])
-        msg.debug("y_np:\n%s\n", problem.y_np[0])
-        msg.debug("x_np:\n%s\n", problem.x_np[0])
-        msg.debug("A_wp (%s):\n%s\n", problem.A_wp.shape, problem.A_wp.numpy().reshape((N_max, N_max)))
-        msg.debug("b_wp (%s):\n%s\n", problem.b_wp.shape, problem.b_wp.numpy().reshape((N_max,)))
+        logger.debug("Problem:\n%s\n", problem)
+        logger.debug("b_np:\n%s\n", problem.b_np[0])
+        logger.debug("A_np:\n%s\n", problem.A_np[0])
+        logger.debug("X_np:\n%s\n", problem.X_np[0])
+        logger.debug("y_np:\n%s\n", problem.y_np[0])
+        logger.debug("x_np:\n%s\n", problem.x_np[0])
+        logger.debug("A_wp (%s):\n%s\n", problem.A_wp.shape, problem.A_wp.numpy().reshape((N_max, N_max)))
+        logger.debug("b_wp (%s):\n%s\n", problem.b_wp.shape, problem.b_wp.numpy().reshape((N_max,)))
 
         # Create the linear operator meta-data
         opinfo = DenseSquareMultiLinearInfo()
         opinfo.finalize(dimensions=problem.maxdims, dtype=problem.wp_dtype, device=self.default_device)
-        msg.debug("opinfo:\n%s", opinfo)
+        logger.debug("opinfo:\n%s", opinfo)
 
         # Create the linear operator data structure
         operator = DenseLinearOperatorData(info=opinfo, mat=problem.A_wp)
-        msg.debug("operator.info:\n%s\n", operator.info)
-        msg.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N_max, N_max)))
+        logger.debug("operator.info:\n%s\n", operator.info)
+        logger.debug("operator.mat (%s):\n%s\n", operator.mat.shape, operator.mat.numpy().reshape((N_max, N_max)))
 
         # IMPORTANT: Now we set the active dimensions in the operator info
         operator.info.dim.fill_(N_act)
@@ -254,14 +257,14 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
 
         # Check matrix factorization against numpy
         L_wp_np = get_matrix_block(0, L_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
+        logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
         debug_print_error_stats("L", L_wp_np, problem.X_np[0], problem.dims[0])
         np.testing.assert_allclose(L_wp_np, problem.X_np[0], rtol=1e-3, atol=1e-4, err_msg="L")
 
         # Check matrix reconstruction against original matrix
         A_wp_np = L_wp_np @ L_wp_np.T
-        msg.debug("A_np (%s):\n%s\n", problem.A_np[0].shape, problem.A_np[0])
-        msg.debug("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
+        logger.debug("A_np (%s):\n%s\n", problem.A_np[0].shape, problem.A_np[0])
+        logger.debug("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
         debug_print_error_stats("A", A_wp_np, problem.A_np[0], problem.dims[0])
         np.testing.assert_allclose(A_wp_np, problem.A_np[0], rtol=1e-3, atol=1e-4, err_msg="A")
 
@@ -288,8 +291,8 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         # Convert the warp array to numpy for verification
         y_wp_np = get_vector_block(0, y_wp.numpy(), problem.dims, problem.maxdims)
         x_wp_np = get_vector_block(0, x_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-        msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
+        logger.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
+        logger.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
 
         # Assert the result is as expected
         debug_print_error_stats("y", y_wp_np, problem.y_np[0], problem.dims[0])
@@ -320,8 +323,8 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         # Convert the warp array to numpy for verification
         y_wp_np = get_vector_block(0, y_wp.numpy(), problem.dims, problem.maxdims)
         x_wp_np = get_vector_block(0, x_wp.numpy(), problem.dims, problem.maxdims)
-        msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-        msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
+        logger.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
+        logger.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
 
         # Assert the result is as expected
         debug_print_error_stats("y", y_wp_np, problem.y_np[0], problem.dims[0])
@@ -345,29 +348,29 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             wp_dtype=wp.float32,
             device=self.default_device,
         )
-        msg.debug("Problem:\n%s\n", problem)
+        logger.debug("Problem:\n%s\n", problem)
 
         # Optional verbose output
         for i in range(problem.num_blocks):
             A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims, problem.maxdims)
             b_wp_np = get_vector_block(i, problem.b_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("[%d]: b_np:\n%s\n", i, problem.b_np[i])
-            msg.debug("[%d]: A_np:\n%s\n", i, problem.A_np[i])
-            msg.debug("[%d]: X_np:\n%s\n", i, problem.X_np[i])
-            msg.debug("[%d]: y_np:\n%s\n", i, problem.y_np[i])
-            msg.debug("[%d]: x_np:\n%s\n", i, problem.x_np[i])
-            msg.debug("[%d]: A_wp_np (%s):\n%s\n", i, A_wp_np.shape, A_wp_np)
-            msg.debug("[%d]: b_wp_np (%s):\n%s\n", i, b_wp_np.shape, b_wp_np)
+            logger.debug("[%d]: b_np:\n%s\n", i, problem.b_np[i])
+            logger.debug("[%d]: A_np:\n%s\n", i, problem.A_np[i])
+            logger.debug("[%d]: X_np:\n%s\n", i, problem.X_np[i])
+            logger.debug("[%d]: y_np:\n%s\n", i, problem.y_np[i])
+            logger.debug("[%d]: x_np:\n%s\n", i, problem.x_np[i])
+            logger.debug("[%d]: A_wp_np (%s):\n%s\n", i, A_wp_np.shape, A_wp_np)
+            logger.debug("[%d]: b_wp_np (%s):\n%s\n", i, b_wp_np.shape, b_wp_np)
 
         # Create the linear operator meta-data
         opinfo = DenseSquareMultiLinearInfo()
         opinfo.finalize(dimensions=problem.dims, dtype=problem.wp_dtype, device=self.default_device)
-        msg.debug("opinfo:\n%s", opinfo)
+        logger.debug("opinfo:\n%s", opinfo)
 
         # Create the linear operator data structure
         operator = DenseLinearOperatorData(info=opinfo, mat=problem.A_wp)
-        msg.debug("operator.info:\n%s\n", operator.info)
-        msg.debug("operator.mat shape:\n%s\n", operator.mat.shape)
+        logger.debug("operator.info:\n%s\n", operator.info)
+        logger.debug("operator.mat shape:\n%s\n", operator.mat.shape)
 
         # Allocate LLT data arrays
         L_wp = wp.zeros_like(problem.A_wp, device=self.default_device)
@@ -391,15 +394,15 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         for i in range(problem.num_blocks):
             # Check matrix factorization against numpy
             L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
-            msg.debug("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
+            logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
+            logger.debug("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
             debug_print_error_stats("L", L_wp_np, problem.X_np[i], problem.dims[i])
             np.testing.assert_allclose(L_wp_np, problem.X_np[i], rtol=1e-3, atol=1e-4, err_msg="L")
 
             # Check matrix reconstruction against original matrix
             A_wp_np = L_wp_np @ L_wp_np.T
-            msg.debug("A_np (%s):\n%s\n", problem.A_np[i].shape, problem.A_np[i])
-            msg.debug("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
+            logger.debug("A_np (%s):\n%s\n", problem.A_np[i].shape, problem.A_np[i])
+            logger.debug("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
             debug_print_error_stats("A", A_wp_np, problem.A_np[i], problem.dims[i])
             np.testing.assert_allclose(A_wp_np, problem.A_np[i], rtol=1e-3, atol=1e-4, err_msg="A")
 
@@ -428,10 +431,10 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             # Convert the warp array to numpy for verification
             y_wp_np = get_vector_block(i, y_wp.numpy(), problem.dims, problem.maxdims)
             x_wp_np = get_vector_block(i, x_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-            msg.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
-            msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
-            msg.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
+            logger.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
+            logger.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
+            logger.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
+            logger.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
 
             # Assert the result is as expected
             debug_print_error_stats("y", y_wp_np, problem.y_np[i], problem.dims[i])
@@ -464,10 +467,10 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             # Convert the warp array to numpy for verification
             y_wp_np = get_vector_block(i, y_wp.numpy(), problem.dims, problem.maxdims)
             x_wp_np = get_vector_block(i, x_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-            msg.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
-            msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
-            msg.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
+            logger.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
+            logger.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
+            logger.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
+            logger.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
 
             # Assert the result is as expected
             debug_print_error_stats("y", y_wp_np, problem.y_np[i], problem.dims[i])
@@ -494,29 +497,29 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             wp_dtype=wp.float32,
             device=self.default_device,
         )
-        msg.debug("Problem:\n%s\n", problem)
+        logger.debug("Problem:\n%s\n", problem)
 
         # Optional verbose output
         for i in range(problem.num_blocks):
             A_wp_np = get_matrix_block(i, problem.A_wp.numpy(), problem.dims, problem.maxdims)
             b_wp_np = get_vector_block(i, problem.b_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("[%d]: b_np:\n%s\n", i, problem.b_np[i])
-            msg.debug("[%d]: A_np:\n%s\n", i, problem.A_np[i])
-            msg.debug("[%d]: X_np:\n%s\n", i, problem.X_np[i])
-            msg.debug("[%d]: y_np:\n%s\n", i, problem.y_np[i])
-            msg.debug("[%d]: x_np:\n%s\n", i, problem.x_np[i])
-            msg.debug("[%d]: A_wp_np (%s):\n%s\n", i, A_wp_np.shape, A_wp_np)
-            msg.debug("[%d]: b_wp_np (%s):\n%s\n", i, b_wp_np.shape, b_wp_np)
+            logger.debug("[%d]: b_np:\n%s\n", i, problem.b_np[i])
+            logger.debug("[%d]: A_np:\n%s\n", i, problem.A_np[i])
+            logger.debug("[%d]: X_np:\n%s\n", i, problem.X_np[i])
+            logger.debug("[%d]: y_np:\n%s\n", i, problem.y_np[i])
+            logger.debug("[%d]: x_np:\n%s\n", i, problem.x_np[i])
+            logger.debug("[%d]: A_wp_np (%s):\n%s\n", i, A_wp_np.shape, A_wp_np)
+            logger.debug("[%d]: b_wp_np (%s):\n%s\n", i, b_wp_np.shape, b_wp_np)
 
         # Create the linear operator meta-data
         opinfo = DenseSquareMultiLinearInfo()
         opinfo.finalize(dimensions=problem.maxdims, dtype=problem.wp_dtype, device=self.default_device)
-        msg.debug("opinfo:\n%s", opinfo)
+        logger.debug("opinfo:\n%s", opinfo)
 
         # Create the linear operator data structure
         operator = DenseLinearOperatorData(info=opinfo, mat=problem.A_wp)
-        msg.debug("operator.info:\n%s\n", operator.info)
-        msg.debug("operator.mat shape:\n%s\n", operator.mat.shape)
+        logger.debug("operator.info:\n%s\n", operator.info)
+        logger.debug("operator.mat shape:\n%s\n", operator.mat.shape)
 
         # Allocate LLT data arrays
         L_wp = wp.zeros_like(problem.A_wp, device=self.default_device)
@@ -543,15 +546,15 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
         for i in range(problem.num_blocks):
             # Check matrix factorization against numpy
             L_wp_np = get_matrix_block(i, L_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
-            msg.debug("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
+            logger.debug("L_wp_np (%s):\n%s\n", L_wp_np.shape, L_wp_np)
+            logger.debug("X_np (%s):\n%s\n", problem.X_np[i].shape, problem.X_np[i])
             debug_print_error_stats("L", L_wp_np, problem.X_np[i], problem.dims[i])
             np.testing.assert_allclose(L_wp_np, problem.X_np[i], rtol=1e-3, atol=1e-4, err_msg="L")
 
             # Check matrix reconstruction against original matrix
             A_wp_np = L_wp_np @ L_wp_np.T
-            msg.debug("A_np (%s):\n%s\n", problem.A_np[i].shape, problem.A_np[i])
-            msg.debug("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
+            logger.debug("A_np (%s):\n%s\n", problem.A_np[i].shape, problem.A_np[i])
+            logger.debug("A_wp_np (%s):\n%s\n", A_wp_np.shape, A_wp_np)
             debug_print_error_stats("A", A_wp_np, problem.A_np[i], problem.dims[i])
             np.testing.assert_allclose(A_wp_np, problem.A_np[i], rtol=1e-3, atol=1e-4, err_msg="A")
 
@@ -580,10 +583,10 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             # Convert the warp array to numpy for verification
             y_wp_np = get_vector_block(i, y_wp.numpy(), problem.dims, problem.maxdims)
             x_wp_np = get_vector_block(i, x_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-            msg.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
-            msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
-            msg.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
+            logger.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
+            logger.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
+            logger.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
+            logger.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
 
             # Assert the result is as expected
             debug_print_error_stats("y", y_wp_np, problem.y_np[i], problem.dims[i])
@@ -616,10 +619,10 @@ class TestLinAlgLLTBlocked(unittest.TestCase):
             # Convert the warp array to numpy for verification
             y_wp_np = get_vector_block(i, y_wp.numpy(), problem.dims, problem.maxdims)
             x_wp_np = get_vector_block(i, x_wp.numpy(), problem.dims, problem.maxdims)
-            msg.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
-            msg.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
-            msg.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
-            msg.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
+            logger.debug("y_wp_np (%s):\n%s\n", y_wp_np.shape, y_wp_np)
+            logger.debug("y_np (%s):\n%s\n", problem.y_np[i].shape, problem.y_np[i])
+            logger.debug("x_wp_np (%s):\n%s\n", x_wp_np.shape, x_wp_np)
+            logger.debug("x_np (%s):\n%s\n", problem.x_np[i].shape, problem.x_np[i])
 
             # Assert the result is as expected
             debug_print_error_stats("y", y_wp_np, problem.y_np[i], problem.dims[i])

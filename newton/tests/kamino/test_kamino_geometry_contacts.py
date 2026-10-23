@@ -7,6 +7,7 @@ Unit tests for `geometry/contacts.py`.
 Tests all components of the ContactsKamino data types and operations.
 """
 
+import logging
 import unittest
 from collections.abc import Callable
 from types import SimpleNamespace
@@ -33,9 +34,11 @@ from newton._src.solvers.kamino._src.solvers.warmstart import (
     _count_current_contacts_by_cached_pair,
     warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
+from newton.tests.kamino import allow_verbose_output, expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
+
+logger = logging.getLogger(__name__)
 
 _NEWTON_CONTACT_CAPACITY = 64
 
@@ -359,15 +362,15 @@ class TestGeometryContactFrames(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_make_contact_frame_znorm(self):
         # Create a normal vectors
@@ -387,8 +390,8 @@ class TestGeometryContactFrames(unittest.TestCase):
 
         # Compute the contact frames
         compute_contact_frame_znorm(normal=normals, frame=frames, num_threads=len(test_normals))
-        msg.debug("normals:\n%s\n", normals)
-        msg.debug("frames:\n%s\n", frames)
+        logger.debug("normals:\n%s\n", normals)
+        logger.debug("frames:\n%s\n", frames)
 
         # Extract numpy arrays for comparison
         frames_np = frames.numpy()
@@ -436,8 +439,8 @@ class TestGeometryContactFrames(unittest.TestCase):
 
         # Compute the contact frames
         compute_contact_frame_xnorm(normal=normals, frame=frames, num_threads=len(test_normals))
-        msg.debug("normals:\n%s\n", normals)
-        msg.debug("frames:\n%s\n", frames)
+        logger.debug("normals:\n%s\n", normals)
+        logger.debug("frames:\n%s\n", frames)
 
         # Extract numpy arrays for comparison
         frames_np = frames.numpy()
@@ -457,15 +460,15 @@ class TestGeometryContactMode(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_contact_mode_opening(self):
         v_input = wp.array([wp.vec3f(0.0, 0.0, 0.01)], dtype=wp.vec3f, device=self.default_device)
@@ -473,7 +476,7 @@ class TestGeometryContactMode(unittest.TestCase):
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
-        msg.debug("mode: %s (int: %s)", mode, int(mode_int32))
+        logger.debug("mode: %s (int: %s)", mode, int(mode_int32))
         self.assertEqual(mode, ContactMode.OPENING)
 
     def test_02_contact_mode_sticking(self):
@@ -482,7 +485,7 @@ class TestGeometryContactMode(unittest.TestCase):
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
-        msg.debug("mode: %s (int: %s)", mode, int(mode_int32))
+        logger.debug("mode: %s (int: %s)", mode, int(mode_int32))
         self.assertEqual(mode, ContactMode.STICKING)
 
     def test_03_contact_mode_slipping(self):
@@ -491,7 +494,7 @@ class TestGeometryContactMode(unittest.TestCase):
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
-        msg.debug("mode: %s (int: %s)", mode, int(mode_int32))
+        logger.debug("mode: %s (int: %s)", mode, int(mode_int32))
         self.assertEqual(mode, ContactMode.SLIDING)
 
 
@@ -504,15 +507,15 @@ class TestGeometryContacts(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_current_pair_counts_match_legacy_warmstart_scan(self):
         """Match legacy fallback pair counts at cached sorted range starts."""
@@ -748,15 +751,16 @@ class TestGeometryContactConversions(NewtonTestCase):
         self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")
+            allow_verbose_output(self)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     ###
     # Helpers
@@ -909,7 +913,7 @@ class TestGeometryContactConversions(NewtonTestCase):
                 atol=1e-5,
                 err_msg=f"Contact {i}: reaction does not match -R(normal)^T @ f_world",
             )
-        msg.debug("N->K: %d contacts converted, max |reaction| = %g", nc_kamino, float(np.max(np.abs(reactions))))
+        logger.debug("N->K: %d contacts converted, max |reaction| = %g", nc_kamino, float(np.max(np.abs(reactions))))
 
     ###
     # K->N (active path)

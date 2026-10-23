@@ -5,13 +5,16 @@
 Unit tests for random matrix and problem generation utilities in `linalg/utils/random.py`.
 """
 
+import logging
 import unittest
 
 import numpy as np
 
 import newton.tests.kamino.utils.rand as rand
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -26,14 +29,14 @@ class TestRandomSymmetricMatrix(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_matrix_symmetry(self):
         dim = 5
@@ -84,14 +87,14 @@ class TestRandomProblemCholesky(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_generate_small_lower(self):
         dim = 10
@@ -120,14 +123,14 @@ class TestRandomProblemLDLT(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_generate_small_lower(self):
         dim = 10

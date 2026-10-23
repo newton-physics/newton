@@ -15,6 +15,7 @@
 
 # Python
 import argparse
+import logging
 import os
 
 # Thirdparty
@@ -24,9 +25,7 @@ import warp as wp
 
 # Newton
 import newton
-
-# Kamino
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import enable_console_logging
 from newton._src.solvers.kamino._src.utils.viewer import ViewerConfig
 from newton._src.solvers.kamino.examples import run_headless
 from newton._src.solvers.kamino.examples.rl.joystick import JoystickController
@@ -34,6 +33,8 @@ from newton._src.solvers.kamino.examples.rl.observations import BipedalObservati
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
 from newton._src.solvers.kamino.examples.rl.simulation_runner import SimulationRunner
 from newton._src.solvers.kamino.examples.rl.utils import _load_policy_checkpoint, quat_to_projected_yaw
+
+logger = logging.getLogger(__name__)
 
 # Asset root relative to this file
 _ASSETS_DIR = os.path.normpath(
@@ -89,7 +90,7 @@ def _build_normalization(joint_names: list[str]):
         if name in _BIPEDAL_JOINT_NORMALIZATION:
             o, s = _BIPEDAL_JOINT_NORMALIZATION[name]
         else:
-            msg.warning("Joint '%s' not in BIPEDAL normalization dict -- using identity.", name)
+            logger.warning("Joint '%s' not in BIPEDAL normalization dict -- using identity.", name)
             o, s = 0.0, 1.0
         offsets.append(o)
         scales.append(s)
@@ -250,7 +251,7 @@ class Example:
             dt=self.env_dt,
             num_joints=len(self.joint_pos_offset),
         )
-        msg.debug("Observation dim: %s", self.obs.num_observations)
+        logger.debug("Observation dim: %s", self.obs.num_observations)
 
         # Joystick / keyboard command controller
         self.joystick = JoystickController(
@@ -356,6 +357,7 @@ class Example:
 ###########################################################################
 
 if __name__ == "__main__":
+    enable_console_logging()
     parser = argparse.ArgumentParser(description="Bipedal RL play example")
     parser.add_argument("--device", type=str, help="The compute device to use")
     parser.add_argument(
@@ -392,7 +394,7 @@ if __name__ == "__main__":
     else:
         device = wp.get_preferred_device()
 
-    msg.debug("device: %s", device)
+    logger.debug("device: %s", device)
 
     # Convert warp device to torch device string for checkpoint loading
     torch_device = "cuda" if device.is_cuda else "cpu"
@@ -401,7 +403,7 @@ if __name__ == "__main__":
     POLICY_PATH = os.path.join(_ASSETS_DIR, "bipedal", "model.pt")
     PHASE_RATE_POLICY_PATH = os.path.join(_ASSETS_DIR, "bipedal", "phase_rate.pt")
     policy = _load_policy_checkpoint(POLICY_PATH, device=torch_device)
-    msg.info("Loaded policy from: %s", POLICY_PATH)
+    logger.info("Loaded policy from: %s", POLICY_PATH)
 
     example = Example(
         device=device,
@@ -412,10 +414,10 @@ if __name__ == "__main__":
 
     try:
         if args.headless:
-            msg.info("Running in headless mode...")
+            logger.info("Running in headless mode...")
             run_headless(example, progress=True)
         else:
-            msg.info("Running in Viewer mode (%s)...", args.mode)
+            logger.info("Running in Viewer mode (%s)...", args.mode)
             if hasattr(example.viewer, "set_camera"):
                 example.viewer.set_camera(wp.vec3(0.6, 0.6, 0.3), -10.0, 225.0)
             SimulationRunner(example, mode=args.mode, render_fps=args.render_fps).run()

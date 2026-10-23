@@ -3,6 +3,7 @@
 
 """Unit tests for the DelassusOperator class"""
 
+import logging
 import unittest
 from unittest.mock import Mock, patch
 
@@ -19,7 +20,7 @@ from newton._src.solvers.kamino._src.kinematics.constraints import get_max_const
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.linalg import LLTSequentialSolver
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_active_constraint_dims,
@@ -36,6 +37,8 @@ from newton.tests.kamino.utils.make import (
 from newton.tests.kamino.utils.print import debug_print_error_stats
 from newton.tests.kamino.utils.rand import random_rhs_for_matrix
 from newton.tests.utils.basics import build_boxes_fourbar, build_boxes_nunchaku, make_basics_heterogeneous_builder
+
+logger = logging.getLogger(__name__)
 
 ###
 # Helper functions
@@ -87,13 +90,13 @@ def check_delassus_allocations(
 
 def debug_print_delassus_info(delassus: DelassusOperator) -> None:
     """Print ``delassus.info`` and ``delassus.D`` shape in the debug log."""
-    if not msg.is_enabled_for(msg.LogLevel.DEBUG):
+    if not logger.isEnabledFor(logging.DEBUG):
         return
-    msg.debug("delassus.info.maxdim: %s", delassus.info.maxdim)
-    msg.debug("delassus.info.dim: %s", delassus.info.dim)
-    msg.debug("delassus.info.mio: %s", delassus.info.mio)
-    msg.debug("delassus.info.vio: %s", delassus.info.vio)
-    msg.debug("delassus.D: %s", delassus.D)
+    logger.debug("delassus.info.maxdim: %s", delassus.info.maxdim)
+    logger.debug("delassus.info.dim: %s", delassus.info.dim)
+    logger.debug("delassus.info.mio: %s", delassus.info.mio)
+    logger.debug("delassus.info.vio: %s", delassus.info.vio)
+    logger.debug("delassus.D: %s", delassus.D)
 
 
 ###
@@ -181,10 +184,10 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
@@ -217,7 +220,7 @@ class TestDelassusOperator(unittest.TestCase):
         # Compare expected to allocated dimensions and sizes
         check_delassus_allocations(self, model, limits, detector.contacts, delassus)
         # Optional verbose output
-        msg.debug("")  # Print a newline for better readability
+        logger.debug("")  # Print a newline for better readability
         debug_print_delassus_info(delassus)
 
     def test_02_allocate_homogeneous_delassus_operator(self):
@@ -250,7 +253,7 @@ class TestDelassusOperator(unittest.TestCase):
         # Compare expected to allocated dimensions and sizes
         check_delassus_allocations(self, model, limits, detector.contacts, delassus)
         # Optional verbose output
-        msg.debug("")  # Print a newline for better readability
+        logger.debug("")  # Print a newline for better readability
         debug_print_delassus_info(delassus)
 
     def test_03_allocate_heterogeneous_delassus_operator(self):
@@ -281,7 +284,7 @@ class TestDelassusOperator(unittest.TestCase):
         # Compare expected to allocated dimensions and sizes
         check_delassus_allocations(self, model, limits, detector.contacts, delassus)
         # Optional verbose output
-        msg.debug("")  # Print a newline for better readability
+        logger.debug("")  # Print a newline for better readability
         debug_print_delassus_info(delassus)
 
     def test_04_build_delassus_operator(self):
@@ -337,7 +340,7 @@ class TestDelassusOperator(unittest.TestCase):
             for w in range(delassus.num_worlds):
                 inv_M_q_np[w][: njdcts[w]] = inv_m_j_np[jdcts_start[w] : jdcts_start[w] + njdcts[w]]
                 inv_M_q_np[w] = np.diag(inv_M_q_np[w])
-                msg.debug("[%s]: inv_M_q_np (shape=%s):\n%s\n\n", w, inv_M_q_np[w].shape, inv_M_q_np[w])
+                logger.debug("[%s]: inv_M_q_np (shape=%s):\n%s\n\n", w, inv_M_q_np[w].shape, inv_M_q_np[w])
 
         # For each world, compute the Delassus matrix using numpy and
         # compare it with the one from the Delassus operator class
@@ -346,8 +349,8 @@ class TestDelassusOperator(unittest.TestCase):
             D_w = (J_cts_np[w] @ invM_np[w]) @ J_cts_np[w].T + inv_M_q_np[w]
 
             # Compare the computed Delassus matrix with the one from the dual problem
-            msg.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
-            msg.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+            logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+            logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
             debug_print_error_stats(f"D[{w}]", D_np[w], D_w, active_size[w], show_errors=True)
             np.testing.assert_allclose(D_np[w], D_w, rtol=1e-3, atol=1e-4, err_msg="D")
 
@@ -402,22 +405,22 @@ class TestDelassusOperator(unittest.TestCase):
             for w in range(delassus.num_worlds):
                 inv_M_q_np[w][: njdcts[w]] = inv_m_j_np[jdcts_start[w] : jdcts_start[w] + njdcts[w]]
                 inv_M_q_np[w] = np.diag(inv_M_q_np[w])
-                msg.debug("[%s]: inv_M_q_np (shape=%s):\n%s\n\n", w, inv_M_q_np[w].shape, inv_M_q_np[w])
+                logger.debug("[%s]: inv_M_q_np (shape=%s):\n%s\n\n", w, inv_M_q_np[w].shape, inv_M_q_np[w])
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("")  # Print a newline for better readability
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("")  # Print a newline for better readability
             for i in range(len(active_dims)):
-                msg.debug("[%s]: active_dims: %s", i, active_dims[i])
+                logger.debug("[%s]: active_dims: %s", i, active_dims[i])
             for i in range(len(J_cts_np)):
-                msg.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
+                logger.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
             for i in range(len(D_np)):
-                msg.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
+                logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
             for i in range(len(invM_np)):
-                msg.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
-            msg.debug("")  # Add a newline for better readability
+                logger.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
+            logger.debug("")  # Add a newline for better readability
             debug_print_delassus_info(delassus)
-            msg.debug("")  # Add a newline for better readability
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compute the Delassus matrix using numpy and
         # compare it with the one from the Delassus operator class
@@ -426,8 +429,8 @@ class TestDelassusOperator(unittest.TestCase):
             D_w = (J_cts_np[w] @ invM_np[w]) @ J_cts_np[w].T + inv_M_q_np[w]
 
             # Compare the computed Delassus matrix with the one from the dual problem
-            msg.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
-            msg.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+            logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+            logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
             debug_print_error_stats(f"D[{w}]", D_np[w], D_w, active_dims[w])
             np.testing.assert_allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4, err_msg="D")
 
@@ -472,19 +475,19 @@ class TestDelassusOperator(unittest.TestCase):
         invM_np = make_inverse_generalized_mass_matrices(model, data)
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("")  # Print a newline for better readability
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("")  # Print a newline for better readability
             for i in range(len(active_dims)):
-                msg.debug("[%s]: active_dims: %s", i, active_dims[i])
+                logger.debug("[%s]: active_dims: %s", i, active_dims[i])
             for i in range(len(J_cts_np)):
-                msg.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
+                logger.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
             for i in range(len(D_np)):
-                msg.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
+                logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
             for i in range(len(invM_np)):
-                msg.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
-            msg.debug("")  # Add a newline for better readability
+                logger.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
+            logger.debug("")  # Add a newline for better readability
             debug_print_delassus_info(delassus)
-            msg.debug("")  # Add a newline for better readability
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compute the Delassus matrix using numpy and
         # compare it with the one from the Delassus operator class
@@ -493,8 +496,8 @@ class TestDelassusOperator(unittest.TestCase):
             D_w = (J_cts_np[w] @ invM_np[w]) @ J_cts_np[w].T
 
             # Compare the computed Delassus matrix with the one from the dual problem
-            msg.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
-            msg.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+            logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+            logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
             debug_print_error_stats(f"D[{w}]", D_np[w], D_w, active_dims[w])
             np.testing.assert_allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4, err_msg="D")
 
@@ -540,15 +543,15 @@ class TestDelassusOperator(unittest.TestCase):
         D_np = extract_delassus(delassus, only_active_dims=True)
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("\n")
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("\n")
             for i in range(len(active_dims)):
-                msg.debug("[%s]: active_dims: %s", i, active_dims[i])
+                logger.debug("[%s]: active_dims: %s", i, active_dims[i])
             for i in range(len(D_np)):
-                msg.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
-            msg.debug("")  # Add a newline for better readability
+                logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
+            logger.debug("")  # Add a newline for better readability
             debug_print_delassus_info(delassus)
-            msg.debug("")  # Add a newline for better readability
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compute the Delassus matrix using numpy and
         # compare it with the one from the Delassus operator class
@@ -558,8 +561,8 @@ class TestDelassusOperator(unittest.TestCase):
             D_w = np.eye(active_dims[w], dtype=np.float32)
 
             # Compare the computed Delassus matrix with the one from the dual problem
-            msg.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
-            msg.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+            logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+            logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
             debug_print_error_stats(f"D[{w}]", D_np[w], D_w, active_dims[w])
             np.testing.assert_allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4, err_msg="D")
 
@@ -579,15 +582,15 @@ class TestDelassusOperator(unittest.TestCase):
 
         # Update the containers
         update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("")  # Print a newline for better readability
-            msg.debug("model.info.num_bilateral_joint_cts: %s", model.info.num_joint_bilateral_cts)
-            msg.debug("limits.data.world_max_limits: %s", limits.data.world_max_limits)
-            msg.debug("limits.data.world_active_limits: %s", limits.data.world_active_limits)
-            msg.debug("contacts.data.world_max_contacts: %s", detector.contacts.data.world_max_contacts)
-            msg.debug("contacts.data.world_active_contacts: %s", detector.contacts.data.world_active_contacts)
-            msg.debug("data.info.num_total_cts: %s", data.info.num_total_cts)
-            msg.debug("")  # Print a newline for better readability
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("")  # Print a newline for better readability
+            logger.debug("model.info.num_bilateral_joint_cts: %s", model.info.num_joint_bilateral_cts)
+            logger.debug("limits.data.world_max_limits: %s", limits.data.world_max_limits)
+            logger.debug("limits.data.world_active_limits: %s", limits.data.world_active_limits)
+            logger.debug("contacts.data.world_max_contacts: %s", detector.contacts.data.world_max_contacts)
+            logger.debug("contacts.data.world_active_contacts: %s", detector.contacts.data.world_active_contacts)
+            logger.debug("data.info.num_total_cts: %s", data.info.num_total_cts)
+            logger.debug("")  # Print a newline for better readability
 
         # Create the Delassus operator
         delassus = DelassusOperator(
@@ -642,19 +645,19 @@ class TestDelassusOperator(unittest.TestCase):
             x_np.append(np.linalg.solve(D_np[w][: active_dims[w], : active_dims[w]], v_f_np[w]))
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+        if logger.isEnabledFor(logging.DEBUG):
             for i in range(len(active_dims)):
-                msg.debug("[%s]: active_dims: %s", i, active_dims[i])
+                logger.debug("[%s]: active_dims: %s", i, active_dims[i])
             for i in range(len(D_np)):
-                msg.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
+                logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
             for w in range(num_worlds):
-                msg.debug("[%s]: v_f_np: %s", w, v_f_np[w])
+                logger.debug("[%s]: v_f_np: %s", w, v_f_np[w])
             for w in range(num_worlds):
-                msg.debug("[%s]: x_np: %s", w, x_np[w])
-                msg.debug("[%s]: x_wp: %s", w, x_wp_np[w])
-            msg.debug("")  # Add a newline for better readability
+                logger.debug("[%s]: x_np: %s", w, x_np[w])
+                logger.debug("[%s]: x_wp: %s", w, x_wp_np[w])
+            logger.debug("")  # Add a newline for better readability
             debug_print_delassus_info(delassus)
-            msg.debug("")  # Add a newline for better readability
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compare the numpy and DelassusOperator solutions
         for w in range(num_worlds):
@@ -712,8 +715,8 @@ class TestDelassusOperator(unittest.TestCase):
         # For each world, compare the Delassus matrix
         for w in range(delassus_dense.num_worlds):
             # Compare the computed Delassus matrix with the one from the dual problem
-            msg.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
-            msg.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
+            logger.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
+            logger.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
             debug_print_error_stats(f"D[{w}]", D_dense_np[w], D_sparse_np[w], active_size[w], show_errors=True)
             np.testing.assert_allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4, err_msg="D")
 
@@ -768,8 +771,8 @@ class TestDelassusOperator(unittest.TestCase):
         # For each world, compare the Delassus matrix
         for w in range(delassus_dense.num_worlds):
             # Compare the computed Delassus matrix with the one from the dual problem
-            msg.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
-            msg.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
+            logger.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
+            logger.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
             debug_print_error_stats(f"D[{w}]", D_dense_np[w], D_sparse_np[w], active_dims[w] * active_dims[w])
             np.testing.assert_allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4, err_msg="D")
 
@@ -822,8 +825,8 @@ class TestDelassusOperator(unittest.TestCase):
         # For each world, compare the Delassus matrix
         for w in range(delassus_dense.num_worlds):
             # Compare the computed Delassus matrix with the one from the dual problem
-            msg.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
-            msg.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
+            logger.debug("[%s]: D_dense_np (shape=%s):\n%s", w, D_dense_np[w].shape, D_dense_np[w])
+            logger.debug("[%s]: D_sparse_np (shape=%s):\n%s", w, D_sparse_np[w].shape, D_sparse_np[w])
             debug_print_error_stats(f"D[{w}]", D_dense_np[w], D_sparse_np[w], active_dims[w] * active_dims[w])
             np.testing.assert_allclose(D_dense_np[w], D_sparse_np[w], rtol=1e-3, atol=1e-4, err_msg="D")
 
@@ -839,10 +842,10 @@ class TestDelassusOperatorSparse(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
@@ -946,15 +949,15 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                     ]
 
             # Optional verbose output
-            if msg.is_enabled_for(msg.LogLevel.DEBUG):
-                msg.debug("")  # Print a newline for better readability
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("")  # Print a newline for better readability
                 for i in range(len(J_cts_np)):
-                    msg.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
+                    logger.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
                 for i in range(len(invM_np)):
-                    msg.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
+                    logger.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
                 for i in range(len(D_np)):
-                    msg.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
-                msg.debug("")  # Add a newline for better readability
+                    logger.debug("[%s]: D_np (shape=%s):\n%s", i, D_np[i].shape, D_np[i])
+                logger.debug("")  # Add a newline for better readability
 
             # For each world, compute the Delassus matrix using numpy and compare it with the matrix
             # represented by the Delassus operator.
@@ -965,8 +968,8 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                     D_w = np.diag(preconditioner_list[w]) @ D_w @ np.diag(preconditioner_list[w])
                 if use_regularization:
                     D_w = D_w + np.diag(regularization_list[w])
-                msg.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
-                msg.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
+                logger.debug("[%s]: D_w (shape=%s):\n%s", w, D_w.shape, D_w)
+                logger.debug("[%s]: D_np (shape=%s):\n%s", w, D_np[w].shape, D_np[w])
                 debug_print_error_stats(f"D[{w}]", D_np[w], D_w, D_w.shape[0])
                 np.testing.assert_allclose(D_np[w], D_w, atol=1e-3, rtol=1e-4, err_msg="D")
 
@@ -1091,8 +1094,8 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                     vec_gemv_zero_ref = alpha * (D_w @ input_vec_list[w])
 
                     # Compare the computed Delassus matrix with the one from the dual problem
-                    msg.debug("[%s]: vec_matmul_ref (shape=%s):\n%s", w, vec_matmul_ref.shape, vec_matmul_ref)
-                    msg.debug("[%s]: vec_matmul_w (shape=%s):\n%s", w, vec_matmul_w.shape, vec_matmul_w)
+                    logger.debug("[%s]: vec_matmul_ref (shape=%s):\n%s", w, vec_matmul_ref.shape, vec_matmul_ref)
+                    logger.debug("[%s]: vec_matmul_w (shape=%s):\n%s", w, vec_matmul_w.shape, vec_matmul_w)
                     debug_print_error_stats(
                         f"vec_gemv_zero[{w}]",
                         vec_matmul_ref,
@@ -1100,8 +1103,8 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                         vec_matmul_w.shape[0],
                     )
                     np.testing.assert_allclose(vec_matmul_ref, vec_matmul_w, atol=1e-3, rtol=1e-4, err_msg="matmul")
-                    msg.debug("[%s]: vec_gemv_ref (shape=%s):\n%s", w, vec_gemv_ref.shape, vec_gemv_ref)
-                    msg.debug("[%s]: vec_gemv_w (shape=%s):\n%s", w, vec_gemv_w.shape, vec_gemv_w)
+                    logger.debug("[%s]: vec_gemv_ref (shape=%s):\n%s", w, vec_gemv_ref.shape, vec_gemv_ref)
+                    logger.debug("[%s]: vec_gemv_w (shape=%s):\n%s", w, vec_gemv_w.shape, vec_gemv_w)
                     debug_print_error_stats(
                         f"vec_gemv_zero[{w}]",
                         vec_gemv_ref,
@@ -1109,8 +1112,10 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                         vec_gemv_w.shape[0],
                     )
                     np.testing.assert_allclose(vec_gemv_ref, vec_gemv_w, atol=1e-3, rtol=1e-4, err_msg="gemv")
-                    msg.debug("[%s]: vec_gemv_zero_ref (shape=%s):\n%s", w, vec_gemv_zero_ref.shape, vec_gemv_zero_ref)
-                    msg.debug("[%s]: vec_gemv_zero_w (shape=%s):\n%s", w, vec_gemv_zero_w.shape, vec_gemv_zero_w)
+                    logger.debug(
+                        "[%s]: vec_gemv_zero_ref (shape=%s):\n%s", w, vec_gemv_zero_ref.shape, vec_gemv_zero_ref
+                    )
+                    logger.debug("[%s]: vec_gemv_zero_w (shape=%s):\n%s", w, vec_gemv_zero_w.shape, vec_gemv_zero_w)
                     debug_print_error_stats(
                         f"vec_gemv_zero[{w}]",
                         vec_gemv_zero_ref,
@@ -1173,15 +1178,15 @@ class TestDelassusOperatorSparse(unittest.TestCase):
                 ]
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("")  # Print a newline for better readability
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("")  # Print a newline for better readability
             for i in range(len(J_cts_np)):
-                msg.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
+                logger.debug("[%s]: J_cts_np (shape=%s):\n%s", i, J_cts_np[i].shape, J_cts_np[i])
             for i in range(len(invM_np)):
-                msg.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
+                logger.debug("[%s]: invM_np (shape=%s):\n%s", i, invM_np[i].shape, invM_np[i])
             for i in range(len(D_diag_list)):
-                msg.debug("[%s]: D_diag (shape=%s):\n%s", i, D_diag_list[i].shape, D_diag_list[i])
-            msg.debug("")  # Add a newline for better readability
+                logger.debug("[%s]: D_diag (shape=%s):\n%s", i, D_diag_list[i].shape, D_diag_list[i])
+            logger.debug("")  # Add a newline for better readability
 
         # For each world, compute the Delassus matrix diagonal using numpy and compare it with the
         # one from the Delassus operator class
@@ -1191,8 +1196,8 @@ class TestDelassusOperatorSparse(unittest.TestCase):
             D_diag_ref = np.diag(D_w)
 
             # Compare the computed Delassus matrix diagonals
-            msg.debug("[%s]: D_diag_ref (shape=%s):\n%s", w, D_diag_ref.shape, D_diag_ref)
-            msg.debug("[%s]: D_diag (shape=%s):\n%s", w, D_diag_list[w].shape, D_diag_list[w])
+            logger.debug("[%s]: D_diag_ref (shape=%s):\n%s", w, D_diag_ref.shape, D_diag_ref)
+            logger.debug("[%s]: D_diag (shape=%s):\n%s", w, D_diag_list[w].shape, D_diag_list[w])
             debug_print_error_stats(f"D_diag[{w}]", D_diag_list[w], D_diag_ref, D_diag_ref.shape[0])
             np.testing.assert_allclose(D_diag_list[w], D_diag_ref, atol=1e-3, rtol=1e-4, err_msg="D_diag")
 

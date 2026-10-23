@@ -3,6 +3,7 @@
 
 """Unit tests for the collider functions of narrow-phase collision detection"""
 
+import logging
 import unittest
 
 import numpy as np
@@ -32,10 +33,12 @@ from newton._src.solvers.kamino._src.geometry.primitive.narrowphase import (
     PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS,
     primitive_narrowphase,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
+from newton.tests.kamino import allow_verbose_output, expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 from newton.tests.utils import basics, testing
+
+logger = logging.getLogger(__name__)
 
 ###
 # Constants
@@ -378,7 +381,7 @@ def test_narrowphase(
     broadphase_types = [PrimitiveBroadPhaseTestAABB, PrimitiveBroadPhaseTestBS]
     for bp_type in broadphase_types:
         bp_name = bp_type.__name__
-        msg.debug("Running narrow-phase test on '%s' using '%s'", case, bp_name)
+        logger.debug("Running narrow-phase test on '%s' using '%s'", case, bp_name)
 
         # Create a test model and data
         model = ModelKamino.from_newton(builder.finalize(device))
@@ -405,18 +408,18 @@ def test_narrowphase(
         )
 
         # Optional verbose output
-        msg.debug("[%s][%s]: bodies.q_i:\n%s", case, bp_name, data.bodies.q_i)
-        msg.debug("[%s][%s]: contacts.model_active_contacts: %s", case, bp_name, contacts.model_active_contacts)
-        msg.debug("[%s][%s]: contacts.world_active_contacts: %s", case, bp_name, contacts.world_active_contacts)
-        msg.debug("[%s][%s]: contacts.wid: %s", case, bp_name, contacts.wid)
-        msg.debug("[%s][%s]: contacts.cid: %s", case, bp_name, contacts.cid)
-        msg.debug("[%s][%s]: contacts.gid_AB:\n%s", case, bp_name, contacts.gid_AB)
-        msg.debug("[%s][%s]: contacts.bid_AB:\n%s", case, bp_name, contacts.bid_AB)
-        msg.debug("[%s][%s]: contacts.position_A:\n%s", case, bp_name, contacts.position_A)
-        msg.debug("[%s][%s]: contacts.position_B:\n%s", case, bp_name, contacts.position_B)
-        msg.debug("[%s][%s]: contacts.gapfunc:\n%s", case, bp_name, contacts.gapfunc)
-        msg.debug("[%s][%s]: contacts.frame:\n%s", case, bp_name, contacts.frame)
-        msg.debug("[%s][%s]: contacts.material:\n%s", case, bp_name, contacts.material)
+        logger.debug("[%s][%s]: bodies.q_i:\n%s", case, bp_name, data.bodies.q_i)
+        logger.debug("[%s][%s]: contacts.model_active_contacts: %s", case, bp_name, contacts.model_active_contacts)
+        logger.debug("[%s][%s]: contacts.world_active_contacts: %s", case, bp_name, contacts.world_active_contacts)
+        logger.debug("[%s][%s]: contacts.wid: %s", case, bp_name, contacts.wid)
+        logger.debug("[%s][%s]: contacts.cid: %s", case, bp_name, contacts.cid)
+        logger.debug("[%s][%s]: contacts.gid_AB:\n%s", case, bp_name, contacts.gid_AB)
+        logger.debug("[%s][%s]: contacts.bid_AB:\n%s", case, bp_name, contacts.bid_AB)
+        logger.debug("[%s][%s]: contacts.position_A:\n%s", case, bp_name, contacts.position_A)
+        logger.debug("[%s][%s]: contacts.position_B:\n%s", case, bp_name, contacts.position_B)
+        logger.debug("[%s][%s]: contacts.gapfunc:\n%s", case, bp_name, contacts.gapfunc)
+        logger.debug("[%s][%s]: contacts.frame:\n%s", case, bp_name, contacts.frame)
+        logger.debug("[%s][%s]: contacts.material:\n%s", case, bp_name, contacts.material)
 
         # Check results
         check_contacts(
@@ -481,9 +484,9 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
         # Construct a list of all supported primitive shape pairs
         self.supported_shape_pairs: list[tuple[str, str]] = []
@@ -492,19 +495,19 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
             for shape_B in PRIMITIVE_BROADPHASE_SUPPORTED_SHAPES:
                 shape_B_name = shape_B.name.lower()
                 self.supported_shape_pairs.append((shape_A_name, shape_B_name))
-        msg.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
+        logger.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_bspheres_on_each_primitive_shape_pair_exact(self):
         # Each shape pair in its own world with
         # - zero distance: (i.e., exactly touching)
         # - zero gap: no preemption of collisions
         for shape_pair in self.supported_shape_pairs:
-            msg.debug("[BS]: testing broadphase with exact boundaries on shape pair: %s", shape_pair)
+            logger.debug("[BS]: testing broadphase with exact boundaries on shape pair: %s", shape_pair)
             test_broadphase_on_single_pair(
                 self,
                 broadphase_type=PrimitiveBroadPhaseTestBS,
@@ -520,7 +523,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # - positive distance: (i.e., apart)
         # - zero gap: no preemption of collisions
         for shape_pair in self.supported_shape_pairs:
-            msg.debug("[BS]: testing broadphase with shapes apart on shape pair: %s", shape_pair)
+            logger.debug("[BS]: testing broadphase with shapes apart on shape pair: %s", shape_pair)
             test_broadphase_on_single_pair(
                 self,
                 broadphase_type=PrimitiveBroadPhaseTestBS,
@@ -536,7 +539,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # - positive distance: (i.e., apart)
         # - positive gap: preemption of collisions
         for shape_pair in self.supported_shape_pairs:
-            msg.debug("[BS]: testing broadphase with shapes apart but gap on shape pair: %s", shape_pair)
+            logger.debug("[BS]: testing broadphase with shapes apart but gap on shape pair: %s", shape_pair)
             test_broadphase_on_single_pair(
                 self,
                 broadphase_type=PrimitiveBroadPhaseTestBS,
@@ -552,7 +555,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # - negative distance: (i.e., overlapping)
         # - zero gap: no preemption of collisions
         for shape_pair in self.supported_shape_pairs:
-            msg.debug("[BS]: testing broadphase with overlapping shapes on shape pair: %s", shape_pair)
+            logger.debug("[BS]: testing broadphase with overlapping shapes on shape pair: %s", shape_pair)
             test_broadphase_on_single_pair(
                 self,
                 broadphase_type=PrimitiveBroadPhaseTestBS,
@@ -567,7 +570,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # All shape pairs, but each in its own world with
         # - zero distance: (i.e., exactly touching)
         # - zero gap: no preemption of collisions
-        msg.debug("[BS]: testing broadphase with overlapping shapes on all shape pairs")
+        logger.debug("[BS]: testing broadphase with overlapping shapes on all shape pairs")
         builder = testing.build_shape_pairs_test(
             shape_pairs=self.supported_shape_pairs,
             distance=0.0,
@@ -588,7 +591,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # - zero distance: (i.e., exactly touching)
         # - zero gap: no preemption of collisions
         for shape_pair in self.supported_shape_pairs:
-            msg.debug("[AABB]: testing broadphase with exact boundaries on shape pair: %s", shape_pair)
+            logger.debug("[AABB]: testing broadphase with exact boundaries on shape pair: %s", shape_pair)
             test_broadphase_on_single_pair(
                 self,
                 broadphase_type=PrimitiveBroadPhaseTestAABB,
@@ -604,7 +607,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # - positive distance: (i.e., apart)
         # - zero gap: no preemption of collisions
         for shape_pair in self.supported_shape_pairs:
-            msg.debug("[AABB]: testing broadphase with shapes apart on shape pair: %s", shape_pair)
+            logger.debug("[AABB]: testing broadphase with shapes apart on shape pair: %s", shape_pair)
             test_broadphase_on_single_pair(
                 self,
                 broadphase_type=PrimitiveBroadPhaseTestAABB,
@@ -620,7 +623,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # - positive distance: (i.e., apart)
         # - positive gap: preemption of collisions
         for shape_pair in self.supported_shape_pairs:
-            msg.debug("[AABB]: testing broadphase with shapes apart but gap on shape pair: %s", shape_pair)
+            logger.debug("[AABB]: testing broadphase with shapes apart but gap on shape pair: %s", shape_pair)
             test_broadphase_on_single_pair(
                 self,
                 broadphase_type=PrimitiveBroadPhaseTestAABB,
@@ -636,7 +639,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # - negative distance: (i.e., overlapping)
         # - zero gap: no preemption of collisions
         for shape_pair in self.supported_shape_pairs:
-            msg.debug("[AABB]: testing broadphase with overlapping shapes on shape pair: %s", shape_pair)
+            logger.debug("[AABB]: testing broadphase with overlapping shapes on shape pair: %s", shape_pair)
             test_broadphase_on_single_pair(
                 self,
                 broadphase_type=PrimitiveBroadPhaseTestAABB,
@@ -651,7 +654,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         # All shape pairs, but each in its own world with
         # - zero distance: (i.e., exactly touching)
         # - zero gap: no preemption of collisions
-        msg.debug("[AABB]: testing broadphase with overlapping shapes on all shape pairs")
+        logger.debug("[AABB]: testing broadphase with overlapping shapes on all shape pairs")
         builder = testing.build_shape_pairs_test(
             shape_pairs=self.supported_shape_pairs,
             distance=0.0,
@@ -669,7 +672,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         )
 
     def test_11_bspheres_on_boxes_nunchaku(self):
-        msg.debug("[BS]: testing broadphase on `boxes_nunchaku`")
+        logger.debug("[BS]: testing broadphase on `boxes_nunchaku`")
         builder = basics.build_boxes_nunchaku()
         test_broadphase(
             self,
@@ -684,7 +687,7 @@ class TestPrimitiveBroadPhase(unittest.TestCase):
         )
 
     def test_12_aabbs_on_boxes_nunchaku(self):
-        msg.debug("[AABB]: testing broadphase on `boxes_nunchaku`")
+        logger.debug("[AABB]: testing broadphase on `boxes_nunchaku`")
         builder = basics.build_boxes_nunchaku()
         test_broadphase(
             self,
@@ -708,9 +711,9 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
         # Construct a list of all supported primitive shape pairs
         self.supported_shape_pairs: list[tuple[str, str]] = []
@@ -720,19 +723,19 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
                 shape_B_name = shape_B.name.lower()
                 if (shape_A, shape_B) in PRIMITIVE_NARROWPHASE_SUPPORTED_SHAPE_PAIRS:
                     self.supported_shape_pairs.append((shape_A_name, shape_B_name))
-        msg.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
+        logger.debug("supported_shape_pairs:\n%s\n", self.supported_shape_pairs)
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_on_each_primitive_shape_pair_exact(self):
         """
         Tests the narrow-phase collision detection for each supported primitive
         shape pair when placed exactly at their contact boundaries.
         """
-        msg.debug("Testing narrow-phase tests with exact boundaries")
+        logger.debug("Testing narrow-phase tests with exact boundaries")
         # Each shape pair in its own world with
         # - zero distance: (i.e., exactly touching)
         # - zero gap: no preemption of collisions
@@ -763,7 +766,7 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
         Tests the narrow-phase collision detection for each
         supported primitive shape pair when placed apart.
         """
-        msg.debug("Testing narrow-phase tests with shapes apart")
+        logger.debug("Testing narrow-phase tests with shapes apart")
         # Each shape pair in its own world with
         # - zero distance: (i.e., exactly touching)
         # - zero gap: no preemption of collisions
@@ -781,7 +784,7 @@ class TestPrimitiveNarrowPhase(unittest.TestCase):
         Tests the narrow-phase collision detection for each supported
         primitive shape pair when placed apart but with contact gap.
         """
-        msg.debug("Testing narrow-phase tests with shapes apart")
+        logger.debug("Testing narrow-phase tests with shapes apart")
         # Each shape pair in its own world with
         # - zero distance: (i.e., exactly touching)
         # - zero gap: no preemption of collisions
@@ -1023,14 +1026,15 @@ class TestPipelinePrimitive(NewtonTestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            allow_verbose_output(self)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_00_make_default(self):
         """Tests the default constructor of CollisionPipelinePrimitive."""
@@ -1048,7 +1052,7 @@ class TestPipelinePrimitive(NewtonTestCase):
         """
         # Create a list of collidable shape pairs and their reversed versions
         collidable_shape_pairs = list(nominal_expected_contacts_per_shape_pair.keys())
-        msg.debug("collidable_shape_pairs:\n%s\n", collidable_shape_pairs)
+        logger.debug("collidable_shape_pairs:\n%s\n", collidable_shape_pairs)
 
         # Define any special kwargs for specific shape pairs
         per_shape_pair_args = {}
@@ -1079,7 +1083,7 @@ class TestPipelinePrimitive(NewtonTestCase):
 
         # Create a list of expected number of contacts per shape pair
         expected_contacts_per_pair: list[int] = list(nominal_expected_contacts_per_shape_pair.values())
-        msg.debug("expected_contacts_per_pair:\n%s\n", expected_contacts_per_pair)
+        logger.debug("expected_contacts_per_pair:\n%s\n", expected_contacts_per_pair)
 
         # Define expected contacts dictionary
         expected = {

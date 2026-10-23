@@ -3,6 +3,7 @@
 
 """Unit tests for the high-level Simulator class utility of Kamino"""
 
+import logging
 import time
 import unittest
 
@@ -10,11 +11,13 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino._src.utils.sim.simulator import Simulator
 from newton._src.solvers.kamino.examples import print_progress_bar
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton.tests.utils.basics import build_cartpole
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module configs
@@ -95,15 +98,15 @@ class TestCartpoleSimulator(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_step_multiple_cartpoles_all_from_initial_state(self):
         """
@@ -114,8 +117,8 @@ class TestCartpoleSimulator(unittest.TestCase):
         # Create a single-instance system
         builder_single = build_cartpole(ground=False)
         for i, (body_q, body_qd) in enumerate(zip(builder_single.body_q, builder_single.body_qd, strict=True)):
-            msg.debug("[single]: [builder]: body %s: body_q: %s", i, body_q)
-            msg.debug("[single]: [builder]: body %s: body_qd: %s", i, body_qd)
+            logger.debug("[single]: [builder]: body %s: body_q: %s", i, body_q)
+            logger.debug("[single]: [builder]: body %s: body_qd: %s", i, body_qd)
         model_single = builder_single.finalize(device=self.default_device)
 
         # Create simulator
@@ -125,11 +128,11 @@ class TestCartpoleSimulator(unittest.TestCase):
         self.assertEqual(single_sim.model.size.sum_of_num_joints, 2)
 
         # Optional verbose output - enabled globally via self.verbose
-        msg.debug("[single]: [init]: sim.model.size:\n%s\n\n", single_sim.model.size)
-        msg.debug("[single]: [init]: sim.model.state.q_i:\n%s\n\n", single_sim.state.q_i)
-        msg.debug("[single]: [init]: sim.model.state.u_i:\n%s\n\n", single_sim.state.u_i)
-        msg.debug("[single]: [init]: sim.model.state.q_j:\n%s\n\n", single_sim.state.q_j)
-        msg.debug("[single]: [init]: sim.model.state.dq_j:\n%s\n\n", single_sim.state.dq_j)
+        logger.debug("[single]: [init]: sim.model.size:\n%s\n\n", single_sim.model.size)
+        logger.debug("[single]: [init]: sim.model.state.q_i:\n%s\n\n", single_sim.state.q_i)
+        logger.debug("[single]: [init]: sim.model.state.u_i:\n%s\n\n", single_sim.state.u_i)
+        logger.debug("[single]: [init]: sim.model.state.q_j:\n%s\n\n", single_sim.state.q_j)
+        logger.debug("[single]: [init]: sim.model.state.dq_j:\n%s\n\n", single_sim.state.dq_j)
 
         # Define the total number of sample steps to collect, and the
         # total number of execution steps from which to collect them
@@ -141,13 +144,13 @@ class TestCartpoleSimulator(unittest.TestCase):
         initial_u_i = single_sim.state.u_i.numpy().copy()
         initial_q_j = single_sim.state.q_j.numpy().copy()
         initial_dq_j = single_sim.state.dq_j.numpy().copy()
-        msg.debug("[samples]: [single]: [init]: q_i (shape=%s):\n%s\n", initial_q_i.shape, initial_q_i)
-        msg.debug("[samples]: [single]: [init]: u_i (shape=%s):\n%s\n", initial_u_i.shape, initial_u_i)
-        msg.debug("[samples]: [single]: [init]: q_j (shape=%s):\n%s\n", initial_q_j.shape, initial_q_j)
-        msg.debug("[samples]: [single]: [init]: dq_j (shape=%s):\n%s\n", initial_dq_j.shape, initial_dq_j)
+        logger.debug("[samples]: [single]: [init]: q_i (shape=%s):\n%s\n", initial_q_i.shape, initial_q_i)
+        logger.debug("[samples]: [single]: [init]: u_i (shape=%s):\n%s\n", initial_u_i.shape, initial_u_i)
+        logger.debug("[samples]: [single]: [init]: q_j (shape=%s):\n%s\n", initial_q_j.shape, initial_q_j)
+        logger.debug("[samples]: [single]: [init]: dq_j (shape=%s):\n%s\n", initial_dq_j.shape, initial_dq_j)
 
         # Run the simulation for the specified number of steps
-        msg.debug("[single]: Executing %s simulator steps", num_steps)
+        logger.debug("[single]: Executing %s simulator steps", num_steps)
         start_time = time.time()
         for step in range(num_steps):
             # Execute a single simulation step
@@ -161,10 +164,10 @@ class TestCartpoleSimulator(unittest.TestCase):
         final_u_i = single_sim.state.u_i.numpy().copy()
         final_q_j = single_sim.state.q_j.numpy().copy()
         final_dq_j = single_sim.state.dq_j.numpy().copy()
-        msg.debug("[samples]: [single]: [final]: q_i (shape=%s):\n%s\n", final_q_i.shape, final_q_i)
-        msg.debug("[samples]: [single]: [final]: u_i (shape=%s):\n%s\n", final_u_i.shape, final_u_i)
-        msg.debug("[samples]: [single]: [final]: q_j (shape=%s):\n%s\n", final_q_j.shape, final_q_j)
-        msg.debug("[samples]: [single]: [final]: dq_j (shape=%s):\n%s\n", final_dq_j.shape, final_dq_j)
+        logger.debug("[samples]: [single]: [final]: q_i (shape=%s):\n%s\n", final_q_i.shape, final_q_i)
+        logger.debug("[samples]: [single]: [final]: u_i (shape=%s):\n%s\n", final_u_i.shape, final_u_i)
+        logger.debug("[samples]: [single]: [final]: q_j (shape=%s):\n%s\n", final_q_j.shape, final_q_j)
+        logger.debug("[samples]: [single]: [final]: dq_j (shape=%s):\n%s\n", final_dq_j.shape, final_dq_j)
 
         # Tile the collected states for comparison against the multi-instance simulator
         multi_init_q_i = np.tile(initial_q_i, (num_worlds, 1))
@@ -175,22 +178,22 @@ class TestCartpoleSimulator(unittest.TestCase):
         multi_final_u_i = np.tile(final_u_i, (num_worlds, 1))
         multi_final_q_j = np.tile(final_q_j, (num_worlds, 1)).reshape(-1)
         multi_final_dq_j = np.tile(final_dq_j, (num_worlds, 1)).reshape(-1)
-        msg.debug("[samples]: [multi] [init]: q_i (shape=%s):\n%s\n", multi_init_q_i.shape, multi_init_q_i)
-        msg.debug("[samples]: [multi] [init]: u_i (shape=%s):\n%s\n", multi_init_u_i.shape, multi_init_u_i)
-        msg.debug("[samples]: [multi] [init]: q_j (shape=%s):\n%s\n", multi_init_q_j.shape, multi_init_q_j)
-        msg.debug("[samples]: [multi] [init]: dq_j (shape=%s):\n%s\n", multi_init_dq_j.shape, multi_init_dq_j)
-        msg.debug("[samples]: [multi] [final]: q_i (shape=%s):\n%s\n", multi_final_q_i.shape, multi_final_q_i)
-        msg.debug("[samples]: [multi] [final]: u_i (shape=%s):\n%s\n", multi_final_u_i.shape, multi_final_u_i)
-        msg.debug("[samples]: [multi] [final]: q_j (shape=%s):\n%s\n", multi_final_q_j.shape, multi_final_q_j)
-        msg.debug("[samples]: [multi] [final]: dq_j (shape=%s):\n%s\n", multi_final_dq_j.shape, multi_final_dq_j)
+        logger.debug("[samples]: [multi] [init]: q_i (shape=%s):\n%s\n", multi_init_q_i.shape, multi_init_q_i)
+        logger.debug("[samples]: [multi] [init]: u_i (shape=%s):\n%s\n", multi_init_u_i.shape, multi_init_u_i)
+        logger.debug("[samples]: [multi] [init]: q_j (shape=%s):\n%s\n", multi_init_q_j.shape, multi_init_q_j)
+        logger.debug("[samples]: [multi] [init]: dq_j (shape=%s):\n%s\n", multi_init_dq_j.shape, multi_init_dq_j)
+        logger.debug("[samples]: [multi] [final]: q_i (shape=%s):\n%s\n", multi_final_q_i.shape, multi_final_q_i)
+        logger.debug("[samples]: [multi] [final]: u_i (shape=%s):\n%s\n", multi_final_u_i.shape, multi_final_u_i)
+        logger.debug("[samples]: [multi] [final]: q_j (shape=%s):\n%s\n", multi_final_q_j.shape, multi_final_q_j)
+        logger.debug("[samples]: [multi] [final]: dq_j (shape=%s):\n%s\n", multi_final_dq_j.shape, multi_final_dq_j)
 
         # Create a multi-instance system by replicating the single-instance builder
         builder_multi = newton.ModelBuilder()
         for _ in range(num_worlds):
             builder_multi.add_world(builder_single)
         for i, (body_q, body_qd) in enumerate(zip(builder_multi.body_q, builder_multi.body_qd, strict=True)):
-            msg.debug("[multi]: [builder]: body %s: body_q: %s", i, body_q)
-            msg.debug("[multi]: [builder]: body %s: body_qd: %s", i, body_qd)
+            logger.debug("[multi]: [builder]: body %s: body_q: %s", i, body_q)
+            logger.debug("[multi]: [builder]: body %s: body_qd: %s", i, body_qd)
         model_multi = builder_multi.finalize(device=self.default_device)
 
         # Create simulator
@@ -200,16 +203,16 @@ class TestCartpoleSimulator(unittest.TestCase):
         self.assertEqual(multi_sim.model.size.sum_of_num_joints, single_sim.model.size.sum_of_num_joints * num_worlds)
 
         # Optional verbose output - enabled globally via self.verbose
-        msg.debug("[multi]: [init]: sim.model.size:\n%s\n\n", multi_sim.model.size)
-        msg.debug("[multi]: [init]: sim.model.state_previous.q_i:\n%s\n\n", multi_sim.state_previous.q_i)
-        msg.debug("[multi]: [init]: sim.model.state_previous.u_i:\n%s\n\n", multi_sim.state_previous.u_i)
-        msg.debug("[multi]: [init]: sim.model.state_previous.q_j:\n%s\n\n", multi_sim.state_previous.q_j)
-        msg.debug("[multi]: [init]: sim.model.state_previous.dq_j:\n%s\n\n", multi_sim.state_previous.dq_j)
-        msg.debug("[multi]: [init]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
-        msg.debug("[multi]: [init]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
-        msg.debug("[multi]: [init]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
-        msg.debug("[multi]: [init]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
-        msg.debug("[multi]: [init]: sim.model.control.tau_j:\n%s\n\n", multi_sim.control.tau_j)
+        logger.debug("[multi]: [init]: sim.model.size:\n%s\n\n", multi_sim.model.size)
+        logger.debug("[multi]: [init]: sim.model.state_previous.q_i:\n%s\n\n", multi_sim.state_previous.q_i)
+        logger.debug("[multi]: [init]: sim.model.state_previous.u_i:\n%s\n\n", multi_sim.state_previous.u_i)
+        logger.debug("[multi]: [init]: sim.model.state_previous.q_j:\n%s\n\n", multi_sim.state_previous.q_j)
+        logger.debug("[multi]: [init]: sim.model.state_previous.dq_j:\n%s\n\n", multi_sim.state_previous.dq_j)
+        logger.debug("[multi]: [init]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
+        logger.debug("[multi]: [init]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
+        logger.debug("[multi]: [init]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
+        logger.debug("[multi]: [init]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
+        logger.debug("[multi]: [init]: sim.model.control.tau_j:\n%s\n\n", multi_sim.control.tau_j)
 
         # Check if the multi-instance simulator has initial states matching the tiled samples
         np.testing.assert_allclose(multi_sim.state_previous.q_i.numpy(), multi_init_q_i)
@@ -222,7 +225,7 @@ class TestCartpoleSimulator(unittest.TestCase):
         np.testing.assert_allclose(multi_sim.state.dq_j.numpy(), multi_init_dq_j)
 
         # Step the multi-instance simulator for the same number of steps
-        msg.debug("[multi]: Executing %s simulator steps", num_steps)
+        logger.debug("[multi]: Executing %s simulator steps", num_steps)
         start_time = time.time()
         for step in range(num_steps):
             # Execute a single simulation step
@@ -232,10 +235,10 @@ class TestCartpoleSimulator(unittest.TestCase):
                 print_progress_bar(step + 1, num_steps, start_time, prefix="Progress", suffix="")
 
         # Optional verbose output - enabled globally via self.verbose
-        msg.debug("[multi]: [final]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
-        msg.debug("[multi]: [final]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
-        msg.debug("[multi]: [final]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
-        msg.debug("[multi]: [final]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
+        logger.debug("[multi]: [final]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
+        logger.debug("[multi]: [final]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
+        logger.debug("[multi]: [final]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
+        logger.debug("[multi]: [final]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
 
         # Check that the next states match the collected samples
         np.testing.assert_allclose(multi_sim.state.q_i.numpy(), multi_final_q_i)
@@ -252,8 +255,8 @@ class TestCartpoleSimulator(unittest.TestCase):
         # Create a single-instance system
         builder_single = build_cartpole(ground=False)
         for i, (body_q, body_qd) in enumerate(zip(builder_single.body_q, builder_single.body_qd, strict=True)):
-            msg.debug("[single]: [builder]: body %s: body_q: %s", i, body_q)
-            msg.debug("[single]: [builder]: body %s: body_qd: %s", i, body_qd)
+            logger.debug("[single]: [builder]: body %s: body_q: %s", i, body_q)
+            logger.debug("[single]: [builder]: body %s: body_qd: %s", i, body_qd)
         model_single = builder_single.finalize(device=self.default_device)
 
         # Create simulator
@@ -263,11 +266,11 @@ class TestCartpoleSimulator(unittest.TestCase):
         self.assertEqual(single_sim.model.size.sum_of_num_joints, 2)
 
         # Optional verbose output - enabled globally via self.verbose
-        msg.debug("[single]: [init]: sim.model.size:\n%s\n\n", single_sim.model.size)
-        msg.debug("[single]: [init]: sim.model.state.q_i:\n%s\n\n", single_sim.state.q_i)
-        msg.debug("[single]: [init]: sim.model.state.u_i:\n%s\n\n", single_sim.state.u_i)
-        msg.debug("[single]: [init]: sim.model.state.q_j:\n%s\n\n", single_sim.state.q_j)
-        msg.debug("[single]: [init]: sim.model.state.dq_j:\n%s\n\n", single_sim.state.dq_j)
+        logger.debug("[single]: [init]: sim.model.size:\n%s\n\n", single_sim.model.size)
+        logger.debug("[single]: [init]: sim.model.state.q_i:\n%s\n\n", single_sim.state.q_i)
+        logger.debug("[single]: [init]: sim.model.state.u_i:\n%s\n\n", single_sim.state.u_i)
+        logger.debug("[single]: [init]: sim.model.state.q_j:\n%s\n\n", single_sim.state.q_j)
+        logger.debug("[single]: [init]: sim.model.state.dq_j:\n%s\n\n", single_sim.state.dq_j)
 
         # Define the total number of sample steps to collect, and the
         # total number of execution steps from which to collect them
@@ -299,7 +302,7 @@ class TestCartpoleSimulator(unittest.TestCase):
         # Run the simulation for the specified number of steps
         sample_freq = max(1, num_exec_steps // num_sample_steps)
         sample = 0
-        msg.debug("[sample]: sampling %s transitions over %s simulator steps", num_sample_steps, num_exec_steps)
+        logger.debug("[sample]: sampling %s transitions over %s simulator steps", num_sample_steps, num_exec_steps)
         total_steps = num_skip_steps + num_exec_steps
         start_time = time.time()
         for step in range(total_steps):
@@ -344,33 +347,35 @@ class TestCartpoleSimulator(unittest.TestCase):
         sample_ctrl_tau_j = sample_ctrl_tau_j.reshape(-1)
 
         # Optional verbose output
-        msg.debug("[samples]: init q_i (shape=%s):\n%s\n", sample_init_q_i.shape, sample_init_q_i)
-        msg.debug("[samples]: init u_i (shape=%s):\n%s\n", sample_init_u_i.shape, sample_init_u_i)
-        msg.debug("[samples]: init q_j (shape=%s):\n%s\n", sample_init_q_j.shape, sample_init_q_j)
-        msg.debug("[samples]: init dq_j (shape=%s):\n%s\n", sample_init_dq_j.shape, sample_init_dq_j)
-        msg.debug(
+        logger.debug("[samples]: init q_i (shape=%s):\n%s\n", sample_init_q_i.shape, sample_init_q_i)
+        logger.debug("[samples]: init u_i (shape=%s):\n%s\n", sample_init_u_i.shape, sample_init_u_i)
+        logger.debug("[samples]: init q_j (shape=%s):\n%s\n", sample_init_q_j.shape, sample_init_q_j)
+        logger.debug("[samples]: init dq_j (shape=%s):\n%s\n", sample_init_dq_j.shape, sample_init_dq_j)
+        logger.debug(
             "[samples]: init lambda_kin_j (shape=%s):\n%s\n", sample_init_lambda_kin_j.shape, sample_init_lambda_kin_j
         )
-        msg.debug(
+        logger.debug(
             "[samples]: init lambda_dyn_j (shape=%s):\n%s\n", sample_init_lambda_dyn_j.shape, sample_init_lambda_dyn_j
         )
-        msg.debug("[samples]: init lambda_f_j (shape=%s):\n%s\n", sample_init_lambda_f_j.shape, sample_init_lambda_f_j)
-        msg.debug(
+        logger.debug(
+            "[samples]: init lambda_f_j (shape=%s):\n%s\n", sample_init_lambda_f_j.shape, sample_init_lambda_f_j
+        )
+        logger.debug(
             "[samples]: init lambda_tau_j (shape=%s):\n%s\n", sample_init_lambda_tau_j.shape, sample_init_lambda_tau_j
         )
-        msg.debug("[samples]: next q_i (shape=%s):\n%s\n", sample_next_q_i.shape, sample_next_q_i)
-        msg.debug("[samples]: next u_i (shape=%s):\n%s\n", sample_next_u_i.shape, sample_next_u_i)
-        msg.debug("[samples]: next q_j (shape=%s):\n%s\n", sample_next_q_j.shape, sample_next_q_j)
-        msg.debug("[samples]: next dq_j (shape=%s):\n%s\n", sample_next_dq_j.shape, sample_next_dq_j)
-        msg.debug("[samples]: control tau_j (shape=%s):\n%s\n", sample_ctrl_tau_j.shape, sample_ctrl_tau_j)
+        logger.debug("[samples]: next q_i (shape=%s):\n%s\n", sample_next_q_i.shape, sample_next_q_i)
+        logger.debug("[samples]: next u_i (shape=%s):\n%s\n", sample_next_u_i.shape, sample_next_u_i)
+        logger.debug("[samples]: next q_j (shape=%s):\n%s\n", sample_next_q_j.shape, sample_next_q_j)
+        logger.debug("[samples]: next dq_j (shape=%s):\n%s\n", sample_next_dq_j.shape, sample_next_dq_j)
+        logger.debug("[samples]: control tau_j (shape=%s):\n%s\n", sample_ctrl_tau_j.shape, sample_ctrl_tau_j)
 
         # Create a multi-instance system by replicating the single-instance builder
         builder_multi = newton.ModelBuilder()
         for _ in range(num_sample_steps):
             builder_multi.add_world(builder_single)
         for i, (body_q, body_qd) in enumerate(zip(builder_multi.body_q, builder_multi.body_qd, strict=True)):
-            msg.debug("[multi]: [builder]: body %s: body_q: %s", i, body_q)
-            msg.debug("[multi]: [builder]: body %s: body_qd: %s", i, body_qd)
+            logger.debug("[multi]: [builder]: body %s: body_q: %s", i, body_q)
+            logger.debug("[multi]: [builder]: body %s: body_qd: %s", i, body_qd)
         model_multi = builder_multi.finalize(device=self.default_device)
 
         # Create simulator
@@ -380,12 +385,12 @@ class TestCartpoleSimulator(unittest.TestCase):
         self.assertEqual(multi_sim.model.size.sum_of_num_joints, 2 * num_sample_steps)
 
         # Optional verbose output - enabled globally via self.verbose
-        msg.debug("[multi]: [start]: sim.model.size:\n%s\n\n", multi_sim.model.size)
-        msg.debug("[multi]: [start]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
-        msg.debug("[multi]: [start]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
-        msg.debug("[multi]: [start]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
-        msg.debug("[multi]: [start]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
-        msg.debug("[multi]: [start]: sim.model.control.tau_j:\n%s\n\n", multi_sim.control.tau_j)
+        logger.debug("[multi]: [start]: sim.model.size:\n%s\n\n", multi_sim.model.size)
+        logger.debug("[multi]: [start]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
+        logger.debug("[multi]: [start]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
+        logger.debug("[multi]: [start]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
+        logger.debug("[multi]: [start]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
+        logger.debug("[multi]: [start]: sim.model.control.tau_j:\n%s\n\n", multi_sim.control.tau_j)
 
         # Create a state & control containers to hold the sampled initial states
         state_0 = multi_sim.model.state()
@@ -408,14 +413,14 @@ class TestCartpoleSimulator(unittest.TestCase):
         multi_sim.data.state_n.copy_from(state_0)
         multi_sim.data.state_p.copy_from(state_0)
         multi_sim.data.control.copy_from(control_0)
-        msg.debug("[multi]: [reset]: sim.model.state_previous.q_i:\n%s\n\n", multi_sim.state_previous.q_i)
-        msg.debug("[multi]: [reset]: sim.model.state_previous.u_i:\n%s\n\n", multi_sim.state_previous.u_i)
-        msg.debug("[multi]: [reset]: sim.model.state_previous.q_j:\n%s\n\n", multi_sim.state_previous.q_j)
-        msg.debug("[multi]: [reset]: sim.model.state_previous.dq_j:\n%s\n\n", multi_sim.state_previous.dq_j)
-        msg.debug("[multi]: [reset]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
-        msg.debug("[multi]: [reset]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
-        msg.debug("[multi]: [reset]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
-        msg.debug("[multi]: [reset]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
+        logger.debug("[multi]: [reset]: sim.model.state_previous.q_i:\n%s\n\n", multi_sim.state_previous.q_i)
+        logger.debug("[multi]: [reset]: sim.model.state_previous.u_i:\n%s\n\n", multi_sim.state_previous.u_i)
+        logger.debug("[multi]: [reset]: sim.model.state_previous.q_j:\n%s\n\n", multi_sim.state_previous.q_j)
+        logger.debug("[multi]: [reset]: sim.model.state_previous.dq_j:\n%s\n\n", multi_sim.state_previous.dq_j)
+        logger.debug("[multi]: [reset]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
+        logger.debug("[multi]: [reset]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
+        logger.debug("[multi]: [reset]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
+        logger.debug("[multi]: [reset]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
         np.testing.assert_allclose(multi_sim.state_previous.q_i.numpy(), sample_init_q_i)
         np.testing.assert_allclose(multi_sim.state_previous.u_i.numpy(), sample_init_u_i)
         np.testing.assert_allclose(multi_sim.state.q_i.numpy(), sample_init_q_i)
@@ -426,21 +431,21 @@ class TestCartpoleSimulator(unittest.TestCase):
         np.testing.assert_allclose(multi_sim.state.dq_j.numpy(), sample_init_dq_j)
 
         # Optional verbose output - enabled globally via self.verbose
-        msg.debug("[multi]: [init]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
-        msg.debug("[multi]: [init]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
-        msg.debug("[multi]: [init]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
-        msg.debug("[multi]: [init]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
-        msg.debug("[multi]: [init]: sim.model.control.tau_j:\n%s\n\n", multi_sim.control.tau_j)
+        logger.debug("[multi]: [init]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
+        logger.debug("[multi]: [init]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
+        logger.debug("[multi]: [init]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
+        logger.debug("[multi]: [init]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
+        logger.debug("[multi]: [init]: sim.model.control.tau_j:\n%s\n\n", multi_sim.control.tau_j)
 
         # Step the multi-instance simulator once
         multi_sim.step()
         wp.synchronize()
 
         # Optional verbose output - enabled globally via self.verbose
-        msg.debug("[multi]: [next]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
-        msg.debug("[multi]: [next]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
-        msg.debug("[multi]: [next]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
-        msg.debug("[multi]: [next]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
+        logger.debug("[multi]: [next]: sim.model.state.q_i:\n%s\n\n", multi_sim.state.q_i)
+        logger.debug("[multi]: [next]: sim.model.state.u_i:\n%s\n\n", multi_sim.state.u_i)
+        logger.debug("[multi]: [next]: sim.model.state.q_j:\n%s\n\n", multi_sim.state.q_j)
+        logger.debug("[multi]: [next]: sim.model.state.dq_j:\n%s\n\n", multi_sim.state.dq_j)
 
         # Check that the next states match the collected samples
         np.testing.assert_allclose(multi_sim.solver.data.joints.tau_j.numpy(), sample_ctrl_tau_j)

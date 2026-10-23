@@ -3,6 +3,7 @@
 
 """Unit tests for the `kamino.kinematics.joints` module"""
 
+import logging
 import math
 import unittest
 
@@ -14,9 +15,11 @@ from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.kinematics.joints import JointActuationType, compute_joints_data
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.utils.testing import build_unary_revolute_joint_test
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module configs
@@ -146,15 +149,15 @@ class TestKinematicsJoints(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_single_revolute_joint(self):
         # Construct the model description
@@ -166,32 +169,32 @@ class TestKinematicsJoints(unittest.TestCase):
 
         # Set the state of the Follower body to a known state
         set_joint_follower_body_state(model, data)
-        msg.debug("data.bodies.q_i: %s", data.bodies.q_i)
-        msg.debug("data.bodies.u_i: %s", data.bodies.u_i)
+        logger.debug("data.bodies.q_i: %s", data.bodies.q_i)
+        logger.debug("data.bodies.u_i: %s", data.bodies.u_i)
 
         # Update the state of the joints
         compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
-        msg.debug("data.joints.p_j: %s", data.joints.p_j)
+        logger.debug("data.joints.p_j: %s", data.joints.p_j)
 
         # Extract joint data
         r_j_np = data.joints.r_j.numpy().copy()
         dr_j_np = data.joints.dr_j.numpy().copy()
         q_j_np = data.joints.q_j.numpy().copy()
         dq_j_np = data.joints.dq_j.numpy().copy()
-        msg.debug("[measured]:  r_j: %s", r_j_np)
-        msg.debug("[measured]: dr_j: %s", dr_j_np)
-        msg.debug("[measured]:  q_j: %s", q_j_np)
-        msg.debug("[measured]: dq_j: %s", dq_j_np)
+        logger.debug("[measured]:  r_j: %s", r_j_np)
+        logger.debug("[measured]: dr_j: %s", dr_j_np)
+        logger.debug("[measured]:  q_j: %s", q_j_np)
+        logger.debug("[measured]: dq_j: %s", dq_j_np)
 
         # Construct expected joint data
         r_j_expected = np.array([J_DR_J[0], J_DR_J[1], J_DR_J[2], ROT_RES[1], ROT_RES[2]], dtype=np.float32)
         dr_j_expected = np.array([J_DV_J[0], J_DV_J[1], J_DV_J[2], J_DOMEGA_J[1], J_DOMEGA_J[2]], dtype=np.float32)
         q_j_expected = np.array([Q_X_J], dtype=np.float32)
         dq_j_expected = np.array([J_DOMEGA_J[0]], dtype=np.float32)
-        msg.debug("[expected]:  r_j: %s", r_j_expected)
-        msg.debug("[expected]: dr_j: %s", dr_j_expected)
-        msg.debug("[expected]:  q_j: %s", q_j_expected)
-        msg.debug("[expected]: dq_j: %s", dq_j_expected)
+        logger.debug("[expected]:  r_j: %s", r_j_expected)
+        logger.debug("[expected]: dr_j: %s", dr_j_expected)
+        logger.debug("[expected]:  q_j: %s", q_j_expected)
+        logger.debug("[expected]: dq_j: %s", dq_j_expected)
 
         # Check the joint state values
         np.testing.assert_allclose(r_j_np, r_j_expected, atol=1e-6)
@@ -210,22 +213,22 @@ class TestKinematicsJoints(unittest.TestCase):
 
         # Set the state of the Follower body to a known state
         set_joint_follower_body_state(model, data)
-        msg.debug("data.bodies.q_i:\n%s", data.bodies.q_i)
-        msg.debug("data.bodies.u_i:\n%s", data.bodies.u_i)
+        logger.debug("data.bodies.q_i:\n%s", data.bodies.q_i)
+        logger.debug("data.bodies.u_i:\n%s", data.bodies.u_i)
 
         # Update the state of the joints
         compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
-        msg.debug("data.joints.p_j: %s", data.joints.p_j)
+        logger.debug("data.joints.p_j: %s", data.joints.p_j)
 
         # Extract joint data
         r_j_np = data.joints.r_j.numpy().copy()
         dr_j_np = data.joints.dr_j.numpy().copy()
         q_j_np = data.joints.q_j.numpy().copy()
         dq_j_np = data.joints.dq_j.numpy().copy()
-        msg.debug("[measured]:  r_j: %s", r_j_np)
-        msg.debug("[measured]: dr_j: %s", dr_j_np)
-        msg.debug("[measured]:  q_j: %s", q_j_np)
-        msg.debug("[measured]: dq_j: %s", dq_j_np)
+        logger.debug("[measured]:  r_j: %s", r_j_np)
+        logger.debug("[measured]: dr_j: %s", dr_j_np)
+        logger.debug("[measured]:  q_j: %s", q_j_np)
+        logger.debug("[measured]: dq_j: %s", dq_j_np)
 
         # Construct expected joint data
         r_j_expected = np.array([J_DR_J[0], J_DR_J[1], J_DR_J[2], ROT_RES[1], ROT_RES[2]], dtype=np.float32)
@@ -238,10 +241,10 @@ class TestKinematicsJoints(unittest.TestCase):
         dr_j_expected = np.tile(dr_j_expected, builder.world_count)
         q_j_expected = np.tile(q_j_expected, builder.world_count)
         dq_j_expected = np.tile(dq_j_expected, builder.world_count)
-        msg.debug("[expected]:  r_j: %s", r_j_expected)
-        msg.debug("[expected]: dr_j: %s", dr_j_expected)
-        msg.debug("[expected]:  q_j: %s", q_j_expected)
-        msg.debug("[expected]: dq_j: %s", dq_j_expected)
+        logger.debug("[expected]:  r_j: %s", r_j_expected)
+        logger.debug("[expected]: dr_j: %s", dr_j_expected)
+        logger.debug("[expected]:  q_j: %s", q_j_expected)
+        logger.debug("[expected]: dq_j: %s", dq_j_expected)
 
         # Check the joint state values
         np.testing.assert_allclose(r_j_np, r_j_expected, atol=1e-6)
@@ -279,27 +282,27 @@ class TestKinematicsJoints(unittest.TestCase):
             data.joints.tau_j_ref.fill_(2.5)
 
             # Optionally print model parameters for debugging
-            msg.debug("model.time.dt: %s", model.time.dt)
-            msg.debug("model.joints.a_j: %s", model.joints.a_j)
-            msg.debug("model.joints.b_j: %s", model.joints.b_j)
-            msg.debug("model.joints.k_p_j: %s", model.joints.k_p_j)
-            msg.debug("model.joints.k_d_j: %s\n", model.joints.k_d_j)
-            msg.debug("model.joints.num_bilateral_cts: %s", model.joints.num_bilateral_cts)
-            msg.debug("model.joints.num_dynamic_cts: %s", model.joints.num_dynamic_cts)
-            msg.debug("model.joints.num_kinematic_cts: %s", model.joints.num_kinematic_cts)
-            msg.debug("model.joints.dynamic_cts_offset: %s", model.joints.dynamic_cts_offset)
-            msg.debug("model.joints.kinematic_cts_offset: %s\n", model.joints.kinematic_cts_offset)
-            msg.debug("model.info.num_joint_dynamic_cts: %s", model.info.num_joint_dynamic_cts)
-            msg.debug("model.info.joint_dynamic_cts_offset: %s\n", model.info.joint_dynamic_cts_offset)
+            logger.debug("model.time.dt: %s", model.time.dt)
+            logger.debug("model.joints.a_j: %s", model.joints.a_j)
+            logger.debug("model.joints.b_j: %s", model.joints.b_j)
+            logger.debug("model.joints.k_p_j: %s", model.joints.k_p_j)
+            logger.debug("model.joints.k_d_j: %s\n", model.joints.k_d_j)
+            logger.debug("model.joints.num_bilateral_cts: %s", model.joints.num_bilateral_cts)
+            logger.debug("model.joints.num_dynamic_cts: %s", model.joints.num_dynamic_cts)
+            logger.debug("model.joints.num_kinematic_cts: %s", model.joints.num_kinematic_cts)
+            logger.debug("model.joints.dynamic_cts_offset: %s", model.joints.dynamic_cts_offset)
+            logger.debug("model.joints.kinematic_cts_offset: %s\n", model.joints.kinematic_cts_offset)
+            logger.debug("model.info.num_joint_dynamic_cts: %s", model.info.num_joint_dynamic_cts)
+            logger.debug("model.info.joint_dynamic_cts_offset: %s\n", model.info.joint_dynamic_cts_offset)
 
             # Set the state of the Follower body to a known state
             set_joint_follower_body_state(model, data)
-            msg.debug("data.bodies.q_i: %s", data.bodies.q_i)
-            msg.debug("data.bodies.u_i: %s\n", data.bodies.u_i)
+            logger.debug("data.bodies.q_i: %s", data.bodies.q_i)
+            logger.debug("data.bodies.u_i: %s\n", data.bodies.u_i)
 
             # Update the state of the joints
             compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
-            msg.debug("data.joints.p_j: %s\n", data.joints.p_j)
+            logger.debug("data.joints.p_j: %s\n", data.joints.p_j)
 
             # Extract measured joint data
             r_j_np = data.joints.r_j.numpy().copy()
@@ -313,17 +316,17 @@ class TestKinematicsJoints(unittest.TestCase):
             q_j_ref_np = data.joints.q_j_ref.numpy().copy()
             dq_j_ref_np = data.joints.dq_j_ref.numpy().copy()
             tau_j_ref_np = data.joints.tau_j_ref.numpy().copy()
-            msg.debug("[measured]:  r_j: %s", r_j_np)
-            msg.debug("[measured]: dr_j: %s", dr_j_np)
-            msg.debug("[measured]:  q_j: %s", q_j_np)
-            msg.debug("[measured]: dq_j: %s\n", dq_j_np)
-            msg.debug("[measured]: m_j: %s", m_j_np)
-            msg.debug("[measured]: inv_m_j: %s", inv_m_j_np)
-            msg.debug("[measured]: dq_b_j: %s\n", dq_b_j_np)
-            msg.debug("[measured]: tau_j: %s\n", tau_j_np)
-            msg.debug("[measured]: q_j_ref: %s", q_j_ref_np)
-            msg.debug("[measured]: dq_j_ref: %s\n", dq_j_ref_np)
-            msg.debug("[measured]: tau_j_ref: %s\n", tau_j_ref_np)
+            logger.debug("[measured]:  r_j: %s", r_j_np)
+            logger.debug("[measured]: dr_j: %s", dr_j_np)
+            logger.debug("[measured]:  q_j: %s", q_j_np)
+            logger.debug("[measured]: dq_j: %s\n", dq_j_np)
+            logger.debug("[measured]: m_j: %s", m_j_np)
+            logger.debug("[measured]: inv_m_j: %s", inv_m_j_np)
+            logger.debug("[measured]: dq_b_j: %s\n", dq_b_j_np)
+            logger.debug("[measured]: tau_j: %s\n", tau_j_np)
+            logger.debug("[measured]: q_j_ref: %s", q_j_ref_np)
+            logger.debug("[measured]: dq_j_ref: %s\n", dq_j_ref_np)
+            logger.debug("[measured]: tau_j_ref: %s\n", tau_j_ref_np)
 
             # Compute expected joint dynamics values based on the PD control
             # law and the equations of motion for a single revolute joint
@@ -369,15 +372,15 @@ class TestKinematicsJoints(unittest.TestCase):
             h_j_expected = np.array([h_j_exp_val], dtype=np.float32)
             inv_m_j_expected = np.array([inv_m_j_exp_val], dtype=np.float32)
             dq_b_j_expected = np.array([dq_b_j_exp_val], dtype=np.float32)
-            msg.debug("[expected]:  r_j: %s", r_j_expected)
-            msg.debug("[expected]: dr_j: %s", dr_j_expected)
-            msg.debug("[expected]:  q_j: %s", q_j_expected)
-            msg.debug("[expected]: dq_j: %s\n", dq_j_expected)
-            msg.debug("[expected]: m_j: %s", m_j_expected)
-            msg.debug("[expected]: tau_j: %s", tau_j_expected)
-            msg.debug("[expected]: h_j: %s", h_j_expected)
-            msg.debug("[expected]: inv_m_j: %s", inv_m_j_expected)
-            msg.debug("[expected]: dq_b_j: %s\n", dq_b_j_expected)
+            logger.debug("[expected]:  r_j: %s", r_j_expected)
+            logger.debug("[expected]: dr_j: %s", dr_j_expected)
+            logger.debug("[expected]:  q_j: %s", q_j_expected)
+            logger.debug("[expected]: dq_j: %s\n", dq_j_expected)
+            logger.debug("[expected]: m_j: %s", m_j_expected)
+            logger.debug("[expected]: tau_j: %s", tau_j_expected)
+            logger.debug("[expected]: h_j: %s", h_j_expected)
+            logger.debug("[expected]: inv_m_j: %s", inv_m_j_expected)
+            logger.debug("[expected]: dq_b_j: %s\n", dq_b_j_expected)
 
             # Check the joint data values
             np.testing.assert_allclose(r_j_np, r_j_expected, atol=1e-6)
@@ -411,27 +414,27 @@ class TestKinematicsJoints(unittest.TestCase):
         data.joints.tau_j_ref.fill_(2.5)
 
         # Optionally print model parameters for debugging
-        msg.debug("model.time.dt: %s", model.time.dt)
-        msg.debug("model.joints.a_j: %s", model.joints.a_j)
-        msg.debug("model.joints.b_j: %s", model.joints.b_j)
-        msg.debug("model.joints.k_p_j: %s", model.joints.k_p_j)
-        msg.debug("model.joints.k_d_j: %s\n", model.joints.k_d_j)
-        msg.debug("model.joints.num_bilateral_cts: %s", model.joints.num_bilateral_cts)
-        msg.debug("model.joints.num_dynamic_cts: %s", model.joints.num_dynamic_cts)
-        msg.debug("model.joints.num_kinematic_cts: %s", model.joints.num_kinematic_cts)
-        msg.debug("model.joints.dynamic_cts_offset: %s", model.joints.dynamic_cts_offset)
-        msg.debug("model.joints.kinematic_cts_offset: %s\n", model.joints.kinematic_cts_offset)
-        msg.debug("model.info.num_joint_dynamic_cts: %s", model.info.num_joint_dynamic_cts)
-        msg.debug("model.info.joint_dynamic_cts_offset: %s\n", model.info.joint_dynamic_cts_offset)
+        logger.debug("model.time.dt: %s", model.time.dt)
+        logger.debug("model.joints.a_j: %s", model.joints.a_j)
+        logger.debug("model.joints.b_j: %s", model.joints.b_j)
+        logger.debug("model.joints.k_p_j: %s", model.joints.k_p_j)
+        logger.debug("model.joints.k_d_j: %s\n", model.joints.k_d_j)
+        logger.debug("model.joints.num_bilateral_cts: %s", model.joints.num_bilateral_cts)
+        logger.debug("model.joints.num_dynamic_cts: %s", model.joints.num_dynamic_cts)
+        logger.debug("model.joints.num_kinematic_cts: %s", model.joints.num_kinematic_cts)
+        logger.debug("model.joints.dynamic_cts_offset: %s", model.joints.dynamic_cts_offset)
+        logger.debug("model.joints.kinematic_cts_offset: %s\n", model.joints.kinematic_cts_offset)
+        logger.debug("model.info.num_joint_dynamic_cts: %s", model.info.num_joint_dynamic_cts)
+        logger.debug("model.info.joint_dynamic_cts_offset: %s\n", model.info.joint_dynamic_cts_offset)
 
         # Set the state of the Follower body to a known state
         set_joint_follower_body_state(model, data)
-        msg.debug("data.bodies.q_i:\n%s", data.bodies.q_i)
-        msg.debug("data.bodies.u_i:\n%s\n", data.bodies.u_i)
+        logger.debug("data.bodies.q_i:\n%s", data.bodies.q_i)
+        logger.debug("data.bodies.u_i:\n%s\n", data.bodies.u_i)
 
         # Update the state of the joints
         compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
-        msg.debug("data.joints.p_j:\n%s", data.joints.p_j)
+        logger.debug("data.joints.p_j:\n%s", data.joints.p_j)
 
         # Extract measured joint data
         r_j_np = data.joints.r_j.numpy().copy()
@@ -445,17 +448,17 @@ class TestKinematicsJoints(unittest.TestCase):
         q_j_ref_np = data.joints.q_j_ref.numpy().copy()
         dq_j_ref_np = data.joints.dq_j_ref.numpy().copy()
         tau_j_ref_np = data.joints.tau_j_ref.numpy().copy()
-        msg.debug("[measured]:  r_j: %s", r_j_np)
-        msg.debug("[measured]: dr_j: %s", dr_j_np)
-        msg.debug("[measured]:  q_j: %s", q_j_np)
-        msg.debug("[measured]: dq_j: %s\n", dq_j_np)
-        msg.debug("[measured]: m_j: %s", m_j_np)
-        msg.debug("[measured]: inv_m_j: %s", inv_m_j_np)
-        msg.debug("[measured]: dq_b_j: %s\n", dq_b_j_np)
-        msg.debug("[measured]: tau_j: %s\n", tau_j_np)
-        msg.debug("[measured]: q_j_ref: %s", q_j_ref_np)
-        msg.debug("[measured]: dq_j_ref: %s\n", dq_j_ref_np)
-        msg.debug("[measured]: tau_j_ref: %s\n", tau_j_ref_np)
+        logger.debug("[measured]:  r_j: %s", r_j_np)
+        logger.debug("[measured]: dr_j: %s", dr_j_np)
+        logger.debug("[measured]:  q_j: %s", q_j_np)
+        logger.debug("[measured]: dq_j: %s\n", dq_j_np)
+        logger.debug("[measured]: m_j: %s", m_j_np)
+        logger.debug("[measured]: inv_m_j: %s", inv_m_j_np)
+        logger.debug("[measured]: dq_b_j: %s\n", dq_b_j_np)
+        logger.debug("[measured]: tau_j: %s\n", tau_j_np)
+        logger.debug("[measured]: q_j_ref: %s", q_j_ref_np)
+        logger.debug("[measured]: dq_j_ref: %s\n", dq_j_ref_np)
+        logger.debug("[measured]: tau_j_ref: %s\n", tau_j_ref_np)
 
         # Compute expected joint dynamics values based on the PD control
         # law and the equations of motion for a single revolute joint
@@ -491,14 +494,14 @@ class TestKinematicsJoints(unittest.TestCase):
         h_j_expected = np.tile(h_j_expected, builder.world_count)
         inv_m_j_expected = np.tile(inv_m_j_expected, builder.world_count)
         dq_b_j_expected = np.tile(dq_b_j_expected, builder.world_count)
-        msg.debug("[expected]:  r_j: %s", r_j_expected)
-        msg.debug("[expected]: dr_j: %s", dr_j_expected)
-        msg.debug("[expected]:  q_j: %s", q_j_expected)
-        msg.debug("[expected]: dq_j: %s\n", dq_j_expected)
-        msg.debug("[expected]: m_j: %s", m_j_expected)
-        msg.debug("[expected]: h_j: %s", h_j_expected)
-        msg.debug("[expected]: inv_m_j: %s", inv_m_j_expected)
-        msg.debug("[expected]: dq_b_j: %s\n", dq_b_j_expected)
+        logger.debug("[expected]:  r_j: %s", r_j_expected)
+        logger.debug("[expected]: dr_j: %s", dr_j_expected)
+        logger.debug("[expected]:  q_j: %s", q_j_expected)
+        logger.debug("[expected]: dq_j: %s\n", dq_j_expected)
+        logger.debug("[expected]: m_j: %s", m_j_expected)
+        logger.debug("[expected]: h_j: %s", h_j_expected)
+        logger.debug("[expected]: inv_m_j: %s", inv_m_j_expected)
+        logger.debug("[expected]: dq_b_j: %s\n", dq_b_j_expected)
 
         # Check the joint data values
         np.testing.assert_allclose(r_j_np, r_j_expected, atol=1e-6)

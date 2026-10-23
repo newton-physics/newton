@@ -15,6 +15,7 @@
 ###########################################################################
 
 import argparse
+import logging
 from pathlib import Path
 from typing import ClassVar
 
@@ -22,13 +23,15 @@ import warp as wp
 import yaml
 
 import newton
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import enable_console_logging
 from newton._src.solvers.kamino._src.utils.viewer import MeshColors, ViewerConfig
 from newton._src.solvers.kamino.examples import run_headless
 from newton._src.solvers.kamino.examples.rl.joystick import JoystickConfig, JoystickController
 from newton._src.solvers.kamino.examples.rl.onnx_policy import WarpOnnxPolicy
 from newton._src.solvers.kamino.examples.rl.simulation import RigidBodySim
 from newton._src.solvers.kamino.examples.rl.simulation_runner import SimulationRunner
+
+logger = logging.getLogger(__name__)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -227,9 +230,9 @@ def _load_drlegs_config(asset_path: Path) -> dict:
     if yaml_path.exists():
         with open(yaml_path, encoding="utf-8") as file:
             config.update(yaml.safe_load(file) or {})
-        msg.info("Loaded config from %s", yaml_path)
+        logger.info("Loaded config from %s", yaml_path)
     else:
-        msg.info("No YAML config found, using built-in defaults")
+        logger.info("No YAML config found, using built-in defaults")
     config["phase_rate"] = 1.0 / (2.0 * config["contact_duration"])
     if config["phase_embedding_k"] != 2:
         raise ValueError("The DR Legs ONNX policy requires phase_embedding_k=2")
@@ -502,6 +505,7 @@ class Example:
 
 
 if __name__ == "__main__":
+    enable_console_logging()
     parser = argparse.ArgumentParser(description="DR Legs walk policy play example")
     parser.add_argument("--device", type=str, help="The compute device to use")
     parser.add_argument("--headless", action=argparse.BooleanOptionalAction, default=False, help="Run headlessly")
@@ -517,7 +521,7 @@ if __name__ == "__main__":
 
     device = wp.get_device(args.device) if args.device else wp.get_preferred_device()
     wp.set_device(device)
-    msg.debug("device: %s", device)
+    logger.debug("device: %s", device)
 
     asset_path = newton.utils.download_asset("disneyresearch", ref=_DRLEGS_ASSET_REF)
     config = _load_drlegs_config(asset_path)
@@ -532,22 +536,22 @@ if __name__ == "__main__":
         if policy_path.suffix.lower() != ".onnx" or not policy_path.is_file():
             raise FileNotFoundError(f"Expected an existing ONNX policy, got '{policy_path}'")
         policy = WarpOnnxPolicy(policy_path, device=device, batch_size=1, action_width=_DRLEGS_ACTION_WIDTH)
-        msg.info("Loaded policy from: %s", policy_path)
+        logger.info("Loaded policy from: %s", policy_path)
     else:
         policy_path = asset_path / "dr_legs" / "rl_policies" / config["policy_file"]
         if policy_path.exists():
             policy = WarpOnnxPolicy(policy_path, device=device, batch_size=1, action_width=_DRLEGS_ACTION_WIDTH)
-            msg.info("Loaded default policy from: %s", policy_path)
+            logger.info("Loaded default policy from: %s", policy_path)
         else:
-            msg.info("No policy at %s -- using random actions", policy_path)
+            logger.info("No policy at %s -- using random actions", policy_path)
 
     example = Example(config=config, device=device, policy=policy, headless=args.headless, max_steps=args.num_steps)
     try:
         if args.headless:
-            msg.info("Running in headless mode...")
+            logger.info("Running in headless mode...")
             run_headless(example, progress=True)
         else:
-            msg.info("Running in Viewer mode (%s)...", args.mode)
+            logger.info("Running in Viewer mode (%s)...", args.mode)
             if hasattr(example.viewer, "set_camera"):
                 example.viewer.set_camera(wp.vec3(0.6, 0.6, 0.3), -10.0, 225.0)
             SimulationRunner(example, mode=args.mode, render_fps=args.render_fps).run()

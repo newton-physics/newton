@@ -3,6 +3,7 @@
 
 """Unit tests for `geometry/keying.py`"""
 
+import logging
 import unittest
 
 import numpy as np
@@ -16,8 +17,10 @@ from newton._src.solvers.kamino._src.geometry.keying import (
     make_bitmask,
     make_build_pair_key3_func,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module configs
@@ -44,10 +47,10 @@ class TestPairKeyOps(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
         # Global numpy configurations
         np.set_printoptions(linewidth=10000, precision=10, threshold=10000, suppress=True)
@@ -55,7 +58,7 @@ class TestPairKeyOps(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_00_make_bitmask(self):
         """Test make_bitmask function for various bit sizes."""
@@ -66,31 +69,31 @@ class TestPairKeyOps(unittest.TestCase):
 
         # Test make_bitmask for valid inputs
         bitmask_1_Bits = make_bitmask(1)
-        msg.debug("bitmask_1_Bits: %#04x (%s)", bitmask_1_Bits, bitmask_1_Bits)
+        logger.debug("bitmask_1_Bits: %#04x (%s)", bitmask_1_Bits, bitmask_1_Bits)
         self.assertEqual(bitmask_1_Bits, 0x1)
 
         bitmask_3_Bits = make_bitmask(3)
-        msg.debug("bitmask_3_Bits: %#04x (%s)", bitmask_3_Bits, bitmask_3_Bits)
+        logger.debug("bitmask_3_Bits: %#04x (%s)", bitmask_3_Bits, bitmask_3_Bits)
         self.assertEqual(bitmask_3_Bits, 0x7)
 
         bitmask_7_Bits = make_bitmask(7)
-        msg.debug("bitmask_7_Bits: %#04x (%s)", bitmask_7_Bits, bitmask_7_Bits)
+        logger.debug("bitmask_7_Bits: %#04x (%s)", bitmask_7_Bits, bitmask_7_Bits)
         self.assertEqual(bitmask_7_Bits, 0x7F)
 
         bitmask_8_Bits = make_bitmask(8)
-        msg.debug("bitmask_8_Bits: %#04x (%s)", bitmask_8_Bits, bitmask_8_Bits)
+        logger.debug("bitmask_8_Bits: %#04x (%s)", bitmask_8_Bits, bitmask_8_Bits)
         self.assertEqual(bitmask_8_Bits, 0xFF)
 
         bitmask_23_Bits = make_bitmask(23)
-        msg.debug("bitmask_23_Bits: %#08x (%s)", bitmask_23_Bits, bitmask_23_Bits)
+        logger.debug("bitmask_23_Bits: %#08x (%s)", bitmask_23_Bits, bitmask_23_Bits)
         self.assertEqual(bitmask_23_Bits, 0x7FFFFF)
 
         bitmask_32_Bits = make_bitmask(32)
-        msg.debug("bitmask_32_Bits: %#010x (%s)", bitmask_32_Bits, bitmask_32_Bits)
+        logger.debug("bitmask_32_Bits: %#010x (%s)", bitmask_32_Bits, bitmask_32_Bits)
         self.assertEqual(bitmask_32_Bits, 0xFFFFFFFF)
 
         bitmask_64_Bits = make_bitmask(64)
-        msg.debug("bitmask_64_Bits: %#018x (%s)", bitmask_64_Bits, bitmask_64_Bits)
+        logger.debug("bitmask_64_Bits: %#018x (%s)", bitmask_64_Bits, bitmask_64_Bits)
         self.assertEqual(bitmask_64_Bits, 0xFFFFFFFFFFFFFFFF)
 
     def test_01_build_pair_key2(self):
@@ -114,17 +117,17 @@ class TestPairKeyOps(unittest.TestCase):
             (0x12345678, 0x9ABCDEF0),
         ]
         num_test_cases = len(test_cases)
-        msg.debug("num_test_cases: %d", num_test_cases)
-        msg.debug("test_cases: %s", test_cases)
+        logger.debug("num_test_cases: %d", num_test_cases)
+        logger.debug("test_cases: %s", test_cases)
 
         # Create Warp arrays for inputs and outputs
         with wp.ScopedDevice(device=self.default_device):
             index_A = wp.array([index_A for index_A, _ in test_cases], dtype=wp.uint32)
             index_B = wp.array([index_B for _, index_B in test_cases], dtype=wp.uint32)
             keys = wp.zeros(num_test_cases, dtype=wp.uint64)
-        msg.debug("Inputs: index_A: %s", index_A)
-        msg.debug("Inputs: index_B: %s", index_B)
-        msg.debug("Inputs: keys: %s", keys)
+        logger.debug("Inputs: index_A: %s", index_A)
+        logger.debug("Inputs: index_B: %s", index_B)
+        logger.debug("Inputs: keys: %s", keys)
         self.assertEqual(index_A.size, num_test_cases)
         self.assertEqual(index_B.size, num_test_cases)
         self.assertEqual(keys.size, num_test_cases)
@@ -139,10 +142,10 @@ class TestPairKeyOps(unittest.TestCase):
 
         # Verify the generated keys against expected values
         keys_np = keys.numpy()
-        msg.debug("Output: keys: %s", keys_np)
+        logger.debug("Output: keys: %s", keys_np)
         for i, (index_A, index_B) in enumerate(test_cases):
             expected_key = (index_A << 32) | index_B
-            msg.debug("build_pair_key2(%s, %s): %s (expected: %s)", index_A, index_B, keys_np[i], expected_key)
+            logger.debug("build_pair_key2(%s, %s): %s (expected: %s)", index_A, index_B, keys_np[i], expected_key)
             self.assertEqual(keys_np[i], expected_key)
 
     def test_02_build_pair_key3(self):
@@ -176,8 +179,8 @@ class TestPairKeyOps(unittest.TestCase):
             (0x2345678, 0xABCDEF0, 6),
         ]
         num_test_cases = len(test_cases)
-        msg.debug("num_test_cases: %d", num_test_cases)
-        msg.debug("test_cases: %s", test_cases)
+        logger.debug("num_test_cases: %d", num_test_cases)
+        logger.debug("test_cases: %s", test_cases)
 
         # Create Warp arrays for inputs and outputs
         with wp.ScopedDevice(device=self.default_device):
@@ -185,10 +188,10 @@ class TestPairKeyOps(unittest.TestCase):
             index_B = wp.array([index_B for _, index_B, _ in test_cases], dtype=wp.uint32)
             index_C = wp.array([index_C for *_, index_C in test_cases], dtype=wp.uint32)
             keys = wp.zeros(num_test_cases, dtype=wp.uint64)
-        msg.debug("Inputs: index_A: %s", index_A)
-        msg.debug("Inputs: index_B: %s", index_B)
-        msg.debug("Inputs: index_C: %s", index_C)
-        msg.debug("Inputs: keys: %s", keys)
+        logger.debug("Inputs: index_A: %s", index_A)
+        logger.debug("Inputs: index_B: %s", index_B)
+        logger.debug("Inputs: index_C: %s", index_C)
+        logger.debug("Inputs: keys: %s", keys)
         self.assertEqual(index_A.size, num_test_cases)
         self.assertEqual(index_B.size, num_test_cases)
         self.assertEqual(index_C.size, num_test_cases)
@@ -198,7 +201,7 @@ class TestPairKeyOps(unittest.TestCase):
         # NOTE: main_key_bits * 2 + aux_key_bits must equal 63
         test_valid_bitsizes = [(21, 21), (20, 23), (22, 19), (18, 27)]
         for main_key_bits, aux_key_bits in test_valid_bitsizes:
-            msg.debug("Testing build_pair_key3 with main_key_bits=%d, aux_key_bits=%d", main_key_bits, aux_key_bits)
+            logger.debug("Testing build_pair_key3 with main_key_bits=%d, aux_key_bits=%d", main_key_bits, aux_key_bits)
             _test_kernel_build_pair_key2 = make_test_kernel_build_pair_key3(main_key_bits, aux_key_bits)
 
             # Launch the test kernel to generate keys for the given index pairs
@@ -209,7 +212,7 @@ class TestPairKeyOps(unittest.TestCase):
                 device=self.default_device,
             )
             keys_np = keys.numpy()
-            msg.debug("Output: keys: %s", keys_np)
+            logger.debug("Output: keys: %s", keys_np)
 
             # Generate bitmasks for expected key computation
             MAIN_BITMASK = make_bitmask(main_key_bits)
@@ -222,8 +225,8 @@ class TestPairKeyOps(unittest.TestCase):
                     | ((index_B_val & MAIN_BITMASK) << aux_key_bits)
                     | (index_C_val & AUX_BITMASK)
                 )
-                msg.debug("expected_key: %#010x", expected_key)
-                msg.debug(
+                logger.debug("expected_key: %#010x", expected_key)
+                logger.debug(
                     "build_pair_key3(%#010x, %#010x, %#010x): %#010x", index_A_val, index_B_val, index_C_val, keys_np[i]
                 )
                 self.assertEqual(keys_np[i], expected_key)
@@ -238,10 +241,10 @@ class TestBinarySearchOps(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
         # Global numpy configurations
         np.set_printoptions(linewidth=10000, precision=10, threshold=10000, suppress=True)
@@ -249,7 +252,7 @@ class TestBinarySearchOps(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_binary_search_find_pair(self):
         """Test binary_search_find_pair function."""
@@ -273,9 +276,9 @@ class TestBinarySearchOps(unittest.TestCase):
         with wp.ScopedDevice(device=self.default_device):
             pairs = wp.array(pairs_list, dtype=wp.vec2i)
             num_active_pairs = wp.array([7], dtype=wp.int32)  # Only first 7 pairs are active
-        msg.debug("pairs:\n%s", pairs)
-        msg.debug("num_active_pairs: %s", num_active_pairs)
-        msg.debug("num_all_pairs: %s", num_all_pairs)
+        logger.debug("pairs:\n%s", pairs)
+        logger.debug("num_active_pairs: %s", num_active_pairs)
+        logger.debug("num_all_pairs: %s", num_all_pairs)
 
         # Define target pairs to search for
         target_pairs_list = [(1, 1), (3, 1), (7, 8), (0, 0), (9, 10), (11, 12)]
@@ -284,8 +287,8 @@ class TestBinarySearchOps(unittest.TestCase):
         with wp.ScopedDevice(device=self.default_device):
             target_pairs = wp.array(target_pairs_list, dtype=wp.vec2i)
             target_idxs = wp.zeros(num_target_pairs, dtype=wp.int32)
-        msg.debug("target_pairs:\n%s", target_pairs)
-        msg.debug("expected_idxs: %s", expected_idxs)
+        logger.debug("target_pairs:\n%s", target_pairs)
+        logger.debug("expected_idxs: %s", expected_idxs)
 
         # Launch the test kernel
         wp.launch(
@@ -297,9 +300,11 @@ class TestBinarySearchOps(unittest.TestCase):
 
         # Verify results
         target_idxs_np = target_idxs.numpy()
-        msg.debug("target_idxs: %s", target_idxs_np)
+        logger.debug("target_idxs: %s", target_idxs_np)
         for i, expected_index in enumerate(expected_idxs):
-            msg.debug("target %s at index: %s (expected: %s)", target_pairs_list[i], target_idxs_np[i], expected_index)
+            logger.debug(
+                "target %s at index: %s (expected: %s)", target_pairs_list[i], target_idxs_np[i], expected_index
+            )
             self.assertEqual(target_idxs_np[i], expected_index)
 
     def test_02_binary_search_find_range_start(self):
@@ -326,9 +331,9 @@ class TestBinarySearchOps(unittest.TestCase):
         with wp.ScopedDevice(device=self.default_device):
             keys = wp.array(keys_list, dtype=wp.uint64)
             num_active_keys = wp.array([9], dtype=wp.int32)  # Only first 9 keys are active
-        msg.debug("keys:\n%s", keys)
-        msg.debug("num_active_keys: %s", num_active_keys)
-        msg.debug("num_all_keys: %s", num_all_keys)
+        logger.debug("keys:\n%s", keys)
+        logger.debug("num_active_keys: %s", num_active_keys)
+        logger.debug("num_all_keys: %s", num_all_keys)
 
         # Define target keys to search for
         target_keys_list = [1, 5, 11, 2, 9, 12]
@@ -337,8 +342,8 @@ class TestBinarySearchOps(unittest.TestCase):
         with wp.ScopedDevice(device=self.default_device):
             target_keys = wp.array(target_keys_list, dtype=wp.uint64)
             target_start_idxs = wp.zeros(num_target_elements, dtype=wp.int32)
-        msg.debug("target_keys:\n%s", target_keys)
-        msg.debug("expected_range_start_idxs: %s", expected_range_start_idxs)
+        logger.debug("target_keys:\n%s", target_keys)
+        logger.debug("expected_range_start_idxs: %s", expected_range_start_idxs)
 
         # Launch the test kernel
         wp.launch(
@@ -350,9 +355,9 @@ class TestBinarySearchOps(unittest.TestCase):
 
         # Verify results
         target_start_idxs_np = target_start_idxs.numpy()
-        msg.debug("target_start_idxs: %s", target_start_idxs_np)
+        logger.debug("target_start_idxs: %s", target_start_idxs_np)
         for i, expected in enumerate(expected_range_start_idxs):
-            msg.debug(
+            logger.debug(
                 "target %s start index: %s (expected: %s)", target_keys_list[i], target_start_idxs_np[i], expected
             )
             self.assertEqual(target_start_idxs_np[i], expected)
@@ -367,10 +372,10 @@ class TestKeySorter(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
         # Global numpy configurations
         np.set_printoptions(linewidth=10000, precision=10, threshold=10000, suppress=True)
@@ -378,15 +383,15 @@ class TestKeySorter(unittest.TestCase):
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_00_make_key_sorter(self):
         """Test creation of KeySorter instance and relevant memory allocations."""
         max_num_keys = 10
         sorter = KeySorter(max_num_keys=max_num_keys, device=self.default_device)
-        msg.debug("sorter.sorted_keys: %s", sorter.sorted_keys)
-        msg.debug("sorter.sorted_keys_int64: %s", sorter.sorted_keys_int64)
-        msg.debug("sorter.sorted_to_unsorted_map: %s", sorter.sorted_to_unsorted_map)
+        logger.debug("sorter.sorted_keys: %s", sorter.sorted_keys)
+        logger.debug("sorter.sorted_keys_int64: %s", sorter.sorted_keys_int64)
+        logger.debug("sorter.sorted_to_unsorted_map: %s", sorter.sorted_to_unsorted_map)
         self.assertEqual(sorter.sorted_keys.size, 2 * max_num_keys)  # Factor of 2 for sort algorithm
         self.assertEqual(sorter.sorted_keys_int64.size, 2 * max_num_keys)  # Factor of 2 for sort algorithm
         self.assertEqual(sorter.sorted_to_unsorted_map.size, 2 * max_num_keys)  # Factor of 2 for sort algorithm
@@ -395,9 +400,9 @@ class TestKeySorter(unittest.TestCase):
         """Test sorting of fixed keys and verification of sorted results."""
         max_num_keys = 10
         sorter = KeySorter(max_num_keys=max_num_keys, device=self.default_device)
-        msg.debug("sorter.sorted_keys: %s", sorter.sorted_keys)
-        msg.debug("sorter.sorted_keys_int64: %s", sorter.sorted_keys_int64)
-        msg.debug("sorter.sorted_to_unsorted_map: %s", sorter.sorted_to_unsorted_map)
+        logger.debug("sorter.sorted_keys: %s", sorter.sorted_keys)
+        logger.debug("sorter.sorted_keys_int64: %s", sorter.sorted_keys_int64)
+        logger.debug("sorter.sorted_to_unsorted_map: %s", sorter.sorted_to_unsorted_map)
         self.assertEqual(sorter.sorted_keys.size, 2 * max_num_keys)  # Factor of 2 for sort algorithm
         self.assertEqual(sorter.sorted_keys_int64.size, 2 * max_num_keys)  # Factor of 2 for sort algorithm
         self.assertEqual(sorter.sorted_to_unsorted_map.size, 2 * max_num_keys)  # Factor of 2 for sort algorithm
@@ -408,14 +413,14 @@ class TestKeySorter(unittest.TestCase):
         num_active_keys = wp.array([num_active_keys_const], dtype=wp.int32, device=self.default_device)
         keys_list = [5, 3, 9, 1, 7, 3, 5, 11, sentinel, sentinel]
         keys = wp.array(keys_list, dtype=wp.uint64, device=self.default_device)
-        msg.debug("num_active_keys: %s", num_active_keys)
-        msg.debug("keys: %s", keys)
+        logger.debug("num_active_keys: %s", num_active_keys)
+        logger.debug("keys: %s", keys)
 
         # Compute expected results using numpy
         expected_sorted_keys = [1, 3, 3, 5, 5, 7, 9, 11]
         expected_sorted_to_unsorted_map = [3, 1, 5, 0, 6, 4, 2, 7]
-        msg.debug("expected_sorted_keys: %s", expected_sorted_keys)
-        msg.debug("expected_sorted_to_unsorted_map: %s", expected_sorted_to_unsorted_map)
+        logger.debug("expected_sorted_keys: %s", expected_sorted_keys)
+        logger.debug("expected_sorted_to_unsorted_map: %s", expected_sorted_to_unsorted_map)
 
         # Launch sorter to sort the random keys
         sorter.sort(num_active_keys=num_active_keys, keys=keys)
@@ -423,11 +428,11 @@ class TestKeySorter(unittest.TestCase):
         # Verify results
         sorted_keys_np = sorter.sorted_keys.numpy()[:num_active_keys_const]
         sorted_to_unsorted_map_np = sorter.sorted_to_unsorted_map.numpy()[:num_active_keys_const]
-        msg.debug("sorter.sorted_keys: %s", sorted_keys_np)
-        msg.debug("sorter.sorted_to_unsorted_map: %s", sorted_to_unsorted_map_np)
+        logger.debug("sorter.sorted_keys: %s", sorted_keys_np)
+        logger.debug("sorter.sorted_to_unsorted_map: %s", sorted_to_unsorted_map_np)
         for i in range(num_active_keys_const):
-            msg.debug("sorted_keys[%s]: %s (expected: %s)", i, sorted_keys_np[i], expected_sorted_keys[i])
-            msg.debug(
+            logger.debug("sorted_keys[%s]: %s (expected: %s)", i, sorted_keys_np[i], expected_sorted_keys[i])
+            logger.debug(
                 "sorted_to_unsorted_map[%s]: %s (expected: %s)",
                 i,
                 sorted_to_unsorted_map_np[i],
@@ -440,9 +445,9 @@ class TestKeySorter(unittest.TestCase):
         """Test sorting of random keys and verification of sorted results."""
         max_num_keys = 10
         sorter = KeySorter(max_num_keys=max_num_keys, device=self.default_device)
-        msg.debug("sorter.sorted_keys: %s", sorter.sorted_keys)
-        msg.debug("sorter.sorted_keys_int64: %s", sorter.sorted_keys_int64)
-        msg.debug("sorter.sorted_to_unsorted_map: %s", sorter.sorted_to_unsorted_map)
+        logger.debug("sorter.sorted_keys: %s", sorter.sorted_keys)
+        logger.debug("sorter.sorted_keys_int64: %s", sorter.sorted_keys_int64)
+        logger.debug("sorter.sorted_to_unsorted_map: %s", sorter.sorted_to_unsorted_map)
         self.assertEqual(sorter.sorted_keys.size, 2 * max_num_keys)  # Factor of 2 for sort algorithm
         self.assertEqual(sorter.sorted_keys_int64.size, 2 * max_num_keys)  # Factor of 2 for sort algorithm
         self.assertEqual(sorter.sorted_to_unsorted_map.size, 2 * max_num_keys)  # Factor of 2 for sort algorithm
@@ -456,14 +461,14 @@ class TestKeySorter(unittest.TestCase):
         random_keys_np = rng.integers(low=0, high=100, size=max_num_keys, dtype=np.uint64)
         random_keys_np[-2:] = make_bitmask(63)  # Set last two keys to sentinel value
         random_keys = wp.array(random_keys_np, dtype=wp.uint64, device=self.default_device)
-        msg.debug("num_active_keys: %s", num_active_keys)
-        msg.debug("random_keys: %s", random_keys)
+        logger.debug("num_active_keys: %s", num_active_keys)
+        logger.debug("random_keys: %s", random_keys)
 
         # Compute expected results using numpy
         expected_sorted_keys_np = np.sort(random_keys_np, stable=True)[:num_active_keys_const]
         expected_sorted_to_unsorted_map_np = np.argsort(random_keys_np, stable=True)[:num_active_keys_const]
-        msg.debug("expected_sorted_keys: %s", expected_sorted_keys_np.tolist())
-        msg.debug("expected_sorted_to_unsorted_map: %s", expected_sorted_to_unsorted_map_np.tolist())
+        logger.debug("expected_sorted_keys: %s", expected_sorted_keys_np.tolist())
+        logger.debug("expected_sorted_to_unsorted_map: %s", expected_sorted_to_unsorted_map_np.tolist())
 
         # Launch sorter to sort the random keys
         sorter.sort(num_active_keys=num_active_keys, keys=random_keys)
@@ -471,11 +476,11 @@ class TestKeySorter(unittest.TestCase):
         # Verify results
         sorted_keys_np = sorter.sorted_keys.numpy()[:num_active_keys_const]
         sorted_to_unsorted_map_np = sorter.sorted_to_unsorted_map.numpy()[:num_active_keys_const]
-        msg.debug("sorter.sorted_keys: %s", sorted_keys_np.tolist())
-        msg.debug("sorter.sorted_to_unsorted_map: %s", sorted_to_unsorted_map_np.tolist())
+        logger.debug("sorter.sorted_keys: %s", sorted_keys_np.tolist())
+        logger.debug("sorter.sorted_to_unsorted_map: %s", sorted_to_unsorted_map_np.tolist())
         for i in range(num_active_keys_const):
-            msg.debug("sorted_keys[%s]: %s (expected: %s)", i, sorted_keys_np[i], expected_sorted_keys_np[i])
-            msg.debug(
+            logger.debug("sorted_keys[%s]: %s (expected: %s)", i, sorted_keys_np[i], expected_sorted_keys_np[i])
+            logger.debug(
                 "sorted_to_unsorted_map[%s]: %s (expected: %s)",
                 i,
                 sorted_to_unsorted_map_np[i],

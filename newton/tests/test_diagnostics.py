@@ -107,19 +107,25 @@ class TestLoggingDefaults(unittest.TestCase):
 
     def test_kamino_messages_follow_newton_logger(self):
         """Route Kamino messages through the newton logger and its level without configuring logging."""
-        from newton._src.solvers.kamino._src.utils import logger as msg  # noqa: PLC0415
+        import newton._src.solvers.kamino._src  # noqa: F401, PLC0415
 
-        msg.reset_log_level()  # undo a level an earlier test may have set
+        # Undo the level and console handler that Kamino test setup may have installed
+        kamino_logger = logging.getLogger("newton._src.solvers.kamino")
+        self.addCleanup(setattr, kamino_logger, "handlers", kamino_logger.handlers[:])
+        self.addCleanup(kamino_logger.setLevel, kamino_logger.level)
+        kamino_logger.handlers.clear()
+        kamino_logger.setLevel(logging.NOTSET)
         newton_logger = logging.getLogger("newton")
         self.addCleanup(newton_logger.setLevel, newton_logger.level)
 
+        logger = logging.getLogger("newton._src.solvers.kamino._src.core.model")
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-            msg.warning("kamino problem")
-            msg.info("kamino detail")
-            msg.notif("kamino status")
+            logger.warning("kamino problem")
+            logger.debug("kamino detail")
+            logger.info("kamino status")
             newton_logger.setLevel(logging.DEBUG)
-            msg.info("kamino detail on request")
+            logger.debug("kamino detail on request")
 
         self.assertEqual(logging.getLogger().handlers, [])
         self.assertEqual(stdout.getvalue(), "kamino status\nkamino detail on request\n")

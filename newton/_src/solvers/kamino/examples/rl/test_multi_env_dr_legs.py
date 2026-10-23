@@ -11,13 +11,16 @@
 ###########################################################################
 
 import argparse
+import logging
 import time
 
 import warp as wp
 
 import newton
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import enable_console_logging
 from newton._src.solvers.kamino._src.utils.sim import Simulator
+
+logger = logging.getLogger(__name__)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -44,10 +47,10 @@ def run_test(num_worlds: int, num_steps: int, device):
     asset_path = newton.utils.download_asset("disneyresearch")
     usd_path = str(asset_path / "dr_legs" / "usd" / "dr_legs_with_boxes.usda")
 
-    msg.info("--- Testing %s environments ---", num_worlds)
+    logger.info("--- Testing %s environments ---", num_worlds)
 
     # Build model
-    msg.info("Building model...")
+    logger.info("Building model...")
     builder_single = newton.ModelBuilder()
     builder_single.add_usd(source=usd_path)
     builder = newton.ModelBuilder()
@@ -57,43 +60,44 @@ def run_test(num_worlds: int, num_steps: int, device):
     model = builder.finalize(device=device)
 
     # Create simulator
-    msg.info("Creating simulator...")
+    logger.info("Creating simulator...")
     settings = make_settings(0.004)
     sim = Simulator(model=model, config=settings)
     sim.set_control_callback(lambda _: None)
 
-    msg.debug("Model size: %s", sim.model.size)
-    msg.debug("Contacts capacity: %s", sim.contacts.model_max_contacts_host)
+    logger.debug("Model size: %s", sim.model.size)
+    logger.debug("Contacts capacity: %s", sim.contacts.model_max_contacts_host)
 
     # Warm-up: step without CUDA graphs to compile kernels
-    msg.info("Stepping (warmup)...")
+    logger.info("Stepping (warmup)...")
     try:
         sim.step()
         wp.synchronize()
-        msg.info("Warmup step 1 OK")
+        logger.info("Warmup step 1 OK")
     except Exception as e:
-        msg.error("Warmup step 1 FAILED: %s", e)
+        logger.error("Warmup step 1 FAILED: %s", e)
         return False
 
     # Reset
-    msg.info("Resetting...")
+    logger.info("Resetting...")
     sim.reset()
     wp.synchronize()
-    msg.info("Reset OK")
+    logger.info("Reset OK")
 
     # Step multiple times
-    msg.info("Stepping %s times...", num_steps)
+    logger.info("Stepping %s times...", num_steps)
     t0 = time.perf_counter()
     for _i in range(num_steps):
         sim.step()
     wp.synchronize()
     t1 = time.perf_counter()
 
-    msg.info("OK: %s envs x %s steps in %.2fs (%.0f steps/s)", num_worlds, num_steps, t1 - t0, num_steps / (t1 - t0))
+    logger.info("OK: %s envs x %s steps in %.2fs (%.0f steps/s)", num_worlds, num_steps, t1 - t0, num_steps / (t1 - t0))
     return True
 
 
 if __name__ == "__main__":
+    enable_console_logging()
     parser = argparse.ArgumentParser(description="Multi-env smoke test for DR Legs")
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--num-worlds", type=int, nargs="+", default=[2048])
@@ -109,7 +113,7 @@ if __name__ == "__main__":
     for nw in args.num_worlds:
         ok = run_test(nw, args.num_steps, device)
         if not ok:
-            msg.error("FAILED at %s envs", nw)
+            logger.error("FAILED at %s envs", nw)
             break
 
-    msg.info("Done!")
+    logger.info("Done!")

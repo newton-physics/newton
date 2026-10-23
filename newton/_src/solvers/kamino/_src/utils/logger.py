@@ -2,120 +2,133 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-KAMINO: Utilities: Message Logging
+KAMINO: Utilities: Console Logging
+
+Kamino modules log through ``logging.getLogger(__name__)`` like the rest of Newton.
+The helpers below configure logging and are meant for applications (examples,
+tests, benchmarks), not for library code.
 """
 
 import logging
+import os
 import sys
-from enum import IntEnum
 from typing import ClassVar
 
-# Fix rich console output on Windows
-if sys.platform == "win32":
-    import ctypes
+from .....diagnostics import _ConsoleFallbackHandler
 
-    # Enable VT sequences only when stdout is a real console.
-    kernel32 = ctypes.windll.kernel32
-    try:
-        handle = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
-        invalid_handle = ctypes.c_void_p(-1).value
-        if handle != 0 and ctypes.c_void_p(handle).value != invalid_handle:
-            mode = ctypes.c_uint()
-            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
-                new_mode = mode.value | 0x0004  # Set ENABLE_VIRTUAL_TERMINAL_PROCESSING
-                if new_mode != mode.value:
-                    kernel32.SetConsoleMode(handle, new_mode)
-    except Exception:
-        # For some contexts, getting/setting the console mode fails (e.g.,
-        # redirected stdout, services, CI).
-        pass
+###
+# Module interface
+###
 
-
-class LogLevel(IntEnum):
-    """Enumeration for log levels.
-
-    Kamino ``INFO`` sits between the standard ``DEBUG`` and ``INFO`` levels so it
-    stays hidden at the ``newton`` logger's default level; ``NOTIF`` is the
-    standard ``INFO`` level.
-    """
-
-    DEBUG = logging.DEBUG
-    INFO = logging.DEBUG + 5
-    NOTIF = logging.INFO
-    WARNING = logging.WARNING
-    ERROR = logging.ERROR
-    CRITICAL = logging.CRITICAL
-
-
-class Logger(logging.Formatter):
-    """Formatter with color highlighting for Kamino log levels.
-
-    Kamino messages go through the ``newton`` logger hierarchy; attach this
-    formatter to an application handler to get Kamino-style console output.
-    """
-
-    HEADER = "[KAMINO]"
-    HEADERCOL = "\x1b[38;5;13m"
-
-    WHITE = "\x1b[37m"
-    RED = "\x1b[31;20m"
-    BOLD_RED = "\x1b[31;1m"
-    BLUE = "\x1b[34;20m"
-    BOLD_BLUE = "\x1b[34;1m"
-    GREEN = "\x1b[32;20m"
-    BOLD_GREEN = "\x1b[32;1m"
-    YELLOW = "\x1b[33;20m"
-    BOLD_YELLOW = "\x1b[33;1m"
-    RESET = "\x1b[0m"
-
-    LINE_FORMAT = "[%(asctime)s][%(filename)s:%(lineno)d][%(levelname)s]: %(message)s"
-    """Line format for the log messages, including timestamp, filename, line number, log level, and message."""
-
-    FORMATS: ClassVar[dict[int, str]] = {
-        LogLevel.DEBUG: HEADERCOL + HEADER + RESET + BLUE + LINE_FORMAT + RESET,
-        LogLevel.INFO: HEADERCOL + HEADER + RESET + WHITE + LINE_FORMAT + RESET,
-        LogLevel.NOTIF: HEADERCOL + HEADER + RESET + GREEN + LINE_FORMAT + RESET,
-        LogLevel.WARNING: HEADERCOL + HEADER + RESET + YELLOW + LINE_FORMAT + RESET,
-        LogLevel.ERROR: HEADERCOL + HEADER + RESET + RED + LINE_FORMAT + RESET,
-        LogLevel.CRITICAL: HEADERCOL + HEADER + RESET + BOLD_RED + LINE_FORMAT + RESET,
-    }
-    """Dictionary mapping log levels to their respective formats."""
-
-    def __init__(self):
-        super().__init__()
-        logging.addLevelName(LogLevel.INFO, "DETAIL")
-
-    def format(self, record):
-        """Format the log record with the appropriate color based on the log level."""
-        log_fmt = self.FORMATS.get(record.levelno)
-        formatter = logging.Formatter(log_fmt)
-        return formatter.format(record)
-
-    def get(self):
-        """Get the Kamino logger."""
-        return logging.getLogger(_LOGGER_NAME)
-
-    def notif(self, msg, *args, **kwargs):
-        """
-        Log 'msg % args' with severity 'NOTIF'.
-
-        To pass exception information, use the keyword argument exc_info with
-        a true value, e.g.
-
-        logger.notif("Houston, we have a %s", "thorny problem", exc_info=1)
-        """
-        self.get().log(LogLevel.NOTIF, msg, *args, **kwargs)
+__all__ = [
+    "LOGGER_NAMES",
+    "ConsoleFormatter",
+    "enable_console_logging",
+    "reset_log_level",
+    "set_log_level",
+]
 
 
 ###
 # Globals
 ###
 
-_LOGGER_NAME = "newton._src.solvers.kamino"
+LOGGER_NAMES = ("newton._src.solvers.kamino", "newton.tests.kamino")
+"""Parent loggers of the Kamino solver and its tests."""
 
 
-LOGGER: Logger | None = None
-"""Global logger instance for the application."""
+###
+# Formatting
+###
+
+
+class ConsoleFormatter(logging.Formatter):
+    """Formatter adding a ``[KAMINO]`` header and level-based colors."""
+
+    HEADER = "[KAMINO]"
+    HEADER_COLOR = "\x1b[38;5;13m"
+    RESET = "\x1b[0m"
+
+    LINE_FORMAT = "[%(asctime)s][%(filename)s:%(lineno)d][%(levelname)s]: %(message)s"
+    """Line format for the log messages, including timestamp, filename, line number, log level, and message."""
+
+    LEVEL_COLORS: ClassVar[dict[int, str]] = {
+        logging.DEBUG: "\x1b[90m",
+        logging.INFO: "\x1b[32;20m",
+        logging.WARNING: "\x1b[33;20m",
+        logging.ERROR: "\x1b[31;20m",
+    }
+    """Message colors, applied to all records at or above each level."""
+
+    def __init__(self, color: bool = True):
+        super().__init__(self.LINE_FORMAT)
+        self.color = color
+
+    def format(self, record: logging.LogRecord) -> str:
+        line = super().format(record)
+        if not self.color:
+            return self.HEADER + line
+        level = max((lvl for lvl in self.LEVEL_COLORS if lvl <= record.levelno), default=logging.DEBUG)
+        return self.HEADER_COLOR + self.HEADER + self.RESET + self.LEVEL_COLORS[level] + line + self.RESET
+
+
+class _ConsoleHandler(logging.Handler):
+    """Print Kamino records until the application configures a handler of its own."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if _application_handler_configured(record.name):
+            return
+        try:
+            # Resolve the stream per record so redirections of stdout/stderr apply.
+            stream = sys.stderr if record.levelno >= logging.WARNING else sys.stdout
+            if stream is None:
+                return
+            stream.write(self.format(record) + "\n")
+            stream.flush()
+        except RecursionError:
+            raise
+        except Exception:
+            self.handleError(record)
+
+
+def _application_handler_configured(name: str) -> bool:
+    # NOTE: Mirrors the ``newton`` console fallback, so test-time handlers such as ``assertLogs`` take over.
+    logger = logging.Logger.manager.loggerDict.get(name)
+    while isinstance(logger, logging.Logger):
+        if any(not isinstance(handler, (_ConsoleHandler, _ConsoleFallbackHandler)) for handler in logger.handlers):
+            return True
+        if not logger.propagate:
+            return False
+        logger = logger.parent
+    return False
+
+
+def _supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    stream = sys.stdout
+    return stream is not None and hasattr(stream, "isatty") and stream.isatty()
+
+
+def _enable_windows_ansi_sequences():
+    """Make legacy Windows consoles interpret ANSI escape sequences."""
+    if sys.platform != "win32":
+        return
+    import ctypes  # noqa: PLC0415
+
+    kernel32 = ctypes.windll.kernel32
+    invalid_handle = ctypes.c_void_p(-1).value
+    for std_handle in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+        try:
+            handle = kernel32.GetStdHandle(std_handle)
+            if handle == 0 or ctypes.c_void_p(handle).value == invalid_handle:
+                continue
+            mode = ctypes.c_uint()
+            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                kernel32.SetConsoleMode(handle, mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+        except Exception:
+            # Getting/setting the console mode fails in some contexts (e.g., services, CI).
+            pass
 
 
 ###
@@ -123,65 +136,38 @@ LOGGER: Logger | None = None
 ###
 
 
-def get_default_logger() -> logging.Logger:
-    """Initialize the global logger instance."""
-    global LOGGER  # noqa: PLW0603
-    if LOGGER is None:
-        LOGGER = Logger()
-    return LOGGER.get()
+def enable_console_logging(color: bool | None = None):
+    """Print Kamino log records in the Kamino console format.
+
+    Records still propagate to the ``newton`` logger, and the console output
+    yields to any handler the application configures. Calling this again only
+    updates the formatting.
+
+    Args:
+        color: Whether to color the output. Defaults to coloring when stdout is
+            a terminal and the ``NO_COLOR`` environment variable is not set.
+    """
+    if color is None:
+        color = _supports_color()
+    if color:
+        _enable_windows_ansi_sequences()
+
+    formatter = ConsoleFormatter(color=color)
+    for name in LOGGER_NAMES:
+        logger = logging.getLogger(name)
+        handler = next((h for h in logger.handlers if isinstance(h, _ConsoleHandler)), None)
+        if handler is None:
+            handler = _ConsoleHandler()
+            logger.addHandler(handler)
+        handler.setFormatter(formatter)
 
 
-def set_log_level(level: LogLevel):
-    """Set the logging level for the default logger."""
-    get_default_logger().setLevel(level)
-    get_default_logger().debug("Log level set to: %s", logging.getLevelName(level))
+def set_log_level(level: int):
+    """Set the level of the Kamino loggers."""
+    for name in LOGGER_NAMES:
+        logging.getLogger(name).setLevel(level)
 
 
 def reset_log_level():
-    """Make the default logger inherit its level from the ``newton`` logger again."""
-    get_default_logger().setLevel(logging.NOTSET)
-
-
-def is_enabled_for(level: LogLevel) -> bool:
-    """Return whether the default logger would emit a message at ``level``."""
-    return get_default_logger().isEnabledFor(level)
-
-
-def set_log_header(header: str):
-    """Set the header for the logger."""
-    Logger.HEADER = header
-
-
-###
-# Logging
-###
-
-
-def debug(msg: str, *args, **kwargs):
-    """Log a debug message."""
-    get_default_logger().debug(msg, *args, **kwargs, stacklevel=2)
-
-
-def info(msg: str, *args, **kwargs):
-    """Log an info message."""
-    get_default_logger().log(LogLevel.INFO, msg, *args, **kwargs, stacklevel=2)
-
-
-def notif(msg: str, *args, **kwargs):
-    """Log a notification message."""
-    get_default_logger().log(LogLevel.NOTIF, msg, *args, **kwargs, stacklevel=2)
-
-
-def warning(msg: str, *args, **kwargs):
-    """Log a warning message."""
-    get_default_logger().warning(msg, *args, **kwargs, stacklevel=2)
-
-
-def error(msg: str, *args, **kwargs):
-    """Log an error message."""
-    get_default_logger().error(msg, *args, **kwargs, stacklevel=2)
-
-
-def critical(msg: str, *args, **kwargs):
-    """Log a critical message."""
-    get_default_logger().critical(msg, *args, **kwargs, stacklevel=2)
+    """Make the Kamino loggers inherit their level from the ``newton`` logger again."""
+    set_log_level(logging.NOTSET)

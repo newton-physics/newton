@@ -5,6 +5,7 @@
 KAMINO: UNIT TESTS: CORE: SHAPES
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -23,8 +24,10 @@ from newton._src.solvers.kamino._src.core.shapes import (
     SphereShape,
     _max_contacts_for_shape_pair_impl,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -55,15 +58,15 @@ class TestShapeDescriptors(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_00_empty_shape(self):
         # Create a default-constructed surface material

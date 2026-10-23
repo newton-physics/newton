@@ -38,15 +38,17 @@ from __future__ import annotations
 
 # Python
 import dataclasses
+import logging
 from typing import Any
 
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.examples.rl.input_utils import (
     RateLimitedValue,
     _deadband,
     _LowPassFilter,
     _scale_asym,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _require_torch():
@@ -194,11 +196,11 @@ class JoystickController:
 
             self._controller = Xbox360Controller(0, axis_threshold=0.015)
             self._mode = "joystick"
-            msg.info("Joystick connected.")
+            logger.info("Joystick connected.")
         except Exception:
             if viewer is not None and hasattr(viewer, "is_key_down"):
                 self._mode = "keyboard"
-                msg.info(
+                logger.info(
                     "No joystick found. Using keyboard controls:\n"
                     "  I/K — forward/backward    J/L — strafe left/right\n"
                     "  U/O — turn left/right     T/G — look up/down\n"
@@ -206,7 +208,7 @@ class JoystickController:
                     "  P   — reset"
                 )
             else:
-                msg.info("No joystick or keyboard available. Commands will be zero.")
+                logger.info("No joystick or keyboard available. Commands will be zero.")
 
     def _read_input(self) -> tuple[float, float, float, float, float]:
         """Read controller input as semantic axes.

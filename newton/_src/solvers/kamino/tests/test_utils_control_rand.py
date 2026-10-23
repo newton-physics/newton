@@ -3,6 +3,7 @@
 
 """Unit tests for the RandomController class."""
 
+import logging
 import unittest
 
 import numpy as np
@@ -11,10 +12,12 @@ import warp as wp
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src import ModelKamino
 from newton._src.solvers.kamino._src.core.time import advance_time
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.control.rand import RandomJointController
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 from newton.tests.utils.basics import build_boxes_fourbar
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -32,15 +35,15 @@ class TestRandomController(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_00_make_default(self):
         # Create a default random controller
@@ -81,7 +84,7 @@ class TestRandomController(unittest.TestCase):
         self.assertEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
         controller.compute(time=data.time, control=control)
         tau_j_np_0 = control.tau_j.numpy().copy()
-        msg.debug("control.tau_j: %s", tau_j_np_0)
+        logger.debug("control.tau_j: %s", tau_j_np_0)
         self.assertGreaterEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
 
     def test_02_make_for_multiple_fourbar(self):
@@ -112,7 +115,7 @@ class TestRandomController(unittest.TestCase):
         self.assertEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
         controller.compute(time=data.time, control=control)
         tau_j_np_0 = control.tau_j.numpy().copy()
-        msg.debug("control.tau_j: %s", tau_j_np_0)
+        logger.debug("control.tau_j: %s", tau_j_np_0)
         self.assertGreaterEqual(np.linalg.norm(control.tau_j.numpy()), 0.0)
 
     def _build_replicated_fourbar(self, num_worlds: int):

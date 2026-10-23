@@ -5,6 +5,7 @@
 KAMINO: UNIT TESTS: DYNAMICS: DUAL PROBLEM
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -13,12 +14,14 @@ import warp as wp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.linalg import ConjugateGradientSolver
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.kamino.utils.print import debug_print_model_info
 from newton.tests.utils.basics import make_basics_heterogeneous_builder
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -34,10 +37,10 @@ class TestDualProblem(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
@@ -68,21 +71,21 @@ class TestDualProblem(unittest.TestCase):
             solver=ConjugateGradientSolver,
         )
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("\n")  # Print a blank line for better readability
-            msg.debug("problem.data.config: %s", problem.data.config)
-            msg.debug("problem.data.maxdim: %s", problem.data.maxdim)
-            msg.debug("problem.data.dim: %s", problem.data.dim)
-            msg.debug("problem.data.mio: %s", problem.data.mio)
-            msg.debug("problem.data.vio: %s", problem.data.vio)
-            msg.debug("problem.data.u_f (shape): %s", problem.data.u_f.shape)
-            msg.debug("problem.data.v_b (shape): %s", problem.data.v_b.shape)
-            msg.debug("problem.data.v_i (shape): %s", problem.data.v_i.shape)
-            msg.debug("problem.data.v_f (shape): %s", problem.data.v_f.shape)
-            msg.debug("problem.data.mu (shape): %s", problem.data.mu.shape)
-            msg.debug("problem.data.bound_lower (shape): %s", problem.data.bound_lower.shape)
-            msg.debug("problem.data.bound_upper (shape): %s", problem.data.bound_upper.shape)
-            msg.debug("problem.data.D: %s", problem.data.D)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("\n")  # Print a blank line for better readability
+            logger.debug("problem.data.config: %s", problem.data.config)
+            logger.debug("problem.data.maxdim: %s", problem.data.maxdim)
+            logger.debug("problem.data.dim: %s", problem.data.dim)
+            logger.debug("problem.data.mio: %s", problem.data.mio)
+            logger.debug("problem.data.vio: %s", problem.data.vio)
+            logger.debug("problem.data.u_f (shape): %s", problem.data.u_f.shape)
+            logger.debug("problem.data.v_b (shape): %s", problem.data.v_b.shape)
+            logger.debug("problem.data.v_i (shape): %s", problem.data.v_i.shape)
+            logger.debug("problem.data.v_f (shape): %s", problem.data.v_f.shape)
+            logger.debug("problem.data.mu (shape): %s", problem.data.mu.shape)
+            logger.debug("problem.data.bound_lower (shape): %s", problem.data.bound_lower.shape)
+            logger.debug("problem.data.bound_upper (shape): %s", problem.data.bound_upper.shape)
+            logger.debug("problem.data.D: %s", problem.data.D)
 
         # Extract expected allocation sizes
         nw = model.info.num_worlds
@@ -157,26 +160,26 @@ class TestDualProblem(unittest.TestCase):
         v_f_np = extract_problem_vector(problem.delassus, vector=v_f_wp_np, only_active_dims=True)
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("")  # Print a blank line for better readability
-            msg.debug("problem.data.maxdim: %s", problem.data.maxdim)
-            msg.debug("problem.data.dim: %s", problem.data.dim)
-            msg.debug("problem.data.mio: %s", problem.data.mio)
-            msg.debug("problem.data.vio: %s", problem.data.vio)
-            msg.debug("problem.data.D: %s", problem.data.D)
-            msg.debug("problem.data.u_f:\n%s", problem.data.u_f)
-            msg.debug("problem.data.v_b:\n%s", problem.data.v_b)
-            msg.debug("problem.data.v_i:\n%s", problem.data.v_i)
-            msg.debug("problem.data.v_f:\n%s", problem.data.v_f)
-            msg.debug("problem.data.mu:\n%s", problem.data.mu)
-            msg.debug("problem.data.bound_lower:\n%s", problem.data.bound_lower)
-            msg.debug("problem.data.bound_upper:\n%s", problem.data.bound_upper)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("")  # Print a blank line for better readability
+            logger.debug("problem.data.maxdim: %s", problem.data.maxdim)
+            logger.debug("problem.data.dim: %s", problem.data.dim)
+            logger.debug("problem.data.mio: %s", problem.data.mio)
+            logger.debug("problem.data.vio: %s", problem.data.vio)
+            logger.debug("problem.data.D: %s", problem.data.D)
+            logger.debug("problem.data.u_f:\n%s", problem.data.u_f)
+            logger.debug("problem.data.v_b:\n%s", problem.data.v_b)
+            logger.debug("problem.data.v_i:\n%s", problem.data.v_i)
+            logger.debug("problem.data.v_f:\n%s", problem.data.v_f)
+            logger.debug("problem.data.mu:\n%s", problem.data.mu)
+            logger.debug("problem.data.bound_lower:\n%s", problem.data.bound_lower)
+            logger.debug("problem.data.bound_upper:\n%s", problem.data.bound_upper)
             for w in range(num_worlds):
-                msg.debug("problem.data.v_b[%s]:\n%s", w, v_b_np[w])
+                logger.debug("problem.data.v_b[%s]:\n%s", w, v_b_np[w])
             for w in range(num_worlds):
-                msg.debug("problem.data.v_i[%s]:\n%s", w, v_i_np[w])
+                logger.debug("problem.data.v_i[%s]:\n%s", w, v_i_np[w])
             for w in range(num_worlds):
-                msg.debug("problem.data.v_f[%s]:\n%s", w, v_f_np[w])
+                logger.debug("problem.data.v_f[%s]:\n%s", w, v_f_np[w])
 
         # Check the problem data
         # TODO

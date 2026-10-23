@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -21,7 +22,8 @@ from ..core.types import (
     vec7f,
 )
 from ..geometry.keying import build_pair_key2, make_bitmask
-from ..utils import logger as msg
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -834,7 +836,7 @@ class LimitsKamino:
 
         # Skip allocation if there are no limits to allocate
         if model_max_limits == 0:
-            msg.debug("LimitsKamino: Skipping joint-limit data allocations since total requested capacity was `0`.")
+            logger.debug("LimitsKamino: Skipping joint-limit data allocations since total requested capacity was `0`.")
             return
 
         # Allocate the limits data on the specified device

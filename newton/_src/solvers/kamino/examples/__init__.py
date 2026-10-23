@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import os
 import sys
 import time
@@ -8,7 +9,7 @@ from functools import lru_cache
 
 import warp as wp
 
-from .._src.utils import logger as msg
+logger = logging.getLogger(__name__)
 
 ###
 # Example Paths
@@ -41,7 +42,7 @@ def get_examples_output_path() -> str:
         path = os.path.join(pkg_dir, "output")
     except OSError:
         path = os.path.join(os.getcwd(), "kamino_examples_output")
-    msg.info("Kamino examples output folder: %s", path)
+    logger.info("Kamino examples output folder: %s", path)
     return path
 
 
@@ -52,14 +53,14 @@ def get_examples_output_path() -> str:
 
 def run_headless(example, progress: bool = True):
     """Run the simulation in headless mode for a fixed number of steps."""
-    msg.info("Running for %s steps...", example.max_steps)
+    logger.info("Running for %s steps...", example.max_steps)
     start_time = time.time()
     for i in range(example.max_steps):
         example.step_once()
         wp.synchronize()
         if progress:
             print_progress_bar(i + 1, example.max_steps, start_time, prefix="Progress", suffix="")
-    msg.info("Finished headless run")
+    logger.info("Finished headless run")
 
 
 def print_progress_bar(iteration, total, start_time, length=40, prefix="", suffix=""):
