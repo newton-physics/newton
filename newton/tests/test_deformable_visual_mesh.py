@@ -631,7 +631,6 @@ class TestDeformableVisuals(unittest.TestCase):
         self.assertEqual(visuals.mesh_ranges, ((0, 4), (4, 7)))
         self.assertEqual(len(visuals.points), 7)
         self.assertEqual(len(visuals.normals), 7)
-        self.assertIsNone(visuals.state)
 
         with self.assertRaisesRegex(RuntimeError, "update_deformable_visuals"):
             visuals.get_points(model.deformable_visual_meshes[0])
@@ -642,7 +641,6 @@ class TestDeformableVisuals(unittest.TestCase):
         state.particle_q.assign(moved)
 
         self.assertIs(model.update_deformable_visuals(state, visuals), visuals)
-        self.assertIs(visuals.state, state)
         for mesh in model.deformable_visual_meshes:
             assert_np_equal(visuals.get_points(mesh).numpy(), moved[mesh.parent.numpy()], tol=1.0e-6)
             normals = visuals.get_normals(mesh).numpy()
@@ -664,7 +662,6 @@ class TestDeformableVisuals(unittest.TestCase):
         model.update_deformable_visuals(state_b, visuals)
 
         self.assertEqual(visuals.points.ptr, points_ptr)
-        self.assertIs(visuals.state, state_b)
         assert_np_equal(visuals.get_points(0).numpy(), moved_b[particle_indices], tol=1.0e-6)
         self.assertFalse(np.allclose(points_a, visuals.get_points(0).numpy()))
 
@@ -679,63 +676,53 @@ class TestDeformableVisuals(unittest.TestCase):
         assert_np_equal(visuals_b.get_points(0).numpy(), moved_b[particle_indices], tol=1.0e-6)
 
     def test_update_is_cuda_graph_capturable(self):
-        """Keep captured outputs tied to their source states across replay."""
+        """Reuse one output across ordered graph replays from different states."""
         model, _particle_indices, _vertices = self._model()
         if not model.device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device")
 
-        state = model.state()
+        state_a = model.state()
+        state_b = model.state()
+        moved_b = state_b.particle_q.numpy()
+        moved_b[:, 2] += 3.0
+        state_b.particle_q.assign(moved_b)
         visuals = model.deformable_visuals()
-        model.update_deformable_visuals(state, visuals)
+        pointers = (visuals.points.ptr, visuals.normals.ptr)
+        model.update_deformable_visuals(state_a, visuals)
+        model.update_deformable_visuals(state_b, visuals)
+        with wp.ScopedCapture(model.device) as capture_a:
+            model.update_deformable_visuals(state_a, visuals)
+        with wp.ScopedCapture(model.device) as capture_b:
+            model.update_deformable_visuals(state_b, visuals)
 
-        with wp.ScopedCapture(model.device) as capture:
-            model.update_deformable_visuals(state, visuals)
-
-        moved = state.particle_q.numpy()
-        moved[:, 1] += 2.0
-        state.particle_q.assign(moved)
-        wp.capture_launch(capture.graph)
-        visuals.wait()
-
-        for mesh in model.deformable_visual_meshes:
-            assert_np_equal(visuals.get_points(mesh).numpy(), moved[mesh.parent.numpy()], tol=1.0e-6)
-
-        other_state = model.state()
-        other_positions = other_state.particle_q.numpy()
-        other_positions[:, 2] += 3.0
-        other_state.particle_q.assign(other_positions)
-        before_points = visuals.points.numpy().copy()
-        before_normals = visuals.normals.numpy().copy()
-        for capturing in (False, True):
-            with self.subTest(capturing=capturing):
-                with wp.ScopedCapture(model.device) if capturing else contextlib.nullcontext():
-                    with self.assertRaisesRegex(ValueError, "captured.*another state"):
-                        model.update_deformable_visuals(other_state, visuals)
-                self.assertIs(visuals.state, state)
-                assert_np_equal(visuals.points.numpy(), before_points, tol=0.0)
-                assert_np_equal(visuals.normals.numpy(), before_normals, tol=0.0)
-
-        other_visuals = model.deformable_visuals()
-        model.update_deformable_visuals(other_state, other_visuals)
-        with wp.ScopedCapture(model.device) as other_capture:
-            model.update_deformable_visuals(other_state, other_visuals)
+        moved_a = state_a.particle_q.numpy()
+        moved_a[:, 1] += 2.0
+        state_a.particle_q.assign(moved_a)
 
         viewer = _MeshProbe()
         viewer.set_model(model)
-        for graph, source, output, expected in (
-            (capture.graph, state, visuals, moved),
-            (other_capture.graph, other_state, other_visuals, other_positions),
-            (capture.graph, state, visuals, moved),
+        viewer.set_deformable_visuals(visuals)
+        consumer_stream = wp.Stream(model.device)
+        for graph, source, expected in (
+            (capture_a.graph, state_a, moved_a),
+            (capture_b.graph, state_b, moved_b),
+            (capture_a.graph, state_a, moved_a),
         ):
             wp.capture_launch(graph)
-            self.assertIs(output.state, source)
-            viewer.set_deformable_visuals(output)
-            viewer._frame(source)
+            with wp.ScopedStream(consumer_stream, sync_enter=False):
+                # The viewer waits for the output event. Its host snapshot finishes
+                # consumption before the next graph overwrites the shared buffers.
+                viewer._frame(source)
             for mesh in model.deformable_visual_meshes:
                 call = viewer.calls[f"/model/deformable_visual_meshes/mesh_{mesh.index}_{mesh.label}"]
                 assert_np_equal(call["points"], expected[mesh.parent.numpy()], tol=1.0e-6)
-            with self.assertRaisesRegex(ValueError, "another state"):
-                viewer.log_state(other_state if source is state else state)
+                assert_np_equal(
+                    np.linalg.norm(call["normals"], axis=1), np.ones(mesh.vertex_count, dtype=np.float32), tol=1.0e-5
+                )
+            self.assertEqual((visuals.points.ptr, visuals.normals.ptr), pointers)
+
+        model.update_deformable_visuals(state_b, visuals)
+        assert_np_equal(visuals.get_points(0).numpy(), moved_b[model.deformable_visual_meshes[0].parent.numpy()])
 
     def test_rejects_results_and_meshes_from_another_model(self):
         """Output buffers and mesh handles cannot be used with another model."""
@@ -775,7 +762,6 @@ class TestDeformableVisuals(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, f"State.{attribute}.*at least"):
                     model.update_deformable_visuals(short_state, visuals)
                 assert_np_equal(visuals.points.numpy(), before, tol=0.0)
-                self.assertIs(visuals.state, state)
 
 
 class TestDeformableVisualMeshValidation(unittest.TestCase):
@@ -1021,8 +1007,8 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         call = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]
         assert_np_equal(call["points"], moved, tol=1.0e-5)
 
-        with self.assertRaisesRegex(ValueError, "another state"):
-            viewer._frame(model.state(), 1.0)
+        viewer._frame(model.state(), 1.0)
+        assert_np_equal(viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]["points"], moved, tol=1.0e-5)
 
         viewer.set_deformable_visuals(None)
         viewer._frame(state, 2.0)
@@ -1200,7 +1186,8 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         viewer.set_model(model)
         viewer.set_deformable_visuals(visuals)
         viewer.log_state(model.state())
-        self.assertIsNone(visuals.state)
+        with self.assertRaisesRegex(RuntimeError, "update_deformable_visuals"):
+            visuals.get_points(0)
 
     def test_viewer_file_roundtrips_deformable_visual_mesh(self):
         """Replay replicated skins with shared RGBA images and path textures."""
@@ -1240,7 +1227,8 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                     visuals = model.deformable_visuals()
                     recorder.set_deformable_visuals(visuals)
                     recorder.log_state(state)
-                    self.assertIsNone(visuals.state)
+                    with self.assertRaisesRegex(RuntimeError, "update_deformable_visuals"):
+                        visuals.get_points(0)
                     recorder.save_recording()
                     playback = ViewerFile(file_path, auto_save=False)
                     playback.load_recording()
