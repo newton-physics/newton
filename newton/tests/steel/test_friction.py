@@ -935,7 +935,7 @@ def _box_on_support(device, mode, articulated, support_speed, steps=60, window=3
 
 
 def test_kinematic_belt_drags_the_box(test, device):
-    """A box on a kinematic belt reaches the belt speed in the coupled modes, free and articulated.
+    """Verify that a box on a kinematic belt reaches the belt speed in the coupled modes, free and articulated.
 
     Covers the subtests that fail when the sliding rows' rhs is ignored; articulated ``coulomb_newton``
     uses the fixed-normal pair and ``fixed_normal`` adds the rhs itself.
@@ -962,7 +962,7 @@ add_function_test(
 
 
 def test_resting_box_keeps_its_contacts(test, device):
-    """A box resting on four zero-gap contacts stays still in the bisection modes, free and articulated.
+    """Verify that a box resting on four zero-gap contacts stays still in the bisection modes, free and articulated.
 
     A box lifted by one float32 ulp loses its zero-gap contacts on the next step and falls, so this checks
     that the coupled normal solve reaches the support load as exactly as fixed_normal does.
