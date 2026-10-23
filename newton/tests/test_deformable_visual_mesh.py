@@ -17,7 +17,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
+from newton._src.geometry.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
 from newton._src.utils.import_usd_deformable_visual import _sim_bind_positions
 from newton._src.viewer.viewer_file import HAS_CBOR2
 from newton.examples.sensors.example_deformable_visual_mesh_camera import (

@@ -22,9 +22,9 @@ import numpy as np
 import warp as wp
 
 if TYPE_CHECKING:
-    from ..geometry import Gaussian
-    from .model import Model
-    from .state import State
+    from ..sim.model import Model
+    from ..sim.state import State
+    from .types import Gaussian
 
 
 class DeformableVisualMesh:

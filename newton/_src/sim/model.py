@@ -19,12 +19,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
-from ..geometry.flags import ShapeFlags
-from ..utils.deprecation import RemovedAttribute, warn_deprecation
-from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
-from .contacts import Contacts
-from .control import Control
-from .deformable_visual import (
+from ..geometry.deformable_visual import (
     DeformableVisualGaussian,
     DeformableVisualMesh,
     DeformableVisuals,
@@ -32,6 +27,11 @@ from .deformable_visual import (
     skin_deformable_visual_gaussian,
     skin_deformable_visual_mesh,
 )
+from ..geometry.flags import ShapeFlags
+from ..utils.deprecation import RemovedAttribute, warn_deprecation
+from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
+from .contacts import Contacts
+from .control import Control
 from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 

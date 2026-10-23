@@ -12,7 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from ..sim.deformable_visual import DeformableVisuals
+from ..geometry.deformable_visual import DeformableVisuals
 from .sensor_camera_render import Utils
 from .sensor_camera_render.types import (
     AntiAliasing,

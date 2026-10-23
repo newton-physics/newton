@@ -17,8 +17,8 @@ from warp._src import types as warp_types
 
 from ..core.types import override
 from ..geometry import Gaussian, Mesh
+from ..geometry.deformable_visual import DeformableVisualBinding, DeformableVisualGaussian, DeformableVisualMesh
 from ..sim import Model, State
-from ..sim.deformable_visual import DeformableVisualBinding, DeformableVisualGaussian, DeformableVisualMesh
 from ..sim.shape_contact_pairs import _ShapeContactPairs
 from ..utils.color import ColorSpace
 from .viewer import ViewerBase

@@ -12,7 +12,8 @@ import warp as wp
 from ...core import Axis
 from ...geometry import Gaussian, GeoType, Mesh
 from ...geometry.bvh import SHAPE_BOUNDS_BLOCK_DIM, compute_shape_local_bounds
-from ...sim import DeformableVisualGaussian, DeformableVisualMesh, DeformableVisuals, Model, State
+from ...geometry.deformable_visual import DeformableVisualGaussian, DeformableVisualMesh, DeformableVisuals
+from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from ...utils.texture import compute_texture_hash
 from .gaussians import compute_gaussian_bvh_bounds
