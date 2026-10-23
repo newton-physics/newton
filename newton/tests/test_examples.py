@@ -882,6 +882,14 @@ add_example_test(
     test_options={"num-frames": 360},
     use_viewer=True,
 )
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_grid",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360, "finger-mesh": True},
+    use_viewer=True,
+    test_suffix="finger_mesh",
+)
 
 
 class TestRobotExamples(unittest.TestCase):
@@ -1791,6 +1799,25 @@ class TestKaminoExamples(unittest.TestCase):
     pass
 
 
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_earworm_flowers",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    variants=[
+        {
+            "test_suffix": "original",
+            # Two full-height flowers exercise world indexing and variations.
+            "test_options": {"num-frames": 120, "world-count": 2},
+        },
+        {
+            "test_suffix": "fine",
+            # Exercise the finer rings' adapted compaction stroke on a short tower.
+            # At 220 frames the opening is about -0.15 rad, past the 0.04 rad check.
+            "test_options": {"num-frames": 220, "world-count": 1, "stage-count": 2, "flower-resolution": 3},
+        },
+    ],
+)
 add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_basic_fourbar",
