@@ -892,6 +892,8 @@ class SensorCamera:
         Gaussian fields also update their bounds and refit the shape BVH. Other
         shape and particle BVHs are refit separately via
         :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
+        Supplied visual buffers are consumed as-is. Update or replay them before
+        this call; the camera does not track their source State or freshness.
 
         Args:
             state: Current simulation state with particle positions.
@@ -915,7 +917,6 @@ class SensorCamera:
                     f"deformable_visuals must be DeformableVisuals, got {type(deformable_visuals).__name__}"
                 )
             deformable_visuals._validate_model(model)
-            deformable_visuals._require_updated(state)
         if deformable_visuals is not None:
             deformable_visuals.wait()
             self._render_context.update(state, deformable_visuals)
@@ -1004,7 +1005,9 @@ class SensorCamera:
             deformable_visuals: Experimental precomputed visual mesh and Gaussian
                 buffers for this state. If omitted, evaluate the sensor's own
                 buffers. Requires ``sync_deformables=True``; otherwise pass the
-                buffers to :meth:`sync_deformable_meshes` explicitly.
+                buffers to :meth:`sync_deformable_meshes` explicitly. Update or
+                replay supplied buffers before rendering; their source State
+                and freshness are not checked.
 
         .. experimental::
 

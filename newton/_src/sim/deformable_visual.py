@@ -278,9 +278,10 @@ class DeformableVisuals:
 
     Allocate this result with :meth:`newton.Model.deformable_visuals` and
     populate it with :meth:`newton.Model.update_deformable_visuals`. One result
-    can be reused as simulation states are swapped outside CUDA capture. Once
-    an update is captured, that result is tied to its source State. Allocate
-    separate results for different captured states or simultaneous snapshots.
+    can be reused across states and ordered graph replays. Update or replay
+    before consumption; this output does not track its source State or freshness.
+    Finish consumption before overwriting the buffers. Allocate separate results
+    for simultaneous snapshots or concurrent updates.
 
     Mesh output contains positions and normals. Gaussian output contains center
     transforms and axis scales; the rest opacity and appearance remain unchanged.
@@ -333,19 +334,13 @@ class DeformableVisuals:
         self.gaussian_scales = wp.empty(gaussian_start, dtype=wp.vec3, device=self.device)
         """Current positive Gaussian axis scales [m], shape [gaussian_count, 3]."""
 
-        self._state: State | None = None
-        self._captured_state: State | None = None
+        self._updated = False
         self._completion_event = wp.Event(self.device) if self.device.is_cuda else None
 
     @property
     def model(self) -> Model:
         """Model whose visual mesh layout this result uses."""
         return self._model
-
-    @property
-    def state(self) -> State | None:
-        """State used by the most recent update, or ``None`` before the first update."""
-        return self._state
 
     def _mesh_index(self, mesh: DeformableVisualMesh | SupportsIndex) -> int:
         if isinstance(mesh, DeformableVisualMesh):
@@ -362,13 +357,11 @@ class DeformableVisuals:
             raise IndexError(f"Deformable visual mesh index {index} is out of range")
         return index
 
-    def _require_updated(self, state: State | None = None) -> None:
-        if self._state is None:
+    def _require_updated(self) -> None:
+        if not self._updated:
             raise RuntimeError(
                 "DeformableVisuals has not been updated; call model.update_deformable_visuals(state, visuals) first."
             )
-        if state is not None and self._state is not state:
-            raise ValueError("DeformableVisuals was last updated from another state.")
 
     def _gaussian_index(self, gaussian: DeformableVisualGaussian | SupportsIndex) -> int:
         if isinstance(gaussian, DeformableVisualGaussian):
@@ -392,23 +385,18 @@ class DeformableVisuals:
         if self._model is not model:
             raise ValueError("DeformableVisuals was created for another model.")
 
-    def _validate_state(self, state: State) -> None:
-        if self._captured_state is not None and self._captured_state is not state:
-            raise ValueError(
-                "DeformableVisuals has a captured update from another state; allocate separate outputs for each state."
-            )
-
-    def _mark_updated(self, state: State) -> None:
-        self._state = state
+    def _mark_updated(self) -> None:
+        # This records a submitted update, not graph execution or buffer freshness.
+        self._updated = True
         if self._completion_event is not None:
             stream = wp.get_stream(self.device)
-            # Python state tracking does not run on replay, so its identity must stay fixed.
-            if stream.is_capturing:
-                self._captured_state = state
             stream.record_event(self._completion_event, external=stream.is_capturing)
 
     def wait(self, stream: wp.Stream | None = None) -> None:
         """Make a device stream wait for the most recent visual update.
+
+        Launch any captured update before calling this method. The wait does not
+        prevent another update from overwriting buffers still in use by a consumer.
 
         Args:
             stream: Consumer stream. Uses the current stream on :attr:`device`

@@ -755,6 +755,8 @@ class ViewerBase(ABC):
         Passing shared visual data lets the viewer reuse the same evaluated
         points and normals as other consumers, such as camera sensors. Pass
         ``None`` to restore automatic evaluation during :meth:`log_state`.
+        Update or replay before logging the corresponding state. The viewer waits
+        for the output but does not check which State produced it or its freshness.
 
         Args:
             visuals: Updated visual data for the current model, or ``None``.
@@ -3506,7 +3508,6 @@ class ViewerBase(ABC):
                 self._deformable_visuals = visuals
             if self._deformable_visuals_explicit:
                 visuals._validate_model(self.model)
-                visuals._require_updated(state)
             else:
                 self.model.update_deformable_visuals(state, visuals)
             visuals.wait()

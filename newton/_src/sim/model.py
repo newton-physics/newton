@@ -2001,7 +2001,7 @@ class Model:
         """Allocate current mesh and Gaussian output for deformable visuals.
 
         The returned buffers are model-compatible and reusable across
-        simulation states outside CUDA capture. Populate them with
+        simulation states and ordered graph replays. Populate them with
         :meth:`update_deformable_visuals` before reading or rendering them.
 
         Returns:
@@ -2019,10 +2019,11 @@ class Model:
 
         This method reuses the fixed buffers allocated by
         :meth:`deformable_visuals` and performs no structural allocation.
-        Once an update is captured in a CUDA graph, ``visuals`` can only be
-        updated from that same State, including outside capture. Use separate
-        outputs for different captured states. Values in the source State's
-        arrays may change between replays.
+        Warm up before graph capture, and replay the graph before consuming its
+        output. Different states can share one output when updates and consumers
+        are ordered. The caller is responsible for keeping the visual data current;
+        the output does not track its source State. Keep captured arrays alive and
+        change their contents, not their storage, between replays.
 
         Args:
             state: Simulation state containing current particle positions and
@@ -2035,8 +2036,7 @@ class Model:
         Raises:
             TypeError: If ``visuals`` is not :class:`DeformableVisuals`.
             ValueError: If the output belongs to another model or the required
-                state arrays are missing, too short, or on another device;
-                or if the output has a captured update from another State.
+                state arrays are missing, too short, or on another device.
 
         .. experimental::
 
@@ -2046,7 +2046,6 @@ class Model:
         if not isinstance(visuals, DeformableVisuals):
             raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
         visuals._validate_model(self)
-        visuals._validate_state(state)
 
         needs_particles = bool(self.deformable_visual_gaussians) or any(
             mesh.kind != DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes
@@ -2095,7 +2094,7 @@ class Model:
                 out_offset=start,
             )
 
-        visuals._mark_updated(state)
+        visuals._mark_updated()
         return visuals
 
     def state(self, requires_grad: bool | None = None) -> State:

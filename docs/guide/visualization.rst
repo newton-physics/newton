@@ -1153,35 +1153,40 @@ return views of these buffers. Updating them does not allocate new output arrays
 and can run in a CUDA graph. A different consumer stream must call
 :meth:`DeformableVisuals.wait` before reading them. Allocate and warm up the
 buffers before capture. Explicit shared buffers must be updated whenever the
-state changes. Log the same State that was evaluated. The viewer can detect a
-different State or output that was never evaluated, but not in-place changes
-to the same State. Outside capture, one output can be reused across swapped
-states. Once an update is captured, its output is tied to that source State,
-even for later updates outside capture. Python state tracking does not run on
-graph replay. Use a separate output for each captured source State:
+state changes. Log the State that corresponds to the visual data. The output
+does not track its source State or freshness, so the caller must pair them
+correctly. One output can serve swapped states and ordered graph replays:
 
 .. code-block:: python
 
-    visuals_a = model.deformable_visuals()
-    visuals_b = model.deformable_visuals()
-    model.update_deformable_visuals(state_a, visuals_a)  # Warm up before capture.
-    model.update_deformable_visuals(state_b, visuals_b)
+    visuals = model.deformable_visuals()
+    model.update_deformable_visuals(state_a, visuals)  # Warm up before capture.
+    model.update_deformable_visuals(state_b, visuals)
     with wp.ScopedCapture(model.device) as capture_a:
-        model.update_deformable_visuals(state_a, visuals_a)
+        model.update_deformable_visuals(state_a, visuals)
     with wp.ScopedCapture(model.device) as capture_b:
-        model.update_deformable_visuals(state_b, visuals_b)
+        model.update_deformable_visuals(state_b, visuals)
 
     # The source arrays can change in place between replays.
-    wp.capture_launch(capture_a.graph)
-    viewer.set_deformable_visuals(visuals_a)
-    viewer.begin_frame(sim_time)
-    viewer.log_state(state_a)
-    viewer.end_frame()
+    viewer.set_deformable_visuals(visuals)
+    for frame, (graph, state) in enumerate(
+        ((capture_a.graph, state_a), (capture_b.graph, state_b), (capture_a.graph, state_a))
+    ):
+        wp.capture_launch(graph)
+        viewer.begin_frame(frame / 60.0)
+        viewer.log_state(state)
+        viewer.end_frame()
 
-Use separate outputs to retain simultaneous snapshots too. Calling ``set_model()`` resets
-the viewer's shared-output binding. Passing ``None`` to ``set_deformable_visuals``
-restores automatic viewer updates. Differentiating through these visual-output buffers is not
-supported by this API.
+Capture records the update but does not execute it. Replay before rendering,
+and keep the captured input and output arrays alive without replacing their
+storage. Finish each consumer's work before another update overwrites the output.
+Across streams, ``wait()`` orders the consumer after the submitted update; the
+caller must also order the next update after consumption finishes. Use separate
+outputs for concurrent updates or to retain simultaneous snapshots.
+
+Calling ``set_model()`` resets the viewer's shared-output binding. Passing
+``None`` to ``set_deformable_visuals`` restores automatic viewer updates.
+Differentiating through these visual-output buffers is not supported by this API.
 
 Automatic binding uses CPU spatial queries within the supplied triangle or
 tetrahedron range. Outside-tet vertices still search all owning tet centroids.

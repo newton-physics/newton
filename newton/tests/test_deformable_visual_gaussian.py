@@ -648,7 +648,6 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         scales = visuals.get_gaussian_scales(0).numpy()
         np.testing.assert_allclose(transforms[0, :3], center[0], atol=1.0e-6)
         np.testing.assert_allclose(np.sort(scales[0]), np.sort(rest_scale[0]), atol=1.0e-6)
-        self.assertIs(visuals.state, state)
 
     def test_shear_updates_full_covariance(self):
         """Preserve the independently computed Gaussian covariance under affine shear."""
@@ -682,7 +681,7 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         np.testing.assert_allclose(transform[:3], (center @ shear.T)[0], atol=1.0e-6)
 
     def test_update_is_cuda_graph_capturable(self):
-        """Replay Gaussian evaluation into the same output buffers during CUDA capture."""
+        """Reuse Gaussian buffers across ordered graphs with distinct states."""
         builder = _soft_builder()
         tet_indices = np.asarray(builder.tet_indices, dtype=np.int32).reshape(-1, 4)
         rest_particles = np.asarray(builder.particle_q, dtype=np.float32)
@@ -698,6 +697,8 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         if not model.device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device")
         state = model.state()
+        other_state = model.state()
+        other_state.particle_q.assign(rest_particles * 2.0)
         visuals = model.deformable_visuals()
         model.update_deformable_visuals(state, visuals)
         transforms_ptr = visuals.gaussian_transforms.ptr
@@ -705,16 +706,24 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
 
         with wp.ScopedCapture(model.device) as capture:
             model.update_deformable_visuals(state, visuals)
+        with wp.ScopedCapture(model.device) as other_capture:
+            model.update_deformable_visuals(other_state, visuals)
 
         moved = rest_particles.copy()
         moved[:, 2] += 0.4
         state.particle_q.assign(moved)
-        wp.capture_launch(capture.graph)
-        visuals.wait()
+        for graph, expected_center, expected_scale in (
+            (capture.graph, center[0] + [0, 0, 0.4], 0.1),
+            (other_capture.graph, center[0] * 2.0, 0.2),
+            (capture.graph, center[0] + [0, 0, 0.4], 0.1),
+        ):
+            wp.capture_launch(graph)
+            visuals.wait()
 
-        self.assertEqual(visuals.gaussian_transforms.ptr, transforms_ptr)
-        self.assertEqual(visuals.gaussian_scales.ptr, scales_ptr)
-        np.testing.assert_allclose(visuals.get_gaussian_transforms(0).numpy()[0, :3], center[0] + [0, 0, 0.4])
+            self.assertEqual(visuals.gaussian_transforms.ptr, transforms_ptr)
+            self.assertEqual(visuals.gaussian_scales.ptr, scales_ptr)
+            np.testing.assert_allclose(visuals.get_gaussian_transforms(0).numpy()[0, :3], expected_center)
+            np.testing.assert_allclose(visuals.get_gaussian_scales(0).numpy()[0], expected_scale, atol=1.0e-6)
 
 
 class TestDeformableVisualGaussianSensor(unittest.TestCase):
