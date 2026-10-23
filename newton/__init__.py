@@ -107,6 +107,7 @@ __all__ += [
 # ==================================================================================
 from . import (  # noqa: E402
     actuators,
+    config,
     controllers,
     exceptions,
     geometry,
@@ -122,6 +123,7 @@ from . import (  # noqa: E402
 
 __all__ += [
     "actuators",
+    "config",
     "controllers",
     "exceptions",
     "geometry",

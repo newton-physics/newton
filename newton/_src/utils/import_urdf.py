@@ -127,6 +127,8 @@ def parse_urdf(
             Roots supplement environment paths without guaranteed precedence or restricting access.
             Plain relative paths use the URDF directory; file URIs require an absolute local path.
         xform: The transform to apply to the root body. If None, the transform is set to identity.
+            If ``parent_body`` is set, ``xform`` is expressed in that body's frame
+            instead of the world frame.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful

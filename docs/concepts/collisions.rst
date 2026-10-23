@@ -528,7 +528,7 @@ out many copies of a template environment builder into separate worlds in one ca
     # Combined builder: global geometry + 1024 replicated worlds
     main = newton.ModelBuilder()
     main.add_ground_plane()  # global (world -1), shared across all worlds
-    main.replicate(env_builder, world_count=1024)
+    main.replicate(env_builder, copy_count=1024)
     model = main.finalize()
 
 .. note::
@@ -1143,6 +1143,19 @@ call outside graph capture raises :class:`RuntimeError`; graph replays alone do 
 Mesh-plane and mesh-convex contacts read the current scale directly and do not trigger
 this diagnostic.
 
+Changing :attr:`~newton.Model.shape_scale` on mesh, convex-mesh, or heightfield shapes also
+requires updating :attr:`~newton.Model.shape_collision_radius`,
+:attr:`~newton.Model.shape_collision_aabb_lower`, and
+:attr:`~newton.Model.shape_collision_aabb_upper` to match the new scale. The local collision
+bounds already include scale, and collision does not rescale them again; stale bounds can
+cause broadphase culling to omit candidate pairs. ``dynamic_shape_scale=True`` changes only
+unbaked texture-SDF queries and does not update these bounds or rebuild baked SDFs or
+heightfield collision data. To rebuild, recreate the affected shapes on a
+:class:`~newton.ModelBuilder` with the new scale, then call
+:meth:`~newton.ModelBuilder.finalize` and construct a new :class:`~newton.CollisionPipeline`.
+For explicitly prebuilt mesh SDFs, first rerun :meth:`~newton.Mesh.build_sdf` with
+the new scale before adding the mesh to the builder.
+
 **Edge simplification.** ``mesh.build_sdf(...)`` also runs a dihedral-angle pre-filter over
 the mesh's manifold edges and caches the surviving subset on the mesh; the SDF-mesh contact
 pipeline picks up that cached set in preference to the unfiltered :attr:`~Mesh.edges`,
@@ -1207,6 +1220,43 @@ with convex hulls, bounding boxes, or convex decompositions:
 
 Supported methods: ``"convex_hull"`` (default), ``"bounding_box"``, ``"bounding_sphere"``,
 ``"coacd"`` (convex decomposition), ``"vhacd"``.
+
+CoACD and V-HACD decompositions support opt-in disk caching for reuse across
+builders and processes, including automatic approximation during USD import.
+Mesh decomposition caching is disabled by default. Enable it by setting a
+directory through :mod:`newton.config` before importing a scene:
+
+.. code-block:: python
+
+    import newton
+
+    newton.config.cache_dir_meshes = ".cache/convex"
+    builder = newton.ModelBuilder()
+    builder.add_usd("robot.usda")  # Uses this cache for authored convex decompositions.
+
+    # Disable mesh decomposition caching for subsequent calls and imports.
+    newton.config.cache_dir_meshes = None
+
+Explicit ``cache_dir`` directories on :meth:`~ModelBuilder.approximate_meshes`
+override the global setting. Omitting the argument or passing ``None`` uses
+:attr:`config.cache_dir_meshes` at call time. Asset downloads are controlled
+independently by :attr:`config.cache_dir_assets` and remain cached by default in
+the Newton cache directory (``NEWTON_CACHE_PATH`` or the platform's user cache
+location). Setting that to ``None`` keeps each download in a fresh temporary
+directory until process exit. The asset cache environment default is read when
+Newton is imported. These settings do not affect
+:meth:`Mesh.build_sdf`, which retains its explicit, opt-in cache.
+
+Cache directories are created if needed. Entries include the source geometry, effective decomposition options
+(including the hull-vertex limit), backend versions, and cache format version in
+their keys. Shape scales, transforms, and materials are applied independently,
+so cached parts can be reused by differently configured shapes. Missing, corrupt,
+or incompatible entries are recomputed; cache I/O errors are logged without
+preventing approximation. Backend dependencies must still be installed. Failed
+decompositions and fallback hulls are not cached. Delete the directory to reclaim
+disk space. Other approximation methods ignore ``cache_dir``.
+
+Cache locations are runtime settings; they are not authored in USD.
 
 .. note::
    ``approximate_meshes()`` modifies the builder's shape geometry in-place. By default
@@ -2249,6 +2299,72 @@ Example:
         restitution=0.5,  # Bouncy where supported
     )
 
+.. _Contact friction gain and adhesion:
+
+Friction gain and adhesion
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This section covers rigid shape-shape contacts in the penalty contact model of
+:class:`~newton.solvers.SolverSemiImplicit` and
+:class:`~newton.solvers.SolverFeatherstone`, which average ``ke``, ``kd``,
+``kf``, ``ka`` and ``mu`` of the two shapes. Particle-shape contacts in these
+solvers work differently: ``kf`` is averaged with ``Model.soft_contact_kf``, the
+shape's ``ka`` is ignored in favor of ``Model.particle_adhesion``, and damping
+and friction also act inside the adhesion zone. For
+:class:`~newton.solvers.SolverMuJoCo`, see
+:ref:`mujoco-contact-friction-solreffriction`.
+
+Let :math:`d` be the contact-space distance :math:`d = s - m` from
+:ref:`margin and gap semantics <margin-gap-semantics>`, where :math:`s` is the
+surface distance and :math:`m` the pair margin, so :math:`d` is negative once
+the surfaces come within the pair margin. Let :math:`v_n` and :math:`v_t` be the
+normal and tangential relative velocities. Per contact, the normal force
+:math:`f_n` acts along the contact normal and is negative (repulsive) for
+:math:`d < 0` and positive (attractive) inside the adhesion zone:
+
+.. math::
+
+   f_n &= k_e \, d \qquad (d < k_a) \\
+   f_d &= k_d \, \min(v_n, 0) \qquad (d < 0) \\
+   \lVert f_t \rVert &= k_f \, \lVert v_t \rVert \qquad (d < 0, \text{ low slip speed})
+
+**Friction gain** ``kf`` **[N·s/m]** is the slope of a viscous regularization
+of Coulomb friction: at low slip speed the friction force is
+:math:`k_f \lVert v_t \rVert`, so a body at rest on a slope creeps instead of
+sticking. With :math:`N` contacts carrying the load, the creep speed is roughly
+:math:`m g \sin\theta / (N k_f)`. At higher slip speed the force is capped by a
+term proportional to ``mu``. The exact cap is under review in
+`#4796 <https://github.com/newton-physics/newton/issues/4796>`__.
+
+- Larger ``kf`` gives less creep but stiffens the friction force. With these
+  explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
+  where :math:`m_\text{eff}` is the effective mass of the lightest contact pair,
+  or reduce the time step.
+- Smaller ``kf`` is more stable but makes contacts slide and objects creep.
+- ``kf = 0`` disables friction.
+
+**Adhesion distance** ``ka`` **[m]** lets the normal force act before the
+surfaces come within the pair margin. Contacts are processed while
+:math:`d < k_a` instead of :math:`d < 0`, so the adhesion zone is
+:math:`m \le s < m + k_a`. For :math:`0 \le d < k_a`, :math:`f_n = k_e \, d` is
+attractive and grows linearly with :math:`d` up to about :math:`k_e \, k_a`
+per contact just inside :math:`d = k_a`. At :math:`d \ge k_a` the contact applies
+no force. Damping and friction only act while :math:`d < 0`.
+
+- ``ka = 0`` (the default) disables adhesion.
+- Use a small nonzero value for sticky or suction-like contacts, for example to
+  hold a light object against a gripper pad. Choose ``ka`` so that
+  :math:`N k_e \, k_a` exceeds the force you want to resist.
+- Adhesion only acts on contacts the collision pipeline reports, so the pair
+  gap ``gap_a + gap_b`` (see :ref:`margin and gap semantics <margin-gap-semantics>`)
+  must be at least the pair's averaged ``ka``.
+- The force jumps from about :math:`k_e \, k_a` to zero at the cutoff. Shapes
+  that enter the zone are pulled in and bounce, and damping only acts for
+  :math:`d < 0`, so large values make contacts lively. Explicit stepping across
+  the cutoff also adds an error of order :math:`k_e \, k_a \, |v_n| \, \Delta t`
+  per step, which can add or remove energy. Keep ``ka`` small relative to the
+  shape size.
+
 .. _USD Collision:
 
 USD Integration
@@ -2368,6 +2484,14 @@ contributions across threads:
 
 Together these give bit-exact repeatability across runs on the same GPU
 architecture when the consuming solver is deterministic as well.
+For example, :class:`~newton.solvers.SolverSteel` reserves its constraint rows
+in contact-buffer order when constructed with
+``deterministic=wp.DeterministicMode.RUN_TO_RUN``:
+
+.. code-block:: python
+
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    solver = newton.solvers.SolverSteel(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
 
 .. note::
 
@@ -2681,7 +2805,21 @@ specializations. Rebuild the pipeline after modifying or resizing the pair array
 **Narrow phase**
 
 :class:`~geometry.NarrowPhase` accepts the candidate pairs from any broad phase and
-generates contacts:
+generates contacts. Low-level mesh-SDF collision requires packed edge indices and
+per-shape edge ranges; omitting them disables mesh edge contacts. Centers and
+half-vectors are optional acceleration arrays in unscaled mesh coordinates.
+Caller-owned arrays can use the full public :attr:`~newton.Mesh.edges` set and
+zero endpoint-ownership codes, but reproducing the pipeline's simplified edges
+and ownership requires internal data without a stable public accessor. Use
+:class:`~newton.CollisionPipeline` for model collision detection.
+
+.. deprecated:: 1.8
+
+   The ``Model.mesh_edge_indices``, ``Model.mesh_edge_centers``,
+   ``Model.mesh_edge_halves``, and ``Model.shape_edge_range`` aliases expose
+   internal collision acceleration data. They remain readable and writable with
+   :class:`~newton.exceptions.NewtonDeprecationWarning` through Newton 1.8 and
+   will be removed in 1.9. Use :class:`~newton.CollisionPipeline` instead.
 
 .. code-block:: python
 
@@ -2698,7 +2836,7 @@ generates contacts:
         shape_types=...,
         shape_data=...,
         shape_transform=...,
-        # ... remaining geometry arrays from Model
+        # ... remaining geometry arrays and caller-owned mesh edge data
         contact_pair=out_pairs,
         contact_position=out_positions,
         contact_normal=out_normals,

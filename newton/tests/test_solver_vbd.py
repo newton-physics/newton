@@ -15,7 +15,7 @@ import warp as wp
 
 import newton
 from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
-from newton._src.geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
+from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -7152,7 +7152,7 @@ def _run_soft_self_dat_truncation(
             wp.array(displacements, dtype=wp.vec3, device=device),
             wp.array(triangles, dtype=wp.int32, ndim=2, device=device),
             wp.array(edges, dtype=wp.int32, ndim=2, device=device),
-            wp.array([collision_info], dtype=TriMeshCollisionInfo, device=device),
+            collision_info,
             0.85,
         ],
         outputs=[truncation_t],

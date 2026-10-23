@@ -18,7 +18,6 @@ from ...geometry import ParticleFlags
 from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
-    TriMeshCollisionInfo,
 )
 from ...sim import (
     BodyFlags,
@@ -1164,7 +1163,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
                 collision_info = self.trimesh_collision_detector.collision_info
 
-            self.trimesh_collision_info = wp.array([collision_info], dtype=TriMeshCollisionInfo, device=self.device)
+            self.trimesh_collision_info = collision_info
 
             self.particle_self_contact_evaluation_kernel_launch_size = max(
                 self.model.particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,

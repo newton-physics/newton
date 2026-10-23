@@ -45,9 +45,7 @@ devices = get_test_devices()
 _MIRRORED_BODY_WARNING = (
     r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\."
 )
-_PARTIAL_EQ_SOLREF_WARNING = (
-    r"Custom attribute 'mujoco:eq_solref' has 1 values but frequency 'mujoco:equality_constraint' expects 2\."
-)
+_PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ values but frequency"
 
 
 class TestImportUsdPhysics(unittest.TestCase):
@@ -669,7 +667,7 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         fake_coacd.run_coacd = run_coacd
 
-        with patch_sys_module("coacd", fake_coacd):
+        with patch_sys_module("coacd", fake_coacd), mock.patch.object(newton.config, "cache_dir_meshes", None):
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.05)
@@ -3207,6 +3205,110 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
             load_static_visual_shapes=True,
         )
         self.assertNotIn(gaussian.GetPath().pathString, result_no_visuals["path_shape_map"])
+
+    @staticmethod
+    def _define_gaussian_prim(stage, path, *, attribute_color_space=None):
+        """Define a one-splat Gaussian prim, optionally tagging the SH attribute's color space."""
+        from pxr import Sdf
+
+        prim = stage.DefinePrim(path, "ParticleField3DGaussianSplat")
+        prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+        sh = prim.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array)
+        sh.Set([(0.0, 0.0, 0.0)])
+        if attribute_color_space is not None:
+            sh.SetColorSpace(attribute_color_space)
+        return prim
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_sh_color_space_follows_usd_schema(self):
+        """Treat untagged and non-linear SH radiance as sRGB; keep scene-linear radiance linear."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        for name, token, expected in (
+            ("Untagged", None, newton.utils.ColorSpace.SRGB),
+            ("Display", "srgb_rec709_scene", newton.utils.ColorSpace.SRGB),
+            ("DisplayReferred", "srgb_rec709_display", newton.utils.ColorSpace.SRGB),
+            ("Linear", "lin_rec709_scene", newton.utils.ColorSpace.LINEAR),
+            ("Raw", "raw", newton.utils.ColorSpace.LINEAR),
+        ):
+            prim = self._define_gaussian_prim(stage, f"/World/{name}")
+            if token is not None:
+                Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set(token)
+            self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, expected)
+
+        # A color space authored on a parent prim is inherited by the splat prim.
+        parent = stage.DefinePrim("/Scene", "Xform")
+        Usd.ColorSpaceAPI.Apply(parent).CreateColorSpaceNameAttr().Set("lin_rec709_scene")
+        prim = self._define_gaussian_prim(stage, "/Scene/Inherited")
+        self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, newton.utils.ColorSpace.LINEAR)
+
+        prim = self._define_gaussian_prim(stage, "/World/AP1")
+        Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set("lin_ap1_scene")
+        with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
+            gaussian = newton.Gaussian.create_from_usd(prim)
+        self.assertEqual(gaussian.sh_color_space, newton.utils.ColorSpace.LINEAR)
+        self.assertIn("lin_ap1_scene", logs.output[0])
+        self.assertIn("/World/AP1", logs.output[0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_sh_color_space_allowlist(self):
+        """Map supported Rec.709 color-space names exactly and warn for every other name."""
+        from pxr import Usd
+
+        color_space = newton.utils.ColorSpace
+        supported = {
+            "srgb_rec709_scene": color_space.SRGB,
+            "srgb_rec709_display": color_space.SRGB,
+            "sRGB": color_space.SRGB,
+            "srgb_texture": color_space.SRGB,
+            "lin_rec709_scene": color_space.LINEAR,
+            "lin_rec709": color_space.LINEAR,
+            "lin_srgb": color_space.LINEAR,
+            "raw": color_space.LINEAR,
+            "data": color_space.LINEAR,
+            "identity": color_space.LINEAR,
+            "linear": color_space.LINEAR,
+        }
+        unsupported = {
+            "lin_ap1_scene": color_space.LINEAR,
+            "acescg": color_space.LINEAR,
+            "srgb_ap1_scene": color_space.SRGB,
+            "g22_rec709_scene": color_space.SRGB,
+        }
+
+        stage = Usd.Stage.CreateInMemory()
+
+        for token, expected in supported.items():
+            with self.subTest(token=token):
+                prim = self._define_gaussian_prim(stage, f"/World/{token}", attribute_color_space=token)
+                with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+                    gaussian = newton.Gaussian.create_from_usd(prim)
+                self.assertEqual(gaussian.sh_color_space, expected)
+
+        for token, expected in unsupported.items():
+            with self.subTest(token=token):
+                prim = self._define_gaussian_prim(stage, f"/World/{token}", attribute_color_space=token)
+                with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
+                    gaussian = newton.Gaussian.create_from_usd(prim)
+                self.assertEqual(gaussian.sh_color_space, expected)
+                self.assertIn(token, logs.output[0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_with_non_rec709_linear_radiance_does_not_abort_import(self):
+        """Import every splat of a stage whose root is tagged with a non-Rec.709 linear color space."""
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.Xform.Define(stage, "/World")
+        Usd.ColorSpaceAPI.Apply(stage.GetPrimAtPath("/World")).CreateColorSpaceNameAttr().Set("lin_ap1_scene")
+        for name in ("A", "B"):
+            self._define_gaussian_prim(stage, f"/World/{name}")
+
+        with self.assertLogs("newton._src.usd.utils", level="WARNING"):
+            result = newton.ModelBuilder().add_usd(stage, root_path="/World")
+        self.assertIn("/World/A", result["path_shape_map"])
+        self.assertIn("/World/B", result["path_shape_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_static_collider_has_no_collision_flags(self):
@@ -8448,13 +8550,11 @@ def Xform "Articulation" (
         self.assertEqual(builder.joint_coord_count, 14)
         with warnings.catch_warnings(record=True) as caught:
             # The body-to-world row intentionally omits solref to exercise the
-            # registered default. Keep all unrelated warnings under the ambient policy.
+            # registered default, which must not be reported as a missed row.
             warnings.filterwarnings("always", message=_PARTIAL_EQ_SOLREF_WARNING, category=UserWarning)
             model = builder.finalize()
 
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
-        self.assertRegex(str(caught[0].message), _PARTIAL_EQ_SOLREF_WARNING)
+        self.assertEqual(caught, [])
 
         self.assertNotIn("/World/EqualityConnect", result["path_joint_map"])
         self.assertNotIn("/World/EqualityConnectBodyToWorld", result["path_joint_map"])
@@ -8806,6 +8906,7 @@ def Xform "Articulation" (
             np.testing.assert_allclose(converted_row[6], legacy_row[6], atol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_joint_ordering_cycle_raises(self):
         """Reject invalid joint graphs and propagate topological sort errors."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -8884,14 +8985,9 @@ def Xform "Articulation" (
                 with self.subTest(articulated=articulated, enabled=enabled, ignore_paths=ignore_paths):
                     joint_x.CreateJointEnabledAttr().Set(enabled)
                     builder = newton.ModelBuilder()
-                    with warnings.catch_warnings():
-                        # usd-core 25.5 reports an articulation without enabled joints as invalid.
-                        warnings.filterwarnings(
-                            "ignore", "Invalid ArticulationDesc", category=newton.exceptions.NewtonWarning
-                        )
-                        result = builder.add_usd(
-                            stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
-                        )
+                    result = builder.add_usd(
+                        stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
+                    )
                     self.assertNotIn(str(joint_x.GetPath()), result["path_joint_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
