@@ -508,8 +508,8 @@ def _gather_mass_matrix_port_kernel(
 
 @wp.kernel
 def _scatter_port_kernel(
-    values: wp.array[wp.float32],  # one entry per element the view addresses
-    port: wp.indexedarray[wp.float32],  # view of a simulation-sized array
+    values: wp.array[Any],  # one entry per element the view addresses
+    port: wp.indexedarray(dtype=Any),  # view of a simulation-sized array
 ):
     dof = wp.tid()
     port[dof] = values[dof]

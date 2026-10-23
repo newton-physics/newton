@@ -21,6 +21,7 @@ subclass of :class:`ControllerBase`.
    :toctree: _generated
    :nosignatures:
 
+   ControllerAdmittance
    ControllerBase
    ControllerDifferentialIK
    ControllerDifferentialIKModelFree

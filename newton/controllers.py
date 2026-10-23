@@ -11,6 +11,7 @@ subclass of :class:`ControllerBase`.
 """
 
 from ._src.controllers import (
+    ControllerAdmittance,
     ControllerBase,
     ControllerDifferentialIK,
     ControllerDifferentialIKModelFree,
@@ -22,6 +23,7 @@ from ._src.controllers import (
 )
 
 __all__ = [
+    "ControllerAdmittance",
     "ControllerBase",
     "ControllerDifferentialIK",
     "ControllerDifferentialIKModelFree",
