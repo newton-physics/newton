@@ -910,7 +910,7 @@ def test_hetero_propagation_matches_isolated_worlds(test, device):
 
     def run(link_counts, free_box, response):
         model = _build_model(link_counts, device, 0.35, free_box)
-        # Run to run, the sweep's rounding can tip these chains onto a different contact outcome.
+        # Without a deterministic mode these chains can reach a different contact outcome from run to run.
         return _final_joint_q(model, response=response, from_fk=True, deterministic=True)
 
     for response in ("propagation", "propagation_colored"):
