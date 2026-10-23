@@ -425,11 +425,12 @@ class MeshGL:
                 pass
             self.texture_id = None
 
-        self._texture_source = texture
+        self._texture_source = None
         texture_id = _upload_texture_from_file(gl, texture_image)
         if not texture_id:
             return
         self.texture_id = texture_id
+        self._texture_source = texture
 
     def render(self):
         if not self.hidden:

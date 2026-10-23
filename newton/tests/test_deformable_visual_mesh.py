@@ -1420,6 +1420,23 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                             pixel = center_pixel(state)
                             self.assertGreater(pixel.min(), 30, "Sample the mesh, not the background")
                             self.assertLessEqual(np.ptp(pixel), 5, "Do not tint a neutral texture brown")
+
+                    mesh.texture = source
+                    with (
+                        mock.patch.object(
+                            RendererGL.gl, "glTexImage2D", side_effect=RuntimeError("injected upload failure")
+                        ),
+                        self.assertRaisesRegex(RuntimeError, "injected upload failure"),
+                    ):
+                        viewer.log_state(state)
+                    with mock.patch.object(RendererGL.gl, "glTexImage2D", wraps=RendererGL.gl.glTexImage2D) as upload:
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 1, "Retry the same texture after a failed upload")
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 1, "Reuse the successful retry")
+                    restored = center_pixel(state)
+                    self.assertGreater(restored[0], max(restored[1:]) + 30, "Render the recovered red texture")
+
                     mesh.texture = None
                     np.testing.assert_allclose(center_pixel(state), untextured, atol=2)
 
