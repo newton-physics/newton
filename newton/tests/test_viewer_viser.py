@@ -20,6 +20,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.types import SH_C0
 from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_basic_pendulum import Example as PendulumExample
 from newton.exceptions import NewtonWarning
@@ -103,6 +104,23 @@ class TestViewerViserInteraction(unittest.TestCase):
         model.shape_color.assign(np.tile((0.8, 0.2, 0.1), (model.shape_count, 1)))
         self.viewer.set_model(model)
         return model
+
+    def test_gaussian_colors_follow_sh_color_space(self):
+        """Display linear Gaussian radiance sRGB-encoded and sRGB radiance as is, clamped to [0, 1], from the DC term."""
+        # Radiance of (0.2, 10.0, -10.0) per channel: in range, above range and below range.
+        dc = (np.array([[0.2, 10.0, -10.0]], dtype=np.float32) - 0.5) / SH_C0
+        # Higher-order coefficients must not affect the displayed color.
+        sh = np.concatenate([dc, np.full((1, 6), 5.0, dtype=np.float32)], axis=1)
+        for color_space, expected in (
+            (newton.utils.ColorSpace.SRGB, [0.2, 1.0, 0.0]),
+            (newton.utils.ColorSpace.LINEAR, [newton.utils.color_linear_to_srgb([0.2] * 3)[0], 1.0, 0.0]),
+        ):
+            gaussian = newton.Gaussian(
+                positions=np.zeros((1, 3), dtype=np.float32), sh_coeffs=sh, sh_color_space=color_space
+            )
+            with mock.patch.object(self.viewer._server.scene, "add_gaussian_splats") as add_splats:
+                self.viewer.log_gaussian(f"/gaussian_{int(color_space)}", gaussian)
+            np.testing.assert_allclose(add_splats.call_args.kwargs["rgbs"], [expected], atol=1e-5)
 
     def test_hidden_shapes_preserve_colors(self):
         """Restore colored rigid geometry after toggling visual and collision layers."""
