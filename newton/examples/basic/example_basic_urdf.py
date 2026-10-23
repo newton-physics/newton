@@ -1,19 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic URDF
-#
-# Shows how to set up a simulation of a rigid-body quadruped articulation
-# from a URDF using the newton.ModelBuilder().
-# Note this example does not include a trained policy.
-#
-# Users can pick bodies by right-clicking and dragging with the mouse.
-#
-# Command: python -m newton.examples basic_urdf
-# Kamino DVI: python -m newton.examples basic_urdf --solver kamino
-#
-###########################################################################
+"""Example Basic URDF
+
+Shows how to set up a simulation of a rigid-body quadruped articulation
+from a URDF using the newton.ModelBuilder().
+Note this example does not include a trained policy.
+
+Users can pick bodies by right-clicking and dragging with the mouse.
+"""
 
 import numpy as np
 import warp as wp
@@ -220,6 +215,16 @@ class Example:
             help="Solver type: xpbd (default), vbd, or kamino",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Quadrupeds drop onto the plane and remain supported on their four legs.",
+        "The resting robots stay stable without sustained jitter or falling through the ground.",
+    ),
+    "runs": ({"args": ("--world-count", "16"), "success_criteria": ("Sixteen quadrupeds appear.",)},),
+}
 
 
 if __name__ == "__main__":

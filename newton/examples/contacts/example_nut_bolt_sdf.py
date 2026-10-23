@@ -1,15 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example SDF Mesh Collision
-#
-# Demonstrates nut/bolt mesh collision using SDF (Signed Distance Field).
-#
-# Command: python -m newton.examples nut_bolt_sdf
-#          python -m newton.examples nut_bolt_sdf --solver kamino
-#
-###########################################################################
+"""Example SDF Mesh Collision
+
+Demonstrates nut/bolt mesh collision using SDF (Signed Distance Field).
+"""
 
 import tempfile
 from pathlib import Path
@@ -408,6 +403,20 @@ class Example:
         )
         parser.add_argument("--num-per-world", type=int, default=1, help="Number of assemblies per world.")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four nut-and-bolt assemblies appear.",
+        "The nuts rotate and descend along the threads toward the ends of the bolts.",
+        "Both solver variants show the same qualitative thread-engagement outcome; exact trajectories need not match.",
+    ),
+    "runs": (
+        {"args": ("--world-count", "4", "--solver", "xpbd"), "success_criteria": ()},
+        {"args": ("--world-count", "4", "--solver", "mujoco"), "success_criteria": ()},
+    ),
+}
 
 
 if __name__ == "__main__":

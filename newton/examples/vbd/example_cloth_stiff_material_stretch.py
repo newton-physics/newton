@@ -1,29 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Sim Cloth Stiff Material Stretch
-#
-# Five cloth sheets pinned at their +/- X edges and stretched along X by a
-# fixed factor. Each sheet uses a different effective Poisson ratio (set
-# via the ratio of `tri_ka` to `tri_ke`, which map to the Lamé parameters
-# of the stable Neo-Hookean membrane). At equilibrium, the orthogonal
-# direction contracts and the area ratio matches the closed-form
-# prediction for the StableNH 2D membrane:
-#
-#     A(lambda) / A_0 = (lmbd_nh + mu) * lambda^2
-#                       ---------------------------------
-#                          mu + lmbd_nh * lambda^2
-#
-# where mu = tri_ke, lmbd_nh = tri_ka + tri_ke, and Poisson ratio
-# nu = tri_ka / (tri_ka + 2 * tri_ke).
-#
-# The example validates the Neo-Hookean membrane against the StableNH
-# closed-form prediction.
-#
-# Command: python -m newton.examples cloth_stiff_material_stretch
-#
-###########################################################################
+"""Example Sim Cloth Stiff Material Stretch
+
+Five cloth sheets pinned at their +/- X edges and stretched along X by a
+fixed factor. Each sheet uses a different effective Poisson ratio (set
+via the ratio of `tri_ka` to `tri_ke`, which map to the Lamé parameters
+of the stable Neo-Hookean membrane). At equilibrium, the orthogonal
+direction contracts and the area ratio matches the closed-form
+prediction for the StableNH 2D membrane:
+
+    A(lambda) / A_0 = (lmbd_nh + mu) * lambda^2
+                      ---------------------------------
+                         mu + lmbd_nh * lambda^2
+
+where mu = tri_ke, lmbd_nh = tri_ka + tri_ke, and Poisson ratio
+nu = tri_ka / (tri_ka + 2 * tri_ke).
+
+The example validates the Neo-Hookean membrane against the StableNH
+closed-form prediction.
+"""
 
 import numpy as np
 import warp as wp
@@ -250,6 +246,18 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "5 blue-and-white checkerboard sheets are oriented so that they are parallel to the ground plane.",
+        "Each material is stretched so that it elongates towards the camera.",
+        "The materials oscillate as they are stretched.",
+        "The oscillations are damped and the materials quickly find a rest pose at the maximum stretch.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

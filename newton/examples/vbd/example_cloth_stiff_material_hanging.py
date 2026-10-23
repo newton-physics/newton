@@ -1,15 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Sim Cloth Stiff Material Hanging
-#
-# This simulation loads the `square_cloth.usd` asset and hangs it from one
-# edge under gravity, using the VBD solver with stiff material parameters.
-#
-# Command: python -m newton.examples cloth_stiff_material_hanging
-#
-###########################################################################
+"""Example Sim Cloth Stiff Material Hanging
+
+This simulation loads the `square_cloth.usd` asset and hangs it from one
+edge under gravity, using the VBD solver with stiff material parameters.
+"""
 
 import os
 
@@ -156,6 +152,18 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A curtain begins oriented on the x/y plane (assuming gravity is along z).",
+        "The curtain is pinned to the world along one side.",
+        "The curtain falls under gravity and oscillates around its rest pose.",
+        "The curtain loses energy and approaches its rest pose.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

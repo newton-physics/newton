@@ -1,48 +1,40 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Bend/Twist Analytic Validation
-#
-# This is a visual and numerical comparison against two exact discrete
-# boundary-value solutions:
-#
-#   Bend rows:
-#       Root and tip are kinematic. The tip is placed on a constant-curvature
-#       discrete arc and rotated by the target bend angle. With identical bend
-#       springs and no external load, the analytic minimum-energy solution is
-#       uniform bend:
-#
-#           theta_i = i / (N - 1) * theta_tip
-#
-#       The numerical test compares against that analytic centerline. The
-#       viewer overlays simulated and analytic centerlines so bend agreement is
-#       visible without enabling joint-frame axes by default.
-#
-#   Twist rows:
-#       Root and tip are kinematic at their straight positions. The tip is
-#       twisted about the cable axis. With identical twist springs and no bend
-#       load, the analytic solution is uniform twist:
-#
-#           theta_i = i / (N - 1) * theta_tip
-#
-#       The numerical test compares against that analytic twist distribution.
-#       The viewer overlays simulated and analytic material-frame spokes so
-#       twist agreement is visible without enabling joint-frame axes by default.
-#
-# These rows are direct analytic checks for "bend does not create twist" and
-# "twist does not create bend" without relying on a continuum EI calibration.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_bend_twist_analytic
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_bend_twist_analytic --test --viewer null
-#
-# Verification/report modes:
-#   --cable-analytic-mode {all,bend,twist,twist_max}   (default: all)
-#
-###########################################################################
+"""Cable Bend/Twist Analytic Validation
+
+This is a visual and numerical comparison against two exact discrete
+boundary-value solutions:
+
+  Bend rows:
+      Root and tip are kinematic. The tip is placed on a constant-curvature
+      discrete arc and rotated by the target bend angle. With identical bend
+      springs and no external load, the analytic minimum-energy solution is
+      uniform bend:
+
+          theta_i = i / (N - 1) * theta_tip
+
+      The numerical test compares against that analytic centerline. The
+      viewer overlays simulated and analytic centerlines so bend agreement is
+      visible without enabling joint-frame axes by default.
+
+  Twist rows:
+      Root and tip are kinematic at their straight positions. The tip is
+      twisted about the cable axis. With identical twist springs and no bend
+      load, the analytic solution is uniform twist:
+
+          theta_i = i / (N - 1) * theta_tip
+
+      The numerical test compares against that analytic twist distribution.
+      The viewer overlays simulated and analytic material-frame spokes so
+      twist agreement is visible without enabling joint-frame axes by default.
+
+These rows are direct analytic checks for "bend does not create twist" and
+"twist does not create bend" without relying on a continuum EI calibration.
+
+Verification/report modes:
+  --cable-analytic-mode {all,bend,twist,twist_max}   (default: all)
+"""
 
 import math
 
@@ -528,6 +520,46 @@ class Example:
             assert max(twist_tip_errors) < math.radians(0.02), f"twist tip errors too high: {twist_tip_errors}"
             assert max(twist_linear_errors) < math.radians(0.02), f"twist linear errors too high: {twist_linear_errors}"
             assert max(twist_transverse) < 1.0e-5, f"pure twist created transverse motion: {twist_transverse}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Kinematic endpoints follow the prescribed bend or twist targets.",
+        "After the ramp and hold, simulated overlays closely match the analytic reference for each displayed row.",
+    ),
+    "runs": (
+        {
+            "args": (),
+            "success_criteria": (
+                "Both bend and twist rows are displayed.",
+                "Bend rows follow constant-curvature centerlines without unwanted twist.",
+                "Twist rows distribute twist uniformly without visible bending.",
+            ),
+        },
+        {
+            "args": ("--cable-analytic-mode", "bend"),
+            "success_criteria": (
+                "Only bend rows are displayed.",
+                "Bend rows follow constant-curvature centerlines without unwanted twist.",
+            ),
+        },
+        {
+            "args": ("--cable-analytic-mode", "twist"),
+            "success_criteria": (
+                "Only twist rows are displayed.",
+                "Twist rows distribute twist uniformly without visible bending.",
+            ),
+        },
+        {
+            "args": ("--cable-analytic-mode", "twist_max"),
+            "success_criteria": (
+                "The maximum-twist reference row is displayed.",
+                "Twist rows distribute twist uniformly without visible bending.",
+            ),
+        },
+    ),
+}
 
 
 if __name__ == "__main__":

@@ -1,33 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Tendon Capstan Friction
-#
-# Three side-by-side asymmetric Atwood machines with
-# different capstan friction coefficients on the pulley:
-#
-#   Left:   mu = 0.0   (frictionless)
-#   Center: mu = 0.40  (subcritical — visible partial grip)
-#   Right:  mu = 10.0  (no-slip)
-#
-# Each pulley is a dynamic body on a hinge joint, free to rotate about Y.
-# The Euler-Eytelwein capstan equation bounds the tension ratio across
-# a frictional contact: T_tight / T_slack <= exp(mu * theta).
-#
-# For dynamic pulleys with mu>0 the cable grips the pulley (stick mode).
-# The XPBD constraint solver couples the pulley's rotational inertia
-# I/R^2 to the system through the shared body.  The capstan bound
-# activates only when the required tension ratio exceeds exp(mu*theta).
-# The pulleys use explicit high inertia and the vertically constrained
-# weights keep a fixed orientation and remain on their respective sides.
-# With dynamic pulleys, low finite friction spins the pulley only partially.
-# The red tab on each pulley marks rim rotation; the frictionless pulley
-# should translate the cable without spinning.
-#
-# Command: python -m newton.examples tendon_capstan_friction
-#
-###########################################################################
+"""Example Tendon Capstan Friction
+
+Three side-by-side asymmetric Atwood machines with
+different capstan friction coefficients on the pulley:
+
+  Left:   mu = 0.0   (frictionless)
+  Center: mu = 0.40  (subcritical — visible partial grip)
+  Right:  mu = 10.0  (no-slip)
+
+Each pulley is a dynamic body on a hinge joint, free to rotate about Y.
+The Euler-Eytelwein capstan equation bounds the tension ratio across
+a frictional contact: T_tight / T_slack <= exp(mu * theta).
+
+For dynamic pulleys with mu>0 the cable grips the pulley (stick mode).
+The XPBD constraint solver couples the pulley's rotational inertia
+I/R^2 to the system through the shared body.  The capstan bound
+activates only when the required tension ratio exceeds exp(mu*theta).
+The pulleys use explicit high inertia and the vertically constrained
+weights keep a fixed orientation and remain on their respective sides.
+With dynamic pulleys, low finite friction spins the pulley only partially.
+The red tab on each pulley marks rim rotation; the frictionless pulley
+should translate the cable without spinning.
+"""
 
 import numpy as np
 import warp as wp
@@ -356,6 +352,21 @@ class Example:
                 width=0.008,
             )
             self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Three side-by-side pulley systems compare friction coefficients of 0.0, 0.40, and 10.0 from left to right.",
+        "The heavier weights descend and the lighter weights rise along their vertical tracks, "
+        "remaining on their respective sides.",
+        "Before payload contact, the frictionless pulley stays nearly stationary, the middle pulley "
+        "rotates partially, and the high-friction pulley rotates more than the middle one.",
+        "Red rim markers make the different pulley rotations visible; the cable routes remain "
+        "bounded without abrupt weight jumps.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

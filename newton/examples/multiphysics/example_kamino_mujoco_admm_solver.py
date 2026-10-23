@@ -1,17 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Kamino-MuJoCo ADMM Coupled Solver
-#
-# A closed four-bar linkage is split across two rigid solvers: two links are
-# owned by Kamino and two links are owned by MuJoCo. SolverCoupledADMM detects
-# the model revolute joints that connect bodies owned by different solvers and
-# turns them into ADMM attachments.
-#
-# Command: python -m newton.examples kamino_mujoco_admm_solver
-#
-###########################################################################
+"""Example Kamino-MuJoCo ADMM Coupled Solver
+
+A closed four-bar linkage is split across two rigid solvers: two links are
+owned by Kamino and two links are owned by MuJoCo. SolverCoupledADMM detects
+the model revolute joints that connect bodies owned by different solvers and
+turns them into ADMM attachments.
+"""
 
 from __future__ import annotations
 
@@ -385,6 +381,21 @@ class Example:
             help="Disable graph capture.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A closed four-bar linkage appears.",
+        "The scene is replicated across multiple worlds by default.",
+        "Two links are owned by Kamino and two links are owned by MuJoCo.",
+        "ADMM attachments keep the cross-solver revolute joints connected.",
+        "The linkage should remain assembled without excessive joint drift. It's expected that "
+        "the colored bars fall through the grey one.",
+        "The simulation should run without contact truncation warnings.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

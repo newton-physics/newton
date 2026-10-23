@@ -1,15 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Balance Bird
-#
-# Balances a small procedural toy body on a narrow pedestal. The body is
-# built from primitive shapes so the example has no external mesh asset.
-#
-# Command: python -m newton.examples balance_bird
-#
-###########################################################################
+"""Example Balance Bird
+
+Balances a small procedural toy body on a narrow pedestal. The body is
+built from primitive shapes so the example has no external mesh asset.
+"""
 
 from __future__ import annotations
 
@@ -214,6 +210,16 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument("--solver", default="xpbd", choices=SOLVER_CHOICES, help="Solver used for the balance toy.")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The bird remains balanced upright on the pedestal in the undisturbed run.",
+        "The body does not drift off its support or fall through the pedestal.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

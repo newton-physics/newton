@@ -1,22 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Twist
-#
-# Demonstrates twist propagation along cables with dynamic spinning.
-# Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
-# The first segment of each cable continuously spins, propagating twist along the cable.
-# The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
-# is transported through rod joints and across bends.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_twist
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_twist --test --viewer null
-#
-###########################################################################
+"""Example Cable Twist
+
+Demonstrates twist propagation along cables with dynamic spinning.
+Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
+The first segment of each cable continuously spins, propagating twist along the cable.
+The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
+is transported through rod joints and across bends.
+"""
 
 import numpy as np
 import warp as wp
@@ -325,6 +317,17 @@ class Example:
             ground_tolerance = 0.5  # Larger tolerance for zigzag cables with dynamic spinning
             min_z = np.min(body_positions[:, 2])  # Z positions (Newton uses Z-up)
             assert min_z > -ground_tolerance, f"Cable penetrated ground too much: min_z = {min_z:.3f}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Three cables of different angular stiffness twist continuously along their zigzag paths.",
+        "In the initial camera view, motion is larger toward the right-hand cable.",
+        "The segments remain connected without explosive motion or excessive ground penetration.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

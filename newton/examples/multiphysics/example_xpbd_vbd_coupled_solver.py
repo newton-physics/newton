@@ -1,24 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example XPBD-VBD Coupled Solver
-#
-# A VBD cloth patch pushes into an XPBD particle bed through SolverCoupledProxy's
-# proxy-particle path. XPBD resolves particle-particle contact against the VBD
-# proxy particles, and the harvested proxy impulse is applied back to the VBD
-# particles on the next coupled step.
-#
-# Pass ``--solver xpbd`` to run a monolithic XPBD reference, or``--solver vbd``
-# to run the same scene with VBD only.
-# Those baselines are provided for comparison purposes, it is expected that the
-# behavior will differ as they support different features and/or parameters.
-#
-# Command: python -m newton.examples xpbd_vbd_coupled_solver
-#          python -m newton.examples xpbd_vbd_coupled_solver --solver xpbd
-#          python -m newton.examples xpbd_vbd_coupled_solver --solver vbd
-#
-###########################################################################
+"""Example XPBD-VBD Coupled Solver
+
+An XPBD particle bed drops onto a pinned VBD cloth patch through SolverCoupledProxy's
+proxy-particle path. XPBD resolves particle-particle contact against the VBD
+proxy particles, and the harvested proxy impulse is applied back to the VBD
+particles on the next coupled step.
+
+Pass ``--solver xpbd`` to run a monolithic XPBD reference, or``--solver vbd``
+to run the same scene with VBD only.
+Those baselines are provided for comparison purposes, it is expected that the
+behavior will differ as they support different features and/or parameters.
+"""
 
 from __future__ import annotations
 
@@ -285,6 +279,30 @@ class Example:
             default=8,
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A cloth patch and particle bed appear in the scene.",
+        "The cloth and particles remain bounded above the ground without escaping upward.",
+    ),
+    "runs": (
+        {
+            "args": (),
+            "success_criteria": (
+                "The XPBD particle bed lands on and deforms the pinned VBD cloth; cloth contact reactions support the bed.",
+            ),
+        },
+        {"args": ("--solver", "xpbd"), "success_criteria": ("The scene runs as a monolithic XPBD reference.",)},
+        {
+            "args": ("--solver", "vbd"),
+            "success_criteria": (
+                "The scene runs as a monolithic VBD reference; record particle pass-through separately for review.",
+            ),
+        },
+    ),
+}
 
 
 if __name__ == "__main__":

@@ -1,19 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Tendon MuJoCo Switch
-#
-# Active-set tendon routing with one optional wrap candidate.  A tendon is
-# anchored to the end of a rotating top capsule.  When the capsule swings left,
-# the straight lower-guide-to-endpoint span reaches the middle capstan from the
-# inactive side selected by its orientation, the solver activates that rolling
-# guide.  When the capsule swings right, the solver skips the middle capstan and
-# the tendon wraps only around the lower guide.
-#
-# Command: python -m newton.examples tendon_mujoco_switch
-#
-###########################################################################
+"""Example Tendon MuJoCo Switch
+
+Active-set tendon routing with one optional wrap candidate.  A tendon is
+anchored to the end of a rotating top capsule.  When the capsule swings left,
+the straight lower-guide-to-endpoint span reaches the middle capstan from the
+inactive side selected by its orientation, the solver activates that rolling
+guide.  When the capsule swings right, the solver skips the middle capstan and
+the tendon wraps only around the lower guide.
+"""
 
 from __future__ import annotations
 
@@ -466,6 +462,19 @@ def _tangent_point_circle_np(p, center, radius, plane_normal, orientation):
     phi = math.asin(min(radius / dist, 1.0))
     angle = -0.5 * math.pi - phi if orientation > 0 else 0.5 * math.pi + phi
     return center + radius * (math.cos(angle) * u + math.sin(angle) * v)
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The top capsule sweeps left and right while the tendon remains routed around the lower guide.",
+        "The middle wrap candidate activates during the leftward part of the cycle and is skipped "
+        "during the rightward part.",
+        "The diagnostic marker is green when the middle guide is active and gray when it is "
+        "inactive, matching the visible cable route.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

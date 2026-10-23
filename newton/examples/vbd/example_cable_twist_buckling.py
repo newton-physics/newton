@@ -1,29 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Twist Buckling Link Verification
-#
-# Fixed-span dynamic VBD cable example:
-#
-#   1. build a straight cable with both tips fixed from the start
-#   2. let it settle briefly
-#   3. twist only the tip capsule about its local cable tangent
-#   4. hold the final twist as the centerline buckles into a helical crown
-#
-# There is no shortening ramp and no initial U-shaped/slack geometry. With a
-# sufficiently large gradual twist, the straight cable can still develop a
-# crown-like centerline wave. The test checks that the open-curve link quantity,
-# Lk = Tw + Wr, remains close to the commanded endpoint twist while self-contact
-# prevents strand passage.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_twist_buckling
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_twist_buckling --test --viewer null
-#
-###########################################################################
+"""Cable Twist Buckling Link Verification
+
+Fixed-span dynamic VBD cable example:
+
+  1. build a straight cable with both tips fixed from the start
+  2. let it settle briefly
+  3. twist only the tip capsule about its local cable tangent
+  4. hold the final twist as the centerline buckles into a helical crown
+
+There is no shortening ramp and no initial U-shaped/slack geometry. With a
+sufficiently large gradual twist, the straight cable can still develop a
+crown-like centerline wave. The test checks that the open-curve link quantity,
+Lk = Tw + Wr, remains close to the commanded endpoint twist while self-contact
+prevents strand passage.
+"""
 
 import math
 
@@ -573,6 +565,19 @@ class Example:
         assert link["min_nonlocal_distance_diameters"] > self.MIN_SELF_DISTANCE_DIAMETERS, (
             f"cable self-distance is too small for a link-conservation test: {link}"
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Both endpoints stay fixed in position as the tip twists about the cable tangent after "
+        "an initial settling period.",
+        "The initially straight cable develops a visible helical crown without a shortening ramp.",
+        "Twist transfers along the cable without abrupt material-frame jumps or excessive segment stretching.",
+        "Self-contact prevents strand passage; inspect the final held crown from multiple views.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

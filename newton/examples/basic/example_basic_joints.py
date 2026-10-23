@@ -1,17 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Joints
-#
-# Shows how to use the ModelBuilder API to programmatically create different
-# joint types: BALL, DISTANCE, PRISMATIC, and REVOLUTE.
-#
-# Command: python -m newton.examples basic_joints --solver xpbd
-#          python -m newton.examples basic_joints --solver vbd
-#          python -m newton.examples basic_joints --solver kamino
-#
-###########################################################################
+"""Example Basic Joints
+
+Shows how to use the ModelBuilder API to programmatically create different
+joint types: BALL, DISTANCE, PRISMATIC, and REVOLUTE.
+"""
 
 import warp as wp
 
@@ -341,6 +335,19 @@ class Example:
         if self.contacts is not None:
             self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Three two-link systems appear: a revolute pendulum on the left, a prismatic slider in "
+        "the middle, and a ball joint on the right.",
+        "The revolute pendulum swings; the prismatic body initially slides downward along its constrained axis.",
+        "Right-drag the hanging bodies: the revolute joint stays in its plane, the slider "
+        "follows its axis, and the ball joint permits rotation about all three axes.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

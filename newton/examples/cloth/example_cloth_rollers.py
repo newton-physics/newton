@@ -1,13 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cloth Rollers
-#
-# A rolled cloth mesh that unrolls as the inner seam rotates.
-# Command: uv run -m newton.examples cloth_rollers
-#
-###########################################################################
+"""Cloth Rollers
+
+A rolled cloth mesh that unrolls as the inner seam rotates.
+"""
 
 import math
 
@@ -536,6 +533,17 @@ class Example:
         # Ensure bbox hasn't exploded
         bbox_size = np.linalg.norm(np.max(cloth_q, axis=0) - np.min(cloth_q, axis=0))
         assert bbox_size < 150.0, f"Bbox exploded: size={bbox_size:.2f}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "One roller initially carries the cloth while the other is empty.",
+        "Rotation transfers cloth from the full roller to the empty one without visible "
+        "tearing, explosive stretching, or persistent interpenetration.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

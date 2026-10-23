@@ -1,22 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Bundle Hysteresis
-#
-# Demonstrates Dahl friction model for cable bending hysteresis.
-# Creates a bundle of 7 cables passing through moving obstacles that
-# apply cyclic loading (load -> hold -> release). The Dahl model captures
-# plastic deformation and hysteresis loops in cable bending behavior,
-# showing realistic memory effects in cable dynamics.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis --test --viewer null
-#
-###########################################################################
+"""Example Cable Bundle Hysteresis
+
+Demonstrates Dahl friction model for cable bending hysteresis.
+Creates a bundle of 7 cables passing through moving obstacles that
+apply cyclic loading (load -> hold -> release). The Dahl model captures
+plastic deformation and hysteresis loops in cable bending behavior,
+showing realistic memory effects in cable dynamics.
+"""
 
 import numpy as np
 import warp as wp
@@ -444,6 +436,28 @@ class Example:
         parser.add_argument("--eps-max", type=float, default=2.0, help="Maximum plastic strain [rad]")
         parser.add_argument("--tau", type=float, default=0.1, help="Memory decay length [rad]")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Seven cables are bent by four vertical capsules into an S pattern.",
+        "After the capsules disappear, the cables settle without exploding.",
+    ),
+    "runs": (
+        {"args": ("--no-dahl",), "success_criteria": ("The cables are mostly straight.",)},
+        {"args": (), "success_criteria": ("The cables keep a clear S shape.",)},
+        {
+            "args": ("--segments", "15"),
+            "success_criteria": ("The cables have a more irregular S shape with visibly coarser segmentation.",),
+        },
+        {
+            "args": ("--eps-max", "0.3"),
+            "success_criteria": ("The cables retain a less-pronounced S shape than the default run.",),
+        },
+        {"args": ("--tau", "10.0"), "success_criteria": ("The cables become mostly straight.",)},
+    ),
+}
 
 
 if __name__ == "__main__":

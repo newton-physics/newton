@@ -1,17 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Tendon Pulley
-#
-# Simplest tendon demonstration: a fixed anchor point with a cable
-# attached to a hanging weight.  The tendon acts as a unilateral
-# distance constraint — the weight swings freely under gravity like
-# a pendulum on a string.
-#
-# Command: python -m newton.examples tendon_pulley
-#
-###########################################################################
+"""Example Tendon Pulley
+
+Simplest tendon demonstration: a fixed anchor point with a cable
+attached to a hanging weight.  The tendon acts as a unilateral
+distance constraint — the weight swings freely under gravity like
+a pendulum on a string.
+"""
 
 import numpy as np
 import warp as wp
@@ -148,6 +144,17 @@ class Example:
             ends = wp.array(att_r, dtype=wp.vec3)
             self.viewer.log_lines("cable", starts, ends, colors=(0.9, 0.2, 0.2), width=0.008)
             self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A box-shaped weight hangs from a fixed anchor and swings under gravity like a pendulum on a string.",
+        "The tendon limits the weight's distance from the anchor while allowing it to swing freely, "
+        "without explosive stretching or disconnection.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

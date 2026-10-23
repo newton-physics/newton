@@ -1,15 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Selection Multiple Articulations
-#
-# Shows how to control multiple articulation per world in a single ArticulationView.
-#
-# Command: python -m newton.examples selection_multiple
-#          python -m newton.examples selection_multiple --solver kamino
-#
-###########################################################################
+"""Example Selection Multiple Articulations
+
+Shows how to control multiple articulation per world in a single ArticulationView.
+"""
 
 from __future__ import annotations
 
@@ -295,6 +290,18 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=16)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "8 identical setups appear consisting of a floating stack of 3 Ants.",
+        "The ants are rotating around the Z axis at different speeds and drop on the ground plane.",
+        "They are then reset to their initial position.",
+        "All setups behave differently and their behavior differs at every reset.",
+    ),
+    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -1,14 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example MPM ANYmal
-#
-# Shows ANYmal C with a pretrained policy coupled with implicit MPM sand.
-#
-# Example usage (via unified runner):
-#   python -m newton.examples mpm_anymal --viewer gl
-###########################################################################
+"""Example MPM ANYmal
+
+Shows ANYmal C with a pretrained policy coupled with implicit MPM sand.
+"""
 
 import sys
 
@@ -347,6 +343,16 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, de
         jitter=2.0 * radius,
         radius_mean=radius,
     )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An Anymal robot is walking on a ground covered by particles.",
+        "The particles are reacting realistically to the movement of the robot.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

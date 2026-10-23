@@ -1,32 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Twist Transfer Validation
-#
-# Routed twist-transfer/localization verification for three cables held between
-# fixed endpoints:
-#
-#   1. straight reference
-#   2. V-shaped kink
-#   3. semicircular arc
-#
-# The root body is twisted about its local cable tangent while the tip body is
-# held at its rest orientation. The scene checks that twist propagates through
-# smooth paths, localizes before a sharp kink, and does not create large
-# centerline drift.
-#
-# The acceptance criteria check Newton's VBD bend/twist split directly: twist
-# should remain a tangent-axis mode and should transfer across routed cable
-# geometry.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_twist_transfer
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_twist_transfer --test --viewer null
-#
-###########################################################################
+"""Cable Twist Transfer Validation
+
+Routed twist-transfer/localization verification for three cables held between
+fixed endpoints:
+
+  1. straight reference
+  2. V-shaped kink
+  3. semicircular arc
+
+The root body is twisted about its local cable tangent while the tip body is
+held at its rest orientation. The scene checks that twist propagates through
+smooth paths, localizes before a sharp kink, and does not create large
+centerline drift.
+
+The acceptance criteria check Newton's VBD bend/twist split directly: twist
+should remain a tangent-axis mode and should transfer across routed cable
+geometry.
+"""
 
 import math
 
@@ -387,6 +379,17 @@ class Example:
             f"semicircle twist did not transfer around the curve: {twist_metrics}"
         )
         assert max(centerline_drifts) < 0.08, f"centerline drift too large: {centerline_drifts}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Straight, V-kink, and semicircular cables are held between fixed endpoints while the root twists.",
+        "Twist propagates along the straight and smoothly curved paths, while it concentrates before the sharp V kink.",
+        "The held tip keeps its rest orientation and the centerlines do not undergo large drift.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

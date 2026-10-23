@@ -1,16 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example MPM 2-Way Coupling
-#
-# A simple scene spawning a dozen rigid shapes above a plane. The shapes
-# fall and collide using the MuJoCo solver. Demonstrates basic builder APIs
-# and the standard example structure.
-#
-# Command: python -m newton.examples mpm_twoway_coupling
-#
-###########################################################################
+"""Example MPM 2-Way Coupling
+
+A simple scene spawning a dozen rigid shapes above a plane. The shapes
+fall and collide using the MuJoCo solver. Demonstrates basic builder APIs
+and the standard example structure.
+"""
 
 from __future__ import annotations
 
@@ -378,6 +374,17 @@ class Example:
             radius_mean=radius,
             custom_attributes={"mpm:friction": 0.75},
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A vertical stack of 6 boxes is falling on a pile of particles.",
+        "The particles are acting on the boxes such that they do not completely sink.",
+        "The boxes are acting on the particles such that they are displaced by the boxes.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

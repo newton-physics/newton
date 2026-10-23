@@ -1,38 +1,35 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Controllers — Differential IK
-#
-# Demonstrates ControllerDifferentialIK on four real, heterogeneous robots at
-# once -- a 7-DOF Franka Panda arm tasking the full 6D pose (redundant by 1
-# DOF), a 6-DOF UR10 arm tasking position only (redundant by 3 DOFs), a 4-DOF
-# planar arm restricted to a 3D task (X, Y, yaw) via axis_weight (redundant
-# by 1 DOF), and a 5-DOF elbow-type arm that softly tracks roll and pitch but
-# leaves every rotation axis unprotected by its own null space (see
-# null_space_axes below) -- each independently tracking its own draggable
-# gizmo target. One
-# controller call handles all four, each robot resolved through its own tool
-# site and Jacobian.
-#
-# Kinematics only: the controller's joint targets are applied directly to
-# the sim state each frame (no physics solver), keeping the demo focused on
-# the IK itself.
-#
-# Every robot here is redundant against its own task, so null-space posture
-# control continuously pulls each toward its own ready pose, so none of them
-# drifts toward a bad internal configuration with nothing to anchor it.
-#
-# Each robot's gizmo only exposes the axes its own axis_weight keeps active
-# -- via log_gizmo's own translate/rotate axis selection -- so the widget
-# itself can't suggest a motion the controller would ignore.
-#
-# --ik-method picks the inverse-Jacobian solve (dls, pinv, transpose,
-# adaptive_damping, truncated_svd) -- see the create_controller_from_*_method
-# functions below, one per DifferentialIKMethod.
-#
-# Command: python -m newton.examples controller_differential_ik --ik-method adaptive_damping
-###########################################################################
+"""Example Controllers — Differential IK
+
+Demonstrates ControllerDifferentialIK on four real, heterogeneous robots at
+once -- a 7-DOF Franka Panda arm tasking the full 6D pose (redundant by 1
+DOF), a 6-DOF UR10 arm tasking position only (redundant by 3 DOFs), a 4-DOF
+planar arm restricted to a 3D task (X, Y, yaw) via axis_weight (redundant
+by 1 DOF), and a 5-DOF elbow-type arm that softly tracks roll and pitch but
+leaves every rotation axis unprotected by its own null space (see
+null_space_axes below) -- each independently tracking its own draggable
+gizmo target. One
+controller call handles all four, each robot resolved through its own tool
+site and Jacobian.
+
+Kinematics only: the controller's joint targets are applied directly to
+the sim state each frame (no physics solver), keeping the demo focused on
+the IK itself.
+
+Every robot here is redundant against its own task, so null-space posture
+control continuously pulls each toward its own ready pose, so none of them
+drifts toward a bad internal configuration with nothing to anchor it.
+
+Each robot's gizmo only exposes the axes its own axis_weight keeps active
+-- via log_gizmo's own translate/rotate axis selection -- so the widget
+itself can't suggest a motion the controller would ignore.
+
+--ik-method picks the inverse-Jacobian solve (dls, pinv, transpose,
+adaptive_damping, truncated_svd) -- see the create_controller_from_*_method
+functions below, one per DifferentialIKMethod.
+"""
 
 import numpy as np
 import warp as wp
@@ -48,6 +45,8 @@ from newton.controllers import ControllerDifferentialIK, DifferentialIKMethod
 # ---------------------------------------------------------------------------
 
 # Franka's standard "ready" pose.
+
+
 FRANKA_READY_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
 FRANKA_ARM_DOFS = len(FRANKA_READY_POSE)  # 7; redundant against the 6D task
 FRANKA_BASE_POSITION = wp.vec3(0.0, 0.0, 0.0)
@@ -629,6 +628,17 @@ class Example:
         assert np.all(np.abs(five_dof_q - five_dof_ready_q) < 0.2), (
             f"5-DOF arm joints drifted from its ready pose: {five_dof_q}"
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four robot arms appear with independent draggable target gizmos.",
+        "Drag reachable targets: each arm follows its own configured task axes without moving unrelated robots.",
+        "With targets stationary, arms remain near their solved poses without sustained jitter.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

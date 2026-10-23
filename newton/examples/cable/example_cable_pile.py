@@ -1,21 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Pile
-#
-# Demonstrates complex cable-to-cable contact and settling behavior.
-# Creates a pile of cables with alternating
-# orientations (X/Y axis) and sinusoidal waviness. Tests multi-body contact
-# resolution, stacking stability, and friction in dense cable assemblies.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_pile
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_pile --test --viewer null
-#
-###########################################################################
+"""Example Cable Pile
+
+Demonstrates complex cable-to-cable contact and settling behavior.
+Creates a pile of cables with alternating
+orientations (X/Y axis) and sinusoidal waviness. Tests multi-body contact
+resolution, stacking stability, and friction in dense cable assemblies.
+"""
 
 import math
 
@@ -254,6 +246,17 @@ class Example:
             )
 
             assert (np.abs(body_velocities) < 5e2).all(), "Velocities too large"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "An ordered pile of cables drops onto the ground.",
+        "The pile settles and remains mostly static, with no sustained visible contact chatter "
+        "or cables falling through the ground.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -1,15 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Newton Cradle
-#
-# Builds a five-ball Newton's cradle with revolute-joint pendulums and
-# sphere-sphere contact.
-#
-# Command: python -m newton.examples newton_cradle
-#
-###########################################################################
+"""Example Newton Cradle
+
+Builds a five-ball Newton's cradle with revolute-joint pendulums and
+sphere-sphere contact.
+"""
 
 from __future__ import annotations
 
@@ -210,6 +206,17 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument("--solver", default="xpbd", choices=SOLVER_CHOICES, help="Solver used for the cradle.")
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Five aligned pendulum balls form a cradle and an initially displaced end ball swings into the row.",
+        "Contact transfers motion to the opposite end while balls remain attached and in the pendulum plane.",
+        "The cradle continues bounded oscillation without explosive energy growth.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":
