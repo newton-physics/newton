@@ -123,8 +123,9 @@ class Example:
             self.config.dynamics.preconditioning = False
             self.config.dynamics.linear_solver_type = "CR"
             self.config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-            self.config.dvi.bilateral_solver_type = "LLTBRCM"
-            self.config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
+            self.config.dvi.bilateral_solver_type = getattr(args, "bilateral_solver_type", "LLTBRCM")
+            if self.config.dvi.bilateral_solver_type == "LLTBRCM":
+                self.config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
             self.config.dvi.tolerance = 1e-4
             self.config.dvi.regularization = 1e-5
             self.config.dvi.max_alternating_iterations = 4
@@ -353,10 +354,17 @@ class Example:
         )
         parser.add_argument(
             "--linear-solver-type",
-            choices=("LLTB", "LLTBRCM", "CR"),
+            choices=("LLTB", "LLTBRCM", "LLTBS", "CR"),
             default="LLTB",
             type=str.upper,
             help="Kamino dynamics linear solver to use.",
+        )
+        parser.add_argument(
+            "--bilateral-solver-type",
+            choices=("LLTB", "LLTBRCM", "LLTBS"),
+            default="LLTBRCM",
+            type=str.upper,
+            help="DVI bilateral solver (this example retains its tuned RCM preset).",
         )
         parser.add_argument(
             "--no-graph-conditionals",

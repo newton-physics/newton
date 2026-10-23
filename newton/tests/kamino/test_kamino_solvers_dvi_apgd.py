@@ -992,6 +992,7 @@ class TestDVIAPGDDynamics(unittest.TestCase):
                 dynamics_solver="dvi",
                 unilateral_solver="apgd",
                 use_schur_complement=True,
+                bilateral_solver_type="LLTBS",
                 # Match the upstream support test; bounded rows have separate tests.
                 joint_effort_limit=math.inf,
             )

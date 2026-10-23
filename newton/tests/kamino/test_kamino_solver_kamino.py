@@ -6,6 +6,7 @@
 import time
 import unittest
 import warnings
+from itertools import product
 from typing import Literal
 from unittest import mock
 
@@ -28,6 +29,7 @@ from newton._src.solvers.kamino._src.integrators import IntegratorEuler, Integra
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians, SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.joints import JointCorrectionMode, compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.linalg import LLTBlockedSolver, LLTBlockSparseSolver
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
 from newton._src.solvers.kamino._src.solvers import PADMMSolver
 from newton._src.solvers.kamino._src.utils import logger as msg
@@ -838,14 +840,19 @@ class TestSolverKaminoStatus(unittest.TestCase):
         """Verify PADMM terminal status is available regardless of detailed collection."""
         model = self._make_three_world_model()
 
-        for collect_solver_info in (False, True):
-            with self.subTest(collect_solver_info=collect_solver_info):
+        for backend, collect_solver_info in product(("LLTB", "LLTBS"), (False, True)):
+            with self.subTest(backend=backend, collect_solver_info=collect_solver_info):
                 solver = newton.solvers.SolverKamino(
                     model,
                     config=newton.solvers.SolverKamino.Config(
                         dynamics_solver="padmm",
+                        dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type=backend),
                         collect_solver_info=collect_solver_info,
                     ),
+                )
+                self.assertIsInstance(
+                    solver._solver_kamino.problem_fd.delassus.solver,
+                    LLTBlockSparseSolver if backend == "LLTBS" else LLTBlockedSolver,
                 )
                 self._step_and_assert_status_contract(solver, model)
 

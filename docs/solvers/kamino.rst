@@ -45,8 +45,8 @@ Kamino provides three forward-dynamics backends:
 * ``"padmm"`` (default): proximal ADMM, dense Jacobians/dynamics, and the Euler
   integrator. It is the slower, more robust option because it solves equality
   and inequality constraints together.
-* ``"dvi"`` (opt-in): projected dual iterations, sparse Jacobians, dense dynamics
-  with the RCM-reordered blocked LLT solver, and the Euler integrator. It is
+* ``"dvi"`` (opt-in): projected dual iterations, sparse Jacobians, dense dynamics,
+  block-sparse Cholesky bilateral solves, and the Euler integrator. It is
   generally faster, but approximates the coupled problem by alternating between
   a direct solve for equality constraints and projected iterations for
   inequality constraints. As a rule of thumb, DVI solves inequality constraints
@@ -71,7 +71,13 @@ Set ``sparse_jacobian=False`` for fully dense DVI, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-For large bilateral systems, opt into RCM-reordered factorization explicitly:
+DVI defaults to ``"LLTBS"`` for its bilateral joint solve. This block-sparse
+Cholesky backend stores only joint blocks and symbolic fill, supports CPU and
+CUDA execution, and reuses its factorization across unilateral iterations.
+It applies to both dense and sparse DVI dynamics. The source DVI solver calls
+this algorithm LDL, but it computes an LLT factorization of an SPD matrix.
+
+To select the existing RCM-reordered factorization explicitly:
 
 .. code-block:: python
 
@@ -84,7 +90,16 @@ For large bilateral systems, opt into RCM-reordered factorization explicitly:
 
 The cached permutation remains mathematically valid when matrix values or
 sparsity change and is recomputed automatically if the active dimension
-changes. Keep the default ``"LLTB"`` solver for small systems.
+changes. ``"LLTB"`` remains available for dense blocked factorization.
+The level-scheduled sparse backend can incur more launch overhead on small
+systems or long chains, so benchmark representative workloads when choosing
+between these backends.
+
+Dense PADMM can also select the new backend through
+``config.dynamics.linear_solver_type = "LLTBS"``. Its changing contact rows use
+a conservative full block pattern, so this mode does not provide the joint
+topology's sparse-storage savings. Sparse PADMM continues to require an
+iterative linear solver; ``"LLTBS"`` is not supported with sparse PADMM.
 
 DVI unilateral subsolvers
 ^^^^^^^^^^^^^^^^^^^^^^^^^
