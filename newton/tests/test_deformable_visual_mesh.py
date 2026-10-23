@@ -694,7 +694,7 @@ class TestDeformableVisuals(unittest.TestCase):
         assert_np_equal(visuals_b.get_points(0).numpy(), moved_b[particle_indices], tol=1.0e-6)
 
     def test_update_is_cuda_graph_capturable(self):
-        """Replay captured skinning after changing the simulation state."""
+        """Keep captured outputs tied to their source states across replay."""
         model, _particle_indices, _vertices = self._model()
         if not model.device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device")
@@ -714,6 +714,43 @@ class TestDeformableVisuals(unittest.TestCase):
 
         for mesh in model.deformable_visual_meshes:
             assert_np_equal(visuals.get_points(mesh).numpy(), moved[mesh.parent.numpy()], tol=1.0e-6)
+
+        other_state = model.state()
+        other_positions = other_state.particle_q.numpy()
+        other_positions[:, 2] += 3.0
+        other_state.particle_q.assign(other_positions)
+        before_points = visuals.points.numpy().copy()
+        before_normals = visuals.normals.numpy().copy()
+        for capturing in (False, True):
+            with self.subTest(capturing=capturing):
+                with wp.ScopedCapture(model.device) if capturing else contextlib.nullcontext():
+                    with self.assertRaisesRegex(ValueError, "captured.*another state"):
+                        model.update_deformable_visuals(other_state, visuals)
+                self.assertIs(visuals.state, state)
+                assert_np_equal(visuals.points.numpy(), before_points, tol=0.0)
+                assert_np_equal(visuals.normals.numpy(), before_normals, tol=0.0)
+
+        other_visuals = model.deformable_visuals()
+        model.update_deformable_visuals(other_state, other_visuals)
+        with wp.ScopedCapture(model.device) as other_capture:
+            model.update_deformable_visuals(other_state, other_visuals)
+
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        for graph, source, output, expected in (
+            (capture.graph, state, visuals, moved),
+            (other_capture.graph, other_state, other_visuals, other_positions),
+            (capture.graph, state, visuals, moved),
+        ):
+            wp.capture_launch(graph)
+            self.assertIs(output.state, source)
+            viewer.set_deformable_visuals(output)
+            viewer._frame(source)
+            for mesh in model.deformable_visual_meshes:
+                call = viewer.calls[f"/model/deformable_visual_meshes/mesh_{mesh.index}_{mesh.label}"]
+                assert_np_equal(call["points"], expected[mesh.parent.numpy()], tol=1.0e-6)
+            with self.assertRaisesRegex(ValueError, "another state"):
+                viewer.log_state(other_state if source is state else state)
 
     def test_rejects_results_and_meshes_from_another_model(self):
         """Output buffers and mesh handles cannot be used with another model."""
@@ -1421,6 +1458,23 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                             pixel = center_pixel(state)
                             self.assertGreater(pixel.min(), 30, "Sample the mesh, not the background")
                             self.assertLessEqual(np.ptp(pixel), 5, "Do not tint a neutral texture brown")
+
+                    mesh.texture = source
+                    with (
+                        mock.patch.object(
+                            RendererGL.gl, "glTexImage2D", side_effect=RuntimeError("injected upload failure")
+                        ),
+                        self.assertRaisesRegex(RuntimeError, "injected upload failure"),
+                    ):
+                        viewer.log_state(state)
+                    with mock.patch.object(RendererGL.gl, "glTexImage2D", wraps=RendererGL.gl.glTexImage2D) as upload:
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 1, "Retry the same texture after a failed upload")
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 1, "Reuse the successful retry")
+                    restored = center_pixel(state)
+                    self.assertGreater(restored[0], max(restored[1:]) + 30, "Render the recovered red texture")
+
                     mesh.texture = None
                     np.testing.assert_allclose(center_pixel(state), untextured, atol=2)
 
@@ -1600,6 +1654,19 @@ class TestDeformableVisualMeshSensor(unittest.TestCase):
         sensor.sync_deformable_meshes(state, deformable_visuals=visuals)
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image, sync_deformables=False)
         np.testing.assert_array_equal(depth_image.numpy()[0], depth)
+
+        if model.device.is_cuda:
+            with wp.ScopedCapture(model.device) as capture:
+                model.update_deformable_visuals(state, visuals)
+            wp.capture_launch(capture.graph)
+            sensor.update(
+                state,
+                camera_transforms,
+                camera_rays,
+                depth_image=depth_image,
+                deformable_visuals=visuals,
+            )
+            self.assertAlmostEqual(float(depth_image.numpy()[0, 8, 8]), 1.5, delta=0.25)
 
         with self.assertRaisesRegex(ValueError, "requires sync_deformables=True"):
             sensor.update(

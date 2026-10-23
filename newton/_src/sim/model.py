@@ -2001,7 +2001,7 @@ class Model:
         """Allocate current mesh and Gaussian output for deformable visuals.
 
         The returned buffers are model-compatible and reusable across
-        simulation states. Populate them with
+        simulation states outside CUDA capture. Populate them with
         :meth:`update_deformable_visuals` before reading or rendering them.
 
         Returns:
@@ -2019,6 +2019,10 @@ class Model:
 
         This method reuses the fixed buffers allocated by
         :meth:`deformable_visuals` and performs no structural allocation.
+        Once an update is captured in a CUDA graph, ``visuals`` can only be
+        updated from that same State, including outside capture. Use separate
+        outputs for different captured states. Values in the source State's
+        arrays may change between replays.
 
         Args:
             state: Simulation state containing current particle positions and
@@ -2031,7 +2035,8 @@ class Model:
         Raises:
             TypeError: If ``visuals`` is not :class:`DeformableVisuals`.
             ValueError: If the output belongs to another model or the required
-                state arrays are missing, too short, or on another device.
+                state arrays are missing, too short, or on another device;
+                or if the output has a captured update from another State.
 
         .. experimental::
 
@@ -2041,6 +2046,7 @@ class Model:
         if not isinstance(visuals, DeformableVisuals):
             raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
         visuals._validate_model(self)
+        visuals._validate_state(state)
 
         needs_particles = bool(self.deformable_visual_gaussians) or any(
             mesh.kind != DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes
