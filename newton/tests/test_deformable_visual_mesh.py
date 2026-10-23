@@ -1236,7 +1236,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                         assert_np_equal(_skin(restored_model, mesh, restored_state), moved[mesh.parent.numpy()])
 
     def test_gl_reuses_skinned_textures_but_updates_regular_meshes(self):
-        """Reuse visual textures without changing ordinary mutable mesh uploads."""
+        """Reuse visual textures untinted by default; preserve explicit colors and ordinary uploads."""
         from newton._src.viewer.gl.opengl import RendererGL  # noqa: PLC0415
         from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip  # noqa: PLC0415
 
@@ -1315,6 +1315,39 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                         frame = viewer.get_frame().numpy().astype(np.int32)
                         red = (frame[:, :, 0] > frame[:, :, 1] + 30) & (frame[:, :, 0] > frame[:, :, 2] + 30)
                         self.assertTrue(red.any(), "The restored visual texture must be sampled by the shader")
+
+                    def center_pixel(state):
+                        viewer.begin_frame(1.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        image = viewer.get_frame().numpy().astype(np.int32)
+                        return image[image.shape[0] // 2, image.shape[1] // 2]
+
+                    mesh.texture = None
+                    untextured = center_pixel(state)
+                    self.assertGreater(untextured[0], untextured[2] + 30)
+                    for value in (200, 100):
+                        with self.subTest(gray=value):
+                            mesh.texture = np.full((2, 2, 3), value, dtype=np.uint8)
+                            pixel = center_pixel(state)
+                            self.assertGreater(pixel.min(), 30, "Sample the mesh, not the background")
+                            self.assertLessEqual(np.ptp(pixel), 5, "Do not tint a neutral texture brown")
+                    mesh.texture = None
+                    np.testing.assert_allclose(center_pixel(state), untextured, atol=2)
+
+                    # Override through log_mesh; log_state must retain the tint after buffer replacement.
+                    viewer.log_mesh(
+                        "/model/deformable_visual_meshes/mesh_0",
+                        mesh.rest_vertices,
+                        mesh.indices,
+                        uvs=mesh.uvs,
+                        color=(0.1, 0.4, 1.0),
+                        dynamic=True,
+                    )
+                    for image in (None, np.full((2, 2, 3), 200, dtype=np.uint8), None):
+                        mesh.texture = image
+                        pixel = center_pixel(state)
+                        self.assertGreater(pixel[2], pixel[0] + 30)
 
 
 class TestDeformableVisualMeshSensor(unittest.TestCase):
