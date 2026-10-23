@@ -7,6 +7,7 @@ import os
 import re
 import warnings
 import weakref
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache
 from typing import Literal
@@ -198,7 +199,7 @@ from .kernels import (
     update_qdd_from_velocity,
     vector_add_inplace,
 )
-from .sleeping import _SleepState
+from .sleeping import _publish_body_awake, _SleepState
 from .sparse_contact import (
     _get_sparse_contact_response_kernel,
     apply_sparse_factor_velocity,
@@ -1405,6 +1406,9 @@ class SolverSteel(SolverBase):
         sleeps; pass ``sleep_skip_constraints=False`` (or leave sleeping off) to keep the
         solved forces.
 
+        With ``enable_sleeping``, :attr:`SolverSteel.Observables.body_awake` reports per-body sleep
+        flags; see :ref:`steel_sleep_observable`.
+
     Example:
 
         .. code-block:: python
@@ -1419,7 +1423,38 @@ class SolverSteel(SolverBase):
                 state_in, state_out = state_out, state_in
     """
 
-    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.BODY_PARENT_F, SolverBase.ObservableKind.CONTACT_F})
+    class ObservableKind(SolverBase.ObservableKind):
+        """Standard and Steel-specific observable kinds.
+
+        See :ref:`solver_observables` for solver-specific kinds.
+
+        .. experimental::
+        """
+
+        BODY_AWAKE = "body_awake"
+        """Per-body awake flags, ``True`` for awake and ``False`` for sleeping bodies; requires ``enable_sleeping``."""
+
+    @dataclass(eq=False)
+    class Observables(SolverBase.Observables):
+        """Standard and Steel-specific observable arrays.
+
+        .. experimental::
+            The solver observable API may change without prior notice.
+        """
+
+        body_awake: "wp.array[wp.bool] | None" = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.bool,
+            frequency=Model.AttributeFrequency.BODY,
+        )
+        """Per-body awake flags, shape ``(body_count,)``; see :ref:`steel_sleep_observable`."""
+
+    SUPPORTED_OBSERVABLES = frozenset(
+        {
+            SolverBase.ObservableKind.BODY_PARENT_F,
+            SolverBase.ObservableKind.CONTACT_F,
+            ObservableKind.BODY_AWAKE,
+        }
+    )
 
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.
     solve_mode = _ConstructionOption()
@@ -2677,6 +2712,59 @@ class SolverSteel(SolverBase):
     def velocity_limits_fused(self) -> bool:
         """Whether the fused velocity-limit clamp is active: ``fuse_joint_velocity_limits`` applies only with drive rows and joint velocity limits."""
         return self._velocity_limits_fused
+
+    @property
+    def supported_observables(self) -> frozenset[str]:
+        """Return the observables available for this configuration; ``BODY_AWAKE`` requires ``enable_sleeping``."""
+        kinds = super().supported_observables
+        return kinds if self._sleeping is not None else kinds - {self.ObservableKind.BODY_AWAKE}
+
+    @override
+    def observables(
+        self,
+        kinds: Iterable[str],
+        *,
+        contacts: Contacts | None = None,
+        requires_grad: bool | None = None,
+    ) -> "SolverSteel.Observables":
+        """Allocate observable arrays; ``body_awake`` starts with the solver's current flags.
+
+        See :meth:`SolverBase.observables` for the shared allocation contract. Allocating
+        ``BODY_AWAKE`` launches a kernel, so call this before graph capture.
+
+        Args:
+            kinds: Observable kinds to allocate, as in :meth:`SolverBase.observables`.
+            contacts: Contact storage for contact-indexed kinds, as in :meth:`SolverBase.observables`.
+            requires_grad: Whether allocated arrays require gradients, as in
+                :meth:`SolverBase.observables`.
+
+        Returns:
+            The solver-owned observable container with the requested arrays allocated.
+
+        Raises:
+            ValueError: If ``BODY_AWAKE`` is requested without ``enable_sleeping``.
+                :meth:`SolverBase.observables` lists the other ``TypeError`` and
+                ``ValueError`` cases.
+
+        .. experimental::
+
+            The solver observable API may change while additional solvers and
+            observable categories are migrated to it.
+        """
+        observables = super().observables(kinds, contacts=contacts, requires_grad=requires_grad)
+        if observables.is_requested(self.ObservableKind.BODY_AWAKE):
+            self._copy_body_awake(observables)
+        return observables
+
+    def _copy_body_awake(self, observables: "SolverSteel.Observables") -> None:
+        """Copy the solver's per-body awake flags into ``observables.body_awake``."""
+        wp.launch(
+            _publish_body_awake,
+            dim=self.model.body_count,
+            inputs=[self._sleeping.body_awake],
+            outputs=[observables.body_awake],
+            device=self.model.device,
+        )
 
     @property
     def _contact_torsion_shape_radius(self) -> wp.array | None:
@@ -6070,6 +6158,8 @@ class SolverSteel(SolverBase):
                 outputs=[observables.contact_f],
                 device=self.model.device,
             )
+        if observables is not None and observables.is_requested(self.ObservableKind.BODY_AWAKE):
+            self._copy_body_awake(observables)
         return state_out
 
     def _advance(
