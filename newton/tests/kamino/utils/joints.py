@@ -16,6 +16,7 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino._src.core.joints import JointActuationType, JointDoFType
 from newton._src.solvers.kamino._src.core.model import ModelKamino
+from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests import get_kamino_testing_asset
 
 ###
@@ -131,7 +132,7 @@ def run_test_single_joint_examples(
         single_test_success = test_fun(model)
         success &= single_test_success
         if not single_test_success:
-            print(f"{test_name} failed for {unary_binary_str} {passive_actuated_str} {joint_type_str} joint")
+            msg.debug(f"{test_name} failed for {unary_binary_str} {passive_actuated_str} {joint_type_str} joint")
     return success
 
 

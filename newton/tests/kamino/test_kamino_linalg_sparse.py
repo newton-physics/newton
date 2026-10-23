@@ -39,8 +39,8 @@ class TestBlockDType(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -135,8 +135,8 @@ class TestBlockSparseMatrices(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -338,14 +338,14 @@ class TestBlockSparseMatrices(unittest.TestCase):
         bsm.num_nzb.assign(num_nzb_np)
         bsm.nzb_coords.assign(nzb_coords_np)
         bsm.nzb_values.view(dtype=wp.float32).assign(nzb_values_np)
-        msg.info("bsm.max_of_max_dims:\n%s", bsm.max_of_max_dims)
-        msg.info("bsm.max_dims:\n%s", bsm.max_dims)
-        msg.info("bsm.dims:\n%s", bsm.dims)
-        msg.info("bsm.max_nzb:\n%s", bsm.max_nzb)
-        msg.info("bsm.num_nzb:\n%s", bsm.num_nzb)
-        msg.info("bsm.nzb_start:\n%s", bsm.nzb_start)
-        msg.info("bsm.nzb_coords:\n%s", bsm.nzb_coords)
-        msg.info("bsm.nzb_values:\n%s", bsm.nzb_values)
+        msg.debug("bsm.max_of_max_dims:\n%s", bsm.max_of_max_dims)
+        msg.debug("bsm.max_dims:\n%s", bsm.max_dims)
+        msg.debug("bsm.dims:\n%s", bsm.dims)
+        msg.debug("bsm.max_nzb:\n%s", bsm.max_nzb)
+        msg.debug("bsm.num_nzb:\n%s", bsm.num_nzb)
+        msg.debug("bsm.nzb_start:\n%s", bsm.nzb_start)
+        msg.debug("bsm.nzb_coords:\n%s", bsm.nzb_coords)
+        msg.debug("bsm.nzb_values:\n%s", bsm.nzb_values)
 
         # Check host device data
         self.assertEqual(bsm.max_of_max_dims, (2, 12))
@@ -366,7 +366,7 @@ class TestBlockSparseMatrices(unittest.TestCase):
         # Convert to list of numpy arrays for easier verification
         bsm_np = bsm.numpy()
         for i in range(bsm.num_matrices):
-            msg.info("bsm_np[%d]:\n%s", i, bsm_np[i])
+            msg.debug("bsm_np[%d]:\n%s", i, bsm_np[i])
             if self.plot:
                 sparseplot(bsm_np[i], title=f"bsm_np[{i}]")
 
@@ -378,7 +378,7 @@ class TestBlockSparseMatrices(unittest.TestCase):
         # Convert again to list of numpy arrays for easier verification
         bsm_np = bsm.numpy()
         for i in range(bsm.num_matrices):
-            msg.info("bsm_np[%d]:\n%s", i, bsm_np[i])
+            msg.debug("bsm_np[%d]:\n%s", i, bsm_np[i])
             if self.plot:
                 sparseplot(bsm_np[i], title=f"bsm_np[{i}]")
 
@@ -399,8 +399,8 @@ class TestBlockSparseMatrixOperations(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 

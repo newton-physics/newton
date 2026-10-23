@@ -115,15 +115,15 @@ class TestSetup:
 
 
 def print_dual_problem_summary(D: np.ndarray, v_f: np.ndarray, notes: str = ""):
+    if not msg.is_enabled_for(msg.LogLevel.DEBUG):
+        return
     D_props = SquareSymmetricMatrixProperties(D)
     v_f_is_in_range, *_ = in_range_via_gaussian_elimination(D, v_f)
-    msg.info("Delassus Properties %s:\n%s\n", notes, D_props)
-    msg.info("v_f is in range of D %s: %s\n", notes, v_f_is_in_range)
+    msg.debug("Delassus Properties %s:\n%s\n", notes, D_props)
+    msg.debug("v_f is in range of D %s: %s\n", notes, v_f_is_in_range)
 
 
-def check_padmm_solution(
-    test: unittest.TestCase, model: ModelKamino, problem: DualProblem, solver: PADMMSolver, verbose: bool = False
-):
+def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: DualProblem, solver: PADMMSolver):
     # Extract numpy arrays from the solver state and solution
     only_active_dims = True
     D_wp_np = extract_delassus(problem.delassus, only_active_dims=only_active_dims)
@@ -136,7 +136,7 @@ def check_padmm_solution(
         problem.delassus, solver.data.solution.lambdas.numpy(), only_active_dims=only_active_dims
     )
 
-    # Optional verbose output
+    # Check solution
     status = solver.data.status.numpy()
     for w in range(model.size.num_worlds):
         # Recover the original (preconditioned) Delassua matrix from the in-place regularized storage
@@ -162,10 +162,10 @@ def check_padmm_solution(
         r_c = status[w]["r_c"]
 
         # Optionally print relevant solver data
-        if verbose:
+        if msg.is_enabled_for(msg.LogLevel.DEBUG):
             print_dual_problem_summary(D, v_f_wp_np[w], "(preconditioned)")
             print_dual_problem_summary(D_true, v_f_true)
-            msg.info(
+            msg.debug(
                 "\n---------"
                 f"\nconverged: {converged}"
                 f"\niterations: {iterations}"
@@ -314,7 +314,7 @@ def solve_apadmm_bilateral_reference(
     }
 
 
-def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool = False):
+def save_solver_info(solver: PADMMSolver, path: str | None = None):
     # Attempt to import matplotlib for plotting
     try:
         import matplotlib.pyplot as plt
@@ -353,33 +353,34 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None, verbose: bool
         r_comb_np = extract_info_vectors(offsets_np, solver.data.info.r_comb.numpy(), iterations)
         r_comb_ratio_np = extract_info_vectors(offsets_np, solver.data.info.r_comb_ratio.numpy(), iterations)
 
-    if verbose:
+    # Optional verbose output
+    if msg.is_enabled_for(msg.LogLevel.DEBUG):
         for w in range(nw):
-            print(f"[World {w}] =======================================================================")
-            print(f"solver.info.num_rho_updates: {num_rho_updates_np[w]}")
-            print(f"solver.info.norm_s: {norm_s_np[w]}")
-            print(f"solver.info.norm_x: {norm_x_np[w]}")
-            print(f"solver.info.norm_y: {norm_y_np[w]}")
-            print(f"solver.info.norm_z: {norm_z_np[w]}")
-            print(f"solver.info.f_ccp: {f_ccp_np[w]}")
-            print(f"solver.info.f_ncp: {f_ncp_np[w]}")
-            print(f"solver.info.r_dx: {r_dx_np[w]}")
-            print(f"solver.info.r_dy: {r_dy_np[w]}")
-            print(f"solver.info.r_dz: {r_dz_np[w]}")
-            print(f"solver.info.r_primal: {r_primal_np[w]}")
-            print(f"solver.info.r_dual: {r_dual_np[w]}")
-            print(f"solver.info.r_compl: {r_compl_np[w]}")
-            print(f"solver.info.r_pd: {r_pd_np[w]}")
-            print(f"solver.info.r_dp: {r_dp_np[w]}")
-            print(f"solver.info.r_ncp_primal: {r_ncp_primal_np[w]}")
-            print(f"solver.info.r_ncp_dual: {r_ncp_dual_np[w]}")
-            print(f"solver.info.r_ncp_compl: {r_ncp_compl_np[w]}")
-            print(f"solver.info.r_ncp_natmap: {r_ncp_natmap_np[w]}")
+            msg.debug(f"[World {w}] =======================================================================")
+            msg.debug(f"solver.info.num_rho_updates: {num_rho_updates_np[w]}")
+            msg.debug(f"solver.info.norm_s: {norm_s_np[w]}")
+            msg.debug(f"solver.info.norm_x: {norm_x_np[w]}")
+            msg.debug(f"solver.info.norm_y: {norm_y_np[w]}")
+            msg.debug(f"solver.info.norm_z: {norm_z_np[w]}")
+            msg.debug(f"solver.info.f_ccp: {f_ccp_np[w]}")
+            msg.debug(f"solver.info.f_ncp: {f_ncp_np[w]}")
+            msg.debug(f"solver.info.r_dx: {r_dx_np[w]}")
+            msg.debug(f"solver.info.r_dy: {r_dy_np[w]}")
+            msg.debug(f"solver.info.r_dz: {r_dz_np[w]}")
+            msg.debug(f"solver.info.r_primal: {r_primal_np[w]}")
+            msg.debug(f"solver.info.r_dual: {r_dual_np[w]}")
+            msg.debug(f"solver.info.r_compl: {r_compl_np[w]}")
+            msg.debug(f"solver.info.r_pd: {r_pd_np[w]}")
+            msg.debug(f"solver.info.r_dp: {r_dp_np[w]}")
+            msg.debug(f"solver.info.r_ncp_primal: {r_ncp_primal_np[w]}")
+            msg.debug(f"solver.info.r_ncp_dual: {r_ncp_dual_np[w]}")
+            msg.debug(f"solver.info.r_ncp_compl: {r_ncp_compl_np[w]}")
+            msg.debug(f"solver.info.r_ncp_natmap: {r_ncp_natmap_np[w]}")
             if solver_has_acceleration:
-                print(f"solver.info.num_restarts: {num_restarts_np[w]}")
-                print(f"solver.info.a: {a_np[w]}")
-                print(f"solver.info.r_comb: {r_comb_np[w]}")
-                print(f"solver.info.r_comb_ratio: {r_comb_ratio_np[w]}")
+                msg.debug(f"solver.info.num_restarts: {num_restarts_np[w]}")
+                msg.debug(f"solver.info.a: {a_np[w]}")
+                msg.debug(f"solver.info.r_comb: {r_comb_np[w]}")
+                msg.debug(f"solver.info.r_comb_ratio: {r_comb_ratio_np[w]}")
 
     # List of (label, data) for plotting
     info_list = [
@@ -456,8 +457,8 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -538,7 +539,7 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        # check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        # check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
@@ -547,7 +548,7 @@ class TestPADMMSolver(unittest.TestCase):
             save_solver_info(solver=solver, path=str(path))
 
         # Check solution
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
     def test_03_padmm_solve_with_acceleration(self):
         """
@@ -583,7 +584,7 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        # check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        # check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
@@ -592,7 +593,7 @@ class TestPADMMSolver(unittest.TestCase):
             save_solver_info(solver=solver, path=str(path))
 
         # Check solution
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
     def test_04_padmm_solve_with_internal_warmstart(self):
         """
@@ -627,7 +628,7 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Second solve with warm-starting from previous solution
         test.build()
@@ -636,7 +637,7 @@ class TestPADMMSolver(unittest.TestCase):
         np.testing.assert_allclose(solver.data.state.x_p.numpy(), expected_forces)
         np.testing.assert_allclose(solver.data.state.y_p.numpy(), expected_forces)
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
@@ -677,14 +678,14 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Second solve with warm-starting from previous solution
         test.cache(solver=solver)
         test.build()
         solver.warmstart(test.problem, test.model, test.data, test.limits, test.contacts)
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
@@ -726,13 +727,13 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Second solve with warm-starting from previous solution
         test.build()
         solver.warmstart(test.problem, test.model, test.data)
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
@@ -774,14 +775,14 @@ class TestPADMMSolver(unittest.TestCase):
         solver.reset()
         solver.coldstart()
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Second solve with warm-starting from previous solution
         test.cache(solver=solver)
         test.build()
         solver.warmstart(test.problem, test.model, test.data, test.limits, test.contacts)
         solver.solve(problem=test.problem)
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
         # Extract solver info
         if self.savefig:
@@ -813,7 +814,7 @@ class TestPADMMSolver(unittest.TestCase):
             save_solver_info(solver=solver, path=str(path))
 
         # Check solution
-        check_padmm_solution(self, test.model, test.problem, solver, verbose=self.verbose)
+        check_padmm_solution(self, test.model, test.problem, solver)
 
     def test_08a_padmm_collect_info_matches_solution(self):
         """Record consistent diagnostics for dense and sparse PADMM problems."""

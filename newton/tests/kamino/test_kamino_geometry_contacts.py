@@ -359,8 +359,8 @@ class TestGeometryContactFrames(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.info("\n")  # Add newline before test output for better readability
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -387,9 +387,8 @@ class TestGeometryContactFrames(unittest.TestCase):
 
         # Compute the contact frames
         compute_contact_frame_znorm(normal=normals, frame=frames, num_threads=len(test_normals))
-        if self.verbose:
-            print(f"normals:\n{normals}\n")
-            print(f"frames:\n{frames}\n")
+        msg.debug(f"normals:\n{normals}\n")
+        msg.debug(f"frames:\n{frames}\n")
 
         # Extract numpy arrays for comparison
         frames_np = frames.numpy()
@@ -437,9 +436,8 @@ class TestGeometryContactFrames(unittest.TestCase):
 
         # Compute the contact frames
         compute_contact_frame_xnorm(normal=normals, frame=frames, num_threads=len(test_normals))
-        if self.verbose:
-            print(f"normals:\n{normals}\n")
-            print(f"frames:\n{frames}\n")
+        msg.debug(f"normals:\n{normals}\n")
+        msg.debug(f"frames:\n{frames}\n")
 
         # Extract numpy arrays for comparison
         frames_np = frames.numpy()
@@ -459,8 +457,8 @@ class TestGeometryContactMode(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.info("\n")  # Add newline before test output for better readability
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -475,7 +473,7 @@ class TestGeometryContactMode(unittest.TestCase):
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
-        msg.info(f"mode: {mode} (int: {int(mode_int32)})")
+        msg.debug(f"mode: {mode} (int: {int(mode_int32)})")
         self.assertEqual(mode, ContactMode.OPENING)
 
     def test_02_contact_mode_sticking(self):
@@ -484,7 +482,7 @@ class TestGeometryContactMode(unittest.TestCase):
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
-        msg.info(f"mode: {mode} (int: {int(mode_int32)})")
+        msg.debug(f"mode: {mode} (int: {int(mode_int32)})")
         self.assertEqual(mode, ContactMode.STICKING)
 
     def test_03_contact_mode_slipping(self):
@@ -493,7 +491,7 @@ class TestGeometryContactMode(unittest.TestCase):
         compute_contact_mode(velocity=v_input, mode=mode_output, num_threads=1)
         mode_int32 = mode_output.numpy()[0]
         mode = ContactMode(int(mode_int32))
-        msg.info(f"mode: {mode} (int: {int(mode_int32)})")
+        msg.debug(f"mode: {mode} (int: {int(mode_int32)})")
         self.assertEqual(mode, ContactMode.SLIDING)
 
 
@@ -506,8 +504,8 @@ class TestGeometryContacts(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.info("\n")  # Add newline before test output for better readability
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -750,8 +748,8 @@ class TestGeometryContactConversions(NewtonTestCase):
         self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
         if self.verbose:
-            msg.info("\n")
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")
         else:
             msg.reset_log_level()
 
@@ -911,9 +909,7 @@ class TestGeometryContactConversions(NewtonTestCase):
                 atol=1e-5,
                 err_msg=f"Contact {i}: reaction does not match -R(normal)^T @ f_world",
             )
-
-        if self.verbose:
-            msg.debug("N->K: %d contacts converted, max |reaction| = %g", nc_kamino, float(np.max(np.abs(reactions))))
+        msg.debug("N->K: %d contacts converted, max |reaction| = %g", nc_kamino, float(np.max(np.abs(reactions))))
 
     ###
     # K->N (active path)

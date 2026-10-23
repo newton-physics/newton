@@ -31,10 +31,10 @@ class TestUtilsLinAlgMatrix(unittest.TestCase):
     def test_01_spd_matrix_properties(self):
         A = linalg.utils.rand.random_spd_matrix(dim=10, dtype=np.float32, scale=4.0, seed=42)
         A_props = linalg.utils.matrix.SquareSymmetricMatrixProperties(A)
-        msg.debug(f"A (shape: {A.shape}, dtype: {A.dtype}):\n{A}\n") if self.verbose else None
-        msg.debug(f"A properties:\n{A_props}\n") if self.verbose else None
-        msg.debug(f"cond(A): {np.linalg.cond(A)}\n") if self.verbose else None
-        msg.debug(f"det(A): {np.linalg.det(A)}\n") if self.verbose else None
+        msg.debug(f"A (shape: {A.shape}, dtype: {A.dtype}):\n{A}\n")
+        msg.debug(f"A properties:\n{A_props}\n")
+        msg.debug(f"cond(A): {np.linalg.cond(A)}\n")
+        msg.debug(f"det(A): {np.linalg.det(A)}\n")
         self.assertAlmostEqual(A_props.cond, np.linalg.cond(A), places=6)
 
 

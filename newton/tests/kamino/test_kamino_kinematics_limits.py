@@ -151,8 +151,8 @@ class TestKinematicsLimits(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.info("\n")  # Add newline before test output for better readability
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -209,22 +209,23 @@ class TestKinematicsLimits(unittest.TestCase):
         self.assertEqual(limits.world_active_limits.shape, (3,))
 
         # Optional verbose output
-        msg.info("limits.model_max_limits_host: %s", limits.model_max_limits_host)
-        msg.info("limits.world_max_limits_host: %s", limits.world_max_limits_host)
-        msg.info("limits.model_max_limits: %s", limits.model_max_limits)
-        msg.info("limits.model_active_limits: %s", limits.model_active_limits)
-        msg.info("limits.world_max_limits: %s", limits.world_max_limits)
-        msg.info("limits.world_active_limits: %s", limits.world_active_limits)
-        msg.info("limits.wid: %s", limits.wid)
-        msg.info("limits.lid: %s", limits.lid)
-        msg.info("limits.jid: %s", limits.jid)
-        msg.info("limits.bids:\n%s", limits.bids)
-        msg.info("limits.dof: %s", limits.dof)
-        msg.info("limits.side: %s", limits.side)
-        msg.info("limits.r_q: %s", limits.r_q)
-        msg.info("limits.key: %s", limits.key)
-        msg.info("limits.reaction: %s", limits.reaction)
-        msg.info("limits.velocity: %s", limits.velocity)
+        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+            msg.debug("limits.model_max_limits_host: %s", limits.model_max_limits_host)
+            msg.debug("limits.world_max_limits_host: %s", limits.world_max_limits_host)
+            msg.debug("limits.model_max_limits: %s", limits.model_max_limits)
+            msg.debug("limits.model_active_limits: %s", limits.model_active_limits)
+            msg.debug("limits.world_max_limits: %s", limits.world_max_limits)
+            msg.debug("limits.world_active_limits: %s", limits.world_active_limits)
+            msg.debug("limits.wid: %s", limits.wid)
+            msg.debug("limits.lid: %s", limits.lid)
+            msg.debug("limits.jid: %s", limits.jid)
+            msg.debug("limits.bids:\n%s", limits.bids)
+            msg.debug("limits.dof: %s", limits.dof)
+            msg.debug("limits.side: %s", limits.side)
+            msg.debug("limits.r_q: %s", limits.r_q)
+            msg.debug("limits.key: %s", limits.key)
+            msg.debug("limits.reaction: %s", limits.reaction)
+            msg.debug("limits.velocity: %s", limits.velocity)
 
     def test_02_check_revolute_joint(self):
         # Construct the model description
@@ -243,59 +244,62 @@ class TestKinematicsLimits(unittest.TestCase):
         compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
 
         # Optional verbose output
-        msg.info("model.joints.q_j_min: %s", model.joints.q_j_min)
-        msg.info("model.joints.q_j_max: %s", model.joints.q_j_max)
-        msg.info("model.joints.dq_j_max: %s", model.joints.dq_j_max)
-        msg.info("model.joints.tau_j_max: %s", model.joints.tau_j_max)
-        msg.info("data.bodies.q_i:\n%s", data.bodies.q_i)
-        msg.info("data.bodies.u_i:\n%s", data.bodies.u_i)
-        msg.info("data.joints.p_j:\n%s", data.joints.p_j)
-        msg.info("data.joints.r_j: %s", data.joints.r_j)
-        msg.info("data.joints.dr_j: %s", data.joints.dr_j)
-        msg.info("data.joints.q_j: %s", data.joints.q_j)
-        msg.info("data.joints.dq_j: %s\n\n", data.joints.dq_j)
+        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+            msg.debug("model.joints.q_j_min: %s", model.joints.q_j_min)
+            msg.debug("model.joints.q_j_max: %s", model.joints.q_j_max)
+            msg.debug("model.joints.dq_j_max: %s", model.joints.dq_j_max)
+            msg.debug("model.joints.tau_j_max: %s", model.joints.tau_j_max)
+            msg.debug("data.bodies.q_i:\n%s", data.bodies.q_i)
+            msg.debug("data.bodies.u_i:\n%s", data.bodies.u_i)
+            msg.debug("data.joints.p_j:\n%s", data.joints.p_j)
+            msg.debug("data.joints.r_j: %s", data.joints.r_j)
+            msg.debug("data.joints.dr_j: %s", data.joints.dr_j)
+            msg.debug("data.joints.q_j: %s", data.joints.q_j)
+            msg.debug("data.joints.dq_j: %s\n\n", data.joints.dq_j)
 
         # Create a LimitsKamino container
         limits = LimitsKamino(model=model)
 
         # Optional verbose output
-        msg.info("[before]: limits.model_max_limits_host: %s", limits.model_max_limits_host)
-        msg.info("[before]: limits.world_max_limits_host: %s", limits.world_max_limits_host)
-        msg.info("[before]: limits.model_max_limits: %s", limits.model_max_limits)
-        msg.info("[before]: limits.model_active_limits: %s", limits.model_active_limits)
-        msg.info("[before]: limits.world_max_limits: %s", limits.world_max_limits)
-        msg.info("[before]: limits.world_active_limits: %s", limits.world_active_limits)
-        msg.info("[before]: limits.wid: %s", limits.wid)
-        msg.info("[before]: limits.lid: %s", limits.lid)
-        msg.info("[before]: limits.jid: %s", limits.jid)
-        msg.info("[before]: limits.bids:\n%s", limits.bids)
-        msg.info("[before]: limits.dof: %s", limits.dof)
-        msg.info("[before]: limits.side: %s", limits.side)
-        msg.info("[before]: limits.r_q: %s", limits.r_q)
-        msg.info("[before]: limits.key: %s", limits.key)
-        msg.info("[before]: limits.reaction: %s", limits.reaction)
-        msg.info("[before]: limits.velocity: %s", limits.velocity)
+        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+            msg.debug("[before]: limits.model_max_limits_host: %s", limits.model_max_limits_host)
+            msg.debug("[before]: limits.world_max_limits_host: %s", limits.world_max_limits_host)
+            msg.debug("[before]: limits.model_max_limits: %s", limits.model_max_limits)
+            msg.debug("[before]: limits.model_active_limits: %s", limits.model_active_limits)
+            msg.debug("[before]: limits.world_max_limits: %s", limits.world_max_limits)
+            msg.debug("[before]: limits.world_active_limits: %s", limits.world_active_limits)
+            msg.debug("[before]: limits.wid: %s", limits.wid)
+            msg.debug("[before]: limits.lid: %s", limits.lid)
+            msg.debug("[before]: limits.jid: %s", limits.jid)
+            msg.debug("[before]: limits.bids:\n%s", limits.bids)
+            msg.debug("[before]: limits.dof: %s", limits.dof)
+            msg.debug("[before]: limits.side: %s", limits.side)
+            msg.debug("[before]: limits.r_q: %s", limits.r_q)
+            msg.debug("[before]: limits.key: %s", limits.key)
+            msg.debug("[before]: limits.reaction: %s", limits.reaction)
+            msg.debug("[before]: limits.velocity: %s", limits.velocity)
 
         # Check for active joint limits
         limits.detect(q_j=data.joints.q_j)
 
         # Optional verbose output
-        msg.info("[after]: limits.model_max_limits_host: %s", limits.model_max_limits_host)
-        msg.info("[after]: limits.world_max_limits_host: %s", limits.world_max_limits_host)
-        msg.info("[after]: limits.model_max_limits: %s", limits.model_max_limits)
-        msg.info("[after]: limits.model_active_limits: %s", limits.model_active_limits)
-        msg.info("[after]: limits.world_max_limits: %s", limits.world_max_limits)
-        msg.info("[after]: limits.world_active_limits: %s", limits.world_active_limits)
-        msg.info("[after]: limits.wid: %s", limits.wid)
-        msg.info("[after]: limits.lid: %s", limits.lid)
-        msg.info("[after]: limits.jid: %s", limits.jid)
-        msg.info("[after]: limits.bids:\n%s", limits.bids)
-        msg.info("[after]: limits.dof: %s", limits.dof)
-        msg.info("[after]: limits.side: %s", limits.side)
-        msg.info("[after]: limits.r_q: %s", limits.r_q)
-        msg.info("[after]: limits.key: %s", limits.key)
-        msg.info("[after]: limits.reaction: %s", limits.reaction)
-        msg.info("[after]: limits.velocity: %s", limits.velocity)
+        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+            msg.debug("[after]: limits.model_max_limits_host: %s", limits.model_max_limits_host)
+            msg.debug("[after]: limits.world_max_limits_host: %s", limits.world_max_limits_host)
+            msg.debug("[after]: limits.model_max_limits: %s", limits.model_max_limits)
+            msg.debug("[after]: limits.model_active_limits: %s", limits.model_active_limits)
+            msg.debug("[after]: limits.world_max_limits: %s", limits.world_max_limits)
+            msg.debug("[after]: limits.world_active_limits: %s", limits.world_active_limits)
+            msg.debug("[after]: limits.wid: %s", limits.wid)
+            msg.debug("[after]: limits.lid: %s", limits.lid)
+            msg.debug("[after]: limits.jid: %s", limits.jid)
+            msg.debug("[after]: limits.bids:\n%s", limits.bids)
+            msg.debug("[after]: limits.dof: %s", limits.dof)
+            msg.debug("[after]: limits.side: %s", limits.side)
+            msg.debug("[after]: limits.r_q: %s", limits.r_q)
+            msg.debug("[after]: limits.key: %s", limits.key)
+            msg.debug("[after]: limits.reaction: %s", limits.reaction)
+            msg.debug("[after]: limits.velocity: %s", limits.velocity)
 
         # Check the limits
         limits_num_np = limits.world_active_limits.numpy()

@@ -10,6 +10,7 @@ import unittest
 import numpy as np
 
 import newton.tests.kamino.utils.rand as rand
+from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.tests import setup_tests, test_context
 
 ###
@@ -22,6 +23,17 @@ class TestRandomSymmetricMatrix(unittest.TestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
+        else:
+            msg.reset_log_level()
+
+    def tearDown(self):
+        if self.verbose:
+            msg.reset_log_level()
 
     def test_matrix_symmetry(self):
         dim = 5
@@ -70,6 +82,17 @@ class TestRandomProblemCholesky(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
 
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
+        else:
+            msg.reset_log_level()
+
+    def tearDown(self):
+        if self.verbose:
+            msg.reset_log_level()
+
     def test_generate_small_lower(self):
         dim = 10
         problem = rand.RandomProblemLLT(dims=[dim], seed=42, upper=False)
@@ -94,6 +117,17 @@ class TestRandomProblemLDLT(unittest.TestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
+
+        # Set debug-level logging to print verbose test output to console
+        if self.verbose:
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
+        else:
+            msg.reset_log_level()
+
+    def tearDown(self):
+        if self.verbose:
+            msg.reset_log_level()
 
     def test_generate_small_lower(self):
         dim = 10

@@ -29,7 +29,7 @@ class TestContactAggregation(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.INFO)
+            msg.set_log_level(msg.LogLevel.DEBUG)
         else:
             msg.reset_log_level()
 
@@ -79,7 +79,7 @@ class TestContactAggregation(unittest.TestCase):
             cwid = int(wid_np[c])
             bid_A = max(-1, int(bid_AB_np[c, 0]) - world_body_start[cwid])
             bid_B = max(-1, int(bid_AB_np[c, 1]) - world_body_start[cwid])
-            msg.info(f"Contact {c}: wid={cwid}, bid_A={bid_A}, bid_B={bid_B}")
+            msg.debug(f"Contact {c}: wid={cwid}, bid_A={bid_A}, bid_B={bid_B}")
             # First nunchaku box body
             if bid_B == 0 and bid_A == -1:
                 contact_reaction_np[c, :] = np.array([1.0, 0.0, 0.0])  # Force in +x direction
@@ -90,7 +90,7 @@ class TestContactAggregation(unittest.TestCase):
             elif bid_B == 2 and bid_A == -1:
                 contact_reaction_np[c, :] = np.array([0.0, 0.0, 1.0])  # Force in +z direction
         detector.contacts.reaction.assign(contact_reaction_np)
-        msg.info("contacts.reaction:\n%s", detector.contacts.reaction.numpy())
+        msg.debug("contacts.reaction:\n%s", detector.contacts.reaction.numpy())
 
         # Enable the mode of active contacts to ensure all contacts are processed by the aggregator
         contact_mode_np = detector.contacts.mode.numpy().copy()
@@ -101,11 +101,11 @@ class TestContactAggregation(unittest.TestCase):
         aggregator.compute()
 
         # Optional debug output
-        msg.info("aggregator.body_net_force:\n%s", aggregator.body_net_force)
-        msg.info("aggregator.body_contact_flag:\n%s", aggregator.body_contact_flag)
-        msg.info("aggregator.body_static_contact_flag:\n%s", aggregator.body_static_contact_flag)
-        msg.info("aggregator.geom_net_force:\n%s", aggregator.geom_net_force)
-        msg.info("aggregator.geom_contact_flag:\n%s", aggregator.geom_contact_flag)
+        msg.debug("aggregator.body_net_force:\n%s", aggregator.body_net_force)
+        msg.debug("aggregator.body_contact_flag:\n%s", aggregator.body_contact_flag)
+        msg.debug("aggregator.body_static_contact_flag:\n%s", aggregator.body_static_contact_flag)
+        msg.debug("aggregator.geom_net_force:\n%s", aggregator.geom_net_force)
+        msg.debug("aggregator.geom_contact_flag:\n%s", aggregator.geom_contact_flag)
 
         # Test results: check that the aggregated net forces on bodies and
         # geoms match expected values based on the contact reactions we set

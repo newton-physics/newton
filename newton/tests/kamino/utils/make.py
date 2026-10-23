@@ -30,11 +30,12 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
 )
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 from .print import (
-    print_data_info,
-    print_model_constraint_info,
+    debug_print_data_info,
+    debug_print_model_constraint_info,
 )
 
 ###
@@ -197,7 +198,6 @@ def make_test_problem(
     with_limits: bool = False,
     with_contacts: bool = False,
     dt: float = 0.001,
-    verbose: bool = False,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino | None, ContactsKamino | None]:
     # Configure model time-steps
     model.time.dt.fill_(wp.float32(dt))
@@ -226,54 +226,51 @@ def make_test_problem(
         limits=limits,
         contacts=contacts,
     )
-    if verbose:
-        print("")  # Add a newline for better readability
-        print_model_constraint_info(model)
-        print_data_info(data)
-        print("\n")  # Add a newline for better readability
+    msg.debug("")  # Add a newline for better readability
+    debug_print_model_constraint_info(model)
+    debug_print_data_info(data)
+    msg.debug("\n")  # Add a newline for better readability
 
-    # If a set-state callback is provided, perturb the system
-    # NOTE: This is done to potentially trigger
-    # joint limits and contacts to become active
+    # If a set-state callback is provided, perturb the system to potentially trigger
+    # joint limits and contacts to become active.
     if set_state_fn is not None:
         set_state_fn(model=model, data=data)
+    if msg.is_enabled_for(msg.LogLevel.DEBUG):
         wp.synchronize()
-    if verbose:
-        print("data.bodies.q_i:\n", data.bodies.q_i)
-        print("data.bodies.u_i:\n\n", data.bodies.u_i)
+        msg.debug(f"data.bodies.q_i:\n {data.bodies.q_i}")
+        msg.debug(f"data.bodies.u_i:\n\n {data.bodies.u_i}")
 
     # Compute the joints state
     compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
-    wp.synchronize()
-    if verbose:
-        print("data.joints.p_j:\n", data.joints.p_j)
-        print("data.joints.r_j:\n", data.joints.r_j)
-        print("data.joints.dr_j:\n", data.joints.dr_j)
-        print("data.joints.q_j:\n", data.joints.q_j)
-        print("data.joints.dq_j:\n\n", data.joints.dq_j)
+    if msg.is_enabled_for(msg.LogLevel.DEBUG):
+        wp.synchronize()
+        msg.debug(f"data.joints.p_j:\n {data.joints.p_j}")
+        msg.debug(f"data.joints.r_j:\n {data.joints.r_j}")
+        msg.debug(f"data.joints.dr_j:\n {data.joints.dr_j}")
+        msg.debug(f"data.joints.q_j:\n {data.joints.q_j}")
+        msg.debug(f"data.joints.dq_j:\n\n {data.joints.dq_j}")
 
     # Run limit detection to generate active limits
     if with_limits:
         limits.detect(q_j=data.joints.q_j)
-        wp.synchronize()
-        if verbose:
-            print(f"limits.world_active_limits: {limits.world_active_limits}")
-            print(f"data.info.num_limits: {data.info.num_limits}\n\n")
+        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+            wp.synchronize()
+            msg.debug(f"limits.world_active_limits: {limits.world_active_limits}")
+            msg.debug(f"data.info.num_limits: {data.info.num_limits}\n\n")
 
     # Run collision detection to generate active contacts
     if with_contacts:
         detector.collide(data)
-        wp.synchronize()
-        if verbose:
-            print(f"contacts.world_active_contacts: {detector.contacts.world_active_contacts}")
-            print(f"data.info.num_contacts: {data.info.num_contacts}\n\n")
+        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+            wp.synchronize()
+            msg.debug(f"contacts.world_active_contacts: {detector.contacts.world_active_contacts}")
+            msg.debug(f"data.info.num_contacts: {data.info.num_contacts}\n\n")
 
     # Update the constraints info
     update_constraints_info(model=model, data=data)
-    if verbose:
-        print("")  # Add a newline for better readability
-        print_data_info(data)
-        print("\n")  # Add a newline for better readability
+    msg.debug("")  # Add a newline for better readability
+    debug_print_data_info(data)
+    msg.debug("\n")  # Add a newline for better readability
     wp.synchronize()
 
     # Return the problem data containers
@@ -399,7 +396,6 @@ def make_test_problem_fourbar(
     with_limits: bool = False,
     with_contacts: bool = False,
     with_implicit_joints: bool = True,
-    verbose: bool = False,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino | None, ContactsKamino | None]:
     # Define the problem using the public ModelBuilder, then convert to a ModelKamino
     builder = ModelBuilder()
@@ -416,7 +412,6 @@ def make_test_problem_fourbar(
         max_world_contacts=max_world_contacts,
         with_limits=with_limits,
         with_contacts=with_contacts,
-        verbose=verbose,
     )
 
 
@@ -426,7 +421,6 @@ def make_test_problem_heterogeneous(
     with_limits: bool = False,
     with_contacts: bool = False,
     with_implicit_joints: bool = True,
-    verbose: bool = False,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino | None, ContactsKamino | None]:
     # Define the problem using the public ModelBuilder, then convert to a ModelKamino
     builder = make_basics_heterogeneous_builder(
@@ -441,5 +435,4 @@ def make_test_problem_heterogeneous(
         max_world_contacts=max_world_contacts,
         with_limits=with_limits,
         with_contacts=with_contacts,
-        verbose=verbose,
     )

@@ -52,8 +52,8 @@ class TestModel(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
             msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -68,15 +68,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, builder.body_count)
@@ -99,15 +97,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder1.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         data = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(data)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(data)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, total_nb)
@@ -124,15 +120,13 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.size.sum_of_num_bodies, num_worlds * 2)
@@ -147,19 +141,17 @@ class TestModel(unittest.TestCase):
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_model_info(model)
-            print("")  # Add a newline for better readability
-            print_utils.print_model_bodies(model)
-            print("")  # Add a newline for better readability
-            print_utils.print_model_joints(model)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_info(model)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_bodies(model)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_model_joints(model)
 
         # Create a model state
         state = model.data()
-        if self.verbose:
-            print("")  # Add a newline for better readability
-            print_utils.print_data_info(state)
+        msg.debug("")  # Add a newline for better readability
+        print_utils.debug_print_data_info(state)
 
         # Check the model info entries
         self.assertEqual(model.info.num_worlds, num_worlds)
@@ -174,8 +166,8 @@ class TestModelConversions(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)  # TODO @nvtw: set this to DEBUG when investigating noted issues
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -1086,8 +1078,8 @@ class TestStateControlConversions(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)  # TODO @nvtw: set this to DEBUG when investigating noted issues
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 

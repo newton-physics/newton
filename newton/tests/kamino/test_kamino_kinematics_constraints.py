@@ -16,7 +16,7 @@ from newton._src.solvers.kamino._src.kinematics.constraints import make_unilater
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
-from newton.tests.kamino.utils.print import print_data_info, print_model_constraint_info
+from newton.tests.kamino.utils.print import debug_print_data_info, debug_print_model_constraint_info
 from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 ###
@@ -42,8 +42,8 @@ class TestKinematicsConstraints(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.INFO)
+            msg.set_log_level(msg.LogLevel.DEBUG)
+            msg.debug("\n")  # Add newline before test output for better readability
         else:
             msg.reset_log_level()
 
@@ -64,31 +64,28 @@ class TestKinematicsConstraints(unittest.TestCase):
 
         # Create the model from the builder
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        msg.info(f"model.joints.bilateral_cts_offset:\n{model.joints.bilateral_cts_offset}")
-        msg.info(f"model.joints.dynamic_cts_offset:\n{model.joints.dynamic_cts_offset}")
-        msg.info(f"model.joints.kinematic_cts_offset:\n{model.joints.kinematic_cts_offset}")
+        msg.debug(f"model.joints.bilateral_cts_offset:\n{model.joints.bilateral_cts_offset}")
+        msg.debug(f"model.joints.dynamic_cts_offset:\n{model.joints.dynamic_cts_offset}")
+        msg.debug(f"model.joints.kinematic_cts_offset:\n{model.joints.kinematic_cts_offset}")
 
         # Create a model data
         data = model.data(device=self.default_device)
 
         # Create a  limits container
         limits = LimitsKamino(model=model)
-        if self.verbose:
-            print("")
-            print("limits.model_max_limits_host: ", limits.model_max_limits_host)
-            print("limits.world_max_limits_host: ", limits.world_max_limits_host)
+        msg.debug("")
+        msg.debug(f"limits.model_max_limits_host:  {limits.model_max_limits_host}")
+        msg.debug(f"limits.world_max_limits_host:  {limits.world_max_limits_host}")
 
         # Set the contact allocation capacities
         required_world_max_contacts = [max_world_contacts] * builder.world_count
-        if self.verbose:
-            print("required_world_max_contacts: ", required_world_max_contacts)
+        msg.debug(f"required_world_max_contacts:  {required_world_max_contacts}")
 
         # Construct and allocate the contacts container
         contacts = ContactsKamino(capacity=required_world_max_contacts, device=self.default_device)
-        if self.verbose:
-            print("contacts.default_max_world_contacts: ", contacts.default_max_world_contacts)
-            print("contacts.model_max_contacts_host: ", contacts.model_max_contacts_host)
-            print("contacts.world_max_contacts_host: ", contacts.world_max_contacts_host)
+        msg.debug(f"contacts.default_max_world_contacts:  {contacts.default_max_world_contacts}")
+        msg.debug(f"contacts.model_max_contacts_host:  {contacts.model_max_contacts_host}")
+        msg.debug(f"contacts.world_max_contacts_host:  {contacts.world_max_contacts_host}")
 
         # Create the constraints info
         make_unilateral_constraints_info(
@@ -97,10 +94,9 @@ class TestKinematicsConstraints(unittest.TestCase):
             limits=limits,
             contacts=contacts,
         )
-        if self.verbose:
-            print(f"model.size:\n{model.size}\n\n")
-            print_model_constraint_info(model)
-            print_data_info(data)
+        msg.debug(f"model.size:\n{model.size}\n\n")
+        debug_print_model_constraint_info(model)
+        debug_print_data_info(data)
 
     def test_02_homogeneous_model_make_constraints(self):
         """
@@ -116,31 +112,28 @@ class TestKinematicsConstraints(unittest.TestCase):
 
         # Create the model from the builder
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
-        msg.info(f"model.joints.bilateral_cts_offset:\n{model.joints.bilateral_cts_offset}")
-        msg.info(f"model.joints.dynamic_cts_offset:\n{model.joints.dynamic_cts_offset}")
-        msg.info(f"model.joints.kinematic_cts_offset:\n{model.joints.kinematic_cts_offset}")
+        msg.debug(f"model.joints.bilateral_cts_offset:\n{model.joints.bilateral_cts_offset}")
+        msg.debug(f"model.joints.dynamic_cts_offset:\n{model.joints.dynamic_cts_offset}")
+        msg.debug(f"model.joints.kinematic_cts_offset:\n{model.joints.kinematic_cts_offset}")
 
         # Create a model data
         data = model.data(device=self.default_device)
 
         # Create a  limits container
         limits = LimitsKamino(model=model)
-        if self.verbose:
-            print("")
-            print("limits.model_max_limits_host: ", limits.model_max_limits_host)
-            print("limits.world_max_limits_host: ", limits.world_max_limits_host)
+        msg.debug("")
+        msg.debug(f"limits.model_max_limits_host:  {limits.model_max_limits_host}")
+        msg.debug(f"limits.world_max_limits_host:  {limits.world_max_limits_host}")
 
         # Set the contact allocation capacities
         required_world_max_contacts = [max_world_contacts] * builder.world_count
-        if self.verbose:
-            print("required_world_max_contacts: ", required_world_max_contacts)
+        msg.debug(f"required_world_max_contacts:  {required_world_max_contacts}")
 
         # Construct and allocate the contacts container
         contacts = ContactsKamino(capacity=required_world_max_contacts, device=self.default_device)
-        if self.verbose:
-            print("contacts.default_max_world_contacts: ", contacts.default_max_world_contacts)
-            print("contacts.model_max_contacts_host: ", contacts.model_max_contacts_host)
-            print("contacts.world_max_contacts_host: ", contacts.world_max_contacts_host)
+        msg.debug(f"contacts.default_max_world_contacts:  {contacts.default_max_world_contacts}")
+        msg.debug(f"contacts.model_max_contacts_host:  {contacts.model_max_contacts_host}")
+        msg.debug(f"contacts.world_max_contacts_host:  {contacts.world_max_contacts_host}")
 
         # Create the constraints info
         make_unilateral_constraints_info(
@@ -149,14 +142,13 @@ class TestKinematicsConstraints(unittest.TestCase):
             limits=limits,
             contacts=contacts,
         )
-        if self.verbose:
-            print_model_constraint_info(model)
-            print_data_info(data)
-            print("\n===============================================================")
-            print("data.info.num_limits.ptr: ", data.info.num_limits.ptr)
-            print("limits.world_active_limits.ptr: ", limits.world_active_limits.ptr)
-            print("data.info.num_contacts.ptr: ", data.info.num_contacts.ptr)
-            print("contacts.world_active_contacts.ptr: ", contacts.world_active_contacts.ptr)
+        debug_print_model_constraint_info(model)
+        debug_print_data_info(data)
+        msg.debug("\n===============================================================")
+        msg.debug(f"data.info.num_limits.ptr:  {data.info.num_limits.ptr}")
+        msg.debug(f"limits.world_active_limits.ptr:  {limits.world_active_limits.ptr}")
+        msg.debug(f"data.info.num_contacts.ptr:  {data.info.num_contacts.ptr}")
+        msg.debug(f"contacts.world_active_contacts.ptr:  {contacts.world_active_contacts.ptr}")
 
         # Check if the data info entity counters point to the same arrays as the limits and contacts containers
         self.assertTrue(data.info.num_limits.ptr, limits.world_active_limits.ptr)
@@ -225,22 +217,19 @@ class TestKinematicsConstraints(unittest.TestCase):
 
         # Create a  limits container
         limits = LimitsKamino(model=model)
-        if self.verbose:
-            print("")
-            print("limits.model_max_limits_host: ", limits.model_max_limits_host)
-            print("limits.world_max_limits_host: ", limits.world_max_limits_host)
+        msg.debug("")
+        msg.debug(f"limits.model_max_limits_host:  {limits.model_max_limits_host}")
+        msg.debug(f"limits.world_max_limits_host:  {limits.world_max_limits_host}")
 
         # Set the contact allocation capacities
         required_world_max_contacts = [max_world_contacts] * builder.world_count
-        if self.verbose:
-            print("required_world_max_contacts: ", required_world_max_contacts)
+        msg.debug(f"required_world_max_contacts:  {required_world_max_contacts}")
 
         # Construct and allocate the contacts container
         contacts = ContactsKamino(capacity=required_world_max_contacts, device=self.default_device)
-        if self.verbose:
-            print("contacts.default_max_world_contacts: ", contacts.default_max_world_contacts)
-            print("contacts.model_max_contacts_host: ", contacts.model_max_contacts_host)
-            print("contacts.world_max_contacts_host: ", contacts.world_max_contacts_host)
+        msg.debug(f"contacts.default_max_world_contacts:  {contacts.default_max_world_contacts}")
+        msg.debug(f"contacts.model_max_contacts_host:  {contacts.model_max_contacts_host}")
+        msg.debug(f"contacts.world_max_contacts_host:  {contacts.world_max_contacts_host}")
 
         # Create the constraints info
         make_unilateral_constraints_info(
@@ -249,14 +238,13 @@ class TestKinematicsConstraints(unittest.TestCase):
             limits=limits,
             contacts=contacts,
         )
-        if self.verbose:
-            print_model_constraint_info(model)
-            print_data_info(data)
-            print("\n===============================================================")
-            print("data.info.num_limits.ptr: ", data.info.num_limits.ptr)
-            print("limits.world_active_limits.ptr: ", limits.world_active_limits.ptr)
-            print("data.info.num_contacts.ptr: ", data.info.num_contacts.ptr)
-            print("contacts.world_active_contacts.ptr: ", contacts.world_active_contacts.ptr)
+        debug_print_model_constraint_info(model)
+        debug_print_data_info(data)
+        msg.debug("\n===============================================================")
+        msg.debug(f"data.info.num_limits.ptr:  {data.info.num_limits.ptr}")
+        msg.debug(f"limits.world_active_limits.ptr:  {limits.world_active_limits.ptr}")
+        msg.debug(f"data.info.num_contacts.ptr:  {data.info.num_contacts.ptr}")
+        msg.debug(f"contacts.world_active_contacts.ptr:  {contacts.world_active_contacts.ptr}")
 
         # Check if the data info entity counters point to the same arrays as the limits and contacts containers
         self.assertTrue(data.info.num_limits.ptr, limits.world_active_limits.ptr)
