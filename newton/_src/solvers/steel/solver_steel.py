@@ -9654,6 +9654,7 @@ class SolverSteel(SolverBase):
         self._launch_tree_fk(
             "public",
             [
+                None,  # The tree plan already supplies the traversal order.
                 model.joint_articulation,
                 state_out.joint_q,
                 state_out.joint_qd,
@@ -9670,6 +9671,7 @@ class SolverSteel(SolverBase):
                 model.body_flags,
                 int(BodyFlags.ALL),
                 self._dynamics_art_active,
+                None,
             ],
             [state_out.body_q, state_out.body_qd],
         )

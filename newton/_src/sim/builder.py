@@ -15256,6 +15256,30 @@ class ModelBuilder:
             m.joint_qd_start = wp.array(joint_qd_start, dtype=wp.int32)
             m.articulation_start = wp.array(articulation_start, dtype=wp.int32)
             m.articulation_end = wp.array(articulation_end, dtype=wp.int32)
+
+            # Serial ordering is local to each articulation, even when shared
+            # bodies or non-tree articulations disable the tiled schedule.
+            joint_indices = np.arange(self.joint_count, dtype=np.int32)
+            unordered_articulations = np.unique(
+                joint_articulation_np[(joint_articulation_np >= 0) & (parent_joint > joint_indices)]
+            )
+            if len(unordered_articulations):
+                from ..utils import topological_sort  # noqa: PLC0415
+
+                fk_joint_order = joint_indices.copy()
+                for art_idx in unordered_articulations:
+                    start, end = articulation_start[art_idx], articulation_end[art_idx]
+                    joints = [(int(joint_parent_np[i]), int(joint_child_np[i])) for i in range(start, end)]
+                    try:
+                        order = topological_sort(joints, custom_indices=range(start, end), use_dfs=False)
+                    except ValueError:
+                        # Preserve the legacy order for non-tree articulations.
+                        continue
+                    if len(order) == end - start:
+                        fk_joint_order[start:end] = order
+                if not np.array_equal(fk_joint_order, joint_indices):
+                    m._fk_joint_order = wp.array(fk_joint_order, dtype=wp.int32)
+
             from .articulation_cuda import FK_TILE_MAX_LEVEL_WIDTH  # noqa: PLC0415
 
             fk_topology = _build_fk_level_topology(

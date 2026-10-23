@@ -32,6 +32,7 @@ class IKJacobianType(Enum):
 def _eval_fk_articulation_batched(
     articulation_start: wp.array[wp.int32],
     articulation_end: wp.array[wp.int32],
+    joint_order: wp.array[int],
     joint_articulation: wp.array[int],
     joint_q: wp.array2d[wp.float32],
     joint_qd: wp.array2d[wp.float32],
@@ -46,6 +47,7 @@ def _eval_fk_articulation_batched(
     joint_dof_dim: wp.array2d[wp.int32],
     body_com: wp.array[wp.vec3],
     body_flags: wp.array[wp.int32],
+    joint_mask: wp.array[bool],
     body_q: wp.array2d[wp.transform],
     body_qd: wp.array2d[wp.spatial_vector],
 ):
@@ -57,6 +59,7 @@ def _eval_fk_articulation_batched(
     eval_single_articulation_fk(
         joint_start,
         joint_end,
+        joint_order,
         joint_articulation,
         joint_q[problem_idx],
         joint_qd[problem_idx],
@@ -72,6 +75,7 @@ def _eval_fk_articulation_batched(
         body_com,
         body_flags,
         int(BodyFlags.ALL),
+        joint_mask,
         body_q[problem_idx],
         body_qd[problem_idx],
     )
@@ -86,6 +90,7 @@ def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
         inputs=[
             model.articulation_start,
             model.articulation_end,
+            model._fk_joint_order,
             model.joint_articulation,
             joint_q,
             joint_qd,
@@ -100,6 +105,7 @@ def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
             model.joint_dof_dim,
             model.body_com,
             model.body_flags,
+            None,
         ],
         outputs=[body_q, body_qd],
         device=model.device,
