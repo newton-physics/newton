@@ -17,8 +17,8 @@ from warp._src import types as warp_types
 
 from ..core.types import override
 from ..geometry import Mesh
+from ..geometry.deformable_visual import DeformableVisualMesh
 from ..sim import Model, State
-from ..sim.deformable_visual import DeformableVisualMesh
 from ..sim.shape_contact_pairs import _ShapeContactPairs
 from .viewer import ViewerBase
 

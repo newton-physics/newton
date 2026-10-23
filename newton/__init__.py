@@ -23,6 +23,8 @@ __all__ = [
 # ==================================================================================
 from ._src.geometry import (
     SDF,
+    DeformableVisualMesh,
+    DeformableVisuals,
     Gaussian,
     GeoType,
     Heightfield,
@@ -35,6 +37,8 @@ from ._src.geometry import (
 
 __all__ += [
     "SDF",
+    "DeformableVisualMesh",
+    "DeformableVisuals",
     "Gaussian",
     "GeoType",
     "Heightfield",
@@ -54,8 +58,6 @@ from ._src.sim import (  # noqa: E402
     CollisionSubstepScheduler,
     Contacts,
     Control,
-    DeformableVisualMesh,
-    DeformableVisuals,
     JointTargetMode,
     JointType,
     Model,
@@ -83,8 +85,6 @@ __all__ += [
     "CollisionSubstepScheduler",
     "Contacts",
     "Control",
-    "DeformableVisualMesh",
-    "DeformableVisuals",
     "JointTargetMode",
     "JointType",
     "Model",

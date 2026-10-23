@@ -16,7 +16,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
+from newton._src.geometry.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
 from newton._src.viewer.viewer_file import HAS_CBOR2
 from newton.exceptions import NewtonWarning
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal

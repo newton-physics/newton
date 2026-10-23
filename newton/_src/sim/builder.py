@@ -65,6 +65,7 @@ from ..geometry import (
     compute_shape_radius,
     transform_inertia,
 )
+from ..geometry.deformable_visual import DeformableVisualMesh
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
@@ -77,7 +78,6 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
-from .deformable_visual import DeformableVisualMesh
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -12708,7 +12708,7 @@ class ModelBuilder:
         every owning tet (gaps, surface overhang) is clamped to the nearest owning
         tet by centroid distance and a warning-level log is emitted.
         """
-        from .deformable_visual_binding import embed_tetrahedra  # noqa: PLC0415
+        from ..geometry.deformable_visual_binding import embed_tetrahedra  # noqa: PLC0415
 
         lo, hi = tet_range
         tet_idx = np.asarray(self.tet_indices, dtype=np.int64).reshape(-1, 4)[lo:hi]
@@ -12767,7 +12767,7 @@ class ModelBuilder:
         stored; the normal offset from the surface is dropped by design (the
         skinned vertex lies on the simulation surface).
         """
-        from .deformable_visual_binding import embed_triangles  # noqa: PLC0415
+        from ..geometry.deformable_visual_binding import embed_triangles  # noqa: PLC0415
 
         lo, hi = tri_range
         tri_idx = np.asarray(self.tri_indices, dtype=np.int64).reshape(-1, 3)[lo:hi]
