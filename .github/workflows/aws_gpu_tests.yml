@@ -358,6 +358,9 @@ jobs:
           name: coverage-gpu
       - name: Upload coverage reports to Codecov
         if: ${{ steps.download-coverage.outcome == 'success' }}
+        # A Codecov error should not fail the nightly run and trigger its
+        # failure notification. Pushes to main still fail visibly.
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           disable_search: true

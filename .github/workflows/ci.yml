@@ -342,7 +342,8 @@ jobs:
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload coverage reports to Codecov
-        if: ${{ steps.download-coverage.outcome == 'success' }}
+        # Run even if the test results upload failed.
+        if: ${{ !cancelled() && steps.download-coverage.outcome == 'success' }}
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           disable_search: true

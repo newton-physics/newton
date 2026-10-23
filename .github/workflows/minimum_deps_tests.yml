@@ -187,7 +187,7 @@ jobs:
     if: >-
       !cancelled() &&
       github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.event_name == 'workflow_dispatch' &&
       needs.minimum-deps-tests.result != 'skipped'
     runs-on: ubuntu-latest
     # Same-run artifact downloads use the runtime token, not GITHUB_TOKEN.
