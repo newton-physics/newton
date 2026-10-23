@@ -3,6 +3,7 @@
 
 """Unit tests for the Proximal-ADMM Solver."""
 
+import logging
 import unittest
 from typing import Any
 
@@ -21,7 +22,7 @@ from newton._src.solvers.kamino._src.solvers.padmm.math import (
     project_to_coulomb_cone,
     project_to_coulomb_dual_cone,
 )
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
     extract_delassus,
@@ -30,6 +31,8 @@ from newton.tests.kamino.utils.extract import (
 )
 from newton.tests.kamino.utils.make import make_containers, update_containers
 from newton.tests.utils import basics
+
+logger = logging.getLogger(__name__)
 
 ###
 # Helper functions
@@ -115,12 +118,12 @@ class TestSetup:
 
 
 def print_dual_problem_summary(D: np.ndarray, v_f: np.ndarray, notes: str = ""):
-    if not msg.is_enabled_for(msg.LogLevel.DEBUG):
+    if not logger.isEnabledFor(logging.DEBUG):
         return
     D_props = SquareSymmetricMatrixProperties(D)
     v_f_is_in_range, *_ = in_range_via_gaussian_elimination(D, v_f)
-    msg.debug("Delassus Properties %s:\n%s\n", notes, D_props)
-    msg.debug("v_f is in range of D %s: %s\n", notes, v_f_is_in_range)
+    logger.debug("Delassus Properties %s:\n%s\n", notes, D_props)
+    logger.debug("v_f is in range of D %s: %s\n", notes, v_f_is_in_range)
 
 
 def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: DualProblem, solver: PADMMSolver):
@@ -162,10 +165,10 @@ def check_padmm_solution(test: unittest.TestCase, model: ModelKamino, problem: D
         r_c = status[w]["r_c"]
 
         # Optionally print relevant solver data
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+        if logger.isEnabledFor(logging.DEBUG):
             print_dual_problem_summary(D, v_f_wp_np[w], "(preconditioned)")
             print_dual_problem_summary(D_true, v_f_true)
-            msg.debug(
+            logger.debug(
                 "\n---------"
                 "\nconverged: %s"
                 "\niterations: %s"
@@ -363,33 +366,33 @@ def save_solver_info(solver: PADMMSolver, path: str | None = None):
         r_comb_ratio_np = extract_info_vectors(offsets_np, solver.data.info.r_comb_ratio.numpy(), iterations)
 
     # Optional verbose output
-    if msg.is_enabled_for(msg.LogLevel.DEBUG):
+    if logger.isEnabledFor(logging.DEBUG):
         for w in range(nw):
-            msg.debug("[World %s] =======================================================================", w)
-            msg.debug("solver.info.num_rho_updates: %s", num_rho_updates_np[w])
-            msg.debug("solver.info.norm_s: %s", norm_s_np[w])
-            msg.debug("solver.info.norm_x: %s", norm_x_np[w])
-            msg.debug("solver.info.norm_y: %s", norm_y_np[w])
-            msg.debug("solver.info.norm_z: %s", norm_z_np[w])
-            msg.debug("solver.info.f_ccp: %s", f_ccp_np[w])
-            msg.debug("solver.info.f_ncp: %s", f_ncp_np[w])
-            msg.debug("solver.info.r_dx: %s", r_dx_np[w])
-            msg.debug("solver.info.r_dy: %s", r_dy_np[w])
-            msg.debug("solver.info.r_dz: %s", r_dz_np[w])
-            msg.debug("solver.info.r_primal: %s", r_primal_np[w])
-            msg.debug("solver.info.r_dual: %s", r_dual_np[w])
-            msg.debug("solver.info.r_compl: %s", r_compl_np[w])
-            msg.debug("solver.info.r_pd: %s", r_pd_np[w])
-            msg.debug("solver.info.r_dp: %s", r_dp_np[w])
-            msg.debug("solver.info.r_ncp_primal: %s", r_ncp_primal_np[w])
-            msg.debug("solver.info.r_ncp_dual: %s", r_ncp_dual_np[w])
-            msg.debug("solver.info.r_ncp_compl: %s", r_ncp_compl_np[w])
-            msg.debug("solver.info.r_ncp_natmap: %s", r_ncp_natmap_np[w])
+            logger.debug("[World %s] =======================================================================", w)
+            logger.debug("solver.info.num_rho_updates: %s", num_rho_updates_np[w])
+            logger.debug("solver.info.norm_s: %s", norm_s_np[w])
+            logger.debug("solver.info.norm_x: %s", norm_x_np[w])
+            logger.debug("solver.info.norm_y: %s", norm_y_np[w])
+            logger.debug("solver.info.norm_z: %s", norm_z_np[w])
+            logger.debug("solver.info.f_ccp: %s", f_ccp_np[w])
+            logger.debug("solver.info.f_ncp: %s", f_ncp_np[w])
+            logger.debug("solver.info.r_dx: %s", r_dx_np[w])
+            logger.debug("solver.info.r_dy: %s", r_dy_np[w])
+            logger.debug("solver.info.r_dz: %s", r_dz_np[w])
+            logger.debug("solver.info.r_primal: %s", r_primal_np[w])
+            logger.debug("solver.info.r_dual: %s", r_dual_np[w])
+            logger.debug("solver.info.r_compl: %s", r_compl_np[w])
+            logger.debug("solver.info.r_pd: %s", r_pd_np[w])
+            logger.debug("solver.info.r_dp: %s", r_dp_np[w])
+            logger.debug("solver.info.r_ncp_primal: %s", r_ncp_primal_np[w])
+            logger.debug("solver.info.r_ncp_dual: %s", r_ncp_dual_np[w])
+            logger.debug("solver.info.r_ncp_compl: %s", r_ncp_compl_np[w])
+            logger.debug("solver.info.r_ncp_natmap: %s", r_ncp_natmap_np[w])
             if solver_has_acceleration:
-                msg.debug("solver.info.num_restarts: %s", num_restarts_np[w])
-                msg.debug("solver.info.a: %s", a_np[w])
-                msg.debug("solver.info.r_comb: %s", r_comb_np[w])
-                msg.debug("solver.info.r_comb_ratio: %s", r_comb_ratio_np[w])
+                logger.debug("solver.info.num_restarts: %s", num_restarts_np[w])
+                logger.debug("solver.info.a: %s", a_np[w])
+                logger.debug("solver.info.r_comb: %s", r_comb_np[w])
+                logger.debug("solver.info.r_comb_ratio: %s", r_comb_ratio_np[w])
 
     # List of (label, data) for plotting
     info_list = [
@@ -466,15 +469,15 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_00_make_padmm_default(self):
         """
@@ -552,7 +555,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.info("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_02_padmm_solve.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -597,7 +600,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.info("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_03_padmm_solve_with_acceleration.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -650,7 +653,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.info("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_04_padmm_solve_with_internal_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -698,7 +701,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.info("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_05_padmm_solve_with_container_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -746,7 +749,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.info("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_06_padmm_solve_with_acceleration_and_internal_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -795,7 +798,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig:
-            msg.info("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_07_padmm_solve_with_acceleration_and_container_warmstart.pdf"
             save_solver_info(solver=solver, path=str(path))
 
@@ -818,7 +821,7 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Extract solver info
         if self.savefig and solver.data.info is not None:
-            msg.info("Generating solver info plots...")
+            logger.info("Generating solver info plots...")
             path = self.output_path / "test_08_padmm_solve.pdf"
             save_solver_info(solver=solver, path=str(path))
 

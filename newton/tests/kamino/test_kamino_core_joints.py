@@ -3,14 +3,17 @@
 
 """Unit tests for the `kamino.core.joints` module"""
 
+import logging
 import unittest
 
 import numpy as np
 import warp as wp
 
 from newton._src.solvers.kamino._src.core.joints import JointDoFType
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -43,27 +46,27 @@ class TestCoreJoints(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_joint_dof_type_enum(self):
         doftype = JointDoFType.REVOLUTE
 
         # Optional verbose output
-        msg.debug("doftype: %s", doftype)
-        msg.debug("doftype.value: %s", doftype.value)
-        msg.debug("doftype.name: %s", doftype.name)
-        msg.debug("doftype.num_cts: %s", doftype.num_cts)
-        msg.debug("doftype.num_dofs: %s", doftype.num_dofs)
-        msg.debug("doftype.cts_axes: %s", doftype.cts_axes)
-        msg.debug("doftype.dofs_axes: %s", doftype.dofs_axes)
+        logger.debug("doftype: %s", doftype)
+        logger.debug("doftype.value: %s", doftype.value)
+        logger.debug("doftype.name: %s", doftype.name)
+        logger.debug("doftype.num_cts: %s", doftype.num_cts)
+        logger.debug("doftype.num_dofs: %s", doftype.num_dofs)
+        logger.debug("doftype.cts_axes: %s", doftype.cts_axes)
+        logger.debug("doftype.dofs_axes: %s", doftype.dofs_axes)
 
         # Check the enum values
         self.assertEqual(doftype.value, JointDoFType.REVOLUTE)

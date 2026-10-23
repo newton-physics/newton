@@ -3,6 +3,7 @@
 
 """Unit tests for `geometry/aggregation.py`"""
 
+import logging
 import unittest
 
 import numpy as np
@@ -11,9 +12,11 @@ import warp as wp
 from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry import CollisionDetector, ContactAggregation, ContactMode
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.utils import basics
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -29,19 +32,19 @@ class TestContactAggregation(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
         self.build_func = basics.build_boxes_nunchaku
         self.expected_contacts = 9  # NOTE: specialized to build_boxes_nunchaku
-        msg.debug("build_func: %s", self.build_func.__name__)
-        msg.debug("expected_contacts: %s", self.expected_contacts)
+        logger.debug("build_func: %s", self.build_func.__name__)
+        logger.debug("expected_contacts: %s", self.expected_contacts)
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_contact_aggregation(self):
         """
@@ -79,7 +82,7 @@ class TestContactAggregation(unittest.TestCase):
             cwid = int(wid_np[c])
             bid_A = max(-1, int(bid_AB_np[c, 0]) - world_body_start[cwid])
             bid_B = max(-1, int(bid_AB_np[c, 1]) - world_body_start[cwid])
-            msg.debug("Contact %s: wid=%s, bid_A=%s, bid_B=%s", c, cwid, bid_A, bid_B)
+            logger.debug("Contact %s: wid=%s, bid_A=%s, bid_B=%s", c, cwid, bid_A, bid_B)
             # First nunchaku box body
             if bid_B == 0 and bid_A == -1:
                 contact_reaction_np[c, :] = np.array([1.0, 0.0, 0.0])  # Force in +x direction
@@ -90,7 +93,7 @@ class TestContactAggregation(unittest.TestCase):
             elif bid_B == 2 and bid_A == -1:
                 contact_reaction_np[c, :] = np.array([0.0, 0.0, 1.0])  # Force in +z direction
         detector.contacts.reaction.assign(contact_reaction_np)
-        msg.debug("contacts.reaction:\n%s", detector.contacts.reaction.numpy())
+        logger.debug("contacts.reaction:\n%s", detector.contacts.reaction.numpy())
 
         # Enable the mode of active contacts to ensure all contacts are processed by the aggregator
         contact_mode_np = detector.contacts.mode.numpy().copy()
@@ -101,11 +104,11 @@ class TestContactAggregation(unittest.TestCase):
         aggregator.compute()
 
         # Optional debug output
-        msg.debug("aggregator.body_net_force:\n%s", aggregator.body_net_force)
-        msg.debug("aggregator.body_contact_flag:\n%s", aggregator.body_contact_flag)
-        msg.debug("aggregator.body_static_contact_flag:\n%s", aggregator.body_static_contact_flag)
-        msg.debug("aggregator.geom_net_force:\n%s", aggregator.geom_net_force)
-        msg.debug("aggregator.geom_contact_flag:\n%s", aggregator.geom_contact_flag)
+        logger.debug("aggregator.body_net_force:\n%s", aggregator.body_net_force)
+        logger.debug("aggregator.body_contact_flag:\n%s", aggregator.body_contact_flag)
+        logger.debug("aggregator.body_static_contact_flag:\n%s", aggregator.body_static_contact_flag)
+        logger.debug("aggregator.geom_net_force:\n%s", aggregator.geom_net_force)
+        logger.debug("aggregator.geom_contact_flag:\n%s", aggregator.geom_contact_flag)
 
         # Test results: check that the aggregated net forces on bodies and
         # geoms match expected values based on the contact reactions we set

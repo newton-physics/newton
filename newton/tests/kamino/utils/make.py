@@ -5,6 +5,7 @@
 Utilities for constructing test problem containers and data.
 """
 
+import logging
 import math
 from collections.abc import Callable
 
@@ -30,13 +31,14 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
 )
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 from .print import (
     debug_print_data_info,
     debug_print_model_constraint_info,
 )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -226,51 +228,51 @@ def make_test_problem(
         limits=limits,
         contacts=contacts,
     )
-    msg.debug("")  # Add a newline for better readability
+    logger.debug("")  # Add a newline for better readability
     debug_print_model_constraint_info(model)
     debug_print_data_info(data)
-    msg.debug("\n")  # Add a newline for better readability
+    logger.debug("\n")  # Add a newline for better readability
 
     # If a set-state callback is provided, perturb the system to potentially trigger
     # joint limits and contacts to become active.
     if set_state_fn is not None:
         set_state_fn(model=model, data=data)
-    if msg.is_enabled_for(msg.LogLevel.DEBUG):
+    if logger.isEnabledFor(logging.DEBUG):
         wp.synchronize()
-        msg.debug("data.bodies.q_i:\n %s", data.bodies.q_i)
-        msg.debug("data.bodies.u_i:\n\n %s", data.bodies.u_i)
+        logger.debug("data.bodies.q_i:\n %s", data.bodies.q_i)
+        logger.debug("data.bodies.u_i:\n\n %s", data.bodies.u_i)
 
     # Compute the joints state
     compute_joints_data(model=model, data=data, q_j_p=wp.zeros_like(data.joints.q_j))
-    if msg.is_enabled_for(msg.LogLevel.DEBUG):
+    if logger.isEnabledFor(logging.DEBUG):
         wp.synchronize()
-        msg.debug("data.joints.p_j:\n %s", data.joints.p_j)
-        msg.debug("data.joints.r_j:\n %s", data.joints.r_j)
-        msg.debug("data.joints.dr_j:\n %s", data.joints.dr_j)
-        msg.debug("data.joints.q_j:\n %s", data.joints.q_j)
-        msg.debug("data.joints.dq_j:\n\n %s", data.joints.dq_j)
+        logger.debug("data.joints.p_j:\n %s", data.joints.p_j)
+        logger.debug("data.joints.r_j:\n %s", data.joints.r_j)
+        logger.debug("data.joints.dr_j:\n %s", data.joints.dr_j)
+        logger.debug("data.joints.q_j:\n %s", data.joints.q_j)
+        logger.debug("data.joints.dq_j:\n\n %s", data.joints.dq_j)
 
     # Run limit detection to generate active limits
     if with_limits:
         limits.detect(q_j=data.joints.q_j)
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+        if logger.isEnabledFor(logging.DEBUG):
             wp.synchronize()
-            msg.debug("limits.world_active_limits: %s", limits.world_active_limits)
-            msg.debug("data.info.num_limits: %s\n\n", data.info.num_limits)
+            logger.debug("limits.world_active_limits: %s", limits.world_active_limits)
+            logger.debug("data.info.num_limits: %s\n\n", data.info.num_limits)
 
     # Run collision detection to generate active contacts
     if with_contacts:
         detector.collide(data)
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+        if logger.isEnabledFor(logging.DEBUG):
             wp.synchronize()
-            msg.debug("contacts.world_active_contacts: %s", detector.contacts.world_active_contacts)
-            msg.debug("data.info.num_contacts: %s\n\n", data.info.num_contacts)
+            logger.debug("contacts.world_active_contacts: %s", detector.contacts.world_active_contacts)
+            logger.debug("data.info.num_contacts: %s\n\n", data.info.num_contacts)
 
     # Update the constraints info
     update_constraints_info(model=model, data=data)
-    msg.debug("")  # Add a newline for better readability
+    logger.debug("")  # Add a newline for better readability
     debug_print_data_info(data)
-    msg.debug("\n")  # Add a newline for better readability
+    logger.debug("\n")  # Add a newline for better readability
     wp.synchronize()
 
     # Return the problem data containers

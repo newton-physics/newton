@@ -3,15 +3,17 @@
 
 """Utilities for simulation data logging and plotting."""
 
+import logging
 import os
 
 import numpy as np
 
 import newton
 
-from .. import logger as msg
 from ..control import JointSpacePIDController
 from .simulator import Simulator
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -65,7 +67,7 @@ class SimulationLogger:
 
         # Warn if multiple worlds are present
         if sim.model.size.num_worlds > 1:
-            msg.warning("SimulationLogger currently only records data from the first world.")
+            logger.warning("SimulationLogger currently only records data from the first world.")
 
         # Attempt to initialize matplotlib for plotting
         self.initialize_plt()
@@ -91,7 +93,7 @@ class SimulationLogger:
         if self._njaq != self._nja:
             self._nja = 0
             self._njaq = 0
-            msg.warning(
+            logger.warning(
                 "Number of actuated joint coordinates (%s) does not match "
                 "number of actuated joints (%s), skipping joint logging.",
                 self._njaq,
@@ -151,7 +153,7 @@ class SimulationLogger:
         TODO
         """
         if self._frames >= self._max_frames:
-            msg.warning("Maximum logging frames reached, skipping data logging.")
+            logger.warning("Maximum logging frames reached, skipping data logging.")
             return
 
         # Log unilateral constraints info
@@ -215,12 +217,12 @@ class SimulationLogger:
         """
         # Attempt to initialize matplotlib
         if self.plt is None:
-            msg.warning("matplotlib is not available, skipping plotting.")
+            logger.warning("matplotlib is not available, skipping plotting.")
             return
 
         # Check if there are any logged frames
         if self._frames == 0:
-            msg.warning("No logged frames to plot, skipping solver info plotting.")
+            logger.warning("No logged frames to plot, skipping solver info plotting.")
             return
 
         # Create an array for time logging
@@ -318,17 +320,17 @@ class SimulationLogger:
         """
         # Attempt to initialize matplotlib
         if self.plt is None:
-            msg.warning("matplotlib is not available, skipping plotting.")
+            logger.warning("matplotlib is not available, skipping plotting.")
             return
 
         # Check if there are any logged frames
         if self._frames == 0:
-            msg.warning("No logged frames to plot, skipping solver info plotting.")
+            logger.warning("No logged frames to plot, skipping solver info plotting.")
             return
 
         # Ensure that joint logging data is available
         if self._njaq == 0 or self._nja == 0:
-            msg.warning("No actuated joints to plot, skipping joint-tracking plotting.")
+            logger.warning("No actuated joints to plot, skipping joint-tracking plotting.")
             return
 
         # Create an array for time logging
@@ -390,17 +392,17 @@ class SimulationLogger:
         """
         # Attempt to initialize matplotlib
         if self.plt is None:
-            msg.warning("matplotlib is not available, skipping plotting.")
+            logger.warning("matplotlib is not available, skipping plotting.")
             return
 
         # Check if there are any logged frames
         if self._frames == 0:
-            msg.warning("No logged frames to plot, skipping solution metrics plotting.")
+            logger.warning("No logged frames to plot, skipping solution metrics plotting.")
             return
 
         # Ensure that solution metrics data is available
         if self._sim.metrics is None:
-            msg.warning("No solution metrics to plot, skipping solution metrics plotting.")
+            logger.warning("No solution metrics to plot, skipping solution metrics plotting.")
             return
 
         # Create an array for time logging

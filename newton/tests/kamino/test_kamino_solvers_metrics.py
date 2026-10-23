@@ -3,6 +3,7 @@
 
 """Unit tests for `solvers/metrics.py`."""
 
+import logging
 import unittest
 
 import numpy as np
@@ -14,7 +15,7 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJac
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.padmm.types import PADMMData
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import (
@@ -25,6 +26,8 @@ from newton.tests.kamino.utils.extract import (
 )
 from newton.tests.utils.basics import build_box_on_plane, build_boxes_hinged
 from newton.tests.utils.testing import build_free_joint_test, build_unary_revolute_joint_test
+
+logger = logging.getLogger(__name__)
 
 ###
 # Helpers
@@ -256,15 +259,15 @@ class TestSolverMetrics(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def _evaluate_contact_residuals(self, contacts: list[tuple[int, int, float]]) -> tuple[np.ndarray, np.ndarray]:
         """Evaluate contact residuals from explicitly supplied signed distances."""
@@ -346,10 +349,10 @@ class TestSolverMetrics(unittest.TestCase):
         self.assertIsNotNone(metrics._buffer_v)
 
         # Check allocation sizes
-        msg.debug("num_worlds: %s", test.model.size.num_worlds)
-        msg.debug("sum_of_max_total_cts: %s", test.model.size.sum_of_max_total_cts)
-        msg.debug("buffer_s size: %s", metrics._buffer_s.size)
-        msg.debug("buffer_v size: %s", metrics._buffer_v.size)
+        logger.debug("num_worlds: %s", test.model.size.num_worlds)
+        logger.debug("sum_of_max_total_cts: %s", test.model.size.sum_of_max_total_cts)
+        logger.debug("buffer_s size: %s", metrics._buffer_s.size)
+        logger.debug("buffer_v size: %s", metrics._buffer_v.size)
         self.assertEqual(metrics._buffer_s.size, test.model.size.sum_of_max_total_cts)
         self.assertEqual(metrics._buffer_v.size, test.model.size.sum_of_max_total_cts)
         self.assertEqual(metrics.data.r_eom.size, test.model.size.num_worlds)
@@ -401,8 +404,8 @@ class TestSolverMetrics(unittest.TestCase):
 
         nl = test.limits.model_active_limits.numpy()[0] if test.limits.model_max_limits_host > 0 else 0
         nc = test.contacts.model_active_contacts.numpy()[0] if test.contacts.model_max_contacts_host > 0 else 0
-        msg.debug("num active limits: %s", nl)
-        msg.debug("num active contacts: %s\n", nc)
+        logger.debug("num active limits: %s", nl)
+        logger.debug("num active contacts: %s\n", nc)
         self.assertEqual(nl, 0)
         self.assertEqual(nc, 4)
 
@@ -422,17 +425,17 @@ class TestSolverMetrics(unittest.TestCase):
         )
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("metrics.r_eom: %s", metrics.data.r_eom)
-            msg.debug("metrics.r_kinematics: %s", metrics.data.r_kinematics)
-            msg.debug("metrics.r_cts_joints: %s", metrics.data.r_cts_joints)
-            msg.debug("metrics.r_cts_limits: %s", metrics.data.r_cts_limits)
-            msg.debug("metrics.r_cts_contacts: %s", metrics.data.r_cts_contacts)
-            msg.debug("metrics.r_v_plus: %s", metrics.data.r_v_plus)
-            msg.debug("metrics.r_ncp_primal: %s", metrics.data.r_ncp_primal)
-            msg.debug("metrics.r_ncp_dual: %s", metrics.data.r_ncp_dual)
-            msg.debug("metrics.r_ncp_compl: %s", metrics.data.r_ncp_compl)
-            msg.debug("metrics.r_vi_natmap: %s\n", metrics.data.r_vi_natmap)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("metrics.r_eom: %s", metrics.data.r_eom)
+            logger.debug("metrics.r_kinematics: %s", metrics.data.r_kinematics)
+            logger.debug("metrics.r_cts_joints: %s", metrics.data.r_cts_joints)
+            logger.debug("metrics.r_cts_limits: %s", metrics.data.r_cts_limits)
+            logger.debug("metrics.r_cts_contacts: %s", metrics.data.r_cts_contacts)
+            logger.debug("metrics.r_v_plus: %s", metrics.data.r_v_plus)
+            logger.debug("metrics.r_ncp_primal: %s", metrics.data.r_ncp_primal)
+            logger.debug("metrics.r_ncp_dual: %s", metrics.data.r_ncp_dual)
+            logger.debug("metrics.r_ncp_compl: %s", metrics.data.r_ncp_compl)
+            logger.debug("metrics.r_vi_natmap: %s\n", metrics.data.r_vi_natmap)
 
         # Extract the maximum unilateral penetration depth, max(0, -d).
         nc = test.contacts.model_active_contacts.numpy()[0]
@@ -456,17 +459,17 @@ class TestSolverMetrics(unittest.TestCase):
         np.testing.assert_allclose(metrics.data.r_vi_natmap.numpy()[0], 0.0)
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("metrics.r_eom_argmax: %s", metrics.data.r_eom_argmax)
-            msg.debug("metrics.r_kinematics_argmax: %s", metrics.data.r_kinematics_argmax)
-            msg.debug("metrics.r_cts_joints_argmax: %s", metrics.data.r_cts_joints_argmax)
-            msg.debug("metrics.r_cts_limits_argmax: %s", metrics.data.r_cts_limits_argmax)
-            msg.debug("metrics.r_cts_contacts_argmax: %s", metrics.data.r_cts_contacts_argmax)
-            msg.debug("metrics.r_v_plus_argmax: %s", metrics.data.r_v_plus_argmax)
-            msg.debug("metrics.r_ncp_primal_argmax: %s", metrics.data.r_ncp_primal_argmax)
-            msg.debug("metrics.r_ncp_dual_argmax: %s", metrics.data.r_ncp_dual_argmax)
-            msg.debug("metrics.r_ncp_compl_argmax: %s", metrics.data.r_ncp_compl_argmax)
-            msg.debug("metrics.r_vi_natmap_argmax: %s\n", metrics.data.r_vi_natmap_argmax)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("metrics.r_eom_argmax: %s", metrics.data.r_eom_argmax)
+            logger.debug("metrics.r_kinematics_argmax: %s", metrics.data.r_kinematics_argmax)
+            logger.debug("metrics.r_cts_joints_argmax: %s", metrics.data.r_cts_joints_argmax)
+            logger.debug("metrics.r_cts_limits_argmax: %s", metrics.data.r_cts_limits_argmax)
+            logger.debug("metrics.r_cts_contacts_argmax: %s", metrics.data.r_cts_contacts_argmax)
+            logger.debug("metrics.r_v_plus_argmax: %s", metrics.data.r_v_plus_argmax)
+            logger.debug("metrics.r_ncp_primal_argmax: %s", metrics.data.r_ncp_primal_argmax)
+            logger.debug("metrics.r_ncp_dual_argmax: %s", metrics.data.r_ncp_dual_argmax)
+            logger.debug("metrics.r_ncp_compl_argmax: %s", metrics.data.r_ncp_compl_argmax)
+            logger.debug("metrics.r_vi_natmap_argmax: %s\n", metrics.data.r_vi_natmap_argmax)
 
         # Check that all argmax indices are correct
         np.testing.assert_allclose(metrics.data.r_eom_argmax.numpy()[0], 0)  # only one body
@@ -525,21 +528,21 @@ class TestSolverMetrics(unittest.TestCase):
 
         nl = test.limits.model_active_limits.numpy()[0] if test.limits.model_max_limits_host > 0 else 0
         nc = test.contacts.model_active_contacts.numpy()[0] if test.contacts.model_max_contacts_host > 0 else 0
-        msg.debug("num active limits: %s", nl)
-        msg.debug("num active contacts: %s\n", nc)
+        logger.debug("num active limits: %s", nl)
+        logger.debug("num active contacts: %s\n", nc)
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("metrics.r_eom: %s", metrics.data.r_eom)
-            msg.debug("metrics.r_kinematics: %s", metrics.data.r_kinematics)
-            msg.debug("metrics.r_cts_joints: %s", metrics.data.r_cts_joints)
-            msg.debug("metrics.r_cts_limits: %s", metrics.data.r_cts_limits)
-            msg.debug("metrics.r_cts_contacts: %s", metrics.data.r_cts_contacts)
-            msg.debug("metrics.r_v_plus: %s", metrics.data.r_v_plus)
-            msg.debug("metrics.r_ncp_primal: %s", metrics.data.r_ncp_primal)
-            msg.debug("metrics.r_ncp_dual: %s", metrics.data.r_ncp_dual)
-            msg.debug("metrics.r_ncp_compl: %s", metrics.data.r_ncp_compl)
-            msg.debug("metrics.r_vi_natmap: %s\n", metrics.data.r_vi_natmap)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("metrics.r_eom: %s", metrics.data.r_eom)
+            logger.debug("metrics.r_kinematics: %s", metrics.data.r_kinematics)
+            logger.debug("metrics.r_cts_joints: %s", metrics.data.r_cts_joints)
+            logger.debug("metrics.r_cts_limits: %s", metrics.data.r_cts_limits)
+            logger.debug("metrics.r_cts_contacts: %s", metrics.data.r_cts_contacts)
+            logger.debug("metrics.r_v_plus: %s", metrics.data.r_v_plus)
+            logger.debug("metrics.r_ncp_primal: %s", metrics.data.r_ncp_primal)
+            logger.debug("metrics.r_ncp_dual: %s", metrics.data.r_ncp_dual)
+            logger.debug("metrics.r_ncp_compl: %s", metrics.data.r_ncp_compl)
+            logger.debug("metrics.r_vi_natmap: %s\n", metrics.data.r_vi_natmap)
 
         # Extract the maximum unilateral penetration depth, max(0, -d).
         nc = test.contacts.model_active_contacts.numpy()[0]
@@ -559,17 +562,17 @@ class TestSolverMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics.data.r_vi_natmap.numpy()[0], 0.0, places=accuracy)
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("metrics.r_eom_argmax: %s", metrics.data.r_eom_argmax)
-            msg.debug("metrics.r_kinematics_argmax: %s", metrics.data.r_kinematics_argmax)
-            msg.debug("metrics.r_cts_joints_argmax: %s", metrics.data.r_cts_joints_argmax)
-            msg.debug("metrics.r_cts_limits_argmax: %s", metrics.data.r_cts_limits_argmax)
-            msg.debug("metrics.r_cts_contacts_argmax: %s", metrics.data.r_cts_contacts_argmax)
-            msg.debug("metrics.r_v_plus_argmax: %s", metrics.data.r_v_plus_argmax)
-            msg.debug("metrics.r_ncp_primal_argmax: %s", metrics.data.r_ncp_primal_argmax)
-            msg.debug("metrics.r_ncp_dual_argmax: %s", metrics.data.r_ncp_dual_argmax)
-            msg.debug("metrics.r_ncp_compl_argmax: %s", metrics.data.r_ncp_compl_argmax)
-            msg.debug("metrics.r_vi_natmap_argmax: %s\n", metrics.data.r_vi_natmap_argmax)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("metrics.r_eom_argmax: %s", metrics.data.r_eom_argmax)
+            logger.debug("metrics.r_kinematics_argmax: %s", metrics.data.r_kinematics_argmax)
+            logger.debug("metrics.r_cts_joints_argmax: %s", metrics.data.r_cts_joints_argmax)
+            logger.debug("metrics.r_cts_limits_argmax: %s", metrics.data.r_cts_limits_argmax)
+            logger.debug("metrics.r_cts_contacts_argmax: %s", metrics.data.r_cts_contacts_argmax)
+            logger.debug("metrics.r_v_plus_argmax: %s", metrics.data.r_v_plus_argmax)
+            logger.debug("metrics.r_ncp_primal_argmax: %s", metrics.data.r_ncp_primal_argmax)
+            logger.debug("metrics.r_ncp_dual_argmax: %s", metrics.data.r_ncp_dual_argmax)
+            logger.debug("metrics.r_ncp_compl_argmax: %s", metrics.data.r_ncp_compl_argmax)
+            logger.debug("metrics.r_vi_natmap_argmax: %s\n", metrics.data.r_vi_natmap_argmax)
 
     def test_04_evaluate_padmm_solution_boxes_hinged(self):
         """
@@ -613,21 +616,21 @@ class TestSolverMetrics(unittest.TestCase):
 
         nl = test.limits.model_active_limits.numpy()[0] if test.limits.model_max_limits_host > 0 else 0
         nc = test.contacts.model_active_contacts.numpy()[0] if test.contacts.model_max_contacts_host > 0 else 0
-        msg.debug("num active limits: %s", nl)
-        msg.debug("num active contacts: %s\n", nc)
+        logger.debug("num active limits: %s", nl)
+        logger.debug("num active contacts: %s\n", nc)
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("metrics.r_eom: %s", metrics.data.r_eom)
-            msg.debug("metrics.r_kinematics: %s", metrics.data.r_kinematics)
-            msg.debug("metrics.r_cts_joints: %s", metrics.data.r_cts_joints)
-            msg.debug("metrics.r_cts_limits: %s", metrics.data.r_cts_limits)
-            msg.debug("metrics.r_cts_contacts: %s", metrics.data.r_cts_contacts)
-            msg.debug("metrics.r_v_plus: %s", metrics.data.r_v_plus)
-            msg.debug("metrics.r_ncp_primal: %s", metrics.data.r_ncp_primal)
-            msg.debug("metrics.r_ncp_dual: %s", metrics.data.r_ncp_dual)
-            msg.debug("metrics.r_ncp_compl: %s", metrics.data.r_ncp_compl)
-            msg.debug("metrics.r_vi_natmap: %s\n", metrics.data.r_vi_natmap)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("metrics.r_eom: %s", metrics.data.r_eom)
+            logger.debug("metrics.r_kinematics: %s", metrics.data.r_kinematics)
+            logger.debug("metrics.r_cts_joints: %s", metrics.data.r_cts_joints)
+            logger.debug("metrics.r_cts_limits: %s", metrics.data.r_cts_limits)
+            logger.debug("metrics.r_cts_contacts: %s", metrics.data.r_cts_contacts)
+            logger.debug("metrics.r_v_plus: %s", metrics.data.r_v_plus)
+            logger.debug("metrics.r_ncp_primal: %s", metrics.data.r_ncp_primal)
+            logger.debug("metrics.r_ncp_dual: %s", metrics.data.r_ncp_dual)
+            logger.debug("metrics.r_ncp_compl: %s", metrics.data.r_ncp_compl)
+            logger.debug("metrics.r_vi_natmap: %s\n", metrics.data.r_vi_natmap)
 
         # Extract the maximum unilateral penetration depth, max(0, -d).
         signed_distances = test.contacts.gapfunc.numpy()[:nc, 3]
@@ -646,17 +649,17 @@ class TestSolverMetrics(unittest.TestCase):
         self.assertAlmostEqual(metrics.data.r_vi_natmap.numpy()[0], 0.0, places=accuracy)
 
         # Optional verbose output
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
-            msg.debug("metrics.r_eom_argmax: %s", metrics.data.r_eom_argmax)
-            msg.debug("metrics.r_kinematics_argmax: %s", metrics.data.r_kinematics_argmax)
-            msg.debug("metrics.r_cts_joints_argmax: %s", metrics.data.r_cts_joints_argmax)
-            msg.debug("metrics.r_cts_limits_argmax: %s", metrics.data.r_cts_limits_argmax)
-            msg.debug("metrics.r_cts_contacts_argmax: %s", metrics.data.r_cts_contacts_argmax)
-            msg.debug("metrics.r_v_plus_argmax: %s", metrics.data.r_v_plus_argmax)
-            msg.debug("metrics.r_ncp_primal_argmax: %s", metrics.data.r_ncp_primal_argmax)
-            msg.debug("metrics.r_ncp_dual_argmax: %s", metrics.data.r_ncp_dual_argmax)
-            msg.debug("metrics.r_ncp_compl_argmax: %s", metrics.data.r_ncp_compl_argmax)
-            msg.debug("metrics.r_vi_natmap_argmax: %s\n", metrics.data.r_vi_natmap_argmax)
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("metrics.r_eom_argmax: %s", metrics.data.r_eom_argmax)
+            logger.debug("metrics.r_kinematics_argmax: %s", metrics.data.r_kinematics_argmax)
+            logger.debug("metrics.r_cts_joints_argmax: %s", metrics.data.r_cts_joints_argmax)
+            logger.debug("metrics.r_cts_limits_argmax: %s", metrics.data.r_cts_limits_argmax)
+            logger.debug("metrics.r_cts_contacts_argmax: %s", metrics.data.r_cts_contacts_argmax)
+            logger.debug("metrics.r_v_plus_argmax: %s", metrics.data.r_v_plus_argmax)
+            logger.debug("metrics.r_ncp_primal_argmax: %s", metrics.data.r_ncp_primal_argmax)
+            logger.debug("metrics.r_ncp_dual_argmax: %s", metrics.data.r_ncp_dual_argmax)
+            logger.debug("metrics.r_ncp_compl_argmax: %s", metrics.data.r_ncp_compl_argmax)
+            logger.debug("metrics.r_vi_natmap_argmax: %s\n", metrics.data.r_vi_natmap_argmax)
 
     def test_05_validate_metrics_boxes_hinged(self):
         """
@@ -716,9 +719,9 @@ class TestSolverMetrics(unittest.TestCase):
 
         # Compute numpy solution to metrics
         metrics_np = compute_metrics_numpy(test.problem, solver.data)
-        if msg.is_enabled_for(msg.LogLevel.DEBUG):
+        if logger.isEnabledFor(logging.DEBUG):
             for key, value in metrics_np.items():
-                msg.debug("%s: %s", key, value)
+                logger.debug("%s: %s", key, value)
         np.testing.assert_allclose(metrics_np["r_v_plus"], metrics.data.r_v_plus.numpy(), rtol=rtol, atol=atol)
         np.testing.assert_allclose(metrics_np["f_ccp"], metrics.data.f_ccp.numpy(), rtol=rtol, atol=atol)
         np.testing.assert_allclose(metrics_np["f_ncp"], metrics.data.f_ncp.numpy(), rtol=rtol, atol=atol)

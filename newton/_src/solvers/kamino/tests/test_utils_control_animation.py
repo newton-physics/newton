@@ -3,6 +3,7 @@
 
 """Unit tests for the AnimationJointReference class."""
 
+import logging
 import unittest
 
 import numpy as np
@@ -10,9 +11,11 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src import ModelKamino
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.control import AnimationJointReference
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -30,15 +33,15 @@ class TestAnimationJointReference(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
-            msg.debug("\n")  # Add newline before test output for better readability
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_00_make_default(self):
         animation = AnimationJointReference()
@@ -62,13 +65,13 @@ class TestAnimationJointReference(unittest.TestCase):
         # Retrieve the number of actuated coordinates and DoFs
         njaq = model.size.sum_of_num_actuated_joint_coords
         njad = model.size.sum_of_num_actuated_joint_dofs
-        msg.debug("number of actuated joint coordinates: %s", njaq)
-        msg.debug("number of actuated joint DoFs: %s", njad)
+        logger.debug("number of actuated joint coordinates: %s", njaq)
+        logger.debug("number of actuated joint DoFs: %s", njad)
         self.assertEqual(njaq, njad)  # Ensure only 1-DoF joints
 
         # Load numpy animation data
         animation_np = np.load(animation_asset_file, allow_pickle=True)
-        msg.debug("animation_np (shape=%s):\n%s\n", animation_np.shape, animation_np)
+        logger.debug("animation_np (shape=%s):\n%s\n", animation_np.shape, animation_np)
         self.assertEqual(animation_np.shape[1], njaq)  # Ensure data matches number of joints
 
         # Set animation parameters
@@ -165,13 +168,13 @@ class TestAnimationJointReference(unittest.TestCase):
         # Retrieve the number of actuated coordinates and DoFs
         njaq = model.size.sum_of_num_actuated_joint_coords
         njad = model.size.sum_of_num_actuated_joint_dofs
-        msg.debug("number of actuated joint coordinates: %s", njaq)
-        msg.debug("number of actuated joint DoFs: %s", njad)
+        logger.debug("number of actuated joint coordinates: %s", njaq)
+        logger.debug("number of actuated joint DoFs: %s", njad)
         self.assertEqual(njaq, njad)  # Ensure only 1-DoF joints
 
         # Load numpy animation data
         animation_np = np.load(animation_asset_file, allow_pickle=True)
-        msg.debug("animation_np (shape=%s):\n%s\n", animation_np.shape, animation_np)
+        logger.debug("animation_np (shape=%s):\n%s\n", animation_np.shape, animation_np)
         self.assertEqual(animation_np.shape[1], njaq)  # Ensure data matches number of joints
 
         # Set animation parameters
@@ -233,7 +236,7 @@ class TestAnimationJointReference(unittest.TestCase):
             # Increment the global simulation step array
             data.time.steps.fill_(s)
             step = data.time.steps.numpy()[0]
-            msg.debug("[s=%s]: step index: %s", s, step)
+            logger.debug("[s=%s]: step index: %s", s, step)
             self.assertEqual(step, s)
 
             # Step the animation
@@ -243,10 +246,10 @@ class TestAnimationJointReference(unittest.TestCase):
 
             # Retrieve the actual frame index
             frame = animation.data.frame.numpy()[0]
-            msg.debug("[s=%s]: frame index: %s", s, frame)
+            logger.debug("[s=%s]: frame index: %s", s, frame)
             # Compute the expected frame index based on decimation
             expected = (step // decimation) % animation.sequence_length
-            msg.debug("[s=%s]: expected index: %s", s, expected)
+            logger.debug("[s=%s]: expected index: %s", s, expected)
             # Check expected vs actual frame index and outputs
             self.assertEqual(frame, expected)
 
@@ -269,7 +272,7 @@ class TestAnimationJointReference(unittest.TestCase):
             # Increment the global simulation step array
             data.time.steps.fill_(s)
             step = data.time.steps.numpy()[0]
-            msg.debug("[s=%s]: step index: %s", s, step)
+            logger.debug("[s=%s]: step index: %s", s, step)
             self.assertEqual(step, s)
 
             # Step the animation
@@ -279,10 +282,10 @@ class TestAnimationJointReference(unittest.TestCase):
 
             # Retrieve the actual frame index
             frame = animation.data.frame.numpy()[0]
-            msg.debug("[s=%s]: frame index: %s", s, frame)
+            logger.debug("[s=%s]: frame index: %s", s, frame)
             # Compute the expected frame index based on decimation
             expected = (step // decimation) % animation.sequence_length
-            msg.debug("[s=%s]: expected index: %s", s, expected)
+            logger.debug("[s=%s]: expected index: %s", s, expected)
             # Check expected vs actual frame index and outputs
             self.assertEqual(frame, expected)
 
@@ -306,13 +309,13 @@ class TestAnimationJointReference(unittest.TestCase):
         # Retrieve the number of actuated coordinates and DoFs
         njaq = model.size.sum_of_num_actuated_joint_coords
         njad = model.size.sum_of_num_actuated_joint_dofs
-        msg.debug("number of actuated joint coordinates: %s", njaq)
-        msg.debug("number of actuated joint DoFs: %s", njad)
+        logger.debug("number of actuated joint coordinates: %s", njaq)
+        logger.debug("number of actuated joint DoFs: %s", njad)
         self.assertEqual(njaq, njad)  # Ensure only 1-DoF joints
 
         # Load numpy animation data
         animation_np = np.load(animation_asset_file, allow_pickle=True)
-        msg.debug("animation_np (shape=%s):\n%s\n", animation_np.shape, animation_np)
+        logger.debug("animation_np (shape=%s):\n%s\n", animation_np.shape, animation_np)
         self.assertEqual(animation_np.shape[1], njaq)  # Ensure data matches number of joints
 
         # Set animation parameters
@@ -374,7 +377,7 @@ class TestAnimationJointReference(unittest.TestCase):
             # Increment the global simulation step array
             data.time.steps.fill_(s)
             step = data.time.steps.numpy()[0]
-            msg.debug("[s=%s]: step index: %s", s, step)
+            logger.debug("[s=%s]: step index: %s", s, step)
             self.assertEqual(step, s)
 
             # Step the animation
@@ -384,10 +387,10 @@ class TestAnimationJointReference(unittest.TestCase):
 
             # Retrieve the actual frame index
             frame = animation.data.frame.numpy()[0]
-            msg.debug("[s=%s]: frame index: %s", s, frame)
+            logger.debug("[s=%s]: frame index: %s", s, frame)
             # Compute the expected frame index based on decimation
             expected = ((step // decimation) * rate) % animation.sequence_length
-            msg.debug("[s=%s]: expected index: %s", s, expected)
+            logger.debug("[s=%s]: expected index: %s", s, expected)
             # Check expected vs actual frame index and outputs
             self.assertEqual(frame, expected)
 
@@ -410,7 +413,7 @@ class TestAnimationJointReference(unittest.TestCase):
             # Increment the global simulation step array
             data.time.steps.fill_(s)
             step = data.time.steps.numpy()[0]
-            msg.debug("[s=%s]: step index: %s", s, step)
+            logger.debug("[s=%s]: step index: %s", s, step)
             self.assertEqual(step, s)
 
             # Step the animation
@@ -420,10 +423,10 @@ class TestAnimationJointReference(unittest.TestCase):
 
             # Retrieve the actual frame index
             frame = animation.data.frame.numpy()[0]
-            msg.debug("[s=%s]: frame index: %s", s, frame)
+            logger.debug("[s=%s]: frame index: %s", s, frame)
             # Compute the expected frame index based on decimation
             expected = ((step // decimation) * rate) % animation.sequence_length
-            msg.debug("[s=%s]: expected index: %s", s, expected)
+            logger.debug("[s=%s]: expected index: %s", s, expected)
             # Check expected vs actual frame index and outputs
             self.assertEqual(frame, expected)
 
@@ -447,13 +450,13 @@ class TestAnimationJointReference(unittest.TestCase):
         # Retrieve the number of actuated coordinates and DoFs
         njaq = model.size.sum_of_num_actuated_joint_coords
         njad = model.size.sum_of_num_actuated_joint_dofs
-        msg.debug("number of actuated joint coordinates: %s", njaq)
-        msg.debug("number of actuated joint DoFs: %s", njad)
+        logger.debug("number of actuated joint coordinates: %s", njaq)
+        logger.debug("number of actuated joint DoFs: %s", njad)
         self.assertEqual(njaq, njad)  # Ensure only 1-DoF joints
 
         # Load numpy animation data
         animation_np = np.load(animation_asset_file, allow_pickle=True)
-        msg.debug("animation_np (shape=%s):\n%s\n", animation_np.shape, animation_np)
+        logger.debug("animation_np (shape=%s):\n%s\n", animation_np.shape, animation_np)
         self.assertEqual(animation_np.shape[1], njaq)  # Ensure data matches number of joints
 
         # Set animation parameters
@@ -515,7 +518,7 @@ class TestAnimationJointReference(unittest.TestCase):
             # Increment the global simulation step array
             data.time.steps.fill_(s)
             step = data.time.steps.numpy()[0]
-            msg.debug("[s=%s]: step index: %s", s, step)
+            logger.debug("[s=%s]: step index: %s", s, step)
             self.assertEqual(step, s)
 
             # Step the animation
@@ -525,10 +528,10 @@ class TestAnimationJointReference(unittest.TestCase):
 
             # Retrieve the actual frame index
             frame = animation.data.frame.numpy()[0]
-            msg.debug("[s=%s]: frame index: %s", s, frame)
+            logger.debug("[s=%s]: frame index: %s", s, frame)
             # Compute the expected frame index based on decimation
             expected = (step // decimation) * rate
-            msg.debug("[s=%s]: expected index: %s", s, expected)
+            logger.debug("[s=%s]: expected index: %s", s, expected)
             # Check expected vs actual frame index and outputs
             if expected >= animation.sequence_length:
                 expected = animation.sequence_length - 1  # Clamp to last frame if exceeding length

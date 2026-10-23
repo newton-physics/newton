@@ -3,13 +3,16 @@
 
 """Unit tests for linear algebra matrix analysis utilities"""
 
+import logging
 import unittest
 
 import numpy as np
 
 import newton._src.solvers.kamino._src.linalg as linalg
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -22,19 +25,19 @@ class TestUtilsLinAlgMatrix(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.verbose = test_context.verbose  # Set to True for verbose output
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
 
     def tearDown(self):
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_spd_matrix_properties(self):
         A = linalg.utils.rand.random_spd_matrix(dim=10, dtype=np.float32, scale=4.0, seed=42)
         A_props = linalg.utils.matrix.SquareSymmetricMatrixProperties(A)
-        msg.debug("A (shape: %s, dtype: %s):\n%s\n", A.shape, A.dtype, A)
-        msg.debug("A properties:\n%s\n", A_props)
-        msg.debug("cond(A): %s\n", np.linalg.cond(A))
-        msg.debug("det(A): %s\n", np.linalg.det(A))
+        logger.debug("A (shape: %s, dtype: %s):\n%s\n", A.shape, A.dtype, A)
+        logger.debug("A properties:\n%s\n", A_props)
+        logger.debug("cond(A): %s\n", np.linalg.cond(A))
+        logger.debug("det(A): %s\n", np.linalg.det(A))
         self.assertAlmostEqual(A_props.cond, np.linalg.cond(A), places=6)
 
 
