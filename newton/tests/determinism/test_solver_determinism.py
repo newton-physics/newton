@@ -12,6 +12,7 @@ from unittest import mock
 
 import numpy as np
 import warp as wp
+from packaging.version import Version
 
 import newton
 import newton.tests.unittest_utils
@@ -23,6 +24,15 @@ from newton._src.solvers.xpbd import tendon_kernels as xpbd_tendon_kernels
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DETERMINISTIC_MODE = wp.DeterministicMode.RUN_TO_RUN
+
+# Warp 1.19 rejects MuJoCo Warp kernels that read and atomically update one array
+# (_accumulate_subtreemass, _qLD_acc) in deterministic mode.
+_MUJOCO_WARP_DETERMINISM_UNSUPPORTED = Version(wp.__version__) >= Version("1.19.0.dev0")
+
+
+def _skip_unsupported_mujoco_determinism(test):
+    if _MUJOCO_WARP_DETERMINISM_UNSUPPORTED:
+        test.skipTest("MuJoCo Warp does not compile in Warp 1.19 deterministic mode")
 
 
 def _run_isolated(test, function_name, *args):
@@ -193,6 +203,7 @@ def _check_mujoco_sparse_articulation_construction(device):
 
 
 def test_mujoco_sparse_articulation_construction(test, device):
+    _skip_unsupported_mujoco_determinism(test)
     _run_isolated(test, "_check_mujoco_sparse_articulation_construction", str(device))
 
 
@@ -235,6 +246,8 @@ def _check_articulation_determinism(device, solver_name):
 
 
 def test_articulation_determinism(test, device, solver_name):
+    if solver_name == "mujoco":
+        _skip_unsupported_mujoco_determinism(test)
     _run_isolated(test, "_check_articulation_determinism", str(device), solver_name)
 
 

@@ -798,18 +798,17 @@ def test_articulated_contact_response_validation(test, device):
     test.assertEqual(solver.articulated_contact_response, "propagation")
     # Every contact row, free-body rows included, uses the propagation family.
     test.assertEqual(solver._propagation_max_constraints, 512 + 16)
-    solver = SolverSteel(model, articulated_contact_response="propagation_fused", articulation_constraint_max=16)
-    test.assertEqual(solver.articulated_contact_response, "propagation_fused")
-    test.assertEqual(solver._propagation_max_constraints, 16)
 
-    with test.assertRaisesRegex(ValueError, "articulated_contact_response"):
-        SolverSteel(model, articulated_contact_response="bad")
-    for response in ("immediate", "propagation_fused"):
+    for response in ("bad", "propagation_fused"):
+        with test.subTest(response=response):
+            with test.assertRaisesRegex(ValueError, f"articulated_contact_response must be .*got '{response}'"):
+                SolverSteel(model, articulated_contact_response=response)
+    for response in ("immediate", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
                 SolverSteel(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
 
-    # The fused kernel runs the tree passes of a single articulation size.
+    # The propagation responses solve trees of different articulation sizes in one model.
     mixed = newton.ModelBuilder()
     for num_links in (2, 3):
         chain = newton.ModelBuilder()
@@ -822,18 +821,17 @@ def test_articulated_contact_response_validation(test, device):
         chain.add_articulation(joints)
         mixed.add_world(chain)
     mixed_model = mixed.finalize(device=device)
-    with test.assertRaisesRegex(NotImplementedError, "propagation_fused"):
-        SolverSteel(mixed_model, articulated_contact_response="propagation_fused")
-    test.assertEqual(
-        SolverSteel(mixed_model, articulated_contact_response="propagation").articulated_contact_response,
-        "propagation",
-    )
+    for response in ("propagation", "propagation_colored"):
+        with test.subTest(response=response):
+            test.assertEqual(
+                SolverSteel(mixed_model, articulated_contact_response=response).articulated_contact_response, response
+            )
 
 
 def test_propagation_rejects_unsupported_options(test, device):
     """Reject the split solve and the options the propagation rows do not implement; accept the rest."""
     model = _build_chain_model(device, num_links=2, num_worlds=1)
-    for response in ("propagation", "propagation_fused", "propagation_colored"):
+    for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response, option="solve_mode"):
             with test.assertRaisesRegex(NotImplementedError, "requires solve_mode='matrix_free'"):
                 SolverSteel(model, solve_mode="split", articulated_contact_response=response)
@@ -873,7 +871,7 @@ def test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows(tes
     """Step both propagation responses with dense joint velocity-limit rows."""
     model = _build_chain_model(device, num_links=3, num_worlds=1)
     model.joint_velocity_limit.assign(np.full(model.joint_dof_count, 0.1, dtype=np.float32))
-    for response in ("propagation", "propagation_fused", "propagation_colored"):
+    for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response):
             solver = SolverSteel(
                 model,
@@ -1419,9 +1417,11 @@ def _run_sequence(model, plan, *, delay_clear=False, **solver_kwargs):
     """Run ``plan`` and return ``joint_q`` after each operation.
 
     Operations: ``("eager", n)``, ``("capture", name, n)`` (records ``n`` steps without
-    running them), ``("replay", name, n)`` and ``("reset",)``. With ``delay_clear`` the
-    double-buffer clearing of the last eager step before each capture first waits for a
-    long kernel on its stream, so it is still pending when the graph is first launched.
+    running them), ``("capture_paused", name, n)`` (the same with a conditional node
+    between steps, which pauses the capture), ``("replay", name, n)`` and ``("reset",)``.
+    With ``delay_clear`` the double-buffer clearing of the last eager step before each
+    capture first waits for a long kernel on its stream, so it is still pending when the
+    graph is first launched.
     """
     solver = SolverSteel(model, friction_anchor_beta=0.0, articulation_constraint_max=96, **solver_kwargs)
     pipeline = newton.CollisionPipeline(model, deterministic=True)
@@ -1430,6 +1430,7 @@ def _run_sequence(model, plan, *, delay_clear=False, **solver_kwargs):
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     control = model.control()
     sink = wp.zeros(1, dtype=float, device=model.device)
+    condition = wp.ones(1, dtype=wp.int32, device=model.device)
 
     def substep():
         pipeline.collide(state_0, contacts)
@@ -1447,9 +1448,11 @@ def _run_sequence(model, plan, *, delay_clear=False, **solver_kwargs):
                     with wp.ScopedStream(solver._memset_stream, sync_enter=False):
                         wp.launch(_spin, dim=1, inputs=[20_000_000], outputs=[sink])
                 substep()
-        elif operation == "capture":
+        elif operation in ("capture", "capture_paused"):
             with wp.ScopedCapture(model.device) as scope:
-                for _ in range(args[1]):
+                for step in range(args[1]):
+                    if operation == "capture_paused" and step > 0:
+                        wp.capture_if(condition, on_true=lambda: condition.fill_(1))
                     substep()
             graphs[args[0]] = scope.graph
         elif operation == "replay":
@@ -1478,6 +1481,7 @@ _SEQUENCES = {
         ("replay", "b", 1),
     ],
     "capture after reset": [("eager", 2), ("reset",), ("capture", "a", 2), ("replay", "a", 4), ("reset",)],
+    "capture paused between steps": [("capture_paused", "a", 3), ("replay", "a", 4), ("eager", 1)],
 }
 
 
@@ -1485,6 +1489,10 @@ def test_double_buffer_capture_sequences_match_single_buffer(test, device):
     """Match the single-buffer trajectory bitwise across capture, replay, eager and reset sequences."""
     model = _scene(device)
     for name, plan in _SEQUENCES.items():
+        if any(operation == "capture_paused" for operation, *_ in plan) and not wp.is_conditional_graph_supported():
+            with test.subTest(sequence=name):
+                test.skipTest("requires conditional graph nodes")
+            continue
         _, expected = _run_sequence(model, plan)
         for streams in (False, True):
             with test.subTest(sequence=name, use_parallel_streams=streams):
