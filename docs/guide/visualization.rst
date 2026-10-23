@@ -1180,21 +1180,15 @@ Textured visuals require UVs. Textures are asset data. Replace the texture
 source to change it; do not edit image contents in place. GL reuses the upload
 while the mesh deforms and does not multiply the texture by its default mesh color.
 
-Skinned meshes have fixed topology. With GL's default CUDA interop settings,
-their vertex updates pass through host memory. For larger meshes, enable the
-existing ``STATIC_MESH`` category as well as the default ``DYNAMIC_MESH`` category:
+Skinned meshes have fixed topology. GL uploads their triangle indices once and
+updates positions and normals on the GPU when CUDA-OpenGL interop is available.
+Either ``ViewerGL.CudaInterop.DYNAMIC_MESH`` (the default) or ``STATIC_MESH``
+enables this path without uploading unchanged indices each frame. Ordinary
+``log_mesh()`` calls keep their existing interop settings.
 
-.. code-block:: python
-
-    from newton.viewer import ViewerGL
-
-    viewer = ViewerGL(
-        enable_cuda_interop=ViewerGL.CudaInterop.DYNAMIC_MESH | ViewerGL.CudaInterop.STATIC_MESH,
-    )
-
-This keeps vertex updates on the GPU when CUDA-OpenGL interop is available,
-without uploading unchanged triangle indices each frame. Measure the effect on
-your scene: interop overhead can outweigh the transfer savings for small meshes.
+CPU models, unavailable interop, and ``enable_cuda_interop=ViewerGL.CudaInterop.NONE``
+use host uploads. Interop overhead can outweigh the transfer savings for small
+meshes; measure the effect on your scene.
 
 Rerun and Viser reuse decoded path textures. Failed paths
 are not retried each frame; replacing the source or resetting the model clears

@@ -1262,6 +1262,68 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                             self.assertEqual(mesh.texture, str(path))
                         assert_np_equal(_skin(restored_model, mesh, restored_state), moved[mesh.parent.numpy()])
 
+    def test_gl_updates_skinned_vertices_on_cuda(self):
+        """Render changed vertices without host transfers or repeated index uploads."""
+        from newton._src.viewer.gl.opengl import RenderVertex  # noqa: PLC0415
+        from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip  # noqa: PLC0415
+
+        if not wp.is_cuda_available():
+            self.skipTest("CUDA is not available")
+        with wp.ScopedDevice("cuda:0"), contextlib.closing(_make_headless_viewer_gl_or_skip(self)) as viewer:
+            builder = newton.ModelBuilder()
+            points = np.array([[-0.5, 0, 0], [0.5, 0, 0], [0, 0, 1]], dtype=np.float32)
+            for point in points:
+                builder.add_particle(point, wp.vec3(0), mass=1.0)
+            builder.add_deformable_visual_mesh(points, [0, 1, 2], kind="particle", particles=[0, 1, 2])
+            model = builder.finalize()
+            viewer.set_model(model)
+            viewer.show_particles = False
+            viewer.show_ground = False
+            viewer.set_camera(wp.vec3(0, -3, 0.5), pitch=0, yaw=90)
+            state = model.state()
+            mesh = model.deformable_visual_meshes[0]
+            mapped_types = []
+            map_buffer = wp.RegisteredGLBuffer.map
+
+            def map_vertices(buffer, dtype, *args, **kwargs):
+                mapped_types.append(dtype)
+                return map_buffer(buffer, dtype, *args, **kwargs)
+
+            # Probe the existing interop path separately from the skinned-mesh default.
+            with (
+                warnings.catch_warnings(record=True),
+                mock.patch.object(wp.RegisteredGLBuffer, "map", map_vertices),
+            ):
+                warnings.simplefilter("always", NewtonWarning)
+                viewer.log_mesh("probe", mesh.rest_vertices, mesh.indices, dynamic=True, hidden=True)
+            if not mapped_types:
+                self.skipTest("CUDA-OpenGL interoperability is unavailable")
+
+            viewer.begin_frame(0.0)
+            viewer.log_state(state)
+            viewer.end_frame()
+            before = viewer.get_frame().numpy().copy()
+            points[2, 0] += 0.5
+            state.particle_q.assign(points)
+            mapped_types.clear()
+            to_numpy = wp.array.numpy
+
+            def check_readback(array):
+                self.assertNotIn(array.dtype, (RenderVertex, wp.uint32), "Unexpected mesh readback")
+                return to_numpy(array)
+
+            viewer.begin_frame(1.0)
+            with (
+                mock.patch.object(wp.array, "numpy", check_readback),
+                mock.patch.object(wp.RegisteredGLBuffer, "map", map_vertices),
+            ):
+                viewer.log_state(state)
+                viewer.log_state(state)
+            self.assertEqual(mapped_types, [RenderVertex, RenderVertex])
+            viewer.end_frame()
+            after = viewer.get_frame().numpy()
+            self.assertFalse(np.array_equal(before, after), "The rendered mesh must follow its moved particle")
+
     def test_gl_reuses_skinned_textures_but_updates_regular_meshes(self):
         """Reuse visual textures untinted by default; preserve explicit colors and ordinary uploads."""
         from newton._src.viewer.gl.opengl import RendererGL  # noqa: PLC0415
