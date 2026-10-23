@@ -306,7 +306,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     positions = np.asarray(builder.particle_q, dtype=np.float32)
                 if parent is None:
                     parent, weights = builder._embed_visual_vertices_in_tets(
-                        gaussian.positions, tet_range, positions=positions
+                        gaussian.positions, tet_range, positions=positions, operation="add_deformable_visual_gaussian"
                     )
                 if np.any(parent < tet_range[0]) or np.any(parent >= tet_range[1]):
                     raise ValueError("tetIndices references a tetrahedron outside the owning volume")

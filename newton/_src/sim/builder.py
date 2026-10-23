@@ -2013,7 +2013,7 @@ class ModelBuilder:
         self.tet_materials: list[tuple[float, float, float]] = []
         """Tetrahedral material rows accumulated for :attr:`Model.tet_materials`."""
 
-        # deformable visual meshes (visualization/sensor geometry, skinned from sim state)
+        # Visual meshes follow simulation state without entering physics or collision.
         self._deformable_visual_meshes: list[dict] = []
         """Raw visual-mesh specs accumulated for :attr:`Model.deformable_visual_meshes`.
         Each entry stores numpy asset data and per-vertex embedding; converted to
@@ -12820,7 +12820,9 @@ class ModelBuilder:
                     parent, weights, point_count, (lo, hi), 4, operation
                 )
             else:
-                binding["parent"], binding["weights"] = self._embed_visual_vertices_in_tets(points, (lo, hi))
+                binding["parent"], binding["weights"] = self._embed_visual_vertices_in_tets(
+                    points, (lo, hi), operation=operation
+                )
         else:
             if bodies is None:
                 raise ValueError(f"{operation}(kind='body'): requires bodies")
@@ -12880,7 +12882,12 @@ class ModelBuilder:
         return parent, weights
 
     def _embed_visual_vertices_in_tets(
-        self, vertices: np.ndarray, tet_range: tuple[int, int], positions: np.ndarray | None = None
+        self,
+        vertices: np.ndarray,
+        tet_range: tuple[int, int],
+        positions: np.ndarray | None = None,
+        *,
+        operation: str = "add_deformable_visual_mesh",
     ) -> tuple[np.ndarray, np.ndarray]:
         """Compute the containing owning tet and barycentric weights per visual vertex.
 
@@ -12902,7 +12909,7 @@ class ModelBuilder:
         det = np.linalg.det(edge_mats)
         nonsingular = np.abs(det) > 1.0e-20
         if not np.any(nonsingular):
-            raise ValueError("degenerate_parent: owning tet range contains no non-degenerate tetrahedron")
+            raise ValueError(f"{operation}: owning tet range contains no non-degenerate tetrahedron")
         valid = np.flatnonzero(nonsingular)
         corners = particles[tet_idx[valid]]
         lower, upper = corners.min(axis=1), corners.max(axis=1)
@@ -12932,8 +12939,9 @@ class ModelBuilder:
         clamped = int(outside.numpy().sum())
         if clamped:
             logger.warning(
-                "add_deformable_visual_mesh: %d of %d visual vertices fell outside "
+                "%s: %d of %d visual vertices fell outside "
                 "the owning tet range and were clamped to the nearest owning tetrahedron.",
+                operation,
                 clamped,
                 len(vertices),
             )
@@ -12965,7 +12973,7 @@ class ModelBuilder:
         denom = d00 * d11 - d01 * d01
         nonsingular = np.abs(denom) > 1.0e-20
         if not np.any(nonsingular):
-            raise ValueError("degenerate_parent: owning triangle range contains no non-degenerate triangle")
+            raise ValueError("add_deformable_visual_mesh: owning triangle range contains no non-degenerate triangle")
         valid = np.flatnonzero(nonsingular)
         mesh = wp.Mesh(
             wp.array(particles, dtype=wp.vec3, device="cpu"),

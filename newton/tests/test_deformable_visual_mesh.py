@@ -155,32 +155,6 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         state.particle_q = wp.array(moved, dtype=wp.vec3)
         assert_np_equal(_skin(model, rm, state), moved, tol=1.0e-5)
 
-    def test_triangle_embedding_far_from_surface(self):
-        """Bind distant vertices to the closest surface without losing their weights."""
-        builder = newton.ModelBuilder()
-        for x in (2000.0, 1000.1552):
-            start = builder.particle_count
-            for point in ((x, 0, 0), (x + 1, 0, 0), (x, 1, 0)):
-                builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
-            builder.add_triangle(start, start + 1, start + 2)
-        vertices = np.array(
-            [
-                [-0.009496063, 0.39774823, 0.12428024],
-                [0.00046608306, 0.8325083, 0.13732179],
-                [0.0004659774, 0.6846791, 0.16780631],
-            ],
-            dtype=np.float32,
-        )
-        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(0, 2))
-        model = builder.finalize(device="cpu")
-        mesh = model.deformable_visual_meshes[0]
-        np.testing.assert_array_equal(mesh.parent.numpy(), [1, 1, 1])
-        np.testing.assert_allclose(mesh.weights.numpy().sum(axis=1), 1, atol=1.0e-6)
-        visuals = model.deformable_visuals()
-        model.update_deformable_visuals(model.state(), visuals)
-        expected = np.column_stack((np.full(3, 1000.1552), vertices[:, 1], np.zeros(3)))
-        np.testing.assert_allclose(visuals.get_points(mesh).numpy(), expected, rtol=1.0e-7, atol=1.0e-6)
-
     def test_triangle_embedding_follows_surface(self):
         """An independently discretized vertex projects onto its closest owning
         triangle (normal offset dropped) and follows the surface; the weights
@@ -378,8 +352,36 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         mesh = model.deformable_visual_meshes[0]
         np.testing.assert_array_equal(mesh.parent.numpy(), [0, 0, 0])
         assert_np_equal(_skin(model, mesh, model.state()), np.array([[1, 0, 0], [1.01, 0, 0], [1, 0, 0]]), tol=1.0e-6)
-        with self.assertRaisesRegex(ValueError, "degenerate"):
+
+        with self.assertRaisesRegex(ValueError, "add_deformable_visual_mesh:.*non-degenerate triangle"):
             builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(2, 3))
+
+    def test_triangle_embedding_far_from_surface(self):
+        """Bind distant vertices to the closest surface without losing their weights."""
+        builder = newton.ModelBuilder()
+        for x in (2000.0, 1000.1552):
+            start = builder.particle_count
+            for point in ((x, 0, 0), (x + 1, 0, 0), (x, 1, 0)):
+                builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+            builder.add_triangle(start, start + 1, start + 2)
+        vertices = np.array(
+            [
+                [-0.009496063, 0.39774823, 0.12428024],
+                [0.00046608306, 0.8325083, 0.13732179],
+                [0.0004659774, 0.6846791, 0.16780631],
+            ],
+            dtype=np.float32,
+        )
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(0, 2))
+        # Automatic binding runs on the CPU, independently of the simulation device.
+        model = builder.finalize(device="cpu")
+        mesh = model.deformable_visual_meshes[0]
+        np.testing.assert_array_equal(mesh.parent.numpy(), [1, 1, 1])
+        np.testing.assert_allclose(mesh.weights.numpy().sum(axis=1), 1.0, atol=1.0e-6)
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(model.state(), visuals)
+        expected = np.column_stack((np.full(3, 1000.1552), vertices[:, 1], np.zeros(3)))
+        np.testing.assert_allclose(visuals.get_points(mesh).numpy(), expected, rtol=1.0e-7, atol=1.0e-6)
 
     def test_automatic_binding_preserves_ties_and_thin_elements(self):
         """Equal candidates choose the first parent, including thin or inverted elements."""
@@ -408,6 +410,10 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                 mesh = model.deformable_visual_meshes[0]
                 np.testing.assert_array_equal(mesh.parent.numpy(), [0, 0, 0])
                 assert_np_equal(_skin(model, mesh, model.state()), vertices, tol=1.0e-6)
+
+                builder.particle_q[:] = [wp.vec3(0)] * builder.particle_count
+                with self.assertRaisesRegex(ValueError, "add_deformable_visual_mesh:.*non-degenerate"):
+                    builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind=kind, **owning_range)
 
     def test_outside_tet_vertex_clamps_within_owning_range(self):
         """Log fallback binding and keep normalized weights inside the owning range."""
@@ -2024,7 +2030,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
 
         with self.assertLogs("newton", level="WARNING") as logs:
             builder = self._import(stage)
-        self.assertIn("degenerate_parent", "\n".join(logs.output))
+        self.assertIn("owning tet range contains no non-degenerate tetrahedron", "\n".join(logs.output))
 
         self.assertEqual(builder.finalize().deformable_visual_mesh_count, 0)
 
@@ -2048,7 +2054,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
 
         with self.assertLogs("newton", level="WARNING") as logs:
             builder = self._import(stage)
-        self.assertIn("degenerate_parent", "\n".join(logs.output))
+        self.assertIn("owning triangle range contains no non-degenerate triangle", "\n".join(logs.output))
 
         self.assertEqual(builder.finalize().deformable_visual_mesh_count, 0)
 

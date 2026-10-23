@@ -1043,6 +1043,12 @@ Deformable Visual Meshes
 A deformable can use a separate visual mesh while physics runs on its particles
 or rigid segments. The visual mesh adds no mass or collision geometry.
 
+:class:`newton.DeformableVisualMesh` stores the model-owned geometry and binding.
+:class:`newton.DeformableVisuals` holds its current points and normals. Both live
+at the package root because they are shared model data, not viewer-specific
+objects: applications can pass the evaluated data to different renderers without
+depending on a viewer backend.
+
 .. experimental::
 
     Deformable visual bindings, model output, and viewer integration may change
@@ -1066,6 +1072,7 @@ follows a cloth surface:
         dim_x=2, dim_y=2,
         cell_x=0.5, cell_y=0.5,
         mass=0.1,
+        label="cloth",
     )
     cloth_tri_range = (tri_start, builder.tri_count)
     builder.add_deformable_visual_mesh(
@@ -1081,6 +1088,13 @@ Use ``PARTICLE`` to map visual vertices directly to simulation particles,
 such as cable links. Triangle and tetrahedron bindings store barycentric
 weights: each visual vertex follows a weighted sum of its driving vertices.
 Body bindings store an offset in the driving body's local frame.
+
+The builder also records the cloth as a :ref:`deformable object <deformable-objects>`.
+This binding API takes simulation elements rather than that object's label. The
+range above selects the whole cloth, but a visual may use only part of it.
+Explicit drivers also support low-level geometry without an object record and
+per-vertex particle mappings. Unlabeled native cloth, volume, and rod constructors
+still create records with generated labels; labels are not required for binding.
 
 If a binding is already known, pass its ``parent`` and ``weights`` instead of
 running the search. The next call attaches another visual mesh to the same
@@ -1106,9 +1120,9 @@ within ``tri_range``:
     state = model.state()
 
 Viewers evaluate these meshes during :meth:`~newton.viewer.ViewerBase.log_state`.
-In GL and RTX, **Show Skinned Meshes** controls
+In GL, RTX, and Viser, **Show Skinned Meshes** controls
 ``viewer.show_deformable_visual_meshes`` independently of **Show Cloth** and
-**Show Visual**. Use the Python flag for Viser. Hide the simulation triangles with ``viewer.show_triangles =
+**Show Visual**. Hide the simulation triangles with ``viewer.show_triangles =
 False`` when they obscure the visual surface. Replicated meshes use separate
 simulation drivers; viewer world offsets only change their display positions.
 Those offsets do not move the existing raw particle or triangle display.
@@ -1163,8 +1177,9 @@ Textured visuals require UVs. Textures are asset data. Replace the texture
 source to change it; do not edit image contents in place. GL reuses the upload
 while the mesh deforms. Rerun and Viser reuse decoded path textures. Failed paths
 are not retried each frame; replacing the source or resetting the model clears
-the cached result. Viser currently rebuilds textured
-meshes on updates, so dense textured skins can be expensive in that viewer.
+the cached result. Viser rebuilds and sends the full GLB asset on each textured
+mesh update, including topology and texture. It does not provide vertex-only
+updates for these assets, so dense textured skins can be expensive in that viewer.
 Untextured skins use the viewer's default appearance; per-mesh color and opacity
 are not exposed here. The same mesh output can be consumed by
 :class:`~newton.sensors.SensorCamera`; the USD importer also creates these
