@@ -138,6 +138,8 @@ class RigidBodiesModel:
     either because it is physically massless (zero inverse mass and inverse
     inertia in Newton) or because it is flagged
     :attr:`newton.BodyFlags.KINEMATIC` / :attr:`newton.BodyFlags.PROXY`.
+    Dynamics solvers that simulate massless and PROXY bodies only mark the
+    KINEMATIC bodies, see :func:`is_immovable_for_kamino`.
     Shape of ``(num_bodies,)``.
     """
 
@@ -289,14 +291,20 @@ def has_zero_inverse_inertia(inv_inertia: wp.mat33f) -> bool:
 
 
 @wp.func
-def is_immovable_for_kamino(inv_mass: wp.float32, inv_inertia: wp.mat33f, flags: wp.int32) -> bool:
+def is_immovable_for_kamino(
+    inv_mass: wp.float32, inv_inertia: wp.mat33f, flags: wp.int32, kinematic_only_immovable: wp.bool
+) -> bool:
     """Whether a body is treated as immovable by Kamino.
 
     A body is immovable if it is either physically massless (zero inverse mass
     and zero inverse inertia) or flagged as externally driven via KINEMATIC or
     PROXY. Its inverse mass and inertia are masked to zero in Kamino, so the
     body neither responds to forces nor contributes to constraint dynamics.
+    Dynamics solvers that simulate massless and PROXY bodies set
+    ``kinematic_only_immovable``, so that only KINEMATIC bodies are immovable.
     """
+    if kinematic_only_immovable:
+        return (flags & int(BodyFlags.KINEMATIC)) != 0
     return (inv_mass <= 0.0 and has_zero_inverse_inertia(inv_inertia)) or (
         (flags & (int(BodyFlags.KINEMATIC) | int(BodyFlags.PROXY))) != 0
     )

@@ -1,0 +1,1099 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+"""Frozen-contact orchestration for the LOX rigid-body solve."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+import numpy as np
+import warp as wp
+
+from ......sim import BodyFlags, JointType, Model, ModelFlags
+from ....config import LOXSolverConfig
+from ...core.joints import JointCorrectionMode
+from ...core.state import StateKamino
+from ...core.types import vec6f
+from .metrics import DualSolution
+from .problem import LOXProblem
+from .projection import ProjectionSchedule
+from .projection_kernels import (
+    _compute_box_residuals,
+    make_contact_residuals_kernel,
+    make_iteration_residuals_kernel,
+)
+from .seed import build_seed_topology, estimate_joint_penalty_scale
+from .solver_kernels import (
+    _blend_accepted_twist,
+    _finalize_world_iteration,
+    _initialize_bodies,
+    _initialize_fixed_iteration,
+    _initialize_world_convergence,
+    _prepare_projection,
+    _reduce_final_body_residuals,
+    _reset_dual_wrench,
+    _restore_dual_from_wrench,
+    _store_dual_wrench,
+    _update_splitting_dual,
+    _write_integrator_body_inputs,
+    _write_world_status,
+)
+from .types import LOXData, ProjectionAcceleration
+
+if TYPE_CHECKING:
+    from ....config import ConstraintStabilizationConfig
+    from ...core.data import DataKamino
+    from ...core.model import ModelKamino
+    from ...dynamics.dual import DualProblem
+    from ...geometry.contacts import ContactsKamino
+    from ...kinematics.jacobians import SparseSystemJacobians
+    from ...kinematics.limits import LimitsKamino
+
+###
+# Module interface
+###
+
+__all__ = [
+    "LOXSolver",
+]
+
+###
+# Module configs
+###
+
+wp.set_module_options({"enable_backward": False})
+
+
+###
+# Constants
+###
+
+
+_WORLD_THREAD_GRANULE = 32
+"""Granule of the number of threads that loop over the active contacts of one world."""
+
+
+_WORLD_THREADS_PER_SM = 256
+"""Threads per SM that the per-world contact loops launch when there are few worlds."""
+
+
+###
+# Functions
+###
+
+
+def _world_thread_count(device: wp.DeviceLike, num_worlds: int, max_world_items: int) -> int:
+    """Return the number of threads that loop over the active items of each world.
+
+    Each world gets one warp when there are enough worlds to fill the device; fewer, larger
+    worlds get more warps, up to one item per thread.
+
+    Args:
+        device: Device of the launch.
+        num_worlds: Number of worlds.
+        max_world_items: Largest number of items of one world.
+    """
+    device = wp.get_device(device)
+    if not device.is_cuda or num_worlds == 0:
+        return 1
+    granules = (device.sm_count * _WORLD_THREADS_PER_SM) // (_WORLD_THREAD_GRANULE * num_worlds)
+    max_granules = (max_world_items + _WORLD_THREAD_GRANULE - 1) // _WORLD_THREAD_GRANULE
+    return _WORLD_THREAD_GRANULE * max(1, min(granules, max_granules))
+
+
+###
+# Interfaces
+###
+
+
+class LOXSolver:
+    """Run a fixed LOX splitting solve on one frozen linearization.
+
+    The caller owns collision detection, Jacobian construction, pose
+    integration, and nonlinear relinearization. This class owns the smooth
+    system update, weight construction, blocked dense LLT solve, unilateral
+    projections, convergence freezing, and output conversion for one such
+    linearization. A nonfailed world that reaches the iteration limit is
+    accepted using its last projected iterate.
+    """
+
+    Config = LOXSolverConfig
+    """Type alias of the LOX solver configuration container."""
+
+    def __init__(
+        self,
+        model: ModelKamino | None = None,
+        data: DataKamino | None = None,
+        jacobians: SparseSystemJacobians | None = None,
+        limits: LimitsKamino | None = None,
+        contacts: ContactsKamino | None = None,
+        config: LOXSolver.Config | None = None,
+        constraints: ConstraintStabilizationConfig | None = None,
+        rotation_correction: JointCorrectionMode = JointCorrectionMode.TWOPI,
+        *,
+        compute_solution_metrics: bool = False,
+    ):
+        """Creates a LOX solver.
+
+        If a model is provided, all necessary memory allocations are performed on
+        the model's device; otherwise :meth:`finalize` must be called before using
+        the solver.
+
+        Args:
+            model: The model for which to allocate the solver data.
+            data: The model data holding the state of the bodies and joints.
+            jacobians: The sparse system Jacobians of the model.
+            limits: The joint limits container of the model.
+            contacts: The contacts container of the model.
+            config: The solver config to use.
+            constraints: The constraint stabilization config to use.
+            rotation_correction: The joint rotation correction mode.
+            compute_solution_metrics: Whether to allocate the dual solution of the solution metrics.
+        """
+        self._config: LOXSolver.Config | None = None
+        self._constraints: ConstraintStabilizationConfig | None = None
+        self._model: ModelKamino | None = None
+        self._device: wp.DeviceLike = None
+        self._problem: LOXProblem | None = None
+        self._data: LOXData | None = None
+
+        if model is not None:
+            self.finalize(
+                model,
+                data,
+                jacobians,
+                limits,
+                contacts,
+                config,
+                constraints,
+                rotation_correction,
+                compute_solution_metrics=compute_solution_metrics,
+            )
+
+    ###
+    # Properties
+    ###
+
+    @property
+    def data(self) -> LOXData:
+        """Returns the solver state and terminal status."""
+        if self._data is None:
+            raise RuntimeError("Solver data has not been allocated yet. Call `finalize()` first.")
+        return self._data
+
+    @property
+    def problem(self) -> LOXProblem:
+        """Returns the constraint rows and the smooth body system."""
+        return self._problem
+
+    @property
+    def has_welded_bodies(self) -> bool:
+        """Whether the model has bodies welded to kinematic bodies, which :meth:`carry_welded_bodies` moves."""
+        return self._problem.welded_bodies is not None
+
+    ###
+    # Public API
+    ###
+
+    def finalize(
+        self,
+        model: ModelKamino,
+        data: DataKamino,
+        jacobians: SparseSystemJacobians,
+        limits: LimitsKamino | None,
+        contacts: ContactsKamino | None,
+        config: LOXSolver.Config,
+        constraints: ConstraintStabilizationConfig,
+        rotation_correction: JointCorrectionMode = JointCorrectionMode.TWOPI,
+        *,
+        compute_solution_metrics: bool = False,
+    ) -> None:
+        """Allocates the solver data structures on the model's device.
+
+        Args:
+            model: The model for which to allocate the solver data.
+            data: The model data holding the state of the bodies and joints.
+            jacobians: The sparse system Jacobians of the model.
+            limits: The joint limits container of the model.
+            contacts: The contacts container of the model.
+            config: The solver config to use.
+            constraints: The constraint stabilization config to use.
+            rotation_correction: The joint rotation correction mode.
+            compute_solution_metrics: Whether to allocate the dual solution of the solution metrics.
+        """
+        if model.size.sum_of_num_bodies == 0:
+            raise ValueError("LOX requires at least one rigid body.")
+        source_model = model._model
+        self._massless_bodies = None
+        if source_model is not None:
+            # LOX decides which bodies it prescribes from their masses, so runtime edits keep them
+            self._massless_bodies = LOXSolver._find_massless_bodies(source_model)
+            singular_bodies = LOXSolver._find_unsupported_singular_inertia_bodies(source_model)
+            if singular_bodies:
+                raise ValueError(
+                    "LOX cannot simulate bodies with singular inertial properties on joint DOFs without armature:\n"
+                    + "\n".join(f"  - {desc}" for desc in singular_bodies)
+                    + "\nWeld these bodies with fixed joints, give these joint DOFs armature,"
+                    " or give the bodies a non-zero mass and inertia."
+                )
+        self._config = config
+        self._constraints = constraints
+        self._model = model
+        self._device = model.device
+        self._problem = LOXProblem(
+            model=model,
+            data=data,
+            jacobians=jacobians,
+            limits=limits,
+            contacts=contacts,
+            eliminate_fixed_world_islands=config.eliminate_fixed_world_islands,
+            selective_weights=config.selective_weights,
+            rotation_correction=rotation_correction,
+            joint_proximal_relaxation=config.joint_proximal_relaxation,
+            contact_compliance=config.contact_compliance,
+            contact_implicit_restitution=config.contact_implicit_restitution,
+            contact_spatial_friction=config.contact_spatial_friction,
+        )
+        self._problem.prepare_patch_schur()
+        self._data = LOXData(
+            model.info.num_bodies.numpy().tolist(),
+            DualSolution(model, config) if compute_solution_metrics else None,
+            config.min_joint_penalty_ratio,
+            self._device,
+        )
+        self._build_projection_schedule()
+        self._iteration_condition = wp.zeros(1, dtype=wp.int32, device=self._device)
+        self._initialize_splitting()
+        structural_rows = self._problem.data.structural_rows
+        self._seed_topology = (
+            build_seed_topology(self._problem.system, structural_rows) if structural_rows.count > 0 else None
+        )
+
+    @staticmethod
+    def _find_massless_bodies(model: Model) -> np.ndarray:
+        """Returns whether each body of the Newton model has zero inverse mass and inverse inertia."""
+        inverse_inertia = model.body_inv_inertia.numpy().reshape(model.body_count, 9)
+        return (model.body_inv_mass.numpy() == 0.0) & ~inverse_inertia.any(axis=1)
+
+    @staticmethod
+    def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
+        """Finds bodies whose singular inertial properties leave a joint DOF of the LOX system without inertia.
+
+        LOX simulates bodies with singular inverse mass or inertia, such as helper links welded to
+        movable bodies, as long as their joints transmit the motion that they cannot resist. It
+        prescribes kinematic bodies, massless bodies whose only joints are free joints to the world,
+        and the bodies welded to them or to the world. Any other such body is unsupported when one
+        of its joints, a free joint to the world included, has a DOF without armature: no inertia
+        then acts on that DOF, and the smooth system of LOX is singular.
+
+        Args:
+            model: The Newton model to validate.
+
+        Returns:
+            A human-readable description of each offending body, empty if the model is supported.
+        """
+        if model.body_count == 0 or model.joint_count == 0:
+            return []
+
+        inv_mass = model.body_inv_mass.numpy()
+        inv_inertia = model.body_inv_inertia.numpy()
+        singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
+        singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
+        if not singular:
+            return []
+
+        joint_type = model.joint_type.numpy()
+        joint_parent = model.joint_parent.numpy()
+        joint_child = model.joint_child.numpy()
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_armature = model.joint_armature.numpy()
+
+        # `-1` denotes the world. Kinematic bodies and the bodies welded to them or to the world are prescribed.
+        welded_neighbors: dict[int, list[int]] = {}
+        unarmed_joints: dict[int, list[int]] = {}
+        constrained = set()
+        for j in range(model.joint_count):
+            joint = int(joint_type[j])
+            parent, child = int(joint_parent[j]), int(joint_child[j])
+            if not (joint == JointType.FREE and parent == -1):
+                constrained.update((parent, child))
+            if joint == JointType.FIXED:
+                welded_neighbors.setdefault(parent, []).append(child)
+                welded_neighbors.setdefault(child, []).append(parent)
+            elif np.any(joint_armature[joint_qd_start[j] : joint_qd_start[j + 1]] <= 0.0):
+                for endpoint in (parent, child):
+                    if endpoint >= 0:
+                        unarmed_joints.setdefault(endpoint, []).append(j)
+
+        body_flags = model.body_flags.numpy()
+        prescribed = {-1, *np.flatnonzero(body_flags & int(BodyFlags.KINEMATIC)).tolist()}
+        stack = list(prescribed)
+        while stack:
+            for neighbor in welded_neighbors.get(stack.pop(), ()):
+                if neighbor not in prescribed:
+                    prescribed.add(neighbor)
+                    stack.append(neighbor)
+
+        descriptions = []
+        for b in singular:
+            if b in prescribed or b not in unarmed_joints:
+                continue
+            # LOX prescribes massless bodies whose only joints are free joints to the world
+            if inv_mass[b] == 0.0 and not inv_inertia[b].any() and b not in constrained:
+                continue
+            reasons = []
+            if inv_mass[b] == 0.0:
+                reasons.append("zero inverse mass")
+            if singular_inertia[b]:
+                reasons.append("singular inverse inertia")
+            label = model.body_label[b] if model.body_label else f"body {b}"
+            joints = ", ".join(
+                f"'{model.joint_label[j]}'" if model.joint_label else f"joint {j}" for j in unarmed_joints[b]
+            )
+            descriptions.append(f"'{label}' (index {b}): {' and '.join(reasons)}, on {joints}")
+        return descriptions
+
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        """Seed the joint penalty again when the masses, the armature or the joint gains change.
+
+        The seed runs on the device at :attr:`LOXSolverConfig.joint_penalty_seed_time_step`, from the
+        current rigid state, and keeps the warm start. The LOX topology depends only on the immovability
+        of the bodies, which Kamino keeps fixed after construction.
+        """
+        reseed_flags = (
+            ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        )
+        if self._seed_topology is not None and flags & reseed_flags:
+            self._estimate_joint_penalty_scale(float(self._config.joint_penalty_seed_time_step), warn_failures=False)
+
+    def carry_welded_bodies(self) -> None:
+        """Move the bodies welded to kinematic bodies rigidly with them, in the Kamino body state.
+
+        Like a fixed joint in a MuJoCo tree, each such body takes the pose of its kinematic anchor composed
+        with their fixed relative pose, and the anchor's twist carried to its center of mass.
+        """
+        self._problem.carry_welded_bodies()
+
+    def validate_model_changed(self, flags: ModelFlags | int) -> None:
+        """Validate the joint friction and effort limits when the joint DOF values change, and that no body
+        became massless or gained mass when the inertial properties change."""
+        check_joints = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES))
+        check_masses = bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES) and self._massless_bodies is not None
+        if not (check_joints or check_masses):
+            return
+        # Host-side validation cannot synchronize aliased Newton arrays while a
+        # CUDA graph is being captured. The same topology was validated when the
+        # solver was built; captured property updates retain that topology.
+        if self._device.is_cuda and self._device.is_capturing:
+            return
+        if check_joints:
+            self._problem.validate_model_changed()
+        if check_masses:
+            source_model = self._model._model
+            flipped = np.flatnonzero(LOXSolver._find_massless_bodies(source_model) != self._massless_bodies)
+            if flipped.size > 0:
+                labels = ", ".join(
+                    f"'{source_model.body_label[b]}'" if source_model.body_label else f"body {b}" for b in flipped
+                )
+                raise RuntimeError(
+                    "LOX does not support making a body massless or giving a massless body mass after "
+                    f"construction: {labels}."
+                )
+
+    def reset(
+        self,
+        problem: DualProblem | None = None,
+        world_mask: wp.array[wp.bool] | None = None,
+    ) -> None:
+        """Clear the structural and splitting warm starts and the per-world diagnostics.
+
+        Args:
+            problem: Unused; accepted for interface compatibility with the dual solvers.
+            world_mask: Worlds to reset, or ``None`` for all worlds.
+        """
+        del problem
+        if world_mask is not None:
+            if world_mask.shape != (self._model.info.num_worlds,) or world_mask.dtype != wp.bool:
+                raise ValueError(f"world_mask must have shape ({self._model.info.num_worlds},) and dtype bool.")
+            if world_mask.device != self._device:
+                raise ValueError(f"world_mask must be allocated on {self._device}, found {world_mask.device}.")
+
+        self._initialize_splitting(world_mask=world_mask)
+        if world_mask is None:
+            self._data.dual_wrench.zero_()
+        else:
+            wp.launch(
+                _reset_dual_wrench,
+                dim=self._data.state.num_bodies,
+                inputs=[self._model.bodies.wid, world_mask],
+                outputs=[self._data.dual_wrench],
+                device=self._device,
+            )
+        self._problem.reset_structural_multipliers(world_mask=world_mask)
+        self._problem.reset_effort_counters(world_mask=world_mask)
+        self._problem.reset_box_reactions(world_mask=world_mask)
+        self._problem.reset_angular_contact_reactions(world_mask)
+
+    def joint_penalty_scale_seed(self, time_step: float) -> wp.array[wp.float32]:
+        """Estimate and apply a timestep-aware structural ALM scale.
+
+        The estimate is the reciprocal of the smallest positive eigenvalue of the
+        effective-mass-normalized structural Delassus, independently for each joint-connected component,
+        clamped so that the ratio of the penalty to the effective mass of the lightest structural mode
+        lies between :attr:`LOXSolverConfig.min_joint_penalty_ratio` and
+        :attr:`LOXSolverConfig.max_joint_penalty_ratio`. Components whose estimate fails take the
+        scale ``min_joint_penalty_ratio``. The smooth operator excludes the body splitting weights.
+
+        This operation prepares the LOX problem from the initial rigid state and
+        runs a one-time Golub-Kahan estimate on the device that synchronizes with
+        the host, so it is intended for initialization, outside the captured
+        simulation loop.
+
+        Args:
+            time_step: Uniform simulation time step [s].
+
+        Returns:
+            The applied dimensionless structural ALM penalty scale for each
+            body, shared by the bodies of a joint-connected component, shape
+            ``(num_bodies,)``. This is the solver's own array.
+        """
+        if np.any(self._problem.kamino_data.time.steps.numpy() != 0):
+            raise RuntimeError("joint penalty scale seeding must run before the first step or after a solver reset.")
+        self.reset()
+        try:
+            self._estimate_joint_penalty_scale(time_step, warn_failures=True)
+        finally:
+            self.reset()
+        return self._data.joint_penalty_scale
+
+    def solve_forward_dynamics(self, contacts: ContactsKamino | None = None) -> None:
+        """Solve one LOX forward-dynamics step from prepared Kamino data.
+
+        The splitting dual is warm-started from the previous solve, see :attr:`LOXData.dual_wrench`.
+
+        Args:
+            contacts: Unused; LOX reads the contacts container bound at construction.
+        """
+        del contacts
+        self._begin_time_step()
+
+        # Reset the per-world solver state from the inertial velocity guess and assemble the smooth system.
+        # A failed world stays failed until a reset
+        self._initialize_splitting(
+            inertial_warmstart_fraction=self._config.inertial_warmstart_fraction, keep_failed=True
+        )
+        self._update_system()
+        self._restore_dual()
+
+        # Iterate until every world converges, fails, or reaches the iteration limit
+        config = self._config
+        use_conditional_loop = not config.fixed_iterations and config.use_graph_conditionals
+        if use_conditional_loop:
+            self._iteration_condition.fill_(1)
+            wp.capture_while(self._iteration_condition, self._iterate, conditional=True)
+        else:
+            for _ in range(config.max_iterations):
+                self._iterate(conditional=False)
+
+        # Store the terminal status and the final residuals, which also fail the worlds with
+        # non-finite iterates. Store the warm start for non-failed worlds only
+        self._write_final_status_and_residuals()
+        self._store_dual_wrench()
+        self._write_accepted_dynamics()
+
+    def build_dual_solution(
+        self,
+        model: ModelKamino,
+        data: DataKamino,
+        state_p: StateKamino,
+        problem: DualProblem,
+        jacobians: SparseSystemJacobians,
+        limits: LimitsKamino | None = None,
+        contacts: ContactsKamino | None = None,
+    ) -> None:
+        """Reconstruct the dual solution of the last solve into ``data.solution`` for the solution metrics.
+
+        Evaluate the metrics from it with ``use_solution_velocity=True``. Contacts whose
+        law departs from hard contact are excluded from the dual residuals.
+
+        Args:
+            model: The model containing the time-invariant simulation data.
+            data: The model data holding the final body state and joint reactions.
+            state_p: The state at the beginning of the time step.
+            problem: The analysis dual problem built at the LOX linearization before the solve.
+            jacobians: The sparse system Jacobians used by the LOX solve.
+            limits: Active joint-limit constraints.
+            contacts: Active contact constraints.
+        """
+        if self._data.solution is None:
+            raise RuntimeError("The dual solution requires a solver built with `compute_solution_metrics=True`.")
+        self._data.solution.build(model, data, state_p, problem, jacobians, limits, contacts)
+
+    ###
+    # Internals - Setup
+    ###
+
+    def _build_projection_schedule(self) -> None:
+        """(Re)create the projection schedule for the current problem layout."""
+        self._projection = ProjectionSchedule(
+            self._problem.data,
+            self._config.gauss_seidel_max_colors,
+            ProjectionAcceleration.from_string(self._config.projection_acceleration),
+        )
+
+    def _initialize_splitting(
+        self,
+        inertial_warmstart_fraction: float = 0.0,
+        world_mask: wp.array[wp.bool] | None = None,
+        keep_failed: bool = False,
+    ) -> None:
+        """Initialize the splitting iterates of the masked worlds, or of all worlds.
+
+        Args:
+            inertial_warmstart_fraction: Fraction of the unconstrained velocity increment added to the
+                begin-step body velocities to seed the body twists.
+            world_mask: Worlds to initialize, or ``None`` for all worlds.
+            keep_failed: Whether the failed worlds stay failed; a reset clears them.
+        """
+        state = self._data.state
+        residuals = self._data.residuals
+        problem = self._problem
+        wp.launch(
+            _initialize_bodies,
+            dim=state.num_bodies,
+            inputs=[
+                self._model.bodies.wid,
+                world_mask,
+                problem.body_velocity_begin,
+                problem.system.data.body_block,
+                problem.model.bodies.m_i,
+                problem.model.bodies.inv_m_i,
+                problem.kamino_data.bodies.I_i,
+                problem.kamino_data.bodies.inv_I_i,
+                problem.kamino_data.bodies.w_e_i.view(dtype=vec6f),
+                problem.kamino_data.bodies.w_a_i.view(dtype=vec6f),
+                problem.model.gravity.vector,
+                self._model.time.dt,
+                inertial_warmstart_fraction,
+                self._data.dual_wrench,
+            ],
+            outputs=[
+                state.projected_twist,
+                state.projected_twist_previous,
+                state.global_twist,
+                state.global_twist_previous,
+            ],
+            device=self._device,
+        )
+        wp.launch(
+            _initialize_world_convergence,
+            dim=state.num_worlds,
+            inputs=[world_mask, keep_failed],
+            outputs=[
+                state.world_active,
+                state.world_converged,
+                state.world_failed,
+                state.iteration_count,
+                residuals.r_change,
+                residuals.r_split,
+                residuals.r_cross_iterate,
+                residuals.r_unilateral,
+                residuals.r_lagged,
+                residuals.r_primal,
+                residuals.r_dual,
+                self._problem.data.box_rows.world_residual_max,
+                self._problem.data.contact_rows.world_residual_max,
+                self._problem.data.structural_rows.world_residual,
+                self._problem.data.effort_rows.world_residual_max if self._problem.has_bounded_effort else None,
+                self._data.status,
+            ],
+            device=self._device,
+        )
+
+    ###
+    # Internals - Time Step
+    ###
+
+    def _begin_time_step(self, structural_warmstart_scale: float | None = None) -> None:
+        """Load the constraint rows of the time step with the configured stabilization and warm start.
+
+        Args:
+            structural_warmstart_scale: Scale of the structural multipliers of the previous time step,
+                or ``None`` for :attr:`LOXSolverConfig.joint_warmstart_scale`.
+        """
+        if structural_warmstart_scale is None:
+            structural_warmstart_scale = self._config.joint_warmstart_scale
+        constraints = self._constraints
+        self._problem.begin_time_step(
+            self._model.time.dt,
+            joint_max_correction=self._config.joint_max_correction,
+            # Joint residuals within the position and rotation tolerances are left to average out
+            joint_translation_dead_zone=self._config.position_tolerance,
+            joint_rotation_dead_zone=self._config.rotation_tolerance,
+            limit_stabilization_fraction=constraints.beta,
+            contact_stabilization_fraction=constraints.gamma,
+            contact_dead_zone=constraints.delta,
+            structural_warmstart_scale=structural_warmstart_scale,
+        )
+
+    def _estimate_joint_penalty_scale(self, time_step: float, warn_failures: bool) -> None:
+        """Seed the joint penalty scale from the current rigid state at the uniform ``time_step``.
+
+        The structural rows load without damping their warm start, so the multipliers carry over.
+
+        Args:
+            time_step: Uniform time step of the seed [s].
+            warn_failures: Whether to warn about the components whose estimate failed, which reads the
+                status on the host.
+        """
+        problem = self._problem
+        model_time = problem.model.time
+        # Seeding assembles the system with the given uniform time step, so restore the
+        # time step of each world afterwards
+        saved_time_step = wp.clone(model_time.dt)
+        saved_inverse_time_step = wp.clone(model_time.inv_dt)
+        try:
+            problem.prepare_joint_penalty_scale_seed(time_step)
+            if self._seed_topology is not None:
+                self._begin_time_step(structural_warmstart_scale=1.0)
+                problem.build_smooth_system(model_time.dt, joint_penalty_scale=None)
+                # Converge every structural mode within a conditioning bound
+                estimate_joint_penalty_scale(
+                    problem.system,
+                    problem.data.structural_rows,
+                    self._seed_topology,
+                    self._data.joint_penalty_scale,
+                    self._config.min_joint_penalty_ratio,
+                    self._config.max_joint_penalty_ratio,
+                    warn_failures=warn_failures,
+                )
+                # The time steps order their factorization from their own matrices
+                if problem.system.linear_solver is not None:
+                    problem.system.linear_solver.reset()
+        finally:
+            wp.copy(model_time.dt, saved_time_step)
+            wp.copy(model_time.inv_dt, saved_inverse_time_step)
+
+    def _update_system(self) -> None:
+        """Assemble and factorize the weighted smooth system, then prepare the projections."""
+        problem = self._problem
+        system = problem.system
+
+        def assemble() -> None:
+            problem.build_smooth_system(
+                self._model.time.dt,
+                joint_penalty_scale=self._data.joint_penalty_scale,
+            )
+            # The patch weights W of A, of which the matrix A + alpha W takes the fraction alpha
+            problem.compute_patch_schur_weights(
+                self._config.weight_beta or 0.0, self._config.weight_sigma, self._config.consensus_fraction
+            )
+
+        system.assemble_and_factorize(assemble)
+        if system.dynamic_bodies:
+            self._projection.prepare(system.data.inverse_weight, self._data.state.world_failed)
+
+    def _restore_dual(self) -> None:
+        """Convert the warm-start wrench to the scaled splitting dual with the current body weight."""
+        state = self._data.state
+        wp.launch(
+            _restore_dual_from_wrench,
+            dim=state.num_bodies,
+            inputs=[
+                self._model.bodies.wid,
+                self._problem.data.body_unilateral_count,
+                self._model.time.dt,
+                self._problem.system.data.inverse_weight,
+                self._data.dual_wrench,
+            ],
+            outputs=[state.splitting_dual],
+            device=self._device,
+        )
+
+    ###
+    # Internals - Iterations
+    ###
+
+    def _iterate(self, conditional: bool) -> None:
+        """Perform one splitting iteration."""
+        # Solve the smooth system for the candidate twist
+        self._update_candidate(conditional)
+
+        # Project the candidate onto the unilateral constraints
+        self._update_projection()
+
+        # Update the splitting dual, the structural multipliers, and the effort counters
+        self._update_multipliers()
+
+        # Check convergence
+        self._update_convergence_status(conditional)
+
+    def _update_candidate(self, conditional: bool = False) -> None:
+        """Solve the smooth system for the candidate twist, and clear the residuals of the convergence check."""
+        problem = self._problem
+        system = self._problem.system
+        splitting = self._data.state
+        residuals = self._data.residuals
+        # The splitting dual u = W^-1 J^T r carries the unilateral impulses, and the consensus fraction
+        # alpha anchors the solve (A + alpha W) v = f + W (u + alpha p) to the projected twist p
+        consensus_fraction = self._config.consensus_fraction
+        system.build_candidate_right_hand_side(
+            splitting.projected_twist if consensus_fraction > 0.0 else None,
+            splitting.splitting_dual,
+            problem.data.dynamic_rows,
+            problem.data.effort_rows,
+            problem.data.structural_rows,
+            anchor_scale=consensus_fraction,
+        )
+        system.solve_candidate()
+        wp.launch(
+            _prepare_projection,
+            dim=splitting.num_bodies,
+            inputs=[
+                self._model.bodies.wid,
+                problem.data.world_body_offset,
+                splitting.world_active,
+                system.data.body_vector_index,
+                system.data.packed_solution,
+                problem.body_velocity_begin,
+            ],
+            outputs=[
+                splitting.splitting_dual,
+                splitting.global_twist_previous,
+                splitting.global_twist,
+                splitting.projected_twist_previous,
+                splitting.projected_twist,
+                residuals.r_change,
+                residuals.r_split,
+                residuals.r_cross_iterate,
+                residuals.r_unilateral,
+                residuals.r_lagged,
+                problem.data.box_rows.world_residual_max,
+                problem.data.contact_rows.world_residual_max,
+                self._iteration_condition if conditional else None,
+            ],
+            device=self._device,
+        )
+
+    def _update_projection(self) -> None:
+        """Project the candidate twist onto the unilateral constraints."""
+        if not self._problem.system.dynamic_bodies:
+            return
+        self._projection.project(
+            self._config.projection_sweeps_per_iteration,
+            self._config.projection_anderson_recycle,
+            self._data.state.world_active,
+            self._data.state.world_failed,
+            self._model.bodies.wid,
+            self._data.state.projected_twist,
+        )
+
+    def _update_multipliers(self) -> None:
+        """Update the splitting dual, the structural multipliers, and the effort counters.
+
+        With convergence checks, the body residual reduction advances the splitting dual.
+        """
+        config = self._config
+        problem = self._problem
+        splitting = self._data.state
+        time_step = self._model.time.dt
+        if config.fixed_iterations:
+            wp.launch(
+                _update_splitting_dual,
+                dim=splitting.num_bodies,
+                inputs=[
+                    self._model.bodies.wid,
+                    splitting.world_active,
+                    splitting.world_failed,
+                    splitting.global_twist,
+                    splitting.projected_twist,
+                ],
+                outputs=[splitting.splitting_dual],
+                device=self._device,
+            )
+        problem.update_structural_multipliers_from_twist(
+            time_step,
+            config.position_tolerance,
+            config.rotation_tolerance,
+            splitting.global_twist,
+            splitting.projected_twist,
+            splitting.world_active,
+            splitting.world_failed,
+            projected_fraction=config.projected_twist_fraction,
+        )
+        if self._problem.has_bounded_effort:
+            problem.update_effort_counters(
+                time_step,
+                config.velocity_tolerance,
+                splitting.projected_twist,
+                splitting.world_active,
+            )
+
+    def _update_convergence_status(self, conditional: bool) -> None:
+        """Reduce the iteration residuals, then deactivate converged and failed worlds."""
+        config = self._config
+        problem = self._problem
+        splitting = self._data.state
+        residuals = self._data.residuals
+        if config.fixed_iterations:
+            wp.launch(
+                _initialize_fixed_iteration,
+                dim=splitting.num_worlds,
+                inputs=[splitting.world_failed],
+                outputs=[splitting.world_active, splitting.iteration_count],
+                device=self._device,
+            )
+            return
+        iteration_condition = self._iteration_condition if conditional else None
+        box_rows = problem.data.box_rows
+        contact_rows = problem.data.contact_rows
+        spatial = contact_rows.frame is not None
+        max_world_items = max(
+            int(self._model.size.max_of_num_bodies), box_rows.max_world_capacity, contact_rows.max_world_capacity
+        )
+        thread_count = _world_thread_count(self._device, problem.data.num_worlds, max_world_items)
+        wp.launch(
+            make_iteration_residuals_kernel(spatial),
+            dim=(problem.data.num_worlds, thread_count),
+            inputs=[
+                thread_count,
+                self._model.time.dt,
+                config.position_tolerance,
+                config.rotation_tolerance,
+                config.velocity_tolerance,
+                1.0 / config.velocity_tolerance,
+                splitting.world_active,
+                problem.data.world_body_offset,
+                problem.data.world_body_count,
+                splitting.global_twist_previous,
+                splitting.global_twist,
+                splitting.projected_twist_previous,
+                splitting.projected_twist,
+                box_rows.world_offset,
+                box_rows.world_count,
+                box_rows.body_a,
+                box_rows.body_b,
+                box_rows.jacobian_a,
+                box_rows.jacobian_b,
+                box_rows.bias,
+                box_rows.lower,
+                box_rows.upper,
+                box_rows.reaction,
+                box_rows.physical_delassus,
+                contact_rows.world_offset,
+                contact_rows.world_count,
+                contact_rows.body_a,
+                contact_rows.body_b,
+                contact_rows.jacobian_a,
+                contact_rows.jacobian_b,
+                contact_rows.bias,
+                contact_rows.friction,
+                contact_rows.normal_compliance,
+                contact_rows.restitution,
+                contact_rows.reaction,
+                None if spatial else contact_rows.physical_delassus,
+                contact_rows.frame,
+                contact_rows.angular_friction,
+                contact_rows.angular_reaction,
+                contact_rows.physical_delassus if spatial else None,
+            ],
+            outputs=[
+                splitting.splitting_dual,
+                splitting.world_failed,
+                box_rows.velocity,
+                contact_rows.velocity,
+                box_rows.world_residual_max,
+                contact_rows.world_residual_max,
+                residuals.r_unilateral,
+                residuals.r_lagged,
+                residuals.r_change,
+                residuals.r_split,
+                residuals.r_cross_iterate,
+            ],
+            device=self._device,
+        )
+        wp.launch(
+            _finalize_world_iteration,
+            dim=splitting.num_worlds,
+            inputs=[
+                residuals.r_change,
+                residuals.r_split,
+                residuals.r_cross_iterate,
+                residuals.r_lagged,
+                residuals.r_unilateral,
+                splitting.world_failed,
+                config.max_iterations,
+            ],
+            outputs=[
+                splitting.iteration_count,
+                problem.data.structural_rows.world_residual,
+                problem.data.effort_rows.world_residual_max if self._problem.has_bounded_effort else None,
+                splitting.world_active,
+                splitting.world_converged,
+                iteration_condition,
+            ],
+            device=self._device,
+        )
+
+    def _update_residuals(self) -> None:
+        """Evaluate the unilateral velocities and the final natural-map residuals, skipping the failed worlds."""
+        splitting = self._data.state
+        box_rows = self._problem.data.box_rows
+        contact_rows = self._problem.data.contact_rows
+        box_rows.world_residual_max.zero_()
+        contact_rows.world_residual_max.zero_()
+        if box_rows.capacity > 0:
+            wp.launch(
+                _compute_box_residuals,
+                dim=box_rows.capacity,
+                inputs=[
+                    splitting.world_failed,
+                    box_rows.world,
+                    box_rows.local,
+                    box_rows.world_count,
+                    box_rows.body_a,
+                    box_rows.body_b,
+                    box_rows.jacobian_a,
+                    box_rows.jacobian_b,
+                    box_rows.bias,
+                    box_rows.lower,
+                    box_rows.upper,
+                    box_rows.reaction,
+                    box_rows.physical_delassus,
+                    splitting.projected_twist,
+                ],
+                outputs=[box_rows.velocity, box_rows.world_residual_max],
+                device=self._device,
+            )
+        if contact_rows.capacity > 0:
+            num_worlds = self._problem.data.num_worlds
+            spatial = contact_rows.frame is not None
+            thread_count = _world_thread_count(self._device, num_worlds, contact_rows.max_world_capacity)
+            wp.launch(
+                make_contact_residuals_kernel(spatial),
+                dim=(num_worlds, thread_count),
+                inputs=[
+                    thread_count,
+                    contact_rows.world_offset,
+                    contact_rows.world_count,
+                    contact_rows.body_a,
+                    contact_rows.body_b,
+                    contact_rows.jacobian_a,
+                    contact_rows.jacobian_b,
+                    contact_rows.bias,
+                    contact_rows.friction,
+                    contact_rows.normal_compliance,
+                    contact_rows.restitution,
+                    contact_rows.reaction,
+                    None if spatial else contact_rows.physical_delassus,
+                    contact_rows.frame,
+                    contact_rows.angular_friction,
+                    contact_rows.angular_reaction,
+                    contact_rows.physical_delassus if spatial else None,
+                    splitting.projected_twist,
+                ],
+                outputs=[splitting.world_failed, contact_rows.velocity, contact_rows.world_residual_max],
+                device=self._device,
+            )
+
+    ###
+    # Internals - Outputs
+    ###
+
+    def _store_dual_wrench(self) -> None:
+        """Store the scaled splitting dual as the warm-start wrench of the next time step."""
+        state = self._data.state
+        wp.launch(
+            _store_dual_wrench,
+            dim=state.num_bodies,
+            inputs=[
+                self._model.bodies.wid,
+                self._problem.data.body_unilateral_count,
+                state.world_failed,
+                self._model.time.inv_dt,
+                self._problem.system.data.weight,
+                state.splitting_dual,
+            ],
+            outputs=[self._data.dual_wrench],
+            device=self._device,
+        )
+
+    def _write_final_status_and_residuals(self) -> None:
+        """Store the terminal world status and the final residuals."""
+        state = self._data.state
+        residuals = self._data.residuals
+        wp.launch(
+            _reduce_final_body_residuals,
+            dim=state.num_bodies,
+            inputs=[
+                self._model.bodies.wid,
+                self._problem.system.data.weight,
+                state.global_twist_previous,
+                state.global_twist,
+                state.projected_twist,
+                state.splitting_dual,
+            ],
+            outputs=[state.world_failed, residuals.r_primal, residuals.r_dual],
+            device=self._device,
+        )
+        # The convergence check evaluates the unilateral residuals at the final twists of
+        # each world; fixed iterations skip that check and evaluate them once here.
+        if self._config.fixed_iterations:
+            self._update_residuals()
+        wp.launch(
+            _write_world_status,
+            dim=self._model.info.num_worlds,
+            inputs=[
+                self._data.state.world_converged,
+                state.world_failed,
+                self._data.state.iteration_count,
+                residuals.r_primal,
+                residuals.r_dual,
+                self._problem.data.box_rows.world_residual_max,
+                self._problem.data.contact_rows.world_residual_max,
+            ],
+            outputs=[self._data.status],
+            device=self._device,
+        )
+
+    def _write_accepted_dynamics(self) -> None:
+        """Write outputs and expose the accepted LOX velocity as equivalent inputs to the selected Kamino integrator."""
+        state = self._data.state
+        accepted_twist = state.projected_twist
+        fraction = self._config.projected_twist_fraction
+        if fraction < 1.0:
+            # The smooth twist is read again only by the next solve, which reinitializes it
+            wp.launch(
+                _blend_accepted_twist,
+                dim=state.num_bodies,
+                inputs=[fraction, state.projected_twist],
+                outputs=[state.global_twist],
+                device=self._device,
+            )
+            accepted_twist = state.global_twist
+        self._problem.write_output_wrenches(self._model.time.inv_dt, accepted_twist, self._data.state.world_failed)
+        model = self._model
+        problem = self._problem
+        wp.launch(
+            _write_integrator_body_inputs,
+            dim=model.size.sum_of_num_bodies,
+            inputs=[
+                self._problem.system.data.body_vector_index,
+                model.bodies.wid,
+                self._data.state.world_failed,
+                model.time.dt,
+                model.bodies.m_i,
+                problem.kamino_data.bodies.I_i,
+                model.bodies.inv_m_i,
+                model.bodies.inv_i_I_i,
+                model.gravity.vector,
+                problem.body_velocity_begin,
+                accepted_twist,
+            ],
+            outputs=[problem.kamino_data.bodies.w_i, problem.kamino_data.bodies.u_i],
+            device=self._device,
+        )

@@ -113,7 +113,7 @@ class Example:
         scene = newton.ModelBuilder()
         scene.default_shape_cfg.gap = 0.0
         scene.add_ground_plane()
-        scene.replicate(world, world_count=self.world_count)
+        scene.replicate(world, copy_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()
