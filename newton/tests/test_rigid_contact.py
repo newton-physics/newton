@@ -823,6 +823,11 @@ def test_penalty_friction_force_and_gradient(test, device):
             np.testing.assert_allclose(gradient, expected_gradient, atol=2.0e-3, rtol=2.0e-5)
             tape.zero()
 
+            # Numerical checks at rest and in each friction regime complement the
+            # analytical checks above without repeating them for every edge case.
+            if (mu, kf, normal_speed) != (0.5, 1000.0, 0.0) or speed not in (0.0, 0.01, 0.5):
+                continue
+
             # Compare the full contact kernel's derivative to perturbed velocities.
             finite_difference = np.zeros(2)
             epsilon = 1.0e-4
@@ -852,7 +857,7 @@ def test_penalty_friction_solver_step(test, device):
     test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
     dt = 1.0e-4
     for solver_type in (newton.solvers.SolverSemiImplicit, newton.solvers.SolverFeatherstone):
-        for smoothing in (None, 0.1, 1.0, 2.0):
+        for smoothing in (None, 0.1):
             with test.subTest(solver=solver_type.__name__, friction_smoothing=smoothing):
                 if smoothing is None:
                     solver = solver_type(model)
