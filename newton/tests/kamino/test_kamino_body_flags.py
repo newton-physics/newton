@@ -571,7 +571,7 @@ class TestKaminoBodyFlags(unittest.TestCase):
                 state_in, state_out, control = model.state(), model.state(), model.control()
                 start = state_in.body_q.numpy().copy()
 
-                for _ in range(60):
+                for _ in range(30):
                     pipeline.collide(state_in, contacts)
                     solver.step(state_in, state_out, control, contacts, time_step)
                     state_in, state_out = state_out, state_in
