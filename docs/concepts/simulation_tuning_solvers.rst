@@ -212,7 +212,7 @@ repository examples spend tuning effort, not a shared solver API.
        derivative bound. See
        :ref:`Tuning VBD` for the VBD-specific tuning page.
    * - :class:`~newton.solvers.SolverFeatherstone`
-     - ``angular_damping``, ``friction_smoothing``,
+     - ``angular_damping``,
        ``update_mass_matrix_interval``, ``use_tile_gemm``, ``fuse_cholesky``.
      - This semi-implicit articulated solver is tuned mainly through ``dt``,
        contact materials, drive gains, joint limits, and armature. Large stiffness
@@ -334,7 +334,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
    * - :class:`~newton.solvers.SolverSemiImplicit`
-     - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
+     - ``angular_damping``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.
      - There is no iteration parameter. For instability, reduce ``dt``, reduce
        stiffness, add damping, or use a solver with an implicit or iterative

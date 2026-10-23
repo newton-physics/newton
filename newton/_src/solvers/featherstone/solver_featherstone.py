@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import numpy as np
 import warp as wp
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
 from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -155,7 +158,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         *,
         angular_damping: float = 0.05,
         update_mass_matrix_interval: int = 1,
-        friction_smoothing: float = 1.0,
+        friction_smoothing: float | None = None,
         use_tile_gemm: bool = False,
         fuse_cholesky: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -165,7 +168,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             model: The model to be simulated.
             angular_damping: Angular damping factor. Defaults to 0.05.
             update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
-            friction_smoothing: The delta value for the Huber norm (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`) used for the friction velocity normalization. Defaults to 1.0.
+            friction_smoothing: Deprecated, ignored compatibility argument.
+
+                .. deprecated:: 1.8
+                    Remove this argument. Shape material ``kf`` controls the low-speed
+                    friction slope and ``mu`` controls the Coulomb limit.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. A kernel is compiled per distinct articulation size. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
             deterministic: Opt-in determinism for this solver's atomic-emitting
@@ -224,7 +231,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         self.angular_damping = angular_damping
         self.update_mass_matrix_interval = update_mass_matrix_interval
-        self.friction_smoothing = friction_smoothing
+        if friction_smoothing is not None:
+            warnings.warn(
+                "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
+                "Remove this argument; use shape material kf for the low-speed friction slope and mu for the Coulomb limit.",
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
+        self.friction_smoothing = 1.0 if friction_smoothing is None else friction_smoothing
         self.use_tile_gemm = use_tile_gemm
         self.fuse_cholesky = fuse_cholesky
 
@@ -730,7 +744,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             contacts.rigid_contact_damping,
                             contacts.rigid_contact_friction,
                             False,
-                            self.friction_smoothing,
                         ],
                         outputs=[body_f],
                         device=model.device,

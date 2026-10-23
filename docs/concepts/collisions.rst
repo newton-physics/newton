@@ -2326,15 +2326,21 @@ normal and tangential relative velocities. Per contact, the normal force
 
    f_n &= k_e \, d \qquad (d < k_a) \\
    f_d &= k_d \, \min(v_n, 0) \qquad (d < 0) \\
-   \lVert f_t \rVert &= k_f \, \lVert v_t \rVert \qquad (d < 0, \text{ low slip speed})
+   \lVert f_t \rVert &= \min(k_f \, \lVert v_t \rVert,\, \mu |f_n + f_d|) \qquad (d < 0)
 
 **Friction gain** ``kf`` **[N·s/m]** is the slope of a viscous regularization
 of Coulomb friction: at low slip speed the friction force is
 :math:`k_f \lVert v_t \rVert`, so a body at rest on a slope creeps instead of
 sticking. With :math:`N` contacts carrying the load, the creep speed is roughly
-:math:`m g \sin\theta / (N k_f)`. At higher slip speed the force is capped by a
-term proportional to ``mu``. The exact cap is under review in
-`#4796 <https://github.com/newton-physics/newton/issues/4796>`__.
+:math:`m g \sin\theta / (N k_f)`. At higher slip speed the force is capped at
+:math:`\mu |f_n + f_d|`, including normal damping. Friction opposes tangential
+relative motion. For positive ``kf``, the transition speed is
+:math:`\mu |f_n + f_d| / k_f`.
+
+The solver argument ``friction_smoothing`` is deprecated in Newton 1.8 and
+ignored. Remove it from solver construction; use ``kf`` to control the
+low-speed slope and ``mu`` to control the Coulomb limit. The viscous branch is
+evaluated directly so its velocity derivative remains well-defined at rest.
 
 - Larger ``kf`` gives less creep but stiffens the friction force. With these
   explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
