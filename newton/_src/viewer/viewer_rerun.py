@@ -383,6 +383,14 @@ class ViewerRerun(ViewerBase):
         rr.log(name, mesh_3d, static=static)
 
     @override
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
+        if flags & newton.ModelFlags.SHAPE_ACTIVE and self.model is not None and self.model.body_variant_count > 0:
+            raise NotImplementedError(
+                "ViewerRerun does not support shape geometry changes such as body variant selection."
+            )
+        super().notify_model_changed(flags)
+
+    @override
     def log_instances(
         self,
         name: str,

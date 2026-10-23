@@ -24,6 +24,7 @@ from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .enums import ModelFlags
 from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
@@ -45,6 +46,62 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
+
+
+@wp.kernel(enable_backward=False)
+def _select_body_variants_kernel(
+    variants: wp.array[wp.int32],
+    bodies: wp.array[wp.int32],
+    body_variant_start: wp.array[wp.int32],
+    variant_shape_range: wp.array[wp.vec2i],
+    variant_mass: wp.array[wp.float32],
+    variant_com: wp.array[wp.vec3],
+    variant_inertia: wp.array[wp.mat33],
+    body_world: wp.array[wp.int32],
+    # outputs
+    body_variant: wp.array[wp.int32],
+    shape_active: wp.array[wp.bool],
+    body_mass: wp.array[wp.float32],
+    body_inv_mass: wp.array[wp.float32],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_inertia: wp.array[wp.mat33],
+    changed_world_mask: wp.array[wp.bool],
+):
+    i = wp.tid()
+    body = i
+    if bodies.shape[0] > 0:
+        body = bodies[i]
+    if body < 0 or body >= body_variant.shape[0]:
+        return
+    local = variants[i]
+    first = body_variant_start[body]
+    if local < 0 or local >= body_variant_start[body + 1] - first:
+        return
+
+    if changed_world_mask.shape[0] > 0 and body_variant[body] != local:
+        world = body_world[body]
+        if world < 0:
+            world = changed_world_mask.shape[0] - 1
+        changed_world_mask[world] = True
+    body_variant[body] = local
+
+    selected = first + local
+    for variant in range(first, body_variant_start[body + 1]):
+        shapes = variant_shape_range[variant]
+        for shape in range(shapes[0], shapes[1]):
+            shape_active[shape] = variant == selected
+
+    mass = variant_mass[selected]
+    inertia = variant_inertia[selected]
+    body_mass[body] = mass
+    body_inv_mass[body] = wp.where(mass > 0.0, 1.0 / mass, 0.0)
+    body_com[body] = variant_com[selected]
+    body_inertia[body] = inertia
+    if wp.determinant(inertia) != 0.0:
+        body_inv_inertia[body] = wp.inverse(inertia)
+    else:
+        body_inv_inertia[body] = wp.mat33(0.0)
 
 
 def _pack_shape_pair_codes(shape_a: np.ndarray, shape_b: np.ndarray) -> np.ndarray:
@@ -357,6 +414,13 @@ class Model:
             AttributeFrequency.ONCE,
             compaction_policy="passthrough",
         ),
+        "body_variant": AttributeSpec(AttributeFrequency.BODY),
+        "body_variant_start": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "body_variant_label": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_body_variant_shape_range": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_body_variant_mass": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_body_variant_com": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_body_variant_inertia": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         # shapes
         "shape_label": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_transform": AttributeSpec(AttributeFrequency.SHAPE),
@@ -415,6 +479,7 @@ class Model:
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_interior_point": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_active": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_world_start": AttributeSpec(
             AttributeFrequency.SHAPE,
             compaction_policy="world_start",
@@ -859,6 +924,9 @@ class Model:
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
         """Shape indices included in the shape BVH, shape ``[bvh_shape_count_enabled]``."""
+        self._bvh_shape_active_leaves: wp.array[wp.uint32] | None = None
+        """:attr:`bvh_shape_enabled` with inactive body-variant shapes replaced by ``0xFFFFFFFF``, which ray
+        queries skip; updated by :meth:`bvh_refit_shapes` and aliasing :attr:`bvh_shape_enabled` without variants."""
         self.bvh_shape_count_enabled: int = 0
         """Number of shapes included in the shape BVH."""
         self.bvh_shape_bounds: wp.array2d[wp.vec3f] | None = None
@@ -1111,6 +1179,48 @@ class Model:
         The total number of global bodies can be computed as::
 
             num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]
+        """
+        self.body_variant: wp.array[wp.int32] | None = None
+        """Selected shape variant of each body, local to the body, or ``-1`` for bodies without
+        variants, shape [body_count], int.
+
+        Change the selection with :meth:`select_body_variants`; see
+        :meth:`ModelBuilder.add_body_variants <newton.ModelBuilder.add_body_variants>`.
+
+        .. experimental::
+
+            Body shape variants may change without a deprecation period.
+        """
+        self.body_variant_start: wp.array[wp.int32] | None = None
+        """Start index of each body's variants in :attr:`body_variant_label`, shape [body_count + 1], int.
+
+        Body ``b`` has ``body_variant_start[b + 1] - body_variant_start[b]`` variants.
+
+        .. experimental::
+
+            Body shape variants may change without a deprecation period.
+        """
+        self.body_variant_label: list[str] = []
+        """Labels of all body shape variants, shape [body_variant_count], str. Experimental, see :attr:`body_variant`."""
+        self.body_variant_count: int = 0
+        """Total number of body shape variants over all bodies. Experimental, see :attr:`body_variant`."""
+        self._body_variant_shape_range: wp.array[wp.vec2i] | None = None
+        """Shape index range ``[start, end)`` of each variant, shape [body_variant_count, 2], int."""
+        self._body_variant_mass: wp.array[wp.float32] | None = None
+        """Body mass [kg] with each variant selected, shape [body_variant_count], float."""
+        self._body_variant_com: wp.array[wp.vec3] | None = None
+        """Body center of mass [m] with each variant selected, shape [body_variant_count, 3], float."""
+        self._body_variant_inertia: wp.array[wp.mat33] | None = None
+        """Body inertia [kg·m²] about the COM with each variant selected, shape [body_variant_count, 3, 3], float."""
+        self.shape_active: wp.array[wp.bool] | None = None
+        """Whether each shape is part of the simulated and rendered geometry, shape [shape_count], bool.
+
+        Shapes of body variants that are not selected are inactive; all other shapes are always
+        active. Read-only: :meth:`select_body_variants` updates it.
+
+        .. experimental::
+
+            Body shape variants may change without a deprecation period.
         """
 
         self.joint_q: wp.array[wp.float32] | None = None
@@ -1843,6 +1953,10 @@ class Model:
         )
         self.bvh_shape_count_enabled = int(num_enabled.numpy()[0])
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
+        # Body-variant leaves stay in the BVH; ray queries read a copy masked per refit.
+        self._bvh_shape_active_leaves = (
+            wp.empty_like(self.bvh_shape_enabled) if self.body_variant_count > 0 else self.bvh_shape_enabled
+        )
 
         if self.bvh_shape_count_enabled == 0:
             # drop any BVH from a previous build, it would index stale shapes
@@ -1865,6 +1979,7 @@ class Model:
             inputs=[self.bvh_shapes.id, self.bvh_shapes_group_roots],
             device=device,
         )
+        self._mark_inactive_bvh_shapes()
 
     def bvh_refit_shapes(self, state: State) -> None:
         """Refit the shape BVH stored on this model for the current state.
@@ -1872,7 +1987,8 @@ class Model:
         The shape BVH is built automatically by :meth:`ModelBuilder.finalize`.
         Manually populated models must call :meth:`bvh_build_shapes` first.
         Updates world-space shape transforms from ``state.body_q`` and refits
-        the BVH in place.
+        the BVH in place, and marks the leaves of inactive body-variant shapes
+        so that ray queries skip them.
 
         Args:
             state: Current simulation state with body transforms.
@@ -1894,6 +2010,21 @@ class Model:
         compute_shape_world_transforms_launch(self, state)
         compute_shape_bvh_bounds_launch(self, self.bvh_shapes.lowers, self.bvh_shapes.uppers, self.bvh_shapes.groups)
         self.bvh_shapes.refit()
+        self._mark_inactive_bvh_shapes()
+
+    def _mark_inactive_bvh_shapes(self) -> None:
+        """Mark inactive body-variant leaves of the shape BVH on the device, so it also works in CUDA graphs."""
+        from ..geometry.bvh import mark_inactive_bvh_shapes  # noqa: PLC0415
+
+        if self.body_variant_count == 0 or self.bvh_shape_count_enabled == 0:
+            return
+        wp.launch(
+            mark_inactive_bvh_shapes,
+            dim=self.bvh_shape_count_enabled,
+            inputs=[self.bvh_shape_enabled, self.shape_active],
+            outputs=[self._bvh_shape_active_leaves],
+            device=self.device,
+        )
 
     def bvh_build_particles(self, state: State, *, bvh_constructor: str | None = None) -> None:
         """Build or rebuild the particle BVH stored on this model.
@@ -2146,6 +2277,90 @@ class Model:
                 self.gravity.assign(current)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
+
+    def select_body_variants(
+        self,
+        variants: wp.array[wp.int32],
+        *,
+        bodies: wp.array[wp.int32] | None = None,
+        changed_world_mask: wp.array[wp.bool] | None = None,
+    ) -> int:
+        """Select the active shape variant of bodies declared with
+        :meth:`ModelBuilder.add_body_variants <newton.ModelBuilder.add_body_variants>`.
+
+        Activates the selected variant's shapes, deactivates the body's other variant shapes,
+        and writes the variant's mass, center of mass, and inertia, including their inverses,
+        to the body. Inactive shapes do not collide in :class:`~newton.CollisionPipeline` and are
+        not rendered. Sensors and ray casts skip them after the next :meth:`bvh_refit_shapes`.
+        Shapes added to the body directly remain active for every variant.
+
+        Each body may appear at most once per call. The selection runs as a single kernel launch
+        without host synchronization, so it can be captured in a CUDA graph. Notify solvers and viewers with the returned flags::
+
+            flags = model.select_body_variants(variants, bodies=bodies, changed_world_mask=changed)
+            solver.notify_model_changed(flags)
+            viewer.notify_model_changed(flags)
+
+        .. experimental::
+
+            Body shape variants may change without a deprecation period.
+
+        Args:
+            variants: Local variant index per entry, in ``[0, variant count of the body)``.
+                Entries outside that range, such as ``-1``, leave their body unchanged.
+            bodies: Body index per entry of ``variants``. If ``None``, ``variants`` must have one
+                entry per body.
+            changed_world_mask: Optional output mask of shape ``(world_count + 1,)`` in the
+                :meth:`~newton.solvers.SolverBase.reset` layout. The selection only writes it: entries
+                of worlds whose selection changed are set to ``True`` and other entries are left
+                unchanged, so pass a zeroed array to collect the changes of this call. The result can be
+                passed as the ``world_mask`` of solver methods.
+
+        Returns:
+            The :class:`~newton.ModelFlags` bit-mask to pass to ``notify_model_changed``.
+        """
+        if self.body_variant is None:
+            raise RuntimeError("select_body_variants() requires a finalized model.")
+        if bodies is None:
+            if variants.shape[0] != self.body_count:
+                raise ValueError(
+                    f"Expected one variant per body ({self.body_count}) when bodies is None, got {variants.shape[0]}."
+                )
+        elif bodies.shape != variants.shape:
+            raise ValueError(f"bodies shape {bodies.shape} must match variants shape {variants.shape}.")
+        if changed_world_mask is not None and changed_world_mask.shape[0] != self.world_count + 1:
+            raise ValueError(
+                f"changed_world_mask must have shape ({self.world_count + 1},), got {changed_world_mask.shape}."
+            )
+        flags = int(ModelFlags.SHAPE_ACTIVE | ModelFlags.BODY_INERTIAL_PROPERTIES)
+        if self.body_variant_count == 0 or variants.shape[0] == 0:
+            return flags
+        wp.launch(
+            _select_body_variants_kernel,
+            dim=variants.shape[0],
+            inputs=[
+                variants,
+                wp.empty(0, dtype=wp.int32, device=self.device) if bodies is None else bodies,
+                self.body_variant_start,
+                self._body_variant_shape_range,
+                self._body_variant_mass,
+                self._body_variant_com,
+                self._body_variant_inertia,
+                self.body_world,
+            ],
+            outputs=[
+                self.body_variant,
+                self.shape_active,
+                self.body_mass,
+                self.body_inv_mass,
+                self.body_com,
+                self.body_inertia,
+                self.body_inv_inertia,
+                wp.empty(0, dtype=wp.bool, device=self.device) if changed_world_mask is None else changed_world_mask,
+            ],
+            device=self.device,
+        )
+        return flags
 
     @property
     def contact_max(self) -> int | None:

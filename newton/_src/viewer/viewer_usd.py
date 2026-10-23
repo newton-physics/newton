@@ -561,6 +561,14 @@ class ViewerUSD(ViewerBase):
         safe = mesh_name.replace("/", "_").lstrip("_")
         return f"{self._root_path}/Materials/mat_{safe}"
 
+    @override
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
+        if flags & newton.ModelFlags.SHAPE_ACTIVE and self.model is not None and self.model.body_variant_count > 0:
+            raise NotImplementedError(
+                "ViewerUSD does not support shape geometry changes such as body variant selection."
+            )
+        super().notify_model_changed(flags)
+
     # log a set of instances as individual mesh prims, slower but makes it easier
     # to do post-editing of instance materials etc. default for Newton shapes
     @override

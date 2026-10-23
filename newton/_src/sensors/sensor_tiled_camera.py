@@ -129,6 +129,8 @@ class SensorTiledCamera:
                 to skip texture loading when textures are not needed.
         """
         warnings.warn(_TILED_CAMERA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        if getattr(model, "body_variant_count", 0) > 0:
+            raise NotImplementedError("SensorTiledCamera does not support body shape variants; use SensorCamera.")
 
         self.model = model
 

@@ -59,6 +59,9 @@ def check_aabb_overlap_moving(
     upper_box1 = box_upper[shape1]
     lower_box2 = box_lower[shape2]
     upper_box2 = box_upper[shape2]
+    # An empty box, such as that of an inactive body-variant shape, never overlaps.
+    if lower_box1[0] > upper_box1[0] or lower_box2[0] > upper_box2[0]:
+        return False
     enter = float(0.0)
     exit_time = float(1.0)
     for axis in range(3):

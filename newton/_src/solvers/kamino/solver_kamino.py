@@ -807,6 +807,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             # Validate the user-provided config. Protects against modifying the config after initialization.
             config.validate()
         self._config = config
+        if config.use_collision_detector and getattr(model, "body_variant_count", 0) > 0:
+            raise NotImplementedError(
+                "SolverKamino supports body shape variants only with Newton contacts; set use_collision_detector=False."
+            )
 
         # Validate solver-specific model compatibility after resolving the selected backend.
         self._validate_model_compatibility(model, self._config)
@@ -1344,6 +1348,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.ACTUATOR_PROPERTIES
             | ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.TENDON_PROPERTIES
+            # Body variants require Newton contacts, so Kamino caches no geometry to refresh.
+            | ModelFlags.SHAPE_ACTIVE
         )
         unsupported = int(flags) & ~int(handled)
         if unsupported:

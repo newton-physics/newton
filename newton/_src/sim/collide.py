@@ -67,6 +67,30 @@ def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndar
     return (flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0
 
 
+def _variant_capacity_mask(model: Model, mask: np.ndarray) -> np.ndarray:
+    """Restrict ``mask`` to the variant with the most masked shapes of each body for capacity estimates.
+
+    Only one variant per body is active at a time, so counting every variant would size contact
+    buffers for the whole catalog.
+    """
+    if getattr(model, "body_variant_count", 0) == 0:
+        return mask
+    ranges = model._body_variant_shape_range.numpy()
+    variant_start = model.body_variant_start.numpy()
+    counts = np.concatenate(([0], np.cumsum(mask)))
+    counts = counts[ranges[:, 1]] - counts[ranges[:, 0]]
+    variant_body = np.repeat(np.arange(len(variant_start) - 1), np.diff(variant_start))
+    # Sort by body, then by descending count; the first variant of each body is its largest.
+    order = np.lexsort((-counts, variant_body))
+    first = np.concatenate(([True], variant_body[order][1:] != variant_body[order][:-1]))
+    kept = np.zeros(len(counts), dtype=bool)
+    kept[order[first]] = True
+    excluded = np.zeros(len(mask) + 1, dtype=np.int64)
+    np.add.at(excluded, ranges[~kept, 0], 1)
+    np.add.at(excluded, ranges[~kept, 1], -1)
+    return mask & (np.cumsum(excluded[:-1]) == 0)
+
+
 _ANALYTIC_PRIMITIVE_PAIRS = frozenset(
     {
         (int(GeoType.PLANE), int(GeoType.SPHERE)),
@@ -339,6 +363,9 @@ def _record_reduction_overflow(
     overflow[0] = wp.where(insert_failures[0] > 0 or buffer_overflows[0] > 0, 1, 0)
 
 
+_INACTIVE_AABB_EXTENT = wp.constant(1.0e30)
+
+
 @wp.kernel(enable_backward=False)
 def compute_shape_aabbs(
     body_q: wp.array[wp.transform],
@@ -352,6 +379,7 @@ def compute_shape_aabbs(
     shape_gap: wp.array[float],
     shape_collision_aabb_lower: wp.array[wp.vec3],
     shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_active: wp.array[wp.bool],
     # Fused counter arrays — zeroed by thread 0 to avoid separate kernel launches.
     contact_counters: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
@@ -382,6 +410,12 @@ def compute_shape_aabbs(
             g = g + 1
         contact_generation[0] = g
         broad_phase_pair_count[0] = 0
+
+    # Inactive body-variant shapes get an empty AABB so that no broad phase pairs them.
+    if shape_active.shape[0] > 0 and not shape_active[shape_id]:
+        aabb_lower[shape_id] = wp.vec3(_INACTIVE_AABB_EXTENT)
+        aabb_upper[shape_id] = wp.vec3(-_INACTIVE_AABB_EXTENT)
+        return
 
     rigid_id = shape_body[shape_id]
     geo_type = shape_type[shape_id]
@@ -661,6 +695,11 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
 
     shape_types = model.shape_type.numpy()
     colliding_mask = _shape_collide_mask(model, len(shape_types))
+    if getattr(model, "body_variant_count", 0) > 0:
+        colliding_mask = _variant_capacity_mask(model, colliding_mask)
+        if pair_count > 0:
+            pairs = model.shape_contact_pairs.numpy()
+            pair_count = int(np.count_nonzero(colliding_mask[pairs[:, 0]] & colliding_mask[pairs[:, 1]]))
 
     mesh_mask = colliding_mask & ((shape_types == int(GeoType.MESH)) | (shape_types == int(GeoType.HFIELD)))
     plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
@@ -2018,13 +2057,20 @@ class CollisionPipeline:
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(route_shape_types.tolist()))
 
                 if max_triangle_pairs is None:
+                    # Size for the largest variant of each body, not every variant.
+                    capacity_mask = _variant_capacity_mask(model, route_mask)
+                    capacity_pairs = explicit_pairs_host
+                    if capacity_pairs is not None and capacity_mask is not route_mask:
+                        capacity_pairs = capacity_pairs[
+                            capacity_mask[capacity_pairs[:, 0]] & capacity_mask[capacity_pairs[:, 1]]
+                        ]
                     # NXN/SAP count from shape masks without materializing the model's lazy pair array.
                     triangle_pair_estimate = _estimate_triangle_pair_details(
                         model,
-                        explicit_pairs_host,
-                        route_mask,
-                        mesh_mask | heightfield_mask,
-                        planar_sdf_mask,
+                        capacity_pairs,
+                        capacity_mask,
+                        (mesh_mask | heightfield_mask) & capacity_mask,
+                        planar_sdf_mask & capacity_mask,
                         hydroelastic=hydroelastic_sdf is not None,
                     )
                     max_triangle_pairs = _resolve_auto_triangle_pairs(
@@ -2132,6 +2178,9 @@ class CollisionPipeline:
             self.broad_phase_shape_pairs = wp.zeros(self.shape_pairs_max, dtype=wp.vec2i, device=device)
             self.geom_data = wp.zeros(shape_count, dtype=wp.vec4, device=device)
             self.geom_transform = wp.zeros(shape_count, dtype=wp.transform, device=device)
+            # Updated in place by Model.select_body_variants(); skipped for models without variants.
+            has_variants = getattr(model, "body_variant_count", 0) > 0
+            self._shape_active = model.shape_active if has_variants else wp.empty(0, dtype=wp.bool, device=device)
             if self._speculative_enabled:
                 self._shape_linear_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
@@ -2251,6 +2300,16 @@ class CollisionPipeline:
         model._validate_contact_capacity(rigid_contact_max, soft_contact_max)
 
         self.requires_grad = requires_grad
+        if (
+            (requires_grad or enable_rigid_soft_full_surface_contact)
+            and self._shape_active.shape[0] > 0
+            and model.particle_count > 0
+        ):
+            # Differentiable and full-surface soft contacts do not cull shapes by their AABBs.
+            raise NotImplementedError(
+                "Soft contacts with requires_grad=True or enable_rigid_soft_full_surface_contact=True "
+                "do not support body shape variants."
+            )
         self.deterministic = deterministic
         per_contact_props = self.narrow_phase.hydroelastic_sdf is not None
         if deterministic:
@@ -2749,6 +2808,7 @@ class CollisionPipeline:
                 model.shape_gap,
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
+                self._shape_active,
                 contacts.contact_counters,
                 contacts.contact_generation,
                 self.broad_phase_pair_count,

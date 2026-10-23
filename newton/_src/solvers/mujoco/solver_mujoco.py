@@ -4595,6 +4595,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
 
+        if (use_mujoco_contacts or use_mujoco_cpu) and getattr(model, "body_variant_count", 0) > 0:
+            # MuJoCo geoms of inactive variant shapes would keep colliding.
+            raise NotImplementedError(
+                "SolverMuJoCo supports body shape variants only with Newton contacts; "
+                "set use_mujoco_contacts=False and use_mujoco_cpu=False."
+            )
         self._use_mujoco_contacts = use_mujoco_contacts
         """Whether MuJoCo handles collision detection.
 

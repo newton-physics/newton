@@ -653,6 +653,13 @@ class ViewerViser(ViewerBase):
             self._reset_camera_to_default(up_axis)
 
     @override
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
+        if self.model is None or not flags & newton.ModelFlags.SHAPE_ACTIVE:
+            return
+        super().notify_model_changed(flags)
+        self._build_packed_shape_arrays()
+
+    @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
         """Set visible worlds and keep picking visibility in sync.
 
@@ -2374,7 +2381,11 @@ class ViewerViser(ViewerBase):
         layer_hidden = self._layer_force_hidden()
 
         for shapes, offset, count in self._packed_shape_groups:
-            visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+            visible = (
+                self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type)
+                and not layer_hidden
+                and len(shapes.model_shapes) > 0
+            )
             xforms = packed_xforms[offset : offset + count]
             handle = self._scene_handles.get(self._qualify(shapes.name))
             # A newly shown batch may have missed earlier color updates.
