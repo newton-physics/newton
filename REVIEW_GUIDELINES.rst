@@ -137,6 +137,13 @@ For authorable simulation features, apply the schema and importer policy in
 Require implemented support, an explicitly accepted and tracked deferral, or a
 reason this does not apply. A follow-up issue alone is not acceptance.
 
+Confirm that schemas the change newly reads, authors, or models come from
+sources the :ref:`source-code-guidelines` permit. Pre-existing sources are out
+of scope for this policy review unless their removal or migration is an
+explicit part of the task. Treat new support for a proprietary shading system,
+such as MDL or OmniPBR, as a Fit failure about ownership and durable cost
+rather than as an implementation detail.
+
 Return one explicit verdict:
 
 - **Fits:** The value, owner, evidence, scope, and approach are proportionate.
@@ -228,6 +235,12 @@ Check the repository obligations relevant to the change, including:
   Newton warning categories and module loggers instead of ``print()``;
 - accurate, correctly categorized Towncrier fragments for user-facing changes;
 - dependency and lockfile changes, licenses, and required notices;
+- USD schemas the change newly reads, authors, or models, including whether
+  they stay within the supported OpenUSD, Newton, and bounded solver-fallback
+  tiers. Existing proposal schemas are grandfathered, as are legacy
+  compatibility paths during their deprecation windows, including the
+  ``omniphysics:`` and ``physxDeformableBody:`` deformable fallbacks on the
+  default import path. Do not treat these as policy violations;
 - packaging, supported platforms, workflows, and downstream compatibility;
   and
 - release-visible semantic changes, including numerical behavior that changes
