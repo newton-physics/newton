@@ -93,19 +93,24 @@ def compute_body_immovability_kernel(
     newton_body_inv_mass: wp.array[wp.float32],
     newton_body_inv_inertia: wp.array[wp.mat33f],
     newton_body_flags: wp.array[wp.int32],
+    kinematic_only_immovable: wp.bool,
     # Outputs:
     kamino_body_is_immovable: wp.array[wp.int32],
 ):
     """Bake Kamino's per-body immovability decision from Newton's arrays.
 
     A body is immovable if it is physically massless (zero inverse mass and
-    zero inverse inertia) or flagged KINEMATIC / PROXY. The result is written
-    once at build and kept constant for the solver's lifetime; runtime flips
-    are rejected via ``StructuralUpdateViolation.IMMOVABILITY_FLIP``.
+    zero inverse inertia) or flagged KINEMATIC / PROXY. Dynamics solvers that
+    simulate massless and PROXY bodies only treat KINEMATIC bodies as immovable. The
+    result is written once at build and kept constant for the solver's lifetime;
+    runtime flips are rejected via ``StructuralUpdateViolation.IMMOVABILITY_FLIP``.
     """
     body_id = wp.tid()
     if is_immovable_for_kamino(
-        newton_body_inv_mass[body_id], newton_body_inv_inertia[body_id], newton_body_flags[body_id]
+        newton_body_inv_mass[body_id],
+        newton_body_inv_inertia[body_id],
+        newton_body_flags[body_id],
+        kinematic_only_immovable,
     ):
         kamino_body_is_immovable[body_id] = 1
     else:
@@ -426,6 +431,7 @@ def validate_body_immovability_updates_kernel(
     body_inv_inertia: wp.array[wp.mat33f],
     body_flags: wp.array[wp.int32],
     built_is_immovable: wp.array[wp.int32],
+    kinematic_only_immovable: wp.bool,
     # Outputs:
     violations: wp.array[wp.int32],
 ):
@@ -440,7 +446,9 @@ def validate_body_immovability_updates_kernel(
     structural-update violation.
     """
     body = wp.tid()
-    current_immovable = is_immovable_for_kamino(body_inv_mass[body], body_inv_inertia[body], body_flags[body])
+    current_immovable = is_immovable_for_kamino(
+        body_inv_mass[body], body_inv_inertia[body], body_flags[body], kinematic_only_immovable
+    )
     if current_immovable != (built_is_immovable[body] != 0):
         wp.atomic_min(violations, StructuralUpdateViolation.IMMOVABILITY_FLIP, body)
 
@@ -1102,6 +1110,7 @@ def validate_model_structural_updates(
     check_actuation: bool,
     check_axes: bool,
     check_body_immovability: bool,
+    kinematic_only_immovable: bool = False,
 ) -> int:
     """Validate that runtime edits preserve Kamino's structural layout.
 
@@ -1133,6 +1142,8 @@ def validate_model_structural_updates(
         check_axes: Whether to check universal and gimbal axes.
         check_body_immovability: Whether to check that no body's immovability
             status changed (via mass, inertia, or KINEMATIC/PROXY flag flip).
+        kinematic_only_immovable: Whether only KINEMATIC bodies were built as immovable,
+            see :func:`convert_rigid_bodies`.
 
     Returns:
         The sentinel value indicating no violations.
@@ -1208,6 +1219,7 @@ def validate_model_structural_updates(
                 model.body_inv_inertia,
                 model.body_flags,
                 built_is_immovable,
+                kinematic_only_immovable,
                 # Outputs:
                 violations,
             ],
@@ -1429,6 +1441,7 @@ def convert_rigid_bodies(
     model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
+    kinematic_only_immovable: bool = False,
 ) -> RigidBodiesModel:
     """
     Converts the rigid bodies from a Newton model into Kamino's format. The function
@@ -1440,6 +1453,9 @@ def convert_rigid_bodies(
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
+        kinematic_only_immovable: Whether only KINEMATIC bodies are immovable. Dynamics
+            solvers that simulate massless and PROXY bodies set it, so that Kamino keeps their
+            joints, limits, and inertia.
 
     Returns:
         Fully converted rigid bodies model in Kamino's format.
@@ -1488,7 +1504,7 @@ def convert_rigid_bodies(
         wp.launch(
             kernel=compute_body_immovability_kernel,
             dim=model.body_count,
-            inputs=[model.body_inv_mass, model.body_inv_inertia, model.body_flags],
+            inputs=[model.body_inv_mass, model.body_inv_inertia, model.body_flags, kinematic_only_immovable],
             outputs=[body_is_immovable],
             device=model.device,
         )
@@ -2248,6 +2264,8 @@ def convert_geometries(
         params=model.shape_scale,
         offset=offset,
         material=geom_material,
+        torsional_friction=model.shape_material_mu_torsional,
+        rolling_friction=model.shape_material_mu_rolling,
         group=model.shape_collision_group,
         gap=model.shape_gap,
         margin=model.shape_margin,
