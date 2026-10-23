@@ -12556,7 +12556,6 @@ class ModelBuilder:
             bodies=bodies,
             parent=parent,
             weights=weights,
-            operation="add_deformable_visual_mesh",
         )
         spec: dict = {
             **binding,
@@ -12581,10 +12580,9 @@ class ModelBuilder:
         bodies: list[int] | np.ndarray | None = None,
         parent: list[int] | np.ndarray | None = None,
         weights: np.ndarray | None = None,
-        operation: str,
     ) -> dict:
-        """Build one validated binding shared by deformable visual payloads."""
-        kind = self._resolve_deformable_visual_kind(kind, operation)
+        """Validate and build the mesh's simulation binding."""
+        kind = self._resolve_deformable_visual_kind(kind)
 
         mode_args = {
             DeformableVisualMesh.Kind.PARTICLE: ("particles",),
@@ -12604,69 +12602,69 @@ class ModelBuilder:
         conflicting = [name for name, value in provided.items() if value is not None and name not in allowed]
         if conflicting:
             raise ValueError(
-                f"{operation}(kind={kind.name.lower()!r}): arguments {conflicting} do not apply to this kind"
+                f"add_deformable_visual_mesh(kind={kind.name.lower()!r}): arguments {conflicting} do not apply to this kind"
             )
         if (parent is None) != (weights is None):
-            raise ValueError(f"{operation}: parent and weights must be passed together")
+            raise ValueError("add_deformable_visual_mesh: parent and weights must be passed together")
 
         point_count = len(points)
         binding = {"kind": kind, "weights": None, "local_offsets": None}
         if kind == DeformableVisualMesh.Kind.PARTICLE:
             if particles is None:
-                raise ValueError(f"{operation}(kind='particle'): requires particles")
+                raise ValueError("add_deformable_visual_mesh(kind='particle'): requires particles")
             drivers = Mesh._normalize_indices(particles)
             if len(drivers) != point_count:
-                raise ValueError(f"{operation}: particles length must match the number of visual points")
+                raise ValueError("add_deformable_visual_mesh: particles length must match the number of visual points")
             if int(drivers.min()) < 0 or int(drivers.max()) >= self.particle_count:
-                raise ValueError(f"{operation}: particles reference particles outside the current builder")
+                raise ValueError(
+                    "add_deformable_visual_mesh: particles reference particles outside the current builder"
+                )
             binding["parent"] = drivers
         elif kind == DeformableVisualMesh.Kind.TRIANGLE:
             if tri_range is None:
-                raise ValueError(f"{operation}(kind='triangle'): requires tri_range")
-            lo, hi = self._validate_visual_range(tri_range, self.tri_count, "tri_range", operation)
+                raise ValueError("add_deformable_visual_mesh(kind='triangle'): requires tri_range")
+            lo, hi = self._validate_visual_range(tri_range, self.tri_count, "tri_range")
             if parent is not None:
                 binding["parent"], binding["weights"] = self._validate_visual_embedding(
-                    parent, weights, point_count, (lo, hi), 3, operation
+                    parent, weights, point_count, (lo, hi), 3
                 )
             else:
                 binding["parent"], binding["weights"] = self._embed_visual_vertices_in_triangles(points, (lo, hi))
         elif kind == DeformableVisualMesh.Kind.TET:
             if tet_range is None:
-                raise ValueError(f"{operation}(kind='tet'): requires tet_range")
-            lo, hi = self._validate_visual_range(tet_range, self.tet_count, "tet_range", operation)
+                raise ValueError("add_deformable_visual_mesh(kind='tet'): requires tet_range")
+            lo, hi = self._validate_visual_range(tet_range, self.tet_count, "tet_range")
             if parent is not None:
                 binding["parent"], binding["weights"] = self._validate_visual_embedding(
-                    parent, weights, point_count, (lo, hi), 4, operation
+                    parent, weights, point_count, (lo, hi), 4
                 )
             else:
                 binding["parent"], binding["weights"] = self._embed_visual_vertices_in_tets(points, (lo, hi))
         else:
             if bodies is None:
-                raise ValueError(f"{operation}(kind='body'): requires bodies")
+                raise ValueError("add_deformable_visual_mesh(kind='body'): requires bodies")
             binding["parent"], binding["local_offsets"] = self._bind_visual_vertices_to_bodies(points, bodies)
         return binding
 
     @staticmethod
-    def _resolve_deformable_visual_kind(
-        kind: DeformableVisualMesh.Kind | str, operation: str
-    ) -> DeformableVisualMesh.Kind:
-        """Resolve a public binding kind with an operation-specific error."""
+    def _resolve_deformable_visual_kind(kind: DeformableVisualMesh.Kind | str) -> DeformableVisualMesh.Kind:
+        """Resolve the binding kind from its enum or name."""
         if isinstance(kind, str):
             try:
                 kind = DeformableVisualMesh.Kind[kind.upper()]
             except KeyError:
                 names = ", ".join(item.name.lower() for item in DeformableVisualMesh.Kind)
-                raise ValueError(f"{operation}: unknown kind {kind!r}; expected one of {names}") from None
+                raise ValueError(
+                    f"add_deformable_visual_mesh: unknown kind {kind!r}; expected one of {names}"
+                ) from None
         return DeformableVisualMesh.Kind(kind)
 
-    def _validate_visual_range(
-        self, rng: tuple[int, int], count: int, name: str, operation: str = "add_deformable_visual_mesh"
-    ) -> tuple[int, int]:
+    def _validate_visual_range(self, rng: tuple[int, int], count: int, name: str) -> tuple[int, int]:
         """Validate a [start, end) owning-element range against a builder count."""
         lo, hi = map(int, Mesh._normalize_indices(rng))
         if not (0 <= lo < hi <= count):
             raise ValueError(
-                f"{operation}: {name} [{lo}, {hi}) is not a valid non-empty range within the current {count} elements"
+                f"add_deformable_visual_mesh: {name} [{lo}, {hi}) is not a valid non-empty range within the current {count} elements"
             )
         return lo, hi
 
@@ -12677,22 +12675,23 @@ class ModelBuilder:
         point_count: int,
         owning_range: tuple[int, int],
         arity: int,
-        operation: str = "add_deformable_visual_mesh",
     ) -> tuple[np.ndarray, np.ndarray]:
         """Validate precomputed per-vertex parents and barycentric weights."""
         parent = Mesh._normalize_indices(parent)
         weights = np.array(weights, dtype=np.float32)
         if len(parent) != point_count:
-            raise ValueError(f"{operation}: parent must have one index per visual point")
+            raise ValueError("add_deformable_visual_mesh: parent must have one index per visual point")
         if weights.shape != (point_count, arity):
-            raise ValueError(f"{operation}: weights must have shape ({point_count}, {arity})")
+            raise ValueError(f"add_deformable_visual_mesh: weights must have shape ({point_count}, {arity})")
         lo, hi = owning_range
         if int(parent.min()) < lo or int(parent.max()) >= hi:
-            raise ValueError(f"{operation}: parent indices must lie within the owning range [{lo}, {hi})")
+            raise ValueError(
+                f"add_deformable_visual_mesh: parent indices must lie within the owning range [{lo}, {hi})"
+            )
         if not np.all(np.isfinite(weights)) or np.any(weights < -1.0e-4):
-            raise ValueError(f"{operation}: weights must be finite and non-negative")
+            raise ValueError("add_deformable_visual_mesh: weights must be finite and non-negative")
         if not np.allclose(weights.sum(axis=1), 1.0, rtol=0.0, atol=1.0e-4):
-            raise ValueError(f"{operation}: barycentric weights must sum to one")
+            raise ValueError("add_deformable_visual_mesh: barycentric weights must sum to one")
         # Accepted roundoff must not scale translations or extrapolate points.
         np.maximum(weights, 0.0, out=weights)
         weights /= weights.sum(axis=1, keepdims=True)
@@ -12720,7 +12719,7 @@ class ModelBuilder:
         det = np.linalg.det(edge_mats)
         nonsingular = np.abs(det) > 1.0e-20
         if not np.any(nonsingular):
-            raise ValueError("degenerate_parent: owning tet range contains no non-degenerate tetrahedron")
+            raise ValueError("add_deformable_visual_mesh: owning tet range contains no non-degenerate tetrahedron")
         valid = np.flatnonzero(nonsingular)
         corners = particles[tet_idx[valid]]
         lower, upper = corners.min(axis=1), corners.max(axis=1)
@@ -12782,7 +12781,7 @@ class ModelBuilder:
         denom = d00 * d11 - d01 * d01
         nonsingular = np.abs(denom) > 1.0e-20
         if not np.any(nonsingular):
-            raise ValueError("degenerate_parent: owning triangle range contains no non-degenerate triangle")
+            raise ValueError("add_deformable_visual_mesh: owning triangle range contains no non-degenerate triangle")
         valid = np.flatnonzero(nonsingular)
         mesh = wp.Mesh(
             wp.array(particles, dtype=wp.vec3, device="cpu"),

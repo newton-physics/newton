@@ -338,7 +338,7 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         np.testing.assert_array_equal(mesh.parent.numpy(), [0, 0, 0])
         assert_np_equal(_skin(model, mesh, model.state()), np.array([[1, 0, 0], [1.01, 0, 0], [1, 0, 0]]), tol=1.0e-6)
 
-        with self.assertRaisesRegex(ValueError, "degenerate"):
+        with self.assertRaisesRegex(ValueError, "add_deformable_visual_mesh:.*non-degenerate triangle"):
             builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(2, 3))
 
     def test_triangle_embedding_far_from_surface(self):
@@ -395,6 +395,10 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                 mesh = model.deformable_visual_meshes[0]
                 np.testing.assert_array_equal(mesh.parent.numpy(), [0, 0, 0])
                 assert_np_equal(_skin(model, mesh, model.state()), vertices, tol=1.0e-6)
+
+                builder.particle_q[:] = [wp.vec3(0)] * builder.particle_count
+                with self.assertRaisesRegex(ValueError, "add_deformable_visual_mesh:.*non-degenerate"):
+                    builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind=kind, **owning_range)
 
     def test_outside_tet_vertex_clamps_within_owning_range(self):
         """Log fallback binding and keep normalized weights inside the owning range."""
