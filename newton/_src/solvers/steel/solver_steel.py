@@ -9851,6 +9851,7 @@ class SolverSteel(SolverBase):
         self._propagation_tree_D_inv = wp.zeros((joints, 6, 6), dtype=wp.float32, device=device)
         self._propagation_tree_pA = wp.zeros((bodies, 6), dtype=wp.float32, device=device)
         self._propagation_tree_u = wp.zeros((dofs,), dtype=wp.float32, device=device)
+        self._propagation_tree_u_basis = wp.zeros((dofs, 6), dtype=wp.float32, device=device)
         self._propagation_tree_qdd = wp.zeros((dofs,), dtype=wp.float32, device=device)
         self._propagation_tree_body_delta = wp.zeros((bodies, 6), dtype=wp.float32, device=device)
         # Responding non-free articulations of each tree group, in solve-world order.
@@ -10443,6 +10444,7 @@ class SolverSteel(SolverBase):
                     outputs=[
                         self._propagation_tree_pA,
                         self._propagation_tree_u,
+                        self._propagation_tree_u_basis,
                         self._propagation_tree_qdd,
                         self._propagation_tree_body_delta,
                         self._propagation_body_response,

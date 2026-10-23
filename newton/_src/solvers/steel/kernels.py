@@ -8697,6 +8697,7 @@ def compute_propagation_tree_body_response_for_size(
     # scratch
     propagation_tree_pA: wp.array2d[float],
     propagation_tree_u: wp.array[float],
+    propagation_tree_u_basis: wp.array2d[float],
     propagation_tree_qdd: wp.array[float],
     propagation_tree_body_delta: wp.array2d[float],
     # outputs
@@ -8707,8 +8708,9 @@ def compute_propagation_tree_body_response_for_size(
 
     For any joint DOF count. A unit wrench at a link only couples to the joints on its
     path to the root, so each of the six basis solves walks that path only. The walk is
-    capped at the articulation's joint count. The split response weights each path
-    joint's term by its ``propagation_joint_split`` count.
+    capped at the articulation's joint count. The exact response is ``sum_j u_j^T D_j^-1 u_j``
+    over the path joints, with ``u_j`` the joint's backward-sweep projection of the six unit
+    wrenches; the split response weights each term by the joint's ``propagation_joint_split`` count.
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
@@ -8772,6 +8774,7 @@ def compute_propagation_tree_body_response_for_size(
                     for r in range(6):
                         v -= propagation_joint_S_flat[gdof, r] * propagation_tree_pA[child, r]
                     propagation_tree_u[gdof] = v
+                    propagation_tree_u_basis[gdof, basis] = v
                 if parent >= 0:
                     propagated_child = _spatial_row(propagation_tree_pA, child)
                     for a in range(dof_count):
@@ -8785,57 +8788,62 @@ def compute_propagation_tree_body_response_for_size(
                     for r in range(6):
                         propagation_tree_pA[parent, r] = propagation_tree_pA[parent, r] + propagated_parent[r]
 
-            # The forward sweep runs once per response: exact, then split, with each path
-            # joint's source term scaled by its split count.
-            for split_pass in range(2):
-                if split_pass == 1:
-                    walk = body_to_joint[target_body]
-                    for _k in range(path_len):
-                        joint = walk
-                        walk_parent = joint_parent[joint]
-                        if walk_parent >= 0:
-                            walk = body_to_joint[walk_parent]
-                        else:
-                            walk = int(-1)
-                        weight = float(wp.max(propagation_joint_split[joint], 1))
-                        for dof in range(joint_qd_start[joint], joint_qd_start[joint + 1]):
-                            propagation_tree_u[dof] = weight * propagation_tree_u[dof]
-
-                # Forward sweep, root to target: level i visits the (path_len - 1 - i)-th ancestor.
-                for level in range(path_len):
-                    joint = body_to_joint[target_body]
-                    for _s in range(path_len - 1 - level):
-                        joint = body_to_joint[joint_parent[joint]]
-                    child = joint_child[joint]
-                    dof_start = joint_qd_start[joint]
-                    dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
-                    value = _propagation_joint_qdd(
-                        joint,
-                        child,
-                        joint_parent[joint],
-                        dof_start,
-                        dof_count,
-                        propagation_body_com_rel,
-                        propagation_tree_U,
-                        propagation_tree_D_inv,
-                        propagation_tree_u,
-                        propagation_tree_body_delta,
-                        propagation_tree_qdd,
-                    )
-                    for a in range(dof_count):
-                        value += (
-                            _spatial_row(propagation_joint_S_flat, dof_start + a) * propagation_tree_qdd[dof_start + a]
-                        )
-                    for r in range(6):
-                        propagation_tree_body_delta[child, r] = value[r]
-
+            # Forward sweep, root to target: level i visits the (path_len - 1 - i)-th ancestor.
+            for level in range(path_len):
+                joint = body_to_joint[target_body]
+                for _s in range(path_len - 1 - level):
+                    joint = body_to_joint[joint_parent[joint]]
+                child = joint_child[joint]
+                dof_start = joint_qd_start[joint]
+                dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
+                value = _propagation_joint_qdd(
+                    joint,
+                    child,
+                    joint_parent[joint],
+                    dof_start,
+                    dof_count,
+                    propagation_body_com_rel,
+                    propagation_tree_U,
+                    propagation_tree_D_inv,
+                    propagation_tree_u,
+                    propagation_tree_body_delta,
+                    propagation_tree_qdd,
+                )
+                for a in range(dof_count):
+                    value += _spatial_row(propagation_joint_S_flat, dof_start + a) * propagation_tree_qdd[dof_start + a]
                 for r in range(6):
-                    if split_pass == 0:
-                        propagation_body_response[target_body, r, basis] = propagation_tree_body_delta[target_body, r]
-                    else:
-                        propagation_body_response_split[target_body, r, basis] = propagation_tree_body_delta[
-                            target_body, r
-                        ]
+                    propagation_tree_body_delta[child, r] = value[r]
+
+            for r in range(6):
+                propagation_body_response[target_body, r, basis] = propagation_tree_body_delta[target_body, r]
+
+        # Split response: add (n_j - 1) u_j^T D_j^-1 u_j for each path joint shared by n_j > 1 bodies.
+        extra_response = wp.spatial_matrix()
+        walk = body_to_joint[target_body]
+        for _k in range(path_len):
+            joint = walk
+            walk_parent = joint_parent[joint]
+            if walk_parent >= 0:
+                walk = body_to_joint[walk_parent]
+            else:
+                walk = int(-1)
+            extra = float(propagation_joint_split[joint] - 1)
+            if extra <= 0.0:
+                continue
+            dof_start = joint_qd_start[joint]
+            dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
+            for a in range(dof_count):
+                weighted = wp.spatial_vector()
+                for b in range(dof_count):
+                    weighted += propagation_tree_D_inv[joint, a, b] * _spatial_row(
+                        propagation_tree_u_basis, dof_start + b
+                    )
+                extra_response += wp.outer(_spatial_row(propagation_tree_u_basis, dof_start + a), extra * weighted)
+        for r in range(6):
+            for c in range(6):
+                propagation_body_response_split[target_body, r, c] = (
+                    propagation_body_response[target_body, r, c] + extra_response[r, c]
+                )
 
 
 @wp.kernel
