@@ -2730,64 +2730,16 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
     }
 
 
-def _harvest_comoving_proxy_contact(vbd_substeps, contact_kd, speed=1.0, depth=1.0e-3, radius=0.05, dt=0.01):
-    """Harvest the wrench of one particle riding on a proxy box that moves up at ``speed``.
-
-    Without gravity, the box and the particle start with the same velocity and the particle
-    slightly penetrates the box top, so the contact has a penalty force and no relative motion.
-    """
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, kd=contact_kd, mu=0.0)
-    body = builder.add_body(mass=1.0e3, inertia=wp.mat33(np.eye(3) * 1.0e3))
-    builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.1, cfg=shape_cfg)
-    builder.body_qd[body] = (0.0, 0.0, speed, 0.0, 0.0, 0.0)
-    builder.add_particle(pos=(0.0, 0.0, 0.1 + radius - depth), vel=(0.0, 0.0, speed), mass=1.0, radius=radius)
-    builder.color()
-    model = builder.finalize(device="cpu")
-    model.soft_contact_kd = contact_kd
-    model.soft_contact_mu = 0.0
-
-    harvested = []
-
-    class _RecordingVBD(SolverVBD):
-        def coupling_harvest_proxy_wrenches(self, body_local_to_proxy_global, out_body_f, **kwargs):
-            super().coupling_harvest_proxy_wrenches(body_local_to_proxy_global, out_body_f, **kwargs)
-            harvested.append(out_body_f.numpy()[0, :3].copy())
-
-    coupled = SolverCoupledProxy(
-        model=model,
-        entries=[
-            SolverCoupled.Entry(name="rigid", solver=SolverSemiImplicit, bodies=[body]),
-            SolverCoupled.Entry(
-                name="vbd",
-                solver=lambda view: _RecordingVBD(view, iterations=4, rigid_compliant_alm=True),
-                particles=[0],
-                substeps=vbd_substeps,
-            ),
-        ],
-        coupling=SolverCoupledProxy.Config(
-            proxies=[
-                SolverCoupledProxy.Proxy(
-                    source="rigid",
-                    destination="vbd",
-                    bodies=[body],
-                    collision_pipeline=lambda view: newton.CollisionPipeline(view, soft_contact_gap=0.01),
-                )
-            ],
-        ),
-    )
-    coupled.step(model.state(), model.state(), None, None, dt)
-    return harvested[-1]
-
-
-def _harvest_comoving_proxy_particle_contact(
-    vbd_substeps, contact_kd, speed=1.0, particle_speed=None, depth=1.0e-3, radius=0.05, dt=0.01
+def _harvest_comoving_proxy_contact(
+    proxy, vbd_substeps, contact_kd, speed=1.0, particle_speed=None, depth=1.0e-3, radius=0.05, dt=0.01
 ):
-    """Harvest the force on one proxy particle resting on a VBD box that moves up at ``speed``.
+    """Harvest the proxy force of one particle resting on a box that moves up at ``speed``.
 
-    Mirrors :func:`_harvest_comoving_proxy_contact` with the roles swapped: the particle is the
-    proxy and the box is simulated by the VBD destination entry. The particle moves up at
-    ``particle_speed``, which defaults to ``speed`` (no relative motion).
+    Without gravity, the particle slightly penetrates the box top and moves up at
+    ``particle_speed``, which defaults to ``speed`` (no relative motion). With ``proxy="body"``
+    the box is the proxy and the VBD destination entry simulates the particle; the harvested
+    proxy-body force is returned. With ``proxy="particle"`` the roles are swapped and the
+    harvested proxy-particle force is returned.
     """
     if particle_speed is None:
         particle_speed = speed
@@ -2805,27 +2757,37 @@ def _harvest_comoving_proxy_particle_contact(
     harvested = []
 
     class _RecordingVBD(SolverVBD):
+        def coupling_harvest_proxy_wrenches(self, body_local_to_proxy_global, out_body_f, **kwargs):
+            super().coupling_harvest_proxy_wrenches(body_local_to_proxy_global, out_body_f, **kwargs)
+            harvested.append(out_body_f.numpy()[0, :3].copy())
+
         def coupling_harvest_proxy_particle_forces(self, particle_local_to_proxy_global, out_particle_f, **kwargs):
             super().coupling_harvest_proxy_particle_forces(particle_local_to_proxy_global, out_particle_f, **kwargs)
             harvested.append(out_particle_f.numpy()[0].copy())
 
+    proxy_bodies = [body] if proxy == "body" else []
+    proxy_particles = [0] if proxy == "particle" else []
     coupled = SolverCoupledProxy(
         model=model,
         entries=[
-            SolverCoupled.Entry(name="particles", solver=SolverSemiImplicit, particles=[0]),
+            SolverCoupled.Entry(
+                name="source", solver=SolverSemiImplicit, bodies=proxy_bodies, particles=proxy_particles
+            ),
             SolverCoupled.Entry(
                 name="vbd",
                 solver=lambda view: _RecordingVBD(view, iterations=4, rigid_compliant_alm=True),
-                bodies=[body],
+                bodies=[] if proxy_bodies else [body],
+                particles=[] if proxy_particles else [0],
                 substeps=vbd_substeps,
             ),
         ],
         coupling=SolverCoupledProxy.Config(
             proxies=[
                 SolverCoupledProxy.Proxy(
-                    source="particles",
+                    source="source",
                     destination="vbd",
-                    particles=[0],
+                    bodies=proxy_bodies,
+                    particles=proxy_particles,
                     collision_pipeline=lambda view: newton.CollisionPipeline(view, soft_contact_gap=0.01),
                 )
             ],
@@ -2864,8 +2826,8 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
         """
         for substeps in (1, 2):
             with self.subTest(substeps=substeps):
-                undamped = _harvest_comoving_proxy_contact(substeps, contact_kd=0.0)
-                damped = _harvest_comoving_proxy_contact(substeps, contact_kd=1.0e3)
+                undamped = _harvest_comoving_proxy_contact("body", substeps, contact_kd=0.0)
+                damped = _harvest_comoving_proxy_contact("body", substeps, contact_kd=1.0e3)
                 self.assertLess(undamped[2], 0.0, "the particle must press on the box top")
                 np.testing.assert_allclose(damped, undamped, rtol=1.0e-2, atol=1.0e-3)
 
@@ -2873,8 +2835,8 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
         """Harvest the same proxy-particle force with and without contact damping for a co-moving contact."""
         for substeps in (1, 2):
             with self.subTest(substeps=substeps):
-                undamped = _harvest_comoving_proxy_particle_contact(substeps, contact_kd=0.0)
-                damped = _harvest_comoving_proxy_particle_contact(substeps, contact_kd=1.0e3)
+                undamped = _harvest_comoving_proxy_contact("particle", substeps, contact_kd=0.0)
+                damped = _harvest_comoving_proxy_contact("particle", substeps, contact_kd=1.0e3)
                 self.assertGreater(undamped[2], 0.0, "the box top must push the particle up")
                 np.testing.assert_allclose(damped, undamped, rtol=1.0e-2, atol=1.0e-3)
 
@@ -2887,8 +2849,8 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
         """
         for contact_kd in (0.0, 1.0e3):
             with self.subTest(contact_kd=contact_kd):
-                single = _harvest_comoving_proxy_particle_contact(1, contact_kd=contact_kd, particle_speed=0.0)
-                substepped = _harvest_comoving_proxy_particle_contact(2, contact_kd=contact_kd, particle_speed=0.0)
+                single = _harvest_comoving_proxy_contact("particle", 1, contact_kd=contact_kd, particle_speed=0.0)
+                substepped = _harvest_comoving_proxy_contact("particle", 2, contact_kd=contact_kd, particle_speed=0.0)
                 self.assertGreater(single[2], 0.0, "the box top must push the particle up")
                 np.testing.assert_allclose(substepped, single, rtol=0.15, atol=1.0e-3)
 
