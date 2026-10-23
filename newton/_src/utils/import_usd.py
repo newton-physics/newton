@@ -1900,21 +1900,28 @@ def parse_usd(
     # child is not already owned by an articulation, but only when no other loose joint
     # touches the same child - chains of loose joints (e.g. world->A->B) stay unwrapped
     # so validation rejects them instead of silently splitting the chain.
-    articulated_children = {
-        int(builder.joint_child[j]) for j, a in enumerate(builder.joint_articulation) if a != -1
-    }
+    articulated_bodies = set()
+    for j, a in enumerate(builder.joint_articulation):
+        if a != -1:
+            articulated_bodies.add(int(builder.joint_child[j]))
+            articulated_bodies.add(int(builder.joint_parent[j]))
+    # Count loose-joint endpoints per body once so the chain guard stays linear
+    # instead of rescanning every loose joint for each candidate.
+    loose_touch_count: dict[int, int] = {}
+    for joint_id in orphan_joint_ids:
+        for body in (int(builder.joint_parent[joint_id]), int(builder.joint_child[joint_id])):
+            loose_touch_count[body] = loose_touch_count.get(body, 0) + 1
     for joint_id in orphan_joint_ids:
         if int(builder.joint_parent[joint_id]) != -1:
             continue
         child = int(builder.joint_child[joint_id])
-        if child in articulated_children:
+        if child in articulated_bodies:
             # Loop joint to the world on an articulated body; stays a loop closure.
+            # Match _validate_joints, which counts both parents and children of
+            # articulated joints: a floating articulation's root body only shows
+            # up as a parent here because its free joint is added later.
             continue
-        if any(
-            other != joint_id
-            and (int(builder.joint_child[other]) == child or int(builder.joint_parent[other]) == child)
-            for other in orphan_joint_ids
-        ):
+        if loose_touch_count[child] > 1:
             continue
         builder.add_articulation([joint_id], label=builder.joint_label[joint_id])
 
