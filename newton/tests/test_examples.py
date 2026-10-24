@@ -1950,7 +1950,9 @@ add_example_test(
     TestKaminoExamples,
     name="kamino.example_kamino_robot_anymal_d",
     devices=cuda_test_devices,
-    variants=[{"test_options": {"num-frames": 500}}, *_kamino_ldl_variants(500)],
+    # Retain the long baseline; each LDL ordering covers the drop and settling
+    # over 960 physics steps with the same final pose and velocity assertions.
+    variants=[{"test_options": {"num-frames": 500}}, *_kamino_ldl_variants(120)],
     use_viewer=True,
 )
 for example_name, num_frames in (

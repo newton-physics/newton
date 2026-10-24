@@ -1,6 +1,14 @@
 # LDL validation
 
-Final broad regression run: **pending**. Earlier broad runs exposed the issues below and were stopped while they were fixed; they are not counted as passing runs.
+All selected checks passed across the broad run and a full-length isolated rerun: **907 passed and seven skipped**. This was not a single clean parallel run: the broad run completed **914 tests in 2,213.268 seconds: 906 passed, seven skipped, and one timed out**. The ANYmal PADMM example batch exceeded its combined 1,800-second limit while four test workers shared the GPU. A stack inspection showed its final LDL-RCM variant still advancing through simulation frames.
+
+The unchanged ANYmal batch then **passed in 1,085.179 seconds with exclusive GPU use**: the baseline, LDL-MECA, and LDL-RCM each completed 500 frames with the existing final pose and velocity assertions. The full-length audit used the test registration at commit `0e5c5cef`.
+
+To bound routine test cost, the original 500-frame baseline is retained and each added LDL ordering now runs 120 frames (960 physics steps), with unchanged assertions. That shorter registration **passed in 296.652 seconds**, compared with 1,085.179 seconds for the full-length group, including setup and teardown. Only this test registration changed after the broad run; the affected group was rerun, rather than repeating the unchanged 913 tests.
+
+The seven skips cover two manual visualization tests, one unavailable ViewerGL display, one missing video-encoder dependency, two unsupported CPU graph-capture copies, and one CUDA-only graph test on CPU.
+
+Earlier broad runs exposed the issues below and were stopped while they were fixed; they are not counted as passing runs.
 
 ## Numerical checks completed
 
@@ -18,6 +26,18 @@ uv run --no-sync --extra dev -m newton.tests \
 ```
 
 The selection includes Kamino unit tests, physics verification, contacts, solver integration, and Kamino-enabled examples. Both orderings are explicit variants for all six native Kamino example modules and seven shared joint/robot modules: pendulum, joints, URDF, ANYmal D, Allegro hand, H1, and G1. DR Legs exercises both DVI and dense PADMM. Other Kamino-enabled example tests retain their existing configurations, which use the MECA default where applicable.
+
+Run the ANYmal batch in isolation with:
+
+```bash
+uv run --no-sync --extra dev -m newton.tests \
+  -k TestKaminoExamples.test_kamino.example_kamino_robot_anymal_d_cuda_0 \
+  --strict-warnings --no-cache-clear -j 1 -v
+```
+
+At `0e5c5cef` this command runs all three variants for 500 frames. The current registration uses 500 frames for the original baseline and 120 for each LDL ordering. The solver implementation and assertions are unchanged between these runs.
+
+All repository pre-commit checks and the Towncrier draft preview passed. All 36 benchmark cases passed their simulation and numerical checks, and every Markdown report link resolves to a saved artifact.
 
 ## Issues discovered and addressed
 
