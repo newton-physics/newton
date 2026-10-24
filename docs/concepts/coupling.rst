@@ -96,6 +96,21 @@ notifications arrive. Direct writes through returned Warp arrays are not
 intercepted, so view-local edits should go through the coupled-solver API that
 owns the view.
 
+When an entry's selection forms closed topology, its view is compact: it holds
+only the entry's rows, grouped by world, with local indices. Each world keeps
+the rows the entry selects in that world, so worlds of one view may differ in
+size. Solvers that require identical worlds, such as
+:class:`~newton.solvers.SolverMuJoCo`, therefore need the same selection in
+every world. When an entry owns a body but not the body's incoming
+articulation joint from its parent body, the compact view gives the body a
+FREE joint to the world, like :meth:`~newton.ModelBuilder.add_joint_free`, so
+reduced-coordinate solvers move it as the root of its own articulation. A
+hidden FREE joint to the world likewise becomes an identical synthesized FREE
+joint. A hidden joint of any other type to the world, such as the fixed mount
+of an arm, stays out of the view: the body keeps no incoming joint, and
+``SolverCoupled`` logs a warning because no entry simulates that joint. Give
+such a joint to the entry that owns its child body to keep the attachment.
+
 Coupling Hooks
 --------------
 
@@ -115,6 +130,9 @@ The protocol currently covers these concepts:
   argument uses :class:`newton.StateFlags`. VBD uses this to realign private
   previous-pose state after proxy synchronization or ADMM iteration restarts.
   MPM uses it to keep collider caches consistent.
+- ``coupling_notify_iteration_restarts()`` tells a solver once after
+  construction whether the coupler may restart a step's solve, so a solver that
+  saves state for a restart can skip the save when none can follow.
 - ``coupling_eval_gravity_acceleration()`` lets a solver report the body and
   particle acceleration that it applies internally for gravity-like forces.
   Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind
@@ -131,6 +149,13 @@ The protocol currently covers these concepts:
 - ``coupling_eval_effective_mass()`` and
   ``coupling_eval_effective_mass_block()`` let a solver provide endpoint
   effective mass instead of using raw model mass and inertia.
+- ``coupling_effective_mass_refresh_flags()`` names the
+  :class:`~newton.ModelFlags` after which a solver's effective masses need
+  refreshing. The default covers body, body inertial, joint DOF, armature and
+  reference-pose updates, and a solver can return a narrower set. Proxy and
+  ADMM couplers evaluate effective masses again after a notification that any
+  entry names. The evaluation runs on the host, so issue those notifications
+  outside graph capture.
 
 Force injection itself is not a hook. Couplers write into public
 ``state.body_f``, ``state.particle_f``, and ``control.joint_f`` buffers, then
@@ -379,6 +404,34 @@ against immovable particles.
 MuJoCo provides GPU effective-mass hooks from MuJoCo Warp data so proxy virtual
 inertia and ADMM endpoint weights can use articulated mass estimates rather than
 raw body mass.
+
+:class:`~newton.solvers.SolverSteel` can own rigid bodies and articulations as a
+proxy source or an ADMM entry. It consumes coupling forces through
+``state.body_f`` and reports articulated effective mass as the inverse of the
+axis mean of the endpoint mobility ``J H^-1 J^T``, where ``H`` is the tree-only
+joint-space mass matrix with armature at ``model.joint_q``; kinematic DOFs take
+the large armature that Steel's solve gives them. The endpoint is a body-frame
+offset from the body COM. The effective mass is evaluated on the host, so query
+it outside graph capture. Steel names body, body inertial, joint and joint DOF
+notifications in ``coupling_effective_mass_refresh_flags()``, so in a proxy or
+ADMM coupler with a Steel entry issue those outside graph capture too. When the
+coupler runs more than one iteration, Steel's next step after a coupler state
+write saves the friction-patch history; after an iteration restart, it restores
+the saved copy instead, so repeated solves of one step start from the same
+history. Both run inside the step, so a graph captured from the coupled step
+records them; a reset cancels both. Owning particles raises
+:class:`NotImplementedError` when the coupled solver is constructed. Sleeping,
+contact warm starting, contact compliance, contact torsion and
+``deterministic=wp.DeterministicMode.RUN_TO_RUN`` raise it there too, and so
+does ``update_mass_matrix_interval`` above 1 when the coupler runs more than
+one iteration; a standalone Steel on a ``ModelView`` keeps these options. The
+coupler routes contacts and sums coupling forces with atomics, so the contact
+order that run-to-run mode relies on is not fixed inside it. Acting as a proxy
+destination raises :class:`NotImplementedError` on the first coupled step.
+Coupled use is validated with ``solve_mode="matrix_free"`` and the
+``"immediate"`` articulated contact response. Set ``model.rigid_contact_max`` to the capacity of
+the coupled contact buffer before constructing the coupled solver, because Steel
+sizes its contact scratch from the model.
 
 Current Limitations
 -------------------

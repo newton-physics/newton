@@ -15474,6 +15474,9 @@ class ModelBuilder:
                     custom_attr.namespace,
                     custom_attr.references,
                 )
+                m._set_attribute_spec(
+                    custom_attr.key, replace(m.attribute_specs[custom_attr.key], default=custom_attr.default)
+                )
 
             self._finalize_custom_frequency_metadata(m, device)
 
