@@ -268,7 +268,8 @@ def ray_intersect_box(ray_origin: wp.vec3, ray_direction: wp.vec3, size: wp.vec3
         # Identify the hit face by matching the solved face distance to t_hit.
         normal_local = wp.vec3(0.0)
         for i in range(3):
-            if wp.abs(ray_direction[i]) > EPSILON:
+            # Reconstruct every face considered by the slab calculation.
+            if wp.abs(ray_direction[i]) >= MINVAL:
                 for side in range(-1, 2, 2):
                     sol = (float(side) * size[i] - ray_origin[i]) / ray_direction[i]
                     if sol >= 0.0:
