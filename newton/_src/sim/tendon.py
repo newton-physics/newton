@@ -61,15 +61,15 @@ class TendonGuide:
     """Describe one point or circular guide in an experimental massless tendon route.
 
     Pass a complete sequence to :meth:`newton.ModelBuilder.add_tendon`. Geometry
-    is body-local; the builder copies it and normalizes the axis. Material
-    parameters describe the incoming straight span. The first guide has no
-    incoming span and must keep the material defaults.
+    is body-local, or world-space when ``body=-1``; the builder copies it and
+    normalizes the axis. Material parameters describe the incoming straight span.
+    The first guide has no incoming span and must keep the material defaults.
 
     .. experimental::
     """
 
     body: int
-    """Index of the attached rigid body; world-body index ``-1`` is not supported."""
+    """Index of the attached rigid body, or ``-1`` for a world-attached guide."""
     guide_type: TendonGuideType = TendonGuideType.ANCHOR
     """Anchor, pinhole, or circular roller."""
     radius: float = 0.0
@@ -81,9 +81,9 @@ class TendonGuide:
     dynamic: bool = False
     """Whether an internal roller can engage and disengage."""
     offset: Vec3 = (0.0, 0.0, 0.0)
-    """Anchor point or roller center in the body's local frame [m]."""
+    """Anchor point or roller center in the body's local frame, or world space for ``body=-1`` [m]."""
     axis: Vec3 = (0.0, 0.0, 1.0)
-    """Nonzero cable-plane normal in the body's local frame [dimensionless]."""
+    """Nonzero cable-plane normal in the body's local frame, or world space for ``body=-1`` [dimensionless]."""
     compliance: float = 0.0
     """Incoming span compliance [m/N], equal to ``1 / stiffness`` for positive stiffness [N/m].
 

@@ -2507,13 +2507,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             for segment, left_guide in enumerate(segment_left_guides):
                 body_l = int(guide_bodies[left_guide])
                 body_r = int(guide_bodies[left_guide + 1])
-                if body_l != body_r and len(model.body_color_groups) > 0 and body_colors[body_l] == body_colors[body_r]:
+                if (
+                    body_l >= 0
+                    and body_r >= 0
+                    and body_l != body_r
+                    and len(model.body_color_groups) > 0
+                    and body_colors[body_l] == body_colors[body_r]
+                ):
                     raise ValueError(
                         "model.body_color_groups does not separate tendon segment endpoints; "
                         "call ModelBuilder.color() after adding tendons"
                     )
-                body_segments[body_l].add(segment)
-                body_segments[body_r].add(segment)
+                if body_l >= 0:
+                    body_segments[body_l].add(segment)
+                if body_r >= 0:
+                    body_segments[body_r].add(segment)
 
                 right_guide = left_guide + 1
                 # Deactivation reuses the left authored segment for the bypass to the following guide.
@@ -2522,7 +2530,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ] == segment:
                     bypass_body = int(guide_bodies[right_guide + 1])
                     if (
-                        bypass_body != body_l
+                        bypass_body >= 0
+                        and body_l >= 0
+                        and bypass_body != body_l
                         and len(model.body_color_groups) > 0
                         and body_colors[bypass_body] == body_colors[body_l]
                     ):
@@ -2530,7 +2540,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             "model.body_color_groups does not separate dynamic tendon bypass endpoints; "
                             "call ModelBuilder.color() after adding tendons"
                         )
-                    body_segments[bypass_body].add(segment)
+                    if bypass_body >= 0:
+                        body_segments[bypass_body].add(segment)
 
         offsets = np.zeros(model.body_count + 1, dtype=np.int32)
         for body, segments in enumerate(body_segments):
@@ -2758,7 +2769,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Must run BEFORE _initialize_rigid_bodies: the dynamic routing activation
         # decision has to see the accepted pose, but the inertial predictor inside
         # _initialize_rigid_bodies overwrites state_in.body_q in place.
-        if self.tendon_segment_lambda is not None and state_in.body_q is not None:
+        if self.tendon_segment_lambda is not None:
             self._load_tendon_history(state_in)
             self._snapshot_tendon_step_state()
             self._update_tendon_guide_active(self.model, state_in.body_q)
@@ -2791,13 +2802,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._mid_step_detection(
                 state_in, state_out, contacts, dt, rigid_due=rigid_due, soft_due=soft_due, preserve_history=True
             )
+            # Material can redistribute between fixed guides even without any rigid bodies.
+            if self.tendon_segment_lambda is not None and not self.integrate_with_external_rigid_solver:
+                self._update_tendon_routing(state_in, dt, False)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
 
         update_tendon_diagnostics = (
             self.iterations > 0
             and self.tendon_segment_lambda is not None
-            and state_in.body_q is not None
             and not self.integrate_with_external_rigid_solver
         )
         if update_tendon_diagnostics:
@@ -4207,7 +4220,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def _update_tendon_routing(self, state_in: State, dt: float, report_unsupported_wrap: bool) -> None:
         """Update VBD routed-tendon geometry and rolling rest transfer for this iteration."""
         model = self.model
-        if model.tendon_segment_count == 0 or state_in.body_q is None:
+        if model.tendon_segment_count == 0:
             return
 
         wp.launch(
@@ -4253,7 +4266,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             inputs=[
                 state_in.body_q,
                 state_in.body_qd,
-                self.body_q_prev,
+                self.body_q_prev if model.body_count else None,
                 model.body_com,
                 model.tendon_start,
                 model.tendon_guide_body,
@@ -4307,7 +4320,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             inputs=[
                 dt,
                 body_q,
-                self.body_q_prev,
+                self.body_q_prev if model.body_count else None,
                 model.body_com,
                 model.tendon_guide_body,
                 model.tendon_guide_type,
@@ -4416,8 +4429,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.body_hessian_aa.zero_()
         self.body_hessian_al.zero_()
         self.body_hessian_ll.zero_()
-
-        self._update_tendon_routing(state_in, dt, False)
 
         body_color_groups = model.body_color_groups
 
