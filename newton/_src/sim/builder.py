@@ -1944,7 +1944,7 @@ class ModelBuilder:
         self.tendon_start: list[int] = []
         """Start index into guide arrays for each tendon."""
         self.tendon_guide_body: list[int] = []
-        """Body index for each tendon guide."""
+        """Body index for each tendon guide, or -1 for world."""
         self.tendon_guide_type: list[int] = []
         """Guide type (TendonGuideType enum) for each tendon guide."""
         self.tendon_guide_radius: list[float] = []
@@ -1956,9 +1956,9 @@ class ModelBuilder:
         self.tendon_guide_flags: list[int] = []
         """Routing flags for each tendon guide."""
         self.tendon_guide_offset: list[tuple[float, float, float]] = []
-        """Local-frame offset of the cable plane center on each body [m]."""
+        """Cable plane center in body-local coordinates, or world space for body -1 [m]."""
         self.tendon_guide_axis: list[tuple[float, float, float]] = []
-        """Local-frame normal of the cable plane on each body."""
+        """Cable plane normal in body-local coordinates, or world space for body -1."""
         self.tendon_segment_compliance: list[float] = []
         """Compliance [m/N] for each tendon segment."""
         self.tendon_segment_damping: list[float] = []
@@ -3792,6 +3792,29 @@ class ModelBuilder:
                 transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
                 targets = shape_transform_start + moved_copies[:, None] * counts["shape"] + static_shapes[None]
                 store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
+
+        # World guides carry their own frame; body-local guides follow the placed body.
+        world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
+        for name in ("tendon_guide_offset", "tendon_guide_axis"):
+            attribute_specs.pop(name)
+            start = int(bases["tendon_guide"])
+            values = getattr(self, name)
+            values.extend(source_list(name) * world_count)
+            is_offset = name == "tendon_guide_offset"
+            if world_guides.size == 0 or (not is_offset and translations_only):
+                continue
+            source_vectors = np.asarray(getattr(builder, name), dtype=np.float32)[world_guides]
+            for world_index, xform in enumerate(xforms):
+                if xform is None:
+                    continue
+                transformed = source_vectors.copy()
+                if not translations_only:
+                    rotate_vectors(xform.q, transformed)
+                if is_offset:
+                    transformed += np.asarray(xform.p, dtype=np.float32)
+                targets = start + world_index * counts["tendon_guide"] + world_guides
+                for target, vector in zip(targets, transformed.tolist(), strict=True):
+                    values[target] = tuple(vector)
 
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():
@@ -6687,9 +6710,12 @@ class ModelBuilder:
         """Add a complete experimental massless routed tendon atomically.
 
         Each guide after the first owns the incoming span's material parameters.
-        All guides must reference bodies in one world. Roller guides may be
-        dynamic only when internal and not adjacent to another dynamic guide.
+        All guides must belong to one simulation world. A guide with ``body=-1``
+        is fixed in world space and belongs to :attr:`current_world`. Roller guides
+        may be dynamic only when internal and not adjacent to another dynamic guide.
         The route is validated and copied before any tendon arrays are changed.
+        Author world-attached routes in the source builder before :meth:`add_world`
+        or :meth:`replicate`; those methods end outside the copied world contexts.
 
         .. experimental::
 
@@ -6753,10 +6779,10 @@ class ModelBuilder:
         previous_dynamic = False
         for index, guide in enumerate(route):
             body = guide.body
-            if not self._is_integer_scalar(body) or body < 0 or body >= self.body_count:
+            if not self._is_integer_scalar(body) or body < -1 or body >= self.body_count:
                 raise ValueError(f"Tendon guide body index {body} is out of range")
             body = int(body)
-            world = self.body_world[body]
+            world = self.body_world[body] if body >= 0 else self.current_world
             if tendon_world is not None and world != tendon_world:
                 raise ValueError("All guides in a tendon must belong to the same world")
             tendon_world = world
@@ -7329,6 +7355,12 @@ class ModelBuilder:
                 the collapse process.
 
         Note:
+            Tendon guides do not prevent their attached bodies from being merged
+            into world. Their offsets and axes are transformed to world space, and
+            their body indices become ``-1``. To retain an anchor body and its
+            fixed joint, include that joint in ``joints_to_keep``. Do not reuse
+            pre-collapse body indices after collapsing joints.
+
             Deformable labels do not change which fixed joints are collapsed. A curve's
             record is retained only if all of its segment bodies and joints survive.
             Otherwise the incomplete record is omitted with a warning. Pass the relevant
@@ -7427,8 +7459,8 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
-        # Preserve body frames needed by equality constraints and tendon guides when collapsing into world.
-        bodies_requiring_body_frame = set(self.tendon_guide_body)
+        # Preserve body frames still required by constraints when collapsing into world.
+        bodies_requiring_body_frame = set()
         for body1, body2 in zip(
             self._eq_list("equality_constraint_body1"),
             self._eq_list("equality_constraint_body2"),
@@ -7486,20 +7518,20 @@ class ModelBuilder:
             entry_xform = incoming_xform
             entry_last_dynamic_body = last_dynamic_body
             joint = joint_data[(parent_body, child_body)][0]
-            # Local frames referenced by constraints or tendons cannot be remapped onto body -1.
+            # These constraints still require an actual body frame.
             should_skip_merge = child_body in bodies_requiring_body_frame and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
             joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
-                # Keep a body frame required by a constraint or tendon instead of merging it into world.
+                # Keep a body frame required by a constraint instead of merging it into world.
                 if verbose:
                     parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                     child_lbl = self.body_label[child_body]
                     logger.info(
                         "Skipping collapse of fixed joint %s between %s and %s: %s is referenced by a "
-                        "constraint or tendon and cannot be merged into world",
+                        "constraint and cannot be merged into world",
                         joint["label"],
                         parent_lbl,
                         child_lbl,
