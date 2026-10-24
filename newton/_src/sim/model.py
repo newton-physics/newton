@@ -501,6 +501,7 @@ class Model:
         "joint_X_c": AttributeSpec(AttributeFrequency.JOINT),
         "joint_dof_dim": AttributeSpec(AttributeFrequency.JOINT),
         "joint_enabled": AttributeSpec(AttributeFrequency.JOINT),
+        "joint_collision_filter_parent": AttributeSpec(AttributeFrequency.JOINT),
         "joint_twist_lower": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_twist_upper": AttributeSpec(AttributeFrequency.JOINT, deprecated=True),
         "joint_label": AttributeSpec(AttributeFrequency.JOINT),
@@ -1184,6 +1185,8 @@ class Model:
         """Number of linear and angular dofs per joint, shape [joint_count, 2], int."""
         self.joint_enabled: wp.array[wp.bool] | None = None
         """Controls which joint is simulated (bodies become disconnected if False, supported by :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and :class:`~newton.solvers.SolverSemiImplicit`), shape [joint_count], bool."""
+        self.joint_collision_filter_parent: wp.array[wp.bool] | None = None
+        """Whether the joint filters collisions between the shapes of its parent and child bodies, the ``collision_filter_parent`` argument of :meth:`ModelBuilder.add_joint`, shape [joint_count], bool."""
         self.joint_limit_lower: wp.array[wp.float32] | None = None
         """Joint lower position limits [m or rad, depending on joint type], shape [joint_dof_count], float. Values must be finite; use ``-newton.MAXVAL`` to indicate no lower limit."""
         self.joint_limit_upper: wp.array[wp.float32] | None = None

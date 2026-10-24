@@ -4747,5 +4747,20 @@ class TestRemovedJointTargetAliases(unittest.TestCase):
                 self.assertIsNotNone(obj.joint_target_qd)
 
 
+class TestJointCollisionFilterParent(unittest.TestCase):
+    def test_joint_collision_filter_parent_exported(self):
+        """The per-joint parent-filter choice is available on the finalized model."""
+        builder = newton.ModelBuilder()
+        parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        tool = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        root = builder.add_joint_free(parent)
+        hinge = builder.add_joint_revolute(parent, child, axis=newton.Axis.Z, collision_filter_parent=False)
+        weld = builder.add_joint_fixed(child, tool)
+        builder.add_articulation([root, hinge, weld])
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.joint_collision_filter_parent.numpy().tolist(), [False, False, True])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
