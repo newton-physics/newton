@@ -670,6 +670,55 @@ def test_rheology_residual_inactive_strain_nodes(test, device):
                 test.assertLess(res_linf, 1e-5)
 
 
+def test_viscosity_tolerates_inactive_particles(test, device):
+    """Keep a viscous material finite when inactive particles share the grid.
+
+    A grid node whose particles are all inactive carries no material, so its
+    volume and its volume-averaged viscosity are both zero. Dividing one by the
+    other is 0/0, and the resulting NaN reaches the whole state instead of
+    staying confined to the empty nodes.
+    """
+    sep = 0.02
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=(0.0, -9.81, 0.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_ground_plane()
+
+    grid = np.arange(0.0, 0.12, sep) + 0.5 * sep
+    x, y, z = np.meshgrid(grid, grid, grid, indexing="ij")
+    block = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
+
+    # Offset the inactive pool so some of its particles land on nodes no active
+    # particle reaches; those nodes are the ones with no material on them.
+    rng = np.random.default_rng(0)
+    pool = block[rng.choice(len(block), 24, replace=False)] + rng.uniform(-0.2 * sep, 0.2 * sep, (24, 3))
+    positions = np.concatenate([block, pool])
+    material = {
+        "mpm:friction": 0.0,
+        "mpm:tensile_yield_ratio": 1.0,
+        "mpm:yield_stress": 0.0,
+        "mpm:viscosity": 10.0,
+    }
+    builder.add_particles(
+        pos=positions.tolist(),
+        vel=[(0.0, 0.0, 0.0)] * len(positions),
+        mass=[1000 * sep**3] * len(positions),
+        radius=[0.5 * sep] * len(positions),
+        custom_attributes=material,
+    )
+    model = builder.finalize(device=device)
+
+    flags = model.particle_flags.numpy()
+    flags[len(block) :] &= ~int(newton.ParticleFlags.ACTIVE)
+    model.particle_flags.assign(flags)
+
+    # The rheology solver has to iterate far enough to assemble the plastic
+    # correction at the empty nodes; a handful of iterations stops short.
+    config = SolverImplicitMPM.Config(voxel_size=2 * sep, max_iterations=64)
+    _solver, state = _step_mpm(model, config, step_count=24, dt=1.0 / 24 / 8)
+    test.assertTrue(np.isfinite(state.particle_q.numpy()).all(), msg="inactive particles poisoned particle_q")
+    test.assertTrue(np.isfinite(state.particle_qd.numpy()).all(), msg="inactive particles poisoned particle_qd")
+
+
 def _make_mpm_particle_builder(
     gravity=(0.0, -9.81, 0.0),
     velocity=(0.0, 0.0, 0.0),
@@ -2227,6 +2276,12 @@ add_function_test(
     TestImplicitMPM,
     "test_rheology_residual_inactive_strain_nodes",
     test_rheology_residual_inactive_strain_nodes,
+    devices=devices,
+)
+add_function_test(
+    TestImplicitMPM,
+    "test_viscosity_tolerates_inactive_particles",
+    test_viscosity_tolerates_inactive_particles,
     devices=devices,
 )
 add_function_test(

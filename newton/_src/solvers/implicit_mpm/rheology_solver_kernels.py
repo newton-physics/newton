@@ -606,9 +606,14 @@ def make_solve_flow_rule(has_viscosity: bool = True, has_dilatancy: bool = True)
             dilatancy = 0.0
 
         if wp.static(has_viscosity):
-            D_visc = vec6(1.0) + get_viscosity(yield_params) / strain_node_volume * D
-            D = wp.cw_div(D, D_visc)
-            b = wp.cw_div(b, D_visc)
+            # A node whose particles are all inactive carries no material: its volume
+            # and its volume-averaged viscosity are both zero, so the quotient below
+            # is 0/0 and turns the plastic correction into NaN for the whole state.
+            # There is nothing to regularize at an empty node.
+            if strain_node_volume > 0.0:
+                D_visc = vec6(1.0) + get_viscosity(yield_params) / strain_node_volume * D
+                D = wp.cw_div(D, D_visc)
+                b = wp.cw_div(b, D_visc)
 
         if wp.static(_USE_CAM_CLAY):
             return solve_flow_rule_camclay(D, b, r_guess, yield_params)
