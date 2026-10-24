@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import enum
 import math
 import os
+import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -12,11 +14,16 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
-from .sensor_camera_render import Utils
+from ..geometry.flags import ShapeFlags
+from ..sim.camera import CameraLens
+from ..utils.selection import match_labels
+from .sensor_camera_render import Utils, raytrace
+from .sensor_camera_render.camera_utils import _multisample_offset
 from .sensor_camera_render.types import (
     AntiAliasing,
     ClearData,
     GaussianRenderMode,
+    RayQuery,
     RenderConfig,
     RenderOrder,
     TextureProjectionMode,
@@ -29,6 +36,98 @@ if TYPE_CHECKING:
 
 # Enable NVTX ranges / timing around SensorCamera.update() when NEWTON_PROFILE is set.
 PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
+
+
+# Render contexts shared by bound sensors are stored on the model under this attribute, keyed by
+# ``load_textures``, so they are released together with the model.
+_SHARED_RENDER_CONTEXTS_ATTR = "_sensor_camera_render_contexts"
+
+_HIT_TRIANGLE_MESH = int(raytrace.TRIANGLE_MESH_SHAPE_ID)
+_HIT_PARTICLES = int(raytrace.PARTICLES_SHAPE_ID)
+_HIT_NONE = int(raytrace.NO_HIT_SHAPE_ID)
+
+
+@wp.kernel(enable_backward=False)
+def _compute_view_transforms_kernel(
+    view_frame: wp.array[wp.int32],
+    frame_body: wp.array[wp.int32],
+    frame_transform: wp.array[wp.transformf],
+    body_q: wp.array[wp.transformf],
+    out_transforms: wp.array[wp.transformf],
+):
+    view = wp.tid()
+    frame = view_frame[view]
+    body = frame_body[frame]
+    transform = frame_transform[frame]
+    if body >= 0:
+        transform = wp.transform_multiply(body_q[body], transform)
+    out_transforms[view] = transform
+
+
+@wp.kernel(enable_backward=False)
+def _gather_view_clip_kernel(
+    view_frame: wp.array[wp.int32],
+    camera_clipping_range: wp.array[wp.vec2f],
+    out_clip: wp.array[wp.vec2f],
+):
+    view = wp.tid()
+    out_clip[view] = camera_clipping_range[view_frame[view]]
+
+
+@wp.kernel(enable_backward=False)
+def _compute_view_pinhole_kernel(
+    view_frame: wp.array[wp.int32],
+    camera_focal_length: wp.array[wp.float32],
+    camera_aperture: wp.array[wp.vec2f],
+    camera_aperture_offset: wp.array[wp.vec2f],
+    aspect: wp.float32,
+    out_pinhole: wp.array[wp.vec4f],
+):
+    view = wp.tid()
+    camera = view_frame[view]
+    focal = camera_focal_length[camera]
+    aperture = camera_aperture[camera]
+    horizontal = aperture[0]
+    vertical = aperture[1]
+    # A zero aperture component follows the image aspect ratio (square pixels).
+    if horizontal <= 0.0:
+        horizontal = vertical * aspect
+    if vertical <= 0.0:
+        vertical = horizontal / aspect
+    offset = camera_aperture_offset[camera]
+    out_pinhole[view] = wp.vec4f(horizontal / focal, vertical / focal, offset[0] / focal, offset[1] / focal)
+
+
+@wp.kernel(enable_backward=False)
+def _fill_pinhole_bundles_kernel(
+    bundle_pinhole: wp.array[wp.vec4f],
+    width: wp.int32,
+    height: wp.int32,
+    sample_count: wp.int32,
+    out_rays: wp.array4d[wp.vec3f],
+):
+    bundle, py, px, sample_index = wp.tid()
+    pinhole = bundle_pinhole[bundle]
+    offset = _multisample_offset(sample_index, sample_count)
+    u = (float(px) + offset[0]) / float(width)
+    v = (float(py) + offset[1]) / float(height)
+    direction = wp.vec3f((u - 0.5) * pinhole[0] + pinhole[2], (0.5 - v) * pinhole[1] + pinhole[3], -1.0)
+    row = bundle * height + py
+    out_rays[row, px, sample_index, 0] = wp.vec3f(0.0)
+    out_rays[row, px, sample_index, 1] = wp.normalize(direction)
+
+
+@wp.kernel(enable_backward=False)
+def _apply_view_mask_kernel(
+    view_world: wp.array[wp.int32],
+    view_mask: wp.array[wp.bool],
+    out_world_indices: wp.array[wp.int32],
+):
+    view = wp.tid()
+    if view_mask[view]:
+        out_world_indices[view] = view_world[view]
+    else:
+        out_world_indices[view] = wp.static(int(WorldRenderFlag.DISABLE_PRESERVE))
 
 
 def _validate_camera_ray_output(
@@ -108,6 +207,26 @@ class SensorCamera:
         camera.update(state, camera_transforms, camera_rays, color_image=color)
     """
 
+    class RayMode(enum.IntEnum):
+        """How a bound sensor obtains the rays of built-in pinhole lenses.
+
+        .. experimental::
+        """
+
+        PRECOMPUTED = 0
+        """Cache one ray bundle per distinct lens among the selected cameras."""
+        ANALYTIC = 1
+        """Generate pinhole rays in the render kernel from the Model's camera intrinsics."""
+
+    HIT_TRIANGLE_MESH = _HIT_TRIANGLE_MESH
+    """``shape_index_image`` value of hits on deformable triangle surfaces; ``face_index_image``
+    then holds the triangle index into :attr:`~newton.Model.tri_indices`."""
+    HIT_PARTICLES = _HIT_PARTICLES
+    """``shape_index_image`` value of particle hits; ``face_index_image`` then holds the particle index."""
+    HIT_NONE = _HIT_NONE
+    """``shape_index_image`` value of rays that hit nothing."""
+
+    RayQuery = RayQuery
     AntiAliasing = AntiAliasing
     ClearData = ClearData
     GaussianRenderMode = GaussianRenderMode
@@ -121,15 +240,50 @@ class SensorCamera:
         self,
         model: Model,
         *,
+        cameras: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        sites: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        sample_count: int = 1,
+        ray_mode: SensorCamera.RayMode | int = 0,
+        ray_function: Any = None,
+        ray_params: wp.array2d[wp.float32] | None = None,
+        clipping_range: tuple[float, float] | None = None,
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
     ):
         """Construct a camera sensor for a model.
 
+        A sensor constructed with ``cameras`` or ``sites`` is *bound*: it renders one
+        view per selected camera or site and world, computes view poses from the
+        state, and needs no camera transforms or rays in :meth:`update`.
+
+        .. experimental::
+
+            ``cameras``, ``sites``, ``width``, ``height``, ``sample_count``,
+            ``ray_mode``, ``ray_function``, ``ray_params`` and ``clipping_range``
+            are part of the experimental model-camera API.
+
         Args:
             model: Newton simulation model to render. The sensor builds and owns
                 its internal renderer for this model.
+            cameras: Model cameras to render, by label pattern or index (see
+                :ref:`label-matching`). Mutually exclusive with ``sites``.
+            sites: Sites to render from, by label pattern or index. Sites only
+                provide a frame, so rays come from :meth:`set_camera_rays`, a
+                ``ray_function`` or :meth:`update`'s ``camera_rays``.
+            width: Image width [px]; defaults to the cameras' common nominal resolution.
+            height: Image height [px]; defaults to the cameras' common nominal resolution.
+            sample_count: Rays per pixel of generated rays.
+            ray_mode: :class:`RayMode` used for pinhole cameras.
+            ray_function: Optional ``@wp.func`` ``(params: wp.array2d[float], query:
+                SensorCamera.RayQuery) -> (origin, direction)`` evaluated in the render
+                kernel for every view.
+            ray_params: Parameter table passed to ``ray_function``.
+            clipping_range: Near and far clip distance [m] for every view. Defaults
+                to the cameras' clip ranges, or ``(0, 1e6)`` for sites. The far
+                distance is also limited by the render config's ``max_distance``.
             default_clear_data: Clear values used by :meth:`update` when its
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
             default_render_config: Render settings used by :meth:`update` when
@@ -148,14 +302,315 @@ class SensorCamera:
 
         from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
 
-        self._render_context = RenderContext(model, load_textures=load_textures)
+        self._bound = cameras is not None or sites is not None
+        if self._bound:
+            # Bound sensors share scene data (and lights) with the other bound sensors of the model.
+            contexts = model.__dict__.setdefault(_SHARED_RENDER_CONTEXTS_ATTR, {})
+            render_context = contexts.get(load_textures)
+            if render_context is None:
+                render_context = contexts[load_textures] = RenderContext(model, load_textures=load_textures)
+            self._render_context = render_context
+            self._bind(
+                cameras,
+                sites,
+                width,
+                height,
+                sample_count,
+                SensorCamera.RayMode(ray_mode),
+                ray_function,
+                ray_params,
+                clipping_range,
+            )
+        else:
+            self._render_context = RenderContext(model, load_textures=load_textures)
+
+    # ------------------------------------------------------------------
+    # Bound sensors (model cameras and sites)
+
+    def _bind(self, cameras, sites, width, height, sample_count, ray_mode, ray_function, ray_params, clipping_range):
+        model = self._render_context.model
+        if cameras is not None and sites is not None:
+            raise ValueError("cameras and sites are mutually exclusive")
+        self._from_sites = sites is not None
+        if self._from_sites:
+            frames = list(match_labels(model.shape_label, sites))
+            if not frames:
+                raise ValueError(f"No sites match {sites!r}")
+            flags = model.shape_flags.numpy()
+            not_sites = [f for f in frames if not (int(flags[f]) & int(ShapeFlags.SITE))]
+            if not_sites:
+                raise ValueError(f"Shapes {not_sites} are not sites")
+            frame_world = model.shape_world.numpy()
+            self._frame_labels = model.shape_label
+            frame_lens = {f: int(CameraLens.CUSTOM) for f in frames}
+        else:
+            frames = list(match_labels(model.camera_label, cameras))
+            if not frames:
+                raise ValueError(f"No cameras match {cameras!r}")
+            frame_world = model.camera_world.numpy()
+            self._frame_labels = model.camera_label
+            lens = model.camera_lens.numpy()
+            frame_lens = {f: int(lens[f]) for f in frames}
+
+        view_frame, view_world = [], []
+        for frame in frames:
+            world = int(frame_world[frame])
+            worlds = range(model.world_count) if world < 0 else (world,)
+            for w in worlds:
+                view_frame.append(int(frame))
+                view_world.append(int(w))
+        if not view_frame:
+            raise ValueError("The selection produces no views (the model has no worlds)")
+
+        if width is None or height is None:
+            if self._from_sites:
+                raise ValueError("width and height are required for site-bound sensors")
+            resolution = {tuple(int(v) for v in model.camera_resolution.numpy()[f]) for f in frames}
+            if len(resolution) != 1 or (0, 0) in resolution:
+                raise ValueError("width and height are required unless all selected cameras share a resolution")
+            (res_w, res_h) = resolution.pop()
+            width = res_w if width is None else width
+            height = res_h if height is None else height
+        if int(width) <= 0 or int(height) <= 0 or int(sample_count) <= 0:
+            raise ValueError("width, height and sample_count must be positive")
+
+        device = self.device
+        self.width = int(width)
+        """Image width [px] of a bound sensor."""
+        self.height = int(height)
+        """Image height [px] of a bound sensor."""
+        self.sample_count = int(sample_count)
+        """Rays per pixel of a bound sensor."""
+        self.view_count = len(view_frame)
+        """Number of views rendered by a bound sensor."""
+        self.view_camera = wp.array(view_frame, dtype=wp.int32, device=device)
+        """Model camera (or site) index of each view, shape ``(view_count,)``."""
+        self.view_world = wp.array(view_world, dtype=wp.int32, device=device)
+        """World rendered by each view, shape ``(view_count,)``."""
+
+        self._view_frame_np = np.asarray(view_frame, dtype=np.int32)
+        self._view_lens_np = np.asarray([frame_lens[f] for f in view_frame], dtype=np.int32)
+        self._ray_mode = ray_mode
+        self._ray_function = ray_function
+        self._ray_params = ray_params if ray_params is not None else wp.zeros((1, 1), dtype=wp.float32, device=device)
+        self._view_transforms = wp.zeros(self.view_count, dtype=wp.transformf, device=device)
+        self._world_indices = wp.zeros(self.view_count, dtype=wp.int32, device=device)
+        self._view_clip = wp.zeros(self.view_count, dtype=wp.vec2f, device=device)
+        self._clip_override = clipping_range
+        if clipping_range is None and self._from_sites:
+            self._clip_override = (0.0, 1.0e6)
+        if self._clip_override is not None:
+            near, far = (float(v) for v in self._clip_override)
+            if not 0.0 <= near < far:
+                raise ValueError(f"clipping_range must satisfy 0 <= near < far, got {self._clip_override}")
+            self._view_clip.fill_(wp.vec2f(near, far))
+        self._view_pinhole = wp.zeros(self.view_count, dtype=wp.vec4f, device=device)
+
+        if ray_mode == SensorCamera.RayMode.ANALYTIC and ray_function is None:
+            if np.any(self._view_lens_np != int(CameraLens.PINHOLE)):
+                raise ValueError("RayMode.ANALYTIC needs PINHOLE cameras; use set_camera_rays or a ray_function")
+
+        # Precomputed bundles: pinhole lens groups first, custom bundles appended by set_camera_rays().
+        self._view_bundle_np = np.full(self.view_count, -1, dtype=np.int32)
+        self._pinhole_bundle_count = 0
+        self._pinhole_params = np.zeros((0, 4), dtype=np.float32)
+        self._custom_bundles: list[tuple[np.ndarray, wp.array]] = []  # (views, rays)
+        self._camera_rays: wp.array | None = None
+        self._view_ray_bundle = wp.zeros(self.view_count, dtype=wp.int32, device=device)
+        if ray_function is None and ray_mode == SensorCamera.RayMode.PRECOMPUTED:
+            self.sync_camera_rays()
+
+    @property
+    def is_bound(self) -> bool:
+        """Whether this sensor renders model cameras or sites selected at construction."""
+        return self._bound
+
+    def _require_bound(self) -> None:
+        if not self._bound:
+            raise RuntimeError("This operation requires a sensor constructed with cameras or sites")
+
+    def _views_matching(self, cameras) -> np.ndarray:
+        if cameras is None:
+            return np.arange(self.view_count)
+        frames = set(match_labels(self._frame_labels, cameras))
+        return np.flatnonzero(np.isin(self._view_frame_np, list(frames)))
+
+    def _compute_pinhole_params(self, out: wp.array) -> None:
+        model = self._render_context.model
+        wp.launch(
+            _compute_view_pinhole_kernel,
+            dim=self.view_count,
+            inputs=[
+                self.view_camera,
+                model.camera_focal_length,
+                model.camera_aperture,
+                model.camera_aperture_offset,
+                float(self.width) / float(self.height),
+            ],
+            outputs=[out],
+            device=self.device,
+        )
+
+    def sync_camera_rays(self) -> None:
+        """Rebuild the precomputed pinhole ray bundles from the Model's camera intrinsics.
+
+        Call after changing ``model.camera_focal_length``, ``camera_aperture`` or
+        ``camera_aperture_offset`` when using :attr:`RayMode.PRECOMPUTED`. Views with
+        identical intrinsics share one bundle. Custom bundles set with
+        :meth:`set_camera_rays` are kept.
+
+        .. experimental::
+        """
+        self._require_bound()
+        pinhole_views = np.flatnonzero(self._view_lens_np == int(CameraLens.PINHOLE))
+        bundle_params = np.zeros((0, 4), dtype=np.float32)
+        self._view_bundle_np[pinhole_views] = -1
+        if len(pinhole_views) and not self._from_sites:
+            self._compute_pinhole_params(self._view_pinhole)
+            params = self._view_pinhole.numpy()[pinhole_views]
+            bundle_params, inverse = np.unique(params.round(7), axis=0, return_inverse=True)
+            self._view_bundle_np[pinhole_views] = inverse.reshape(-1)
+        self._pinhole_bundle_count = len(bundle_params)
+        self._pinhole_params = bundle_params
+        self._rebuild_bundles()
+
+    def _rebuild_bundles(self) -> None:
+        device = self.device
+        bundle_params = self._pinhole_params
+        custom_offset = self._pinhole_bundle_count
+        for index, (views, _rays) in enumerate(self._custom_bundles):
+            self._view_bundle_np[views] = custom_offset + index
+        bundle_count = self._pinhole_bundle_count + len(self._custom_bundles)
+        shape = (max(bundle_count, 1) * self.height, self.width, self.sample_count, 2)
+        if self._camera_rays is None or self._camera_rays.shape != shape:
+            self._camera_rays = wp.zeros(shape, dtype=wp.vec3f, device=device)
+        if len(bundle_params):
+            wp.launch(
+                _fill_pinhole_bundles_kernel,
+                dim=(len(bundle_params), self.height, self.width, self.sample_count),
+                inputs=[
+                    wp.array(bundle_params, dtype=wp.vec4f, device=device),
+                    self.width,
+                    self.height,
+                    self.sample_count,
+                ],
+                outputs=[self._camera_rays],
+                device=device,
+            )
+        for index, (_views, rays) in enumerate(self._custom_bundles):
+            row = (custom_offset + index) * self.height
+            wp.copy(self._camera_rays[row : row + self.height], rays)
+        self._view_ray_bundle.assign(self._view_bundle_np)
+
+    def set_camera_rays(
+        self,
+        rays: wp.array4d[wp.vec3f] | Sequence[wp.array4d[wp.vec3f]],
+        *,
+        cameras: str | list[str] | re.Pattern[str] | list[int] | None = None,
+    ) -> None:
+        """Assign custom camera-space rays to views of a bound sensor.
+
+        Rays use the sensor's frame convention: origins in ``[..., 0]`` and unit
+        directions in ``[..., 1]``, in the camera (or site) frame. A zero direction
+        marks an unused ray. The rays are copied into sensor-owned storage; calling
+        again with the same selection and shapes is a device copy that keeps the
+        storage address, so it can run inside a captured CUDA graph.
+
+        .. experimental::
+
+        Args:
+            rays: One ``(height, width, sample_count, 2)`` bundle shared by the
+                selected views, or a sequence with one bundle per selected camera
+                (in index order).
+            cameras: Label pattern or indices restricting the views to update. ``None``
+                selects every view of a site-bound sensor and every ``CUSTOM`` camera
+                otherwise.
+        """
+        self._require_bound()
+        if cameras is None:
+            views = np.arange(self.view_count)
+            if not self._from_sites:
+                views = np.flatnonzero(self._view_lens_np == int(CameraLens.CUSTOM))
+        else:
+            views = self._views_matching(cameras)
+        if len(views) == 0:
+            raise ValueError("No views match the camera selection")
+
+        expected = (self.height, self.width, self.sample_count, 2)
+        bundles = list(rays) if isinstance(rays, (list, tuple)) else [rays]
+        for bundle in bundles:
+            if bundle.dtype != wp.vec3f or tuple(bundle.shape) != expected:
+                raise ValueError(f"Ray bundles must have dtype vec3f and shape {expected}, got {tuple(bundle.shape)}")
+        if len(bundles) == 1:
+            groups = [(views, bundles[0])]
+        else:
+            frames = sorted(set(self._view_frame_np[views].tolist()))
+            if len(frames) != len(bundles):
+                raise ValueError(f"Expected {len(frames)} bundles (one per selected camera), got {len(bundles)}")
+            groups = [(views[self._view_frame_np[views] == f], b) for f, b in zip(frames, bundles, strict=True)]
+
+        # Reuse slots with the same views so repeated updates keep the storage layout.
+        layout_changed = False
+        for group_views, bundle in groups:
+            slot = next(
+                (i for i, (v, _) in enumerate(self._custom_bundles) if np.array_equal(v, group_views)),
+                None,
+            )
+            if slot is None:
+                # Remove these views from older slots, then append.
+                kept = []
+                for v, b in self._custom_bundles:
+                    remaining = np.setdiff1d(v, group_views)
+                    if len(remaining):
+                        kept.append((remaining, b))
+                self._custom_bundles = [*kept, (group_views, bundle)]
+                layout_changed = True
+            else:
+                self._custom_bundles[slot] = (group_views, bundle)
+                if not layout_changed:
+                    row = (self._pinhole_bundle_count + slot) * self.height
+                    wp.copy(self._camera_rays[row : row + self.height], bundle)
+        if layout_changed:
+            self._rebuild_bundles()
+
+    def compute_view_transforms(self, state: State, out: wp.array[wp.transformf] | None = None) -> wp.array:
+        """Compute the world-space pose of every view of a bound sensor.
+
+        .. experimental::
+
+        Args:
+            state: State providing ``body_q``.
+            out: Optional output array, shape ``(view_count,)``.
+
+        Returns:
+            View poses, shape ``(view_count,)`` of ``transformf``.
+        """
+        self._require_bound()
+        model = self._render_context.model
+        if out is None:
+            out = wp.empty(self.view_count, dtype=wp.transformf, device=self.device)
+        if self._from_sites:
+            frame_body, frame_transform = model.shape_body, model.shape_transform
+        else:
+            frame_body, frame_transform = model.camera_body, model.camera_transform
+        body_q = state.body_q if state.body_q is not None else wp.zeros(1, dtype=wp.transformf, device=self.device)
+        wp.launch(
+            _compute_view_transforms_kernel,
+            dim=self.view_count,
+            inputs=[self.view_camera, frame_body, frame_transform, body_q],
+            outputs=[out],
+            device=self.device,
+        )
+        return out
 
     @property
     def device(self) -> wp.Device:
         """Device of the model this sensor renders."""
         return self._render_context.model.device
 
-    def allocate_image(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
+    def allocate_image(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None, dtype: Any = None
+    ) -> wp.array[Any]:
         """Allocate a zeroed output image array on the model device.
 
         Args:
@@ -169,9 +624,18 @@ class SensorCamera:
             Zeroed array of shape ``(view_count, height, width)`` and dtype
             *dtype*, on the model device.
         """
+        if view_count is None or width is None or height is None:
+            self._require_bound()
+            view_count = self.view_count if view_count is None else view_count
+            width = self.width if width is None else width
+            height = self.height if height is None else height
+        if dtype is None:
+            raise TypeError("allocate_image() requires dtype")
         return wp.zeros((int(view_count), int(height), int(width)), dtype=dtype, device=self.device)
 
-    def allocate_image_color(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+    def allocate_image_color(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.uint32]:
         """Allocate an RGBA color output array (packed ``uint32``).
 
         Args:
@@ -184,7 +648,9 @@ class SensorCamera:
         """
         return self.allocate_image(view_count, width, height, wp.uint32)
 
-    def allocate_image_depth(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+    def allocate_image_depth(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.float32]:
         """Allocate a ray-distance depth output array [m].
 
         Args:
@@ -197,7 +663,9 @@ class SensorCamera:
         """
         return self.allocate_image(view_count, width, height, wp.float32)
 
-    def allocate_image_depth_forward(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+    def allocate_image_depth_forward(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.float32]:
         """Allocate a forward (planar) depth output array [m].
 
         Args:
@@ -210,7 +678,9 @@ class SensorCamera:
         """
         return self.allocate_image_depth(view_count, width, height)
 
-    def allocate_image_shape_index(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+    def allocate_image_shape_index(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.uint32]:
         """Allocate a shape-index output array.
 
         Args:
@@ -223,7 +693,9 @@ class SensorCamera:
         """
         return self.allocate_image(view_count, width, height, wp.uint32)
 
-    def allocate_image_normal(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+    def allocate_image_normal(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.vec3f]:
         """Allocate a world-space surface-normal output array (``vec3f``).
 
         Args:
@@ -236,7 +708,9 @@ class SensorCamera:
         """
         return self.allocate_image(view_count, width, height, wp.vec3f)
 
-    def allocate_image_albedo(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+    def allocate_image_albedo(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.uint32]:
         """Allocate an RGBA albedo output array (packed ``uint32``).
 
         Args:
@@ -249,7 +723,9 @@ class SensorCamera:
         """
         return self.allocate_image(view_count, width, height, wp.uint32)
 
-    def allocate_image_color_hdr(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+    def allocate_image_color_hdr(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.vec3f]:
         """Allocate a linear HDR color output array (``vec3f``).
 
         Args:
@@ -261,6 +737,27 @@ class SensorCamera:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
         """
         return self.allocate_image(view_count, width, height, wp.vec3f)
+
+    def allocate_image_face_index(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.int32]:
+        """Allocate a face-index output array (``int32``, ``-1`` where nothing is hit).
+
+        Holds the triangle index for deformable-surface hits, the face index for mesh
+        hits and the particle index for particle hits.
+
+        .. experimental::
+        """
+        return self.allocate_image(view_count, width, height, wp.int32)
+
+    def allocate_image_barycentric(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.vec2f]:
+        """Allocate a barycentric-coordinate output array (``vec2f``) for triangle hits.
+
+        .. experimental::
+        """
+        return self.allocate_image(view_count, width, height, wp.vec2f)
 
     @staticmethod
     def compute_camera_rays_pinhole(
@@ -900,8 +1397,8 @@ class SensorCamera:
     def update(
         self,
         state: State,
-        camera_transforms: wp.array[wp.transformf],
-        camera_rays: wp.array4d[wp.vec3f],
+        camera_transforms: wp.array[wp.transformf] | None = None,
+        camera_rays: wp.array4d[wp.vec3f] | None = None,
         *,
         color_image: wp.array3d[wp.uint32] | None = None,
         depth_image: wp.array3d[wp.float32] | None = None,
@@ -914,6 +1411,9 @@ class SensorCamera:
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
         sync_deformables: bool = True,
+        view_mask: wp.array[wp.bool] | None = None,
+        face_index_image: wp.array3d[wp.int32] | None = None,
+        barycentric_image: wp.array3d[wp.vec2f] | None = None,
     ) -> None:
         """Render this camera sensor.
 
@@ -970,6 +1470,32 @@ class SensorCamera:
         render_context = self._render_context
         model = render_context.model
 
+        if self._bound:
+            self._update_bound(
+                state,
+                camera_transforms,
+                camera_rays,
+                color_image=color_image,
+                depth_image=depth_image,
+                forward_depth_image=forward_depth_image,
+                shape_index_image=shape_index_image,
+                normal_image=normal_image,
+                albedo_image=albedo_image,
+                hdr_color_image=hdr_color_image,
+                face_index_image=face_index_image,
+                barycentric_image=barycentric_image,
+                world_indices=world_indices,
+                view_mask=view_mask,
+                clear_data=clear_data,
+                render_config=render_config,
+                sync_deformables=sync_deformables,
+            )
+            return
+        if camera_transforms is None or camera_rays is None:
+            raise ValueError("camera_transforms and camera_rays are required for sensors without cameras or sites")
+        if view_mask is not None:
+            raise ValueError("view_mask requires a sensor constructed with cameras or sites")
+
         if sync_deformables:
             render_context.update(state)
 
@@ -1007,6 +1533,97 @@ class SensorCamera:
                 shape_index_image=shape_index_image,
                 normal_image=normal_image,
                 albedo_image=albedo_image,
+                face_index_image=face_index_image,
+                barycentric_image=barycentric_image,
                 clear_data=clear_data if clear_data is not None else self.default_clear_data,
                 config=render_config if render_config is not None else self.default_render_config,
             )
+
+    def _update_bound(
+        self,
+        state: State,
+        camera_transforms,
+        camera_rays,
+        *,
+        world_indices,
+        view_mask,
+        clear_data,
+        render_config,
+        sync_deformables,
+        **outputs,
+    ) -> None:
+        render_context = self._render_context
+        model = render_context.model
+        if sync_deformables:
+            render_context.update(state)
+
+        if camera_transforms is None:
+            camera_transforms = self.compute_view_transforms(state, self._view_transforms)
+        elif camera_transforms.shape != (self.view_count,):
+            raise ValueError(f"camera_transforms must have shape ({self.view_count},)")
+
+        if self._clip_override is None:
+            wp.launch(
+                _gather_view_clip_kernel,
+                dim=self.view_count,
+                inputs=[self.view_camera, model.camera_clipping_range],
+                outputs=[self._view_clip],
+                device=self.device,
+            )
+
+        if world_indices is None:
+            world_indices = self.view_world
+            if view_mask is not None:
+                if view_mask.shape != (self.view_count,) or view_mask.dtype != wp.bool:
+                    raise ValueError(f"view_mask must be a bool array of shape ({self.view_count},)")
+                wp.launch(
+                    _apply_view_mask_kernel,
+                    dim=self.view_count,
+                    inputs=[self.view_world, view_mask],
+                    outputs=[self._world_indices],
+                    device=self.device,
+                )
+                world_indices = self._world_indices
+        elif view_mask is not None:
+            raise ValueError("Pass either world_indices or view_mask, not both")
+
+        ray_kwargs: dict[str, Any] = {"image_size": (self.width, self.height), "view_frame": self.view_camera}
+        if camera_rays is not None:
+            ray_kwargs["sample_count"] = int(camera_rays.shape[2])
+            if tuple(camera_rays.shape[:2]) != (self.height, self.width):
+                raise ValueError(f"camera_rays must have shape ({self.height}, {self.width}, sample_count, 2)")
+        elif self._ray_function is not None:
+            camera_rays = self._ray_params_placeholder()
+            ray_kwargs.update(
+                sample_count=self.sample_count, ray_function=self._ray_function, ray_params=self._ray_params
+            )
+        elif self._ray_mode == SensorCamera.RayMode.ANALYTIC:
+            self._compute_pinhole_params(self._view_pinhole)
+            camera_rays = self._ray_params_placeholder()
+            ray_kwargs.update(sample_count=self.sample_count, view_pinhole=self._view_pinhole)
+        else:
+            missing = np.flatnonzero(self._view_bundle_np < 0)
+            if len(missing):
+                labels = sorted({self._frame_labels[int(self._view_frame_np[v])] for v in missing})
+                raise RuntimeError(f"No rays for {labels}; call set_camera_rays() for CUSTOM cameras and sites")
+            camera_rays = self._camera_rays
+            ray_kwargs.update(sample_count=self.sample_count, view_ray_bundle=self._view_ray_bundle)
+
+        with wp.ScopedTimer("Newton::SensorCamera::update", active=PROFILE_ENABLED, use_nvtx=True, synchronize=True):
+            render_context.render(
+                state,
+                camera_transforms=camera_transforms,
+                camera_rays=camera_rays,
+                world_indices=world_indices,
+                view_clip=self._view_clip,
+                clear_data=clear_data if clear_data is not None else self.default_clear_data,
+                config=render_config if render_config is not None else self.default_render_config,
+                **ray_kwargs,
+                **outputs,
+            )
+
+    def _ray_params_placeholder(self) -> wp.array4d[wp.vec3f]:
+        placeholder = getattr(self, "_empty_rays", None)
+        if placeholder is None:
+            placeholder = self._empty_rays = wp.zeros((1, 1, 1, 2), dtype=wp.vec3f, device=self.device)
+        return placeholder

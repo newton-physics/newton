@@ -131,6 +131,137 @@ class _CableAttachmentCandidate:
     target_path: str
 
 
+def _usd_render_product_resolutions(stage) -> dict[str, tuple[int, int]]:
+    """Map camera prim paths to the resolution of the first ``UsdRender.Product`` that renders them.
+
+    ``UsdRender`` prims live under the ``/Render`` scope by convention, so only that scope is scanned.
+    """
+    resolutions: dict[str, tuple[int, int]] = {}
+    render_scope = stage.GetPrimAtPath("/Render")
+    if not (render_scope and render_scope.IsValid()):
+        return resolutions
+    from pxr import Usd, UsdRender
+
+    for prim in Usd.PrimRange(render_scope):
+        if not prim.IsA(UsdRender.Product):
+            continue
+        product = UsdRender.Product(prim)
+        resolution = product.GetResolutionAttr().Get()
+        if resolution is None or resolution[0] <= 0 or resolution[1] <= 0:
+            continue
+        for target in product.GetCameraRel().GetForwardedTargets():
+            resolutions.setdefault(str(target), (int(resolution[0]), int(resolution[1])))
+    return resolutions
+
+
+def _import_usd_cameras(
+    builder: ModelBuilder,
+    stage,
+    root_prim,
+    *,
+    ignore_paths: list[str],
+    path_body_map: dict[str, int],
+    path_body_relative_transform: dict[str, wp.transform],
+    path_camera_map: dict[str, int],
+    get_world_mat,
+    xform_cache,
+    linear_unit: float,
+    verbose: bool,
+) -> None:
+    """Add every perspective ``UsdGeom.Camera`` below ``root_prim`` as a model camera.
+
+    A camera is attached to its nearest imported rigid-body ancestor, with its pose taken relative to
+    that body's world frame (composed with the merge transform if the body was collapsed into its
+    parent). Cameras without a rigid-body ancestor are fixed in the world and use the static-shape
+    transform pipeline (``get_world_mat``), which applies the import ``xform`` and up-axis rotation.
+    Cameras below a rigid body that was not imported are skipped.
+
+    USD authors focal length and apertures in tenths of a scene unit and the clipping range in scene
+    units; both are converted to meters with ``linear_unit``.
+    """
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    resolutions = _usd_render_product_resolutions(stage)
+    custom_attrs = builder.get_custom_attributes_by_frequency([AttributeFrequency.CAMERA])
+    lens_unit = 0.1 * linear_unit
+
+    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
+        if not prim.IsA(UsdGeom.Camera):
+            continue
+        path = str(prim.GetPath())
+        if any(re.match(pattern, path) for pattern in ignore_paths):
+            continue
+
+        # Find the nearest rigid-body ancestor (the camera prim itself included).
+        body_path = None
+        current = prim
+        while current and current.IsValid() and not current.IsPseudoRoot():
+            current_path = str(current.GetPath())
+            if current_path in path_body_map:
+                body_path = current_path
+                break
+            if current.HasAPI(UsdPhysics.RigidBodyAPI):
+                break
+            current = current.GetParent()
+        if body_path is None and current and current.IsValid() and not current.IsPseudoRoot():
+            if verbose:
+                logger.info("Skipping camera %s below rigid body %s that was not imported.", path, current.GetPath())
+            continue
+
+        camera = UsdGeom.Camera(prim)
+        if camera.GetProjectionAttr().Get() == UsdGeom.Tokens.orthographic:
+            warnings.warn(
+                f"Orthographic camera {path} is not supported; skipping.",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+            continue
+
+        body = path_body_map[body_path] if body_path is not None else -1
+        if body >= 0:
+            body_prim = stage.GetPrimAtPath(body_path)
+            body_world = usd.get_transform(body_prim, local=False, xform_cache=xform_cache)
+            body_world_inv = wp.transform_inverse(body_world)
+            body_inv_mat = wp.transform_compose(body_world_inv.p, body_world_inv.q, wp.vec3(1.0))
+            rel_mat = body_inv_mat @ usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
+            pos, rot, _scale = wp.transform_decompose(rel_mat)
+            camera_xform = wp.transform(pos, rot)
+            merge_xform = path_body_relative_transform.get(body_path)
+            if merge_xform is not None:
+                camera_xform = merge_xform * camera_xform
+        else:
+            pos, rot, _scale = wp.transform_decompose(get_world_mat(prim))
+            camera_xform = wp.transform(pos, rot)
+
+        near, far = camera.GetClippingRangeAttr().Get()
+        try:
+            camera_id = builder.add_camera(
+                body,
+                xform=camera_xform,
+                focal_length=float(camera.GetFocalLengthAttr().Get()) * lens_unit,
+                horizontal_aperture=float(camera.GetHorizontalApertureAttr().Get()) * lens_unit,
+                vertical_aperture=float(camera.GetVerticalApertureAttr().Get()) * lens_unit,
+                horizontal_aperture_offset=float(camera.GetHorizontalApertureOffsetAttr().Get()) * lens_unit,
+                vertical_aperture_offset=float(camera.GetVerticalApertureOffsetAttr().Get()) * lens_unit,
+                clipping_range=(float(near) * linear_unit, float(far) * linear_unit),
+                resolution=resolutions.get(path),
+                label=path,
+                custom_attributes=usd.get_custom_attribute_values(prim, custom_attrs, context={"builder": builder})
+                if custom_attrs
+                else None,
+            )
+        except ValueError as e:
+            warnings.warn(
+                f"Camera {path} has invalid intrinsics and is skipped: {e}",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+            continue
+        path_camera_map[path] = camera_id
+        if verbose:
+            logger.info("Added camera %s (body %s) with id %s.", path, body, camera_id)
+
+
 def parse_usd(
     builder: ModelBuilder,
     source: str | UsdStage,
@@ -152,6 +283,7 @@ def parse_usd(
     bodies_follow_joint_ordering: bool = True,
     skip_mesh_approximation: bool = False,
     load_sites: bool = True,
+    load_cameras: bool = True,
     load_visual_shapes: bool = True,
     load_static_visual_shapes: bool = True,
     hide_collision_shapes: bool = False,
@@ -267,6 +399,9 @@ def parse_usd(
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+        load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
+            (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
+            ancestor or fixed in the world. Orthographic cameras are skipped with a warning. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         load_static_visual_shapes: If True, supported visual-only geometry outside
             rigid-body hierarchies is loaded as static shapes when
@@ -414,6 +549,8 @@ def parse_usd(
               - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+            * - ``"path_camera_map"``
+              - Mapping from prim path (str) of an imported ``UsdGeom.Camera`` to the respective camera index in :class:`~newton.ModelBuilder`
             * - ``"path_particle_map"``
               - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
             * - ``"path_cable_map"``
@@ -2703,6 +2840,23 @@ def parse_usd(
 
     initialize_free_joint_velocities()
 
+    # Cameras are imported after collapse_fixed_joints so their parent body indices are final.
+    path_camera_map: dict[str, int] = {}
+    if load_cameras and root_prim and root_prim.IsValid():
+        _import_usd_cameras(
+            builder,
+            stage,
+            root_prim,
+            ignore_paths=ignore_paths,
+            path_body_map=path_body_map,
+            path_body_relative_transform=path_body_relative_transform,
+            path_camera_map=path_camera_map,
+            get_world_mat=lambda prim: _get_prim_world_mat(prim, None, incoming_world_xform),
+            xform_cache=xform_cache,
+            linear_unit=linear_unit,
+            verbose=verbose,
+        )
+
     # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
     # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)
     # that couples a follower joint to a leader (reference) joint with a gearing ratio.
@@ -2904,6 +3058,7 @@ def parse_usd(
         "path_joint_map": path_joint_map,
         "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
+        "path_camera_map": path_camera_map,
         "path_particle_map": path_particle_map,
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,

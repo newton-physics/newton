@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from typing import Any
 
 import numpy as np
 import warp as wp
@@ -14,7 +15,16 @@ from ...geometry import GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
-from .types import AntiAliasing, ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
+from .types import (
+    AntiAliasing,
+    ClearData,
+    LightType,
+    MeshData,
+    RayGenerationMode,
+    RenderConfig,
+    RenderOrder,
+    TextureData,
+)
 
 # Default hemispheric ambient radiance (linear RGB) for surfaces facing up and down.
 DEFAULT_AMBIENT_SKY_COLOR = (0.2, 0.2, 0.225)
@@ -36,6 +46,11 @@ class RenderContext:
         render_normal: bool = False
         render_albedo: bool = False
         render_hdr_color: bool = False
+        render_face_index: bool = False
+        render_barycentric: bool = False
+        has_view_clip: bool = False
+        ray_mode: int = 0
+        ray_function: Any = None
 
     DEFAULT_CLEAR_DATA = ClearData()
     DEFAULT_RENDER_CONFIG = RenderConfig()
@@ -307,6 +322,16 @@ class RenderContext:
         albedo_image: wp.array3d[wp.uint32] | None = None,
         clear_data: ClearData | None = DEFAULT_CLEAR_DATA,
         config: RenderConfig | None = DEFAULT_RENDER_CONFIG,
+        face_index_image: wp.array3d[wp.int32] | None = None,
+        barycentric_image: wp.array3d[wp.vec2f] | None = None,
+        image_size: tuple[int, int] | None = None,
+        sample_count: int | None = None,
+        view_ray_bundle: wp.array[wp.int32] | None = None,
+        view_pinhole: wp.array[wp.vec4f] | None = None,
+        view_clip: wp.array[wp.vec2f] | None = None,
+        view_frame: wp.array[wp.int32] | None = None,
+        ray_function: Any = None,
+        ray_params: wp.array2d[wp.float32] | None = None,
     ):
         """Raytrace the scene into the provided output images.
 
@@ -356,7 +381,19 @@ class RenderContext:
             anti_aliasing = AntiAliasing(config.anti_aliasing)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Invalid anti_aliasing mode: {config.anti_aliasing!r}") from exc
-        if camera_rays.ndim == 4 and camera_rays.shape[2] > 1 and anti_aliasing == AntiAliasing.NONE:
+        if ray_function is not None:
+            ray_mode = RayGenerationMode.FUNCTION
+        elif view_pinhole is not None:
+            ray_mode = RayGenerationMode.PINHOLE
+        elif view_ray_bundle is not None:
+            ray_mode = RayGenerationMode.BUNDLE_INDEXED
+        else:
+            ray_mode = RayGenerationMode.BUNDLE
+        if sample_count is None:
+            if camera_rays is None:
+                raise ValueError("sample_count is required when camera_rays is not given")
+            sample_count = camera_rays.shape[2]
+        if sample_count > 1 and anti_aliasing == AntiAliasing.NONE:
             raise ValueError("anti_aliasing must be SSAA or MSAA for camera_rays with more than one sample")
 
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
@@ -383,8 +420,11 @@ class RenderContext:
             )
 
         if has_shapes or has_particles or self._has_triangle_mesh or self._has_gaussians:
-            height = camera_rays.shape[0]
-            width = camera_rays.shape[1]
+            if image_size is not None:
+                width, height = int(image_size[0]), int(image_size[1])
+            else:
+                height = camera_rays.shape[0]
+                width = camera_rays.shape[1]
 
             if clear_data is None:
                 clear_data = RenderContext.DEFAULT_CLEAR_DATA
@@ -397,6 +437,11 @@ class RenderContext:
             self._render_state.render_normal = normal_image is not None
             self._render_state.render_albedo = albedo_image is not None
             self._render_state.render_hdr_color = hdr_color_image is not None
+            self._render_state.render_face_index = face_index_image is not None
+            self._render_state.render_barycentric = barycentric_image is not None
+            self._render_state.has_view_clip = view_clip is not None
+            self._render_state.ray_mode = int(ray_mode)
+            self._render_state.ray_function = ray_function
 
             # One view per camera transform; independent of the model world count.
             view_count = camera_transforms.shape[0]
@@ -411,10 +456,23 @@ class RenderContext:
                 if image is not None and image.shape != expected:
                     raise ValueError(f"{name} shape must be {expected}, got {tuple(image.shape)}")
 
-            if camera_rays.ndim != 4 or camera_rays.shape[2] <= 0 or camera_rays.shape[3] != 2:
-                raise ValueError(
-                    f"camera_rays shape must be ({height}, {width}, sample_count, 2), got {tuple(camera_rays.shape)}"
-                )
+            if ray_mode == RayGenerationMode.BUNDLE:
+                if camera_rays.ndim != 4 or camera_rays.shape[2] <= 0 or camera_rays.shape[3] != 2:
+                    raise ValueError(
+                        f"camera_rays shape must be ({height}, {width}, sample_count, 2), got {tuple(camera_rays.shape)}"
+                    )
+            elif ray_mode == RayGenerationMode.BUNDLE_INDEXED:
+                if (
+                    camera_rays.ndim != 4
+                    or camera_rays.shape[0] % height != 0
+                    or camera_rays.shape[1] != width
+                    or camera_rays.shape[2] != sample_count
+                    or camera_rays.shape[3] != 2
+                ):
+                    raise ValueError(
+                        f"stacked camera_rays shape must be (bundle_count * {height}, {width}, {sample_count}, 2), "
+                        f"got {tuple(camera_rays.shape)}"
+                    )
             # ``world_indices`` is optional: when ``None`` each view renders its own
             # world (``world_index == view_index``); otherwise validate the mapping.
             if world_indices is not None:
@@ -432,6 +490,8 @@ class RenderContext:
             _check_output("normal_image", normal_image)
             _check_output("albedo_image", albedo_image)
             _check_output("hdr_color_image", hdr_color_image)
+            _check_output("face_index_image", face_index_image)
+            _check_output("barycentric_image", barycentric_image)
 
             total_pixels = view_count * width * height
 
@@ -450,6 +510,10 @@ class RenderContext:
                 albedo_image = albedo_image.reshape(total_pixels)
             if hdr_color_image is not None:
                 hdr_color_image = hdr_color_image.reshape(total_pixels)
+            if face_index_image is not None:
+                face_index_image = face_index_image.reshape(total_pixels)
+            if barycentric_image is not None:
+                barycentric_image = barycentric_image.reshape(total_pixels)
 
             # Key the cache on the value tuple itself (dict hashes AND compares by
             # equality), so two configs that merely share a hash cannot collide onto
@@ -486,6 +550,12 @@ class RenderContext:
                     camera_rays,
                     camera_transforms,
                     world_indices,
+                    int(sample_count),
+                    view_ray_bundle,
+                    view_pinhole,
+                    view_clip,
+                    view_frame,
+                    ray_params,
                     # Shape BVH
                     model.bvh_shape_count_enabled,
                     model.bvh_shapes.id if model.bvh_shapes is not None else 0,
@@ -533,6 +603,8 @@ class RenderContext:
                     normal_image,
                     albedo_image,
                     hdr_color_image,
+                    face_index_image,
+                    barycentric_image,
                 ],
                 device=self.device,
                 block_dim=config.block_dim,
