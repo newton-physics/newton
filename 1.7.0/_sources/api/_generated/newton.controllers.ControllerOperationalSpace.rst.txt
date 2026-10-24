@@ -1,0 +1,8 @@
+﻿newton.controllers.ControllerOperationalSpace
+=============================================
+
+.. autoclass:: newton.controllers.ControllerOperationalSpace
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :member-order: groupwise

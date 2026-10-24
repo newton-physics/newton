@@ -1,0 +1,6 @@
+﻿newton.math.vec\_leaky\_min
+===========================
+
+.. currentmodule:: newton.math
+
+.. autowarpfunc:: vec_leaky_min
