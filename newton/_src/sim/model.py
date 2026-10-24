@@ -768,8 +768,11 @@ class Model:
         """Shape coefficient of static friction [dimensionless], shape [shape_count], float.
         A negative value (the default) means "same as :attr:`shape_material_mu`", so code that edits
         ``shape_material_mu`` directly keeps a single friction coefficient. Set via
-        :attr:`ModelBuilder.ShapeConfig.mu_static` or a USD ``physics:staticFriction``. Solvers use
-        ``max(shape_material_mu_static, shape_material_mu)`` when it is non-negative."""
+        :attr:`ModelBuilder.ShapeConfig.mu_static` or a USD ``physics:staticFriction``. The effective
+        static coefficient is ``max(shape_material_mu_static, shape_material_mu)`` when it is
+        non-negative. No built-in solver models stick-slip friction yet: :class:`~newton.solvers.SolverKamino`
+        carries the value into its material tables but its contact model uses the dynamic coefficient,
+        and the other solvers read only ``shape_material_mu``."""
         self.shape_material_restitution: wp.array[wp.float32] | None = None
         """Shape coefficient of restitution [dimensionless], shape [shape_count], float."""
         self.shape_material_mu_torsional: wp.array[wp.float32] | None = None

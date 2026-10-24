@@ -215,6 +215,11 @@ def material_first_shape_kernel(
         wp.atomic_min(first_shape, material, shape)
 
 
+def effective_static_friction_np(mu: np.ndarray, mu_static: np.ndarray) -> np.ndarray:
+    """Host-side twin of :func:`effective_static_friction`: negative means "same as mu", otherwise never below mu."""
+    return np.where(mu_static < 0.0, mu, np.maximum(mu_static, mu))
+
+
 @wp.func
 def effective_static_friction(friction: wp.float32, static_friction: wp.float32) -> wp.float32:
     """Static friction a shape material resolves to: negative means "same as mu", otherwise never below mu."""
@@ -2174,11 +2179,9 @@ def register_materials(model: Model, materials_manager: MaterialManager) -> np.n
         material_param_indices[(mu, mu_static, restitution)] = i
 
     # Newton material parameters
-    shape_friction = model.shape_material_mu.numpy().tolist()
-    # Negative mu_static means "same as mu"; otherwise never let it fall below mu.
     mu_np = model.shape_material_mu.numpy()
-    mu_static_np = model.shape_material_mu_static.numpy()
-    shape_static_friction = np.where(mu_static_np < 0.0, mu_np, np.maximum(mu_static_np, mu_np)).tolist()
+    shape_friction = mu_np.tolist()
+    shape_static_friction = effective_static_friction_np(mu_np, model.shape_material_mu_static.numpy()).tolist()
     shape_restitution = model.shape_material_restitution.numpy().tolist()
     # Mapping from geom to material index
     geom_material = np.zeros((model.shape_count,), dtype=int)

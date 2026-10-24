@@ -5492,6 +5492,29 @@ def Xform "Articulation" (
                 self.assertAlmostEqual(value, expected, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_unbound_collider_uses_default_mu_static(self):
+        """A collider without a bound material takes mu_static from the builder defaults like mu (#3560)."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        body = UsdGeom.Xform.Define(stage, "/Body")
+        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+        collider = UsdGeom.Cube.Define(stage, "/Body/Collider")
+        UsdPhysics.CollisionAPI.Apply(collider.GetPrim())
+
+        for mu_static, expected in ((0.9, 0.9), (None, -1.0)):
+            with self.subTest(mu_static=mu_static):
+                builder = newton.ModelBuilder()
+                builder.default_shape_cfg.mu = 0.4
+                builder.default_shape_cfg.mu_static = mu_static
+                result = builder.add_usd(stage)
+                model = builder.finalize(device="cpu")
+                shape_idx = result["path_shape_map"]["/Body/Collider"]
+                self.assertAlmostEqual(float(model.shape_material_mu.numpy()[shape_idx]), 0.4, places=5)
+                self.assertAlmostEqual(float(model.shape_material_mu_static.numpy()[shape_idx]), expected, places=5)
+
     def test_material_parsing(self):
         """Test that material attributes are parsed correctly from USD."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade

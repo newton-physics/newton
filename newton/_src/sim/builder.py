@@ -975,8 +975,10 @@ class ModelBuilder:
         :attr:`mu_static` is set."""
         mu_static: float | None = None
         """The coefficient of static friction [dimensionless], the break-away threshold for sticking
-        contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction). Must be ``>= mu``.
-        Only solvers that model stick-slip friction use it; others use :attr:`mu`."""
+        contacts. ``None`` uses :attr:`mu` (no static/dynamic distinction). A value below :attr:`mu`
+        is treated as :attr:`mu` (the effective coefficient is ``max(mu_static, mu)``), so importers
+        that override :attr:`mu` alone never invalidate the config. No built-in solver models
+        stick-slip friction yet; the value is stored for solvers that do."""
         restitution: float = 0.0
         """The coefficient of restitution.
 
@@ -1127,8 +1129,8 @@ class ModelBuilder:
                 )
             if not math.isfinite(self.density) or self.density < 0.0:
                 raise ValueError(f"density must be finite and >= 0 (got {self.density}).")
-            if self.mu_static is not None and (not math.isfinite(self.mu_static) or self.mu_static < self.mu):
-                raise ValueError(f"mu_static must be finite and >= mu (got mu_static={self.mu_static}, mu={self.mu}).")
+            if self.mu_static is not None and (not math.isfinite(self.mu_static) or self.mu_static < 0.0):
+                raise ValueError(f"mu_static must be finite and >= 0 (got mu_static={self.mu_static}).")
 
             if self.sdf_target_voxel_size is not None and (
                 not math.isfinite(self.sdf_target_voxel_size) or self.sdf_target_voxel_size <= 0.0

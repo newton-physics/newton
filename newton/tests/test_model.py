@@ -2412,13 +2412,28 @@ class TestShapeConfigValidation(unittest.TestCase):
                     cfg.validate(shape_type=newton.GeoType.SPHERE)
 
     def test_shape_config_rejects_invalid_mu_static(self):
-        """Reject a static friction coefficient below mu or non-finite."""
-        for mu_static in (0.3, float("nan"), float("inf")):
+        """Reject a negative or non-finite static friction coefficient."""
+        for mu_static in (-0.5, float("nan"), float("inf")):
             with self.subTest(mu_static=mu_static):
                 cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=mu_static)
 
-                with self.assertRaisesRegex(ValueError, "mu_static must be finite and >= mu"):
+                with self.assertRaisesRegex(ValueError, "mu_static must be finite and >= 0"):
                     cfg.validate(shape_type=newton.GeoType.SPHERE)
+
+    def test_shape_config_mu_static_below_mu_is_raised_to_mu(self):
+        """A static coefficient below mu validates and resolves to mu, so overriding mu alone never fails."""
+        from newton._src.solvers.kamino._src.core.conversions import effective_static_friction_np  # noqa: PLC0415
+
+        cfg = newton.ModelBuilder.ShapeConfig(mu=0.5, mu_static=0.3)
+        cfg.validate(shape_type=newton.GeoType.SPHERE)
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0)
+        builder.add_shape_sphere(body, radius=0.1, cfg=cfg)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.3])
+        np.testing.assert_allclose(
+            effective_static_friction_np(model.shape_material_mu.numpy(), model.shape_material_mu_static.numpy()), [0.5]
+        )
 
     def test_shape_material_mu_static_defaults_to_same_as_mu(self):
         """Unset mu_static is stored as the "same as mu" sentinel and survives replication."""

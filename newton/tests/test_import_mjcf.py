@@ -148,6 +148,21 @@ class TestImportMjcfBasic(unittest.TestCase):
                 solver = SolverMuJoCo(builder.finalize())
                 self.assertEqual(solver.mj_model.opt.enableflags, 0)
 
+    def test_friction_override_keeps_default_mu_static(self):
+        """A geom friction above the builder's default mu_static imports without error (#3560)."""
+        mjcf = """
+<mujoco>
+    <worldbody><body><freejoint/><geom type="sphere" size="0.1" friction="1.0"/></body></worldbody>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.default_shape_cfg.mu = 0.5
+        builder.default_shape_cfg.mu_static = 0.8
+        builder.add_mjcf(mjcf)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.shape_material_mu.numpy(), [1.0])
+        np.testing.assert_allclose(model.shape_material_mu_static.numpy(), [0.8])
+
     def test_constructor_overrides_imported_option_flags(self):
         """Resolve explicit arguments before MJCF or USD flags and Newton defaults."""
         mjcf = """

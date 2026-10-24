@@ -2236,6 +2236,12 @@ Shape material properties control contact resolution. Configure via :class:`~Mod
      - 1.0
      - :attr:`~ModelBuilder.ShapeConfig.mu`
      - :attr:`~Model.shape_material_mu`
+   * - ``mu_static``
+     - Coefficient of static (break-away) friction; ``None`` keeps a single
+       coefficient. Not used by any built-in solver yet.
+     - None
+     - :attr:`~ModelBuilder.ShapeConfig.mu_static`
+     - :attr:`~Model.shape_material_mu_static`
    * - ``ke``
      - Normal contact stiffness
      - 2.5e3
@@ -2397,7 +2403,10 @@ attributes. The contact response attributes map to :class:`~ModelBuilder.ShapeCo
 fields as follows: ``newton:contactStiffness`` → ``ke``,
 ``newton:contactDamping`` → ``kd``, ``newton:contactFrictionGain`` → ``kf``,
 ``newton:contactAdhesion`` → ``ka``. A value of ``-inf`` means "use the engine's
-default" (see :ref:`Contact Material Properties`).
+default" (see :ref:`Contact Material Properties`). ``physics:dynamicFriction`` maps
+to ``mu``; ``physics:staticFriction`` maps to ``mu_static`` when it is larger than
+the dynamic coefficient (the material below imports ``mu=0.8``, ``mu_static=1.0``),
+and otherwise leaves a single coefficient.
 
 .. code-block:: usda
 
