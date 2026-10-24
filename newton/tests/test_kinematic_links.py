@@ -161,6 +161,32 @@ class TestKinematicLinks(unittest.TestCase):
             "Dynamic body should move on the first step after a kinematic toggle.",
         )
 
+    def test_featherstone_refreshes_joint_inertia_separately_from_forces(self):
+        """Refresh a cached mass matrix for armature changes but retain it for force edits."""
+        builder = ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_revolute(-1, body, armature=0.1)
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        solver = newton.solvers.SolverFeatherstone(model, update_mass_matrix_interval=100)
+        state_in, state_out = model.state(), model.state()
+        control = model.control()
+        control.joint_f.fill_(1.0)
+        newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+        solver.step(state_in, state_out, control, None, 0.01)
+        initial_velocity = state_out.joint_qd.numpy().copy()
+        model.joint_damping.fill_(0.2)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+        self.assertFalse(solver._mass_matrix_dirty)
+        model.joint_armature.fill_(2.0)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+        solver.step(state_in, state_out, control, None, 0.01)
+        reference = newton.solvers.SolverFeatherstone(model)
+        reference_out = model.state()
+        reference.step(state_in, reference_out, control, None, 0.01)
+        np.testing.assert_allclose(state_out.joint_qd.numpy(), reference_out.joint_qd.numpy())
+        self.assertLess(float(state_out.joint_qd.numpy()[0]), float(initial_velocity[0]))
+
     def test_immovable_contact_pair_filtering(self):
         """Filter static-static pairs while making other immovable pairs configurable."""
         for shape_a, shape_b in [
@@ -229,7 +255,13 @@ KINEMATIC_TEST_WRENCH = np.array([20.0, -15.0, 10.0, 0.5, -0.4, 0.3], dtype=np.f
 
 
 def _uses_maximal_coordinates(solver) -> bool:
-    return isinstance(solver, newton.solvers.SolverXPBD | newton.solvers.SolverSemiImplicit | newton.solvers.SolverVBD)
+    return isinstance(
+        solver,
+        newton.solvers.SolverKamino
+        | newton.solvers.SolverXPBD
+        | newton.solvers.SolverSemiImplicit
+        | newton.solvers.SolverVBD,
+    )
 
 
 def _create_contacts(model: newton.Model, solver):
@@ -716,20 +748,61 @@ def test_kinematic_runtime_toggle(
     test.assertLess(displacement, 1e-3, "Re-kinematic body should not move further")
 
 
+def test_kinematic_prescribed_response_lifetime(
+    test: TestKinematicLinksCanonical,
+    device,
+    solver_fn,
+):
+    """Drop a newly kinematic free body from the response and reject a kinematic body turning dynamic."""
+    model, kinematic_body, probe_body, _kinematic_joint = _build_free_root_scene(device)
+    solver = solver_fn(model)
+    body_to_articulation = solver._body_to_articulation.numpy()
+    kinematic_articulation = int(body_to_articulation[kinematic_body])
+    probe_articulation = int(body_to_articulation[probe_body])
+    test.assertEqual(int(solver._articulation_response_dof_count.numpy()[kinematic_articulation]), 0)
+
+    flags = model.body_flags.numpy()
+    flags[probe_body] = int(BodyFlags.KINEMATIC)
+    model.body_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+    test.assertEqual(int(solver._articulation_response_dof_count.numpy()[probe_articulation]), 6)
+
+    flags = model.body_flags.numpy()
+    flags[kinematic_body] = int(BodyFlags.DYNAMIC)
+    model.body_flags.assign(flags)
+    with test.assertRaisesRegex(RuntimeError, "reconstruct the solver"):
+        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
+    "steel_matrix_free": lambda model: newton.solvers.SolverSteel(model, solve_mode="matrix_free"),
+    "steel_split": lambda model: newton.solvers.SolverSteel(model, solve_mode="split"),
+    "steel_propagation": lambda model: newton.solvers.SolverSteel(model, articulated_contact_response="propagation"),
+    "steel_propagation_colored": lambda model: newton.solvers.SolverSteel(
+        model, articulated_contact_response="propagation_colored"
+    ),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
     "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=5, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "vbd": lambda model: newton.solvers.SolverVBD(model, rigid_compliant_alm=True),
+    "lox": lambda model: newton.solvers.SolverKamino(
+        model,
+        config=newton.solvers.SolverKamino.Config.from_model(model, dynamics_solver="lox"),
+    ),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
-        if device.is_cpu and solver_name == "mujoco_warp":
+        if device.is_cpu and solver_name in (
+            "mujoco_warp",
+            "steel_matrix_free",
+            "steel_propagation",
+            "steel_propagation_colored",
+        ):
             continue
 
         add_function_test(
@@ -739,6 +812,14 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
+        if solver_name.startswith("steel"):
+            add_function_test(
+                TestKinematicLinksCanonical,
+                f"test_kinematic_prescribed_response_lifetime_{solver_name}",
+                test_kinematic_prescribed_response_lifetime,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
         add_function_test(
             TestKinematicLinksCanonical,
             f"test_kinematic_revolute_root_pendulum_prescribed_motion_{solver_name}",
@@ -753,13 +834,15 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
-        add_function_test(
-            TestKinematicLinksCanonical,
-            f"test_kinematic_runtime_toggle_{solver_name}",
-            test_kinematic_runtime_toggle,
-            devices=[device],
-            solver_fn=solver_fn,
-        )
+        # Kamino freezes body immovability when constructing the solver.
+        if solver_name != "lox":
+            add_function_test(
+                TestKinematicLinksCanonical,
+                f"test_kinematic_runtime_toggle_{solver_name}",
+                test_kinematic_runtime_toggle,
+                devices=[device],
+                solver_fn=solver_fn,
+            )
 
 
 if __name__ == "__main__":

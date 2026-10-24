@@ -22,7 +22,10 @@ import newton
 import newton.examples
 import newton.usd
 from newton.sensors import SensorCamera
-from newton.viewer import ViewerGL
+from newton.viewer import ViewerGL, ViewerRTX
+
+# Viewers with an interactive camera that can also display logged images.
+_INTERACTIVE_VIEWERS = (ViewerGL, ViewerRTX)
 
 SEMANTIC_COLOR_CYLINDER = (255, 0, 0)
 SEMANTIC_COLOR_SPHERE = (255, 255, 0)
@@ -105,8 +108,8 @@ class Example:
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
 
-        self.time = 0.0
-        self.time_delta = 0.005
+        self.sim_time = 0.0
+        self.frame_dt = 0.005
 
         self.viewer = viewer
         self.show_robot_camera = False
@@ -118,7 +121,7 @@ class Example:
         self.sensor_render_height = 256
 
         fov = 45.0
-        if isinstance(self.viewer, ViewerGL):
+        if isinstance(self.viewer, _INTERACTIVE_VIEWERS):
             fov = self.viewer.camera.fov
         self.observer_camera_fov = math.radians(fov)
         self.robot_camera_fov = math.radians(75.0)
@@ -128,7 +131,7 @@ class Example:
 
         robot_asset = newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf"
         robot_builder = newton.ModelBuilder()
-        robot_builder.add_urdf(robot_asset, floating=False)
+        robot_builder.add_urdf(robot_asset, floating=False, joint_damping_mode="passive")
         robot_camera_body = robot_builder.body_label.index("fr3/fr3_link6")
 
         gaussian = None
@@ -265,11 +268,11 @@ class Example:
         self.sensor_camera_transforms = wp.empty(view_count, dtype=wp.transformf, device=self.model.device)
         self.robot_sensor_camera_transforms = wp.empty(view_count, dtype=wp.transformf, device=self.model.device)
 
-        self.sensor_camera_color_image = self.sensor_camera.create_color_image_output(view_count, W, H)
-        self.sensor_camera_albedo_image = self.sensor_camera.create_albedo_image_output(view_count, W, H)
-        self.sensor_camera_depth_image = self.sensor_camera.create_depth_image_output(view_count, W, H)
-        self.sensor_camera_normal_image = self.sensor_camera.create_normal_image_output(view_count, W, H)
-        self.sensor_camera_shape_index_image = self.sensor_camera.create_shape_index_image_output(view_count, W, H)
+        self.sensor_camera_color_image = self.sensor_camera.allocate_image_color(view_count, W, H)
+        self.sensor_camera_albedo_image = self.sensor_camera.allocate_image_albedo(view_count, W, H)
+        self.sensor_camera_depth_image = self.sensor_camera.allocate_image_depth(view_count, W, H)
+        self.sensor_camera_normal_image = self.sensor_camera.allocate_image_normal(view_count, W, H)
+        self.sensor_camera_shape_index_image = self.sensor_camera.allocate_image_shape_index(view_count, W, H)
 
         # Palette for the "semantic" debug view: looked up by shape index.
         # Indices written into shape_index_image come from builder shape order,
@@ -300,7 +303,7 @@ class Example:
             animate_franka,
             self.model.joint_count,
             [
-                self.time,
+                self.sim_time,
                 self.model.joint_type,
                 self.model.joint_dof_dim,
                 self.model.joint_q_start,
@@ -311,12 +314,12 @@ class Example:
             outputs=[self.state.joint_q],
         )
         newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
-        self.time += self.time_delta
+        self.sim_time += self.frame_dt
 
     def render(self):
         sensor_image_is_main_view = self.render_sensors()
 
-        self.viewer.begin_frame(0.0)
+        self.viewer.begin_frame(self.sim_time)
         if not sensor_image_is_main_view:
             self.viewer.log_state(self.state)
         self.viewer.end_frame()
@@ -350,7 +353,7 @@ class Example:
             self.sensor_camera_shape_index_image, colors=self.semantic_palette, out_buffer=self.semantic_rgba
         )
 
-        sensor_image_is_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        sensor_image_is_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, _INTERACTIVE_VIEWERS)
         self.viewer.log_image("color", color_rgba)
         if sensor_image_is_main_view:
             # Flatten the per-world color views into one full-window image.
@@ -409,7 +412,7 @@ class Example:
         self._world_indices_dirty = False
 
     def _get_camera_transform(self) -> wp.transformf:
-        if isinstance(self.viewer, ViewerGL):
+        if isinstance(self.viewer, _INTERACTIVE_VIEWERS):
             return wp.transformf(
                 self.viewer.camera.pos,
                 wp.quat_from_matrix(wp.mat33f(self.viewer.camera.get_view_matrix().reshape(4, 4)[:3, :3])),
@@ -426,10 +429,10 @@ class Example:
     def test_final(self):
         """Verify sensor camera outputs and the sensor-color main-view fallback."""
         sensor_image_is_main_view = self.render_sensors()
-        expected_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, ViewerGL)
+        expected_main_view = self.sensor_color_as_main_view and isinstance(self.viewer, _INTERACTIVE_VIEWERS)
         assert sensor_image_is_main_view is expected_main_view
 
-        if not isinstance(self.viewer, ViewerGL):
+        if not isinstance(self.viewer, _INTERACTIVE_VIEWERS):
             self.sensor_color_as_main_view = True
             assert self.render_sensors() is False
 
@@ -517,7 +520,7 @@ class Example:
         if ui.radio_button("Robot Camera", self.show_robot_camera):
             self.show_robot_camera = True
 
-        if isinstance(self.viewer, ViewerGL):
+        if isinstance(self.viewer, _INTERACTIVE_VIEWERS):
             _changed, self.sensor_color_as_main_view = ui.checkbox(
                 "Sensor Color as Main View", self.sensor_color_as_main_view
             )
@@ -571,7 +574,7 @@ class Example:
             render_config.gaussians_max_num_hits = value
             show_compile_kernel_info = True
 
-        if show_compile_kernel_info:
+        if show_compile_kernel_info and isinstance(self.viewer, ViewerGL):
             display_width = self.viewer.renderer.window.width
             display_height = self.viewer.renderer.window.height
 
