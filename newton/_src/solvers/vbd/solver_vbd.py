@@ -13,9 +13,9 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
-from ...exceptions import NewtonDeprecationWarning
+from ...exceptions import NewtonDeprecationWarning, NewtonWarning
 from ...geometry import ParticleFlags
-from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data
+from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data, _SoftContactFilterData
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
 )
@@ -99,6 +99,23 @@ from .rigid_vbd_kernels import (
     update_duals_body_particle_contacts,
     update_duals_joint,
     update_rod_dahl_state,
+)
+from .rod_direct import (
+    ROD_DIRECT_ANISOTROPIC_FALLBACK,
+    ROD_DIRECT_FAILED,
+    ROD_DIRECT_STALE,
+    ROD_DIRECT_STALLED,
+    mat66d,
+    vec6d,
+)
+from .rod_direct_kernels import accumulate_rod_body_joint_terms, solve_rod_direct
+from .rod_direct_layout import (
+    allocate_rod_direct_layout,
+    check_rod_membership,
+    clear_rod_direct_status,
+    rod_candidates,
+    split_rod_inverse_mass,
+    update_rod_direct_layout,
 )
 from .tendon_kernels import (
     TendonForceElementAdjacencyInfo,
@@ -191,6 +208,10 @@ def _rigid_lambda_retention(alpha: float, gamma: float, use_compliant_alm: bool)
     residual. The legacy path keeps its historical ``alpha * gamma`` policy.
     """
     return gamma if use_compliant_alm else alpha * gamma
+
+
+_ROD_DIRECT_MAX_HALVINGS = 12
+"""Backtracking halvings of the direct rod step before the pose is kept."""
 
 
 class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
@@ -440,6 +461,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_joint_angular_k_start: float | None = None,  # Legacy AVBD angular joint penalty ramp seed
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-rod linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-rod angular joint constraints
+        rigid_rod_direct_solve: bool = False,  # Solve each rod's ROD joints directly per iteration (opt-in)
         # Tendons
         tendon_max_sweeps: int = 256,
         tendon_settle_tol: float = 1.0e-3,
@@ -656,6 +678,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Damping coefficient for non-rod angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
+            rigid_rod_direct_solve: If ``True``, every connected set of dynamic bodies joined by
+                :attr:`~newton.JointType.ROD` joints (a chain, a tree, a loop, or a single segment
+                held by rod joints to kinematic or static bodies) is solved as one block in each rigid
+                iteration, by a line-searched Newton step eliminated along the rod tree in float64. This
+                removes the slow convergence of per-body updates on slender rods, whose stretch stiffness
+                dwarfs their bending stiffness, and lets the two bend axes differ. Rod membership follows
+                joint enablement, body flags and inverse masses through :meth:`notify_model_changed`.
+                Refused, stalled and per-body fallback steps are reported by
+                :meth:`check_rod_direct_status` until :meth:`reset`. Not supported together with
+                ``rigid_soft_enable_dat``, Dahl rod friction or tendons routed over rod bodies. See
+                :doc:`/solvers/vbd` for the method, graph capture and cost. Defaults to ``False``.
+
+                .. experimental::
+                    The direct rod solve and its status reporting may change without a deprecation
+                    period.
             rigid_soft_enable_dat: Whether to apply Divide-and-Truncate (DAT) penetration-free
                 truncation to rigid-soft contacts, symmetric to particle self-contact truncation.
                 Each rigid-soft contact reported by the owned collision pipeline defines a division
@@ -992,6 +1029,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         # Common parameters
         self.iterations = iterations
+        self._rigid_rod_direct_solve = bool(rigid_rod_direct_solve)
         self.friction_epsilon = friction_epsilon
         self.rigid_soft_contact_use_log_barrier = bool(rigid_soft_contact_use_log_barrier)
         self._joint_mode_deprecation_warned = False
@@ -1058,6 +1096,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         # Initialize rigid penetration-free (DAT) truncation state
         self._init_rigid_penetration_free(model, rigid_soft_dat_use_interval_arithmetic)
+
+        # Direct (tree) solve of rod joints; None keeps the per-body path unchanged
+        self._rod_direct = None
+        self._rod_direct_max_halvings = _ROD_DIRECT_MAX_HALVINGS
+        if self._rigid_rod_direct_solve and self._integrates_rigid_bodies:
+            self._init_rod_direct(model)
 
         # Controls whether the next step() refreshes contact state derived from
         # the Contacts buffer or reuses the current rigid/body-particle contact state.
@@ -1538,6 +1582,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
         ):
             self._refresh_rod_rest_bend_twist_cache()
+        if self._rigid_rod_direct_solve and self._integrates_rigid_bodies:
+            if flags & ModelFlags.JOINT_PROPERTIES:
+                # rod membership follows joint enablement: rewrite the layout on the host
+                self._update_rod_direct(self.model)
+            elif flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+                # body flags and masses are checked on the device, so pose resets and per-step notifications
+                # stay capturable
+                self._refresh_rod_direct_membership(self.model)
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
@@ -1888,7 +1940,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     "SolverVBD requires JointType.ROD to have three linear and three angular DOFs; "
                     f"joint {joint} has dimensions {(linear_count, angular_count)}."
                 )
-            if (
+            if not self._rigid_rod_direct_solve and (
                 joint_target_ke[dof_start] != joint_target_ke[dof_start + 1]
                 or joint_target_kd[dof_start] != joint_target_kd[dof_start + 1]
                 or joint_target_ke[angular_dof] != joint_target_ke[angular_dof + 1]
@@ -2148,7 +2200,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
                             f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
                         )
-                    if (
+                    if not self._rigid_rod_direct_solve and (
                         jtarget_ke[dof0] != jtarget_ke[dof0 + 1]
                         or jtarget_kd[dof0] != jtarget_kd[dof0 + 1]
                         or jtarget_ke[angular_dof] != jtarget_ke[angular_dof + 1]
@@ -2875,6 +2927,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and :meth:`rebuild_bvh` are graph-capturable, so either may run inside a
         captured episode-reset graph.
 
+        With ``rigid_rod_direct_solve``, reset clears the direct-solve status of rods in the selected worlds,
+        including what earlier rod layouts reported for them (see :meth:`check_rod_direct_status`). A per-body
+        fallback still in force is reported until :meth:`notify_model_changed` runs outside capture.
+
         Reset does not run collision detection, and :meth:`step` consumes the
         supplied contacts rather than rerunning
         :meth:`~newton.CollisionPipeline.collide`. After moving bodies or
@@ -2970,6 +3026,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
 
         self._reset_tendon_state(state, world_mask)
+        self._reset_rod_direct_status(world_mask)
 
         if not self._integrates_rigid_bodies:
             return
@@ -4356,6 +4413,505 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             device=self.device,
         )
 
+    def _init_rod_direct(self, model: Model) -> None:
+        """Allocate the rod layout, its float64 scratch and status at fixed capacity (rigid_rod_direct_solve).
+
+        Everything the captured step reads is allocated here once; :meth:`_update_rod_direct` rewrites the contents
+        in place, so a graph captured before :meth:`notify_model_changed` replays the current layout.
+        """
+        layout = allocate_rod_direct_layout(model, self.device)
+        if layout is None:
+            return
+        if self.rigid_soft_enable_dat:
+            raise NotImplementedError("SolverVBD: rigid_rod_direct_solve does not support rigid_soft_enable_dat yet.")
+        if getattr(self, "enable_dahl_friction", False):
+            raise NotImplementedError("SolverVBD: rigid_rod_direct_solve does not support Dahl rod friction yet.")
+        self._check_rod_direct_tendons(model, layout)
+        self._rod_direct = layout
+        n = layout.node_capacity
+        self._rod_direct_scratch = {
+            name: wp.zeros(n, dtype=dtype, device=self.device)
+            for name, dtype in (
+                ("D", mat66d),
+                ("B", mat66d),
+                ("F", vec6d),
+                ("S", mat66d),
+                ("Y", vec6d),
+                ("DEL", vec6d),
+                ("HM", mat66d),
+                ("FM", vec6d),
+                ("T0", wp.transform),
+            )
+        }
+        self._rod_direct_inv_mass_color = wp.zeros_like(self.body_inv_mass_effective)
+        self._rod_direct_inv_mass_rod = wp.zeros_like(self.body_inv_mass_effective)
+        # Sticky status bits (ROD_DIRECT_*) per rod of the current layout, the bits of earlier layouts per world (the
+        # last entry for rods whose first body is global), and stale flags per world for membership changes detected
+        # under graph capture (see check_rod_membership); all allocated once.
+        self._rod_direct_status = wp.zeros(layout.rod_capacity, dtype=wp.int32, device=self.device)
+        self._rod_direct_prior_status = wp.zeros(model.world_count + 1, dtype=wp.int32, device=self.device)
+        self._rod_direct_stale = wp.zeros(model.world_count + 2, dtype=wp.int32, device=self.device)
+        self._rod_direct_no_flags = (
+            wp.zeros(model.body_count, dtype=wp.int32, device=self.device) if model.body_flags is None else None
+        )
+
+    def _update_rod_direct(self, model: Model) -> None:
+        """Rewrite the rod layout in place after a model change; status bits raised so far are kept for
+        :meth:`check_rod_direct_status`.
+
+        Raises:
+            RuntimeError: During graph capture if the model has ROD joints, or if the ROD joints outgrew the layout's
+                capacity.
+        """
+        if self._rod_direct is None:
+            if not self.device.is_capturing and rod_candidates(model)[0].size:
+                raise RuntimeError(
+                    "SolverVBD rigid_rod_direct_solve: the model gained ROD joints after the solver was created; "
+                    "create a new solver (and re-capture any graph that steps it)."
+                )
+            return
+        if self.device.is_capturing:
+            raise RuntimeError(
+                "SolverVBD rigid_rod_direct_solve: notify_model_changed(JOINT_PROPERTIES) rebuilds the rod layout on "
+                "the host and cannot run during graph capture; call it before capturing or between graph launches."
+            )
+        self._fold_rod_direct_status(model)
+        self._rod_direct_status.zero_()
+        update_rod_direct_layout(self._rod_direct, model)
+        self._rod_direct_stale.zero_()
+        self._check_rod_direct_tendons(model, self._rod_direct)
+
+    def _refresh_rod_direct_membership(self, model: Model) -> None:
+        """Check rod membership on the device after a body-flag or inertial-property change (capturable).
+
+        Outside capture the layout is rewritten only if a body became dynamic or stopped being dynamic, at the cost of
+        reading the stale flags. Under capture such a change marks the rods of that body's world stale (all rods for a
+        global body), and the color loop solves their bodies per body until the next notification outside capture.
+        """
+        rd = self._rod_direct
+        if rd is None:
+            return
+        flags = model.body_flags if model.body_flags is not None else self._rod_direct_no_flags
+        wp.launch(
+            kernel=check_rod_membership,
+            dim=rd.node_capacity,
+            inputs=[
+                rd.rod_bodies,
+                rd.body_dynamic,
+                model.body_inv_mass,
+                flags,
+                int(BodyFlags.KINEMATIC),
+                model.body_world,
+                model.world_count,
+            ],
+            outputs=[self._rod_direct_stale],
+            device=self.device,
+        )
+        if not self.device.is_capturing and np.any(self._rod_direct_stale.numpy()):
+            self._update_rod_direct(model)
+
+    def _reset_rod_direct_status(self, world_mask: wp.array | None) -> None:
+        """Clear the direct-solve status of rods in the reset worlds (graph-capturable)."""
+        rd = self._rod_direct
+        if rd is None:
+            return
+        wp.launch(
+            kernel=clear_rod_direct_status,
+            dim=rd.rod_capacity + self.model.world_count + 1,
+            inputs=[
+                world_mask,
+                world_mask is None,
+                self.model.world_count,
+                self.model.body_world,
+                rd.rod_start,
+                rd.node_body,
+            ],
+            outputs=[self._rod_direct_status, self._rod_direct_prior_status],
+            device=self.device,
+        )
+
+    @staticmethod
+    def _check_rod_direct_tendons(model: Model, layout) -> None:
+        if getattr(model, "tendon_guide_count", 0) > 0:
+            guide_body = model.tendon_guide_body.numpy()
+            if np.any(layout.is_rod_body[guide_body[guide_body >= 0]]):
+                raise NotImplementedError(
+                    "SolverVBD: rigid_rod_direct_solve does not support tendons routed over rod bodies."
+                )
+
+    def check_rod_direct_status(self) -> None:
+        """Report direct rod steps that were refused, fell back to the per-body solve, or stalled
+        (``rigid_rod_direct_solve``).
+
+        Covers every step since the solver was created or since :meth:`reset` cleared the rods' worlds, eager or
+        replayed from a captured graph. A refused step (a singular block, a non-finite step, or a non-finite energy at
+        the start or at the smallest trial step) keeps the rod at the iteration's start pose, so a rod refused on every
+        iteration follows its inertial prediction for that step, ignoring its joints and contacts; the kernel warns
+        once and this check raises. A rod whose membership changed under graph capture (one of its world's bodies
+        became or stopped being dynamic) is solved by the per-body update until :meth:`notify_model_changed` runs
+        outside capture. The per-body update requires equal X and Y shear and bend coefficients, so this check raises
+        if such a rod has different ones and warns otherwise. It also warns for a line search that found no decrease
+        larger than the estimated round-off of the energy, which keeps the pose for that iteration. The check
+        synchronizes the solver device, so call it outside graph capture. It is a no-op without direct rod solves.
+
+        Raises:
+            RuntimeError: If called during graph capture, if any rod reported a refused step, or if a rod with
+                different X and Y shear or bend coefficients fell back to the per-body solve.
+        """
+        if not self._rigid_rod_direct_solve:
+            return
+        if self.device.is_capturing:
+            raise RuntimeError("Cannot inspect rod direct-solve status during graph capture")
+        if self._rod_direct is None:
+            return
+        status = self._rod_direct_status.numpy()
+        prior = self._rod_direct_prior_status.numpy()
+        failed = np.flatnonzero(status & ROD_DIRECT_FAILED)
+        if failed.size or np.any(prior & ROD_DIRECT_FAILED):
+            raise RuntimeError(
+                f"SolverVBD rigid_rod_direct_solve: {self._describe_rods(status, prior, ROD_DIRECT_FAILED)} "
+                "gave a singular or non-finite step; they kept each refused iteration's start pose."
+            )
+        if np.any(status & ROD_DIRECT_ANISOTROPIC_FALLBACK) or np.any(prior & ROD_DIRECT_ANISOTROPIC_FALLBACK):
+            raise RuntimeError(
+                "SolverVBD rigid_rod_direct_solve: "
+                f"{self._describe_rods(status, prior, ROD_DIRECT_ANISOTROPIC_FALLBACK)} fell back to the per-body solve "
+                "after a body became or stopped being dynamic under graph capture, but have different X and Y shear "
+                "or bend coefficients, which the per-body solve cannot represent (it used the X entries); notify such "
+                "changes outside capture. reset() clears this report."
+            )
+        pending = bool(np.any(self._rod_direct_stale.numpy()))
+        if np.any(status & ROD_DIRECT_STALE) or np.any(prior & ROD_DIRECT_STALE) or pending:
+            rods = self._describe_rods(status, prior, ROD_DIRECT_STALE) or "the affected rods"
+            remedy = (
+                "call notify_model_changed() with ModelFlags.BODY_PROPERTIES or BODY_INERTIAL_PROPERTIES outside "
+                "capture to restore the direct solve"
+                if pending
+                else "reset() clears this report"
+            )
+            warnings.warn(
+                "SolverVBD rigid_rod_direct_solve: a body became or stopped being dynamic (inverse mass or KINEMATIC "
+                f"flag) under graph capture, so {rods} used the per-body solve; {remedy}.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+        if np.any(status & ROD_DIRECT_STALLED) or np.any(prior & ROD_DIRECT_STALLED):
+            warnings.warn(
+                f"SolverVBD rigid_rod_direct_solve: the line search of "
+                f"{self._describe_rods(status, prior, ROD_DIRECT_STALLED)} found no decrease above the estimated "
+                "round-off; their poses were kept for that iteration.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+
+    def _describe_rods(self, status: np.ndarray, prior: np.ndarray, bit: int) -> str:
+        """Name the rods with ``bit`` set by one of their bodies (label, index and world); rods of an earlier layout
+        are named by world."""
+        rd = self._rod_direct
+        rods = np.flatnonzero(status & bit)
+        first_body = rd.node_body.numpy()[rd.rod_start.numpy()[rods[:8]]]
+        body_world = self.model.body_world.numpy()
+        names = ", ".join(f"{self.model.body_label[b]!r} (body {b}, world {body_world[b]})" for b in first_body)
+        text = f"the rods containing bodies {names}{' and more' if rods.size > 8 else ''}" if rods.size else ""
+        earlier = np.flatnonzero(prior & bit)
+        if earlier.size:
+            worlds = [int(w) if w < self.model.world_count else -1 for w in earlier]
+            text += (
+                f"{' and ' if text else ''}rods of a layout before the last notify_model_changed() in worlds {worlds}"
+            )
+        return text
+
+    def _fold_rod_direct_status(self, model: Model) -> None:
+        """Move the current layout's status bits into the per-world bits of earlier layouts before a rewrite."""
+        status = self._rod_direct_status.numpy()
+        flagged = np.flatnonzero(status)
+        if not flagged.size:
+            return
+        rd = self._rod_direct
+        world = model.body_world.numpy()[rd.node_body.numpy()[rd.rod_start.numpy()[flagged]]]
+        prior = self._rod_direct_prior_status.numpy()
+        np.bitwise_or.at(prior, np.where(world < 0, model.world_count, world), status[flagged])
+        self._rod_direct_prior_status.assign(prior)
+
+    @property
+    def rigid_rod_direct_solve(self) -> bool:
+        """Whether rods are solved directly (read-only, set at construction; see :doc:`/solvers/vbd`)."""
+        return self._rigid_rod_direct_solve
+
+    def _solve_rods_direct(
+        self,
+        state_in: State,
+        control: Control,
+        dt: float,
+        contacts: Contacts | None,
+        contact_filter: _SoftContactFilterData | None,
+    ) -> None:
+        """Accumulate contact and non-rod joint terms on rod bodies, then one direct Gauss-Newton step per rod.
+
+        Launch sizes are the layout's capacities and every array is allocated once, so a captured step stays valid
+        across :meth:`_update_rod_direct`.
+        """
+        model, rd, sc = self.model, self._rod_direct, self._rod_direct_scratch
+        self._accumulate_rigid_body_terms(
+            rd.rod_bodies, state_in, contacts, dt, self._rod_direct_inv_mass_rod, contact_filter
+        )
+        wp.launch(
+            kernel=accumulate_rod_body_joint_terms,
+            dim=rd.node_capacity,
+            inputs=[
+                rd.rod_bodies,
+                rd.body_node,
+                state_in.body_q,
+                self.body_q_prev,
+                model.body_q,
+                model.body_com,
+                self.rigid_adjacency,
+                model.joint_type,
+                model.joint_enabled,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
+                model.joint_axis,
+                self.joint_rod_rest_kb_local,
+                self.joint_rod_rest_twist,
+                model.joint_qd_start,
+                model.joint_target_q_start,
+                self.joint_constraint_start,
+                self.joint_penalty_k,
+                self.joint_rho,
+                self.joint_material_k,
+                self.joint_penalty_kd,
+                self.joint_sigma_start,
+                self.joint_C_fric,
+                model.joint_target_ke,
+                model.joint_target_kd,
+                control.joint_target_q,
+                control.joint_target_qd,
+                model.joint_limit_lower,
+                model.joint_limit_upper,
+                model.joint_limit_ke,
+                model.joint_limit_kd,
+                self.joint_drive_limit_support,
+                self.joint_drive_lambda,
+                self.joint_limit_lambda,
+                self.joint_lambda_lin,
+                self.joint_lambda_ang,
+                self.joint_C0_lin,
+                self.joint_C0_ang,
+                self.joint_is_hard,
+                self.rigid_joint_alpha,
+                self.rigid_compliant_alm,
+                model.joint_dof_dim,
+                self.joint_rest_angle,
+                self.joint_angle_prev,
+                dt,
+            ],
+            outputs=[
+                self.body_forces,
+                self.body_torques,
+                self.body_hessian_ll,
+                self.body_hessian_al,
+                self.body_hessian_aa,
+            ],
+            device=self.device,
+        )
+        wp.launch(
+            kernel=solve_rod_direct,
+            dim=rd.rod_capacity,
+            inputs=[
+                dt,
+                self._rod_direct_max_halvings,
+                rd.rod_start,
+                rd.node_body,
+                rd.node_parent,
+                rd.node_joint,
+                rd.node_side_parent,
+                rd.bnd_start,
+                rd.bnd_joint,
+                rd.body_node,
+                self.body_q_prev,
+                self.body_inertia_q,
+                model.body_mass,
+                model.body_inertia,
+                model.body_com,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
+                model.joint_qd_start,
+                model.joint_target_ke,
+                model.joint_target_kd,
+                self.joint_rod_rest_kb_local,
+                self.joint_rod_rest_twist,
+                self.body_forces,
+                self.body_torques,
+                self.body_hessian_ll,
+                self.body_hessian_al,
+                self.body_hessian_aa,
+                rd.node_slot,
+                self._rod_direct_stale,
+                model.world_count,
+                sc["D"],
+                sc["B"],
+                sc["F"],
+                sc["S"],
+                sc["Y"],
+                sc["DEL"],
+                sc["HM"],
+                sc["FM"],
+                sc["T0"],
+            ],
+            outputs=[state_in.body_q, self._rod_direct_status],
+            device=self.device,
+        )
+
+    def _accumulate_rigid_body_terms(
+        self,
+        color_group: wp.array,
+        state_in: State,
+        contacts: Contacts | None,
+        dt: float,
+        inv_mass: wp.array,
+        contact_filter: _SoftContactFilterData | None,
+        body_contact_block_dim: int = 256,
+        particle_contact_block_dim: int = 256,
+    ):
+        """Accumulate particle-attachment and contact forces/Hessians for the bodies in ``color_group``.
+
+        Bodies with a zero entry in ``inv_mass`` are skipped.
+        """
+        model = self.model
+        if model.attachment_particle_body_count > 0:
+            wp.launch(
+                kernel=accumulate_body_particle_attachments_per_body,
+                dim=color_group.size,
+                inputs=[
+                    dt,
+                    color_group,
+                    state_in.particle_q,
+                    self.particle_q_prev,
+                    state_in.body_q,
+                    self.body_q_prev,
+                    model.body_com,
+                    inv_mass,
+                    model.attachment_particle_body_particle,
+                    model.attachment_particle_body_body_point,
+                    model.attachment_particle_body_stiffness,
+                    model.attachment_particle_body_damping,
+                    model.attachment_particle_body_enabled,
+                    self.body_particle_attachment_offsets,
+                    self.body_particle_attachment_indices,
+                ],
+                outputs=[
+                    self.body_forces,
+                    self.body_torques,
+                    self.body_hessian_ll,
+                    self.body_hessian_al,
+                    self.body_hessian_aa,
+                ],
+                device=self.device,
+            )
+
+        # Accumulate body-particle contact forces/hessians for bodies in this color
+        if model.particle_count > 0 and contacts is not None:
+            wp.launch(
+                kernel=accumulate_body_particle_contacts_per_body,
+                dim=color_group.size * self._body_particle_contact_threads,
+                inputs=[
+                    dt,
+                    color_group,
+                    self._body_particle_contact_threads,
+                    state_in.particle_q,
+                    self.particle_q_prev,
+                    model.particle_radius,
+                    self.body_q_prev,
+                    state_in.body_q,
+                    state_in.body_qd,
+                    model.body_com,
+                    inv_mass,
+                    model.shape_body,
+                    self.friction_epsilon,
+                    self.rigid_soft_contact_use_log_barrier,
+                    self.body_particle_contact_penalty_k,
+                    self.body_particle_contact_material_ke,
+                    self.body_particle_contact_material_kd,
+                    self.body_particle_contact_material_mu,
+                    contacts.soft_contact_count,
+                    contacts.soft_contact_indices,
+                    contacts.soft_contact_shape,
+                    contacts.soft_contact_body_pos,
+                    contacts.soft_contact_body_vel,
+                    contacts.soft_contact_normal,
+                    contacts.soft_contact_barycentric,
+                    model.shape_margin,
+                    self.body_particle_contact_buffer_pre_alloc,
+                    self.body_particle_contact_counts,
+                    self.body_particle_contact_indices,
+                    contact_filter,
+                ],
+                outputs=[
+                    self.body_forces,
+                    self.body_torques,
+                    self.body_hessian_ll,
+                    self.body_hessian_al,
+                    self.body_hessian_aa,
+                ],
+                block_dim=particle_contact_block_dim,
+                device=self.device,
+            )
+
+        # Accumulate body-body (rigid-rigid) contact forces and Hessians on bodies (per-body, per-color)
+        if contacts is not None and model.shape_count > 0:
+            wp.launch(
+                kernel=accumulate_body_body_contacts_per_body,
+                dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
+                inputs=[
+                    dt,
+                    color_group,
+                    self.body_q_prev,
+                    state_in.body_q,
+                    model.body_com,
+                    inv_mass,
+                    self.friction_epsilon,
+                    self.body_body_contact_penalty_k,
+                    self.body_body_contact_normal_rho,
+                    self.body_body_contact_material_ke,
+                    self.body_body_contact_material_kd,
+                    self.body_body_contact_material_mu,
+                    self.body_body_contact_tangent_rho,
+                    self.body_body_contact_lambda,
+                    self.body_body_contact_C0,
+                    self.rigid_contact_alpha,
+                    self.rigid_contact_hard,
+                    self.rigid_compliant_alm,
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_surface_velocity,
+                    contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    model.shape_body,
+                    self.body_body_contact_buffer_pre_alloc,
+                    self.body_body_contact_counts,
+                    self.body_body_contact_indices,
+                ],
+                outputs=[
+                    self.body_forces,
+                    self.body_torques,
+                    self.body_hessian_ll,
+                    self.body_hessian_al,
+                    self.body_hessian_aa,
+                ],
+                block_dim=body_contact_block_dim,
+                device=self.device,
+            )
+
     def _solve_rigid_body_iteration(
         self,
         state_in: State,
@@ -4418,142 +4974,40 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._update_tendon_routing(state_in, dt, False)
 
-        body_color_groups = model.body_color_groups
+        # Directly solved rod bodies get a zero inverse mass in the color loop, whose kernels then skip them; the mask
+        # is applied on the device so a captured step follows layout rewrites and stale layouts.
+        color_inv_mass = self.body_inv_mass_effective
+        if self._rod_direct is not None:
+            color_inv_mass = self._rod_direct_inv_mass_color
+            wp.launch(
+                kernel=split_rod_inverse_mass,
+                dim=model.body_count,
+                inputs=[
+                    self._rod_direct.body_node,
+                    self._rod_direct.node_slot,
+                    self.body_inv_mass_effective,
+                    self._rod_direct_stale,
+                    model.world_count,
+                ],
+                outputs=[color_inv_mass, self._rod_direct_inv_mass_rod],
+                device=self.device,
+            )
 
         # Gauss-Seidel-style per-color updates
-        for color in range(len(body_color_groups)):
-            color_group = body_color_groups[color]
+        for color in range(len(model.body_color_groups)):
+            color_group = model.body_color_groups[color]
             solve_block_dim, body_contact_block_dim, particle_contact_block_dim = self._rigid_color_block_dims[color]
 
-            if model.attachment_particle_body_count > 0:
-                wp.launch(
-                    kernel=accumulate_body_particle_attachments_per_body,
-                    dim=color_group.size,
-                    inputs=[
-                        dt,
-                        color_group,
-                        state_in.particle_q,
-                        self.particle_q_prev,
-                        state_in.body_q,
-                        self.body_q_prev,
-                        model.body_com,
-                        self.body_inv_mass_effective,
-                        model.attachment_particle_body_particle,
-                        model.attachment_particle_body_body_point,
-                        model.attachment_particle_body_stiffness,
-                        model.attachment_particle_body_damping,
-                        model.attachment_particle_body_enabled,
-                        self.body_particle_attachment_offsets,
-                        self.body_particle_attachment_indices,
-                    ],
-                    outputs=[
-                        self.body_forces,
-                        self.body_torques,
-                        self.body_hessian_ll,
-                        self.body_hessian_al,
-                        self.body_hessian_aa,
-                    ],
-                    device=self.device,
-                )
-
-            # Accumulate body-particle contact forces/hessians for bodies in this color
-            if model.particle_count > 0 and contacts is not None:
-                wp.launch(
-                    kernel=accumulate_body_particle_contacts_per_body,
-                    dim=color_group.size * self._body_particle_contact_threads,
-                    inputs=[
-                        dt,
-                        color_group,
-                        self._body_particle_contact_threads,
-                        state_in.particle_q,
-                        self.particle_q_prev,
-                        model.particle_radius,
-                        self.body_q_prev,
-                        state_in.body_q,
-                        state_in.body_qd,
-                        model.body_com,
-                        self.body_inv_mass_effective,
-                        model.shape_body,
-                        self.friction_epsilon,
-                        self.rigid_soft_contact_use_log_barrier,
-                        self.body_particle_contact_penalty_k,
-                        self.body_particle_contact_material_ke,
-                        self.body_particle_contact_material_kd,
-                        self.body_particle_contact_material_mu,
-                        contacts.soft_contact_count,
-                        contacts.soft_contact_indices,
-                        contacts.soft_contact_shape,
-                        contacts.soft_contact_body_pos,
-                        contacts.soft_contact_body_vel,
-                        contacts.soft_contact_normal,
-                        contacts.soft_contact_barycentric,
-                        model.shape_margin,
-                        self.body_particle_contact_buffer_pre_alloc,
-                        self.body_particle_contact_counts,
-                        self.body_particle_contact_indices,
-                        contact_filter,
-                    ],
-                    outputs=[
-                        self.body_forces,
-                        self.body_torques,
-                        self.body_hessian_ll,
-                        self.body_hessian_al,
-                        self.body_hessian_aa,
-                    ],
-                    block_dim=particle_contact_block_dim,
-                    device=self.device,
-                )
-
-            # Accumulate body-body (rigid-rigid) contact forces and Hessians on bodies (per-body, per-color)
-            if contacts is not None and model.shape_count > 0:
-                wp.launch(
-                    kernel=accumulate_body_body_contacts_per_body,
-                    dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
-                    inputs=[
-                        dt,
-                        color_group,
-                        self.body_q_prev,
-                        state_in.body_q,
-                        model.body_com,
-                        self.body_inv_mass_effective,
-                        self.friction_epsilon,
-                        self.body_body_contact_penalty_k,
-                        self.body_body_contact_normal_rho,
-                        self.body_body_contact_material_ke,
-                        self.body_body_contact_material_kd,
-                        self.body_body_contact_material_mu,
-                        self.body_body_contact_tangent_rho,
-                        self.body_body_contact_lambda,
-                        self.body_body_contact_C0,
-                        self.rigid_contact_alpha,
-                        self.rigid_contact_hard,
-                        self.rigid_compliant_alm,
-                        contacts.rigid_contact_count,
-                        contacts.rigid_contact_shape0,
-                        contacts.rigid_contact_shape1,
-                        contacts.rigid_contact_point0,
-                        contacts.rigid_contact_point1,
-                        contacts.rigid_contact_surface_velocity,
-                        contacts.rigid_contact_offset0,
-                        contacts.rigid_contact_offset1,
-                        contacts.rigid_contact_normal,
-                        contacts.rigid_contact_margin0,
-                        contacts.rigid_contact_margin1,
-                        model.shape_body,
-                        self.body_body_contact_buffer_pre_alloc,
-                        self.body_body_contact_counts,
-                        self.body_body_contact_indices,
-                    ],
-                    outputs=[
-                        self.body_forces,
-                        self.body_torques,
-                        self.body_hessian_ll,
-                        self.body_hessian_al,
-                        self.body_hessian_aa,
-                    ],
-                    block_dim=body_contact_block_dim,
-                    device=self.device,
-                )
+            self._accumulate_rigid_body_terms(
+                color_group,
+                state_in,
+                contacts,
+                dt,
+                color_inv_mass,
+                contact_filter,
+                body_contact_block_dim=body_contact_block_dim,
+                particle_contact_block_dim=particle_contact_block_dim,
+            )
 
             wp.launch(
                 kernel=self._solve_rigid_body_kernel,
@@ -4564,7 +5018,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.body_q_prev,
                     model.body_q,
                     model.body_mass,
-                    self.body_inv_mass_effective,
+                    color_inv_mass,
                     model.body_inertia,
                     self.body_inertia_q,
                     model.body_com,
@@ -4641,6 +5095,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # Truncate this color's pose updates before the next color accumulates
             # forces against them; the last color also feeds the dual updates.
             self._rigid_penetration_free_truncation(state_in, contacts)
+
+        if self._rod_direct is not None:
+            self._solve_rods_direct(state_in, control, dt, contacts, contact_filter)
 
         if self._has_joint_mimics:
             project_joint_mimics(

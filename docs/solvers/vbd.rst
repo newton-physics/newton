@@ -76,6 +76,89 @@ legacy-path controls — ``model.vbd.joint_is_hard`` and
 :meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode` (deprecated since
 1.6; no solver-mode effect under compliant ALM).
 
+Slender Rods
+~~~~~~~~~~~~
+
+VBD updates one body at a time, so a rod segment cannot rotate without
+stretching its anchors against neighbours that are frozen during its update.
+When a rod's stretch stiffness far exceeds its bending stiffness (a ratio
+``EA * l**2 / (4 * EI)`` above ~25 for segment length ``l``, typical of threads,
+cables and tapes), bending converges very slowly. Pass
+``rigid_rod_direct_solve=True`` to solve each rod (a chain, tree or loop of
+bodies joined by :attr:`~newton.JointType.ROD` joints) as one block per
+iteration instead. See :class:`~newton.solvers.SolverVBD` for the supported
+options.
+
+Each rod step is one Newton step on the rod's incremental potential: inertia,
+the contact and non-rod joint terms accumulated per body, and the exact
+stretch/shear and bend/twist energies at their material stiffness (no
+augmented-Lagrangian dual or penalty ramp; the two bend axes may differ through
+the per-DOF ``joint_target_ke``/``joint_target_kd``). The Hessian is
+Gauss-Newton plus the tension part of the joints' geometric stiffness, which
+carries a tensioned rod's transverse stiffness. It is eliminated along the rod
+tree in float64, and the step is line-searched on the rod energy. Rod joints
+that close a loop, or join a rod body to a kinematic or static body, enter the
+block diagonal only. Rods are solved in parallel, so a contact or non-rod joint
+between two directly solved bodies couples simultaneous block solves. The
+accumulated contact, attachment and non-rod joint Hessian is therefore weighted
+by 2 in the step: on shared terms this majorizes the omitted cross terms, and on
+one-sided terms it under-relaxes friction and contact activation, which enter
+the line search only as this quadratic model. Gradients are not weighted, so
+the force balance at convergence is unchanged. The weight changes only the
+steps taken on the way: it lowers each step's predicted decrease, but it can
+change the step's direction as well as its length, so this damping is a
+heuristic.
+
+The option allocates its arrays once, so a step captured in a CUDA graph stays
+valid after :meth:`~newton.solvers.SolverVBD.notify_model_changed` changes rod
+membership (joint enablement, body flags, inverse masses).
+``JOINT_PROPERTIES`` rewrites the layout on the host, so notify it outside
+capture. ``BODY_PROPERTIES`` and ``BODY_INERTIAL_PROPERTIES`` are checked on the
+device and can be captured. If a body becomes or stops being dynamic under
+capture, the rods of its world (every rod, for a global body) fall back to the
+per-body update until the next notification outside capture, and
+:meth:`~newton.solvers.SolverVBD.check_rod_direct_status` warns; the rods of
+other worlds stay on the direct solve. The per-body update requires equal X and
+Y shear and bend coefficients, so for a rod with different ones the check
+raises instead: notify such changes outside capture.
+Create a new solver if joints become ROD joints.
+
+.. experimental::
+
+   ``SolverVBD(rigid_rod_direct_solve=True)`` and
+   :meth:`~newton.solvers.SolverVBD.check_rod_direct_status` may change without
+   the normal deprecation period. The option does not support DAT
+   (``rigid_soft_enable_dat``), Dahl rod friction, or tendons routed over rod
+   bodies.
+
+The block solve costs more per iteration than the colored per-body update,
+and each rod is solved serially by one thread. Measured with
+``asv/benchmarks/simulation/bench_rod_direct_solve.py`` (512 rod segments in
+total, 60 steps of 10 iterations, seconds):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Device
+     - 4 rods x 128 segments, colored / direct
+     - 128 rods x 4 segments, colored / direct
+   * - CPU
+     - 0.86 / 2.43
+     - 0.82 / 1.87
+   * - NVIDIA L4
+     - 0.26 / 8.69
+     - 0.26 / 0.44
+
+These are totals at equal iteration counts, not time to a given accuracy. In
+``test_heavy_cantilever_settles_to_discrete_equilibrium``
+(``newton/tests/vbd/test_rod_direct_regime.py``: a clamped 12-segment rod under
+its own weight at stretch/bend ratios of 1e3 and 1e6, ``dt = 1/120`` s, 10
+iterations, 2 s), the direct solve's tip droop is within 1 % of the exact
+equilibrium of the discrete rod; with the option off, the per-body solve
+droops about 40 % past it. Leave the option off for rods that per-body VBD already resolves
+(stretch/bend ratios of order 10 or less), for scenes dominated by a few long
+rods on a GPU, and with the unsupported options listed in the reference.
+
 Coupling Modes
 ~~~~~~~~~~~~~~
 
