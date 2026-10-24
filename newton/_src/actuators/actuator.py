@@ -9,22 +9,40 @@ from collections.abc import Mapping
 from dataclasses import dataclass, fields, make_dataclass
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
 import warp as wp
 
-from ..exceptions import NewtonDeprecationWarning
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .clamping.base import ClampingBase
-from .delay import Delay
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
+from .input_processors.base import InputProcessorBase
+from .input_processors.input_processor_backlash import InputProcessorBacklash
+from .input_processors.input_processor_delay import InputProcessorDelay
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
+    from ..sim.model import Model
 
 _DEPRECATED_UNSET = object()
+_DELAY_KEYWORD_DEPRECATION_MSG = (
+    "Actuator(delay=...) is deprecated in Newton 1.8; use Actuator(input_processors=[delay]) instead."
+)
+_DELAY_ATTRIBUTE_DEPRECATION_MSG = "Actuator.delay is deprecated in Newton 1.8; use Actuator.input_processors instead."
+_DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG = (
+    "Overriding InputProcessorDelay.update_state with the (target_pos, target_vel, feedforward, pos_indices, "
+    "vel_indices, current_state, next_state) signature is deprecated in Newton 1.8; override "
+    "update_state(inputs, current_state, next_state) instead."
+)
+_DELAY_STATE_DEPRECATION_MSG = (
+    "Actuator.State.delay_state is deprecated in Newton 1.8; use input_processor_states instead."
+)
 _CONTROLLER_KEYWORD_DEPRECATION_MSG = (
     "Actuator(controller=...) is deprecated in Newton 1.6; use Actuator(drive=...) instead."
+)
+_CUSTOM_INPUTS_TUPLE_DEPRECATION_MSG = (
+    "{name}.custom_inputs as a tuple of names is deprecated in Newton 1.8; "
+    "map each name to its frequency, e.g. {{name: Model.AttributeFrequency.JOINT_DOF}}."
 )
 _CONTROLLER_ATTRIBUTE_DEPRECATION_MSG = "Actuator.controller is deprecated in Newton 1.6; use Actuator.drive instead."
 _CONTROLLER_STATE_DEPRECATION_MSG = (
@@ -32,20 +50,72 @@ _CONTROLLER_STATE_DEPRECATION_MSG = (
 )
 
 
+ACTUATOR_NAMESPACE = "actuation"
+ACTUATOR_FREQUENCY = f"{ACTUATOR_NAMESPACE}:actuator"
+
+
+def register_actuator_frequency(builder: ModelBuilder) -> None:
+    """Register the per-actuator frequency and its ``actuator_dof`` attribute.
+
+    :meth:`~newton.ModelBuilder.add_actuator` calls this automatically with
+    the first actuator.
+
+    Args:
+        builder: Newton model builder on which to register the frequency.
+    """
+    builder.add_custom_frequency(builder.CustomFrequency(name="actuator", namespace=ACTUATOR_NAMESPACE))
+    builder.add_custom_attribute(
+        builder.CustomAttribute(
+            name="actuator_dof",
+            dtype=wp.int32,
+            frequency=ACTUATOR_FREQUENCY,
+            default=-1,
+            references="joint_dof",
+            namespace=ACTUATOR_NAMESPACE,
+        )
+    )
+
+
 @wp.kernel
 def _scatter_add_kernel(
     forces: wp.array[float],
     computed_forces: wp.array[float],
     indices: wp.array[wp.uint32],
+    computed_indices: wp.array[wp.uint32],
+    accumulate_computed: bool,
     output: wp.array[float],
     computed_output: wp.array[float],
 ):
-    """Scatter-add effort into output; optionally scatter computed effort too."""
+    """Scatter-add effort into output; optionally scatter computed effort too, added per DOF or written per actuator."""
     i = wp.tid()
     idx = indices[i]
-    output[idx] = output[idx] + forces[i]
+    wp.atomic_add(output, idx, forces[i])
     if computed_output:
-        computed_output[idx] = computed_output[idx] + computed_forces[i]
+        j = computed_indices[i]
+        if accumulate_computed:
+            wp.atomic_add(computed_output, j, computed_forces[i])
+        else:
+            computed_output[j] = computed_forces[i]
+
+
+@wp.kernel
+def _scatter_kernel(
+    source: wp.array[float],
+    indices: wp.array[wp.uint32],
+    output: wp.array[float],
+):
+    i = wp.tid()
+    output[indices[i]] = source[i]
+
+
+@wp.kernel
+def _gather_kernel(
+    source: wp.array[float],
+    indices: wp.array[wp.uint32],
+    output: wp.array[float],
+):
+    i = wp.tid()
+    output[i] = source[indices[i]]
 
 
 def _assign_state_value(dst: Any, src: Any, name: str) -> None:
@@ -120,6 +190,14 @@ def _assign_component_state(dst: Any, src: Any, name: str) -> None:
         _assign_state_value(getattr(dst, field.name), getattr(src, field.name), f"{name}.{field.name}")
 
 
+def _legacy_delay_updates(processors: list[InputProcessorBase]) -> list[InputProcessorDelay]:
+    """Return the delays whose ``update_state`` override still takes the deprecated 7-argument form."""
+    legacy = [p for p in processors if isinstance(p, InputProcessorDelay) and p._overrides_legacy_update_state()]
+    if legacy:
+        warnings.warn(_DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
+    return legacy
+
+
 _MISSING = object()
 
 
@@ -148,12 +226,58 @@ def _require_array(source: Any, name: str) -> Any:
     return value
 
 
+def _custom_input_frequencies(drive: DriveBase) -> dict[str, Model.AttributeFrequency | str]:
+    """Return the drive's custom inputs as ``{name: frequency}``, accepting the deprecated tuple of names."""
+    from ..sim.model import Model  # noqa: PLC0415
+
+    declared = drive.custom_inputs
+    if not isinstance(declared, Mapping):
+        warnings.warn(
+            _CUSTOM_INPUTS_TUPLE_DEPRECATION_MSG.format(name=type(drive).__name__),
+            NewtonDeprecationWarning,
+            stacklevel=3,
+        )
+        declared = dict.fromkeys(declared, Model.AttributeFrequency.JOINT_DOF)
+    frequencies = {}
+    for name, declared_frequency in declared.items():
+        frequency = Model.AttributeFrequency.JOINT_DOF if declared_frequency == "joint_dof" else declared_frequency
+        if frequency not in (Model.AttributeFrequency.JOINT_DOF, ACTUATOR_FREQUENCY):
+            raise ValueError(
+                f"{type(drive).__name__} custom input '{name}' has unsupported frequency {frequency!r}; "
+                f"use Model.AttributeFrequency.JOINT_DOF or '{ACTUATOR_FREQUENCY}'"
+            )
+        frequencies[name] = frequency
+    return frequencies
+
+
 def _collect_custom_inputs(
     sim_control: Any,
     declared: tuple[str, ...],
+    gathered: dict[str, wp.array[float]],
+    actuator_indices: wp.array[wp.uint32] | None,
+    device: wp.Device,
 ) -> dict[str, Any]:
-    """Read declared Control values without validating them, keyed by attribute."""
-    return {attribute: _get_attribute(sim_control, attribute, None) for attribute in declared}
+    """Read declared Control values without validating them, keyed by attribute.
+
+    A value with a buffer in *gathered* is a per-actuator array: its entries
+    for the actuator's slots are gathered through *actuator_indices* into that
+    buffer, which is passed on instead.
+    """
+    inputs = {}
+    for attribute in declared:
+        value = _get_attribute(sim_control, attribute, None)
+        buffer = gathered.get(attribute)
+        if value is not None and buffer is not None:
+            wp.launch(
+                _gather_kernel,
+                dim=len(buffer),
+                inputs=[value, actuator_indices],
+                outputs=[buffer],
+                device=device,
+            )
+            value = buffer
+        inputs[attribute] = value
+    return inputs
 
 
 @functools.cache
@@ -165,20 +289,20 @@ def _input_container_class(name: str, fields: tuple[str, ...]) -> type:
 
 
 class Actuator:
-    """Composed actuator: delay → drive → clamping.
+    """Composed actuator: input processors → drive → clamping.
 
     An actuator reads from simulation state/control arrays, optionally
-    delays command inputs, computes effort via a drive, applies clamping
-    (effort limits, saturation, etc.), and **accumulates** the
-    result into the output array (scatter-add).  The caller must zero the
-    output array before stepping actuators.
+    transforms them with input processors (e.g. a command delay), computes
+    effort via a drive, applies clamping (effort limits, saturation, etc.),
+    and **accumulates** the result into the output array (scatter-add).  The
+    caller must zero the output array before stepping actuators.
 
     Usage::
 
         actuator = Actuator(
             indices=indices,
             drive=DrivePD(kp=kp, kd=kd),
-            delay=Delay(delay_steps=wp.array([5, 5], dtype=wp.int32), max_delay=5),
+            input_processors=[InputProcessorDelay(delay_steps=wp.array([5, 5], dtype=wp.int32), max_delay=5)],
             clamping=[ClampingMaxEffort(max_effort=max_effort)],
         )
 
@@ -193,27 +317,31 @@ class Actuator:
     class State:
         """Composed state for an :class:`Actuator`.
 
-        Holds the delay state (if a delay is present) and the drive
-        state. Clamping objects are stateless.
+        Holds one state per input processor and the drive state.
+        Clamping objects are stateless.
         """
 
-        delay_state: Delay.State | None = None
-        """Delay buffer state, or ``None`` if no delay is used."""
+        input_processor_states: list[InputProcessorBase.State | None] | None = None
+        """One state per input processor, in processor order (``None`` for
+        stateless processors), or ``None`` if there are no input processors."""
         drive_state: DriveBase.State | None = None
         """Drive-specific state, or ``None`` if stateless."""
 
         def __init__(
             self,
-            delay_state: Delay.State | None = None,
+            delay_state: InputProcessorDelay.State | None = None,
             drive_state: DriveBase.State | object | None = _DEPRECATED_UNSET,
             *,
+            input_processor_states: list[InputProcessorBase.State | None] | None = None,
             controller_state: DriveBase.State | object | None = _DEPRECATED_UNSET,
         ) -> None:
             """Initialize composed actuator state.
 
             Args:
-                delay_state: Delay buffer state, or ``None`` if no delay is used.
+                delay_state: Deprecated in Newton 1.8; use ``input_processor_states``.
                 drive_state: Drive-specific state, or ``None`` if stateless.
+                input_processor_states: One state per input processor, in
+                    processor order (``None`` for stateless processors).
                 controller_state: Deprecated in Newton 1.6; use ``drive_state``.
             """
             if controller_state is not _DEPRECATED_UNSET:
@@ -221,9 +349,37 @@ class Actuator:
                     raise TypeError("Specify only one of 'drive_state' and deprecated 'controller_state'.")
                 warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
                 drive_state = controller_state
+            if delay_state is not None:
+                if input_processor_states is not None:
+                    raise TypeError("Specify only one of 'input_processor_states' and deprecated 'delay_state'.")
+                warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+                input_processor_states = [delay_state]
 
-            self.delay_state = delay_state
+            self.input_processor_states = input_processor_states
             self.drive_state = None if drive_state is _DEPRECATED_UNSET else drive_state
+
+        @property
+        def delay_state(self) -> InputProcessorDelay.State | None:
+            """Deprecated alias for the first :class:`InputProcessorDelay` state in :attr:`input_processor_states`.
+
+            .. deprecated:: 1.8
+                Use :attr:`input_processor_states` instead.
+            """
+            warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            return next(
+                (s for s in self.input_processor_states or () if isinstance(s, InputProcessorDelay.State)), None
+            )
+
+        @delay_state.setter
+        def delay_state(self, value: InputProcessorDelay.State | None) -> None:
+            warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            states = self.input_processor_states or []
+            for i, s in enumerate(states):
+                if isinstance(s, InputProcessorDelay.State):
+                    states[i] = value
+                    return
+            if value is not None:
+                self.input_processor_states = [value, *states]
 
         @property
         def controller_state(self) -> DriveBase.State | None:
@@ -247,8 +403,9 @@ class Actuator:
                 mask: Boolean mask of length N. ``True`` entries are reset.
                     ``None`` resets all.
             """
-            if self.delay_state is not None:
-                self.delay_state.reset(mask)
+            for state in self.input_processor_states or ():
+                if state is not None:
+                    state.reset(mask)
             if self.drive_state is not None:
                 self.drive_state.reset(mask)
 
@@ -276,14 +433,21 @@ class Actuator:
                 NotImplementedError: A custom state does not implement
                     assignment.
             """
-            _assign_component_state(self.delay_state, other.delay_state, "delay_state")
+            own_states = self.input_processor_states or []
+            other_states = other.input_processor_states or []
+            if len(own_states) != len(other_states):
+                raise ValueError(
+                    f"Cannot assign 'input_processor_states': {len(own_states)} and {len(other_states)} entries."
+                )
+            for i, (dst, src) in enumerate(zip(own_states, other_states, strict=True)):
+                _assign_component_state(dst, src, f"input_processor_states[{i}]")
             _assign_component_state(self.drive_state, other.drive_state, "drive_state")
 
     def __init__(
         self,
         indices: wp.array[wp.uint32],
         drive: DriveBase | None = None,
-        delay: Delay | None = None,
+        delay: InputProcessorDelay | None = None,
         clamping: list[ClampingBase] | None = None,
         pos_indices: wp.array[wp.uint32] | None = None,
         target_pos_indices: wp.array[wp.uint32] | None = None,
@@ -297,6 +461,8 @@ class Actuator:
         control_computed_output_attr: str | None = None,
         requires_grad: bool = False,
         *,
+        input_processors: list[InputProcessorBase] | None = None,
+        actuator_indices: wp.array[wp.uint32] | None = None,
         controller: DriveBase | object | None = _DEPRECATED_UNSET,
     ):
         """Initialize actuator.
@@ -305,7 +471,8 @@ class Actuator:
             indices: DOF indices into velocity-shaped arrays (velocities,
                 velocity targets, feedforward, effort output). Shape ``(N,)``.
             drive: Drive that computes raw effort.
-            delay: Optional Delay instance for input delay.
+            delay: Deprecated in Newton 1.8; pass the delay in
+                ``input_processors`` instead.
             clamping: List of Clamping objects (post-drive effort bounds).
             pos_indices: Indices into coordinate-shaped arrays (positions =
                 ``state.joint_q``). Defaults to *indices*. Differs from
@@ -326,9 +493,21 @@ class Actuator:
             control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
             control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
-                effort. None to skip writing computed effort.
+                effort. None to skip writing computed effort. Without
+                *actuator_indices* the effort is added per DOF like the
+                output; with *actuator_indices* it is written per actuator
+                at :attr:`actuator_indices`. Skipped while *sim_control* has
+                no such array or it is ``None``.
             requires_grad: Allocate intermediate arrays with gradient support
                 for differentiable simulation.
+            input_processors: Input processors applied in list order to the
+                state and command inputs before the drive (e.g.
+                :class:`InputProcessorDelay`).
+            actuator_indices: Index of each actuator into per-actuator arrays,
+                i.e. arrays with one entry per actuator of the model rather
+                than per DOF. Required when the drive declares per-actuator
+                :attr:`~DriveBase.custom_inputs` or any
+                :attr:`~DriveBase.custom_outputs`.
             controller: Deprecated in Newton 1.6; use ``drive`` instead.
         """
         if controller is not _DEPRECATED_UNSET:
@@ -338,11 +517,21 @@ class Actuator:
             drive = controller
         if drive is None:
             raise TypeError("Actuator() missing required argument: 'drive'")
+        input_processors = list(input_processors or [])
+        if delay is not None:
+            warnings.warn(_DELAY_KEYWORD_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            input_processors.insert(0, delay)
 
         self.indices = indices
         self.pos_indices = pos_indices if pos_indices is not None else indices
         self.target_pos_indices = target_pos_indices if target_pos_indices is not None else self.pos_indices
         self.effort_indices = effort_indices if effort_indices is not None else indices
+        self.actuator_indices = actuator_indices
+        """Index of each actuator into per-actuator arrays, or ``None``."""
+        if actuator_indices is not None and actuator_indices.shape != indices.shape:
+            raise ValueError(
+                f"actuator_indices shape {actuator_indices.shape} must match indices shape {indices.shape}"
+            )
         if self.pos_indices.shape != indices.shape:
             raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
         if self.target_pos_indices.shape != indices.shape:
@@ -354,7 +543,9 @@ class Actuator:
                 f"effort_indices shape {self.effort_indices.shape} must match indices shape {indices.shape}"
             )
         self.drive = drive
-        self.delay = delay
+        self.input_processors = input_processors
+        """Input processors, applied in list order before the drive."""
+        self._legacy_delay_updates = _legacy_delay_updates(input_processors)
         self.clamping = clamping or []
         self.num_actuators = len(indices)
 
@@ -368,10 +559,20 @@ class Actuator:
         self.control_feedforward_attr = control_feedforward_attr
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
+        self._custom_inputs = _custom_input_frequencies(drive)
+        actuator_inputs = [name for name, frequency in self._custom_inputs.items() if frequency == ACTUATOR_FREQUENCY]
+        if actuator_inputs and actuator_indices is None:
+            raise ValueError(
+                f"{type(drive).__name__} declares per-actuator custom inputs, which require actuator_indices"
+            )
+        if drive.custom_outputs and actuator_indices is None:
+            raise ValueError(f"{type(drive).__name__} declares custom outputs, which require actuator_indices")
+        self._actuator_inputs = {
+            name: wp.zeros(len(indices), dtype=wp.float32, device=indices.device) for name in actuator_inputs
+        }
 
         self.device = indices.device
         self.requires_grad = requires_grad
-        self._sequential_indices = wp.array(np.arange(self.num_actuators, dtype=np.uint32), device=self.device)
         self._computed_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
@@ -380,8 +581,8 @@ class Actuator:
         )
 
         drive.finalize(self.device, self.num_actuators)
-        if delay is not None:
-            delay.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
+        for processor in self.input_processors:
+            processor.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
 
@@ -415,20 +616,26 @@ class Actuator:
             Container whose slots are the required ``sim_control`` attributes.
 
         Note:
-            Leaving the feedforward field unassigned means no feedforward term.
+            Leaving the feedforward field unassigned means no feedforward term,
+            and leaving the computed output field unassigned skips it.
         """
         fields = self._required_attributes.get("sim_control", ())
         return _input_container_class("sim_control", fields)()
 
     def register_custom_attributes(self, builder: ModelBuilder) -> None:
-        """Register drive inputs as custom Newton Control attributes.
+        """Register drive inputs and per-actuator outputs as custom Newton Control attributes.
 
         :class:`~newton.ModelBuilder` calls this method automatically while
-        finalizing its actuators. Every input declared by the drive is
-        registered as a ``wp.float32`` joint-DOF array on
-        :class:`~newton.Control`. Registration allocates the arrays but does
-        not populate or clear them; the caller must update their values before
-        each actuator evaluation.
+        finalizing its actuators. Every input declared by the drive in
+        :attr:`~DriveBase.custom_inputs` is registered as a ``wp.float32``
+        array on :class:`~newton.Control` with its declared frequency. The
+        drive's :attr:`~DriveBase.custom_outputs` are registered as
+        per-actuator arrays (``actuation:actuator`` frequency), and
+        :attr:`control_computed_output_attr` too when :attr:`actuator_indices`
+        is set.
+        Registration allocates the arrays but does not populate or clear
+        them; the caller must update the declared inputs before each actuator
+        evaluation.
 
         This method is a Newton convenience. Other simulation engines should
         provide arrays with the same names through their ``sim_control``
@@ -439,12 +646,16 @@ class Actuator:
         """
         from ..sim.model import Model  # noqa: PLC0415
 
-        for name in self.drive.custom_inputs:
+        frequencies = dict(self._custom_inputs)
+        frequencies.update(dict.fromkeys(self.drive.custom_outputs, ACTUATOR_FREQUENCY))
+        if self.actuator_indices is not None and self.control_computed_output_attr is not None:
+            frequencies[self.control_computed_output_attr] = ACTUATOR_FREQUENCY
+        for name, frequency in frequencies.items():
             builder.add_custom_attribute(
                 builder.CustomAttribute(
                     name=name,
                     dtype=wp.float32,
-                    frequency=Model.AttributeFrequency.JOINT_DOF,
+                    frequency=frequency,
                     assignment=Model.AttributeAssignment.CONTROL,
                     default=0.0,
                 )
@@ -464,6 +675,26 @@ class Actuator:
     def controller(self, value: DriveBase) -> None:
         warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self.drive = value
+
+    @property
+    def delay(self) -> InputProcessorDelay | None:
+        """Deprecated alias for the first :class:`InputProcessorDelay` in :attr:`input_processors`.
+
+        .. deprecated:: 1.8
+            Use :attr:`input_processors` instead.
+        """
+        warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        return next((p for p in self.input_processors if isinstance(p, InputProcessorDelay)), None)
+
+    @delay.setter
+    def delay(self, value: InputProcessorDelay | None) -> None:
+        warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        processors = [p for p in self.input_processors if not isinstance(p, InputProcessorDelay)]
+        if value is not None:
+            value.finalize(self.device, self.num_actuators, requires_grad=self.requires_grad)
+            processors.insert(0, value)
+        self.input_processors = processors
+        self._legacy_delay_updates = _legacy_delay_updates(processors)
 
     # To achieve public API Actuator.ImplicitOptions.
     # Defining ImplicitOptions inside Actuator would create a circular import issue.
@@ -489,6 +720,11 @@ class Actuator:
         Raises:
             NotImplementedError: The actuator was built with ``requires_grad=True``.
                 The implicit solve is not differentiable.
+
+        Warns:
+            NewtonWarning: The actuator has an :class:`~newton.actuators.InputProcessorBacklash`.
+                The solve uses the motor-side response only, so it is inaccurate
+                while the backlash gap is open.
         """
         if self.requires_grad:
             raise NotImplementedError(
@@ -500,6 +736,13 @@ class Actuator:
             raise NotImplementedError(
                 f"{type(self.drive).__name__} declares custom inputs but does not override prepare_implicit, "
                 "so the implicit solve would ignore them."
+            )
+        if any(isinstance(p, InputProcessorBacklash) for p in self.input_processors):
+            warnings.warn(
+                "Implicit actuation with InputProcessorBacklash predicts the link-side state from the "
+                "motor-side response only, so it is inaccurate while the backlash gap is open.",
+                NewtonWarning,
+                stacklevel=2,
             )
         self._effort_mode = _EffortModeImplicit(
             self.drive,
@@ -516,19 +759,22 @@ class Actuator:
         self._effort_mode = _EffortModeExplicit(self.drive, self.clamping, self.device)
 
     def is_stateful(self) -> bool:
-        """Return True if the delay or drive maintains internal state."""
-        return self.delay is not None or self.drive.is_stateful()
+        """Return True if an input processor or the drive maintains internal state."""
+        return any(p.is_stateful() for p in self.input_processors) or self.drive.is_stateful()
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return self._effort_mode.is_graphable()
+        return all(p.is_graphable() for p in self.input_processors) and self._effort_mode.is_graphable()
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""
         if not self.is_stateful():
             return None
         return Actuator.State(
-            delay_state=(self.delay.state(self.num_actuators, self.device) if self.delay is not None else None),
+            input_processor_states=(
+                [p.state(self.num_actuators, self.device) if p.is_stateful() else None for p in self.input_processors]
+                or None
+            ),
             drive_state=(self.drive.state(self.num_actuators, self.device) if self.drive.is_stateful() else None),
         )
 
@@ -536,7 +782,7 @@ class Actuator:
     def _required_attributes(self) -> dict[str, tuple[str, ...]]:
         """Attributes this actuator reads, keyed by ``sim_state`` or ``sim_control``.
 
-        Covers the standard arrays and the drive's custom inputs.
+        Covers the standard arrays and the drive's custom inputs and outputs.
         """
         state_attrs = [self.state_pos_attr, self.state_vel_attr]
         control_attrs = [
@@ -548,7 +794,9 @@ class Actuator:
         ]
         required = {
             "sim_state": state_attrs,
-            "sim_control": [a for a in control_attrs if a is not None] + list(self.drive.custom_inputs),
+            "sim_control": [a for a in control_attrs if a is not None]
+            + list(self._custom_inputs)
+            + list(self.drive.custom_outputs),
         }
         return {source: tuple(dict.fromkeys(names)) for source, names in required.items() if names}
 
@@ -564,9 +812,10 @@ class Actuator:
     ) -> None:
         """Execute one control step.
 
-        1. **Delay read** — read per-DOF delayed targets from
-           ``current_state`` (falls back to current targets when
-           the buffer is empty).
+        1. **Input processors** — transform the state and command inputs
+           in list order (e.g. read delayed targets from ``current_state``),
+           and write each processor's ``next_state`` (e.g. push the current
+           targets into the delay buffer).
         2. **Effort** — raw effort into ``_computed_forces`` (explicit control
            law, or the implicit end-of-step solve).
         3. **Clamping** — bounded effort into ``_applied_forces``. Explicit
@@ -575,8 +824,9 @@ class Actuator:
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
-        5. **State updates** — drive state update, then delay
-           buffer write (push current targets into ``next_state``).
+           The drive's :attr:`~DriveBase.custom_outputs` are written per
+           actuator.
+        5. **Drive state update** — write the drive's ``next_state``.
 
         Args:
             sim_state: Object or mapping carrying the arrays named by
@@ -611,46 +861,64 @@ class Actuator:
         positions = _require_array(sim_state, self.state_pos_attr)
         velocities = _require_array(sim_state, self.state_vel_attr)
 
-        orig_target_pos = _require_array(sim_control, self.control_target_pos_attr)
-        orig_target_vel = _require_array(sim_control, self.control_target_vel_attr)
-
-        orig_feedforward = None
+        target_pos = _require_array(sim_control, self.control_target_pos_attr)
+        target_vel = _require_array(sim_control, self.control_target_vel_attr)
+        feedforward = None
         if self.control_feedforward_attr is not None:
-            orig_feedforward = _get_attribute(sim_control, self.control_feedforward_attr, None)
+            feedforward = _get_attribute(sim_control, self.control_feedforward_attr, None)
 
-        target_pos = orig_target_pos
-        target_vel = orig_target_vel
-        feedforward = orig_feedforward
-        target_pos_indices = self.target_pos_indices
-        target_vel_indices = self.indices
+        no_states = [None] * len(self.input_processors)
+        current_states = (current_act_state and current_act_state.input_processor_states) or no_states
+        next_states = (next_act_state and next_act_state.input_processor_states) or no_states
 
-        # --- 1. Delay read (from current_state) ---
-        if self.delay is not None:
-            target_pos, target_vel, feedforward = self.delay.get_delayed_targets(
-                orig_target_pos,
-                orig_target_vel,
-                orig_feedforward,
-                self.target_pos_indices,
-                self.indices,
-                current_act_state.delay_state,
-            )
-            target_pos_indices = self._sequential_indices
-            target_vel_indices = self._sequential_indices
+        # --- 1. Input processors (read current_state, write next_state) ---
+        inputs = InputProcessorBase.Inputs(
+            positions=positions,
+            velocities=velocities,
+            target_pos=target_pos,
+            target_vel=target_vel,
+            feedforward=feedforward,
+            pos_indices=self.pos_indices,
+            vel_indices=self.indices,
+            target_pos_indices=self.target_pos_indices,
+            target_vel_indices=self.indices,
+            sim_positions=positions,
+            sim_velocities=velocities,
+        )
+        for processor, current, nxt in zip(self.input_processors, current_states, next_states, strict=True):
+            processed = processor.process(inputs, current, dt)
+            if processed.vel_indices is not inputs.vel_indices or processed.velocities.shape != inputs.velocities.shape:
+                raise ValueError(f"{type(processor).__name__}.process() must keep vel_indices and the velocities shape")
+            if any(processor is legacy for legacy in self._legacy_delay_updates):
+                processor.update_state(
+                    inputs.target_pos,
+                    inputs.target_vel,
+                    inputs.feedforward,
+                    inputs.target_pos_indices,
+                    inputs.target_vel_indices,
+                    current,
+                    nxt,
+                )
+            else:
+                processor.update_state(inputs, current, nxt)
+            inputs = processed
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
-        custom_inputs = _collect_custom_inputs(sim_control, self.drive.custom_inputs)
+        custom_inputs = _collect_custom_inputs(
+            sim_control, tuple(self._custom_inputs), self._actuator_inputs, self.actuator_indices, self.device
+        )
         output_forces = self._effort_mode.compute_force(
             sim_state,
-            positions,
-            velocities,
-            target_pos,
-            target_vel,
-            feedforward,
-            self.pos_indices,
-            self.indices,
-            target_pos_indices,
-            target_vel_indices,
+            inputs.positions,
+            inputs.velocities,
+            inputs.target_pos,
+            inputs.target_vel,
+            inputs.feedforward,
+            inputs.pos_indices,
+            inputs.vel_indices,
+            inputs.target_pos_indices,
+            inputs.target_vel_indices,
             self._computed_forces,
             self._applied_forces,
             drive_state,
@@ -666,28 +934,35 @@ class Actuator:
             self.control_computed_output_attr is not None
             and self.control_computed_output_attr != self.control_output_attr
         ):
-            computed_output = _require_array(sim_control, self.control_computed_output_attr)
+            computed_output = _get_attribute(sim_control, self.control_computed_output_attr, None)
+        per_actuator = self.actuator_indices is not None
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=self.num_actuators,
-            inputs=[output_forces, self._computed_forces, self.effort_indices],
+            inputs=[
+                output_forces,
+                self._computed_forces,
+                self.effort_indices,
+                self.actuator_indices if per_actuator else self.effort_indices,
+                not per_actuator,
+            ],
             outputs=[applied_output, computed_output],
             device=self.device,
         )
+        for name, source in self.drive.custom_outputs.items():
+            output = _get_attribute(sim_control, name, None)
+            if output is not None:
+                wp.launch(
+                    kernel=_scatter_kernel,
+                    dim=self.num_actuators,
+                    inputs=[source, self.actuator_indices],
+                    outputs=[output],
+                    device=self.device,
+                )
 
         # --- 5. State updates (write to next_state) ---
         if self.drive.is_stateful():
             self.drive.update_state(
                 current_act_state.drive_state,
                 next_act_state.drive_state,
-            )
-        if self.delay is not None:
-            self.delay.update_state(
-                orig_target_pos,
-                orig_target_vel,
-                orig_feedforward,
-                self.target_pos_indices,
-                self.indices,
-                current_act_state.delay_state,
-                next_act_state.delay_state,
             )

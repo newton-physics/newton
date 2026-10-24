@@ -7,7 +7,7 @@ newton.actuators
 GPU-accelerated actuator models for physics simulations.
 
 This module provides a modular library of actuator components — drives,
-clamping, and delay — that compute joint effort from simulation state and
+clamping, and input processors such as delay — that compute joint effort from simulation state and
 control targets. Components are composed into an :class:`Actuator` instance
 and registered with :meth:`~newton.ModelBuilder.add_actuator` during model
 construction.
@@ -33,13 +33,16 @@ construction.
    ClampingMaxEffort
    ClampingPositionBased
    ComponentKind
-   Delay
+   DriveBAM
    DriveBase
    DriveNeuralGRU
    DriveNeuralLSTM
    DriveNeuralMLP
    DrivePD
    DrivePID
+   InputProcessorBacklash
+   InputProcessorBase
+   InputProcessorDelay
    JointSpaceResponse
    SchemaNames
 
@@ -50,7 +53,10 @@ construction.
    :signatures: long
 
    parse_actuator_prim
+   parse_battery_prim
    register_actuator_component
+   reset_battery_supply
+   update_battery_supply
 
 .. rubric:: Deprecated
 
@@ -71,3 +77,5 @@ construction.
      - Deprecated in 1.6; use DrivePD instead.
    * - ``ControllerPID``
      - Deprecated in 1.6; use DrivePID instead.
+   * - ``Delay``
+     - Deprecated in 1.8; use InputProcessorDelay instead.

@@ -2,11 +2,23 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
+from .battery import reset_battery_supply, update_battery_supply
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .delay import Delay
-from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
+from .drives import DriveBAM, DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
+from .input_processors import (
+    InputProcessorBacklash,
+    InputProcessorBase,
+    InputProcessorDelay,
+)
 from .joint_space_response import JointSpaceResponse
-from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
+from .usd_parser import (
+    ActuatorParsed,
+    ComponentKind,
+    SchemaNames,
+    parse_actuator_prim,
+    parse_battery_prim,
+    register_actuator_component,
+)
 
 __all__ = [
     "Actuator",
@@ -16,15 +28,21 @@ __all__ = [
     "ClampingMaxEffort",
     "ClampingPositionBased",
     "ComponentKind",
-    "Delay",
+    "DriveBAM",
     "DriveBase",
     "DriveNeuralGRU",
     "DriveNeuralLSTM",
     "DriveNeuralMLP",
     "DrivePD",
     "DrivePID",
+    "InputProcessorBacklash",
+    "InputProcessorBase",
+    "InputProcessorDelay",
     "JointSpaceResponse",
     "SchemaNames",
     "parse_actuator_prim",
+    "parse_battery_prim",
     "register_actuator_component",
+    "reset_battery_supply",
+    "update_battery_supply",
 ]
