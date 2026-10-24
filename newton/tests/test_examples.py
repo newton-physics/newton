@@ -1133,6 +1133,14 @@ add_example_test(TestIKExamples, name="ik.example_ik_franka", devices=test_devic
 
 add_example_test(TestIKExamples, name="ik.example_ik_h1", devices=test_devices, use_viewer=True)
 
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_a1",
+    devices=test_devices,
+    test_options={"usd_required": True, "num-frames": 10},
+    use_viewer=True,
+)
+
 add_example_test(TestIKExamples, name="ik.example_ik_custom", devices=cuda_test_devices, use_viewer=True)
 
 add_example_test(
