@@ -35,6 +35,10 @@ newton
    CollisionSubstepScheduler
    Contacts
    Control
+   DeformableVisualBinding
+   DeformableVisualGaussian
+   DeformableVisualMesh
+   DeformableVisuals
    Gaussian
    GeoType
    Heightfield

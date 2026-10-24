@@ -57,6 +57,12 @@ class ViewerNull(ViewerBase):
         self._bench_elapsed = 0.0
 
     @override
+    def _log_deformable_visual_meshes(self, state: newton.State):
+        # Derived consumers may replace the no-op mesh sink.
+        if type(self).log_mesh is not ViewerNull.log_mesh:
+            super()._log_deformable_visual_meshes(state)
+
+    @override
     def log_mesh(
         self,
         name: str,

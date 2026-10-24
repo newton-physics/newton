@@ -185,10 +185,10 @@ class ViewerGL(ViewerBase):
         """Disable CUDA-OpenGL interoperability for render geometry."""
 
         DYNAMIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=True``."""
+        """Meshes logged with ``dynamic=True`` and model-owned skinned meshes."""
 
         STATIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=False``."""
+        """Meshes logged with ``dynamic=False``, including model-owned skinned meshes."""
 
         POINTS = enum.auto()
         """Point instance-transform buffers."""
@@ -912,6 +912,59 @@ class ViewerGL(ViewerBase):
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
         """
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            normals,
+            uvs,
+            texture,
+            hidden,
+            backface_culling,
+            color,
+            roughness,
+            metallic,
+            dynamic,
+            opacity,
+        )
+
+    @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        existing = self.objects.get(name)
+        if hidden and existing is not None:
+            existing.hidden = True
+            return
+        # Skinning changes vertices, not topology. Keep indices fixed with either mesh interop flag.
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            hidden=hidden,
+            reuse_texture=True,
+            cuda_interop_category=self.CudaInterop.DYNAMIC_MESH | self.CudaInterop.STATIC_MESH,
+            **kwargs,
+        )
+
+    def _log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+        dynamic=False,
+        opacity=None,
+        *,
+        reuse_texture=False,
+        cuda_interop_category: CudaInterop | None = None,
+    ):
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
@@ -930,6 +983,8 @@ class ViewerGL(ViewerBase):
 
         updated = False
         if replace:
+            if cuda_interop_category is None:
+                cuda_interop_category = self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
             point_capacity = len(points)
             index_capacity = len(indices)
             if existing is not None and existing.dynamic and dynamic:
@@ -942,15 +997,14 @@ class ViewerGL(ViewerBase):
                 hidden=hidden,
                 backface_culling=backface_culling,
                 dynamic=dynamic,
-                enable_cuda_interop=self._cuda_interop_enabled(
-                    self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
-                ),
+                enable_cuda_interop=self._cuda_interop_enabled(cuda_interop_category),
             )
             if existing is not None:
                 replacement.color = existing.color
+                replacement._color_is_default = existing._color_is_default
                 replacement.material = existing.material
             try:
-                replacement.update(points, indices, normals, uvs, texture, opacity=opacity)
+                replacement.update(points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture)
             except Exception:
                 replacement.destroy()
                 raise
@@ -963,12 +1017,23 @@ class ViewerGL(ViewerBase):
                 existing.destroy()
 
         if not updated:
-            self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
+            self.objects[name].update(
+                points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture
+            )
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+        if reuse_texture:
+            # Model-owned visuals opt in without changing ordinary log_mesh materials.
+            mesh = self.objects[name]
+            r, m, c, _t = mesh.material
+            mesh.material = (r, m, c, 1.0 if mesh.texture_id else 0.0)
+            if mesh._color_is_default:
+                # Textures supply their own albedo; retain explicit tints across updates.
+                mesh.color = (1.0, 1.0, 1.0) if mesh.texture_id else MeshGL._DEFAULT_COLOR
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
+            self.objects[name]._color_is_default = False
 
         if roughness is not None or metallic is not None:
             r, m, c, t = self.objects[name].material

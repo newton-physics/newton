@@ -292,6 +292,15 @@ class ViewerUSD(ViewerBase):
             return f"{self._root_path}/{name}"
 
     @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        existing = self._meshes.get(name)
+        if hidden and existing is not None:
+            existing.GetVisibilityAttr().Set("invisible", self._frame_index)
+            return
+        self.log_mesh(name, points, indices, hidden=hidden, **kwargs)
+
+    @override
     def log_mesh(
         self,
         name: str,

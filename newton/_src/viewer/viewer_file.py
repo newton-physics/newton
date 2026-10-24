@@ -16,9 +16,11 @@ import warp as wp
 from warp._src import types as warp_types
 
 from ..core.types import override
-from ..geometry import Mesh
+from ..geometry import Gaussian, Mesh
+from ..geometry.deformable_visual import DeformableVisualBinding, DeformableVisualGaussian, DeformableVisualMesh
 from ..sim import Model, State
 from ..sim.shape_contact_pairs import _ShapeContactPairs
+from ..utils.color import ColorSpace
 from .viewer import ViewerBase
 
 # Optional CBOR2 support
@@ -553,6 +555,8 @@ _MODEL_BVH_RECORDING_DEFAULTS = {
     "bvh_shape_world_transforms": None,
     "bvh_particles": None,
     "bvh_particles_group_roots": None,
+    "_gaussians": None,
+    "_gaussian_bvhs": None,
 }
 
 
@@ -603,6 +607,27 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
 
         if isinstance(x, wp.Mesh):
             return {"__type__": "warp.Mesh", "data": None}
+
+        if isinstance(x, Gaussian):
+            # Save appearance, not process-local device buffers or BVH handles.
+            return {
+                "__type__": "Gaussian",
+                "__module__": Gaussian.__module__,
+                "attributes": {
+                    name: serialize(getattr(x, name), callback, format_type=format_type, cache=cache)
+                    for name in (
+                        "positions",
+                        "rotations",
+                        "scales",
+                        "opacities",
+                        "sh_coeffs",
+                        "sh_degree",
+                        "sh_color_space",
+                        "min_response",
+                        "sorting_mode",
+                    )
+                },
+            }
 
         if isinstance(x, Mesh):
             # Use vertices buffer address as mesh key
@@ -792,7 +817,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # NumPy scalar types
     if type_name.startswith("numpy."):
-        if type_name == "numpy.ndarray":
+        if type_name in ("numpy.ndarray", "numpy.ndarray_ref"):
             return deserialize_ndarray(data, format_type, cache)
 
         scalar_name = type_name.removeprefix("numpy.")
@@ -833,6 +858,54 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # Custom objects
     if "attributes" in data:
+        if type_name == "Gaussian" and data.get("__module__") == Gaussian.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}", format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            return Gaussian(
+                sh_color_space=attributes.get("sh_color_space", ColorSpace.SRGB),
+                **{
+                    name: attributes.get(name, attributes.get(f"_{name}"))
+                    for name in (
+                        "positions",
+                        "rotations",
+                        "scales",
+                        "opacities",
+                        "sh_coeffs",
+                        "sh_degree",
+                        "min_response",
+                        "sorting_mode",
+                    )
+                },
+            )
+
+        if type_name == "DeformableVisualGaussian" and data.get("__module__") == DeformableVisualGaussian.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}", format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            visual = DeformableVisualGaussian(
+                **{
+                    name: attributes[name]
+                    for name in (
+                        "gaussian",
+                        "binding",
+                        "rest_rotations",
+                        "rest_scales",
+                        "shape",
+                        "world",
+                        "label",
+                        "index",
+                        "body_path",
+                        "sim_path",
+                        "graphics_path",
+                    )
+                }
+            )
+            visual._bind_poses = attributes.get("_bind_poses")
+            return visual
+
         if type_name == "AttributeSpec" and data.get("__module__") == Model.AttributeSpec.__module__:
             attributes = {
                 attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
@@ -866,6 +939,41 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                     deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache),
                 )
             return ns
+
+        if type_name == "DeformableVisualBinding" and data.get("__module__") == DeformableVisualBinding.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            return DeformableVisualBinding(
+                kind=attributes["kind"],
+                parent=attributes["parent"],
+                weights=attributes.get("weights"),
+                local_offsets=attributes.get("local_offsets"),
+            )
+
+        if type_name == "DeformableVisualMesh" and data.get("__module__") == DeformableVisualMesh.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            return DeformableVisualMesh(
+                kind=attributes["kind"],
+                rest_vertices=attributes["rest_vertices"],
+                indices=attributes["indices"],
+                parent=attributes["parent"],
+                weights=attributes.get("weights"),
+                local_offsets=attributes.get("local_offsets"),
+                uvs=attributes.get("uvs"),
+                texture=attributes.get("texture"),
+                world=attributes.get("world", -1),
+                label=attributes.get("label", ""),
+                index=attributes.get("index", -1),
+                body_path=attributes.get("body_path"),
+                sim_path=attributes.get("sim_path"),
+                graphics_path=attributes.get("graphics_path"),
+            )
+
         # Fallback: return a flat dict of decoded attributes for other custom classes.
         return {
             attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
@@ -1222,6 +1330,12 @@ class ViewerFile(ViewerBase):
             self._model_recorded = True
 
     @override
+    def _log_deformable_visual_meshes(self, state: State):
+        # Record simulation data; playback evaluates visuals when it renders.
+        if type(self).log_mesh is not ViewerFile.log_mesh:
+            super()._log_deformable_visual_meshes(state)
+
+    @override
     def log_state(self, state: State):
         """Record a state snapshot in addition to the base viewer processing.
 
@@ -1320,6 +1434,20 @@ class ViewerFile(ViewerBase):
                 target_obj.finalize()
 
         transfer_to_model(self.deserialized_model, model, post_load_init_callback)
+
+        if model.gaussians_count:
+            # Shape source indices remain stable, but runtime buffers and BVHs
+            # must be recreated. Deformable instances have distinct source indices.
+            model._gaussians = [None] * model.gaussians_count
+            model._gaussian_bvhs = [None] * model.gaussians_count
+            sources = model.shape_source_ptr.numpy()
+            for shape, geometry in enumerate(model.shape_source):
+                if isinstance(geometry, Gaussian):
+                    index = int(sources[shape])
+                    if model._gaussians[index] is None:
+                        model._gaussians[index] = geometry.finalize(device=model.device)
+                        model._gaussian_bvhs[index] = geometry.bvh
+            model.gaussians_data = wp.array(model._gaussians, dtype=Gaussian.Data, device=model.device)
 
     def _save_to_file(self, file_path: str):
         """Save recorded model and history to disk."""

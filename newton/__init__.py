@@ -23,6 +23,10 @@ __all__ = [
 # ==================================================================================
 from ._src.geometry import (
     SDF,
+    DeformableVisualBinding,
+    DeformableVisualGaussian,
+    DeformableVisualMesh,
+    DeformableVisuals,
     Gaussian,
     GeoType,
     Heightfield,
@@ -35,6 +39,10 @@ from ._src.geometry import (
 
 __all__ += [
     "SDF",
+    "DeformableVisualBinding",
+    "DeformableVisualGaussian",
+    "DeformableVisualMesh",
+    "DeformableVisuals",
     "Gaussian",
     "GeoType",
     "Heightfield",

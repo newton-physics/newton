@@ -4,6 +4,7 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -304,6 +305,81 @@ class TestViewerLayers(unittest.TestCase):
 
         self.assertIn("A", viewer.layers)
         self.assertIn("B", viewer.layers)
+
+    def test_rtx_borrowed_stage_disables_deformable_overlays(self):
+        """Leave a borrowed stage's deformable presentation visible by itself."""
+        viewer = _MinimalRTXViewer()
+        viewer._borrowed_stage = object()
+        viewer.clear_model()
+        self.assertFalse(viewer.show_triangles)
+        self.assertFalse(viewer.show_deformable_visual_meshes)
+
+    def test_rtx_runtime_log_mesh_queues_visibility_updates(self):
+        """Runtime mesh logs must apply hidden=True to existing RTX mesh prims."""
+        viewer = _MinimalRTXViewer()
+        viewer._phase = viewer._PHASE_RENDER
+        viewer._mesh_prim_paths = {"/mesh": "/root/mesh"}
+        viewer._pending_mesh_points = {}
+        viewer._pending_mesh_normals = {}
+        viewer._pending_mesh_topology = {}
+        viewer._pending_mesh_visibility = {}
+
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+
+        viewer.log_mesh("/mesh", points, indices, hidden=True, dynamic=True)
+
+        self.assertFalse(getattr(viewer, "_pending_mesh_visibility", {}).get("/mesh", True))
+        self.assertNotIn("/mesh", viewer._pending_mesh_points)
+        self.assertNotIn("/mesh", viewer._pending_mesh_normals)
+        self.assertNotIn("/mesh", viewer._pending_mesh_topology)
+
+        moved = wp.array([[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]], dtype=wp.vec3)
+        normals = wp.array([[0.0, 0.0, 1.0]] * 3, dtype=wp.vec3)
+        reversed_indices = wp.array([0, 2, 1], dtype=wp.int32)
+        viewer.log_mesh("/mesh", moved, reversed_indices, normals=normals, hidden=False, dynamic=True)
+
+        self.assertTrue(viewer._pending_mesh_visibility["/mesh"])
+        np.testing.assert_array_equal(viewer._pending_mesh_points["/mesh"], moved.numpy())
+        np.testing.assert_array_equal(viewer._pending_mesh_normals["/mesh"], normals.numpy())
+        counts, pending_indices = viewer._pending_mesh_topology["/mesh"]
+        np.testing.assert_array_equal(counts, [3])
+        np.testing.assert_array_equal(pending_indices, reversed_indices.numpy())
+
+        viewer.log_mesh("/mesh", moved, indices, normals=None, hidden=False, dynamic=True)
+        np.testing.assert_array_equal(viewer._pending_mesh_normals["/mesh"], [[0.0, 0.0, 1.0]] * 3)
+
+        empty_points = wp.empty(0, dtype=wp.vec3)
+        empty_indices = wp.empty(0, dtype=wp.int32)
+        viewer.log_mesh("/mesh", empty_points, empty_indices, hidden=False, dynamic=True)
+        self.assertFalse(viewer._pending_mesh_visibility["/mesh"])
+
+    def test_rtx_deformable_state_hides_and_restores_geometry(self):
+        """Queue current skinned points when a hidden runtime mesh is shown again."""
+        builder = newton.ModelBuilder()
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        for point in vertices:
+            builder.add_particle(tuple(point), (0, 0, 0), mass=1.0)
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2])
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        viewer = _MinimalRTXViewer()
+        viewer.clear_model()
+        viewer.model = model
+        viewer.device = model.device
+        viewer._phase = viewer._PHASE_RENDER
+        name = "/model/deformable_visual_meshes/mesh_0"
+        viewer._mesh_prim_paths[name] = "/root" + name
+        viewer._point_batch_paths["/model/particles"] = "/root/model/particles"
+        viewer.show_deformable_visual_meshes = False
+        viewer.log_state(state)
+        self.assertFalse(viewer._pending_mesh_visibility[name])
+        self.assertNotIn(name, viewer._pending_mesh_points)
+        state.particle_q.assign(vertices + np.array([0, 0, 2], dtype=np.float32))
+        viewer.show_deformable_visual_meshes = True
+        viewer.log_state(state)
+        self.assertTrue(viewer._pending_mesh_visibility[name])
+        np.testing.assert_array_equal(viewer._pending_mesh_points[name], [[0, 0, 2], [1, 0, 2], [0, 1, 2]])
 
     def test_rtx_clear_all_layers_allows_layered_scene_reset(self):
         """RTX can reset a complete layered scene while keeping single-layer clear guarded."""
