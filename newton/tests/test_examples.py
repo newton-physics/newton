@@ -719,6 +719,13 @@ add_example_batch(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_viscoelastic_release",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 100, "release-time": 0.1},
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_cross_slide_table",
     devices=test_devices,
     use_viewer=True,

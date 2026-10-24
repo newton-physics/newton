@@ -2944,6 +2944,8 @@ def evaluate_joint_force_hessian(
     joint_penalty_kd: wp.array[float],
     joint_sigma_start: wp.array[wp.vec3],
     joint_C_fric: wp.array[wp.vec3],
+    joint_visco_bias: wp.array[wp.vec3],
+    joint_visco_tangent: wp.array[float],
     # Drive parameters (DOF-indexed via joint_qd_start)
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
@@ -3059,6 +3061,8 @@ def evaluate_joint_force_hessian(
         kd_shear = joint_penalty_kd[shear_idx]
         kd_bend = joint_penalty_kd[bend_idx]
         kd_twist = joint_penalty_kd[twist_idx]
+        visco_bias = joint_visco_bias[joint_index]
+        visco_tangent = joint_visco_tangent[joint_index]
 
         total_force = wp.vec3(0.0)
         total_torque = wp.vec3(0.0)
@@ -3068,7 +3072,8 @@ def evaluate_joint_force_hessian(
 
         bend_stiff = _structural_row_has_stiffness(solve_weight_bend, material_bend, joint_compliant_alm)
         twist_stiff = _structural_row_has_stiffness(solve_weight_twist, material_twist, joint_compliant_alm)
-        bend_active = bend_stiff or kd_bend > 0.0
+        visco_active = visco_tangent > 0.0 or visco_bias[0] != 0.0 or visco_bias[1] != 0.0
+        bend_active = bend_stiff or kd_bend > 0.0 or visco_active
         twist_active = twist_stiff or kd_twist > 0.0
         if bend_active or twist_active:
             lambda_ang = joint_lambda_ang[joint_index]
@@ -3092,7 +3097,11 @@ def evaluate_joint_force_hessian(
                 solve_weight_twist, material_twist, twist_dual, joint_compliant_alm
             )
 
-            K_elastic_diag = wp.vec3(bend_primal_k, bend_primal_k, twist_primal_k)
+            K_elastic_diag = wp.vec3(
+                bend_primal_k + visco_tangent,
+                bend_primal_k + visco_tangent,
+                twist_primal_k,
+            )
             K_damp_diag = wp.vec3(kd_bend, kd_bend, kd_twist)
             damping_active = kd_bend > 0.0 or kd_twist > 0.0
 
@@ -3103,7 +3112,7 @@ def evaluate_joint_force_hessian(
             if joint_compliant_alm == 1 or twist_hard:
                 twist_alpha = stab_alpha
 
-            sigma = wp.vec3(0.0)
+            sigma = wp.vec3(visco_bias[0], visco_bias[1], 0.0)
             H_fric_diag = wp.vec3(0.0)
             lambda_projected = bend_dual_eff + twist_dual_eff
             C0_force = bend_primal_k * bend_alpha * wp.vec3(C0_ang[0], C0_ang[1], 0.0)
@@ -5296,6 +5305,80 @@ def compute_rod_dahl_parameters(
     joint_C_fric[j] = C_fric_out
 
 
+@wp.kernel
+def compute_rod_viscoelastic_parameters(
+    dt: float,
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_constraint_start: wp.array[int],
+    joint_is_hard: wp.array[wp.int32],
+    joint_compliant_alm: int,
+    joint_rod_rest_kb_local: wp.array[wp.vec3],
+    joint_rod_rest_twist: wp.array[float],
+    body_q: wp.array[wp.transform],
+    joint_moment_prev: wp.array[wp.vec3],
+    joint_kappa_prev: wp.array[wp.vec3],
+    joint_bend_ke: wp.array[float],
+    joint_tau: wp.array[float],
+    joint_bias: wp.array[wp.vec3],
+    joint_tangent: wp.array[float],
+):
+    """Freeze the backward-Euler rod bending response for one timestep."""
+    j = wp.tid()
+    zero = wp.vec3(0.0)
+    joint_bias[j] = zero
+    joint_tangent[j] = 0.0
+
+    if joint_type[j] != JointType.ROD or not joint_enabled[j]:
+        return
+
+    child = joint_child[j]
+    if child < 0:
+        return
+
+    bend_idx = joint_constraint_start[j] + 2
+    if joint_compliant_alm == 0 and joint_is_hard[bend_idx] == 1:
+        return
+
+    parent = joint_parent[j]
+    if parent >= 0:
+        X_wp = body_q[parent] * joint_X_p[j]
+    else:
+        X_wp = joint_X_p[j]
+    X_wc = body_q[child] * joint_X_c[j]
+    kappa_now = compute_geometric_rod_kappa_cached_z(
+        wp.transform_get_rotation(X_wp),
+        wp.transform_get_rotation(X_wc),
+        joint_rod_rest_kb_local[j],
+        joint_rod_rest_twist[j],
+    )
+    bend_kappa_now = wp.vec3(kappa_now[0], kappa_now[1], 0.0)
+
+    if _world_selected(joint_world[j], pose_rebaseline_mask):
+        joint_kappa_prev[j] = bend_kappa_now
+        joint_moment_prev[j] = zero
+
+    bend_ke = joint_bend_ke[j]
+    tau = joint_tau[j]
+    if bend_ke <= 0.0 or tau <= 0.0:
+        return
+
+    decay = tau / (tau + dt)
+    tangent = decay * bend_ke
+    moment_prev = joint_moment_prev[j]
+    kappa_prev = joint_kappa_prev[j]
+    joint_bias[j] = decay * wp.vec3(moment_prev[0], moment_prev[1], 0.0) - tangent * wp.vec3(
+        kappa_prev[0], kappa_prev[1], 0.0
+    )
+    joint_tangent[j] = tangent
+
+
 # -----------------------------
 # Iteration kernels (per color per iteration)
 # -----------------------------
@@ -6291,6 +6374,9 @@ def create_solve_rigid_body(has_tendons: bool):
         # Dahl hysteresis parameters (frozen for this timestep, component-wise vec3 per joint)
         joint_sigma_start: wp.array[wp.vec3],
         joint_C_fric: wp.array[wp.vec3],
+        # SLS bending response, frozen for this timestep.
+        joint_visco_bias: wp.array[wp.vec3],
+        joint_visco_tangent: wp.array[float],
         # Drive parameters (DOF-indexed via joint_qd_start)
         joint_target_ke: wp.array[float],
         joint_target_kd: wp.array[float],
@@ -6517,6 +6603,8 @@ def create_solve_rigid_body(has_tendons: bool):
                 joint_penalty_kd,
                 joint_sigma_start,
                 joint_C_fric,
+                joint_visco_bias,
+                joint_visco_tangent,
                 joint_target_ke,
                 joint_target_kd,
                 joint_target_q,
@@ -7572,6 +7660,64 @@ def update_rod_dahl_state(
     joint_sigma_prev[j] = sigma_final_out
     joint_kappa_prev[j] = kappa_final
     joint_dkappa_prev[j] = d_kappa_out
+
+
+@wp.kernel
+def update_rod_viscoelastic_state(
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_constraint_start: wp.array[int],
+    joint_is_hard: wp.array[wp.int32],
+    joint_compliant_alm: int,
+    joint_rod_rest_kb_local: wp.array[wp.vec3],
+    joint_rod_rest_twist: wp.array[float],
+    body_q: wp.array[wp.transform],
+    joint_bend_ke: wp.array[float],
+    joint_tau: wp.array[float],
+    joint_bias: wp.array[wp.vec3],
+    joint_tangent: wp.array[float],
+    joint_moment_prev: wp.array[wp.vec3],
+    joint_kappa_prev: wp.array[wp.vec3],
+):
+    """Commit the converged rod viscoelastic bending state."""
+    j = wp.tid()
+    if joint_type[j] != JointType.ROD:
+        return
+
+    child = joint_child[j]
+    if child < 0:
+        return
+
+    parent = joint_parent[j]
+    if parent >= 0:
+        X_wp = body_q[parent] * joint_X_p[j]
+    else:
+        X_wp = joint_X_p[j]
+    X_wc = body_q[child] * joint_X_c[j]
+    kappa_final = compute_geometric_rod_kappa_cached_z(
+        wp.transform_get_rotation(X_wp),
+        wp.transform_get_rotation(X_wc),
+        joint_rod_rest_kb_local[j],
+        joint_rod_rest_twist[j],
+    )
+    bend_kappa_final = wp.vec3(kappa_final[0], kappa_final[1], 0.0)
+
+    bend_idx = joint_constraint_start[j] + 2
+    enabled = (
+        joint_enabled[j]
+        and (joint_compliant_alm == 1 or joint_is_hard[bend_idx] == 0)
+        and joint_bend_ke[j] > 0.0
+        and joint_tau[j] > 0.0
+    )
+    if enabled:
+        joint_moment_prev[j] = joint_bias[j] + joint_tangent[j] * bend_kappa_final
+    else:
+        joint_moment_prev[j] = wp.vec3(0.0)
+    joint_kappa_prev[j] = bend_kappa_final
 
 
 # =====================================================================================
