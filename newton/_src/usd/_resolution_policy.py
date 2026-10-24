@@ -446,7 +446,7 @@ def _resolve_shape_contact(
     defaults: ModelBuilder.ShapeConfig,
     *,
     verbose: bool,
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     """Select contact response values from shape, material, and builder settings."""
     # Contact response precedence:
     #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
@@ -460,6 +460,9 @@ def _resolve_shape_contact(
     has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
     shape_contact = {
         "mu": material.dynamicFriction,
+        # UsdPhysics defaults an unauthored staticFriction to 0; treat any static coefficient
+        # not above the dynamic one as "no distinction".
+        "mu_static": (material.staticFriction if material.staticFriction > material.dynamicFriction else None),
         "restitution": material.restitution,
         "mu_torsional": material.torsionalFriction,
         "mu_rolling": material.rollingFriction,
