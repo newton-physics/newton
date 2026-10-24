@@ -1,0 +1,1 @@
+Add `newton.viewer.Picking` to the public API so applications with their own input handling or renderer can drag bodies with the viewer's picking spring. Call `Picking.apply_force(state)` before each solver step; it replaces the private `_apply_picking_force()` method. Optional constructor arguments are keyword-only.

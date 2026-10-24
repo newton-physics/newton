@@ -1285,7 +1285,7 @@ class ViewerViser(ViewerBase):
         """
         layer = self._layers[layer_id]
         picking = layer.picking
-        pick_state = picking.pick_state.numpy()
+        pick_state = picking._pick_state.numpy()
         target = self._picking_point_to_visual(layer, picking, pick_state[0]["picking_target_world"])
         self._remove_picking_control(layer_id, release=False)
         handle = self._server.scene.add_transform_controls(
@@ -1342,9 +1342,9 @@ class ViewerViser(ViewerBase):
         )
         offset = self._picking_world_offset(layer, layer.picking)
         target = np.asarray(point_with_offset).copy() - offset
-        pick_state = layer.picking.pick_state.numpy()
+        pick_state = layer.picking._pick_state.numpy()
         pick_state[0]["picking_target_world"] = target
-        layer.picking.pick_state.assign(pick_state)
+        layer.picking._pick_state.assign(pick_state)
 
     def _process_interaction_events(self) -> None:
         """Apply browser callbacks on the simulation thread between frames."""
@@ -2431,7 +2431,7 @@ class ViewerViser(ViewerBase):
             self.log_lines("picking_line", None, None, None)
             return
 
-        pick_state = self.picking.pick_state.numpy()
+        pick_state = self.picking._pick_state.numpy()
         anchor = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picked_point_world"])
         target = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picking_target_world"])
         self.log_lines(
@@ -2601,7 +2601,7 @@ class ViewerViser(ViewerBase):
         # pick-body sentinel controls whether graph replay applies a force.
         # Disabling picking releases that sentinel, including captured graphs.
         if self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
     def save_recording(self):
         """

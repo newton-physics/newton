@@ -1853,7 +1853,7 @@ class ViewerGL(ViewerBase):
             return
 
         # Get the pick target and current picked point on geometry (in physics space)
-        pick_state = self.picking.pick_state.numpy()
+        pick_state = self.picking._pick_state.numpy()
 
         pick_target = pick_state[0]["picking_target_world"]
         picked_point = pick_state[0]["picked_point_world"]
@@ -1912,7 +1912,7 @@ class ViewerGL(ViewerBase):
             state: The current simulation state.
         """
         if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
         if self.wind is not None:
             self.wind._apply_wind_force(state)

@@ -1664,7 +1664,7 @@ void main() {
                 self._hide_picking_line()
             return
 
-        pick_state = self.picking.pick_state.numpy()
+        pick_state = self.picking._pick_state.numpy()
         pick_target = pick_state[0]["picking_target_world"]
         picked_point = pick_state[0]["picked_point_world"]
 
@@ -1690,7 +1690,7 @@ void main() {
             state: The current simulation state.
         """
         if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
         if self.wind is not None:
             self.wind._apply_wind_force(state)

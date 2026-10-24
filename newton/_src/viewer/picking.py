@@ -21,17 +21,41 @@ def _rotation_matrix(X: np.ndarray) -> np.ndarray:
 
 
 class Picking:
-    """
-    Picking system.
+    """Interactive picking controller that drags a body with a spring toward a ray.
 
-    Allows to pick a body in the viewer by right clicking on it and dragging the mouse.
-    This can be used to move objects around in the viewer, a typical use case is to check for solver resilience or
-    see how well a RL policy is coping with disturbances.
+    A ray cast picks the closest body and anchors a spring at the hit point. As the
+    ray moves, the spring target follows it at the target's current depth, and
+    :meth:`apply_force` adds the resulting force and torque to the picked body.
+    This is useful to move objects around interactively, for example to check
+    solver resilience or how well a policy copes with disturbances.
+
+    :class:`~newton.viewer.ViewerGL`, :class:`~newton.viewer.ViewerRTX`, and
+    :class:`~newton.viewer.ViewerViser` create one in ``set_model()``, expose it as
+    ``viewer.picking``, and drive it from the mouse. Use this class directly to
+    add picking to a custom application:
+
+    .. code-block:: python
+
+        picking = newton.viewer.Picking(model)
+
+        # on mouse press, with a world-space ray from the camera
+        picking.pick(state, ray_start, ray_dir)
+        # on mouse drag
+        picking.update(ray_start, ray_dir)
+        # on mouse release
+        picking.release()
+
+        # every simulation step, after clearing the state's forces
+        picking.apply_force(state)
+        solver.step(state, state_next, control, contacts, dt)
+
+    Kinematic bodies cannot be picked.
     """
 
     def __init__(
         self,
-        model: newton.Model,
+        model: newton.Model | None,
+        *,
         pick_stiffness: float = 500.0,
         pick_damping: float = 45.0,
         pick_max_acceleration: float = 5.0,
@@ -41,7 +65,8 @@ class Picking:
         Initializes the picking system. All parameters are fixed at construction.
 
         Args:
-            model: The model to pick from.
+            model: The model to pick from. ``None`` creates an inactive controller whose
+                methods do nothing.
             pick_stiffness: Stiffness of the picking spring, in acceleration per unit
                 displacement [1/s^2]. The commanded acceleration is mapped to a force
                 through the operational-space inertia at the pick point, so gains are
@@ -53,7 +78,9 @@ class Picking:
                 this acceleration times the mass of the picked articulation, so a light link can
                 still move its chain, and the torque at the equivalent rotational acceleration of
                 the picked body alone, to prevent runaway divergence on low-inertia links.
-            world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
+            world_offsets: Per-world visual offsets [m], shape [world_count]. Rays are
+                given in the offset (rendered) space, and the offsets are removed before
+                the spring is applied in simulation space. ``None`` means no offsets.
 
         Raises:
             ValueError: If ``pick_max_acceleration`` is negative or non-finite.
@@ -63,28 +90,32 @@ class Picking:
             raise ValueError("Picking maximum acceleration must be finite and nonnegative.")
 
         self.model = model
+        """The model whose bodies are picked."""
         self.world_offsets = world_offsets
+        """Per-world visual offsets [m], shape [world_count], or ``None``; see the constructor."""
         self.visible_worlds_mask: wp.array[int] | None = None
+        """Optional per-world mask, shape [world_count]; rays only hit shapes in worlds whose entry is
+        nonzero. ``None`` makes every world pickable."""
 
-        self.min_dist = None
-        self.min_index = None
-        self.min_body_index = None
-        self.lock = None
+        self._min_dist = None
+        self._min_index = None
+        self._min_body_index = None
+        self._lock = None
 
         # picking state
         if model and model.device.is_cuda:
             self.pick_body = wp.array([-1], dtype=int, pinned=True, device=model.device)
         else:
             self.pick_body = wp.array([-1], dtype=int, device="cpu")
+        """Index of the picked body, shape [1], or -1 when nothing is picked."""
 
         pick_state_np = np.empty(1, dtype=PickingState.numpy_dtype())
         pick_state_np[0]["pick_stiffness"] = pick_stiffness
         pick_state_np[0]["pick_damping"] = pick_damping
         pick_state_np[0]["pick_max_acceleration"] = pick_max_acceleration
-        self.pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
+        self._pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
 
-        self.pick_dist = 0.0
-        self.picking_active = False
+        self._picking_active = False
 
         # Operational-space inertia at the pick point in the picked body's frame, set on every pick.
         self._pick_os_inertia = wp.zeros(1, dtype=wp.mat33, device=model.device if model else "cpu")
@@ -96,12 +127,17 @@ class Picking:
         else:
             self._pick_effective_mass = wp.zeros(1, dtype=float)
 
-    def _apply_picking_force(self, state: newton.State) -> None:
-        """
-        Applies a force to the picked body.
+    def apply_force(self, state: newton.State) -> None:
+        """Add the picking spring's force and torque to the picked body.
+
+        The wrench is accumulated into :attr:`State.body_f <newton.State.body_f>`,
+        so call this after the state's forces are cleared and before the solver
+        step. Does nothing when no body is picked. The kernel is launched even
+        then, so this call can be captured in a CUDA graph.
 
         Args:
-            state: The simulation state.
+            state: The simulation state to read the picked body's pose and
+                velocity from and add the force to.
         """
         if (
             self.model is None
@@ -121,7 +157,7 @@ class Picking:
                 state.body_qd,
                 state.body_f,
                 self.pick_body,
-                self.pick_state,
+                self._pick_state,
                 self.model.body_flags,
                 self.model.body_com,
                 self.model.body_mass,
@@ -276,27 +312,26 @@ class Picking:
             wp.load_module(module="newton._src.sim.articulation", device=device)
 
     def is_picking(self) -> bool:
-        """Checks if picking is active.
+        """Return whether a body is currently picked.
 
         Returns:
-            bool: True if picking is active, False otherwise.
+            ``True`` if a body is picked, ``False`` otherwise.
         """
-        return self.picking_active
+        return self._picking_active
 
     def release(self) -> None:
-        """Releases the picking."""
+        """Release the picked body so :meth:`apply_force` stops applying a force."""
         self.pick_body.fill_(-1)
-        self.picking_active = False
+        self._picking_active = False
 
     def update(self, ray_start: wp.vec3f, ray_dir: wp.vec3f) -> None:
-        """
-        Updates the picking target.
+        """Move the spring target onto a new ray, keeping its distance from the ray start.
 
-        This function is used to track the force that needs to be applied to the picked body as the mouse is dragged.
+        Call this as the cursor is dragged. Does nothing when no body is picked.
 
         Args:
-            ray_start: The start point of the ray.
-            ray_dir: The direction of the ray.
+            ray_start: Ray origin in the offset (rendered) space [m].
+            ray_dir: Unit ray direction in the offset (rendered) space.
         """
         if not self.is_picking():
             return
@@ -320,22 +355,25 @@ class Picking:
                 ray_start,
                 ray_dir,
                 world_offset,
-                self.pick_state,
+                self._pick_state,
             ],
             device=self.model.device,
         )
 
     def pick(self, state: newton.State, ray_start: wp.vec3f, ray_dir: wp.vec3f) -> None:
-        """
-        Picks the selected geometry and computes the initial state of the picking. I.e. the force that
-        will be applied to the picked body.
+        """Pick the body whose shape the ray hits first and anchor the spring at the hit point.
+
+        Any previous pick is released first. Shapes in worlds hidden by
+        :attr:`visible_worlds_mask` are ignored. If the ray hits nothing, a static shape, or a
+        kinematic body, nothing is picked and :meth:`is_picking` returns ``False``. This call
+        synchronizes with the device.
 
         Args:
-            state: The simulation state.
-            ray_start: The start point of the ray.
-            ray_dir: The direction of the ray.
+            state: The simulation state supplying body poses.
+            ray_start: Ray origin in the offset (rendered) space [m].
+            ray_dir: Unit ray direction in the offset (rendered) space.
         """
-
+        self.release()
         if self.model is None:
             return
 
@@ -345,16 +383,16 @@ class Picking:
         if num_geoms == 0:
             return
 
-        if self.min_dist is None:
-            self.min_dist = wp.array([1.0e10], dtype=float, device=self.model.device)
-            self.min_index = wp.array([-1], dtype=int, device=self.model.device)
-            self.min_body_index = wp.array([-1], dtype=int, device=self.model.device)
-            self.lock = wp.array([0], dtype=wp.int32, device=self.model.device)
+        if self._min_dist is None:
+            self._min_dist = wp.array([1.0e10], dtype=float, device=self.model.device)
+            self._min_index = wp.array([-1], dtype=int, device=self.model.device)
+            self._min_body_index = wp.array([-1], dtype=int, device=self.model.device)
+            self._lock = wp.array([0], dtype=wp.int32, device=self.model.device)
         else:
-            self.min_dist.fill_(1.0e10)
-            self.min_index.fill_(-1)
-            self.min_body_index.fill_(-1)
-            self.lock.zero_()
+            self._min_dist.fill_(1.0e10)
+            self._min_index.fill_(-1)
+            self._min_body_index.fill_(-1)
+            self._lock.zero_()
 
         # Get world offsets if available
         shape_world = (
@@ -379,12 +417,12 @@ class Picking:
                 self.model.shape_source_ptr,
                 p,
                 d,
-                self.lock,
+                self._lock,
             ],
             outputs=[
-                self.min_dist,
-                self.min_index,
-                self.min_body_index,
+                self._min_dist,
+                self._min_index,
+                self._min_body_index,
                 shape_world,
                 world_offsets,
                 self.visible_worlds_mask,
@@ -393,13 +431,11 @@ class Picking:
         )
         wp.synchronize()
 
-        dist = self.min_dist.numpy()[0]
-        index = self.min_index.numpy()[0]
-        body_index = self.min_body_index.numpy()[0]
+        dist = self._min_dist.numpy()[0]
+        index = self._min_index.numpy()[0]
+        body_index = self._min_body_index.numpy()[0]
 
         if dist < 1.0e10 and body_index >= 0:
-            self.pick_dist = dist
-
             # Ensures that the ray direction and start point are vec3f objects
             d = wp.vec3f(d[0], d[1], d[2])
             p = wp.vec3f(p[0], p[1], p[2])
@@ -422,7 +458,7 @@ class Picking:
                 kernel=compute_pick_state_kernel,
                 dim=1,
                 inputs=[state.body_q, self.model.body_flags, body_index, hit_point_world],
-                outputs=[self.pick_body, self.pick_state],
+                outputs=[self.pick_body, self._pick_state],
                 device=self.model.device,
             )
 
@@ -430,4 +466,4 @@ class Picking:
             if picked >= 0:
                 self._update_os_inertia(state, picked, hit_point_world)
 
-        self.picking_active = self.pick_body.numpy()[0] >= 0
+        self._picking_active = self.pick_body.numpy()[0] >= 0

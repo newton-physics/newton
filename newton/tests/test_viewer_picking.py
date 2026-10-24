@@ -7,8 +7,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.viewer.picking import Picking
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
+from newton.viewer import Picking
 
 
 def _make_single_sphere_model(
@@ -83,14 +83,14 @@ class TestPickingSetup(unittest.TestCase):
 
         self.assertFalse(picking.is_picking())
         self.assertEqual(picking.pick_body.numpy()[0], -1)
-        self.assertIsNotNone(picking.pick_state)
-        self.assertEqual(picking.pick_state.shape[0], 1)
-        pick_state_np = picking.pick_state.numpy()[0]
+        self.assertIsNotNone(picking._pick_state)
+        self.assertEqual(picking._pick_state.shape[0], 1)
+        pick_state_np = picking._pick_state.numpy()[0]
         self.assertEqual(pick_state_np["pick_stiffness"], 100.0)
         self.assertEqual(pick_state_np["pick_damping"], 10.0)
 
     def test_release_clears_state(self):
-        """release() clears pick_body and sets picking_active to False."""
+        """release() clears pick_body and stops picking."""
         model = _make_single_sphere_model(device="cpu")
         state = model.state()
         picking = Picking(model)
@@ -107,10 +107,12 @@ class TestPickingSetup(unittest.TestCase):
         self.assertEqual(picking.pick_body.numpy()[0], -1)
 
     def test_pick_miss_remains_inactive(self):
-        """pick() with a ray that misses all geometry leaves picking inactive."""
+        """pick() with a ray that misses all geometry releases any previous pick."""
         model = _make_single_sphere_model(device="cpu")
         state = model.state()
         picking = Picking(model)
+        picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
+        self.assertTrue(picking.is_picking())
 
         # Ray far from the sphere
         ray_start = wp.vec3(10.0, 10.0, 0.0)
@@ -133,8 +135,6 @@ class TestPickingSetup(unittest.TestCase):
 
         self.assertTrue(picking.is_picking())
         self.assertEqual(picking.pick_body.numpy()[0], 0)
-        self.assertGreater(picking.pick_dist, 0.0)
-        self.assertLess(picking.pick_dist, 1.0e10)
 
     def test_pick_kinematic_body_remains_inactive(self):
         """pick() ignores kinematic bodies so no body is selected."""
@@ -185,21 +185,21 @@ class TestPickingSetup(unittest.TestCase):
         self.assertFalse(picking.is_picking())
         self.assertEqual(picking.pick_body.numpy()[0], -1)
 
-    def test_apply_picking_force_when_not_picking(self):
-        """_apply_picking_force() when not picking runs kernel without modifying body_f."""
+    def test_apply_force_when_not_picking(self):
+        """apply_force() when not picking runs kernel without modifying body_f."""
         model = _make_single_sphere_model(device="cpu")
         state = model.state()
         picking = Picking(model)
 
         state.body_f.zero_()
-        picking._apply_picking_force(state)
+        picking.apply_force(state)
 
         # No body picked -> no force applied
         forces = state.body_f.numpy()
         assert_np_equal(forces, np.zeros_like(forces), tol=1e-9)
 
-    def test_apply_picking_force_when_picking(self):
-        """_apply_picking_force() when picking runs; force is non-zero after update() moves target."""
+    def test_apply_force_when_picking(self):
+        """apply_force() when picking runs; force is non-zero after update() moves target."""
         model = _make_single_sphere_model(device="cpu")
         state = model.state()
         picking = Picking(model)
@@ -213,7 +213,7 @@ class TestPickingSetup(unittest.TestCase):
         # Move target by updating with a ray offset from center so target != attachment point
         picking.update(wp.vec3(0.5, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
         state.body_f.zero_()
-        picking._apply_picking_force(state)
+        picking.apply_force(state)
 
         forces = state.body_f.numpy()
         self.assertEqual(forces.shape[0], model.body_count)
@@ -260,7 +260,7 @@ def test_picking_setup_device(test: TestPickingSetup, device):
     # update and apply_force should not crash
     picking.update(ray_start, ray_dir)
     state.body_f.zero_()
-    picking._apply_picking_force(state)
+    picking.apply_force(state)
 
     # The target is the pick point and the body is at rest, so the spring applies no wrench.
     assert_np_equal(state.body_f.numpy()[0], np.zeros(6), tol=1.0e-6)
@@ -274,11 +274,11 @@ def _apply_picking_target(
     picking: Picking, state: newton.State, target: tuple[float, float, float], body: int = 0
 ) -> np.ndarray:
     """Apply one picking step and return the controller wrench."""
-    pick_state = picking.pick_state.numpy()
+    pick_state = picking._pick_state.numpy()
     pick_state[0]["picking_target_world"] = target
-    picking.pick_state.assign(pick_state)
+    picking._pick_state.assign(pick_state)
     state.body_f.zero_()
-    picking._apply_picking_force(state)
+    picking.apply_force(state)
     return state.body_f.numpy()[body].copy()
 
 
@@ -341,7 +341,7 @@ def _picked_mass(test: TestPickingSetup, model: newton.Model, ray_start, ray_dir
 
     body = int(picking.pick_body.numpy()[0])
     direction = np.asarray(direction, dtype=float)
-    picked = np.array(picking.pick_state.numpy()[0]["picked_point_world"], dtype=float)
+    picked = np.array(picking._pick_state.numpy()[0]["picked_point_world"], dtype=float)
     force = _apply_picking_target(picking, state, tuple(picked + _PICK_DISPLACEMENT * direction), body=body)[:3]
 
     assert_np_equal(np.cross(force, direction), np.zeros(3), tol=1.0e-4)
@@ -404,7 +404,7 @@ def test_picking_oblique_pull_per_direction_mass(test: TestPickingSetup, device)
     picking.pick(state, *_FINGER_RAY)
     os_inertia = picking._pick_os_inertia.numpy()[0]
 
-    picked = np.array(picking.pick_state.numpy()[0]["picked_point_world"], dtype=float)
+    picked = np.array(picking._pick_state.numpy()[0]["picked_point_world"], dtype=float)
     target = picked + _PICK_DISPLACEMENT * np.array([1.0, 1.0, 0.0])
     force = _apply_picking_target(picking, state, tuple(target), body=1)[:3]
 
@@ -548,7 +548,7 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     picking.pick(state_in, wp.vec3(0.025, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0))
     picked_body = int(picking.pick_body.numpy()[0])
     test.assertEqual(picked_body, bodies[num_links // 2])
-    pick_state = picking.pick_state.numpy()
+    pick_state = picking._pick_state.numpy()
     anchor = np.array(pick_state[0]["picking_target_world"], dtype=np.float32)
 
     dt = 1.0 / 600.0
@@ -556,9 +556,9 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     for step in range(300):
         target = anchor + np.array([0.0, 0.5 * min(1.0, step / 150.0), 0.0], dtype=np.float32)
         pick_state[0]["picking_target_world"] = target
-        picking.pick_state.assign(pick_state)
+        picking._pick_state.assign(pick_state)
         state_in.clear_forces()
-        picking._apply_picking_force(state_in)
+        picking.apply_force(state_in)
         solver.step(state_in, state_out, control, None, dt)
         state_in, state_out = state_out, state_in
 
