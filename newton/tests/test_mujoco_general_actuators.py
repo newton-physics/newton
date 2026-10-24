@@ -1170,6 +1170,23 @@ class TestMuJoCoMuscleActuators(unittest.TestCase):
 """
         self._assert_muscle_matches_native_mujoco(mjcf)
 
+    def test_partial_general_muscle_parameters_inherit_class_values(self):
+        """Partial arrays replace their prefix while retaining inherited trailing values."""
+        mjcf = """<mujoco><option gravity="0 0 0"/>
+          <default><default class="muscle">
+            <general dyntype="muscle" gaintype="muscle" biastype="muscle"
+              gainprm="0.8 1.2 5 250 0.6 1.7 1.8 1.4 1.5"
+              biasprm="0.8 1.2 5 250 0.6 1.7 1.8 2.5 1.5" dynprm="0.02 0.05 0 7"/>
+            <default class="child"><general gainprm="0.85 1.15" biasprm="0.85 1.15"/></default>
+          </default></default>
+          <worldbody><body><joint name="slide" type="slide" range="0.5 1.5"/>
+            <geom type="sphere" size="0.1" mass="1"/>
+          </body></worldbody>
+          <actuator><general name="drive" class="child" joint="slide" lengthrange="0.5 1.5"
+            gainprm="0.9 1.1 6" biasprm="0.9 1.1 6" dynprm="0.03"/></actuator>
+        </mujoco>"""
+        self._assert_muscle_matches_native_mujoco(mjcf)
+
 
 class TestMuJoCoJointInParentActuators(unittest.TestCase):
     """Tests for parent-frame joint actuator transmissions."""

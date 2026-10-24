@@ -1,0 +1,1 @@
+Preserve imported MJCF touch and body/site frame sensors through SolverMuJoCo conversion, including object and reference frames, cutoff and sampling attributes. Other sensor kinds remain unsupported by this import path and emit a warning.

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -142,6 +143,50 @@ def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
         return os.path.abspath(os.path.join(base_dir, file_path))
     else:
         raise ValueError(f"Cannot resolve relative path '{file_path}' without base directory")
+
+
+def _set_mesh_inertia(mesh: Mesh, mode: str) -> Mesh:
+    """Preserve MJCF mesh inertia, including unsigned legacy tetrahedra."""
+    if mode not in {"legacy", "exact", "convex", "shell"}:
+        raise ValueError(f"Unsupported MJCF mesh inertia mode: {mode!r}")
+    vertices, faces = mesh.vertices, mesh.indices.reshape(-1, 3)
+    if mode == "convex":
+        vertices, faces = remesh_convex_hull(vertices, maxhullvert=mesh.maxhullvert)
+    triangles = np.asarray(vertices, dtype=np.float64)[np.asarray(faces).reshape(-1, 3)]
+    areas = np.linalg.norm(np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]), axis=1) / 2
+    area = areas.sum()
+    if area <= 0:
+        return mesh
+    origin = (areas[:, None] * triangles.mean(axis=1)).sum(axis=0) / area
+    relative = triangles - origin
+    weights = np.linalg.det(relative) / 6
+    if mode == "legacy":
+        weights = np.abs(weights)
+    elif mode == "shell":
+        weights = areas
+    elif weights.sum() < 0:
+        weights = -weights
+    if weights.sum() <= 0:
+        return mesh
+    center = (
+        origin
+        if mode == "shell"
+        else origin + (weights[:, None] * relative.sum(axis=1) / 4).sum(axis=0) / weights.sum()
+    )
+    relative = triangles - center
+    if mode != "shell":
+        weights = np.linalg.det(relative) / 6
+        if mode == "legacy":
+            weights = np.abs(weights)
+        elif weights.sum() < 0:
+            weights = -weights
+    sums = relative.sum(axis=1)
+    products = np.einsum("fi,fj->fij", sums, sums) + np.einsum("fvi,fvj->fij", relative, relative)
+    second = (weights[:, None, None] * products / (12 if mode == "shell" else 20)).sum(axis=0)
+    mesh.mass = float(weights.sum())
+    mesh.com = wp.vec3(center)
+    mesh.inertia = wp.mat33(np.trace(second) * np.eye(3) - second)
+    return mesh
 
 
 def _join_asset_dir(asset_dir: str | None, file_path: str) -> str:
@@ -570,6 +615,17 @@ def parse_mjcf(
     # Use findall for <option> to handle multiple elements after include expansion
     # (later values override earlier ones, matching MuJoCo's merge behavior).
     if parse_mujoco_options:
+        builder.custom_attributes["mujoco:integrator"].values.setdefault(0, 0)
+        # MuJoCo 3.15 enables multi-CCD by default, unlike Newton's default
+        # for programmatically constructed models.
+        builder.custom_attributes["mujoco:flag_multiccd"].values.setdefault(0, True)
+        for option in root.findall("option"):
+            if "gravity" in option.attrib:
+                gravity = wp.vec3(*map(float, option.attrib["gravity"].split()))
+                if builder.current_world >= 0:
+                    builder.world_gravity[builder.current_world] = gravity
+                else:
+                    builder.gravity = gravity
         builder_custom_attr_option: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
             [AttributeFrequency.ONCE, AttributeFrequency.WORLD]
         )
@@ -642,6 +698,10 @@ def parse_mjcf(
             if key in attrib:
                 if isinstance(attrib[key], dict):
                     attrib[key] = merge_attrib(attrib[key], value)
+                elif key in {"gainprm", "biasprm", "dynprm"}:
+                    inherited = attrib[key].split()
+                    incoming = value.split()
+                    attrib[key] = " ".join(incoming + inherited[len(incoming) :])
                 else:
                     attrib[key] = value
             else:
@@ -706,6 +766,7 @@ def parse_mjcf(
                     "refpos": refpos,
                     "refquat": refquat,
                     "maxhullvert": maxhullvert,
+                    "inertia": mesh_attrib.get("inertia", "legacy"),
                 }
             elif "vertex" in mesh_attrib:
                 name = mesh_name
@@ -778,6 +839,7 @@ def parse_mjcf(
                     "refquat": refquat,
                     "scale": mesh_scale,
                     "maxhullvert": maxhullvert,
+                    "inertia": mesh_attrib.get("inertia", "legacy"),
                 }
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
@@ -893,7 +955,7 @@ def parse_mjcf(
             # hand out copies so per geom edits (e.g. dropping a texture) do not leak between shapes
             meshes = [mesh.copy() for mesh in cached]
             if not has_ref_pose:
-                return meshes
+                return [_set_mesh_inertia(mesh, mesh_asset["inertia"]) for mesh in meshes]
 
             transformed_meshes = []
             for mesh in meshes:
@@ -913,7 +975,7 @@ def parse_mjcf(
                         texture=mesh.texture,
                     )
                 )
-            return transformed_meshes
+            return [_set_mesh_inertia(mesh, mesh_asset["inertia"]) for mesh in transformed_meshes]
 
         vertices, normals = _apply_mesh_ref_pose(
             mesh_asset["vertices"], mesh_asset["normals"], mesh_asset["refpos"], mesh_asset["refquat"], scaling
@@ -937,14 +999,17 @@ def parse_mjcf(
                 texcoords = texcoords[source_indices]
 
         return [
-            Mesh(
-                vertices,
-                faces,
-                normals=normals,
-                uvs=texcoords,
-                maxhullvert=maxhullvert,
-                color=override_color,
-                texture=override_texture,
+            _set_mesh_inertia(
+                Mesh(
+                    vertices,
+                    faces,
+                    normals=normals,
+                    uvs=texcoords,
+                    maxhullvert=maxhullvert,
+                    color=override_color,
+                    texture=override_texture,
+                ),
+                mesh_asset["inertia"],
             )
         ]
 
@@ -1255,8 +1320,9 @@ def parse_mjcf(
                     shape_cfg.margin = newton_margin
                 else:
                     shape_cfg.margin = mj_margin
-            if "gap" in geom_attrib:
-                shape_cfg.gap = mj_gap
+            # An omitted MJCF gap is zero. Newton's speculative contact gap
+            # must not introduce contacts absent from the source model.
+            shape_cfg.gap = mj_gap
 
             custom_attributes = (
                 parse_custom_attributes(geom_attrib, builder_custom_attr_shape, parsing_mode="mjcf")
@@ -2287,6 +2353,7 @@ def parse_mjcf(
                     parsing_mode="mjcf",
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
+                dof_attr["mujoco:joint_dof_label"] = f"{body_label_path}/{joint_attrib.get('name', joint_name[-1])}"
                 if is_linear:
                     for attr_name in ("mujoco:dof_ref", "mujoco:dof_springref", "mujoco:limit_margin"):
                         if attr_name in dof_attr:
@@ -2569,6 +2636,26 @@ def parse_mjcf(
             # don't modify the explicitly specified mass/com/inertia.  This matches
             # MuJoCo's behavior where <inertial> completely overrides geom contributions.
             builder.body_lock_inertia[link] = True
+
+        boundmass = float(compiler_attribs.get("boundmass", "0"))
+        boundinertia = float(compiler_attribs.get("boundinertia", "0"))
+        if boundmass < 0 or boundinertia < 0:
+            raise ValueError("MJCF compiler mass and inertia bounds must be nonnegative.")
+        if builder.body_mass[link] < boundmass:
+            builder.body_mass[link] = boundmass
+            builder.body_inv_mass[link] = 1.0 / boundmass
+        if boundinertia > 0 or compiler_attribs.get("balanceinertia", "false").lower() == "true":
+            inertia = np.asarray(builder.body_inertia[link], dtype=np.float64).reshape(3, 3)
+            principal, rotation = np.linalg.eigh(inertia)
+            principal = np.maximum(principal, boundinertia)
+            if (
+                principal[0] + principal[1] < principal[2]
+                and compiler_attribs.get("balanceinertia", "false").lower() == "true"
+            ):
+                principal[:] = principal.mean()
+            inertia = rotation @ np.diag(principal) @ rotation.T
+            builder.body_inertia[link] = wp.mat33(inertia)
+            builder.body_inv_inertia[link] = wp.mat33(np.linalg.inv(inertia)) if np.all(principal > 0) else wp.mat33()
 
         # -----------------
         # recurse
@@ -2872,8 +2959,17 @@ def parse_mjcf(
                 joint1_idx = joint_name_to_idx.get(joint1_name, -1) if joint1_name else -1
                 joint2_idx = joint_name_to_idx.get(joint2_name, -1) if joint2_name else -1
                 polycoef_values = mjc_parse_polycoef(polycoef)
+                for endpoint, name in ((1, joint1_name), (2, joint2_name)):
+                    custom_attrs[f"mujoco:equality_constraint_joint{endpoint}_dof"] = mjcf_joint_name_to_dof.get(
+                        name, -1
+                    )
 
-                if convert_mjc_equality_constraints:
+                scalar_pair = (
+                    joint1_idx >= 0
+                    and joint2_idx >= 0
+                    and all(sum(builder.joint_dof_dim[index]) == 1 for index in (joint1_idx, joint2_idx))
+                )
+                if convert_mjc_equality_constraints and scalar_pair:
                     if mjc_polycoef_has_higher_order(polycoef_values):
                         warnings.warn(
                             f"Joint equality '{common['name']}' uses higher-order polycoef terms. "
@@ -3842,6 +3938,45 @@ def parse_mjcf(
                 parent_body=-1,
                 articulation_label=label,
             )
+
+    for section in root.findall("sensor"):
+        for sensor in section:
+            kind = "site" if sensor.tag == "touch" else sensor.get("objtype", "")
+            if sensor.tag != "touch" and not sensor.tag.startswith("frame"):
+                warnings.warn(
+                    f"Unsupported MJCF sensor type {sensor.tag!r}; sensor was not imported.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                continue
+            if kind not in {"body", "xbody", "site"}:
+                raise NotImplementedError(f"MJCF {sensor.tag} sensor object type {kind!r} is unsupported.")
+            name = sensor.get("site") if sensor.tag == "touch" else sensor.get("objname")
+            if kind == "site" and name not in raw_site_name_to_idx:
+                warnings.warn(
+                    f"MJCF sensor {sensor.get('name', sensor.tag)!r} references an unparsed site {name!r}; "
+                    "import with parse_sites=True to retain the sensor.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                continue
+            reference_kind, reference_name = sensor.get("reftype", ""), sensor.get("refname")
+            if reference_kind and reference_kind not in {"body", "xbody", "site"}:
+                raise NotImplementedError(f"MJCF sensor reference type {reference_kind!r} is unsupported.")
+            values = {
+                "mujoco:sensor_type": sensor.tag,
+                "mujoco:sensor_attributes": json.dumps(sensor.attrib),
+                "mujoco:sensor_objtype": kind,
+                "mujoco:sensor_body": body_name_to_idx[name] if kind in {"body", "xbody"} else -1,
+                "mujoco:sensor_site": raw_site_name_to_idx[name] if kind == "site" else -1,
+                "mujoco:sensor_reftype": reference_kind,
+                "mujoco:sensor_refbody": body_name_to_idx[reference_name]
+                if reference_kind in {"body", "xbody"}
+                else -1,
+                "mujoco:sensor_refsite": raw_site_name_to_idx[reference_name] if reference_kind == "site" else -1,
+                "mujoco:sensor_world": builder.current_world,
+            }
+            builder.add_custom_values(**values)
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()

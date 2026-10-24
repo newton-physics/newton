@@ -5,6 +5,7 @@ import os
 import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
+from pathlib import Path
 from typing import cast, overload
 from urllib.parse import urlparse
 
@@ -1147,6 +1148,55 @@ def _extract_trimesh_material_params(
     return roughness, metallic, base_color
 
 
+def _load_mujoco_mesh(filename: str):
+    """Read MuJoCo's little-endian binary mesh arrays without repairing topology."""
+    import trimesh
+
+    data = Path(filename).read_bytes()
+    if len(data) < 16:
+        raise ValueError(f"MuJoCo mesh {filename!r} has a truncated header.")
+    nvertex, nnormal, ntexcoord, nface = map(int, np.frombuffer(data, dtype="<i4", count=4))
+    if nvertex < 3 or nnormal not in (0, nvertex) or ntexcoord not in (0, nvertex) or nface < 0:
+        raise ValueError(f"MuJoCo mesh {filename!r} has invalid array counts.")
+    expected = 16 + 4 * (3 * nvertex + 3 * nnormal + 2 * ntexcoord + 3 * nface)
+    if len(data) != expected:
+        raise ValueError(f"MuJoCo mesh {filename!r} size does not match its array counts.")
+    offset = 16
+
+    def read(count: int, width: int, dtype: str) -> np.ndarray:
+        nonlocal offset
+        result = np.frombuffer(data, dtype=dtype, count=count * width, offset=offset).reshape(count, width)
+        offset += count * width * 4
+        return result.copy()
+
+    vertices = read(nvertex, 3, "<f4")
+    normals = read(nnormal, 3, "<f4")
+    texcoords = read(ntexcoord, 2, "<f4")
+    faces = read(nface, 3, "<i4")
+    if not all(np.isfinite(values).all() for values in (vertices, normals, texcoords)):
+        raise ValueError(f"MuJoCo mesh {filename!r} contains non-finite values.")
+    if faces.size and (np.any(faces < 0) or np.any(faces >= nvertex)):
+        raise ValueError(f"MuJoCo mesh {filename!r} has invalid face indices.")
+    mesh = trimesh.Trimesh(
+        vertices=vertices,
+        faces=faces,
+        vertex_normals=normals if nnormal else None,
+        process=False,
+    )
+    if not nface:
+        mesh = mesh.convex_hull
+        source = {tuple(vertex): row for row, vertex in enumerate(vertices)}
+        source_indices = [source[tuple(vertex)] for vertex in mesh.vertices]
+        if nnormal:
+            mesh.vertex_normals = normals[source_indices]
+    if ntexcoord:
+        if nface:
+            mesh.visual = trimesh.visual.texture.TextureVisuals(uv=texcoords)
+        else:
+            mesh.visual = trimesh.visual.texture.TextureVisuals(uv=texcoords[source_indices])
+    return mesh
+
+
 def load_meshes_from_file(
     filename: str,
     *,
@@ -1359,7 +1409,9 @@ def load_meshes_from_file(
     if filename.lower().endswith(".dae"):
         dae_face_materials, dae_material_colors = _parse_dae_material_colors(filename)
 
-    if filename.lower().endswith(".dae"):
+    if filename.lower().endswith(".msh"):
+        tri = _load_mujoco_mesh(filename)
+    elif filename.lower().endswith(".dae"):
         with warnings.catch_warnings():
             # Remove when the pycollada floor includes a release that replaces
             # load-time NumPy array shape assignment with reshape.
