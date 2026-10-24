@@ -359,11 +359,14 @@ Known gaps of the experimental importer, tracked as follow-ups:
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
 * **Collision and graphics geometry** -- separate collision or render geometry under a
-  deformable body is not simulated or driven (embedding is not implemented): untagged
-  PointBased graphics geometry warns and is skipped (a static import would leave a frozen
-  copy behind), and a dedicated point-based collider (every one warns) only toggles the
-  simulation geometry's collision as described above and never becomes a separate rigid
-  shape. Deformable-owned geometry is owned exclusively by the deformable importer: when a
+  deformable body is not simulated or driven by the importer yet. Procedural visual
+  binding is available through :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`;
+  importing those bindings is not supported yet. Import is deferred so the native
+  binding and update code can be reviewed first. Untagged PointBased graphics geometry
+  warns and is skipped (a static import would leave a frozen copy behind), and a dedicated
+  point-based collider (every one warns) only toggles the simulation geometry's collision
+  as described above and never becomes a separate rigid shape. Deformable-owned geometry
+  is owned exclusively by the deformable importer: when a
   deformable is skipped as kinematic or malformed it imports as nothing, with a warning,
   rather than falling back to a rigid representation. A disabled
   (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:

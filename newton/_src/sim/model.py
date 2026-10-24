@@ -19,6 +19,12 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
+from ..geometry.deformable_visual import (
+    DeformableVisualMesh,
+    DeformableVisuals,
+    compute_deformable_visual_mesh_normals,
+    skin_deformable_visual_mesh,
+)
 from ..geometry.flags import ShapeFlags
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
@@ -1061,6 +1067,15 @@ class Model:
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
         Stored per-element; kernels multiply by rest volume internally."""
 
+        self.deformable_visual_meshes: list[DeformableVisualMesh] = []
+        """High-resolution visual meshes embedded in deformables, skinned from the
+        simulation state for visualization only (see
+        :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). Empty when no
+        visual meshes were attached.
+
+        .. experimental::
+
+            This attribute may change without a formal deprecation cycle."""
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
         self.muscle_params: wp.array2d[wp.float32] | None = None
@@ -1400,6 +1415,13 @@ class Model:
         """Total number of rigid-body-to-particle attachments in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
+        self.deformable_visual_mesh_count: int = 0
+        """Total number of deformable visual meshes.
+
+        .. experimental::
+
+            Deformable visual APIs may change without a formal deprecation cycle.
+        """
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
         self.joint_dof_count: int = 0
@@ -1958,6 +1980,94 @@ class Model:
             self, state, self.bvh_particles.lowers, self.bvh_particles.uppers, self.bvh_particles.groups
         )
         self.bvh_particles.refit()
+
+    def deformable_visuals(self) -> DeformableVisuals:
+        """Allocate current points and normals for deformable visual meshes.
+
+        The returned buffers are model-compatible and reusable across
+        simulation states and ordered graph replays. Populate them with
+        :meth:`update_deformable_visuals` before reading or rendering them.
+
+        Returns:
+            Uninitialized current deformable visual data.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        return DeformableVisuals(self)
+
+    def update_deformable_visuals(self, state: State, visuals: DeformableVisuals) -> DeformableVisuals:
+        """Update current deformable visual points and normals from a state.
+
+        This method reuses the fixed buffers allocated by
+        :meth:`deformable_visuals` and performs no structural allocation.
+        Warm up before graph capture, and replay the graph before consuming its
+        output. Different states can share one output when updates and consumers
+        are ordered. The caller is responsible for keeping the visual data current;
+        the output does not track its source State. Keep captured arrays alive and
+        change their contents, not their storage, between replays.
+
+        Args:
+            state: Simulation state containing current particle positions and
+                body transforms.
+            visuals: Model-compatible destination for current visual data.
+
+        Returns:
+            The updated ``visuals`` object.
+
+        Raises:
+            TypeError: If ``visuals`` is not :class:`DeformableVisuals`.
+            ValueError: If the output belongs to another model or the required
+                state arrays are missing, too short, or on another device.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        if not isinstance(visuals, DeformableVisuals):
+            raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
+        visuals._validate_model(self)
+
+        needs_particles = any(mesh.kind != DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes)
+        needs_bodies = self.body_count > 0 and any(
+            mesh.kind == DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes
+        )
+        if needs_particles and state.particle_q is None:
+            raise ValueError("State.particle_q is required by this model's deformable visual meshes")
+        if needs_bodies and state.body_q is None:
+            raise ValueError("State.body_q is required by this model's body-bound deformable visual meshes")
+        if needs_particles and state.particle_q.device != self.device:
+            raise ValueError(
+                f"State particle device {state.particle_q.device} does not match model device {self.device}"
+            )
+        if needs_bodies and state.body_q.device != self.device:
+            raise ValueError(f"State body device {state.body_q.device} does not match model device {self.device}")
+        if needs_particles and len(state.particle_q) < self.particle_count:
+            raise ValueError(
+                f"State.particle_q must contain at least {self.particle_count} particles; got {len(state.particle_q)}"
+            )
+        if needs_bodies and len(state.body_q) < self.body_count:
+            raise ValueError(f"State.body_q must contain at least {self.body_count} bodies; got {len(state.body_q)}")
+
+        visuals.normals.zero_()
+        for mesh, (start, end) in zip(self.deformable_visual_meshes, visuals.mesh_ranges, strict=True):
+            skin_deformable_visual_mesh(mesh, state, self, visuals.points, device=self.device, out_offset=start)
+            compute_deformable_visual_mesh_normals(
+                visuals.points,
+                mesh.indices,
+                visuals.normals,
+                device=self.device,
+                point_offset=start,
+                normal_offset=start,
+                vertex_count=end - start,
+                clear=False,
+            )
+
+        visuals._mark_updated()
+        return visuals
 
     def state(self, requires_grad: bool | None = None) -> State:
         """

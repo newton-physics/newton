@@ -247,6 +247,17 @@ class ViewerRerun(ViewerBase):
         super().clear_model()
 
     @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, texture=None, **kwargs):
+        name = self._qualify(name)
+        if hidden:
+            mesh = self._meshes.get(name)
+            if mesh is not None and mesh.get("visible", False):
+                rr.log(name, rr.Clear(recursive=False))
+                mesh["visible"] = False
+            return
+        self.log_mesh(name, points, indices, texture=self._deformable_visual_texture(name, texture), **kwargs)
+
+    @override
     def log_mesh(
         self,
         name: str,
@@ -590,6 +601,8 @@ class ViewerRerun(ViewerBase):
         This will terminate any spawned viewer process and disconnect from rerun.
         """
         self._running = False
+        for layer in self.layers.values():
+            layer._deformable_visual_textures.clear()
 
         # Close viewer process if we spawned one
         if self._viewer_process is not None:
