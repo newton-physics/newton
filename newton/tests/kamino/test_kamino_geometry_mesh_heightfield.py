@@ -8,6 +8,7 @@ and solver integration with mesh and heightfield shapes via the
 ``ModelKamino.from_newton()`` path.
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -19,7 +20,7 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino, convert_contacts_newton_to_kamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 
 _cuda_available = wp.is_cuda_available()
@@ -299,14 +300,14 @@ class TestUnifiedPipelineMeshHeightfield(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_sphere_on_flat_heightfield(self):
         """Sphere touching flat heightfield: 2 contacts (one per cell triangle), normal=(0,0,1), position at z=0."""
@@ -428,14 +429,14 @@ class TestNewtonCollisionPathMeshHeightfield(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_newton_to_kamino_heightfield(self):
         """Heightfield contacts survive Newton->Kamino conversion with correct geometry."""
@@ -541,14 +542,14 @@ class TestSolverWithMeshHeightfield(unittest.TestCase):
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
         if self.verbose:
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_01_sphere_falls_onto_heightfield(self):
         """Sphere dropped from 0.5m above flat heightfield must rest at z ≈ SPHERE_RADIUS."""

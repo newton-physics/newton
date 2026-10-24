@@ -10,6 +10,7 @@ on top of margin; contacts are generated when the surface distance is within
 ``margin + gap``, but the resting position is controlled solely by margin.
 """
 
+import logging
 import unittest
 
 import numpy as np
@@ -21,7 +22,7 @@ from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.detector import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.primitive import CollisionPipelinePrimitive
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
-from newton._src.solvers.kamino._src.utils import logger as msg
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton.tests.kamino import setup_tests, test_context
 
 ###
@@ -86,12 +87,12 @@ class TestMarginGapNarrowphase(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         if test_context.verbose:
-            msg.set_log_level(msg.LogLevel.INFO)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
-        msg.reset_log_level()
+        reset_log_level()
 
     # ------------------------------------------------------------------
     # Margin tests
@@ -383,12 +384,12 @@ class TestMarginGapSolver(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         if test_context.verbose:
-            msg.set_log_level(msg.LogLevel.INFO)
+            set_log_level(logging.DEBUG)
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
-        msg.reset_log_level()
+        reset_log_level()
 
     def test_10_penetrating_margin_gets_pushed_out(self):
         """Sphere placed inside the margin envelope should be pushed upward."""

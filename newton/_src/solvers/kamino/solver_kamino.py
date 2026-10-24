@@ -8,6 +8,7 @@ simulating constrained multi-body systems for arbitrary mechanical assemblies.
 
 from __future__ import annotations
 
+import logging
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
@@ -51,6 +52,8 @@ if TYPE_CHECKING:
         MaterialManagerConfig,
         PADMMSolverConfig,
     )
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -1347,7 +1350,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         )
         unsupported = int(flags) & ~int(handled)
         if unsupported:
-            self._kamino.msg.warning(
+            logger.warning(
                 "SolverKamino.notify_model_changed: flags 0x%x not yet supported",
                 unsupported,
             )
@@ -1480,6 +1483,23 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Register KaminoSceneAPI attributes so the USD importer will store them on the model
         SolverKamino.Config.register_custom_attributes(builder)
+
+    @staticmethod
+    def enable_console_logging(color: bool | None = None) -> None:
+        """Print Kamino log records in the Kamino console format.
+
+        Kamino records get a ``[KAMINO]`` header, timestamp, source location
+        and level, colored by level. Other Newton records are unaffected, and
+        the output yields to any handler the application configures.
+
+        Args:
+            color: Whether to color the output. Defaults to coloring when
+                stdout is a terminal and the ``NO_COLOR`` environment variable
+                is not set.
+        """
+        from ._src.utils.logger import enable_console_logging  # noqa: PLC0415
+
+        enable_console_logging(color=color)
 
     ###
     # Internals

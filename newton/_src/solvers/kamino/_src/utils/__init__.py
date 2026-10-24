@@ -4,7 +4,6 @@
 """KAMINO: Utilities"""
 
 from . import device
-from . import logger as msg
 from .profiles import PerformanceProfile
 
 ###
@@ -14,5 +13,4 @@ from .profiles import PerformanceProfile
 __all__ = [
     "PerformanceProfile",
     "device",
-    "msg",
 ]

@@ -383,6 +383,7 @@ class Example:
 
 
 if __name__ == "__main__":
+    newton.solvers.SolverKamino.enable_console_logging()
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

@@ -3,13 +3,16 @@
 
 """Unit tests for the JointSpacePIDController class."""
 
+import logging
 import unittest
 
 import warp as wp
 
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.control.pid import JointSpacePIDController
+from newton._src.solvers.kamino._src.utils.logger import reset_log_level, set_log_level
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -27,15 +30,15 @@ class TestJointSpacePIDController(unittest.TestCase):
 
         # Set debug-level logging to print verbose test output to console
         if self.verbose:
-            print("\n")  # Add newline before test output for better readability
-            msg.set_log_level(msg.LogLevel.DEBUG)
+            set_log_level(logging.DEBUG)
+            logger.debug("\n")  # Add newline before test output for better readability
         else:
-            msg.reset_log_level()
+            reset_log_level()
 
     def tearDown(self):
         self.default_device = None
         if self.verbose:
-            msg.reset_log_level()
+            reset_log_level()
 
     def test_make_default(self):
         # Create a default PID controller

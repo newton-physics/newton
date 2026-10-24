@@ -3,11 +3,21 @@
 
 """Kamino: Tests for logging utilities"""
 
+import contextlib
+import io
+import logging
 import unittest
 
-from newton._src.solvers.kamino._src.utils import logger as msg
-from newton._src.solvers.kamino._src.utils.logger import Logger
+from newton._src.solvers.kamino._src.utils.logger import (
+    LOGGER_NAMES,
+    ConsoleFormatter,
+    enable_console_logging,
+    reset_log_level,
+    set_log_level,
+)
 from newton._src.solvers.kamino.tests import setup_tests, test_context
+
+logger = logging.getLogger(__name__)
 
 ###
 # Tests
@@ -19,30 +29,55 @@ class TestUtilsLogger(unittest.TestCase):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
 
-    def test_new_logger(self):
-        """Test use of the custom logger."""
-        print("")  # Print a newline for better readability in the output
-        msg.set_log_level(msg.LogLevel.DEBUG)
-        logger = Logger()
-        log = logger.get()
-        log.debug("This is a debug message.")
-        log.info("This is an info message.")
-        log.warning("This is a warning message.")
-        log.error("This is an error message.")
-        log.critical("This is a critical message.")
-        msg.reset_log_level()
+    def tearDown(self):
+        enable_console_logging()
+        reset_log_level()
 
-    def test_default_logger(self):
-        """Test use of the custom logger."""
+    def test_00_console_levels(self):
+        """Print one message per level with the colored console format."""
         print("")  # Print a newline for better readability in the output
-        msg.set_log_level(msg.LogLevel.DEBUG)
-        msg.debug("This is a debug message.")
-        msg.info("This is an info message.")
-        msg.notif("This is a notification message.")
-        msg.warning("This is a warning message.")
-        msg.error("This is an error message.")
-        msg.critical("This is a critical message.")
-        msg.reset_log_level()
+        enable_console_logging(color=True)
+        set_log_level(logging.DEBUG)
+        logger.debug("This is a debug message.")
+        logger.info("This is an info message.")
+        logger.warning("This is a warning message.")
+        logger.error("This is an error message.")
+
+    def test_01_formatter(self):
+        """Prefix records with the Kamino header and color them by level."""
+        record = logging.LogRecord(logger.name, logging.WARNING, __file__, 1, "value: %s", (42,), None)
+        plain = ConsoleFormatter(color=False).format(record)
+        self.assertTrue(plain.startswith("[KAMINO]["))
+        self.assertTrue(plain.endswith("[WARNING]: value: 42"))
+        colored = ConsoleFormatter(color=True).format(record)
+        self.assertIn(ConsoleFormatter.LEVEL_COLORS[logging.WARNING] + plain[len(ConsoleFormatter.HEADER) :], colored)
+
+    def test_02_enable_is_idempotent(self):
+        """Attach a single console handler per Kamino logger."""
+        enable_console_logging(color=False)
+        handlers = {name: list(logging.getLogger(name).handlers) for name in LOGGER_NAMES}
+        enable_console_logging(color=False)
+        for name in LOGGER_NAMES:
+            self.assertEqual(logging.getLogger(name).handlers, handlers[name])
+            self.assertEqual(len(handlers[name]), 1)
+
+    def test_03_enable_for_custom_names(self):
+        """Attach a single console handler to loggers outside the Kamino tree."""
+        name = "kamino_test_custom_logger"
+        custom_logger = logging.getLogger(name)
+        self.addCleanup(setattr, custom_logger, "handlers", custom_logger.handlers[:])
+        enable_console_logging(color=False, names=(name,))
+        enable_console_logging(color=False, names=(name,))
+        self.assertEqual(len(custom_logger.handlers), 1)
+
+    def test_04_console_yields_to_application_handlers(self):
+        """Leave records to handlers configured by the application, e.g. ``assertLogs``."""
+        enable_console_logging(color=False)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), self.assertLogs("newton", level="WARNING") as logs:
+            logger.warning("captured")
+        self.assertEqual([record.getMessage() for record in logs.records], ["captured"])
+        self.assertEqual(stderr.getvalue(), "")
 
 
 ###
