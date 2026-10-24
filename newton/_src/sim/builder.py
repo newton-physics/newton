@@ -9362,6 +9362,7 @@ class ModelBuilder:
             if horizontal < 0.0 or vertical < 0.0 or (horizontal == 0.0 and vertical == 0.0):
                 raise ValueError("Apertures must be non-negative and at least one must be positive")
 
+        camera_xform = wp.transform() if xform is None else wp.transform(*xform)
         aperture_offset = (float(horizontal_aperture_offset), float(vertical_aperture_offset))
         near, far = (float(v) for v in clipping_range)
         if not all(math.isfinite(v) for v in (focal_length, horizontal, vertical, *aperture_offset, near, far)):
@@ -9390,7 +9391,7 @@ class ModelBuilder:
         self.camera_label.append(label or f"camera_{camera}")
         self.camera_world.append(self.body_world[body] if body >= 0 else self.current_world)
         self.camera_body.append(body)
-        self.camera_transform.append(wp.transform() if xform is None else wp.transform(*xform))
+        self.camera_transform.append(camera_xform)
         self.camera_lens.append(int(lens))
         self.camera_focal_length.append(focal_length)
         self.camera_aperture.append((horizontal, vertical))

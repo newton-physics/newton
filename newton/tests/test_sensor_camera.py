@@ -1065,6 +1065,83 @@ class TestSensorCamera(unittest.TestCase):
         center = (height // 2, width // 2)
         self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(2)))
 
+    def test_bound_camera_outputs(self) -> None:
+        """Verify bound-sensor outputs for hits, misses, and masked views across anti-aliasing modes."""
+        # A quad 2 m in front of a global camera, replicated into two worlds: the image center hits
+        # the quad and the corners miss it.
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
+        world.add_shape_mesh(-1, mesh=newton.Mesh(quad.astype(np.float32), [0, 1, 2, 0, 2, 3]))
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_camera(-1, fov=math.radians(60.0), label="cam")
+        builder.replicate(world, 2)
+        width, height = 8, 8
+        center, corner = (height // 2, width // 2), (0, 0)
+        modes = (
+            (SensorCamera.AntiAliasing.NONE, 1),
+            (SensorCamera.AntiAliasing.SSAA, 4),
+            (SensorCamera.AntiAliasing.MSAA, 4),
+        )
+        for device in get_test_devices():
+            model = builder.finalize(device=device)
+            state = model.state()
+            for mode, samples in modes:
+                with self.subTest(device=str(device), anti_aliasing=mode.name):
+                    camera = SensorCamera(
+                        model,
+                        cameras="cam",
+                        width=width,
+                        height=height,
+                        sample_count=samples,
+                        default_render_config=SensorCamera.RenderConfig(anti_aliasing=mode),
+                    )
+                    np.testing.assert_array_equal(camera.view_world.numpy(), [0, 1])
+                    depth = camera.allocate_image_depth()
+                    face = wp.full((2, height, width), 7, dtype=wp.int32, device=device)
+                    bary = wp.full((2, height, width), wp.vec2f(9.0, 9.0), dtype=wp.vec2f, device=device)
+                    mask = wp.array([True, False], dtype=wp.bool, device=device)
+                    camera.update(
+                        state, depth_image=depth, face_index_image=face, barycentric_image=bary, view_mask=mask
+                    )
+
+                    face_np, bary_np, depth_np = face.numpy(), bary.numpy(), depth.numpy()
+                    # Hit: a face of the quad, barycentrics inside the triangle, depth to the quad.
+                    self.assertIn(int(face_np[0][center]), (0, 1))
+                    b = bary_np[0][center]
+                    self.assertTrue(np.all(b >= 0.0) and b.sum() <= 1.0 + 1e-5)
+                    self.assertAlmostEqual(float(depth_np[0][center]), 2.0, delta=0.05)
+                    # Miss: the clear values.
+                    self.assertEqual(int(face_np[0][corner]), -1)
+                    np.testing.assert_array_equal(bary_np[0][corner], [0.0, 0.0])
+                    self.assertEqual(float(depth_np[0][corner]), 0.0)
+                    # Masked view: outputs keep their previous values.
+                    self.assertTrue(np.all(face_np[1] == 7))
+                    self.assertTrue(np.all(bary_np[1] == 9.0))
+
+    def test_add_camera_rejects_invalid_input_without_side_effects(self) -> None:
+        """Verify rejected cameras leave the builder unchanged."""
+        builder = newton.ModelBuilder()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="tag", namespace="test", frequency=newton.Model.AttributeFrequency.SHAPE, dtype=wp.float32
+            )
+        )
+        builder.add_camera(-1, label="valid")
+        invalid = (
+            (ValueError, {"focal_length": float("nan"), "vertical_aperture": 0.02}),
+            (ValueError, {"horizontal_aperture_offset": float("inf")}),
+            (ValueError, {"clipping_range": (0.1, float("inf"))}),
+            (AttributeError, {"custom_attributes": {"test:missing": 1.0}}),
+            (ValueError, {"custom_attributes": {"test:tag": 1.0}}),
+            (Exception, {"xform": (1.0, 2.0)}),
+        )
+        for error, kwargs in invalid:
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}), self.assertRaises(error):
+                builder.add_camera(-1, **kwargs)
+        self.assertEqual(builder.camera_count, 1)
+        for name in ("camera_label", "camera_world", "camera_body", "camera_transform", "camera_focal_length"):
+            self.assertEqual(len(getattr(builder, name)), 1, name)
+
     @staticmethod
     def _cloth_color_scene(device):
         """Build two overlapping worlds with distinct face colors and views from both sides."""
