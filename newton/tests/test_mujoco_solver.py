@@ -3500,6 +3500,141 @@ class TestMuJoCoSolverGeomProperties(unittest.TestCase):
                     msg=f"Updated geom_gap mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
+    def test_separate_worlds_batches_geom_bounds_per_world(self):
+        """Per-world geom sizes need per-world geom_aabb/geom_rbound, or every world writes the same row.
+
+        Covers every primitive whose bounds the kernel recomputes (sphere, capsule, cylinder, ellipsoid, box)
+        and checks that plane and mesh bounds, which the kernel leaves alone, keep what MuJoCo computed.
+        """
+        import mujoco
+
+        # MuJoCo's bounds (mj_setConst) for a primitive of size s: (half-size, rbound)
+        expected_bounds = {
+            int(mujoco.mjtGeom.mjGEOM_SPHERE): lambda s: ((s[0], s[0], s[0]), s[0]),
+            int(mujoco.mjtGeom.mjGEOM_CAPSULE): lambda s: ((s[0], s[0], s[0] + s[1]), s[0] + s[1]),
+            int(mujoco.mjtGeom.mjGEOM_CYLINDER): lambda s: ((s[0], s[0], s[1]), math.sqrt(s[0] ** 2 + s[1] ** 2)),
+            int(mujoco.mjtGeom.mjGEOM_ELLIPSOID): lambda s: (tuple(s), max(s)),
+            int(mujoco.mjtGeom.mjGEOM_BOX): lambda s: (tuple(s), float(np.linalg.norm(s))),
+        }
+        untouched_types = {int(mujoco.mjtGeom.mjGEOM_PLANE), int(mujoco.mjtGeom.mjGEOM_MESH)}
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        indices = np.array([0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3], dtype=np.int32)
+        mesh = Mesh(vertices, indices)
+        shape_adders = (
+            lambda w, b, s: w.add_shape_sphere(body=b, radius=s[0]),
+            lambda w, b, s: w.add_shape_capsule(body=b, radius=s[0], half_height=s[1]),
+            lambda w, b, s: w.add_shape_cylinder(body=b, radius=s[0], half_height=s[1]),
+            lambda w, b, s: w.add_shape_ellipsoid(body=b, rx=s[0], ry=s[1], rz=s[2]),
+            lambda w, b, s: w.add_shape_box(body=b, hx=s[0], hy=s[1], hz=s[2]),
+            lambda w, b, s: w.add_shape_mesh(body=b, mesh=mesh),
+        )
+        sizes = [(0.1, 0.2, 0.3), (0.2, 0.4, 0.6)]
+
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for i, s in enumerate(sizes):
+            world = newton.ModelBuilder()
+            for j, add_shape in enumerate(shape_adders):
+                body = world.add_link(
+                    xform=wp.transform((0.0, 2.0 * j, 1.0), wp.quat_identity()),
+                    mass=1.0,
+                    com=wp.vec3(0.0),
+                    inertia=wp.mat33(np.eye(3)),
+                )
+                add_shape(world, body, s)
+                world.add_articulation([world.add_joint_free(body)])
+            builder.add_world(world, xform=wp.transform((4.0 * i, 0.0, 0.0), wp.quat_identity()))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, separate_worlds=True, iterations=1, disable_contacts=True)
+
+        # set_const_fixed writes the bounds once per world of geom_size, so the derived fields
+        # must carry one row per world too.
+        self.assertEqual(solver.mjw_model.geom_size.shape[0], 2)
+        self.assertEqual(solver.mjw_model.geom_aabb.shape[0], 2)
+        self.assertEqual(solver.mjw_model.geom_rbound.shape[0], 2)
+
+        mapping = solver.mjc_geom_to_newton_shape.numpy()
+        geom_type = [int(t) for t in solver.mj_model.geom_type]
+        mj_aabb = solver.mj_model.geom_aabb.reshape(-1, 2, 3)
+        mj_rbound = solver.mj_model.geom_rbound
+        primitive_geoms = [g for g, t in enumerate(geom_type) if t in expected_bounds]
+        untouched_geoms = [g for g, t in enumerate(geom_type) if t in untouched_types]
+        self.assertEqual(len(primitive_geoms), len(expected_bounds))
+        self.assertEqual(len(untouched_geoms), len(untouched_types))
+        # the kernel visits every geom in every world, including the ones whose bounds it must not change
+        self.assertTrue((mapping[:, primitive_geoms + untouched_geoms] >= 0).all())
+
+        def check_bounds(world_sizes):
+            aabb = solver.mjw_model.geom_aabb.numpy()
+            rbound = solver.mjw_model.geom_rbound.numpy()
+            for world_idx, s in enumerate(world_sizes):
+                for g in primitive_geoms:
+                    half, radius = expected_bounds[geom_type[g]](s)
+                    assert_np_equal(aabb[world_idx, g, 0], np.zeros(3), tol=1e-6)
+                    assert_np_equal(aabb[world_idx, g, 1], np.array(half), tol=1e-6)
+                    self.assertAlmostEqual(float(rbound[world_idx, g]), float(radius), places=6)
+                # plane and mesh bounds do not follow from geom_size and stay what MuJoCo computed
+                for g in untouched_geoms:
+                    assert_np_equal(aabb[world_idx, g], mj_aabb[g], tol=1e-6)
+                    self.assertAlmostEqual(float(rbound[world_idx, g]), float(mj_rbound[g]), places=6)
+
+        check_bounds(sizes)
+
+        # Resizing world 1's shapes at runtime must move only that world's primitive bounds.
+        scale = model.shape_scale.numpy()
+        for g in primitive_geoms + untouched_geoms:
+            scale[mapping[1, g]] *= 0.5
+        model.shape_scale.assign(scale)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        check_bounds([sizes[0], tuple(0.5 * np.array(sizes[1]))])
+
+    def test_heterogeneous_worlds_keep_geom_aabb_batched(self):
+        """Per-world mesh assets must not collapse geom_aabb to one row when the rows happen to be equal:
+        the kernel writes world-specific primitive bounds into it, so it needs one row per world."""
+        import mujoco
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        indices = np.array([0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3], dtype=np.int32)
+        # The same tetrahedron with its vertices listed in another order: a distinct mesh asset
+        # (so the worlds count as heterogeneous and per-world mesh bounds are installed) whose
+        # compiled bounds are identical to the first one's.
+        permutation = np.array([3, 2, 1, 0])
+        meshes = [Mesh(vertices, indices), Mesh(vertices[permutation], np.argsort(permutation)[indices])]
+        half_extents = [(0.1, 0.2, 0.3), (0.2, 0.4, 0.6)]
+
+        builder = newton.ModelBuilder()
+        for i, (hx, hy, hz) in enumerate(half_extents):
+            world = newton.ModelBuilder()
+            body = world.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+            world.add_shape_box(body=body, hx=hx, hy=hy, hz=hz)
+            world.add_shape_mesh(body=body, mesh=meshes[i], xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()))
+            world.add_articulation([world.add_joint_free(body)])
+            builder.add_world(world, xform=wp.transform((4.0 * i, 0.0, 0.0), wp.quat_identity()))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, separate_worlds=True, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mjw_model.nmesh, 2)
+        self.assertEqual(solver.mjw_model.geom_aabb.shape[0], 2)
+        self.assertEqual(solver.mjw_model.geom_rbound.shape[0], 2)
+
+        mapping = solver.mjc_geom_to_newton_shape.numpy()
+        geom_type = [int(t) for t in solver.mj_model.geom_type]
+        box_geom = next(g for g, t in enumerate(geom_type) if t == int(mujoco.mjtGeom.mjGEOM_BOX))
+        aabb = solver.mjw_model.geom_aabb.numpy()
+        for world_idx, extents in enumerate(half_extents):
+            assert_np_equal(aabb[world_idx, box_geom, 1], np.array(extents), tol=1e-6)
+
+        scale = model.shape_scale.numpy()
+        scale[mapping[1, box_geom]] *= 0.5
+        model.shape_scale.assign(scale)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        aabb = solver.mjw_model.geom_aabb.numpy()
+        assert_np_equal(aabb[0, box_geom, 1], np.array(half_extents[0]), tol=1e-6)
+        assert_np_equal(aabb[1, box_geom, 1], 0.5 * np.array(half_extents[1]), tol=1e-6)
+
 
 class TestMuJoCoSolverEqualityConstraintProperties(unittest.TestCase):
     def test_connect_reference_anchors_use_free_joint_coordinates(self):

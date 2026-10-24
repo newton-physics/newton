@@ -481,7 +481,8 @@ _MJW_BATCHED_MODEL_FIELDS = (
     "geom_solref",
     "geom_solimp",
     "geom_size",
-    "geom_rbound",
+    "geom_aabb",  # Derived from geom_size, computed by set_const_fixed
+    "geom_rbound",  # Derived from geom_size, computed by set_const_fixed
     "geom_pos",
     "geom_quat",
     "geom_friction",
@@ -9174,8 +9175,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         rbound[missing] = 0.0
         if np.all(dataid == dataid[:1]):
             dataid = dataid[:1]
-        if np.all(aabb == aabb[:1]):
-            aabb = aabb[:1]
+        # geom_aabb stays one row per world: update_geom_properties_kernel writes
+        # world-specific primitive bounds into it, like geom_size and geom_rbound.
         self.mjw_model.geom_dataid = wp.array(dataid, dtype=wp.int32, device=self.model.device)
         self.mjw_model.geom_size = wp.array(size, dtype=wp.vec3, device=self.model.device)
         self.mjw_model.geom_aabb = wp.array(aabb, dtype=wp.vec3, device=self.model.device)
@@ -10092,6 +10093,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.geom_type,
                 self._mujoco.mjtGeom.mjGEOM_MESH,
                 self._mujoco.mjtGeom.mjGEOM_HFIELD,
+                self._mujoco.mjtGeom.mjGEOM_SDF,
+                self._mujoco.mjtGeom.mjGEOM_PLANE,
+                self._mujoco.mjtGeom.mjGEOM_SPHERE,
+                self._mujoco.mjtGeom.mjGEOM_CAPSULE,
+                self._mujoco.mjtGeom.mjGEOM_ELLIPSOID,
+                self._mujoco.mjtGeom.mjGEOM_CYLINDER,
+                self._mujoco.mjtGeom.mjGEOM_BOX,
+                float(self._mujoco.mjMAXVAL),
                 self.mjw_model.geom_dataid,
                 self.mjw_model.mesh_pos,
                 self.mjw_model.mesh_quat,
@@ -10116,6 +10125,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.geom_solmix,
                 self.mjw_model.geom_gap,
                 self.mjw_model.geom_margin,
+                self.mjw_model.geom_aabb,
+                self.mjw_model.geom_rbound,
             ],
             device=self.model.device,
         )
