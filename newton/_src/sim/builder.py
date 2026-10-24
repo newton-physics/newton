@@ -4655,8 +4655,8 @@ class ModelBuilder:
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
-                (see :meth:`add_camera`), attached to their nearest imported rigid-body ancestor or fixed
-                in the world. Orthographic cameras are skipped with a warning. Default is True.
+                (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
+                ancestor or fixed in the world. Orthographic cameras are skipped with a warning. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             load_static_visual_shapes: If True, supported visual-only geometry outside
                 rigid-body hierarchies is loaded as static shapes when
@@ -5015,8 +5015,8 @@ class ModelBuilder:
             parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
             parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
-                :meth:`add_camera`). Tracking modes and targets are imported as fixed mounts with a
-                warning; orthographic cameras are skipped with a warning. Default is True.
+                :meth:`~newton.ModelBuilder.add_camera`). Tracking modes and targets are imported as fixed
+                mounts; orthographic cameras are skipped with a warning. Default is True.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -9362,7 +9362,10 @@ class ModelBuilder:
             if horizontal < 0.0 or vertical < 0.0 or (horizontal == 0.0 and vertical == 0.0):
                 raise ValueError("Apertures must be non-negative and at least one must be positive")
 
+        aperture_offset = (float(horizontal_aperture_offset), float(vertical_aperture_offset))
         near, far = (float(v) for v in clipping_range)
+        if not all(math.isfinite(v) for v in (focal_length, horizontal, vertical, *aperture_offset, near, far)):
+            raise ValueError("Camera intrinsics and clipping_range must be finite")
         if not 0.0 <= near < far:
             raise ValueError(f"clipping_range must satisfy 0 <= near < far, got {clipping_range}")
         if resolution is None:
@@ -9372,6 +9375,17 @@ class ModelBuilder:
             if width <= 0 or height <= 0:
                 raise ValueError(f"resolution must be positive, got {resolution}")
 
+        # Validate custom attributes before changing any camera array.
+        for name in custom_attributes or {}:
+            attribute = self.custom_attributes.get(name)
+            if attribute is None:
+                raise AttributeError(
+                    f"Custom attribute '{name}' is not defined; declare it with add_custom_attribute()"
+                )
+            if attribute.frequency != Model.AttributeFrequency.CAMERA:
+                frequency = getattr(attribute.frequency, "name", attribute.frequency)
+                raise ValueError(f"Custom attribute '{name}' has frequency {frequency}, expected CAMERA")
+
         camera = self.camera_count
         self.camera_label.append(label or f"camera_{camera}")
         self.camera_world.append(self.body_world[body] if body >= 0 else self.current_world)
@@ -9380,7 +9394,7 @@ class ModelBuilder:
         self.camera_lens.append(int(lens))
         self.camera_focal_length.append(focal_length)
         self.camera_aperture.append((horizontal, vertical))
-        self.camera_aperture_offset.append((float(horizontal_aperture_offset), float(vertical_aperture_offset)))
+        self.camera_aperture_offset.append(aperture_offset)
         self.camera_clipping_range.append((near, far))
         self.camera_resolution.append((width, height))
         if custom_attributes:

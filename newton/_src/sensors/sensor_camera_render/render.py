@@ -105,6 +105,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         state.render_color
         or state.render_hdr_color
         or state.render_normal
+        or state.render_face_index
         or state.render_barycentric
         or (state.render_albedo and config.enable_textures)
     ):
@@ -672,7 +673,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         if wp.static(state.has_view_clip):
             clip = view_clip[view_index]
             near = clip[0]
-            far = clip[1]
+            far = wp.min(clip[1], far)
         frame_index = wp.int32(-1)
         if wp.static(state.ray_mode == int(RayGenerationMode.FUNCTION)):
             frame_index = view_frame[view_index]

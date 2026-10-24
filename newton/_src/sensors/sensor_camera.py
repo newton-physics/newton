@@ -7,7 +7,6 @@ import enum
 import math
 import os
 import re
-import weakref
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -18,7 +17,7 @@ from ..core.types import Devicelike
 from ..geometry.flags import ShapeFlags
 from ..sim.camera import CameraLens
 from ..utils.selection import match_labels
-from .sensor_camera_render import Utils
+from .sensor_camera_render import Utils, raytrace
 from .sensor_camera_render.camera_utils import _multisample_offset
 from .sensor_camera_render.types import (
     AntiAliasing,
@@ -39,12 +38,13 @@ if TYPE_CHECKING:
 PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 
 
-# Render contexts shared by bound sensors of the same model (scene data, textures, lights).
-_SHARED_RENDER_CONTEXTS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+# Render contexts shared by bound sensors are stored on the model under this attribute, keyed by
+# ``load_textures``, so they are released together with the model.
+_SHARED_RENDER_CONTEXTS_ATTR = "_sensor_camera_render_contexts"
 
-_HIT_TRIANGLE_MESH = 0xFFFFFFFD
-_HIT_PARTICLES = 0xFFFFFFFE
-_HIT_NONE = 0xFFFFFFFF
+_HIT_TRIANGLE_MESH = int(raytrace.TRIANGLE_MESH_SHAPE_ID)
+_HIT_PARTICLES = int(raytrace.PARTICLES_SHAPE_ID)
+_HIT_NONE = int(raytrace.NO_HIT_SHAPE_ID)
 
 
 @wp.kernel(enable_backward=False)
@@ -282,7 +282,8 @@ class SensorCamera:
                 kernel for every view.
             ray_params: Parameter table passed to ``ray_function``.
             clipping_range: Near and far clip distance [m] for every view. Defaults
-                to the cameras' clip ranges, or ``(0, 1e6)`` for sites.
+                to the cameras' clip ranges, or ``(0, 1e6)`` for sites. The far
+                distance is also limited by the render config's ``max_distance``.
             default_clear_data: Clear values used by :meth:`update` when its
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
             default_render_config: Render settings used by :meth:`update` when
@@ -304,7 +305,7 @@ class SensorCamera:
         self._bound = cameras is not None or sites is not None
         if self._bound:
             # Bound sensors share scene data (and lights) with the other bound sensors of the model.
-            contexts = _SHARED_RENDER_CONTEXTS.setdefault(model, {})
+            contexts = model.__dict__.setdefault(_SHARED_RENDER_CONTEXTS_ATTR, {})
             render_context = contexts.get(load_textures)
             if render_context is None:
                 render_context = contexts[load_textures] = RenderContext(model, load_textures=load_textures)

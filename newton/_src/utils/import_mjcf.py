@@ -413,7 +413,7 @@ def parse_mjcf(
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
         parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
             :meth:`~newton.ModelBuilder.add_camera`). Tracking modes and targets are imported as fixed
-            mounts with a warning; orthographic cameras are skipped with a warning. Default is True.
+            mounts; orthographic cameras are skipped with a warning. Default is True.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -1849,12 +1849,13 @@ def parse_mjcf(
                 continue
             mode = camera_attrib.get("mode", "fixed")
             if mode != "fixed" or "target" in camera_attrib:
-                warnings.warn(
-                    f"MJCF camera '{camera_name}' uses mode='{mode}'"
-                    + (f" with target='{camera_attrib['target']}'" if "target" in camera_attrib else "")
-                    + "; only fixed mounts are supported, importing it as a fixed camera.",
-                    NewtonWarning,
-                    stacklevel=2,
+                # Tracking cameras are common in MuJoCo assets; importing them as fixed mounts is a
+                # documented limitation, so report it at debug level instead of warning on every import.
+                logger.debug(
+                    "MJCF camera '%s' uses mode='%s'%s; only fixed mounts are supported, importing it as a fixed camera.",
+                    camera_name,
+                    mode,
+                    f" with target='{camera_attrib['target']}'" if "target" in camera_attrib else "",
                 )
 
             camera_pos = parse_vec(camera_attrib, "pos", (0.0, 0.0, 0.0)) * scale

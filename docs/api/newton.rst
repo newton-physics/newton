@@ -31,6 +31,7 @@ newton
 
    Axis
    BodyFlags
+   CameraLens
    CollisionPipeline
    CollisionSubstepScheduler
    Contacts
