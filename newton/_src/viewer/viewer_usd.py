@@ -83,6 +83,7 @@ class ViewerUSD(ViewerBase):
     """
 
     _root_path = "/root"
+    _export_gprims = True
 
     def __init__(
         self,
@@ -417,6 +418,83 @@ class ViewerUSD(ViewerBase):
                     "displayOpacity", Sdf.ValueTypeNames.FloatArray, UsdGeom.Tokens.constant, 1
                 )
             display_opacity.Set([float(np.clip(opacity, 0.0, 1.0))], self._frame_index)
+
+    @override
+    def log_geo(
+        self,
+        name: str,
+        geo_type: int,
+        geo_scale: tuple[float, ...],
+        geo_thickness: float,
+        geo_is_solid: bool,
+        geo_src: newton.Mesh | newton.Heightfield | None = None,
+        hidden: bool = False,
+    ):
+        """
+        Log a geometry prototype, as a native USD Gprim where one exists.
+
+        Spheres, capsules, cylinders, cones, boxes, and ellipsoids become
+        ``UsdGeom`` Gprims; other types are tessellated via :meth:`log_mesh`.
+
+        Args:
+            name: Unique path/name used to register the geometry.
+            geo_type: Geometry type value from :class:`newton.GeoType`.
+            geo_scale: Geometry scale tuple, interpreted per geometry type.
+            geo_thickness: Shell thickness for non-solid mesh generation.
+            geo_is_solid: Whether to render mesh geometry as a solid.
+            geo_src: Source mesh or heightfield for mesh-based ``geo_type`` values.
+            hidden: Whether the geometry should be hidden.
+        """
+        qualified_name = self._qualify(name)
+        if self._export_gprims and self._log_gprim(qualified_name, int(geo_type), geo_scale, hidden):
+            return
+        self._remove_retyped_prototype(qualified_name, UsdGeom.Mesh)
+        super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src=geo_src, hidden=hidden)
+
+    def _log_gprim(self, name: str, geo_type: int, geo_scale: tuple[float, ...], hidden: bool) -> bool:
+        """Define a Gprim prototype; return False if ``geo_type`` needs a mesh."""
+        schema = {
+            newton.GeoType.SPHERE: UsdGeom.Sphere,
+            newton.GeoType.CAPSULE: UsdGeom.Capsule,
+            newton.GeoType.CYLINDER: UsdGeom.Cylinder,
+            newton.GeoType.CONE: UsdGeom.Cone,
+            newton.GeoType.BOX: UsdGeom.Cube,
+            newton.GeoType.ELLIPSOID: UsdGeom.Sphere,
+        }.get(geo_type)
+        scale = [float(v) for v in geo_scale]
+        if schema is None or (geo_type == newton.GeoType.CYLINDER and len(scale) > 2 and scale[2] != 0.0):
+            return False
+        if geo_type == newton.GeoType.ELLIPSOID and not scale:
+            scale = [1.0]
+
+        is_scaled = geo_type in (newton.GeoType.BOX, newton.GeoType.ELLIPSOID)
+        self._remove_retyped_prototype(name, UsdGeom.Xform if is_scaled else schema)
+        path = self._get_path(name)
+        self._ensure_scopes_for_path(self.stage, path)
+        if is_scaled:
+            # Instances override the prototype's xformOps, so scale a child
+            # Gprim whose schema fallbacks give it unit half-extents.
+            root = UsdGeom.Xform.Define(self.stage, path)
+            gprim = schema.Define(self.stage, f"{path}/geom")
+            UsdGeom.XformCommonAPI(gprim).SetScale(Gf.Vec3f(*(scale + scale[:1] * 2)[:3]))
+        else:
+            # Schema fallback axis is Z, matching Newton's shape convention.
+            root = gprim = schema.Define(self.stage, path)
+            gprim.GetRadiusAttr().Set(scale[0])
+            if geo_type != newton.GeoType.SPHERE:
+                gprim.GetHeightAttr().Set(2.0 * scale[1])
+
+        gprim.GetExtentAttr().Set(UsdGeom.Boundable.ComputeExtentFromPlugins(gprim, Usd.TimeCode.Default()))
+        root.GetVisibilityAttr().Set("invisible" if hidden else "inherited", self._frame_index)
+        self._meshes[name] = root
+        return True
+
+    def _remove_retyped_prototype(self, name: str, prim_type: type) -> None:
+        # Redefining a prim in place would keep a stale /geom child or hand log_mesh a non-mesh prim.
+        existing = self._meshes.get(name)
+        if existing is not None and not existing.GetPrim().IsA(prim_type):
+            self.stage.RemovePrim(existing.GetPath())
+            del self._meshes[name]
 
     def _resolve_texture_path(self, mesh_name: str, texture) -> str | None:
         """Resolve a texture path or export an image array next to the USD file."""
