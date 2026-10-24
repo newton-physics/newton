@@ -1755,6 +1755,28 @@ add_example_test(
     test_options={"num-frames": 2, "proxy-iterations": 1, "vbd-iterations": 2, "mpm-iterations": 1},
     use_viewer=True,
 )
+add_example_batch(
+    TestMultiphysicsExamples,
+    name="multiphysics.example_franka_bottle_squeeze",
+    variants=[
+        {
+            "devices": cuda_test_devices,
+            "test_options": {
+                "num-frames": 2,
+                "water-particles": 2048,
+                "segments": 32,
+                "rings": 28,
+                "vbd-iterations": 20,
+                "substeps": 8 if use_cuda_graph else 3,
+                "surface-voxel-size": 0.003,
+                "surface-max-grid-cells": 200_000,
+                "cuda-graph": use_cuda_graph,
+            },
+            "test_suffix": "graph" if use_cuda_graph else "no_graph",
+        }
+        for use_cuda_graph in (True, False)
+    ],
+)
 add_example_test(
     TestMultiphysicsExamples,
     name="multiphysics.example_xpbd_mpm_coupled_solver",

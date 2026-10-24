@@ -184,6 +184,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
+        - Optional, state-local, perfectly plastic shell bending
         - Rigid body simulation (joints, contacts) using the AVBD algorithm
         - Coupled particle-rigid body systems
         - Compliant rigid-body-to-particle attachments
@@ -393,6 +394,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_collision_detection_interval: int | None = None,
         particle_edge_parallel_epsilon: float = 1e-5,
         particle_enable_tile_solve: bool = True,
+        particle_enable_bending_plasticity: bool = False,
         particle_topological_contact_filter_threshold: int = 2,
         particle_rest_shape_contact_exclusion_radius: float = 0.0,
         particle_external_vertex_contact_filtering_map: dict | None = None,
@@ -485,6 +487,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 The tiled kernel is specialized once at construction from the model's element
                 materials (e.g. a tetrahedra-only model compiles without triangle/edge code paths);
                 rebuild the solver after changing triangle or edge stiffness.
+            particle_enable_bending_plasticity: Enable rate-independent, perfectly plastic
+                dihedral bending. Disabled by default. Register attributes with
+                :meth:`register_custom_attributes` before finalizing the model, then author
+                ``model.vbd.edge_bending_yield_angle`` [rad] per edge. Infinity keeps an edge
+                elastic; zero allows bending without elastic springback. Plastic offsets live
+                in ``state.vbd.edge_plastic_angle`` [rad], leaving ``model.edge_rest_angle``
+                unchanged. The return map runs once after each solved timestep. Yield angles
+                must be scaled with the rest mesh's dual widths to represent a fixed yield
+                curvature. This mode wraps dihedral residuals across the angle branch cut;
+                it does not implement membrane plasticity, hardening, or fracture, and does
+                not support automatic differentiation. Rebuild the solver to change this mode.
             particle_topological_contact_filter_threshold: Maximum topological distance (measured in rings) under which candidate
                 self-contacts are discarded. Set to a higher value to tolerate contacts between more closely connected mesh
                 elements. Only used when `particle_enable_self_contact` is `True`. Note that setting this to a value larger than 3 will
@@ -988,6 +1001,23 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.integrate_with_external_rigid_solver = integrate_with_external_rigid_solver
         self._integrates_rigid_bodies = integrates_rigid_bodies
 
+        self._bending_plasticity_enabled = bool(particle_enable_bending_plasticity and model.edge_count > 0)
+        self._edge_rest_angles = model.edge_rest_angle
+        if self._bending_plasticity_enabled:
+            vbd = getattr(model, "vbd", None)
+            yield_angles = getattr(vbd, "edge_bending_yield_angle", None)
+            if yield_angles is None:
+                raise ValueError(
+                    "Bending plasticity requires SolverVBD.register_custom_attributes(builder) "
+                    "before finalizing the model."
+                )
+            values = yield_angles.numpy()
+            if np.any(np.isnan(values)) or np.any(values < 0.0):
+                raise ValueError("model.vbd.edge_bending_yield_angle must contain nonnegative angles or infinity")
+            if model.requires_grad:
+                raise ValueError("VBD bending plasticity does not support automatic differentiation")
+            self._edge_rest_angles = wp.empty_like(model.edge_rest_angle)
+
         # Initialize particle system
         self._init_particle_system(
             model,
@@ -1124,7 +1154,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             include_triangles = not _is_tet_only_elasticity_model(model)
             two_particles_per_warp = not include_tets
             self._tiled_elasticity_kernel = make_solve_elasticity_tile(
-                include_triangles, include_tets, two_particles_per_warp
+                include_triangles,
+                include_tets,
+                two_particles_per_warp,
+                wrap_bending_angles=self._bending_plasticity_enabled,
             )
             self._tiled_elasticity_particles_per_block = 2 if two_particles_per_warp else 1
         if particle_enable_self_contact:
@@ -2379,22 +2412,50 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     @override
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
-        """Register SolverVBD custom Model attributes.
+        """Register SolverVBD custom Model and State attributes.
 
         Currently registers:
           - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode (non-rod joints)
           - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional rod angular Dahl friction
+          - ``vbd:edge_bending_yield_angle`` [rad] on Model, default infinity
+          - ``vbd:edge_plastic_angle`` [rad] on State, default zero
 
-        Attributes are declared in the ``vbd`` namespace so they can be authored
+        Joint attributes are declared in the ``vbd`` namespace so they can be authored
         in scenes and in USD as ``newton:vbd:<attr>``.
 
         Dahl rod friction is enabled per joint only where both
         ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
         positive; the attributes default to zero.
 
+        Edge yield angles are builder-authored material inputs indexed by
+        generated bending hinges; USD schema and importer support is not
+        implemented. Plastic offsets are runtime State history. These attributes
+        are used only with ``particle_enable_bending_plasticity=True``.
+        Registering them does not enable plasticity or change elastic defaults.
+
         Args:
             builder: Model builder to register attributes on.
         """
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="edge_bending_yield_angle",
+                frequency=Model.AttributeFrequency.EDGE,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=float("inf"),
+                namespace="vbd",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="edge_plastic_angle",
+                frequency=Model.AttributeFrequency.EDGE,
+                assignment=Model.AttributeAssignment.STATE,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="vbd",
+            )
+        )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",
@@ -2692,6 +2753,20 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # in existing CUDA graphs, silently ignoring the mode change on replay.
             self.joint_is_hard.assign(is_hard_np)
 
+    def _get_edge_plastic_angle(self, state: State) -> wp.array[float]:
+        """Validate state-local bending history without device synchronization."""
+        angles = getattr(getattr(state, "vbd", None), "edge_plastic_angle", None)
+        if (
+            angles is None
+            or angles.shape != (self.model.edge_count,)
+            or angles.dtype != wp.float32
+            or angles.device != self.device
+        ):
+            raise ValueError("state.vbd.edge_plastic_angle must be a float32 edge array on the solver device")
+        if angles.requires_grad or (state.particle_q is not None and state.particle_q.requires_grad):
+            raise ValueError("VBD bending plasticity does not support automatic differentiation")
+        return angles
+
     @override
     def step(
         self,
@@ -2708,7 +2783,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         The solver follows a 3-phase structure:
         1. Initialize: Forward integrate particles and rigid bodies, detect collisions, initialize contact state
         2. Iterate: Interleave particle and rigid-body VBD iterations
-        3. Finalize: Update velocities and persistent state (Dahl friction)
+        3. Finalize: Update velocities, Dahl friction, and optional shell bending plasticity
 
         To control rigid body substepping behavior, call set_rigid_history_update().
         When True (default), the step rebuilds rigid contact lists, re-initializes
@@ -2735,6 +2810,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         contacts = self._resolve_step_contacts(contacts)
         self.validate_observables(observables, contacts)
         self._apply_module_options()
+        if self._bending_plasticity_enabled:
+            plastic_in = self._get_edge_plastic_angle(state_in)
+            plastic_out = self._get_edge_plastic_angle(state_out)
+            wp.launch(
+                particle_vbd_kernels.prepare_bending_rest_angles,
+                dim=self.model.edge_count,
+                inputs=[self.model.edge_rest_angle, plastic_in],
+                outputs=[self._edge_rest_angles],
+                device=self.device,
+            )
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True
 
@@ -2821,6 +2906,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if update_tendon_diagnostics:
             self._update_tendon_segment_diagnostics(state_out, dt)
         self._finalize_particles(state_out, dt)
+        if self._bending_plasticity_enabled:
+            wp.launch(
+                particle_vbd_kernels.update_bending_plasticity,
+                dim=self.model.edge_count,
+                inputs=[
+                    state_out.particle_q,
+                    self.model.edge_indices,
+                    self.model.edge_bending_properties,
+                    self.model.vbd.edge_bending_yield_angle,
+                    self.model.edge_rest_angle,
+                    plastic_in,
+                ],
+                outputs=[plastic_out],
+                device=self.device,
+            )
         self._save_tendon_history(state_out)
 
     @override
@@ -2865,10 +2965,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         volumetric (tet) soft bodies, and it runs even when an external solver
         integrates the bodies or the model has none. A requested particle field is
         skipped if its *state* array is ``None``. Particle and body-particle solver
-        history is intentionally left untouched: ``particle_q_prev`` is rebaselined
+        contact history is intentionally left untouched: ``particle_q_prev`` is rebaselined
         from the incoming state at the start of the next :meth:`step`, self-contact
         and body-particle contacts rebuild per step, and tet/cloth elasticity is
-        stateless, so no particle history cold-start is required. Reset does not
+        stateless in the default elastic mode. With bending plasticity enabled,
+        ``PARTICLE_Q`` also zeros the selected worlds' ``state.vbd.edge_plastic_angle``;
+        ``PARTICLE_QD`` and ``flags=0`` preserve permanent creases. Reset does not
         refresh the particle self-contact BVH; the next :meth:`step` refits it from
         the incoming positions. After a large reset displacement, call
         :meth:`rebuild_bvh` to restore acceleration-structure quality. Both reset
@@ -2912,6 +3014,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         world_mask = self._normalize_reset_world_mask(world_mask)
 
         flags_value = int(StateFlags.ALL if flags is None else flags)
+        plastic_reset = None
+        if self._bending_plasticity_enabled and flags_value & int(StateFlags.PARTICLE_Q):
+            plastic_reset = self._get_edge_plastic_angle(state)
 
         # Only requested BODY flags reach the launch as actionable arrays; everything
         # else stays None so an unrequested (possibly wrong-device) State array never
@@ -2969,6 +3074,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
+        if plastic_reset is not None:
+            wp.launch(
+                particle_vbd_kernels.reset_bending_plasticity,
+                dim=model.edge_count,
+                inputs=[world_mask, world_mask is None, model.world_count, model.particle_world, model.edge_indices],
+                outputs=[plastic_reset],
+                device=self.device,
+            )
         self._reset_tendon_state(state, world_mask)
 
         if not self._integrates_rigid_bodies:
@@ -4153,7 +4266,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.model.tri_materials,
                         self.model.tri_areas,
                         self.model.edge_indices,
-                        self.model.edge_rest_angle,
+                        self._edge_rest_angles,
                         self.model.edge_rest_length,
                         self.model.edge_bending_properties,
                         self.model.tet_indices,
@@ -4174,6 +4287,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     dim=self.model.particle_color_groups[color].size,
                     inputs=[
                         dt,
+                        self._bending_plasticity_enabled,
                         self.model.particle_color_groups[color],
                         self.particle_q_prev,
                         state_in.particle_q,
@@ -4185,7 +4299,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.model.tri_materials,
                         self.model.tri_areas,
                         self.model.edge_indices,
-                        self.model.edge_rest_angle,
+                        self._edge_rest_angles,
                         self.model.edge_rest_length,
                         self.model.edge_bending_properties,
                         self.model.tet_indices,

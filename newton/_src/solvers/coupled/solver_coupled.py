@@ -304,6 +304,7 @@ _RESET_RECONCILABLE_FREQUENCIES = frozenset(
     {
         Model.AttributeFrequency.BODY,
         Model.AttributeFrequency.PARTICLE,
+        Model.AttributeFrequency.EDGE,
         Model.AttributeFrequency.JOINT,
         Model.AttributeFrequency.SHAPE,
         Model.AttributeFrequency.JOINT_COORD,
@@ -449,6 +450,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._attribute_projections = self._build_attribute_projections()
         self._joint_constraint_starts = self._build_joint_constraint_starts()
         self._reset_state_attributes = self._build_reset_state_attributes()
+        self._edge_state_attributes = tuple(
+            name
+            for name, (frequency, _) in self._reset_state_attributes.items()
+            if frequency == Model.AttributeFrequency.EDGE
+        )
         self._reset_input_attributes = self._build_reset_input_attributes()
         self._reset_row_world = self._build_reset_row_world_maps()
         self._full_reset_world_mask = wp.ones(model.world_count + 1, dtype=wp.bool, device=model.device)
@@ -544,7 +550,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _build_reset_input_attributes(self) -> dict[str, Model.AttributeFrequency | str]:
         """Add public force inputs to the arrays distributed before reset."""
         attributes = {
-            name: frequency for name, (frequency, flag) in self._reset_state_attributes.items() if flag is not None
+            name: frequency
+            for name, (frequency, flag) in self._reset_state_attributes.items()
+            if flag is not None or frequency == Model.AttributeFrequency.EDGE
         }
         attributes.update(_RESET_FORCE_INPUT_FREQUENCIES)
         return attributes
@@ -571,6 +579,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
             frequency.JOINT: model.joint_world,
             frequency.SHAPE: model.shape_world,
         }
+        if frequency.EDGE in required:
+            edge_particles = model.edge_indices.numpy()[:, 2]
+            edge_world = model.particle_world.numpy()[edge_particles]
+            direct[frequency.EDGE] = wp.array(edge_world, dtype=wp.int32, device=model.device)
         world_starts = {
             frequency.JOINT_COORD: model.joint_coord_world_start,
             frequency.JOINT_DOF: model.joint_dof_world_start,
@@ -822,6 +834,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return [int(index) for index in cfg.bodies]
         if frequency == model_frequency.PARTICLE:
             return [int(index) for index in cfg.particles]
+        if frequency == model_frequency.EDGE:
+            edges = self.model.edge_indices.numpy()
+            owned = np.all((edges < 0) | np.isin(edges, cfg.particles), axis=1)
+            return np.flatnonzero(owned).tolist()
         if frequency == model_frequency.JOINT:
             return [int(index) for index in cfg.joints]
         if frequency == model_frequency.SHAPE:
@@ -2313,7 +2329,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """Reset coupled sub-solvers and clear coupled-solver transient state.
 
         Generic reconciliation of registered ``STATE`` attributes is limited
-        to body, particle, joint, shape, joint-coordinate, joint-DOF, and
+        to body, particle, edge, joint, shape, joint-coordinate, joint-DOF, and
         joint-constraint frequencies, whose rows have explicit entry
         ownership. Other frequencies require coupler-specific parent
         reconciliation.
@@ -2375,6 +2391,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
         finally:
             self._active_observables = None
         _copy_state(state_in, state_out)
+        for name in self._edge_state_attributes:
+            src = _nested_attribute_value(state_in, name)
+            dst = _nested_attribute_value(state_out, name)
+            if src is not dst and isinstance(src, wp.array) and isinstance(dst, wp.array):
+                wp.copy(dst, src)
         self._reconcile_state(state_out)
         if observables is not None:
             self._reconcile_observables(observables)
@@ -2605,6 +2626,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
         for entry in self._entries.values():
             flags = self._input_state_copy_flags(state_in, entry.state_0)
             _copy_state_to_entry(state_in, entry.state_0, entry)
+            for name in self._edge_state_attributes:
+                src = _nested_attribute_value(state_in, name)
+                dst = _nested_attribute_value(entry.state_0, name)
+                if isinstance(src, wp.array) and isinstance(dst, wp.array):
+                    self._launch_reset_view_kernel(
+                        _copy_reset_view_rows_kernel,
+                        entry,
+                        Model.AttributeFrequency.EDGE,
+                        self._full_reset_world_mask,
+                        True,
+                        src,
+                        dst,
+                    )
             self._notify_input_state_update(entry, flags, dt=dt, iteration_restart=iteration_restart)
 
     def _reconcile_state(self, state_out: State) -> None:
@@ -2612,6 +2646,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
         for entry in self._entries.values():
             if entry.state_1 is None:
                 continue
+            for name in self._edge_state_attributes:
+                src = _nested_attribute_value(entry.state_1, name)
+                dst = _nested_attribute_value(state_out, name)
+                if isinstance(src, wp.array) and isinstance(dst, wp.array):
+                    self._launch_reset_owned_scatter(
+                        entry, Model.AttributeFrequency.EDGE, self._full_reset_world_mask, src, dst
+                    )
             if entry.body_indices.shape[0] > 0 and entry.state_1.body_q is not None and state_out.body_q is not None:
                 wp.launch(
                     _scatter_body_state_mapped,

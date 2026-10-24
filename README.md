@@ -871,6 +871,20 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/multiphysics/example_franka_bottle_squeeze.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_franka_bottle_squeeze.jpg" alt="Franka PET Bottle Squeeze">
+      </a>
+    </td>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples franka_bottle_squeeze</code>
+    </td>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Contacts Examples</h3></td>
   </tr>
   <tr>

@@ -15,6 +15,14 @@ Open the notebooks directly in Colab:
 - :doc:`Robotics </tutorials/01_robotics>` |robotics-colab|
 
 You can also explore the examples in the ``newton/examples/`` directory for more use cases.
+The :doc:`Franka bottle squeeze <franka_bottle_squeeze>` worked example explains
+shell plasticity, water boundaries, and reconstructed fluid surfaces.
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Worked Examples
+
+   franka_bottle_squeeze
 
 .. toctree::
    :maxdepth: 2

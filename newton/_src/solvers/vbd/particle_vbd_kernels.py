@@ -692,6 +692,66 @@ def compute_angle_derivative(
     return dsin_dx * cos_theta - dcos_dx * sin_theta
 
 
+@wp.kernel
+def prepare_bending_rest_angles(
+    rest_angle: wp.array[float],
+    plastic_angle: wp.array[float],
+    effective_rest_angle: wp.array[float],
+):
+    edge = wp.tid()
+    effective_rest_angle[edge] = rest_angle[edge] + plastic_angle[edge]
+
+
+@wp.kernel
+def update_bending_plasticity(
+    positions: wp.array[wp.vec3],
+    edges: wp.array2d[int],
+    bending_properties: wp.array2d[float],
+    yield_angle: wp.array[float],
+    rest_angle: wp.array[float],
+    plastic_angle_in: wp.array[float],
+    plastic_angle_out: wp.array[float],
+):
+    edge = wp.tid()
+    plastic_angle = plastic_angle_in[edge]
+    plastic_angle_out[edge] = plastic_angle
+    i, j = edges[edge, 0], edges[edge, 1]
+    if i < 0 or j < 0 or bending_properties[edge, 0] <= 0.0:
+        return
+
+    k, l = edges[edge, 2], edges[edge, 3]
+    x0, x1, x2, x3 = positions[i], positions[j], positions[k], positions[l]
+    n0 = wp.cross(x2 - x0, x3 - x0)
+    n1 = wp.cross(x3 - x1, x2 - x1)
+    e = x3 - x2
+    # Match the elastic bending kernel's degeneracy tolerance.
+    if wp.length(n0) < 1.0e-6 or wp.length(n1) < 1.0e-6 or wp.length(e) < 1.0e-6:
+        return
+    n0, n1, e = wp.normalize(n0), wp.normalize(n1), wp.normalize(e)
+    theta = wp.atan2(wp.dot(wp.cross(n0, n1), e), wp.dot(n0, n1))
+    elastic_angle = theta - rest_angle[edge] - plastic_angle
+    elastic_angle = wp.atan2(wp.sin(elastic_angle), wp.cos(elastic_angle))
+    # Keep the yield-sized elastic curvature, which provides unloading springback.
+    increment = elastic_angle - wp.clamp(elastic_angle, -yield_angle[edge], yield_angle[edge])
+    if wp.abs(increment) > 1.0e-7:
+        plastic_angle_out[edge] = plastic_angle + increment
+
+
+@wp.kernel
+def reset_bending_plasticity(
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+    particle_world: wp.array[int],
+    edges: wp.array2d[int],
+    plastic_angle: wp.array[float],
+):
+    edge = wp.tid()
+    world = particle_world[edges[edge, 2]]
+    if _reset_world_selected(world, world_mask, reset_all, world_count):
+        plastic_angle[edge] = 0.0
+
+
 @wp.func
 def evaluate_dihedral_angle_based_bending_force_hessian(
     bending_index: int,
@@ -704,6 +764,7 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     stiffness: float,
     damping: float,
     dt: float,
+    wrap_angle: bool = False,
 ):
     # Skip invalid edges (boundary edges with missing opposite vertices)
     if edge_indices[bending_index, 0] == -1 or edge_indices[bending_index, 1] == -1:
@@ -749,7 +810,10 @@ def evaluate_dihedral_angle_based_bending_force_hessian(
     theta = wp.atan2(sin_theta, cos_theta)
 
     k = stiffness * edge_rest_length[bending_index]
-    dE_dtheta = k * (theta - edge_rest_angle[bending_index])
+    angle_error = theta - edge_rest_angle[bending_index]
+    if wrap_angle:
+        angle_error = wp.atan2(wp.sin(angle_error), wp.cos(angle_error))
+    dE_dtheta = k * angle_error
 
     # Pre-compute skew matrices (shared across all angle derivative computations)
     skew_e = wp.skew(e)
@@ -2499,7 +2563,13 @@ def scatter_particle_body_contact_force_and_hessian(
 
 
 @functools.cache
-def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_particles_per_warp: bool):
+def make_solve_elasticity_tile(
+    include_triangles: bool,
+    include_tets: bool,
+    two_particles_per_warp: bool,
+    *,
+    wrap_bending_angles: bool = False,
+):
     """Build the tiled per-particle elasticity kernel, specialized at code generation.
 
     One kernel source serves every tiled variant: ``include_triangles`` / ``include_tets``
@@ -2635,6 +2705,7 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
                                 edge_bending_properties[nei_edge_index, 0],
                                 edge_bending_properties[nei_edge_index, 1],
                                 dt,
+                                wp.static(wrap_bending_angles),
                             )
 
                             f += f_edge
@@ -2722,6 +2793,7 @@ def make_solve_elasticity_tile(include_triangles: bool, include_tets: bool, two_
 @wp.kernel
 def solve_elasticity(
     dt: float,
+    wrap_bending_angles: bool,
     particle_ids_in_color: wp.array[wp.int32],
     pos_prev: wp.array[wp.vec3],
     pos: wp.array[wp.vec3],
@@ -2813,7 +2885,8 @@ def solve_elasticity(
             if edge_bending_properties[nei_edge_index, 0] > 0.0:
                 f_edge, h_edge = evaluate_dihedral_angle_based_bending_force_hessian(
                     nei_edge_index, vertex_order_on_edge, pos, pos_prev, edge_indices, edge_rest_angles, edge_rest_length,
-                    edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt
+                    edge_bending_properties[nei_edge_index, 0], edge_bending_properties[nei_edge_index, 1], dt,
+                    wrap_bending_angles
                 )
 
                 f = f + f_edge
