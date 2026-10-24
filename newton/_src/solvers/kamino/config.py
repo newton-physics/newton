@@ -381,8 +381,9 @@ class ConstrainedDynamicsConfig(ConfigBase):
     (:class:`LLTBlockedRCMSolver`) and is currently opt-in pending further
     performance optimization.
     ``LDL`` selects block-sparse LDL transpose with an explicit diagonal D.
-    Dense PADMM uses a full block
-    pattern to accommodate changing contacts; sparse PADMM does not support it.
+    Its default ordering is MECA; set ``linear_solver_kwargs={"ordering": "rcm"}``
+    for Reverse Cuthill-McKee. Dense PADMM uses a full block pattern to
+    accommodate changing contacts; sparse PADMM does not support it.
     """
 
     linear_solver_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -990,6 +991,9 @@ class DVISolverConfig:
     Direct linear solver used for the bilateral constraint block.
     Defaults to ``LDL``, a block-sparse LDL transpose factorization with
     unit-lower L, explicit diagonal D, and one padded block per joint.
+    MECA (minimum edge creation) is the default block ordering. Set
+    ``bilateral_solver_kwargs={"ordering": "rcm"}`` for Reverse Cuthill-McKee,
+    or ``{"ordering": "meca"}`` to select the default explicitly.
     It requires a positive-definite matrix and uses no numerical pivoting.
     ``LLTB`` selects dense blocked Cholesky and
     ``LLTBRCM`` selects the RCM-reordered semi-sparse implementation.

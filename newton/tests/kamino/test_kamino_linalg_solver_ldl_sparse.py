@@ -4,6 +4,7 @@
 """Numerical contracts for the block-sparse LDL transpose backend."""
 
 import unittest
+from itertools import product
 
 import numpy as np
 import warp as wp
@@ -13,17 +14,43 @@ from newton._src.solvers.kamino._src.linalg.factorize.ldl_sparse import LDLBlock
 
 
 class TestLDLBlockSparseSolver(unittest.TestCase):
+    def test_symbolic_orderings(self):
+        """Match the source MECA and RCM permutations on disconnected block graphs."""
+        # A clique and a cycle distinguish MECA from minimum-degree ordering.
+        edges = [(i, j) for i in range(4) for j in range(i)] + [(4, 5), (5, 6), (6, 7), (7, 4)]
+        info = DenseSquareMultiLinearInfo()
+        info.finalize([8], dtype=wp.float32, device="cpu")
+        operator = DenseLinearOperatorData(info=info)
+        for ordering, expected in (
+            ("meca", [0, 1, 2, 3, 4, 5, 6, 7]),
+            ("rcm", [6, 7, 5, 4, 3, 2, 1, 0]),
+        ):
+            with self.subTest(ordering=ordering):
+                solver = LDLBlockSparseSolver(
+                    operator=operator, block_rows=[[[i] for i in range(8)]], block_edges=[edges], ordering=ordering
+                )
+                self.assertEqual(solver.ordering, ordering)
+                np.testing.assert_array_equal(solver.rows.numpy()[:, 0], expected)
+                self.assertEqual(solver.values.shape[0], 8 + len(edges) + 1)
+        self.assertEqual(LDLBlockSparseSolver().ordering, "meca")
+        with self.assertRaisesRegex(ValueError, "ordering"):
+            LDLBlockSparseSolver(ordering="unknown")
+
     def test_dense_capacity_refresh(self):
         """Refresh changing active dimensions and matrix sparsity under a fixed capacity."""
         rng = np.random.default_rng(312)
-        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
-            with self.subTest(device=device):
+        capacity = 1537  # Reserved contact rows must not create cubic symbolic metadata.
+        for device, ordering in product([wp.get_device("cpu"), *wp.get_cuda_devices()[:1]], ("meca", "rcm")):
+            with self.subTest(device=device, ordering=ordering):
                 info = DenseSquareMultiLinearInfo()
-                info.finalize([13], dtype=wp.float32, device=device)
-                matrix = wp.zeros(13 * 13, device=device)
-                rhs = wp.array(rng.normal(size=13).astype(np.float32), device=device)
-                x = wp.full(13, -123.0, device=device)
-                solver = LDLBlockSparseSolver(operator=DenseLinearOperatorData(info=info, mat=matrix))
+                info.finalize([capacity], dtype=wp.float32, device=device)
+                info.dim.assign([13])
+                matrix = wp.zeros(capacity * capacity, device=device)
+                rhs = wp.array(rng.normal(size=capacity).astype(np.float32), device=device)
+                x = wp.full(capacity, -123.0, device=device)
+                solver = LDLBlockSparseSolver(
+                    operator=DenseLinearOperatorData(info=info, mat=matrix), ordering=ordering
+                )
                 solver.compute(matrix)
                 graph = None
                 if device.is_cuda:
@@ -33,7 +60,7 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                     graph = capture.graph
                 for n in (7, 13, 0, 11):
                     info.dim.assign([n])
-                    storage = np.zeros(169, dtype=np.float32)
+                    storage = np.zeros(capacity * capacity, dtype=np.float32)
                     basis = rng.normal(size=(n, n))
                     a = (basis @ basis.T + np.eye(n)).astype(np.float32)
                     storage[: n * n] = a.ravel()
@@ -47,6 +74,24 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                     if n:
                         np.testing.assert_allclose(
                             x.numpy()[:n], np.linalg.solve(a.astype(np.float64), rhs.numpy()[:n]), atol=3e-6, rtol=3e-6
+                        )
+                        padded = (n + 5) // 6 * 6
+                        lower = solver.factors.numpy()[: padded * padded].reshape(padded, padded)
+                        lower = np.tril(lower)
+                        diagonal = solver.diagonal.numpy()[:padded]
+                        np.testing.assert_array_equal(np.diag(lower), 1.0)
+                        self.assertTrue(np.all(diagonal > 0.0))
+                        original = np.eye(padded)
+                        original[:n, :n] = a
+                        permutation = np.arange(padded).reshape(-1, 6)
+                        if ordering == "rcm":
+                            permutation = permutation[::-1]
+                        permutation = permutation.ravel()
+                        np.testing.assert_allclose(
+                            (lower * diagonal) @ lower.T,
+                            original[np.ix_(permutation, permutation)],
+                            atol=1e-5,
+                            rtol=3e-6,
                         )
                     np.testing.assert_array_equal(x.numpy()[n:], -123.0)
                 solver.finalize(DenseLinearOperatorData(info=info, mat=matrix))
@@ -73,13 +118,13 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                 a[np.ix_(rows[j], rows[i])] += block.T
             a += np.diag(np.sum(np.abs(a), axis=1) + 1.0)
             matrices.append(a)
-        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
-            with self.subTest(device=device):
+        for device, ordering in product([wp.get_device("cpu"), *wp.get_cuda_devices()[:1]], ("meca", "rcm")):
+            with self.subTest(device=device, ordering=ordering):
                 info = DenseSquareMultiLinearInfo()
                 info.finalize([8, 4, 1], dtype=wp.float32, device=device)
                 source = np.concatenate([a.ravel() for a in matrices])
                 a = wp.array(source, device=device)
-                solver = LDLBlockSparseSolver(block_rows=groups, block_edges=edges, device=device)
+                solver = LDLBlockSparseSolver(block_rows=groups, block_edges=edges, ordering=ordering, device=device)
                 solver.finalize(DenseLinearOperatorData(info=info, mat=a))
                 # The cycle adds one fill block; the disconnected second graph adds none.
                 self.assertEqual(solver.values.shape[0], 9 + 4 + 1)
@@ -171,10 +216,53 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                         wp.capture_launch(capture.graph)
                         np.testing.assert_allclose(x.numpy(), reference / multiplier, atol=3e-6, rtol=3e-6)
 
+    def test_dense_rhs_and_pivot_retry(self):
+        """Solve ragged dense systems and multiple RHS without modifying the input."""
+        rng = np.random.default_rng(2026)
+        basis = rng.normal(size=(13, 13))
+        matrices = [(basis @ basis.T + np.eye(13)).astype(np.float32), np.eye(7, dtype=np.float32)]
+        matrices[1][0, 0] = -1e-6
+        source = np.zeros(14 * 14 + 9 * 9, dtype=np.float32)
+        source[: 13 * 13] = matrices[0].ravel()
+        source[14 * 14 : 14 * 14 + 7 * 7] = matrices[1].ravel()
+        rhs = rng.normal(size=(23, 3)).astype(np.float32)
+        for device, ordering in product([wp.get_device("cpu"), *wp.get_cuda_devices()[:1]], ("meca", "rcm")):
+            with self.subTest(device=device, ordering=ordering):
+                info = DenseSquareMultiLinearInfo()
+                info.finalize([14, 9], dtype=wp.float32, device=device)
+                info.dim.assign([13, 7])
+                a = wp.array(source, device=device)
+                solver = LDLBlockSparseSolver(
+                    operator=DenseLinearOperatorData(info=info, mat=a), ordering=ordering, failed_pivot_shift=1e-5
+                )
+                solver.compute(a)
+                np.testing.assert_array_equal(solver.failed.numpy(), [0, 1])
+                b, x = wp.array(rhs.ravel(), device=device), wp.full(rhs.size, -123.0, device=device)
+                layout = {
+                    "offsets": wp.array([0, 42], dtype=wp.int32, device=device),
+                    "strides": wp.full(2, 3, dtype=wp.int32, device=device),
+                    "columns": wp.full(2, 3, dtype=wp.int32, device=device),
+                    "max_columns": 3,
+                }
+                solver.solve_matrix(b, x, **layout)
+                solved = x.numpy().reshape(-1, 3)
+                for start, matrix, shift in ((0, matrices[0], 0.0), (14, matrices[1], 1e-5)):
+                    n = len(matrix)
+                    expected = np.linalg.solve(matrix.astype(np.float64) + shift * np.eye(n), rhs[start : start + n])
+                    np.testing.assert_allclose(solved[start : start + n], expected, atol=3e-6, rtol=3e-6)
+                np.testing.assert_array_equal(solved[[13, 21, 22]], -123.0)
+                reconstructed = wp.zeros_like(a)
+                solver.reconstruct(reconstructed)
+                np.testing.assert_allclose(reconstructed.numpy()[:169].reshape(13, 13), matrices[0], atol=1e-5)
+                np.testing.assert_allclose(
+                    reconstructed.numpy()[196:245].reshape(7, 7), matrices[1] + 1e-5 * np.eye(7), atol=1e-7
+                )
+                np.testing.assert_array_equal(a.numpy(), source)
+
     def test_sparse_storage_and_pivot_retry(self):
         """Keep chain storage sparse and retry only the failing world's factors."""
-        for device in [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]:
-            with self.subTest(device=device):
+        for device, ordering in product([wp.get_device("cpu"), *wp.get_cuda_devices()[:1]], ("meca", "rcm")):
+            with self.subTest(device=device, ordering=ordering):
                 groups = [[list(range(i, i + 6)) for i in range(0, 96, 6)]] * 2
                 edges = [[(i, i + 1) for i in range(15)]] * 2
                 info = DenseSquareMultiLinearInfo()
@@ -187,13 +275,15 @@ class TestLDLBlockSparseSolver(unittest.TestCase):
                     block_rows=groups,
                     block_edges=edges,
                     failed_pivot_shift=1e-5,
+                    ordering=ordering,
                 )
                 self.assertLess(solver.values.size, a.size // 4)
                 solver.compute(a)
                 np.testing.assert_array_equal(solver.failed.numpy(), [0, 1])
                 d = solver.diagonal.numpy()
                 np.testing.assert_array_equal(d[:16], 1.0)
-                np.testing.assert_allclose(d[16, 0], 9e-6, rtol=2e-6)
+                pivot, row = np.argwhere(solver.rows.numpy()[16:] == 0)[0]
+                np.testing.assert_allclose(d[16 + pivot, row], 9e-6, rtol=2e-6)
                 x = wp.ones(192, device=device)
                 solver.solve_inplace(x)
                 np.testing.assert_array_equal(x.numpy()[:96], 1.0)

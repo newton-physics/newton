@@ -1,0 +1,109 @@
+{
+  "description": "Untimed G1 LDL-RCM contact-culling diagnostic: 256 worlds, 1000 frames, corrected velocity predicate.",
+  "cull_speculative_contacts_true": {
+    "keep_contacts": false,
+    "measurements": [
+      {
+        "frame": 500,
+        "max_velocity": 0.23024357855319977,
+        "world": 24,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/left_hip_pitch_link/left_hip_roll_link/left_hip_yaw_link/left_knee_link/left_ankle_pitch_link/left_ankle_roll_link",
+        "component": 3,
+        "passed": false
+      },
+      {
+        "frame": 600,
+        "max_velocity": 0.21663668751716614,
+        "world": 226,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/left_hip_pitch_link/left_hip_roll_link/left_hip_yaw_link/left_knee_link/left_ankle_pitch_link/left_ankle_roll_link",
+        "component": 3,
+        "passed": false
+      },
+      {
+        "frame": 700,
+        "max_velocity": 0.21772314608097076,
+        "world": 198,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/left_hip_pitch_link/left_hip_roll_link/left_hip_yaw_link/left_knee_link/left_ankle_pitch_link/left_ankle_roll_link",
+        "component": 3,
+        "passed": false
+      },
+      {
+        "frame": 800,
+        "max_velocity": 0.22905035316944122,
+        "world": 56,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/left_hip_pitch_link/left_hip_roll_link/left_hip_yaw_link/left_knee_link/left_ankle_pitch_link/left_ankle_roll_link",
+        "component": 3,
+        "passed": false
+      },
+      {
+        "frame": 900,
+        "max_velocity": 0.0029673324897885323,
+        "world": 39,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/waist_yaw_link/waist_roll_link/torso_link/right_shoulder_pitch_link/right_shoulder_roll_link/right_shoulder_yaw_link/right_elbow_link/right_wrist_roll_link",
+        "component": 3,
+        "passed": true
+      },
+      {
+        "frame": 1000,
+        "max_velocity": 0.04211479052901268,
+        "world": 19,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/right_hip_pitch_link/right_hip_roll_link/right_hip_yaw_link/right_knee_link/right_ankle_pitch_link/right_ankle_roll_link",
+        "component": 3,
+        "passed": false
+      }
+    ]
+  },
+  "cull_speculative_contacts_false": {
+    "keep_contacts": true,
+    "measurements": [
+      {
+        "frame": 500,
+        "max_velocity": 0.0018560257740318775,
+        "world": 154,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/waist_yaw_link/waist_roll_link/torso_link/left_shoulder_pitch_link/left_shoulder_roll_link/left_shoulder_yaw_link/left_elbow_link/left_wrist_roll_link/left_wrist_pitch_link/left_wrist_yaw_link/left_hand_index_0_link/left_hand_index_1_link",
+        "component": 4,
+        "passed": true
+      },
+      {
+        "frame": 600,
+        "max_velocity": 0.0017551799537613988,
+        "world": 121,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/waist_yaw_link/waist_roll_link",
+        "component": 4,
+        "passed": true
+      },
+      {
+        "frame": 700,
+        "max_velocity": 0.002006659982725978,
+        "world": 42,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/waist_yaw_link/waist_roll_link",
+        "component": 4,
+        "passed": true
+      },
+      {
+        "frame": 800,
+        "max_velocity": 0.0023859390057623386,
+        "world": 158,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/waist_yaw_link/waist_roll_link",
+        "component": 4,
+        "passed": true
+      },
+      {
+        "frame": 900,
+        "max_velocity": 0.0023162816651165485,
+        "world": 20,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/waist_yaw_link/waist_roll_link",
+        "component": 4,
+        "passed": true
+      },
+      {
+        "frame": 1000,
+        "max_velocity": 0.0020410059951245785,
+        "world": 111,
+        "body": "/g1_29dof_with_hand_rev_1_0/Geometry/pelvis/waist_yaw_link/waist_roll_link",
+        "component": 4,
+        "passed": true
+      }
+    ]
+  }
+}

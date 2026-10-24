@@ -14,12 +14,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from functools import cache
+from typing import Literal
 
 import numpy as np
 import warp as wp
 
 from ..core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from ..linear import DirectSolver
+from .ldl_dense import DenseLDLStorage
 
 wp.set_module_options({"enable_backward": False})
 
@@ -28,8 +30,28 @@ _BlockRows = Sequence[Sequence[Sequence[int]]]
 _BlockEdges = Sequence[Sequence[tuple[int, int]]]
 
 
-def _symbolic(groups, edges):
-    """Order blocks by minimum degree and compute exact symbolic fill."""
+def _rcm_ordering(graph):
+    """Apply the source DVI's deterministic block Reverse Cuthill-McKee traversal."""
+    remaining = set(range(len(graph)))
+    order = []
+    while remaining:
+        root = min(remaining, key=lambda node: (len(graph[node] & remaining), node))
+        queue = [root]
+        remaining.remove(root)
+        head = 0
+        while head < len(queue):
+            node = queue[head]
+            head += 1
+            neighbors = sorted(graph[node] & remaining, key=lambda n: (len(graph[n] & remaining), n))
+            for neighbor in neighbors:
+                remaining.remove(neighbor)
+                queue.append(neighbor)
+        order.extend(reversed(queue))
+    return order
+
+
+def _symbolic(groups, edges, ordering):
+    """Order joint blocks with MECA or RCM, then compute exact symbolic fill."""
     graph = [set() for _ in groups]
     for i, j in edges:
         if not (0 <= i < len(groups) and 0 <= j < len(groups)):
@@ -38,9 +60,24 @@ def _symbolic(groups, edges):
             graph[i].add(j)
             graph[j].add(i)
     remaining = set(range(len(groups)))
+    rcm_order = _rcm_ordering(graph) if ordering == "rcm" else None
+
+    def meca_pivot():
+        best_node, best_fill = -1, float("inf")
+        for node in sorted(remaining):
+            neighbors = sorted(graph[node] & remaining)
+            fill = sum(b not in graph[a] for i, a in enumerate(neighbors) for b in neighbors[i + 1 :])
+            if fill < best_fill:
+                best_node, best_fill = node, fill
+                if fill == 0:
+                    break
+        return best_node
+
     order, columns = [], []
     while remaining:
-        node = min(remaining, key=lambda i: (len(graph[i] & remaining), i))
+        # MECA minimizes newly created edges, not the current vertex degree.
+        # Break ties by block index so symbolic preparation is deterministic.
+        node = rcm_order[len(order)] if rcm_order is not None else meca_pivot()
         adjacent = graph[node] & remaining
         order.append(node)
         columns.append(sorted(adjacent))
@@ -304,13 +341,20 @@ class LDLBlockSparseSolver(DirectSolver):
 
     ``block_rows[w]`` partitions world ``w`` into groups of one to six scalar
     rows. ``block_edges[w]`` contains its undirected block edges. Omitting both
-    uses contiguous six-row blocks and a full pattern, suitable for changing
-    active dimensions in dense operators. Numeric zeros never define topology.
+    uses an implicit complete pattern and dense L storage, suitable for
+    changing active dimensions without cubic symbolic metadata. Numeric zeros
+    never define topology.
 
     ``factors`` stores the unit-lower L blocks, including unit-diagonal blocks.
     ``diagonal`` stores the scalar entries of D in block order, with ones for
-    padded rows. The permutation is described by ``rows``. No numerical
+    active padded rows. The sparse permutation is described by ``rows``.
+    With an implicit complete pattern, ``factors`` and ``diagonal`` are flat
+    packed arrays; RCM reverses the active six-row groups. No numerical
     pivoting is performed; this backend targets positive-definite systems.
+
+    ``ordering="meca"`` (default) minimizes edge creation at each elimination
+    step. ``ordering="rcm"`` uses block Reverse Cuthill-McKee. Both preserve
+    each joint's scalar row group and compute fill before numeric allocation.
     """
 
     def __init__(
@@ -319,16 +363,26 @@ class LDLBlockSparseSolver(DirectSolver):
         *,
         block_rows: _BlockRows | None = None,
         block_edges: _BlockEdges | None = None,
+        ordering: Literal["meca", "rcm"] = "meca",
         failed_pivot_shift: float = 0.0,
         dtype: type = wp.float32,
         device: wp.DeviceLike | None = None,
     ) -> None:
+        if ordering not in {"meca", "rcm"}:
+            raise ValueError(f"Unknown LDL ordering {ordering!r}; expected 'meca' or 'rcm'.")
         if not np.isfinite(failed_pivot_shift) or failed_pivot_shift < 0:
             raise ValueError("failed_pivot_shift must be finite and nonnegative.")
         self._failed_pivot_shift = failed_pivot_shift
         self._block_rows = block_rows
         self._block_edges = block_edges
+        self._ordering = ordering
+        self._dense = None
         super().__init__(operator=operator, dtype=dtype, device=device)
+
+    @property
+    def ordering(self) -> str:
+        """Block ordering selected for symbolic factorization."""
+        return self._ordering
 
     def _allocate_impl(self, operator: DenseLinearOperatorData) -> None:
         if not isinstance(operator.info, DenseSquareMultiLinearInfo):
@@ -342,6 +396,15 @@ class LDLBlockSparseSolver(DirectSolver):
         capacities = info.maxdim.numpy().tolist()
         self._maxdim = max(capacities, default=0)
         self._world_count = len(capacities)
+        self._ones = wp.ones(self._world_count, dtype=wp.int32, device=self.device)
+        self._dense = None
+        if self._block_rows is None and self._block_edges is None:
+            self._dense = DenseLDLStorage(operator, self.ordering, self.device)
+            self.factors = self._dense.lower
+            self.diagonal = self._dense.diagonal
+            self.failed = self._dense.failed
+            self._has_factors = False
+            return
         block_rows, block_edges = self._block_rows, self._block_edges
         if block_rows is None:
             block_rows = [[list(range(i, min(i + 6, n))) for i in range(0, n, 6)] for n in capacities]
@@ -362,7 +425,7 @@ class LDLBlockSparseSolver(DirectSolver):
                 raise ValueError("Block rows must partition each matrix into groups of one to six rows.")
             key = (groups, tuple(sorted({(min(i, j), max(i, j)) for i, j in edges})))
             if key not in cache_symbolic:
-                cache_symbolic[key] = _symbolic(*key)
+                cache_symbolic[key] = _symbolic(*key, self._ordering)
             ordered, local_columns = cache_symbolic[key]
             base = len(rows)
             mapping = {}
@@ -425,11 +488,12 @@ class LDLBlockSparseSolver(DirectSolver):
         self.factors = wp.zeros_like(self.values)
         self.diagonal = wp.zeros((self.pivot_count, 6), dtype=wp.float32, device=self.device)
         self.failed = wp.zeros(len(capacities), dtype=wp.int32, device=self.device)
-        self._ones = wp.ones(len(capacities), dtype=wp.int32, device=self.device)
         self._has_factors = False
 
     def entry_offsets(self, worlds: Sequence[int], rows: Sequence[int], cols: Sequence[int]) -> np.ndarray:
         """Map structural scalar entries to flat block storage before capture."""
+        if self._dense is not None:
+            raise ValueError("Sparse entry offsets require an explicit block pattern.")
         result = []
         for world, row, col in zip(worlds, rows, cols, strict=True):
             i, r = self._row_maps[int(world)][int(row)]
@@ -443,6 +507,9 @@ class LDLBlockSparseSolver(DirectSolver):
         self._has_factors = False
 
     def _factorize_impl(self, A: wp.array[wp.float32]) -> None:
+        if self._dense is not None:
+            self._dense.factorize(A, self._failed_pivot_shift)
+            return
         wp.launch(
             _gather_matrix,
             dim=self.values.shape,
@@ -462,6 +529,8 @@ class LDLBlockSparseSolver(DirectSolver):
 
     def factorize_values(self) -> None:
         """Factor the assembled sparse values, retaining them for a masked retry."""
+        if self._dense is not None:
+            raise ValueError("Factoring sparse values requires an explicit block pattern; use compute(A).")
         self.failed.zero_()
         self._factor_levels(False)
         if self._failed_pivot_shift > 0.0:
@@ -555,6 +624,18 @@ class LDLBlockSparseSolver(DirectSolver):
     ) -> None:
         """Solve with unit-lower L or L^T in original row order, without D scaling."""
         self._check_has_factorization()
+        if self._dense is not None:
+            self._dense.triangular(
+                b,
+                x,
+                offsets=offsets,
+                strides=strides,
+                columns=columns,
+                max_columns=max_columns,
+                forward=forward,
+                active_dim=active_dim,
+            )
+            return
         starts, neighbors, slots = (
             (self._row_ptr, self._col_idx, self._row_slots)
             if forward
@@ -604,6 +685,18 @@ class LDLBlockSparseSolver(DirectSolver):
     ) -> None:
         """Apply D^-1, or D^-1/2 for a whitened response, optionally in place."""
         self._check_has_factorization()
+        if self._dense is not None:
+            self._dense.scale(
+                b,
+                x,
+                offsets=offsets,
+                strides=strides,
+                columns=columns,
+                max_columns=max_columns,
+                inverse_sqrt=inverse_sqrt,
+                active_dim=active_dim,
+            )
+            return
         wp.launch(
             _solve_diagonal,
             dim=(self.pivot_count, 6, max_columns),
@@ -629,6 +722,9 @@ class LDLBlockSparseSolver(DirectSolver):
         self._solve_impl(x, x)
 
     def _reconstruct_impl(self, A: wp.array[wp.float32]) -> None:
+        if self._dense is not None:
+            self._dense.reconstruct(A)
+            return
         info = self.operator.info
         wp.launch(
             _reconstruct,

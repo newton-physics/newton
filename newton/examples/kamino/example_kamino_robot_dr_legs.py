@@ -10,10 +10,12 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
@@ -123,7 +125,7 @@ class Example:
             self.config.dynamics.preconditioning = False
             self.config.dynamics.linear_solver_type = "CR"
             self.config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-            self.config.dvi.bilateral_solver_type = getattr(args, "bilateral_solver_type", "LLTBRCM")
+            self.config.dvi.bilateral_solver_type = getattr(args, "bilateral_solver_type", "LDL")
             if self.config.dvi.bilateral_solver_type == "LLTBRCM":
                 self.config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
             self.config.dvi.tolerance = 1e-4
@@ -134,6 +136,7 @@ class Example:
             self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
             self.config.dvi.unilateral_solver = getattr(args, "unilateral_solver", "pgs")
             self.config.dvi.use_schur_complement = getattr(args, "use_schur_complement", None)
+        configure_ldl(self.config, args)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -235,7 +238,8 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        # TODO: Add some assertions here once we have a more meaningful test scenario
+        assert np.isfinite(self.state_0.body_q.numpy()).all(), "Body poses must remain finite"
+        assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
         if self.dynamics_solver == "lox":
             assert not self.solver.status.numpy()["failed"].any(), "The LOX backend failed"
 
@@ -332,6 +336,7 @@ class Example:
         import argparse  # noqa: PLC0415
 
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
         parser.add_argument(
@@ -362,9 +367,9 @@ class Example:
         parser.add_argument(
             "--bilateral-solver-type",
             choices=("LLTB", "LLTBRCM", "LDL"),
-            default="LLTBRCM",
+            default="LDL",
             type=str.upper,
-            help="DVI bilateral solver (this example retains its tuned RCM preset).",
+            help="DVI bilateral solver (default: LDL with MECA ordering).",
         )
         parser.add_argument(
             "--no-graph-conditionals",

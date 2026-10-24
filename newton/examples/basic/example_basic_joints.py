@@ -17,6 +17,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 @wp.func
@@ -200,7 +201,7 @@ class Example:
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            configure_ldl(solver_config, args)
             solver_config.dvi.max_alternating_iterations = 5
             solver_config.dvi.bilateral_solve_interval = 5
             solver_config.dvi.inequality_sweeps_per_iteration = 1
@@ -346,6 +347,7 @@ class Example:
 if __name__ == "__main__":
     # Parse arguments and initialize viewer
     parser = newton.examples.create_parser()
+    add_ldl_arguments(parser)
     parser.add_argument(
         "--solver",
         type=str,

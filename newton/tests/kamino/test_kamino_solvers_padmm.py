@@ -46,6 +46,7 @@ class TestSetup:
         device: wp.DeviceLike = None,
         sparse: bool = False,
         linear_solver=None,
+        linear_solver_kwargs=None,
         **kwargs,
     ):
         # Cache the max contacts allocated for the test problem
@@ -79,6 +80,7 @@ class TestSetup:
             contacts=self.contacts,
             jacobians=self.jacobians,
             solver=linear_solver or (ConjugateResidualSolver if sparse else LLTBlockedSolver),
+            solver_kwargs=linear_solver_kwargs,
             sparse=sparse,
         )
 
@@ -510,15 +512,22 @@ class TestPADMMSolver(unittest.TestCase):
         """
         Tests the Proximal-ADMM (PADMM) solver with default config on the reference problem.
         """
-        for linear_solver in (LLTBlockedSolver, LDLBlockSparseSolver):
-            with self.subTest(linear_solver=linear_solver.__name__):
+        for linear_solver, ordering in (
+            (LLTBlockedSolver, None),
+            (LDLBlockSparseSolver, "meca"),
+            (LDLBlockSparseSolver, "rcm"),
+        ):
+            with self.subTest(linear_solver=linear_solver.__name__, ordering=ordering):
                 # Create the test problem
                 test = TestSetup(
                     builder_fn=basics.build_box_on_plane,
                     max_world_contacts=8,
                     device=self.default_device,
                     linear_solver=linear_solver,
+                    linear_solver_kwargs={"ordering": ordering} if ordering else {},
                 )
+                if ordering:
+                    self.assertEqual(test.problem.delassus.solver.ordering, ordering)
 
                 # Define solver config
                 # NOTE: These are all equal to their default values
@@ -879,18 +888,25 @@ class TestPADMMSolver(unittest.TestCase):
         combined-residual formula, the restart bookkeeping, and the rule that a restart
         rewinds only the extrapolation while keeping the current iterate.
         """
-        for linear_solver in (LLTBlockedSolver, LDLBlockSparseSolver):
-            with self.subTest(linear_solver=linear_solver.__name__):
-                self._check_apadmm_restart_reference(linear_solver)
+        for linear_solver, ordering in (
+            (LLTBlockedSolver, None),
+            (LDLBlockSparseSolver, "meca"),
+            (LDLBlockSparseSolver, "rcm"),
+        ):
+            with self.subTest(linear_solver=linear_solver.__name__, ordering=ordering):
+                self._check_apadmm_restart_reference(linear_solver, ordering)
 
-    def _check_apadmm_restart_reference(self, linear_solver):
+    def _check_apadmm_restart_reference(self, linear_solver, ordering):
         test = TestSetup(
             builder_fn=basics.build_box_pendulum,
             max_world_contacts=1,
             device=self.default_device,
             ground=False,
             linear_solver=linear_solver,
+            linear_solver_kwargs={"ordering": ordering} if ordering else {},
         )
+        if ordering:
+            self.assertEqual(test.problem.delassus.solver.ordering, ordering)
         config = PADMMSolver.Config(
             primal_tolerance=0.0,
             dual_tolerance=0.0,

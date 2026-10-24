@@ -983,6 +983,11 @@ class TestDVIAPGDDynamics(unittest.TestCase):
         """Support DR Legs after impact and remain stable after a tipped-pose reset."""
         if not wp.is_cuda_available():
             self.skipTest("DR Legs acceptance exercises the CUDA graph path")
+        for ordering in ("meca", "rcm"):
+            with self.subTest(ordering=ordering):
+                self._check_dr_legs_support_and_reset(ordering)
+
+    def _check_dr_legs_support_and_reset(self, ordering):
         from newton.examples.kamino.example_kamino_robot_dr_legs import Example  # noqa: PLC0415
 
         with wp.ScopedDevice("cuda:0"):
@@ -993,6 +998,7 @@ class TestDVIAPGDDynamics(unittest.TestCase):
                 unilateral_solver="apgd",
                 use_schur_complement=True,
                 bilateral_solver_type="LDL",
+                ldl_ordering=ordering,
                 # Match the upstream support test; bounded rows have separate tests.
                 joint_effort_limit=math.inf,
             )
@@ -1006,6 +1012,7 @@ class TestDVIAPGDDynamics(unittest.TestCase):
 
             with patch.object(SolverKamino.Config, "from_model", side_effect=make_accuracy_config):
                 example = Example(ViewerNull(num_frames=1), args)
+            self.assertEqual(example.solver._solver_kamino.solver_fd._bilateral_solver.ordering, ordering)
             base_z = []
             for _ in range(180):
                 example.step()

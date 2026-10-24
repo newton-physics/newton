@@ -1,0 +1,47 @@
+{
+  "timestamp_utc": "2026-10-24T15:57:49.460887+00:00",
+  "commit": "e806bf53fde2019204645058d932e792447677ec",
+  "branch": "milad/kamino-block-sparse-ldl",
+  "tracked_diff_sha256": "ec0892b5ab4767d22c60ce3aba8debc98ced3ea431e6d856f2382a300234a3df",
+  "script_sha256": "4069be2537960ddef9792d03bc62aa644f0054bfc9fc422af738b560a1cbffe8",
+  "assets_ref": "f8fb7abcbeba2318814a74f3eeb02780ad7925d6",
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "platform": "Linux-6.8.0-134-generic-x86_64-with-glibc2.39",
+  "warp": "1.19.0.dev20261020",
+  "numpy": "2.5.3",
+  "cpu": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           40 bits physical, 57 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  16\nOn-line CPU(s) list:                     0-15\nVendor ID:                               AuthenticAMD\nModel name:                              AMD EPYC-Genoa Processor\nCPU family:                              25\nModel:                                   17\nThread(s) per core:                      1\nCore(s) per socket:                      4\nSocket(s):                               4\nStepping:                                0\nBogoMIPS:                                6199.99\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm rep_good nopl cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy svm cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext perfctr_core ssbd ibrs ibpb stibp ibrs_enhanced vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx512_bf16 clzero xsaveerptr wbnoinvd arat npt lbrv nrip_save tsc_scale vmcb_clean flushbyasid pausefilter pfthreshold v_vmsave_vmload vgif vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid fsrm flush_l1d arch_capabilities\nVirtualization:                          AMD-V\nHypervisor vendor:                       KVM\nVirtualization type:                     full\nL1d cache:                               512 KiB (16 instances)\nL1i cache:                               512 KiB (16 instances)\nL2 cache:                                16 MiB (16 instances)\nL3 cache:                                128 MiB (4 instances)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-15\nVulnerability Gather data sampling:      Not affected\nVulnerability Indirect target selection: Not affected\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Not affected\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Vulnerable: Safe RET, no microcode\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; STIBP disabled; PBRSB-eIBRS Not affected; BHI Not affected\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Vulnerable: Clear CPU buffers attempted, no microcode\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected\n",
+  "gpu": "name, driver_version, memory.total [MiB], power.limit [W]\nNVIDIA RTX PRO 4500 Blackwell Server Edition, 595.80, 32623 MiB, 165.00 W\n",
+  "parameters": {
+    "robots": [
+      "h1",
+      "g1",
+      "dr_legs"
+    ],
+    "worlds": [
+      1,
+      32,
+      256
+    ],
+    "backends": [
+      "LDL-MECA",
+      "LDL-RCM",
+      "LLTB",
+      "LLTBRCM"
+    ],
+    "warmup": 500,
+    "frames": 100,
+    "samples": 5
+  },
+  "thread_environment": {
+    "OMP_NUM_THREADS": null,
+    "OPENBLAS_NUM_THREADS": null
+  },
+  "g1_audit_metadata": "g1_audit_metadata.json",
+  "warp_git_commit": "b346b941a4c0cd19c510db67d6506d781464ed5b",
+  "fixture_sha256": {
+    "g1_matrix.npy": "8ff09da77068d4f3c8f181fcc66ca53f11d61d37dd0161f12365a7a8b9f1261f",
+    "h1_matrix.npy": "e08a87a7fd9aa70d1039ec04101a0d5e28eb09726729195d52fe1482271bb80f",
+    "dr_legs_matrix.npy": "9b543b586676f5daf10e37c1037b423aea756c0cef70256fa8d15dba4f31f756"
+  },
+  "notes": "H1 and DR Legs use the initial sweep; all G1 timings and matrices are replaced by the corrected-contact, strict-velocity rerun. Sparse DVI numerical kernels are unchanged by the later dense-PADMM storage fix."
+}

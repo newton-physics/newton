@@ -18,6 +18,7 @@ import newton
 import newton.examples
 import newton.utils
 from newton import JointTargetMode, JointType
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
@@ -90,7 +91,8 @@ class Example:
             solver_config.dynamics.cull_speculative_contacts = False
             solver_config.dvi.max_alternating_iterations = 8
             solver_config.dvi.bilateral_solve_interval = 8
-            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
+            solver_config.dvi.bilateral_solver_type = args.bilateral_solver_type
+            configure_ldl(solver_config, args)
             solver_config.dvi.omega = 1.2
             solver_config.dvi.contact_warmstart_method = (
                 "key_and_position_with_net_force_backup_and_tangential_net_force"
@@ -211,9 +213,11 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_mujoco_contacts_arg(parser)
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
+        parser.add_argument("--bilateral-solver-type", choices=("LDL", "LLTB", "LLTBRCM"), default="LDL")
         parser.set_defaults(world_count=4)
         return parser
 

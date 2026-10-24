@@ -83,29 +83,56 @@ Solves apply :math:`L^{-1}`, :math:`D^{-1}`, and :math:`L^{-T}` in sequence.
 Compact Schur responses use :math:`D^{-1/2} L^{-1}` so that their Gram product
 continues to represent the inverse bilateral operator.
 
-To select the existing RCM-reordered factorization explicitly:
+LDL supports the source DVI solver's two block reorderings:
+
+* **MECA** (default) selects the pivot creating the fewest new fill edges.
+* **RCM** applies Reverse Cuthill-McKee to the block graph.
+
+Both preserve each joint's row group. Ordering, exact symbolic fill, and
+allocation happen during setup and are reused by subsequent numeric solves.
+To select RCM while retaining the LDL factorization:
 
 .. code-block:: python
 
-   config.dvi.bilateral_solver_type = "LLTBRCM"
-   config.dvi.bilateral_solver_kwargs = {
-       "block_size": 32,
-       "reuse_permutation": True,
-       "parallel_factorization": True,
-   }
+   config.dvi.bilateral_solver_type = "LDL"
+   config.dvi.bilateral_solver_kwargs = {"ordering": "rcm"}  # or "meca"
 
-The cached permutation remains mathematically valid when matrix values or
-sparsity change and is recomputed automatically if the active dimension
-changes. ``"LLTB"`` remains available for dense blocked factorization.
+``"LLTB"`` remains available for dense blocked Cholesky, and ``"LLTBRCM"``
+selects its existing RCM-reordered semi-sparse Cholesky variant.
 The level-scheduled sparse backend can incur more launch overhead on small
 systems or long chains, so benchmark representative workloads when choosing
 between these backends.
 
-Dense PADMM can also select the new backend through
-``config.dynamics.linear_solver_type = "LDL"``. Its changing contact rows use
-a conservative full block pattern, so this mode does not provide the joint
-topology's sparse-storage savings. Sparse PADMM continues to require an
+Dense PADMM can also select the backend and ordering:
+
+.. code-block:: python
+
+   config.dynamics.linear_solver_type = "LDL"
+   config.dynamics.linear_solver_kwargs = {"ordering": "rcm"}  # or "meca"
+
+Its changing contact rows use an implicit complete block pattern and dense
+factor storage, so this mode does not provide the joint topology's
+sparse-storage savings. Symbolic metadata is linear in the number of worlds,
+and numeric factorization visits active rows rather than reserved contact
+capacity. Sparse PADMM continues to require an
 iterative linear solver; ``"LDL"`` is not supported with sparse PADMM.
+
+All six Kamino examples accept ``--ldl --ldl-ordering meca`` and
+``--ldl --ldl-ordering rcm``. This selects LDL for the DVI bilateral solver or
+the dense PADMM linear solver. The DR Legs and earworm DVI examples default
+to LDL with MECA. The shared H1 and G1 robot examples also accept these
+options with ``--solver kamino``, default to LDL with MECA, and expose
+``--bilateral-solver-type {LDL,LLTB,LLTBRCM}`` for comparisons. For example:
+
+.. code-block:: console
+
+   uv run -m newton.examples kamino_robot_dr_legs --dynamics-solver dvi --ldl --ldl-ordering rcm --viewer null --num-frames 120 --test
+   uv run -m newton.examples kamino_basic_fourbar --ldl --ldl-ordering meca --viewer null --num-frames 120 --test
+   uv run -m newton.examples robot_h1 --solver kamino --ldl-ordering rcm --viewer null --num-frames 500 --test
+
+The shared pendulum, joints, URDF, ANYmal D, and Allegro hand examples also
+accept ``--ldl-ordering`` with ``--solver kamino`` and use LDL with MECA by
+default.
 
 DVI unilateral subsolvers
 ^^^^^^^^^^^^^^^^^^^^^^^^^

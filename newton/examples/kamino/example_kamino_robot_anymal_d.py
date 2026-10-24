@@ -14,6 +14,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
@@ -63,6 +64,7 @@ class Example:
         self.config.use_collision_detector = self.use_kamino_contacts
         if self.dynamics_solver == "padmm":
             self.config.padmm.warmstart_mode = "none"
+        configure_ldl(self.config, args)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -179,6 +181,7 @@ class Example:
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
         parser.add_argument(

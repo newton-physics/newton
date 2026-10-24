@@ -17,6 +17,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
@@ -85,6 +86,7 @@ class Example:
         solver_config.padmm.contact_warmstart_method = "geom_pair_net_force"
 
         # Create the Kamino solver for the given model
+        configure_ldl(solver_config, args)
         self.solver = newton.solvers.SolverKamino(model=self.model, config=solver_config)
 
         # Create state, control, and contacts data containers
@@ -166,11 +168,13 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
+        assert np.isfinite(self.state_0.body_q.numpy()).all(), "Body poses must remain finite"
+        assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=1)
         parser.add_argument(

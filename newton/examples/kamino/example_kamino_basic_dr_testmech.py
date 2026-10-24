@@ -10,10 +10,12 @@
 #
 ###########################################################################
 
+import numpy as np
 import warp as wp
 
 import newton
 import newton.examples
+from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 
 class Example:
@@ -65,6 +67,7 @@ class Example:
         self.config.padmm.dual_tolerance = 1e-6
         self.config.padmm.compl_tolerance = 1e-6
         self.config.padmm.rho_0 = 0.01
+        configure_ldl(self.config, args)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -116,11 +119,13 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass  # TODO: Add some assertions here once we have a more meaningful test scenario
+        assert np.isfinite(self.state_0.body_q.numpy()).all(), "Body poses must remain finite"
+        assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
+        add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)
         parser.set_defaults(world_count=1)
         return parser

@@ -840,13 +840,17 @@ class TestSolverKaminoStatus(unittest.TestCase):
         """Verify PADMM terminal status is available regardless of detailed collection."""
         model = self._make_three_world_model()
 
-        for backend, collect_solver_info in product(("LLTB", "LDL"), (False, True)):
-            with self.subTest(backend=backend, collect_solver_info=collect_solver_info):
+        for (backend, ordering), collect_solver_info in product(
+            (("LLTB", None), ("LDL", "meca"), ("LDL", "rcm")), (False, True)
+        ):
+            with self.subTest(backend=backend, ordering=ordering, collect_solver_info=collect_solver_info):
                 solver = newton.solvers.SolverKamino(
                     model,
                     config=newton.solvers.SolverKamino.Config(
                         dynamics_solver="padmm",
-                        dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type=backend),
+                        dynamics=kamino_config.ConstrainedDynamicsConfig(
+                            linear_solver_type=backend, linear_solver_kwargs={"ordering": ordering} if ordering else {}
+                        ),
                         collect_solver_info=collect_solver_info,
                     ),
                 )
@@ -854,6 +858,8 @@ class TestSolverKaminoStatus(unittest.TestCase):
                     solver._solver_kamino.problem_fd.delassus.solver,
                     LDLBlockSparseSolver if backend == "LDL" else LLTBlockedSolver,
                 )
+                if ordering:
+                    self.assertEqual(solver._solver_kamino.problem_fd.delassus.solver.ordering, ordering)
                 self._step_and_assert_status_contract(solver, model)
 
     def test_dvi_status_is_always_available(self):

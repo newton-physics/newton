@@ -1384,11 +1384,11 @@ class TestDVISolver(NewtonTestCase):
 
     def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
-        for backend in ("LLTB", "LDL"):
-            with self.subTest(backend=backend):
-                self._check_sparse_bilateral_intervals(backend)
+        for backend, ordering in (("LLTB", None), ("LDL", "meca"), ("LDL", "rcm")):
+            with self.subTest(backend=backend, ordering=ordering):
+                self._check_sparse_bilateral_intervals(backend, ordering)
 
-    def _check_sparse_bilateral_intervals(self, backend):
+    def _check_sparse_bilateral_intervals(self, backend, ordering):
         builder = newton.ModelBuilder()
         builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
@@ -1411,11 +1411,13 @@ class TestDVISolver(NewtonTestCase):
                 max_alternating_iterations=3,
                 bilateral_solve_interval=1,
                 bilateral_solver_type=backend,
+                bilateral_solver_kwargs={"ordering": ordering} if ordering else {},
             ),
             kamino_config.DVISolverConfig(
                 max_alternating_iterations=3,
                 bilateral_solve_interval=99,
                 bilateral_solver_type=backend,
+                bilateral_solver_kwargs={"ordering": ordering} if ordering else {},
             ),
         ]
         solver = DVISolver(
@@ -2141,10 +2143,11 @@ class TestDVISolver(NewtonTestCase):
         basics.make_basics_heterogeneous_builder(builder=builder, ground=True)
         model = builder.finalize(device=self.device, skip_validation_joints=True)
 
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        for sparse, ordering in product((False, True), ("meca", "rcm")):
+            with self.subTest(sparse=sparse, ordering=ordering):
                 config = SolverKamino.Config(
                     dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(bilateral_solver_kwargs={"ordering": ordering}),
                     sparse_dynamics=sparse,
                     sparse_jacobian=True,
                     use_collision_detector=True,
@@ -2176,9 +2179,8 @@ class TestDVISolver(NewtonTestCase):
                 self.assertTrue(np.all(np.isfinite(status["r_d"])))
                 self.assertLess(float(np.max(np.abs(state_in.body_qd.numpy()))), 100.0)
                 self.assertIsInstance(dvi_solver, DVISolver)
-                self.assertIsInstance(
-                    dvi_solver._bilateral_solver, (LLTBlockedSolver, LLTBlockedRCMSolver, LDLBlockSparseSolver)
-                )
+                self.assertIsInstance(dvi_solver._bilateral_solver, LDLBlockSparseSolver)
+                self.assertEqual(dvi_solver._bilateral_solver.ordering, ordering)
                 joint_dims = solver._solver_kamino._model.info.num_joint_bilateral_cts.numpy()
                 self.assertTrue(np.any(joint_dims == 0))
                 self.assertTrue(np.any(joint_dims > 0))
@@ -3270,11 +3272,11 @@ class TestDVISolver(NewtonTestCase):
     def test_09_dr_legs_dvi_first_contact_remains_finite(self):
         if not self.device.is_cuda:
             self.skipTest("Dr Legs DVI first-contact regression uses the CUDA graph path")
-        for backend in ("LLTBRCM", "LDL"):
-            with self.subTest(backend=backend):
-                self._check_dr_legs_first_contact(backend)
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "meca"), ("LDL", "rcm")):
+            with self.subTest(backend=backend, ordering=ordering):
+                self._check_dr_legs_first_contact(backend, ordering)
 
-    def _check_dr_legs_first_contact(self, backend):
+    def _check_dr_legs_first_contact(self, backend, ordering):
         from types import SimpleNamespace  # noqa: PLC0415
 
         from newton.examples.kamino.example_kamino_robot_dr_legs import Example  # noqa: PLC0415
@@ -3285,6 +3287,7 @@ class TestDVISolver(NewtonTestCase):
             use_kamino_contacts=True,
             dynamics_solver="dvi",
             bilateral_solver_type=backend,
+            ldl_ordering=ordering or "meca",
         )
         example = Example(ViewerNull(num_frames=1), args)
 
