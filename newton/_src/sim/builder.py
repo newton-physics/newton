@@ -4630,7 +4630,7 @@ class ModelBuilder:
                 regardless of whether visual shapes exist on the same body. Note that
                 ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
                 colliders on bodies with visual-only geometry. Default is False.
-            parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+            parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the scene's ``mjc:flag:filterparent``, which sets ``collision_filter_parent`` on imported joints that do not author ``physics:collisionEnabled``, is then ignored as well. Default is True.
             convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
                 equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
@@ -4973,7 +4973,7 @@ class ModelBuilder:
             parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
-            parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+            parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the ``gravity`` and ``filterparent`` flags, which change the Newton model rather than a solver option, are then ignored as well. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
             ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
             ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -4982,7 +4982,10 @@ class ModelBuilder:
             no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
             force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
                 Collider planes in MJCF groups 0-2 remain visible even when this is False.
-            enable_self_collisions: If True, self-collisions are enabled.
+            enable_self_collisions: If True, self-collisions are enabled. ``<option><flag filterparent="disable"/>``
+                additionally lets parent and child bodies collide by importing their joints with
+                ``collision_filter_parent=False``; ``enable_self_collisions=False`` still disables every collision
+                between the imported shapes.
             ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
             collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.

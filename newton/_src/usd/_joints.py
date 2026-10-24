@@ -463,6 +463,11 @@ def parse_joint(
                 wp.vec2(axis.limit_ke, axis.limit_kd) for axis in [*linear_axes, *angular_axes]
             ]
 
+        # Without any free axis the joint is a weld in MuJoCo: it keeps the parent filter unless the
+        # joint authors physics:collisionEnabled.
+        joint_params["collision_filter_parent"] = parent_id != -1 and _joint_filters_parent(
+            joint_prim, joint_desc, not linear_axes and not angular_axes, scene_filter_parent
+        )
         joint_index = builder.add_joint_d6(**joint_params, linear_axes=linear_axes, angular_axes=angular_axes)
     elif key == UsdPhysics.ObjectType.DistanceJoint:
         joint_index = builder.add_joint_distance(
@@ -598,7 +603,7 @@ def parse_merged_joints(
     angular_initial_pos: list[float | None] = []
     angular_initial_vel: list[float | None] = []
     enabled_count = 0
-    collision_filter_parent = False
+    sibling_descs = []
 
     # Find the first enabled joint to use as representative for transforms and metadata
     first_desc = None
@@ -671,10 +676,7 @@ def parse_merged_joints(
         if not jd.jointEnabled and only_load_enabled_joints:
             continue
         jp_prim = stage.GetPrimAtPath(jd.primPath)
-        # the merged joint filters if any sibling does, each resolved against the scene flag
-        collision_filter_parent = collision_filter_parent or _joint_filters_parent(
-            jp_prim, jd, False, scene_filter_parent
-        )
+        sibling_descs.append((jp_prim, jd))
         if collect_schema_attrs:
             R.collect_prim_attrs(jp_prim)
 
@@ -801,6 +803,12 @@ def parse_merged_joints(
     if "mujoco:joint_dof_label" in builder.custom_attributes:
         joint_custom_attrs["mujoco:joint_dof_label"] = dof_prim_paths
 
+    # The merged joint filters if any sibling does, each resolved against the scene flag. Without any
+    # free axis it is a weld in MuJoCo and keeps the filter unless a sibling authors collisionEnabled.
+    is_weld = not linear_axes and not angular_axes
+    collision_filter_parent = any(
+        _joint_filters_parent(prim, desc, is_weld, scene_filter_parent) for prim, desc in sibling_descs
+    )
     joint_index = builder.add_joint_d6(
         parent=parent_id,
         child=child_id,

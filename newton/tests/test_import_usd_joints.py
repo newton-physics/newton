@@ -20,6 +20,63 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 
 class TestImportUsdJoints(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_filterparent_keeps_locked_d6_welded(self):
+        """A fully locked generic joint is a weld: the scene flag must not open its parent-child contact."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        def make_stage(scene_flag):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+            if scene_flag is not None:
+                scene.GetPrim().CreateAttribute("mjc:flag:filterparent", Sdf.ValueTypeNames.Bool).Set(scene_flag)
+            for name, x, free_axes in (("Locked", 0.0, ()), ("Hinged", 5.0, ("rotZ",))):
+                root = UsdGeom.Xform.Define(stage, f"/{name}")
+                UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                for body, z in (("Parent", 1.0), ("Child", 1.1)):
+                    sphere = UsdGeom.Sphere.Define(stage, f"/{name}/{body}")
+                    sphere.CreateRadiusAttr(0.2)
+                    UsdGeom.Xformable(sphere).AddTranslateOp().Set(Gf.Vec3d(x, 0.0, z))
+                    UsdPhysics.RigidBodyAPI.Apply(sphere.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+                joint = UsdPhysics.Joint.Define(stage, f"/{name}/Joint")
+                joint.CreateBody0Rel().SetTargets([f"/{name}/Parent"])
+                joint.CreateBody1Rel().SetTargets([f"/{name}/Child"])
+                joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.1))
+                for axis in ("transX", "transY", "transZ", "rotX", "rotY", "rotZ"):
+                    limit = UsdPhysics.LimitAPI.Apply(joint.GetPrim(), axis)
+                    free = axis in free_axes
+                    limit.CreateLowAttr().Set(-1.0 if free else 1.0)
+                    limit.CreateHighAttr().Set(1.0 if free else -1.0)
+            return stage
+
+        def contact_counts(model):
+            import mujoco
+
+            state = model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+            mujoco.mj_forward(solver.mj_model, solver.mj_data)
+            return int(contacts.rigid_contact_count.numpy()[0]), int(solver.mj_data.ncon)
+
+        for scene_flag, expected in ((False, 1), (None, 0)):
+            with self.subTest(scene_flag=scene_flag):
+                builder = newton.ModelBuilder()
+                builder.add_usd(make_stage(scene_flag))
+                locked = builder.joint_label.index("/Locked/Joint")
+                hinged = builder.joint_label.index("/Hinged/Joint")
+                self.assertEqual(tuple(builder.joint_dof_dim[locked]), (0, 0))
+                self.assertTrue(builder.joint_collision_filter_parent[locked])
+                self.assertEqual(builder.joint_collision_filter_parent[hinged], scene_flag is None)
+                model = builder.finalize(device="cpu")
+                # Newton's pipeline and MuJoCo agree: only the hinged pair touches, and only when opted out
+                self.assertEqual(contact_counts(model), (expected, expected))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_filterparent_flag_sets_joint_parent_filter(self):
         """Honor the PhysicsScene's mjc:flag:filterparent on joints that do not author collisionEnabled (#4693)."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
