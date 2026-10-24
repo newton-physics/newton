@@ -219,6 +219,20 @@ def update_model_shape_xforms(
 
 
 @wp.kernel
+def detect_shape_color_changes(
+    shape_colors: wp.array[wp.vec3],
+    previous_shape_colors: wp.array[wp.vec3],
+    changed: wp.array[wp.int32],
+):
+    """Set a device flag when any packed shape color changed."""
+    tid = wp.tid()
+    color = shape_colors[tid]
+    previous = previous_shape_colors[tid]
+    if color[0] != previous[0] or color[1] != previous[1] or color[2] != previous[2]:
+        wp.atomic_add(changed, 0, 1)
+
+
+@wp.kernel
 def repack_shape_colors(
     shape_colors: wp.array[wp.vec3],
     slot_to_shape: wp.array[wp.int32],

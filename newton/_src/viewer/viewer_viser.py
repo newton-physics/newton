@@ -2298,8 +2298,8 @@ class ViewerViser(ViewerBase):
         self._sync_shape_colors_from_model()
         self._sync_shape_opacities_from_model()
 
-        from .kernels import update_model_shape_xforms  # noqa: PLC0415
-        from .viewer_viser_kernels import detect_shape_color_changes, detect_shape_opacity_changes  # noqa: PLC0415
+        from .kernels import detect_shape_color_changes, update_model_shape_xforms  # noqa: PLC0415
+        from .viewer_viser_kernels import detect_shape_opacity_changes  # noqa: PLC0415
 
         wp.launch(
             kernel=update_model_shape_xforms,
