@@ -90,6 +90,7 @@ from .kernels import (
     eval_mujoco_coupling_effective_mass_block_kernel,
     eval_mujoco_coupling_effective_mass_kernel,
     eval_mujoco_coupling_gravity_acceleration_kernel,
+    frictionloss_force_from_efc_kernel,
     hinge_connect_anchor,
     recompute_jnt_eq_anchor1_kernel,
     repeat_array_kernel,
@@ -618,6 +619,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         QFRC_ACTUATOR = "qfrc_actuator"
         """Actuator forces in Newton generalized-coordinate order."""
 
+        QFRC_BIAS = "qfrc_bias"
+        """Coriolis, centrifugal and gravity forces ``C(q, qd)`` in Newton generalized-coordinate order."""
+
+        QFRC_CONSTRAINT = "qfrc_constraint"
+        """Constraint forces in Newton generalized-coordinate order, including DOF friction loss."""
+
+        QFRC_FRICTIONLOSS = "qfrc_frictionloss"
+        """DOF friction-loss constraint forces in Newton generalized-coordinate order."""
+
         OVERFLOW = "overflow"
         """Per-world capacity-overflow bitmask for the most recent step; see :ref:`mujoco_overflow_observable`."""
 
@@ -627,7 +637,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         The native CPU backend (``use_mujoco_cpu=True``) supports
         ``BODY_QDD`` and ``BODY_PARENT_F`` with Euler, RK4, implicit, or
-        implicitfast integration, and ``QFRC_ACTUATOR`` with any integrator. MuJoCo Warp
+        implicitfast integration, and the ``QFRC_*`` kinds with any integrator. MuJoCo Warp
         also supports the standard contact fields, including body fields when
         sensors are disabled. With native collision detection, contact storage must cover
         :meth:`SolverMuJoCo.get_max_contact_count`. External collision detection
@@ -645,6 +655,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             frequency=AttributeFrequency.JOINT_DOF,
         )
         """Actuator forces [N or N·m], shape ``(joint_dof_count,)``."""
+
+        qfrc_bias: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.float32,
+            frequency=AttributeFrequency.JOINT_DOF,
+        )
+        """Coriolis, centrifugal and gravity forces from MuJoCo's last force evaluation of the step [N or N·m], shape ``(joint_dof_count,)``.
+
+        That is the start of the step, except for RK4, where it is the last stage.
+        """
+
+        qfrc_constraint: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.float32,
+            frequency=AttributeFrequency.JOINT_DOF,
+        )
+        """Constraint forces [N or N·m], shape ``(joint_dof_count,)``."""
+
+        qfrc_frictionloss: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.float32,
+            frequency=AttributeFrequency.JOINT_DOF,
+        )
+        """DOF friction-loss forces [N or N·m], shape ``(joint_dof_count,)``.
+
+        Part of :attr:`qfrc_constraint`; ``qfrc_constraint - qfrc_frictionloss``
+        is the constraint load on a DOF without its own friction.
+        """
 
         overflow: wp.array[wp.int32] | None = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.int32,
@@ -675,6 +710,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             SolverBase.ObservableKind.BODY_PARENT_F,
             SolverBase.ObservableKind.CONTACT_F,
             ObservableKind.QFRC_ACTUATOR,
+            ObservableKind.QFRC_BIAS,
+            ObservableKind.QFRC_CONSTRAINT,
+            ObservableKind.QFRC_FRICTIONLOSS,
             ObservableKind.OVERFLOW,
         }
     )
@@ -722,6 +760,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             if observables.contacts is not None:
                 self._validate_native_contact_export(observables, observables.contacts)
+            if (
+                observables.is_requested(self.ObservableKind.QFRC_FRICTIONLOSS)
+                and not self.use_mujoco_cpu
+                and self._mjw_qfrc_frictionloss is None
+            ):
+                self._mjw_qfrc_frictionloss = wp.zeros_like(self.mjw_data.qfrc_constraint)
             return observables
 
     @override
@@ -4650,6 +4694,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # notify_model_changed() may invalidate them during conversion. The
         # contact map is allocated below once the converted capacity is known.
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
+        self._mjw_qfrc_frictionloss: wp.array2d[wp.float32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Placeholder for collect_overflow_kernel's rigid_contact_count arg when contacts is None.
@@ -6256,6 +6301,65 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
             if legacy_qfrc_actuator is not None and legacy_qfrc_actuator.ptr != qfrc_actuator.ptr:
                 legacy_qfrc_actuator.assign(qfrc_actuator)
+
+        if not isinstance(observables, self.Observables):
+            return
+        for kind, qfrc in (
+            (self.ObservableKind.QFRC_BIAS, observables.qfrc_bias),
+            (self.ObservableKind.QFRC_CONSTRAINT, observables.qfrc_constraint),
+            (self.ObservableKind.QFRC_FRICTIONLOSS, observables.qfrc_frictionloss),
+        ):
+            if not observables.is_requested(kind):
+                continue
+            if is_mjwarp:
+                if kind == self.ObservableKind.QFRC_FRICTIONLOSS:
+                    self._mjw_qfrc_frictionloss.zero_()
+                    wp.launch(
+                        frictionloss_force_from_efc_kernel,
+                        dim=(nworld, mj_data.njmax),
+                        inputs=[
+                            mj_data.nefc,
+                            mj_data.efc.type,
+                            mj_data.efc.id,
+                            mj_data.efc.force,
+                            int(self._mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF),
+                        ],
+                        outputs=[self._mjw_qfrc_frictionloss],
+                        device=model.device,
+                    )
+                    mjw_qfrc = self._mjw_qfrc_frictionloss
+                else:
+                    mjw_qfrc = getattr(mj_data, kind)
+                mjw_qpos = mj_data.qpos
+            else:
+                if kind == self.ObservableKind.QFRC_FRICTIONLOSS:
+                    rows = mj_data.efc_type == self._mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+                    mj_qfrc = np.zeros(self.mj_model.nv, dtype=np.float32)
+                    mj_qfrc[mj_data.efc_id[rows]] = mj_data.efc_force[rows]
+                else:
+                    mj_qfrc = getattr(mj_data, kind)
+                mjw_qfrc = wp.array([mj_qfrc], dtype=wp.float32, device=model.device)
+                mjw_qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
+            wp.launch(
+                convert_qfrc_actuator_from_mj_kernel,
+                dim=(nworld, joints_per_world),
+                inputs=[
+                    mjw_qfrc,
+                    mjw_qpos,
+                    joints_per_world,
+                    model.joint_type,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_child,
+                    model.joint_X_c,
+                    model.body_com,
+                    self.mj_q_start,
+                    self.mj_qd_start,
+                ],
+                outputs=[qfrc],
+                device=model.device,
+            )
 
     @staticmethod
     def _find_body_collision_filter_pairs(
