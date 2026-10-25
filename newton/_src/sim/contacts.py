@@ -245,6 +245,8 @@ class Contacts:
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
         self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
+        # Whether the producing pipeline keeps rigid-soft contact points across passes (sticky soft matching).
+        self._soft_contact_points_persist = False
         with wp.ScopedDevice(device):
             # Two contact counts, [0] rigid and [1] soft, plus overflow flags:
             # [2] global contact reduction and [3] a coupled source's soft-contact buffer.
