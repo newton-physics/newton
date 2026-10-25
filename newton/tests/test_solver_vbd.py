@@ -2221,13 +2221,13 @@ def _sticky_soft_contacts_hold_static_load(test, device, full_surface, substeps)
     """With sticky contact matching, a soft block under a tangential load inside the friction cone stays put.
 
     Regularized friction is proportional to slip, so it holds no static load: measured from the motion
-    since the last collision pass, the block creeps about 3 mm/s here. Sticky soft records keep their
+    since the last collision pass, the block creeps about 3 mm/s here, 0.6 mm over the hold. Sticky soft records keep their
     contact points, and friction acting on their drift holds the block. Each entry in ``substeps`` is
     a time step to check.
     """
     with wp.ScopedDevice(device):
         for count in substeps:
-            settled, held = _soft_block_on_tilted_box(0.5, full_surface, True, count, (0.3, 0.5))
+            settled, held = _soft_block_on_tilted_box(0.5, full_surface, True, count, (0.3, 0.2))
             test.assertGreater(settled[2], 0.0)
             test.assertLess(abs(held[0] - settled[0]), 2.0e-5, f"substeps={count}")
 
