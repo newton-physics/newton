@@ -199,7 +199,7 @@ def _anchored_soft_contacts(contacts: Contacts) -> bool:
     Sticky contact matching replays a matched record's soft and body points, so friction can act
     on their drift and hold a static tangential load.
     """
-    return contacts.contact_matching_mode == "sticky"
+    return contacts._soft_contact_points_persist
 
 
 class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):

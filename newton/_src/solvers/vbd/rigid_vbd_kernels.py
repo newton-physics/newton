@@ -2085,15 +2085,16 @@ def _evaluate_rigid_soft_contact_force_norm(
 
 @wp.func
 def _body_particle_friction_translation(
-    anchored: bool, relative_translation: wp.vec3, x: wp.vec3, bx: wp.vec3, surface_velocity: wp.vec3, dt: float
+    anchored: bool, relative_translation: wp.vec3, x: wp.vec3, bx: wp.vec3, surface_velocity: wp.vec3
 ):
     """Friction slip of a body-particle contact.
 
     Unanchored, it is this step's relative motion. Anchored (records whose contact points persist
     across collision passes), it is the drift of the soft point ``x`` from its body point ``bx``.
+    Records on a moving surface keep no anchor, so they always use this step's motion.
     """
-    if anchored:
-        return x - bx - surface_velocity * dt
+    if anchored and wp.length_sq(surface_velocity) == 0.0:
+        return x - bx
     return relative_translation
 
 
@@ -2208,7 +2209,6 @@ def _eval_body_particle_contact(
             particle_pos,
             bx,
             wp.transform_vector(X_wb, contact_body_vel[contact_index]),
-            dt,
         )
 
         return _compute_body_particle_contact_force(
@@ -2326,7 +2326,6 @@ def _eval_soft_ef_contact(
             x,
             bx,
             wp.transform_vector(X_wb, contact_body_vel[contact_index]),
-            dt,
         )
 
         # contact_ke/kd/mu are the per-contact AVBD values (ramped penalty + pre-mixed material,
@@ -6063,7 +6062,6 @@ def accumulate_body_particle_contacts_per_body(
                 particle_pos,
                 cp_world,
                 wp.transform_vector(X_wb, body_particle_contact_body_vel[contact_idx]),
-                dt,
             )
 
             f_soft, h_soft = _compute_body_particle_contact_force(

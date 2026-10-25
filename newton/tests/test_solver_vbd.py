@@ -2340,10 +2340,12 @@ def _sticky_soft_contacts_ride_moving_surface(test, device):
         state_0, state_1, contacts = model.state(), model.state(), pipeline.contacts()
         positions = []
         for duration in (0.3, 0.2):
-            for _ in range(round(duration * fps * substeps)):
+            for _ in range(round(duration * fps)):
+                # One collision pass per frame, as the examples do, so records outlive several substeps.
                 pipeline.collide(state_0, contacts)
-                solver.step(state_0, state_1, None, contacts, dt)
-                state_0, state_1 = state_1, state_0
+                for _ in range(substeps):
+                    solver.step(state_0, state_1, None, contacts, dt)
+                    state_0, state_1 = state_1, state_0
             positions.append(state_0.particle_q.numpy()[:, 0].mean())
         return (positions[1] - positions[0]) / 0.2
 

@@ -1302,6 +1302,13 @@ def test_sticky_soft_contact_history_follows_world_and_buffer(test, device):
         np.testing.assert_allclose(body_points_at(0.0004, other), [0.0004, 0.0004], atol=1.0e-7)
         np.testing.assert_allclose(body_points_at(0.0005), [0.0005, 0.0005], atol=1.0e-7)
 
+        # Differentiable pipelines keep fresh points, so their contacts must not claim persistent ones.
+        differentiable = newton.CollisionPipeline(
+            model, soft_contact_gap=0.01, contact_matching="sticky", requires_grad=True
+        )
+        test.assertTrue(contacts._soft_contact_points_persist)
+        test.assertFalse(differentiable.contacts()._soft_contact_points_persist)
+
 
 # ---------------------------------------------------------------------------
 # Register tests
