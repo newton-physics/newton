@@ -5515,6 +5515,7 @@ def Xform "Articulation" (
                 self.assertAlmostEqual(float(model.shape_material_mu.numpy()[shape_idx]), 0.4, places=5)
                 self.assertAlmostEqual(float(model.shape_material_mu_static.numpy()[shape_idx]), expected, places=5)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_parsing(self):
         """Test that material attributes are parsed correctly from USD."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
