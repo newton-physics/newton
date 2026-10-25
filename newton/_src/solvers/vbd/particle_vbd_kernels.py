@@ -1956,6 +1956,7 @@ def accumulate_contact_force_and_hessian_no_self_contact(
                 shape_margin,
                 dt,
                 False,
+                False,
             )
             wp.atomic_add(particle_forces, particle_idx, body_contact_force)
             wp.atomic_add(particle_hessians, particle_idx, body_contact_hessian)
@@ -2248,6 +2249,7 @@ def gather_particle_body_contact_force_and_hessian(
     # body-particle contact
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    rigid_body_particle_contact_anchored_friction: bool,
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
     particle_contact_head: wp.array[int],
@@ -2329,6 +2331,7 @@ def gather_particle_body_contact_force_and_hessian(
                 shape_margin,
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
+                rigid_body_particle_contact_anchored_friction,
             )
             force += contact_force
             hessian += contact_hessian
@@ -2357,6 +2360,7 @@ def gather_particle_body_contact_force_and_hessian(
                 shape_margin,
                 dt,
                 rigid_body_particle_contact_use_log_barrier,
+                rigid_body_particle_contact_anchored_friction,
             )
             weight = bary[corner]
             force += weight * contact_force
@@ -2378,6 +2382,7 @@ def scatter_particle_body_contact_force_and_hessian(
     # body-particle contact
     friction_epsilon: float,
     rigid_body_particle_contact_use_log_barrier: bool,
+    rigid_body_particle_contact_anchored_friction: bool,
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_count: wp.array[int],
@@ -2450,6 +2455,7 @@ def scatter_particle_body_contact_force_and_hessian(
                     shape_margin,
                     dt,
                     rigid_body_particle_contact_use_log_barrier,
+                    rigid_body_particle_contact_anchored_friction,
                 )
                 wp.atomic_add(particle_forces, particle_index, contact_force)
                 wp.atomic_add(particle_hessians, particle_index, contact_hessian)
@@ -2486,6 +2492,7 @@ def scatter_particle_body_contact_force_and_hessian(
                     shape_margin,
                     dt,
                     rigid_body_particle_contact_use_log_barrier,
+                    rigid_body_particle_contact_anchored_friction,
                 )
                 for i in range(3):
                     corner_index = corners[i]

@@ -1217,6 +1217,92 @@ def test_sticky_disabled_no_sticky_buffers(test, device):
         test.assertIsNotNone(p_sticky._contact_matcher._prev_offset1)
 
 
+def _build_soft_particle_scene(device, world_count=1):
+    """Build one particle pressing into a static box per world, the particle at ``x = 0``."""
+    world = newton.ModelBuilder()
+    world.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, -0.1)), hx=0.5, hy=0.5, hz=0.1)
+    world.add_particle(pos=wp.vec3(0.0, 0.0, 0.009), vel=wp.vec3(0.0), mass=1.0, radius=0.01)
+    builder = newton.ModelBuilder()
+    for w in range(world_count):
+        builder.add_world(world, xform=wp.transform(wp.vec3(0.0, 2.0 * w, 0.0)))
+    model = builder.finalize(device=device)
+    return model, model.state()
+
+
+def _soft_body_points(contacts, world_count):
+    """Body-frame contact points ordered by particle, one soft contact per particle."""
+    count = int(contacts.soft_contact_count.numpy()[0])
+    assert count == world_count
+    particles = contacts.soft_contact_indices.numpy()[:count, 0]
+    return contacts.soft_contact_body_pos.numpy()[:count][np.argsort(particles)]
+
+
+def _check_sticky_soft_contact_points(test, device, *, use_capture):
+    with wp.ScopedDevice(device):
+        model, state = _build_soft_particle_scene(device)
+        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        contacts = pipeline.contacts()
+        if use_capture:
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state, contacts)
+
+        def body_point_at(x):
+            state.particle_q.assign([[x, 0.0, 0.009]])
+            if use_capture:
+                wp.capture_launch(capture.graph)
+            else:
+                pipeline.collide(state, contacts)
+            return _soft_body_points(contacts, 1)[0]
+
+        np.testing.assert_allclose(body_point_at(0.0), [0.0, 0.0, 0.0], atol=1.0e-7)
+        np.testing.assert_allclose(body_point_at(0.0002), [0.0, 0.0, 0.0], atol=1.0e-7)
+        np.testing.assert_allclose(body_point_at(0.0004), [0.0, 0.0, 0.0], atol=1.0e-7)
+        np.testing.assert_allclose(body_point_at(0.0006), [0.0006, 0.0, 0.0], atol=1.0e-7)
+        np.testing.assert_allclose(body_point_at(0.0007), [0.0006, 0.0, 0.0], atol=1.0e-7)
+        pipeline.reset_contact_matching()
+        np.testing.assert_allclose(body_point_at(0.0008), [0.0008, 0.0, 0.0], atol=1.0e-7)
+
+
+def test_sticky_soft_contact_points_replayed(test, device):
+    """STICKY mode keeps a soft contact's body point while it touches and slips less than the threshold.
+
+    A particle presses into a static box and slides along it. Each fresh soft record would put the
+    body point under the particle; sticky replay keeps the first one until the particle has slipped
+    farther than ``contact_matching_pos_threshold`` from it, then starts again from the fresh point.
+    A reset forgets the saved point.
+    """
+    _check_sticky_soft_contact_points(test, device, use_capture=False)
+
+
+def test_sticky_soft_contact_points_cuda_graph(test, device):
+    """Replay and release soft contact points from a captured collision pass."""
+    _check_sticky_soft_contact_points(test, device, use_capture=True)
+
+
+def test_sticky_soft_contact_history_follows_world_and_buffer(test, device):
+    """A masked reset restarts only the selected world's soft points, and a buffer never replays another's."""
+    with wp.ScopedDevice(device):
+        model, state = _build_soft_particle_scene(device, world_count=2)
+        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        contacts = pipeline.contacts()
+
+        def body_points_at(x, buffer=contacts):
+            q = state.particle_q.numpy()
+            q[:, 0] = x
+            state.particle_q.assign(q)
+            pipeline.collide(state, buffer)
+            return _soft_body_points(buffer, 2)[:, 0]
+
+        np.testing.assert_allclose(body_points_at(0.0), [0.0, 0.0], atol=1.0e-7)
+        pipeline.reset_contact_matching(wp.array((True, False, False), dtype=wp.bool, device=device))
+        np.testing.assert_allclose(body_points_at(0.0002), [0.0002, 0.0], atol=1.0e-7)
+        np.testing.assert_allclose(body_points_at(0.0003), [0.0002, 0.0], atol=1.0e-7)
+
+        other = pipeline.contacts()
+        np.testing.assert_allclose(body_points_at(0.0004, other), [0.0004, 0.0004], atol=1.0e-7)
+        np.testing.assert_allclose(body_points_at(0.0005), [0.0005, 0.0005], atol=1.0e-7)
+
+
 # ---------------------------------------------------------------------------
 # Register tests
 # ---------------------------------------------------------------------------
@@ -1384,6 +1470,24 @@ add_function_test(
     "test_sticky_rotated_witness_cuda_graph",
     test_sticky_rotated_witness_cuda_graph,
     devices=cuda_devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_points_replayed",
+    test_sticky_soft_contact_points_replayed,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_points_cuda_graph",
+    test_sticky_soft_contact_points_cuda_graph,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_soft_contact_history_follows_world_and_buffer",
+    test_sticky_soft_contact_history_follows_world_and_buffer,
+    devices=devices,
 )
 
 if __name__ == "__main__":
