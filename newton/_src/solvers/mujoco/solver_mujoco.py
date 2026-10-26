@@ -8683,7 +8683,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # MuJoCo has no prescribed DOFs. A weld to the world without stiffness or damping
         # locks a kinematic root's acceleration, so it keeps the velocity pushed from Newton.
         # _set_const_0 makes the weld and contacts treat the root as immovable.
-        kinematic_weld_eq_ids = []
+        kinematic_welds = []
         for _, root_body, is_kinematic, _ in kinematic_weld_roots:
             eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             eq.type = mujoco.mjtEq.mjEQ_WELD
@@ -8691,7 +8691,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             eq.name1 = root_body.name
             eq.data[0:11] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
             eq.solref = (0.0, 0.0)
-            kinematic_weld_eq_ids.append(eq.id)
+            kinematic_welds.append(eq)
 
         self.mj_model = spec.compile()
         self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
@@ -8931,7 +8931,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 late = ~np.array([t[3] for t in kinematic_weld_roots], dtype=bool)
                 self._kinematic_late_roots = np.zeros(model.body_count, dtype=bool)
                 self._kinematic_late_roots[self._kinematic_weld_body[:, late].ravel()] = True
-                self._kinematic_weld_eq = wp.array(kinematic_weld_eq_ids, dtype=wp.int32)
+                self._kinematic_weld_eq = wp.array([eq.id for eq in kinematic_welds], dtype=wp.int32)
                 lock_armature = np.zeros(self.mj_model.nv)
                 for _, root_body, _, _ in kinematic_weld_roots:
                     mjc_body = self.mj_model.body(root_body.name).id
@@ -9267,6 +9267,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
                     if mode == SOLREF_MODE_RAW:
                         spec.joints[mjc_jnt].solref_limit = solref
+                # Kinematic welds are Newton runtime machinery that importers would turn into fixed joints.
+                for eq in kinematic_welds:
+                    spec.delete(eq)
                 with open(target_filename, "w") as f:
                     f.write(spec.to_xml())
                     logger.info("Saved mujoco model to %s", os.path.abspath(target_filename))

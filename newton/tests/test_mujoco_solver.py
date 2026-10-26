@@ -2783,8 +2783,13 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         model = builder.finalize()
         solver = SolverMuJoCo(model, njmax=64)
         model.body_flags.fill_(int(BodyFlags.KINEMATIC))
-        with self.assertWarnsRegex(NewtonWarning, "120 weld constraint rows"):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
             solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+        categories = {w.category for w in caught if "120 weld constraint rows" in str(w.message)}
+        self.assertEqual(categories, {NewtonWarning})
+        # The roots were dynamic at creation, so the switch is also deprecated.
+        self.assertTrue(any(issubclass(w.category, NewtonDeprecationWarning) for w in caught))
 
 
 class TestMuJoCoSolverCollisionMasks(unittest.TestCase):

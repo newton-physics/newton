@@ -119,6 +119,7 @@ class TestEqualityConstraints(unittest.TestCase):
             ls_iterations=50,
             njmax=100,
             nconmax=50,
+            kinematic_switchable_roots=False,
         )
 
         self.control = self.model.control()
