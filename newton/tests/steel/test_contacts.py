@@ -578,7 +578,6 @@ def test_shared_anchors_step_on_every_route(test, device):
         {"solve_mode": "matrix_free"},
         {"solve_mode": "split"},
         {"articulated_contact_response": "propagation"},
-        {"articulated_contact_response": "propagation_fused"},
     )
 
     def run(route, shared):
@@ -1286,7 +1285,7 @@ for _name in (
     )
 
 
-# Colored and fused propagation build the same body-space rows as propagation and solve them differently.
+# Colored propagation builds the same body-space rows as propagation and solves them differently.
 for _name in (
     "test_rotated_anchor_free_body_matches_world_aligned",
     "test_rotated_anchor_free_body_on_articulation_matches_world_aligned",
@@ -1298,23 +1297,6 @@ for _name in (
         devices=devices,
         response="propagation_colored",
     )
-add_function_test(
-    TestSteelContactForce,
-    "test_rotated_anchor_free_body_on_articulation_matches_world_aligned_propagation_fused",
-    test_rotated_anchor_free_body_on_articulation_matches_world_aligned,
-    devices=devices,
-    response="propagation_fused",
-)
-
-
-# The fused response only differs from the immediate one with an articulated (dense-path) body.
-add_function_test(
-    TestSteelContactForce,
-    "test_free_body_contact_response_includes_armature_propagation_fused",
-    test_free_body_contact_response_includes_armature,
-    devices=devices,
-    response="propagation_fused",
-)
 
 
 LOWER_MASS = 2.0

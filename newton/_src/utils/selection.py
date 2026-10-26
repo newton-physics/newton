@@ -2306,7 +2306,7 @@ class ArticulationView:
             state: The state containing body transforms (body_q).
             H: Optional output array for mass matrix, shape (articulation_count, max_dofs, max_dofs).
                If None, allocates internally.
-            J: Optional pre-computed Jacobian. If None, computes internally.
+            J: Optional pre-computed Jacobian. If None, see :func:`~newton.eval_mass_matrix`.
             body_I_s: Optional pre-allocated temp array for spatial inertias.
             joint_S_s: Optional pre-allocated temp array for motion subspaces.
             mask: Optional mask of articulations in this ArticulationView (all by default).

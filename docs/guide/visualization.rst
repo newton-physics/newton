@@ -1008,8 +1008,25 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.Viewe
 Contact normals, mode disks, and force arrows are sized relative to the smaller
 shape in each contact pair. Use the ``Contact Relative Scale`` control to adjust
 all contact glyphs while preserving their proportions across differently sized
-contacts. Contact mode coloring and force arrows require the ``"force"``
-extended contact attribute.
+contacts. To infer contact modes and draw force arrows, request the solver's
+``CONTACT_F`` observable, pass it to the solver step, and provide the resulting
+observables to the viewer:
+
+.. code-block:: python
+
+    viewer.log_contacts(contacts, state, observables=observables)
+
+See :ref:`solver_observables` for allocation, contact-buffer identity, and backend
+support. Without force output, mode disks are amber (unknown) and force arrows
+are hidden. With force output, disks are black for open contacts, light gray for
+sticking contacts, and blue for slipping contacts. A measured force magnitude
+at or below ``contact_mode_eps_force`` is open, including zero force when the
+threshold is zero.
+
+Default force-arrow calibration uses the average dynamic mass of populated local
+worlds plus shared global dynamic mass, so replicating identical worlds does not
+change arrow lengths. Set ``viewer.contact_force_scale`` after attaching the
+model to override the calibration.
 
 **Transform gizmos:**
 

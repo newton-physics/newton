@@ -70,6 +70,9 @@ FRICTION_OPTIONS = {
 # Warm-started impulses are matched through contact matching and carried across steps.
 WARMSTART_OPTIONS = {**MATRIX_FREE_OPTIONS, "contact_warmstart": True, "velocity_iterations": 2}
 
+# The body-space propagation responses; they also take the free-body contacts.
+PROPAGATION_RESPONSES = ("propagation", "propagation_colored")
+
 # Ants alone select the sparse mass factors and their one-warp joint-limit builder.
 SPARSE_OPTIONS = {
     "iterations": 8,
@@ -172,11 +175,14 @@ def test_full_reset_matches_fresh_solver(test, device):
             np.testing.assert_array_equal(body_qd, fresh_body_qd)
 
 
-def _build_contact_scene(device, worlds=4, boxes=6, ants=2, torsion_radius=0.0, joint_friction=0.0):
+def _build_contact_scene(
+    device, worlds=4, boxes=6, ants=2, torsion_radius=0.0, joint_friction=0.0, kinematic_tray=False
+):
     """Floating ants dropped onto each other and onto a pile of free boxes in every world.
 
     A positive ``joint_friction`` adds a floating prismatic, ball and D6 chain and sets it, with a position
-    drive, on every non-free DOF.
+    drive, on every non-free DOF. ``kinematic_tray`` puts every world on one global kinematic tray that
+    slides and turns.
     """
     env = newton.ModelBuilder()
     SolverSteel.register_custom_attributes(env)
@@ -204,7 +210,15 @@ def _build_contact_scene(device, worlds=4, boxes=6, ants=2, torsion_radius=0.0, 
     SolverSteel.register_custom_attributes(builder)
     builder.replicate(env, worlds)
     builder.add_ground_plane()
+    if kinematic_tray:
+        tray = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), is_kinematic=True)
+        builder.add_shape_box(tray, hx=2.0, hy=2.0, hz=0.01)
     model = builder.finalize(device=device)
+    if kinematic_tray:
+        # The tray's free joint is the last one: linear velocity along x, angular velocity about z.
+        joint_qd = model.joint_qd.numpy()
+        joint_qd[-6:] = (0.2, 0.0, 0.0, 0.0, 0.0, 0.5)
+        model.joint_qd.assign(joint_qd)
     model.joint_velocity_limit.fill_(8.0)
     if torsion_radius > 0.0:
         model.steel.min_torsional_patch_radius.fill_(torsion_radius)
@@ -325,6 +339,83 @@ def test_deterministic_runs_are_bitwise_identical(test, device):
             test.assertTrue(all(finite for _, finite in first))
 
 
+def test_deterministic_propagation_runs_are_bitwise_identical(test, device):
+    """Repeat warm-started rollouts of both propagation responses bitwise over a moving kinematic tray."""
+    model = _build_contact_scene(device, kinematic_tray=True)
+    for response in PROPAGATION_RESPONSES:
+        for cached, graph in ((True, False), (False, False), (True, True)):
+            options = {
+                **WARMSTART_OPTIONS,
+                "articulated_contact_response": response,
+                "propagation_cached_response": cached,
+            }
+            with test.subTest(response=response, cached=cached, graph=graph):
+                if not graph:
+                    _check_propagation_coverage(test, model, options)
+                first = _run_hashes(model, options, 40, graph=graph)
+                second = _run_hashes(model, options, 40, graph=graph)
+                test.assertEqual(first, second)
+                test.assertTrue(all(finite for _, finite in first))
+
+
+def _check_propagation_coverage(test, model, options):
+    """Check that a rollout fills the propagation rows, names no kinematic body in them, and orders the body map."""
+    solver = SolverSteel(model, deterministic=RUN_TO_RUN, **options)
+    pipeline = _make_pipeline(model, options)
+    contacts = pipeline.contacts()
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    _actuate(model, control)
+    tray = model.body_count - 1
+    tray_shapes = np.flatnonzero(model.shape_body.numpy() == tray)
+    tray_contacts = 0
+    carried = 0
+    for _ in range(20):
+        state_0.clear_forces()
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 0.005)
+        state_0, state_1 = state_1, state_0
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        on_tray = np.isin(contacts.rigid_contact_shape0.numpy()[:count], tray_shapes) | np.isin(
+            contacts.rigid_contact_shape1.numpy()[:count], tray_shapes
+        )
+        tray_contacts += int(np.sum(on_tray & (solver._contact_path.numpy()[:count] == 2)))
+        if options.get("contact_warmstart"):
+            carried += int(np.count_nonzero(solver._ws_prev_propagation_impulses.numpy()))
+    rows = solver._propagation_constraint_count.numpy()
+    test.assertTrue(np.all(rows > 0))
+    test.assertGreater(tray_contacts, 0)
+    test.assertFalse(solver.constraint_overflow.numpy().any())
+    active = np.arange(solver._propagation_body_a.shape[1]) < rows[:, None]
+    row_bodies = np.concatenate(
+        [solver._propagation_body_a.numpy()[active], solver._propagation_body_b.numpy()[active]]
+    )
+    test.assertNotIn(tray, row_bodies)
+    # Some body takes part in many rows, so the order of its sums matters.
+    test.assertGreater(np.bincount(row_bodies[row_bodies >= 0]).max(), 2)
+    body_count = solver._propagation_body_count.numpy()
+    body_list = solver._propagation_body_list.numpy()
+    # Only the colored sweep and the cached response read the body map.
+    reads_body_map = (
+        options["articulated_contact_response"] == "propagation_colored" or options["propagation_cached_response"]
+    )
+    test.assertEqual(solver._propagation_world_bodies is not None, reads_body_map)
+    if options["propagation_cached_response"]:
+        test.assertTrue(np.all(solver._propagation_cache_world_flag.numpy() == 1))
+        # Cache-eligible bodies come first; each partition is in body order.
+        split = solver._propagation_cache_body_count.numpy()
+        test.assertTrue(np.all(split > 1))
+        for world, (n, k) in enumerate(zip(body_count, split, strict=True)):
+            test.assertTrue(np.all(np.diff(body_list[world, :k]) > 0))
+            test.assertTrue(np.all(np.diff(body_list[world, k:n]) > 0))
+    elif reads_body_map:
+        test.assertTrue(np.all(body_count > 1))
+        for world, n in enumerate(body_count):
+            test.assertTrue(np.all(np.diff(body_list[world, :n]) > 0))
+    if options.get("contact_warmstart"):
+        test.assertGreater(carried, 0)
+
+
 def test_warm_started_full_reset_matches_fresh_solver(test, device):
     """Replay a fresh warm-started solver's states and contact forces bit for bit after a full reset."""
     model = _build_contact_scene(device, worlds=2, boxes=3, ants=1)
@@ -398,14 +489,42 @@ def test_deterministic_launches_replay_identically(test, device):
     torsion_model = _build_contact_scene(device, worlds=8, torsion_radius=0.02)
     ant_model = _build_contact_scene(device, worlds=8, boxes=0)
     friction_model = _build_contact_scene(device, worlds=8, joint_friction=0.4)
-    for name, scene, options in (
-        ("matrix_free", model, MATRIX_FREE_OPTIONS),
-        ("split", model, SPLIT_OPTIONS),
-        ("torsion", torsion_model, TORSION_OPTIONS),
-        ("warmstart", model, WARMSTART_OPTIONS),
-        ("sparse", ant_model, SPARSE_OPTIONS),
-        ("joint_friction", friction_model, FRICTION_OPTIONS),
-    ):
+    _check_launches_replay(
+        test,
+        (
+            ("matrix_free", model, MATRIX_FREE_OPTIONS),
+            ("split", model, SPLIT_OPTIONS),
+            ("torsion", torsion_model, TORSION_OPTIONS),
+            ("warmstart", model, WARMSTART_OPTIONS),
+            ("sparse", ant_model, SPARSE_OPTIONS),
+            ("joint_friction", friction_model, FRICTION_OPTIONS),
+        ),
+    )
+
+
+def test_deterministic_propagation_launches_replay_identically(test, device):
+    """Reproduce every launch of both propagation responses bitwise, cached without and uncached with warm start."""
+    model = _build_contact_scene(device, worlds=8, kinematic_tray=True)
+    _check_launches_replay(
+        test,
+        [
+            (
+                f"{response}_{name}",
+                model,
+                {**options, "articulated_contact_response": response, "propagation_cached_response": cached},
+            )
+            for response in PROPAGATION_RESPONSES
+            for name, options, cached in (
+                ("cached", MATRIX_FREE_OPTIONS, True),
+                ("uncached_warmstart", WARMSTART_OPTIONS, False),
+            )
+        ],
+    )
+
+
+def _check_launches_replay(test, configurations):
+    """Rerun every solver launch of 12 steps three times from a snapshot and require identical outputs."""
+    for name, scene, options in configurations:
         with test.subTest(name):
             solver = SolverSteel(scene, deterministic=RUN_TO_RUN, **options)
             test.assertEqual(solver._sparse_mass_matrix_size is not None, name == "sparse")
@@ -774,6 +893,16 @@ for _fn in (
 ):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=cuda_devices)
 
+
+class TestSteelPropagationDeterminism(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_deterministic_propagation_runs_are_bitwise_identical,
+    test_deterministic_propagation_launches_replay_identically,
+):
+    add_function_test(TestSteelPropagationDeterminism, _fn.__name__, _fn, devices=cuda_devices)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

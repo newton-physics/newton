@@ -956,9 +956,20 @@ class ModelBuilder:
         kd: float = 100.0
         """The normal contact damping coefficient [N·s/m]."""
         kf: float = 1000.0
-        """The contact friction gain [N·s/m]."""
+        """The contact friction gain [N·s/m].
+
+        Slope of the viscous friction regularization in
+        :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone`; also used by
+        :class:`~newton.solvers.SolverMuJoCo`. See
+        :ref:`Contact friction gain and adhesion`."""
         ka: float = 0.0
-        """The contact adhesion distance [m]."""
+        """The contact adhesion distance [m].
+
+        Distance within which the normal force attracts the shapes, used by
+        :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone`. ``0`` disables adhesion. See
+        :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
         """The coefficient of friction."""
         restitution: float = 0.0
@@ -4374,7 +4385,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
-        joint_damping_mode: Literal["passive", "drive"] | None = None,
+        joint_damping_mode: Literal["passive", "drive"] = "passive",
         package_dirs: list[str] | None = None,
     ):
         """
@@ -4387,6 +4398,8 @@ class ModelBuilder:
                 Roots supplement environment paths without guaranteed precedence or restricting access.
                 Plain relative paths use the URDF directory; file URIs require an absolute local path.
             xform: The transform to apply to the root body. If None, the transform is set to identity.
+                If ``parent_body`` is set, ``xform`` is expressed in that body's frame
+                instead of the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -4479,18 +4492,12 @@ class ModelBuilder:
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
             joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
-                ``"passive"`` imports it into ``joint_damping`` and keeps drive
+                ``"passive"`` (default) imports it into ``joint_damping`` and keeps drive
                 damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
                 into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
                 In drive mode, passive damping uses ``default_joint_cfg.damping``
                 for revolute, prismatic, and planar joints.
                 XPBD/VBD do not consume passive joint damping.
-
-                .. deprecated:: 1.7
-                    The implicit None default retains the drive mapping and warns
-                    when the URDF authors damping. The default will become
-                    ``"passive"`` in Newton 1.8. Pass either mode explicitly to
-                    silence the warning; both explicit modes remain supported.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
@@ -4565,6 +4572,8 @@ class ModelBuilder:
         Args:
             source: The file path to the USD file, or an existing USD stage instance.
             xform: The transform to apply to the entire scene.
+                If ``parent_body`` is set, imported bodies are placed relative to that
+                body's frame; static shapes still use ``xform`` in the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -4925,6 +4934,8 @@ class ModelBuilder:
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.
+                If ``parent_body`` is set, imported bodies are placed relative to that
+                body's frame; static shapes still use ``xform`` in the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -9378,6 +9389,7 @@ class ModelBuilder:
             For ``coacd`` and ``vhacd``, each geometrically connected component
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
+            CoACD decompositions repeat across runs; pass CoACD's ``seed`` through ``remeshing_kwargs`` to change it.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -15060,22 +15072,22 @@ class ModelBuilder:
                 else:
                     shape_edge_ranges.append((-1, 0))
 
-            m.shape_edge_range = wp.array(
+            m._shape_edge_range = wp.array(
                 shape_edge_ranges if shape_edge_ranges else [(-1, 0)],
                 dtype=wp.vec2i,
                 device=device,
             )
-            m.mesh_edge_indices = (
+            m._mesh_edge_indices = (
                 wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec2i, device=device)
             )
-            m.mesh_edge_centers = (
+            m._mesh_edge_centers = (
                 wp.array(np.concatenate(edge_center_chunks), dtype=wp.vec4, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec4, device=device)
             )
-            m.mesh_edge_halves = (
+            m._mesh_edge_halves = (
                 wp.array(np.concatenate(edge_half_chunks), dtype=wp.vec4, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec4, device=device)
