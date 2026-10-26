@@ -1450,7 +1450,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
         internal_body_counts = {}
 
         class _RecordingCoupledSolver(SolverCoupled):
-            def _customize_compact_view(self, view: ModelView) -> None:
+            def _customize_compact_view(self, view: ModelView, proxy_body_local_indices: wp.array) -> None:
+                del proxy_body_local_indices
                 internal_body_counts[view.name] = view.body_count
 
         def configure_soft_view(view: ModelView) -> None:
@@ -2429,6 +2430,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
     def test_entries_preserve_global_shape_ids_by_default(self):
         """Entry shape views should keep global shape arrays with hidden dummies."""
+        parent_flags = self.model.shape_flags.numpy().copy()
         coupled = SolverCoupled(
             model=self.model,
             entries=[
@@ -2454,6 +2456,35 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertNotEqual(int(flags[0]) & collide, 0)
         self.assertEqual(int(flags[1]) & collide, 0)
         self.assertEqual(view_a.shape_contact_pair_count, 0)
+        np.testing.assert_array_equal(flags, [parent_flags[0], 0])
+        np.testing.assert_array_equal(coupled.view("B").shape_flags.numpy(), [0, parent_flags[1]])
+        np.testing.assert_array_equal(self.model.shape_flags.numpy(), parent_flags)
+
+        # Parent property refreshes must not restore excluded shapes or sites.
+        parent_flags[1] = int(newton.ShapeFlags.VISIBLE | newton.ShapeFlags.SITE)
+        self.model.shape_flags.assign(parent_flags)
+        coupled.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_array_equal(view_a.shape_flags.numpy(), [parent_flags[0], 0])
+        np.testing.assert_array_equal(coupled.view("B").shape_flags.numpy(), [0, parent_flags[1]])
+        np.testing.assert_array_equal(self.model.shape_flags.numpy(), parent_flags)
+
+    def test_entry_without_visible_shapes_clears_all_flags(self):
+        """Exclude every shape when a particle-only entry has no static geometry."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=body, radius=0.1)
+        particle = builder.add_particle(pos=(0, 0, 1), vel=(0, 0, 0), mass=1.0)
+        model = builder.finalize(device="cpu")
+        parent_flags = model.shape_flags.numpy().copy()
+        coupled = SolverCoupled(
+            model,
+            [SolverCoupled.Entry(name="particles", solver=SolverSemiImplicit, particles=[particle])],
+        )
+        view = coupled.view("particles")
+        self.assertEqual(view.shape_count, model.shape_count)
+        np.testing.assert_array_equal(view.shape_flags.numpy(), [0])
+        np.testing.assert_array_equal(view.shape_body.numpy(), [-1])
+        np.testing.assert_array_equal(model.shape_flags.numpy(), parent_flags)
 
     def test_particle_entry_without_shapes_keeps_global_static_shapes(self):
         """Particle-only entries should inherit global static shapes by default."""
@@ -2480,6 +2511,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertNotIn(dynamic_shape, view.body_shapes[-1])
         self.assertNotEqual(int(flags[ground_shape]) & collide_particles, 0)
         self.assertEqual(int(flags[dynamic_shape]) & collide_particles, 0)
+        self.assertEqual(int(flags[ground_shape]), int(model.shape_flags.numpy()[ground_shape]))
+        self.assertEqual(int(flags[dynamic_shape]), 0)
         body_shape_ids = np.array(view.body_shapes[-1], dtype=int)
         particle_collider_shapes = body_shape_ids[(flags[body_shape_ids] & collide_particles) > 0]
         np.testing.assert_array_equal(particle_collider_shapes, np.array([ground_shape], dtype=int))
@@ -2573,6 +2606,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(view_a.shape_contact_pair_count, 0)
         self.assertNotEqual(int(view_b.shape_flags.numpy()[0]) & collide, 0)
         self.assertNotEqual(int(view_b.shape_flags.numpy()[1]) & collide, 0)
+        np.testing.assert_array_equal(view_b.shape_flags.numpy(), self.model.shape_flags.numpy())
         self.assertEqual(view_b.shape_contact_pair_count, 1)
         np.testing.assert_array_equal(view_b.shape_contact_pairs.numpy(), np.array([[0, 1]], dtype=np.int32))
 

@@ -46,17 +46,10 @@ def _configure_kamino_rigid_view(view: ModelView) -> None:
 
 
 def _make_kamino_config() -> SolverKamino.Config:
-    config = SolverKamino.Config()
+    # LOX moves the PROXY-flagged ADMM joint proxies as dynamic bodies.
+    config = SolverKamino.Config(dynamics_solver="lox")
     config.use_collision_detector = False
     config.use_fk_solver = False
-    config.dynamics.preconditioning = True
-    config.padmm.max_iterations = 120
-    config.padmm.primal_tolerance = 1.0e-5
-    config.padmm.dual_tolerance = 1.0e-5
-    config.padmm.compl_tolerance = 1.0e-5
-    config.padmm.rho_0 = 0.1
-    config.padmm.use_acceleration = True
-    config.padmm.warmstart_mode = "containers"
     return config
 
 
@@ -137,7 +130,7 @@ class Example:
         self.device = self.model.device
 
         kamino_config = _make_kamino_config()
-        kamino_config.padmm.max_iterations = args.kamino_iterations
+        kamino_config.lox.max_iterations = args.kamino_iterations
 
         self.solver = SolverCoupledADMM(
             model=self.model,
@@ -187,6 +180,7 @@ class Example:
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
+        self._initial_body_q = self.state_0.body_q.numpy().copy()
 
         self.capture()
 
@@ -355,6 +349,8 @@ class Example:
             child = _transform_point(body_q, child_body, child_point)
             max_gap = max(max_gap, float(np.linalg.norm(parent - child)))
         assert max_gap < 0.12, f"Kamino-MuJoCo four-bar ADMM joints drifted too far: gap={max_gap:.3f}"
+        max_travel = float(np.max(np.linalg.norm(body_q[:, :3] - self._initial_body_q[:, :3], axis=1)))
+        assert max_travel > 1.0e-3, f"Kamino-MuJoCo four-bar stayed at its start pose: travel={max_travel:.4f}"
         if self.use_graph:
             assert self.graph is not None, "Graph capture was requested but no graph was captured"
 
@@ -371,12 +367,12 @@ class Example:
         parser.set_defaults(world_count=4)
         parser.add_argument("--substeps", type=int, default=3, help="Coupled substeps per rendered frame.")
         parser.add_argument("--admm-iterations", type=int, default=2, help="ADMM iterations per coupled substep.")
-        parser.add_argument("--rho", type=float, default=0.3, help="Dimensionless ADMM penalty parameter.")
-        parser.add_argument("--gamma", type=float, default=20.0, help="Dimensionless ADMM proximal mass scaling.")
+        parser.add_argument("--rho", type=float, default=2.0, help="Dimensionless ADMM penalty parameter.")
+        parser.add_argument("--gamma", type=float, default=1.0, help="Dimensionless ADMM proximal mass scaling.")
         parser.add_argument("--baumgarte", type=float, default=0.02, help="Position error correction fraction.")
         parser.add_argument("--joint-stiffness", type=float, default=3.6e6, help="Cross-solver joint stiffness [N/m].")
         parser.add_argument("--joint-damping", type=float, default=1.0, help="Cross-solver joint damping [N*s/m].")
-        parser.add_argument("--kamino-iterations", type=int, default=40, help="Kamino PADMM iterations per substep.")
+        parser.add_argument("--kamino-iterations", type=int, default=16, help="Kamino LOX iterations per substep.")
         parser.add_argument(
             "--no-graph-capture",
             action="store_false",

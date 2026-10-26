@@ -130,14 +130,19 @@ The protocol currently covers these concepts:
   argument uses :class:`newton.StateFlags`. VBD uses this to realign private
   previous-pose state after proxy synchronization or ADMM iteration restarts.
   MPM uses it to keep collider caches consistent.
-- ``coupling_eval_gravity_acceleration()`` lets a solver report the body and
-  particle acceleration that it applies internally for gravity-like forces.
-  Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind
-  and harvest hooks so solvers that scale or compensate gravity can avoid
-  double-applying it.
-- ``coupling_rewind_proxy_body()`` and
-  ``coupling_rewind_proxy_particle()`` let a
-  destination solver prepare proxy velocities before a lagged proxy pass.
+- ``coupling_eval_gravity_acceleration()`` reports the gravity each solver
+  actually applies, including gravity compensation and prescribed colliders.
+  ADMM uses it to cancel gravity on joint proxies and on the mass added by
+  ``gamma``.
+- ``coupling_set_inertial_target()`` matches an inertial target expressed as
+  momentum, or adds to the current target with ``accumulate=True``. This is the
+  motion preferred before contact, joint, or material constraints. The default
+  uses a first-order force update including gravity; solvers may invert their
+  native integration more accurately. The setter accepts compact targets with
+  local body or particle indices and changes forces or velocities, preserving
+  poses and solver history. The caller notifies velocity and force updates
+  afterward. Proxy feedback cancellation and ADMM ``gamma`` stabilization use
+  this same setter.
 - ``coupling_harvest_proxy_wrenches()`` and
   ``coupling_harvest_proxy_particle_forces()`` let a destination solver
   report feedback forces from solver-native contact or transfer data.
@@ -345,8 +350,9 @@ default. These custom attributes use ``-1`` to inherit the global value;
 apply only to rows coupled by ADMM; an attachment owned entirely by one
 :class:`~newton.solvers.SolverVBD` entry uses that solver's own attachment
 handling.
-These solver settings are currently authored through Python; no USD schema
-is defined for them.
+USD support for these solver settings is deferred while
+:class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` is
+experimental; they are authored through Python.
 
 For enabled contact pairs, the coupler owns private detection data and builds
 rows from solver ownership: particle-shape rows between particle entries and
@@ -394,13 +400,29 @@ the triangle-pair capacity must be less than ``2**20``. Larger capacities are
 allowed with matching disabled. Increase the hash table size factor when
 contact reduction needs more storage while retaining contact matching.
 
-When ``gamma`` is positive, the coupler scales owned body and particle masses in
-each entry ``ModelView``, asks sub-solvers to refresh model-derived caches, and
-shifts entry input velocities toward the previous ADMM iterate. Endpoint
-effective mass uses solver hooks when available and model fallbacks otherwise.
-This keeps the implementation compatible with solvers that can provide an
-articulated mass estimate, such as MuJoCo Warp, while still allowing simpler
-solvers to participate.
+When ``gamma`` is positive, the coupler adds the proximal mass to owned body and
+particle masses in each entry ``ModelView``, asks sub-solvers to refresh
+model-derived caches, and sets an inertial target that pulls the added mass
+toward the previous ADMM iterate while the physical velocities stay unchanged.
+Endpoint effective mass uses solver hooks when available and model fallbacks
+otherwise. This keeps the implementation compatible with solvers that can
+provide an articulated mass estimate, such as MuJoCo Warp, while still allowing
+simpler solvers to participate.
+
+With ``joint_proximal_bodies`` enabled, each entry view also keeps the body on
+the other side of a cross-solver joint, together with that joint, as rows of
+that view. This joint proxy realizes the local ADMM penalty of the joint's
+rows: at the start of each step it is placed with the joint at zero
+coordinates on the owned body, and it carries the rows' ``rho * W**2``
+inertia, with each row's own ``rho``, centered on the rows. Each iteration pulls it toward the owned body's
+current iterate, so the term vanishes at the ADMM fixed point and
+``joint_proximal_mass_scale`` changes convergence, not the converged answer.
+A cross joint outside any articulation joins the owned body's articulation in
+that view, so reduced-coordinate solvers move the proxy through it. Proxy joints
+carry no drives, limits, or control. Proxy bodies carry
+:attr:`~newton.BodyFlags.PROXY` and every flag of their shapes is cleared, so
+they neither collide nor render. ``joint_proximal_destination_entries``
+restricts which entries keep proxies.
 
 Choosing Proxy or ADMM Coupling
 -------------------------------
@@ -443,7 +465,7 @@ between proxy bodies. For one-DoF drives, the coupler remaps source targets to
 destination-local indices and copies ``joint_target_q`` and ``joint_target_qd``
 before each destination solve.
 
-Implicit MPM supports proxy body and proxy particle rewind/harvest hooks.
+Implicit MPM supports the inertial-target and proxy harvest hooks.
 Transfer-active proxy particles can participate in P2G/G2P momentum transfer
 while being excluded from material volume, stress, strain, and constitutive
 updates. Deformable collider particles registered through collider-particle ids
