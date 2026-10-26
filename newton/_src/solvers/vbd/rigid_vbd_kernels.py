@@ -32,6 +32,7 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL
 from newton._src.geometry.kernels import triangle_closest_point
+from newton._src.geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from newton._src.math import orthonormal_basis, quat_velocity
 from newton._src.sim import JointType
 from newton._src.sim.articulation import eval_angular_coordinates
@@ -1832,10 +1833,12 @@ def evaluate_rod_stretch_shear_force_hessian(
 @wp.struct
 class RigidForceElementAdjacencyInfo:
     r"""
-    Stores adjacency information for rigid bodies and their connected joints using CSR (Compressed Sparse Row) format.
+    Stores adjacency information for rigid bodies and constrained joints using CSR (Compressed Sparse Row) format.
+
+    FREE joints are excluded; disabled constraints are retained because they can be enabled between steps.
 
     - body_adj_joints: Flattened array of joint IDs. Size is sum over all bodies of N_i, where N_i is the
-      number of joints connected to body i.
+      number of constrained joints connected to body i.
 
     - body_adj_joints_offsets: Offset array indicating where each body's joint list starts.
       Size is |B|+1 (number of bodies + 1).
@@ -1845,16 +1848,6 @@ class RigidForceElementAdjacencyInfo:
     # Rigid body joint adjacency
     body_adj_joints: wp.array[wp.int32]
     body_adj_joints_offsets: wp.array[wp.int32]
-
-    def to(self, device):
-        if device == self.body_adj_joints.device:
-            return self
-        else:
-            adjacency_gpu = RigidForceElementAdjacencyInfo()
-            adjacency_gpu.body_adj_joints = self.body_adj_joints.to(device)
-            adjacency_gpu.body_adj_joints_offsets = self.body_adj_joints_offsets.to(device)
-
-            return adjacency_gpu
 
 
 @wp.func
@@ -3882,52 +3875,6 @@ def reset_rigid_state(
 
 
 @wp.kernel
-def _count_num_adjacent_joints(
-    joint_parent: wp.array[wp.int32],
-    joint_child: wp.array[wp.int32],
-    num_body_adjacent_joints: wp.array[wp.int32],
-):
-    joint_count = joint_parent.shape[0]
-    for joint_id in range(joint_count):
-        parent_id = joint_parent[joint_id]
-        child_id = joint_child[joint_id]
-
-        # Skip world joints (parent/child == -1)
-        if parent_id >= 0:
-            num_body_adjacent_joints[parent_id] = num_body_adjacent_joints[parent_id] + 1
-        if child_id >= 0:
-            num_body_adjacent_joints[child_id] = num_body_adjacent_joints[child_id] + 1
-
-
-@wp.kernel
-def _fill_adjacent_joints(
-    joint_parent: wp.array[wp.int32],
-    joint_child: wp.array[wp.int32],
-    body_adjacent_joints_offsets: wp.array[wp.int32],
-    body_adjacent_joints_fill_count: wp.array[wp.int32],
-    body_adjacent_joints: wp.array[wp.int32],
-):
-    joint_count = joint_parent.shape[0]
-    for joint_id in range(joint_count):
-        parent_id = joint_parent[joint_id]
-        child_id = joint_child[joint_id]
-
-        # Add joint to parent body's adjacency list
-        if parent_id >= 0:
-            fill_count_parent = body_adjacent_joints_fill_count[parent_id]
-            buffer_offset_parent = body_adjacent_joints_offsets[parent_id]
-            body_adjacent_joints[buffer_offset_parent + fill_count_parent] = joint_id
-            body_adjacent_joints_fill_count[parent_id] = fill_count_parent + 1
-
-        # Add joint to child body's adjacency list
-        if child_id >= 0:
-            fill_count_child = body_adjacent_joints_fill_count[child_id]
-            buffer_offset_child = body_adjacent_joints_offsets[child_id]
-            body_adjacent_joints[buffer_offset_child + fill_count_child] = joint_id
-            body_adjacent_joints_fill_count[child_id] = fill_count_child + 1
-
-
-@wp.kernel
 def refresh_body_structural_k(
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
@@ -4189,7 +4136,7 @@ def build_body_particle_contact_lists(
     body_particle_contact_overflow_max: wp.array[wp.int32],
 ):
     """
-    Build per-body contact lists for body-particle contacts.
+    Build per-body candidate lists independent of current force eligibility.
 
     Each contact is listed only if its body is dynamic (effective inverse
     mass > 0); static/kinematic bodies are skipped since VBD never moves them.
@@ -4231,7 +4178,7 @@ def check_contact_overflow(
             )
         else:
             wp.printf(
-                "Warning: Per-body particle contact buffer overflowed %d > %d.\n",
+                "Warning: Per-body particle contact buffer overflowed %d > %d; scanning all stored contacts.\n",
                 omax,
                 buffer_size,
             )
@@ -5361,6 +5308,8 @@ def create_accumulate_body_body_contacts_per_body():
         num_contacts = body_contact_counts[body_id]
         if num_contacts > body_contact_buffer_pre_alloc:
             num_contacts = body_contact_buffer_pre_alloc
+        if thread_id_within_body >= num_contacts:
+            return
 
         contact_count = rigid_contact_count[0]
 
@@ -5939,6 +5888,7 @@ def accumulate_body_particle_attachments_per_body(
 def accumulate_body_particle_contacts_per_body(
     dt: float,
     color_group: wp.array[wp.int32],
+    threads_per_body: int,
     # Particle state
     particle_q: wp.array[wp.vec3],
     particle_q_prev: wp.array[wp.vec3],
@@ -5971,6 +5921,7 @@ def accumulate_body_particle_contacts_per_body(
     body_particle_contact_buffer_pre_alloc: int,
     body_particle_contact_counts: wp.array[wp.int32],
     body_particle_contact_indices: wp.array[wp.int32],
+    contact_filter: _SoftContactFilterData,
     # Outputs
     body_forces: wp.array[wp.vec3],
     body_torques: wp.array[wp.vec3],
@@ -5994,8 +5945,8 @@ def accumulate_body_particle_contacts_per_body(
       - Uses per-contact effective penalty/material parameters initialized once per step.
     """
     tid = wp.tid()
-    body_idx_in_group = tid // _NUM_CONTACT_THREADS_PER_BODY
-    thread_id_within_body = tid % _NUM_CONTACT_THREADS_PER_BODY
+    body_idx_in_group = tid // threads_per_body
+    thread_id_within_body = tid % threads_per_body
 
     if body_idx_in_group >= color_group.shape[0]:
         return
@@ -6004,11 +5955,15 @@ def accumulate_body_particle_contacts_per_body(
     if body_inv_mass[body_id] <= 0.0:
         return
 
+    max_contacts = wp.min(body_particle_contact_count[0], body_particle_contact_shape.shape[0])
     num_contacts = body_particle_contact_counts[body_id]
-    if num_contacts > body_particle_contact_buffer_pre_alloc:
-        num_contacts = body_particle_contact_buffer_pre_alloc
-
-    max_contacts = body_particle_contact_count[0]  # single total soft-contact count
+    overflow = num_contacts > body_particle_contact_buffer_pre_alloc
+    if overflow:
+        # The bounded list is only a fast path. Preserve every stored candidate
+        # so particle forces never lose their corresponding body reactions.
+        num_contacts = max_contacts
+    if thread_id_within_body >= num_contacts:
+        return
 
     X_wb = body_q[body_id]
     X_wb_prev = body_q_prev[body_id]
@@ -6022,9 +5977,17 @@ def accumulate_body_particle_contacts_per_body(
 
     i = thread_id_within_body
     while i < num_contacts:
-        contact_idx = body_particle_contact_indices[body_id * body_particle_contact_buffer_pre_alloc + i]
-        i += _NUM_CONTACT_THREADS_PER_BODY
+        contact_idx = i
+        if not overflow:
+            contact_idx = body_particle_contact_indices[body_id * body_particle_contact_buffer_pre_alloc + i]
+        i += threads_per_body
         if contact_idx >= max_contacts:
+            continue
+        if overflow:
+            shape_idx = body_particle_contact_shape[contact_idx]
+            if shape_idx < 0 or shape_body[shape_idx] != body_id:
+                continue
+        if not _soft_contact_force_enabled(contact_idx, contact_filter):
             continue
 
         f_soft = wp.vec3(0.0)
@@ -6137,6 +6100,7 @@ def compute_body_particle_contact_forces(
     body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
     body_particle_contact_count: wp.array[int],
+    contact_filter: _SoftContactFilterData,
     soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
@@ -6158,7 +6122,7 @@ def compute_body_particle_contact_forces(
     solver state.
     """
     tid = wp.tid()
-    if tid >= body_particle_contact_count[0]:
+    if tid >= body_particle_contact_count[0] or not _soft_contact_force_enabled(tid, contact_filter):
         contact_force[tid] = wp.spatial_vector()
         return
 
@@ -7309,6 +7273,7 @@ update_duals_body_body_contacts = create_update_duals_body_body_contacts()
 @wp.kernel
 def update_duals_body_particle_contacts(
     body_particle_contact_count: wp.array[int],
+    contact_filter: _SoftContactFilterData,
     soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
@@ -7332,7 +7297,7 @@ def update_duals_body_particle_contacts(
     2-3 soft particles -- matching _eval_soft_ef_contact.
     """
     idx = wp.tid()
-    if idx >= body_particle_contact_count[0]:
+    if idx >= body_particle_contact_count[0] or not _soft_contact_force_enabled(idx, contact_filter):
         return
 
     corners = soft_contact_indices[idx]

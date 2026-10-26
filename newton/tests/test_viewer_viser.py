@@ -3,20 +3,24 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import io
 import json
+import re
 import tempfile
 import threading
 import time
 import unittest
 import warnings
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.types import SH_C0
 from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_basic_pendulum import Example as PendulumExample
 from newton.viewer import ViewerViser
@@ -99,6 +103,23 @@ class TestViewerViserInteraction(unittest.TestCase):
         model.shape_color.assign(np.tile((0.8, 0.2, 0.1), (model.shape_count, 1)))
         self.viewer.set_model(model)
         return model
+
+    def test_gaussian_colors_follow_sh_color_space(self):
+        """Display linear Gaussian radiance sRGB-encoded and sRGB radiance as is, clamped to [0, 1], from the DC term."""
+        # Radiance of (0.2, 10.0, -10.0) per channel: in range, above range and below range.
+        dc = (np.array([[0.2, 10.0, -10.0]], dtype=np.float32) - 0.5) / SH_C0
+        # Higher-order coefficients must not affect the displayed color.
+        sh = np.concatenate([dc, np.full((1, 6), 5.0, dtype=np.float32)], axis=1)
+        for color_space, expected in (
+            (newton.utils.ColorSpace.SRGB, [0.2, 1.0, 0.0]),
+            (newton.utils.ColorSpace.LINEAR, [newton.utils.color_linear_to_srgb([0.2] * 3)[0], 1.0, 0.0]),
+        ):
+            gaussian = newton.Gaussian(
+                positions=np.zeros((1, 3), dtype=np.float32), sh_coeffs=sh, sh_color_space=color_space
+            )
+            with mock.patch.object(self.viewer._server.scene, "add_gaussian_splats") as add_splats:
+                self.viewer.log_gaussian(f"/gaussian_{int(color_space)}", gaussian)
+            np.testing.assert_allclose(add_splats.call_args.kwargs["rgbs"], [expected], atol=1e-5)
 
     def test_hidden_shapes_preserve_colors(self):
         """Restore colored rigid geometry after toggling visual and collision layers."""
@@ -659,6 +680,70 @@ class TestViewerViserTextures(unittest.TestCase):
         """Keep textured meshes nonmetallic after glTF applies material defaults."""
         material = self._roundtrip_textured_mesh(3)
         self.assertEqual(material.metallicFactor, 0.0)
+
+
+@unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
+class TestViewerViserBindHost(unittest.TestCase):
+    """``host`` controls the bind address and has to be reflected in the browser URL."""
+
+    # Newton prints its own URL after viser has spoken, so anything asserted
+    # against the whole buffer can match Newton's line instead of viser's.
+    _NEWTON_URL_LINE = re.compile(r"^Viser server running at:.*$", re.MULTILINE)
+
+    def _viewer(self, **kwargs):
+        kwargs.setdefault("verbose", False)
+        viewer = ViewerViser(port=0, **kwargs)
+        self.addCleanup(viewer.close)
+        return viewer
+
+    def _viser_startup_output(self, host):
+        """Return the viewer and the startup output viser itself produced."""
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            viewer = self._viewer(host=host, verbose=True)
+        return viewer, self._NEWTON_URL_LINE.split(buffer.getvalue(), maxsplit=1)[0]
+
+    def test_default_host_url_uses_localhost(self):
+        """Report localhost for the default wildcard bind."""
+        viewer = self._viewer()
+        self.assertEqual(viewer.url, f"http://localhost:{viewer._server.get_port()}")
+
+    def test_loopback_host_url_uses_loopback(self):
+        """Report a specific bind address verbatim in the URL."""
+        viewer = self._viewer(host="127.0.0.1")
+        self.assertEqual(viewer.url, f"http://127.0.0.1:{viewer._server.get_port()}")
+
+    def test_loopback_host_is_reachable_at_the_reported_url(self):
+        """Accept connections at the URL reported for a loopback bind."""
+        from urllib.parse import urlparse  # noqa: PLC0415
+        from urllib.request import urlopen  # noqa: PLC0415
+
+        viewer = self._viewer(host="127.0.0.1")
+        parsed = urlparse(viewer.url)
+        with urlopen(f"http://{parsed.hostname}:{parsed.port}/", timeout=10) as response:
+            self.assertLess(response.status, 400)
+
+    def test_verbose_line_uses_the_bound_host(self):
+        """Print the bound host in the verbose startup line."""
+        viewer, viser_output = self._viser_startup_output("127.0.0.1")
+        self.assertIn(f"http://127.0.0.1:{viewer._server.get_port()}", viser_output)
+
+    def test_url_matches_the_url_viser_prints(self):
+        """Report the same host viser's own startup message does, for both bind styles."""
+        for host, expected_host in (("0.0.0.0", "localhost"), ("127.0.0.1", "127.0.0.1")):
+            with self.subTest(host=host):
+                viewer, viser_output = self._viser_startup_output(host)
+                url = f"http://{expected_host}:{viewer._server.get_port()}"
+                self.assertEqual(viewer.url, url)
+                self.assertIn(url, viser_output)
+
+    def test_notebook_fallback_uses_the_bound_host(self):
+        """Use the bound host when a notebook has no Jupyter proxy route to offer."""
+        viewer = self._viewer(host="127.0.0.1")
+        viewer.is_jupyter_notebook = True
+        with mock.patch.object(ViewerViser, "_get_jupyter_proxy_base_url", return_value=None):
+            url = viewer.url
+        self.assertTrue(url.startswith(f"http://127.0.0.1:{viewer._server.get_port()}"), url)
 
 
 if __name__ == "__main__":

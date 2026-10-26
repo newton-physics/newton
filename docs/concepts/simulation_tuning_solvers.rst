@@ -222,8 +222,8 @@ repository examples spend tuning effort, not a shared solver API.
    * - :class:`~newton.solvers.SolverSteel`
      - ``solve_mode``, ``iterations``, ``baumgarte``, ``cfm``, ``relaxation``,
        ``update_mass_matrix_interval``, ``enable_joint_limits``,
-       ``joint_limit_activation_gap``, ``enable_joint_velocity_limits``,
-       ``velocity_limit_activation_fraction``,
+       ``joint_limit_activation_gap``, ``enable_joint_friction``,
+       ``enable_joint_velocity_limits``, ``velocity_limit_activation_fraction``,
        ``articulation_constraint_max``, ``free_body_constraint_max``,
        ``warn_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
@@ -248,10 +248,13 @@ repository examples spend tuning effort, not a shared solver API.
        Delassus matrix per world; it raises for joint velocity limits,
        ``drive_mode="rows"``, mimic joints, loop-closing joints, friction
        patches, contact regularization, velocity-only iterations, warm start,
-       restitution, contact torsion, contact compliance, sleeping, the
-       propagation contact responses, the non-interleaved ``row_schedule``
-       values and the non-default ``friction_mode`` values. Joint limits are enforced only with
-       ``enable_joint_limits=True`` (off by default). Contacts and joint limits are hard
+       restitution, contact torsion, contact compliance, sleeping, joint
+       friction, the propagation contact responses, the non-interleaved
+       ``row_schedule`` values and the non-default ``friction_mode`` values.
+       Joint limits are enforced only with ``enable_joint_limits=True`` (off by
+       default). Joint friction (:attr:`~newton.Model.joint_friction`, for
+       example from MJCF ``frictionloss``) is enforced only with
+       ``enable_joint_friction=True`` (off by default). Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``iterations`` reduce residual penetration and
        slip, and ``baumgarte`` sets how much position error is corrected per
@@ -327,9 +330,9 @@ repository examples spend tuning effort, not a shared solver API.
        faster depends on the model. The propagation responses reject contact torsion,
        contact compliance, sleeping and loop-closing joints, and fall back from bilateral
        pre-elimination to iterative mimic rows with a warning.
-       ``use_parallel_streams`` and ``double_buffer`` overlap the work of
-       articulation-size groups and of consecutive steps without changing results;
-       measure the full step before relying on them.
+       ``use_parallel_streams`` overlaps the work of articulation-size groups and
+       ``double_buffer`` clears a step's buffers on a side stream, without changing
+       results; measure the full step before relying on them.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.

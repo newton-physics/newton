@@ -112,6 +112,9 @@ def _create_witness_kernel(distance_query=None, *, refinement_normal=None):
                 ray_normal,
                 penetration,
                 False,
+                False,
+                wp.vec3(0.0),
+                0.0,
                 max_iter,
             )
         else:
@@ -357,6 +360,90 @@ def test_convex_contact_sampled_line(test, device):
                 test.assertAlmostEqual(abs(float(normal[2])), 1.0, delta=1.0e-6)
 
 
+def test_convex_contact_near_planar_face(test, device):
+    """Report every corner of a resting face that is not planar to EPS, at its exact depth."""
+    # A sole-sized box hull whose first bottom corner sits 20 um above the
+    # other three. All four corners penetrate a slab, so each must get a
+    # contact on both surfaces instead of the deepest witness alone.
+    half = np.array([0.0205, 0.027, 0.0065])
+    vertices = np.array([[x, y, z] for z in (-1, 1) for y in (-1, 1) for x in (-1, 1)]) * half
+    bump = 2.0e-5
+    vertices[0, 2] += bump
+    mesh = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
+    depth = 2.0e-4
+    corners = vertices[:4]
+    corner_depths = depth - (corners[:, 2] + half[2])
+    for swap in (False, True):
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(margin=0.0, gap=0.0)
+        hull_body = builder.add_body()
+        slab_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, depth - half[2] - 0.1), wp.quat_identity()))
+        if swap:
+            builder.add_shape_box(slab_body, hx=0.5, hy=0.5, hz=0.1, cfg=cfg)
+        builder.add_shape_convex_hull(hull_body, mesh=mesh, cfg=cfg)
+        if not swap:
+            builder.add_shape_box(slab_body, hx=0.5, hy=0.5, hz=0.1, cfg=cfg)
+        model = builder.finalize(device=device)
+        state = model.state()
+        for split in (False, True) if device.is_cuda else (False,):
+            with test.subTest(swap=swap, split=split):
+                threshold = 0 if split else 1_000_000_000
+                with patch("newton._src.sim.collide._SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD", threshold):
+                    pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+                contacts = pipeline.contacts()
+                pipeline.collide(state, contacts)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                distances_array = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+                newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances_array)
+                shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+                points = [contacts.rigid_contact_point0.numpy()[:count], contacts.rigid_contact_point1.numpy()[:count]]
+                hull_points = np.where((shape0 == int(swap))[:, None], points[0], points[1])
+                distances = distances_array.numpy()[:count]
+                for corner, corner_depth in zip(corners, corner_depths, strict=True):
+                    nearest = int(np.argmin(np.linalg.norm(hull_points - corner, axis=1)))
+                    np.testing.assert_allclose(hull_points[nearest], corner, atol=1.0e-5)
+                    test.assertAlmostEqual(float(distances[nearest]), -corner_depth, delta=1.0e-6)
+                test.assertTrue(np.all(distances < 0.0))
+
+                # Reuse the pair across touching, separated, and out-of-gap
+                # states. The writer must apply the same gap policy as for a
+                # planar manifold, including rejecting just the raised corner.
+                gap = 1.0e-4
+                model.shape_gap.fill_(gap)
+                for separation in (0.0, 5.0e-5, 1.9e-4, 2.1e-4):
+                    with test.subTest(separation=separation):
+                        poses = state.body_q.numpy()
+                        poses[slab_body, 2] = -separation - half[2] - 0.1
+                        state.body_q.assign(poses)
+                        pipeline.collide(state, contacts)
+                        count = int(contacts.rigid_contact_count.numpy()[0])
+                        expected = separation + corners[:, 2] + half[2] < 2.0 * gap
+                        if not np.any(expected):
+                            test.assertEqual(count, 0)
+                            continue
+                        test.assertGreaterEqual(count, int(np.sum(expected)))
+                        test.assertLessEqual(count, 5)
+                        shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+                        points = [
+                            contacts.rigid_contact_point0.numpy()[:count],
+                            contacts.rigid_contact_point1.numpy()[:count],
+                        ]
+                        hull_points = np.where((shape0 == int(swap))[:, None], points[0], points[1])
+                        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances_array)
+                        measured = distances_array.numpy()[:count]
+                        test.assertTrue(np.all(measured < 2.0 * gap))
+                        for corner in corners[expected]:
+                            nearest = int(np.argmin(np.linalg.norm(hull_points - corner, axis=1)))
+                            np.testing.assert_allclose(hull_points[nearest], corner, atol=1.0e-5)
+                            test.assertAlmostEqual(
+                                float(measured[nearest]), separation + corner[2] + half[2], delta=1.0e-6
+                            )
+                # Restore the penetrating state before testing the other kernel.
+                poses[slab_body, 2] = depth - half[2] - 0.1
+                state.body_q.assign(poses)
+                model.shape_gap.zero_()
+
+
 def test_convex_contact_bounded_refinement(test, device):
     """Recover aligned surface witnesses when the physical portal exceeds the ray bound."""
     with np.load(Path(__file__).parent / "assets" / "convex_contact_4414.npz", allow_pickle=False) as fixture:
@@ -453,6 +540,7 @@ for function in (
     test_convex_contact_unconverged_distance_query,
     test_convex_contact_bounded_refinement,
     test_convex_contact_sampled_line,
+    test_convex_contact_near_planar_face,
     test_convex_contact_witness_margin,
     test_convex_contact_split_witness,
 ):

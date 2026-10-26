@@ -164,7 +164,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         Args:
             model: The model to be simulated.
             angular_damping: Angular damping factor. Defaults to 0.05.
-            update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
+            update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). The update is also forced on the next step after :meth:`notify_model_changed` reports body, joint DOF or inertial changes. Both decisions are made on the host when :meth:`step` runs, so a captured CUDA graph replays the choice made at capture time; use an interval of 1 or recapture after such a notification. Defaults to 1.
             friction_smoothing: The delta value for the Huber norm (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`) used for the friction velocity normalization. Defaults to 1.0.
             use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. A kernel is compiled per distinct articulation size. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
@@ -322,6 +322,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         ):
             self._update_kinematic_state()
             self._mass_matrix_dirty = True
+        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES and self.model.body_count:
+            # Re-derive the buffers baked from body_mass/body_inertia/body_com so runtime mass
+            # randomization reaches the mass matrix and the COM velocity transforms.
+            self._update_body_inertial_buffers()
+            self._mass_matrix_dirty = True
 
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system
@@ -402,23 +407,28 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             self.body_I_m = wp.empty(
                 (model.body_count,), dtype=wp.spatial_matrix, device=model.device, requires_grad=model.requires_grad
             )
-            wp.launch(
-                compute_spatial_inertia,
-                model.body_count,
-                inputs=[model.body_inertia, model.body_mass],
-                outputs=[self.body_I_m],
-                device=model.device,
-            )
             self.body_X_com = wp.empty(
                 (model.body_count,), dtype=wp.transform, device=model.device, requires_grad=model.requires_grad
             )
-            wp.launch(
-                compute_com_transforms,
-                model.body_count,
-                inputs=[model.body_com],
-                outputs=[self.body_X_com],
-                device=model.device,
-            )
+            self._update_body_inertial_buffers()
+
+    def _update_body_inertial_buffers(self):
+        # derive the spatial inertia and COM transform buffers from body_mass/body_inertia/body_com in place
+        model = self.model
+        wp.launch(
+            compute_spatial_inertia,
+            model.body_count,
+            inputs=[model.body_inertia, model.body_mass],
+            outputs=[self.body_I_m],
+            device=model.device,
+        )
+        wp.launch(
+            compute_com_transforms,
+            model.body_count,
+            inputs=[model.body_com],
+            outputs=[self.body_X_com],
+            device=model.device,
+        )
 
     def _allocate_state_aux_vars(self, model, target, requires_grad):
         # allocate auxiliary variables that vary with state
@@ -671,6 +681,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         model.joint_qd_start,
                         state_in.joint_q,
                         state_aug.joint_qd_internal_in,
+                        None,  # joint_qdd
                         model.joint_axis,
                         model.joint_dof_dim,
                         self.body_I_m,

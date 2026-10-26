@@ -58,6 +58,28 @@ logger = logging.getLogger(__name__)
 # of a cube measuring 0.1 mm on each side.
 _MIN_EXPLICIT_MASS_REFERENCE_MASS = 1.0e-12
 
+_ACTUATOR_SHORTCUT_DEFAULTS = {
+    "position": {"mujoco:actuator_biastype": 1},  # affine
+    "velocity": {"mujoco:actuator_biastype": 1},  # affine
+    "muscle": {
+        "mujoco:actuator_dyntype": 4,  # muscle
+        "mujoco:actuator_gaintype": 2,  # muscle
+        "mujoco:actuator_biastype": 2,  # muscle
+    },
+    "intvelocity": {"mujoco:actuator_biastype": 1, "mujoco:actuator_dyntype": 1},
+    "damper": {
+        "mujoco:actuator_gaintype": 1,  # affine
+        "mujoco:actuator_biastype": 0,  # none
+        "mujoco:actuator_ctrllimited": 1,  # true
+    },
+}
+
+
+def _parse_actuator_parameters(value: str) -> vec10:
+    # Actuator parameters use zero-padding, unlike parse_vec's shorthand rules.
+    values = [float(component) for component in value.split()[:10]]
+    return vec10(*values, *([0.0] * (10 - len(values))))
+
 
 def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
     """Parse and validate an MJCF mesh reference pose."""
@@ -122,10 +144,17 @@ def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
         raise ValueError(f"Cannot resolve relative path '{file_path}' without base directory")
 
 
+def _join_asset_dir(asset_dir: str | None, file_path: str) -> str:
+    return os.path.join(asset_dir, file_path) if asset_dir not in (None, ".") else file_path
+
+
 def _load_and_expand_mjcf(
     source: str,
     path_resolver: Callable[[str | None, str], str] = _default_path_resolver,
     include_stack: set[str] | None = None,
+    main_dir: str | None = None,
+    inherited_asset_dirs: dict[str, str | None] | None = None,
+    inherited_strippath: bool = False,
 ) -> tuple[ET.Element, str | None]:
     """Load MJCF source and recursively expand <include> elements.
 
@@ -134,8 +163,12 @@ def _load_and_expand_mjcf(
         path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns:
             - For <include> elements: either an absolute file path or XML content directly
             - For asset elements (mesh, texture, etc.): must return an absolute file path
-            Default resolver joins paths and returns absolute file paths.
+            By default, assets are searched relative to the main model with the compiler asset directory,
+            then relative to the included file without that prefix, and finally relative to the included file with it.
         include_stack: File paths on the active include stack for cycle detection
+        main_dir: Main model directory for default asset lookup
+        inherited_asset_dirs: Including file's effective asset directories by asset tag
+        inherited_strippath: Including file's effective strippath setting
 
     Returns:
         Tuple of (root element, base directory or None for XML string input)
@@ -143,6 +176,7 @@ def _load_and_expand_mjcf(
     Raises:
         ValueError: If a circular include is detected
     """
+    is_included = include_stack is not None
     if include_stack is None:
         include_stack = set()
 
@@ -159,24 +193,29 @@ def _load_and_expand_mjcf(
         base_dir = os.path.dirname(source) or "."
         root = ET.parse(source).getroot()
 
+    if not is_included:
+        main_dir = base_dir
+
     # Extract this file's own asset directories BEFORE expanding
     # includes, so nested-include compilers cannot shadow it.
     own_compiler = root.find("compiler")
+    own_strippath = None
+    own_meshdir = own_texturedir = None
     if own_compiler is not None:
         own_assetdir = own_compiler.attrib.get("assetdir")
-        own_strippath = own_compiler.attrib.get("strippath", "false").lower() in {"true", "1"}
-        if own_assetdir is None:
-            own_meshdir = own_compiler.attrib.get("meshdir", ".")
-            own_texturedir = own_compiler.attrib.get("texturedir", own_meshdir)
-        else:
-            own_meshdir = own_compiler.attrib.get("meshdir", own_assetdir)
-            own_texturedir = own_compiler.attrib.get("texturedir", own_assetdir)
-    else:
-        own_strippath = False
-        own_meshdir = "."
-        own_texturedir = "."
+        if "strippath" in own_compiler.attrib:
+            own_strippath = own_compiler.attrib["strippath"].lower() in {"true", "1"}
+        own_meshdir = own_compiler.attrib.get("meshdir", own_assetdir)
+        own_texturedir = own_compiler.attrib.get("texturedir", own_meshdir if own_assetdir is None else own_assetdir)
 
     asset_dir_by_tag = {"mesh": own_meshdir, "hfield": own_meshdir, "texture": own_texturedir}
+    # MuJoCo applies compiler asset directories model-wide, so main-model
+    # lookups inherit the including file's directories when this file sets none.
+    main_asset_dir_by_tag = {
+        tag: asset_dir if asset_dir is not None else (inherited_asset_dirs or {}).get(tag)
+        for tag, asset_dir in asset_dir_by_tag.items()
+    }
+    main_strippath = inherited_strippath if own_strippath is None else own_strippath
     own_file_assets = [elem for elem in root.iter() if elem.tag in asset_dir_by_tag and elem.get("file")]
 
     # Strip consumed asset directories so they don't leak into the parent tree
@@ -199,7 +238,9 @@ def _load_and_expand_mjcf(
 
         # Recursive call - each included file extracts its own compiler and
         # resolves its own asset paths before returning.
-        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, include_stack)
+        included_root, _ = _load_and_expand_mjcf(
+            resolved, path_resolver, include_stack, main_dir, main_asset_dir_by_tag, main_strippath
+        )
 
         # Replace include element with children of included root
         idx = list(parent).index(include)
@@ -213,12 +254,30 @@ def _load_and_expand_mjcf(
         file_attr = elem.get("file")
         if own_strippath:
             file_attr = os.path.basename(file_attr.replace("\\", "/"))
-        asset_dir = asset_dir_by_tag[elem.tag]
-        resolved_path = os.path.join(asset_dir, file_attr) if asset_dir != "." else file_attr
-        if base_dir is None and path_resolver is _default_path_resolver and not os.path.isabs(resolved_path):
+        resolved_path = _join_asset_dir(asset_dir_by_tag[elem.tag], file_attr)
+        asset_base_dir = base_dir
+        if path_resolver is _default_path_resolver:
+            # MuJoCo prefers assets beside the main model over included-file paths;
+            # the included file's own asset directory remains a final fallback.
+            main_file = os.path.basename(file_attr.replace("\\", "/")) if main_strippath else file_attr
+            main_path = _join_asset_dir(main_asset_dir_by_tag[elem.tag], main_file)
+            if os.path.isabs(main_path):
+                main_candidate = main_path
+            else:
+                main_candidate = os.path.join(main_dir, main_path) if main_dir is not None else None
+            if main_candidate is not None and os.path.isfile(main_candidate):
+                asset_base_dir, resolved_path = main_dir, main_path
+            elif (
+                is_included
+                and base_dir is not None
+                and not os.path.isabs(file_attr)
+                and os.path.isfile(os.path.join(base_dir, file_attr))
+            ):
+                resolved_path = file_attr
+        if asset_base_dir is None and path_resolver is _default_path_resolver and not os.path.isabs(resolved_path):
             elem.set("file", resolved_path)
         else:
-            elem.set("file", path_resolver(base_dir, resolved_path))
+            elem.set("file", path_resolver(asset_base_dir, resolved_path))
 
     return root, base_dir
 
@@ -271,6 +330,8 @@ def parse_mjcf(
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
         xform: The transform to apply to the imported mechanism.
+            If ``parent_body`` is set, imported bodies are placed relative to that
+            body's frame; static shapes still use ``xform`` in the world frame.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
@@ -376,7 +437,11 @@ def parse_mjcf(
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
-        path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+            For position-only drives using ``dampratio``, constructing
+            :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
+            :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
+            Subsequent damping edits use ``joint_target_kd`` as usual.
+        path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model with the compiler asset directory, then relative to the included file without that directory prefix, and finally relative to the included file with it. Custom resolvers receive the authoring file's directory and the file path with that file's compiler asset directory prefix.
         legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
             where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
             Use for MJCF files authored against MuJoCo <= 3.8. Defaults
@@ -680,12 +745,14 @@ def parse_mjcf(
                         normals = np.array(mesh_attrib["normal"].split(), dtype=np.float32)
                     except ValueError as exc:
                         raise ValueError(f"Inline MJCF mesh {name!r} has invalid normal data.") from exc
-                    if len(normals) != 3 * len(vertices):
+                    if len(normals) not in (3, 3 * len(vertices)):
                         raise ValueError(
-                            f"Inline MJCF mesh {name!r} normal data must contain 3 values per vertex; "
+                            f"Inline MJCF mesh {name!r} normal data must contain 3 shared values or 3 values per vertex; "
                             f"got {len(normals)} values for {len(vertices)} vertices."
                         )
                     normals = normals.reshape(-1, 3)
+                    if len(normals) == 1:
+                        normals = np.repeat(normals, len(vertices), axis=0)
 
                 texcoords = None
                 if "texcoord" in mesh_attrib:
@@ -786,6 +853,10 @@ def parse_mjcf(
                 "elevation": elevation_data,
             }
 
+    # meshes loaded from files, keyed by file and load arguments, so a mesh asset
+    # referenced by several geoms (e.g. visual and collision, or mirrored links) is parsed once
+    mesh_file_cache: dict[tuple, list[Mesh]] = {}
+
     def load_mesh_asset(
         mesh_name: str,
         scaling: np.ndarray,
@@ -798,13 +869,29 @@ def parse_mjcf(
             refpos = mesh_asset["refpos"]
             refquat = mesh_asset["refquat"]
             has_ref_pose = not (np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)))
-            meshes = load_meshes_from_file(
-                mesh_asset["file"],
-                scale=(1.0, 1.0, 1.0) if has_ref_pose else scaling,
-                maxhullvert=maxhullvert,
-                override_color=override_color,
-                override_texture=override_texture,
-            )
+            file_scale = (1.0, 1.0, 1.0) if has_ref_pose else scaling
+            cache_key = None
+            if override_texture is None or isinstance(override_texture, str):
+                cache_key = (
+                    os.fspath(mesh_asset["file"]),
+                    tuple(float(v) for v in np.asarray(file_scale, dtype=np.float32).reshape(-1)),
+                    maxhullvert,
+                    None if override_color is None else tuple(float(v) for v in override_color),
+                    override_texture,
+                )
+            cached = mesh_file_cache.get(cache_key) if cache_key is not None else None
+            if cached is None:
+                cached = load_meshes_from_file(
+                    mesh_asset["file"],
+                    scale=file_scale,
+                    maxhullvert=maxhullvert,
+                    override_color=override_color,
+                    override_texture=override_texture,
+                )
+                if cache_key is not None:
+                    mesh_file_cache[cache_key] = cached
+            # hand out copies so per geom edits (e.g. dropping a texture) do not leak between shapes
+            meshes = [mesh.copy() for mesh in cached]
             if not has_ref_pose:
                 return meshes
 
@@ -1066,11 +1153,12 @@ def parse_mjcf(
             geom_defaults = resolve_class_defaults(geom_class, defaults)
             geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib)
 
+            raw_geom_name = geom.attrib.get("name")
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}{'_visual' if just_visual else ''}")
             geom_type = geom_attrib.get("type", "sphere")
             fit_to_mesh = False
             if "mesh" in geom_attrib:
-                if "type" in geom_attrib and geom_type in {"sphere", "capsule", "cylinder", "ellipsoid", "box"}:
+                if geom_type in {"sphere", "capsule", "cylinder", "ellipsoid", "box"}:
                     fit_to_mesh = True
                 else:
                     geom_type = "mesh"
@@ -1333,6 +1421,7 @@ def parse_mjcf(
                             center_offset = wp.vec3(*com)
                             tf = tf * wp.transform(center_offset, fit_rot)
 
+            geom_shape_start = len(shapes)
             if geom_type == "sphere":
                 s = shape_builder.add_shape_sphere(
                     xform=tf,
@@ -1537,6 +1626,10 @@ def parse_mjcf(
                 if verbose:
                     logger.warning("MJCF parsing shape %s issue: geom type %s is unsupported", geom_name, geom_type)
 
+            if shape_builder is builder and raw_geom_name and len(shapes) > geom_shape_start:
+                # Preserve the first shape for multi-part meshes and visual/collider copies.
+                raw_geom_name_to_idx.setdefault(raw_geom_name, shapes[geom_shape_start])
+
             # Handle explicit mass: compute inertia using existing functions, add to body.
             # Visual geoms can still contribute authored mass when parse_visuals=True.
             if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0 and not explicit_mass_handled:
@@ -1636,6 +1729,7 @@ def parse_mjcf(
                 continue
             site_attrib = resolve_element_attrib(site, "site", defaults)
 
+            raw_site_name = site.attrib.get("name")
             site_name = site_attrib.get("name", f"{body_name}_site_{site_count}")
 
             # Check if site should be ignored by name
@@ -1718,6 +1812,8 @@ def parse_mjcf(
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s
+            if raw_site_name:
+                raw_site_name_to_idx[raw_site_name] = s
 
         return site_shapes
 
@@ -2508,13 +2604,18 @@ def parse_mjcf(
             infer_inertia_from_geoms=infer_body_inertia_from_geoms,
         )
 
-    def parse_equality_constraints(equality):
-        def parse_common_attributes(attribs):
-            return {
-                "name": attribs.get("name"),
-                "active": attribs.get("active", "true").lower() == "true",
-            }
+    def parse_common_attributes(attribs):
+        return {
+            "name": attribs.get("name"),
+            "active": attribs.get("active", "true").lower() == "true",
+        }
 
+    def equality_label(common: dict[str, Any]) -> str | None:
+        if articulation_label and common["name"]:
+            return f"{articulation_label}/{common['name']}"
+        return common["name"]
+
+    def parse_equality_constraints(equality):
         def get_site_body_and_anchor(site_name: str) -> tuple[int, wp.vec3] | None:
             """Look up a site by name and return its body index and position (anchor).
 
@@ -2535,11 +2636,6 @@ def parse_mjcf(
             site_xform = builder.shape_transform[site_idx]
             anchor = wp.vec3(site_xform[0], site_xform[1], site_xform[2])
             return (body_idx, anchor)
-
-        def equality_label(common: dict[str, Any]) -> str | None:
-            if articulation_label and common["name"]:
-                return f"{articulation_label}/{common['name']}"
-            return common["name"]
 
         def add_converted_loop_joint(
             eq_type: EqType,
@@ -2807,7 +2903,31 @@ def parse_mjcf(
                         custom_attributes=custom_attrs,
                     )
 
+        # Tendon equalities are parsed after tendons by parse_tendon_equality_constraints().
         # TODO: add support for equality constraint type "flex" once Newton supports it
+
+    def parse_tendon_equality_constraints(equality):
+        for tendon in equality.findall("tendon"):
+            attribs = resolve_element_attrib(tendon, "equality")
+            common = parse_common_attributes(attribs)
+            tendon_indices = []
+            for key in ("tendon1", "tendon2"):
+                tendon_name = attribs.get(key)
+                tendon_indices.append(tendon_name_to_idx.get(sanitize_name(tendon_name)) if tendon_name else -1)
+            if None in tendon_indices or tendon_indices[0] < 0:
+                if verbose:
+                    logger.warning("Tendon equality '%s' references unknown tendons, skipping", common["name"])
+                continue
+            _add_equality_constraint(
+                builder,
+                constraint_type=EqType.TENDON,
+                tendon1=tendon_indices[0],
+                tendon2=tendon_indices[1],
+                polycoef=mjc_parse_polycoef(attribs.get("polycoef", "0 1 0 0 0")),
+                label=equality_label(common),
+                enabled=common["active"],
+                custom_attributes=parse_custom_attributes(attribs, builder_custom_attr_eq, parsing_mode="mjcf"),
+            )
 
     # -----------------
     # start articulation
@@ -2830,6 +2950,9 @@ def parse_mjcf(
     # Used to resolve equality constraints and actuators that reference entities by their short name.
     body_name_to_idx: dict[str, int] = {}
     site_name_to_idx: dict[str, int] = {}
+    # Spatial tendons need exact authored names within this import, without label aliases.
+    raw_site_name_to_idx: dict[str, int] = {}
+    raw_geom_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
 
     # Extract articulation label early for hierarchical label construction
@@ -3138,7 +3261,7 @@ def parse_mjcf(
                 logger.info("Parsed fixed tendon: %s (%s)", tendon_name, joint_names_str)
 
         def find_shape_by_name(name: str, want_site: bool) -> int:
-            """Find a shape index by name, disambiguating sites from geoms.
+            """Find a shape index by its exact MJCF name, disambiguating sites from geoms.
 
             MuJoCo allows sites and geoms to share the same name (different namespaces).
             Newton stores both as shapes in shape_label, so we need to pick the right one
@@ -3146,12 +3269,9 @@ def parse_mjcf(
 
             Returns -1 if no shape with the matching name and type is found.
             """
-            for i, label in enumerate(builder.shape_label):
-                if label == name or label.endswith(f"/{name}"):
-                    is_site = bool(builder.shape_flags[i] & ShapeFlags.SITE)
-                    if is_site == want_site:
-                        return i
-            return -1
+            if want_site:
+                return raw_site_name_to_idx.get(name, -1)
+            return raw_geom_name_to_idx.get(name, -1)
 
         for spatial in tendon_section.findall("spatial"):
             # Apply default class inheritance for spatial tendon attributes.
@@ -3165,8 +3285,6 @@ def parse_mjcf(
             for child in spatial:
                 if child.tag == "site":
                     site_name = child.attrib.get("site", "")
-                    if site_name:
-                        site_name = sanitize_name(site_name)
                     site_idx = find_shape_by_name(site_name, want_site=True) if site_name else -1
                     if site_idx < 0:
                         warnings.warn(
@@ -3179,8 +3297,6 @@ def parse_mjcf(
 
                 elif child.tag == "geom":
                     geom_name = child.attrib.get("geom", "")
-                    if geom_name:
-                        geom_name = sanitize_name(geom_name)
                     geom_idx = find_shape_by_name(geom_name, want_site=False) if geom_name else -1
                     if geom_idx < 0:
                         warnings.warn(
@@ -3193,7 +3309,6 @@ def parse_mjcf(
                     sidesite_name = child.attrib.get("sidesite", "")
                     sidesite_idx = -1
                     if sidesite_name:
-                        sidesite_name = sanitize_name(sidesite_name)
                         sidesite_idx = find_shape_by_name(sidesite_name, want_site=True)
                         if sidesite_idx < 0:
                             warnings.warn(
@@ -3258,23 +3373,28 @@ def parse_mjcf(
             if verbose:
                 logger.info("Parsed spatial tendon: %s (%s wrap elements)", tendon_name, len(wrap_entries))
 
-    # -----------------
-    # parse actuators
+    def inherit_actuator_range(attrib: dict[str, str], joint_name: str | None, dof: int, prefix: str) -> bool:
+        inheritrange = parse_float(attrib, "inheritrange", 0.0)
+        if not (inheritrange > 0 and joint_name and dof >= 0):
+            return False
+
+        # Newton limits are relative to ref; actuator ranges use absolute qpos.
+        dof_ref = 0.0
+        ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
+        if ref_attr is not None and isinstance(ref_attr.values, dict):
+            dof_ref = float(ref_attr.values.get(dof, ref_attr.default))
+        lower = builder.joint_limit_lower[dof] + dof_ref
+        upper = builder.joint_limit_upper[dof] + dof_ref
+        if lower < upper:
+            mean = (upper + lower) / 2.0
+            radius = (upper - lower) / 2.0 * inheritrange
+            attrib[f"{prefix}range"] = f"{mean - radius} {mean + radius}"
+            attrib[f"{prefix}limited"] = "true"
+            return True
+        return False
 
     def parse_actuators(actuator_section):
-        """Parse actuators from MJCF preserving order.
-
-        All actuators are added as custom attributes with mujoco:actuator frequency,
-        preserving their order from the MJCF file. This ensures control.mujoco.ctrl
-        has the same ordering as native MuJoCo.
-
-        For position/velocity actuators: also set mode/target_ke/target_kd on per-DOF arrays
-        for compatibility with Newton's joint target interface.
-
-        Args:
-            actuator_section: The <actuator> XML element
-        """
-        # Process ALL actuators in MJCF order
+        """Preserve XML actuator order so direct-control indices remain stable."""
         for actuator_elem in actuator_section:
             actuator_type = actuator_elem.tag  # position, velocity, motor, general
 
@@ -3419,7 +3539,9 @@ def parse_mjcf(
 
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
-            # Extract gains based on actuator type
+            ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+            if actuator_type in {"position", "velocity"} and trntype == 0 and total_dofs != 0 and not ctrl_direct:
+                ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
             ctrlrange_is_derived = False
             if actuator_type == "position":
                 kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
@@ -3439,30 +3561,7 @@ def parse_mjcf(
                 elif dampratio > 0.0:
                     # Store unresolved dampratio in biasprm[2] (USD convention).
                     biasprm = vec10(0.0, -kp, dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                # Resolve inheritrange: copy target joint's range to ctrlrange.
-                # Uses only the first DOF (qd_start) since inheritrange is only
-                # meaningful for single-DOF joints (hinge, slide).
-                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
-                if inheritrange > 0 and joint_name and qd_start >= 0:
-                    # inheritrange copies absolute MuJoCo qpos, but Newton stores joint limits as qpos - ref.
-                    # Add ref back so the derived ctrlrange matches native MuJoCo.
-                    dof_ref_value = 0.0
-                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
-                    if ref_attr is not None and isinstance(ref_attr.values, dict):
-                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
-                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
-                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
-                    if lower < upper:
-                        mean = (upper + lower) / 2.0
-                        radius = (upper - lower) / 2.0 * inheritrange
-                        merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
-                        merged_attrib["ctrllimited"] = "true"
-                        ctrlrange_is_derived = True
-                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
-                if trntype != 0 or total_dofs == 0 or ctrl_direct:
-                    ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
-                else:
-                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                ctrlrange_is_derived = inherit_actuator_range(merged_attrib, joint_name, qd_start, "ctrl")
                 if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
@@ -3482,11 +3581,6 @@ def parse_mjcf(
                 kv = parse_float(merged_attrib, "kv", 1.0)  # MuJoCo default kv=1
                 gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
-                if trntype != 0 or total_dofs == 0 or ctrl_direct:
-                    ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
-                else:
-                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
                 if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
@@ -3503,28 +3597,11 @@ def parse_mjcf(
                 dampratio = parse_float(merged_attrib, "dampratio", 0.0)
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv if kv > 0.0 else dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
-                actrange_is_derived = False
-                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
-                if inheritrange > 0 and joint_name and qd_start >= 0:
-                    # Joint limits are stored relative to ref; activation bounds use absolute qpos.
-                    dof_ref_value = 0.0
-                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
-                    if ref_attr is not None and isinstance(ref_attr.values, dict):
-                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
-                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
-                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
-                    if lower < upper:
-                        mean = (upper + lower) / 2.0
-                        radius = (upper - lower) / 2.0 * inheritrange
-                        merged_attrib["actrange"] = f"{mean - radius} {mean + radius}"
-                        merged_attrib["actlimited"] = "true"
-                        actrange_is_derived = True
+                actrange_is_derived = inherit_actuator_range(merged_attrib, joint_name, qd_start, "act")
 
             elif actuator_type == "motor":
                 gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "muscle":
                 timeconst = parse_vec(merged_attrib, "timeconst", [0.01, 0.04])
@@ -3545,26 +3622,15 @@ def parse_mjcf(
                 ]
                 gainprm = vec10(*muscle_params, 0.0)
                 biasprm = vec10(*muscle_params, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "damper":
                 kv = parse_float(merged_attrib, "kv", 1.0)
                 gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "general":
-                gainprm_str = merged_attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
-                biasprm_str = merged_attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
-                gainprm_vals = [float(x) for x in gainprm_str.split()[:10]]
-                biasprm_vals = [float(x) for x in biasprm_str.split()[:10]]
-                while len(gainprm_vals) < 10:
-                    gainprm_vals.append(0.0)
-                while len(biasprm_vals) < 10:
-                    biasprm_vals.append(0.0)
-                gainprm = vec10(*gainprm_vals)
-                biasprm = vec10(*biasprm_vals)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                gainprm = _parse_actuator_parameters(merged_attrib.get("gainprm", "1"))
+                biasprm = _parse_actuator_parameters(merged_attrib.get("biasprm", "0"))
             else:
                 if verbose:
                     logger.warning("Unknown actuator type '%s', skipping", actuator_type)
@@ -3598,29 +3664,8 @@ def parse_mjcf(
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
-            # Set implicit type defaults per actuator shortcut type.
-            # MuJoCo shortcut elements (position, velocity, etc.) implicitly set
-            # biastype/gaintype/dyntype without writing them to the XML. We mirror
-            # these defaults here so the CTRL_DIRECT path recreates faithful actuators.
-            # Only override when the XML didn't explicitly specify the attribute.
-            shortcut_type_defaults = {
-                "position": {"mujoco:actuator_biastype": 1},  # affine
-                "velocity": {"mujoco:actuator_biastype": 1},  # affine
-                "muscle": {
-                    "mujoco:actuator_dyntype": 4,  # muscle
-                    "mujoco:actuator_gaintype": 2,  # muscle
-                    "mujoco:actuator_biastype": 2,  # muscle
-                },
-                "intvelocity": {"mujoco:actuator_biastype": 1, "mujoco:actuator_dyntype": 1},
-                "damper": {
-                    "mujoco:actuator_gaintype": 1,  # affine
-                    "mujoco:actuator_biastype": 0,  # none
-                    "mujoco:actuator_ctrllimited": 1,  # true
-                },
-            }
-            for key, value in shortcut_type_defaults.get(actuator_type, {}).items():
-                if key not in parsed_attrs:
-                    parsed_attrs[key] = value
+            for key, value in _ACTUATOR_SHORTCUT_DEFAULTS.get(actuator_type, {}).items():
+                parsed_attrs.setdefault(key, value)
 
             # Intrinsic actuator kind, known directly from the MJCF shortcut tag.
             if actuator_type == "position":
@@ -3683,6 +3728,9 @@ def parse_mjcf(
         tendon_sections = root.findall(".//tendon")
         for tendon_section in tendon_sections:
             parse_tendons(tendon_section)
+        if not skip_equality_constraints:
+            for equality in root.findall("equality"):
+                parse_tendon_equality_constraints(equality)
 
     for actuator_section in root.findall("actuator"):
         parse_actuators(actuator_section)

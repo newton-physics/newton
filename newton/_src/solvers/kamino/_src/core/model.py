@@ -754,7 +754,12 @@ class ModelKamino:
         return control
 
     @staticmethod
-    def from_newton(model: Model | ModelView, *, include_shape_contact_pairs: bool = True) -> ModelKamino:
+    def from_newton(
+        model: Model | ModelView,
+        *,
+        include_shape_contact_pairs: bool = True,
+        kinematic_only_immovable: bool = False,
+    ) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
 
@@ -762,6 +767,8 @@ class ModelKamino:
             model: The source :class:`newton.Model` instance to be converted.
             include_shape_contact_pairs: Include explicit collision-pair identities.
                 Required for primitive or explicit collision detection. Defaults to `True`.
+            kinematic_only_immovable: Whether only KINEMATIC bodies are immovable, see
+                :func:`convert_rigid_bodies`. Defaults to `False`.
 
         Returns:
             Kamino model converted from the input Newton model.
@@ -830,7 +837,9 @@ class ModelKamino:
             model_gravity = GravityModel.from_newton(model)
 
             # Bodies
-            model_bodies = convert_rigid_bodies(conversion_model, model_size, model_info)
+            model_bodies = convert_rigid_bodies(
+                conversion_model, model_size, model_info, kinematic_only_immovable=kinematic_only_immovable
+            )
 
             # Joints
             model_joints = convert_joints(
