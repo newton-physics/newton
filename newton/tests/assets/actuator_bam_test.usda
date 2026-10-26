@@ -134,14 +134,14 @@ def Xform "World"
         }
 
         # Battery without newton:minVoltage, which falls back to 0
-        def NewtonBattery "Battery"
+        def NewtonInternalResistanceBattery "Battery"
         {
             float newton:nominalVoltage = 6.0
             float newton:resistance = 0.5
         }
 
         # Battery no actuator draws from, which is not imported
-        def NewtonBattery "SpareBattery"
+        def NewtonInternalResistanceBattery "SpareBattery"
         {
             float newton:nominalVoltage = 12.0
             float newton:resistance = 0.1

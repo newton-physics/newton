@@ -7,6 +7,7 @@ from typing import Any
 
 import warp as wp
 
+from ...core.reset import normalize_reset_world_mask
 from ..actuator import _require_array
 from .base import BatteryBase
 
@@ -39,14 +40,17 @@ def _battery_reset_kernel(
     battery_actuator_start: wp.array[wp.int32],
     battery_actuators: wp.array[wp.int32],
     battery_world: wp.array[wp.int32],
+    world_count: int,
     nominal_voltage: wp.array[float],
     world_mask: wp.array[wp.bool],
     supply_voltage: wp.array[float],
 ):
     b = wp.tid()
     world = battery_world[b]
+    if world < 0:
+        world = world_count
     if world_mask:
-        if world < 0 or not world_mask[world]:
+        if not world_mask[world]:
             return
     for k in range(battery_actuator_start[b], battery_actuator_start[b + 1]):
         supply_voltage[battery_actuators[k]] = nominal_voltage[b]
@@ -84,6 +88,7 @@ class BatteryInternalResistance(BatteryBase):
         actuator_start: See :class:`BatteryBase`.
         actuators: See :class:`BatteryBase`.
         world: See :class:`BatteryBase`.
+        world_count: See :class:`BatteryBase`.
 
     Raises:
         ValueError: An array does not have one entry per battery.
@@ -94,22 +99,21 @@ class BatteryInternalResistance(BatteryBase):
         """Resolve user-provided arguments of one battery with defaults.
 
         Args:
-            args: ``nominal_voltage`` [V] and ``resistance`` [Ω] are required;
-                ``min_voltage`` [V] defaults to 0, with which the voltage only
-                stays non-negative.
+            args: ``nominal_voltage`` [V] is required; ``resistance`` [Ω]
+                defaults to 0, and ``min_voltage`` [V] defaults to 0, with
+                which the voltage only stays non-negative.
 
         Returns:
             Complete arguments with defaults filled in.
 
         Raises:
-            ValueError: *nominal_voltage* or *resistance* is missing,
-                *min_voltage* is negative or exceeds *nominal_voltage*, or
-                *resistance* is negative.
+            ValueError: *nominal_voltage* is missing, *min_voltage* is
+                negative or exceeds *nominal_voltage*, or *resistance* is
+                negative.
         """
-        for name in ("nominal_voltage", "resistance"):
-            if name not in args:
-                raise ValueError(f"BatteryInternalResistance requires '{name}' argument")
-        nominal_voltage, resistance = args["nominal_voltage"], args["resistance"]
+        if "nominal_voltage" not in args:
+            raise ValueError("BatteryInternalResistance requires 'nominal_voltage' argument")
+        nominal_voltage, resistance = args["nominal_voltage"], args.get("resistance", 0.0)
         min_voltage = args.get("min_voltage", 0.0)
         if not 0.0 <= min_voltage <= nominal_voltage:
             raise ValueError(
@@ -132,8 +136,9 @@ class BatteryInternalResistance(BatteryBase):
         actuator_start: wp.array[wp.int32],
         actuators: wp.array[wp.int32],
         world: wp.array[wp.int32] | None = None,
+        world_count: int = 0,
     ):
-        super().__init__(actuator_start, actuators, world)
+        super().__init__(actuator_start, actuators, world, world_count)
         self.nominal_voltage = nominal_voltage
         """Voltage without load [V], shape (B,)."""
         self.resistance = resistance
@@ -193,18 +198,28 @@ class BatteryInternalResistance(BatteryBase):
         Args:
             sim_control: Object carrying ``actuator_supply_voltage``, e.g.
                 :class:`~newton.Control`.
-            world_mask: Boolean mask with one entry per world. Batteries in
-                ``True`` worlds are reset. ``None`` resets all, including
-                batteries outside any world, which a mask never resets.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
+                specifying which worlds to reset. Entries before the last select
+                local worlds by index, and the final entry selects batteries
+                whose world is ``-1``. If ``None``, all batteries are reset.
 
         Raises:
             AttributeError: *sim_control* has no ``actuator_supply_voltage``.
-            ValueError: ``actuator_supply_voltage`` is ``None``.
+            ValueError: ``actuator_supply_voltage`` is ``None``, or
+                *world_mask* does not have shape ``(world_count + 1,)``.
         """
+        world_mask = normalize_reset_world_mask(world_mask, world_count=self.world_count, device=self.device)
         wp.launch(
             _battery_reset_kernel,
             dim=self.num_batteries,
-            inputs=[self.actuator_start, self.actuators, self.world, self.nominal_voltage, world_mask],
+            inputs=[
+                self.actuator_start,
+                self.actuators,
+                self.world,
+                self.world_count,
+                self.nominal_voltage,
+                world_mask,
+            ],
             outputs=[_require_array(sim_control, "actuator_supply_voltage")],
             device=self.device,
         )

@@ -656,8 +656,10 @@ models subclass :class:`BatteryBase`.
   ``control.actuator_supply_voltage``.  Call it once per step after the
   actuators; the drives read the voltage on the next step.
 * :meth:`BatteryInternalResistance.reset` restores the nominal voltage, of all
-  batteries or of the batteries in the worlds of a mask.  Batteries added
-  outside any world are reset only without a mask.
+  batteries or of the batteries in the worlds of a mask.  As in
+  :meth:`SolverBase.reset() <newton.solvers.SolverBase.reset>`, the mask has
+  ``world_count + 1`` entries, and the last one selects batteries outside any
+  world.
 
 :class:`DriveBAM` with ``supply_from_battery=True`` reads its supply voltage
 from ``control.actuator_supply_voltage`` and writes

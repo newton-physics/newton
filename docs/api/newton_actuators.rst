@@ -30,6 +30,7 @@ construction.
    ActuatorParsed
    BatteryBase
    BatteryInternalResistance
+   BatteryParsed
    ClampingBase
    ClampingDCMotor
    ClampingMaxEffort

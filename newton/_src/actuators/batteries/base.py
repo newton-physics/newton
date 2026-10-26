@@ -36,6 +36,8 @@ class BatteryBase:
             ``actuators[actuator_start[b]:actuator_start[b + 1]]``.
         world: World of each battery, ``-1`` for none. Shape ``(B,)``.
             ``None`` places every battery outside any world.
+        world_count: Number of worlds, which sets the shape of the mask in
+            :meth:`reset`.
 
     Raises:
         ValueError: *world* does not have one entry per battery.
@@ -68,6 +70,7 @@ class BatteryBase:
         actuator_start: wp.array[wp.int32],
         actuators: wp.array[wp.int32],
         world: wp.array[wp.int32] | None = None,
+        world_count: int = 0,
     ):
         self.num_batteries = len(actuator_start) - 1
         """Number of batteries B."""
@@ -78,6 +81,8 @@ class BatteryBase:
         """Actuators of all batteries, sorted by battery."""
         self.world = world if world is not None else wp.full(self.num_batteries, -1, dtype=wp.int32, device=self.device)
         """World of each battery, ``-1`` for none, shape (B,)."""
+        self.world_count = world_count
+        """Number of worlds."""
         if self.world.shape != (self.num_batteries,):
             raise ValueError(f"world shape {self.world.shape} must be ({self.num_batteries},)")
 
@@ -100,8 +105,9 @@ class BatteryBase:
         Args:
             sim_control: Object carrying ``actuator_supply_voltage``, e.g.
                 :class:`~newton.Control`.
-            world_mask: Boolean mask with one entry per world. Batteries in
-                ``True`` worlds are reset. ``None`` resets all, including
-                batteries outside any world, which a mask never resets.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
+                specifying which worlds to reset. Entries before the last select
+                local worlds by index, and the final entry selects batteries
+                whose world is ``-1``. If ``None``, all batteries are reset.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement reset")

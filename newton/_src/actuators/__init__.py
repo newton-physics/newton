@@ -13,6 +13,7 @@ from .input_processors import (
 from .joint_space_response import JointSpaceResponse
 from .usd_parser import (
     ActuatorParsed,
+    BatteryParsed,
     ComponentKind,
     SchemaNames,
     parse_actuator_prim,
@@ -25,6 +26,7 @@ __all__ = [
     "ActuatorParsed",
     "BatteryBase",
     "BatteryInternalResistance",
+    "BatteryParsed",
     "ClampingBase",
     "ClampingDCMotor",
     "ClampingMaxEffort",

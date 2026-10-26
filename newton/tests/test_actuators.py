@@ -2831,7 +2831,7 @@ class TestDriveBAM(unittest.TestCase):
                 self.assertTrue(0.0 < drawn[0] < duty[0] * clamped[0] / kt and drawn[1] < 0.0)
         self.assertAlmostEqual(control.actuator_supply_voltage.numpy()[3], min_voltage[0], places=5)
 
-        batteries.reset(control, world_mask=wp.array([True, False], dtype=wp.bool))
+        batteries.reset(control, world_mask=wp.array([True, False, False], dtype=wp.bool))
         dropped = np.maximum(nominal - battery_resistance * np.maximum(drawn, 0.0), minimum)
         np.testing.assert_allclose(
             control.actuator_supply_voltage.numpy(), np.where(np.arange(4) < 2, nominal, dropped)[battery], rtol=1e-5
@@ -5001,6 +5001,7 @@ class TestActuatorBuilder(unittest.TestCase):
             "already draws": ([1], 12.0, 0.5, 9.0),
             "does not draw from a battery": ([2], 12.0, 0.5, 9.0),
             "does not exist": ([3], 12.0, 0.5, 9.0),
+            "belongs to world 0": ([0], 12.0, 0.5, 9.0),
         }
         for message, (actuators, nominal_voltage, resistance, min_voltage) in cases.items():
             with self.subTest(message), self.assertRaisesRegex(ValueError, message):
@@ -5046,8 +5047,9 @@ class TestActuatorBuilder(unittest.TestCase):
         control = model.control()
         actuator = newton.Model.AttributeFrequency.ACTUATOR
 
-        self.assertEqual((model.actuator_count, model.battery_count), (6, 3))
+        self.assertEqual(model.actuator_count, 6)
         (batteries,) = model.batteries
+        self.assertEqual(batteries.num_batteries, 3)
         np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 1, 2, 3])
         np.testing.assert_array_equal(batteries.actuators.numpy(), [1, 3, 5])
         np.testing.assert_array_equal(batteries.world.numpy(), [0, 1, 2])
@@ -5087,10 +5089,9 @@ class TestActuatorBuilder(unittest.TestCase):
         """
         usd_path = os.path.join(os.path.dirname(__file__), "assets", "actuator_bam_test.usda")
         stage = Usd.Stage.Open(usd_path)
-        self.assertEqual(
-            parse_battery_prim(stage.GetPrimAtPath("/World/Robot/Battery")),
-            {"nominal_voltage": 6.0, "resistance": 0.5, "min_voltage": 0.0},
-        )
+        battery = parse_battery_prim(stage.GetPrimAtPath("/World/Robot/Battery"))
+        self.assertIs(battery.battery_class, BatteryInternalResistance)
+        self.assertEqual(battery.battery_kwargs, {"nominal_voltage": 6.0, "resistance": 0.5})
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parse_usd(template, stage)
         builder = newton.ModelBuilder()

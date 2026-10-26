@@ -2360,8 +2360,6 @@ class ModelBuilder:
         """Total joint constraint count propagated to :attr:`Model.joint_constraint_count`."""
         self.actuator_count: int = 0
         """Total actuator count propagated to :attr:`Model.actuator_count`."""
-        self.battery_count: int = 0
-        """Total battery count propagated to :attr:`Model.battery_count`."""
 
         self._current_world: int = -1
         """Internal world context backing the read-only :attr:`current_world` property."""
@@ -3411,8 +3409,8 @@ class ModelBuilder:
         entry.actuator_indices.append(actuator)
         return actuator
 
-    def add_battery(self, battery_class: type[BatteryBase], actuators: Sequence[int], **kwargs: Any) -> int:
-        """Add a battery shared by several actuators.
+    def add_battery(self, battery_class: type[BatteryBase], actuators: Sequence[int], **kwargs: Any) -> None:
+        """Add a battery shared by several actuators of the current world.
 
         Multiple calls with the same *battery_class* are accumulated into one
         :class:`~newton.actuators.BatteryBase` instance during
@@ -3422,17 +3420,15 @@ class ModelBuilder:
         Args:
             battery_class: Battery class (e.g. :class:`~newton.actuators.BatteryInternalResistance`).
             actuators: Actuator indices returned by :meth:`add_actuator`. At
-                least one is required, and each must draw from a battery
-                (e.g. :class:`~newton.actuators.DriveBAM` with ``supply_from_battery=True``).
+                least one is required, and each must belong to the current
+                world and draw from a battery (e.g.
+                :class:`~newton.actuators.DriveBAM` with ``supply_from_battery=True``).
             **kwargs: Per-battery parameters (e.g. ``nominal_voltage``, ``resistance``).
-
-        Returns:
-            The index of the battery in per-battery arrays.
 
         Raises:
             ValueError: *actuators* is empty, an actuator does not exist,
-                does not draw from a battery or already has a battery, or a
-                battery parameter is invalid.
+                belongs to another world, does not draw from a battery or
+                already has a battery, or a battery parameter is invalid.
         """
         args = battery_class.resolve_arguments(kwargs)
         actuators = [int(actuator) for actuator in actuators]
@@ -3442,28 +3438,29 @@ class ModelBuilder:
         for actuator in actuators:
             if not 0 <= actuator < self.actuator_count:
                 raise ValueError(f"add_battery: actuator {actuator} does not exist")
-            drive_args = next(
+            dof, drive_args = next(
                 (
-                    args
+                    (dof, args)
                     for entry in self.actuator_entries.values()
-                    for row, args in zip(entry.actuator_indices, entry.drive_args, strict=False)
+                    for row, dof, args in zip(entry.actuator_indices, entry.indices, entry.drive_args, strict=False)
                     if row == actuator
                 ),
-                {},
+                (None, {}),
             )
+            if dof is not None:
+                world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
+                if world != self.current_world:
+                    raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
             if not drive_args.get("supply_from_battery"):
                 raise ValueError(
                     f"add_battery: actuator {actuator} does not draw from a battery; add it with supply_from_battery=True"
                 )
             if actuator in with_battery:
                 raise ValueError(f"add_battery: actuator {actuator} already draws from a battery")
-        battery = self.battery_count
-        self.battery_count += 1
         entry = self.battery_entries.setdefault(battery_class, ModelBuilder.BatteryEntry(battery_class=battery_class))
         entry.args.append(args)
         entry.actuators.append(actuators)
         entry.world.append(self.current_world)
-        return battery
 
     def _actuators_with_battery(self) -> set[int]:
         """Return the actuators that draw from a battery added with :meth:`add_battery`."""
@@ -4262,7 +4259,6 @@ class ModelBuilder:
             )
             self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
-        self.battery_count += copy_count * builder.battery_count
 
     @staticmethod
     @functools.cache
@@ -15637,7 +15633,6 @@ class ModelBuilder:
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
             m.actuator_count = self.actuator_count
-            m.battery_count = self.battery_count
 
             m._shape_contact_pair_data = _ShapeContactPairs(
                 self.shape_body,
@@ -15764,6 +15759,7 @@ class ModelBuilder:
                             device=device,
                         ),
                         world=wp.array(entry.world, dtype=wp.int32, device=device),
+                        world_count=m.world_count,
                     )
                 )
 
