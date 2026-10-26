@@ -12,18 +12,21 @@ Sticky replay keeps a matched record's contact points where they were: the soft-
 (``soft_contact_barycentric``) and the body-frame surface point (``soft_contact_body_pos``). A record
 keeps them while they still touch and have slipped apart tangentially by at most the matching
 position threshold. Records on a moving surface (nonzero ``soft_contact_body_vel``) keep fresh points,
-since the surface material moves away from any body-frame point. The fresh normal is kept, so a rotating body still pushes along its current
-surface normal. Consumers can then measure tangential slip as the drift between the two replayed
-points, which persists across collision passes, rather than as the motion since the last one.
+since the surface material moves away from any body-frame point. The fresh normal is kept, so a
+rotating body still pushes along its current surface normal. Consumers can then measure tangential
+slip as the drift between the two replayed points, which persists across collision passes, rather
+than as the motion since the last one.
 
-Per-frame call order (inside :class:`~newton.CollisionPipeline`), after all soft records are written::
+The matcher saves a buffer's records as the consumers left them, so a solver may move the kept points
+between passes; VBD drags them along once a contact slides. Each buffer therefore replays its own
+records. Call order (inside :class:`~newton.CollisionPipeline`)::
 
-    matcher.replay_and_save(...)
+    matcher.save(...)  # before the pass rewrites the buffer's records
+    matcher.replay(...)  # after all soft records are written
 """
 
 from __future__ import annotations
 
-import weakref
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -93,7 +96,6 @@ def _record_feature(features: wp.array[wp.vec3i], index: int):
 @wp.kernel(enable_backward=False)
 def _replay_soft_contacts_kernel(
     thread_count: int,
-    buffer_id: int,
     world_count: int,
     pos_threshold_sq: float,
     particle_q: wp.array[wp.vec3],
@@ -110,7 +112,6 @@ def _replay_soft_contacts_kernel(
     contact_normal: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
     reset_world_mask: wp.array[wp.bool],
-    prev_buffer: wp.array[wp.int32],
     prev_head: wp.array[wp.int32],
     prev_next: wp.array[wp.int32],
     prev_indices: wp.array[wp.vec3i],
@@ -122,8 +123,6 @@ def _replay_soft_contacts_kernel(
     contact_barycentric: wp.array[wp.vec3],
     contact_body_pos: wp.array[wp.vec3],
 ):
-    if prev_buffer[0] != buffer_id:
-        return
     for i in range(wp.tid(), wp.min(contact_count[0], contact_max), thread_count):
         corners = contact_indices[i]
         if reset_world_selected(particle_world[corners[0]], reset_world_mask, world_count):
@@ -200,18 +199,6 @@ def _save_soft_contacts_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _finish_save_kernel(
-    buffer_id: int,
-    prev_buffer: wp.array[wp.int32],
-    reset_world_mask: wp.array[wp.bool],
-):
-    world = wp.tid()
-    reset_world_mask[world] = False
-    if world == 0:
-        prev_buffer[0] = buffer_id
-
-
-@wp.kernel(enable_backward=False)
 def _accumulate_reset_world_mask_kernel(world_mask: wp.array[wp.bool], accumulated: wp.array[wp.bool]):
     world = wp.tid()
     if world_mask[world]:
@@ -222,8 +209,8 @@ class SoftContactMatcher:
     """Sticky replay of rigid-soft contact points across collision passes.
 
     Internal helper owned by :class:`~newton.CollisionPipeline` in ``contact_matching="sticky"``
-    mode. It owns the previous pass's records; all buffers are allocated at construction, so
-    :meth:`replay_and_save` can be captured in a CUDA graph.
+    mode. It owns the saved records; all buffers are allocated at construction, so :meth:`save` and
+    :meth:`replay` can be captured in a CUDA graph.
 
     Args:
         capacity: Maximum number of soft contacts (``soft_contact_max``).
@@ -258,18 +245,14 @@ class SoftContactMatcher:
             self._prev_features = wp.full(capacity if mesh_features else 0, wp.vec3i(-1, -1, -1), dtype=wp.vec3i)
             self._prev_barycentric = wp.zeros(capacity, dtype=wp.vec3)
             self._prev_body_pos = wp.zeros(capacity, dtype=wp.vec3)
-            # Id of the Contacts buffer the saved records came from; 0 is no buffer.
-            self._prev_buffer = wp.zeros(1, dtype=wp.int32)
             self._reset_world_mask = wp.zeros(self._world_count + 1, dtype=wp.bool)
-            self._buffer_ids: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
-            self._last_buffer_id = 0
             self._empty_features = wp.empty(0, dtype=wp.vec3i)
             self._empty_body_q = wp.empty(0, dtype=wp.transform)
 
     def reset(self, world_mask: wp.array[wp.bool] | None = None) -> None:
-        """Forget all or reset-selected saved records; masked selections apply at the next pass."""
+        """Forget all or reset-selected saved records; selections accumulate until the next replay."""
         if world_mask is None:
-            self._prev_buffer.zero_()
+            self._reset_world_mask.fill_(True)
             return
         wp.launch(
             _accumulate_reset_world_mask_kernel,
@@ -278,55 +261,14 @@ class SoftContactMatcher:
             device=self._reset_world_mask.device,
         )
 
-    def _buffer_id(self, contacts: Contacts) -> int:
-        buffer_id = self._buffer_ids.get(contacts)
-        if buffer_id is None:
-            self._last_buffer_id += 1
-            buffer_id = self._last_buffer_id
-            self._buffer_ids[contacts] = buffer_id
-        return buffer_id
-
-    def replay_and_save(self, model: Model, state: State, contacts: Contacts) -> None:
-        """Replay the previous contact points onto matched records, then save this pass's records."""
-        buffer_id = self._buffer_id(contacts)
+    def _features(self, contacts: Contacts) -> wp.array[wp.vec3i]:
         features = contacts._soft_contact_mesh_features
         if features is None or self._prev_features.shape[0] == 0:
-            features = self._empty_features
-        device = contacts.soft_contact_count.device
-        wp.launch(
-            _replay_soft_contacts_kernel,
-            dim=self._thread_count,
-            inputs=[
-                self._thread_count,
-                buffer_id,
-                self._world_count,
-                self._pos_threshold_sq,
-                state.particle_q,
-                model.particle_radius,
-                model.particle_world,
-                state.body_q if state.body_q is not None else self._empty_body_q,
-                model.shape_body,
-                model.shape_margin,
-                contacts.soft_contact_count,
-                self._capacity,
-                contacts.soft_contact_indices,
-                contacts.soft_contact_shape,
-                features,
-                contacts.soft_contact_normal,
-                contacts.soft_contact_body_vel,
-                self._reset_world_mask,
-                self._prev_buffer,
-                self._prev_head,
-                self._prev_next,
-                self._prev_indices,
-                self._prev_shape,
-                self._prev_features,
-                self._prev_barycentric,
-                self._prev_body_pos,
-            ],
-            outputs=[contacts.soft_contact_barycentric, contacts.soft_contact_body_pos],
-            device=device,
-        )
+            return self._empty_features
+        return features
+
+    def save(self, contacts: Contacts) -> None:
+        """Save the buffer's records as its consumers left them, before a pass rewrites them."""
         self._prev_head.fill_(-1)
         wp.launch(
             _save_soft_contacts_kernel,
@@ -337,7 +279,7 @@ class SoftContactMatcher:
                 self._capacity,
                 contacts.soft_contact_indices,
                 contacts.soft_contact_shape,
-                features,
+                self._features(contacts),
                 contacts.soft_contact_barycentric,
                 contacts.soft_contact_body_pos,
             ],
@@ -350,11 +292,41 @@ class SoftContactMatcher:
                 self._prev_barycentric,
                 self._prev_body_pos,
             ],
-            device=device,
+            device=contacts.soft_contact_count.device,
         )
+
+    def replay(self, model: Model, state: State, contacts: Contacts) -> None:
+        """Replay the saved contact points onto this pass's matched records."""
         wp.launch(
-            _finish_save_kernel,
-            dim=self._world_count + 1,
-            inputs=[buffer_id, self._prev_buffer, self._reset_world_mask],
-            device=device,
+            _replay_soft_contacts_kernel,
+            dim=self._thread_count,
+            inputs=[
+                self._thread_count,
+                self._world_count,
+                self._pos_threshold_sq,
+                state.particle_q,
+                model.particle_radius,
+                model.particle_world,
+                state.body_q if state.body_q is not None else self._empty_body_q,
+                model.shape_body,
+                model.shape_margin,
+                contacts.soft_contact_count,
+                self._capacity,
+                contacts.soft_contact_indices,
+                contacts.soft_contact_shape,
+                self._features(contacts),
+                contacts.soft_contact_normal,
+                contacts.soft_contact_body_vel,
+                self._reset_world_mask,
+                self._prev_head,
+                self._prev_next,
+                self._prev_indices,
+                self._prev_shape,
+                self._prev_features,
+                self._prev_barycentric,
+                self._prev_body_pos,
+            ],
+            outputs=[contacts.soft_contact_barycentric, contacts.soft_contact_body_pos],
+            device=contacts.soft_contact_count.device,
         )
+        self._reset_world_mask.fill_(False)
