@@ -77,6 +77,13 @@ Joint types
 Joint reference values (``ref``)
 --------------------------------
 
+MJCF hinge and slide joints with ``limited="false"`` use unlimited Newton
+bounds. Their authored ranges remain available for MuJoCo export and actuator
+``inheritrange``, including integrated-velocity activation bounds. Disabled
+angular ranges retain their authored units, as in MuJoCo; slide ranges scale
+with the imported model. Editing the reference pose leaves these inactive
+ranges unchanged. Subsequent finite Newton bounds take precedence.
+
 MuJoCo scalar joints (hinge and slide) may carry a reference value
 (MJCF ``ref``, exposed as the ``mujoco.dof_ref`` custom attribute): the
 authored body poses correspond to ``qpos = ref``, and MuJoCo interprets

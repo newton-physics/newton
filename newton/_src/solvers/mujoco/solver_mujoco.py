@@ -1642,6 +1642,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # region body and joint attributes
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="dof_limit_range",
+                frequency=AttributeFrequency.JOINT_DOF,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec2,
+                # Import metadata; non-finite defaults mean no disabled range was retained.
+                default=wp.vec2(float("-inf"), float("-inf")),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="limit_margin",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
@@ -6896,6 +6907,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         body_sleep_policy = get_custom_attribute("sleep_policy")
         joint_springref = get_custom_attribute("dof_springref")
         joint_ref = get_custom_attribute("dof_ref")
+        joint_disabled_range = get_custom_attribute("dof_limit_range")
 
         def joint_has_raw_limit_solref(dof_idx: int) -> bool:
             if joint_solref_limit is None:
@@ -7983,6 +7995,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     dof_ref_value = float(joint_ref[ai]) if joint_ref is not None else 0.0
                     # Keep the range available for runtime limit enablement.
                     joint_params["range"] = (lower + dof_ref_value, upper + dof_ref_value)
+                    if (
+                        not joint_params["limited"]
+                        and joint_disabled_range is not None
+                        and np.all(np.isfinite(joint_disabled_range[ai]))
+                    ):
+                        joint_params["range"] = joint_disabled_range[ai]
                     if joint_params["limited"] and joint_has_raw_limit_solref(ai):
                         # RAW solref_limit values are authored MuJoCo data and
                         # must survive the spec → ``MjModel`` → save_to_mjcf
@@ -8105,6 +8123,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     dof_ref_value = float(joint_ref[ai]) if joint_ref is not None else 0.0
                     # Keep the range available for runtime limit enablement.
                     joint_params["range"] = (np.rad2deg(lower + dof_ref_value), np.rad2deg(upper + dof_ref_value))
+                    if (
+                        not joint_params["limited"]
+                        and joint_disabled_range is not None
+                        and np.all(np.isfinite(joint_disabled_range[ai]))
+                    ):
+                        joint_params["range"] = joint_disabled_range[ai]
                     if joint_params["limited"] and joint_has_raw_limit_solref(ai):
                         # See the matching block above for the linear-DOF
                         # joint type: only ``SOLREF_MODE_RAW`` joints seed the
@@ -9565,6 +9589,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.jnt_type,
                 self.mjw_model.jnt_qposadr,
                 self.mjw_model.qpos0,
+                getattr(mujoco_attrs, "dof_limit_range", None) if mujoco_attrs is not None else None,
             ],
             outputs=[
                 self.mjw_model.jnt_solimp,
@@ -9593,6 +9618,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mjw_model.jnt_qposadr,
                 self.mjw_model.qpos0,
                 dof_ref,
+                self.model.joint_limit_lower,
+                self.model.joint_limit_upper,
+                getattr(mujoco_attrs, "dof_limit_range", None),
             ],
             outputs=[self.mjw_model.jnt_range],
             device=self.model.device,
