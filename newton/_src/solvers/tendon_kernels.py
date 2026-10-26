@@ -13,6 +13,14 @@ from ..sim.tendon import TendonGuideFlags, TendonGuideType
 
 
 @wp.func
+def tendon_body_pose(body_q: wp.array[wp.transform], body: int) -> wp.transform:
+    """Use world coordinates for guides attached to body -1."""
+    if body < 0:
+        return wp.transform_identity()
+    return body_q[body]
+
+
+@wp.func
 def tendon_material_tension(length: float, rest_length: float, compliance: float) -> float:
     """Evaluate unilateral tendon tension from linear compliance."""
     return wp.max(length - rest_length, 0.0) / wp.max(compliance, 1.0e-30)
@@ -242,9 +250,9 @@ def update_tendon_guide_active(
         prev_guide = guide_idx - 1
         next_guide = guide_idx + 1
 
-        prev_pose = body_q[tendon_guide_body[prev_guide]]
-        next_pose = body_q[tendon_guide_body[next_guide]]
-        candidate_pose = body_q[tendon_guide_body[guide_idx]]
+        prev_pose = tendon_body_pose(body_q, tendon_guide_body[prev_guide])
+        next_pose = tendon_body_pose(body_q, tendon_guide_body[next_guide])
+        candidate_pose = tendon_body_pose(body_q, tendon_guide_body[guide_idx])
         prev_center = wp.transform_point(prev_pose, tendon_guide_offset[prev_guide])
         next_center = wp.transform_point(next_pose, tendon_guide_offset[next_guide])
         candidate_center = wp.transform_point(candidate_pose, tendon_guide_offset[guide_idx])
@@ -355,10 +363,14 @@ def _tendon_segment_length_rate_from_twists(
     direction = diff / length
     body_l = tendon_guide_body[guide_l]
     body_r = tendon_guide_body[guide_r]
-    pose_l = body_q[body_l]
-    pose_r = body_q[body_r]
-    world_com_l = wp.transform_point(pose_l, body_com[body_l])
-    world_com_r = wp.transform_point(pose_r, body_com[body_r])
+    pose_l = tendon_body_pose(body_q, body_l)
+    pose_r = tendon_body_pose(body_q, body_r)
+    world_com_l = wp.vec3(0.0)
+    world_com_r = wp.vec3(0.0)
+    if body_l >= 0:
+        world_com_l = wp.transform_point(pose_l, body_com[body_l])
+    if body_r >= 0:
+        world_com_r = wp.transform_point(pose_r, body_com[body_r])
 
     linear_l = -direction
     linear_r = direction
@@ -402,6 +414,12 @@ def tendon_segment_length_rate(
     """Return the free-span length rate used by the stretch constraint."""
     body_l = tendon_guide_body[guide_l]
     body_r = tendon_guide_body[guide_r]
+    twist_l = wp.spatial_vector()
+    twist_r = wp.spatial_vector()
+    if body_l >= 0:
+        twist_l = body_qd[body_l]
+    if body_r >= 0:
+        twist_r = body_qd[body_r]
     return _tendon_segment_length_rate_from_twists(
         body_q,
         body_com,
@@ -413,10 +431,10 @@ def tendon_segment_length_rate(
         guide_r,
         x_l,
         x_r,
-        wp.spatial_top(body_qd[body_l]),
-        wp.spatial_top(body_qd[body_r]),
-        wp.spatial_bottom(body_qd[body_l]),
-        wp.spatial_bottom(body_qd[body_r]),
+        wp.spatial_top(twist_l),
+        wp.spatial_top(twist_r),
+        wp.spatial_bottom(twist_l),
+        wp.spatial_bottom(twist_r),
     )
 
 
@@ -440,10 +458,10 @@ def tendon_segment_length_rate_from_poses(
     """Return free-span length rate from the current and previous body poses."""
     body_l = tendon_guide_body[guide_l]
     body_r = tendon_guide_body[guide_r]
-    pose_l = body_q[body_l]
-    pose_r = body_q[body_r]
-    pose_l_prev = body_q_prev[body_l]
-    pose_r_prev = body_q_prev[body_r]
+    pose_l = tendon_body_pose(body_q, body_l)
+    pose_r = tendon_body_pose(body_q, body_r)
+    pose_l_prev = tendon_body_pose(body_q_prev, body_l)
+    pose_r_prev = tendon_body_pose(body_q_prev, body_r)
     # Preserve VBD's discrete damping except where rolling contact requires removing roller-axis spin.
     if tendon_guide_type[guide_l] != int(TendonGuideType.ROLLER) and tendon_guide_type[guide_r] != int(
         TendonGuideType.ROLLER
@@ -452,10 +470,16 @@ def tendon_segment_length_rate_from_poses(
         x_r_prev = wp.transform_point(pose_r_prev, x_r_local)
         return (wp.length(x_r - x_l) - wp.length(x_r_prev - x_l_prev)) / dt
 
-    world_com_l = wp.transform_point(pose_l, body_com[body_l])
-    world_com_r = wp.transform_point(pose_r, body_com[body_r])
-    world_com_l_prev = wp.transform_point(pose_l_prev, body_com[body_l])
-    world_com_r_prev = wp.transform_point(pose_r_prev, body_com[body_r])
+    com_l = wp.vec3(0.0)
+    com_r = wp.vec3(0.0)
+    if body_l >= 0:
+        com_l = body_com[body_l]
+    if body_r >= 0:
+        com_r = body_com[body_r]
+    world_com_l = wp.transform_point(pose_l, com_l)
+    world_com_r = wp.transform_point(pose_r, com_r)
+    world_com_l_prev = wp.transform_point(pose_l_prev, com_l)
+    world_com_r_prev = wp.transform_point(pose_r_prev, com_r)
     velocity_l = (world_com_l - world_com_l_prev) / dt
     velocity_r = (world_com_r - world_com_r_prev) / dt
     omega_l = quat_velocity(
@@ -568,7 +592,7 @@ def prepare_tendon_route(
         merged_rest = seg_rest_length_step[seg_left]
         if tendon_guide_active_step[guide_idx]:
             body = tendon_guide_body[guide_idx]
-            pose = body_q[body]
+            pose = tendon_body_pose(body_q, body)
             center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
             normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
             pt_left = wp.transform_point(pose, seg_attachment_r_local_step[seg_left])
@@ -690,8 +714,8 @@ def update_tendon_attachments(
     axis_l = tendon_guide_axis[guide_l]
     axis_r = tendon_guide_axis[guide_r]
 
-    pose_l = body_q[body_l]
-    pose_r = body_q[body_r]
+    pose_l = tendon_body_pose(body_q, body_l)
+    pose_r = tendon_body_pose(body_q, body_r)
     center_l = wp.transform_point(pose_l, offset_l)
     center_r = wp.transform_point(pose_r, offset_r)
     normal_l = wp.transform_vector(pose_l, axis_l)
@@ -809,8 +833,8 @@ def rebaseline_tendon_attachments(
     guide_r = seg_active_guide_r[seg]
     body_l = tendon_guide_body[guide_l]
     body_r = tendon_guide_body[guide_r]
-    pose_l = body_q[body_l]
-    pose_r = body_q[body_r]
+    pose_l = tendon_body_pose(body_q, body_l)
+    pose_r = tendon_body_pose(body_q, body_r)
     center_l = wp.transform_point(pose_l, tendon_guide_offset[guide_l])
     center_r = wp.transform_point(pose_r, tendon_guide_offset[guide_r])
     normal_l = wp.transform_vector(pose_l, tendon_guide_axis[guide_l])
@@ -936,7 +960,7 @@ def update_tendon_cone_rows(
     is_dynamic = (tendon_guide_flags[guide_idx] & int(TendonGuideFlags.DYNAMIC)) != 0
     if is_rolling and not is_dynamic and report_unsupported_wrap != 0:
         body = tendon_guide_body[guide_idx]
-        pose = body_q[body]
+        pose = tendon_body_pose(body_q, body)
         center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
         normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
         r_left = seg_attachment_r[seg_left] - center
@@ -987,7 +1011,7 @@ def update_tendon_cone_rows(
             cap_ratio = wp.exp(wp.min(wp.max(tendon_guide_mu[guide_first], 0.0) * theta, 20.0))
         elif cone_guide_type == int(TendonGuideType.ROLLER) and cone_guide_is_active:
             body = tendon_guide_body[guide_first]
-            pose = body_q[body]
+            pose = tendon_body_pose(body_q, body)
             center = wp.transform_point(pose, tendon_guide_offset[guide_first])
             normal = wp.transform_vector(pose, tendon_guide_axis[guide_first])
             radius = tendon_guide_radius[guide_first]
@@ -1107,7 +1131,7 @@ def solve_tendon_material(
         seg_left = seg_offset + i - 1
         seg_right = seg_left + 1
         body = tendon_guide_body[guide_idx]
-        pose = body_q[body]
+        pose = tendon_body_pose(body_q, body)
         center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
         normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
         arc_rest = wrapped_arc_length(
