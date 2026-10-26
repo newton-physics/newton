@@ -490,6 +490,21 @@ def _iter_deformable_collider_prims(body_root, ignore_paths: Sequence[str] = ())
             yield prim
 
 
+# Applied API schemas of the AOUSD proposal's deformable simulation families.
+_AOUSD_DEFORMABLE_SIM_APIS = frozenset(
+    {
+        "PhysicsCurvesDeformableSimAPI",
+        "PhysicsSurfaceDeformableSimAPI",
+        "PhysicsVolumeDeformableSimAPI",
+    }
+)
+
+
+def _is_aousd_deformable_sim_prim(prim) -> bool:
+    """Whether a prim applies one of the AOUSD deformable simulation APIs."""
+    return not _AOUSD_DEFORMABLE_SIM_APIS.isdisjoint(prim.GetPrimTypeInfo().GetAppliedAPISchemas())
+
+
 def _deformable_collision_enabled(prim, ignore_paths: Sequence[str] = ()) -> tuple[bool, list[str]]:
     """Resolve a deformable simulation geometry's collision participation.
 
@@ -1427,11 +1442,6 @@ def _scout_deformable_prims(
     # the traversal over just the discovered body subtrees, so a stage without
     # deformables pays nothing extra.
     if buckets.body_owner:
-        deformable_sim_apis = (
-            "PhysicsCurvesDeformableSimAPI",
-            "PhysicsSurfaceDeformableSimAPI",
-            "PhysicsVolumeDeformableSimAPI",
-        )
         stage = root_prim.GetStage()
         for body_path, owner_path in buckets.body_owner.items():
             body_prim = stage.GetPrimAtPath(body_path)
@@ -1441,10 +1451,7 @@ def _scout_deformable_prims(
                 path = str(prim.GetPath())
                 if _prim_has_collision_api(prim):
                     buckets.native_physics_exclude_paths.append(path)
-                elif path != owner_path and not (
-                    prim.IsA(UsdGeom.TetMesh)
-                    or any(s in deformable_sim_apis for s in prim.GetPrimTypeInfo().GetAppliedAPISchemas())
-                ):
+                elif path != owner_path and not (prim.IsA(UsdGeom.TetMesh) or _is_aousd_deformable_sim_prim(prim)):
                     # Simulation candidates of any family are handled (or warned) by their
                     # own passes; everything else is graphics geometry. Untagged Meshes are
                     # claimed by the render pass and skinned from the simulation state
