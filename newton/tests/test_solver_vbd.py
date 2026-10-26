@@ -3276,6 +3276,96 @@ def _self_contact_damping_uses_relative_gap_rate(test, device):
         np.testing.assert_allclose(hessians.numpy()[1], hessians.numpy()[0], rtol=1.0e-6, atol=1.0e-6)
 
 
+def _soft_block_on_pinned_sheet(load: float, matching: str, substeps: int, seconds: tuple):
+    """Mean positions of a soft block resting on a pinned cloth sheet under gravity tilted along x.
+
+    Only self-contact holds the block: the sheet has zero mass and there are no shapes. The tangential
+    load is ``load`` times the friction limit mu * N. Returns the block's mean position after each
+    duration in ``seconds``, advanced in turn.
+    """
+    mu = 0.5
+    radius = 0.004
+    tilt = math.atan(load * mu)
+    fps = 60
+    dt = 1.0 / (fps * substeps)
+    builder = newton.ModelBuilder()
+    builder.add_cloth_grid(
+        pos=wp.vec3(-0.2, -0.2, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=8,
+        dim_y=8,
+        cell_x=0.05,
+        cell_y=0.05,
+        mass=0.0,
+        tri_ke=1.0e2,
+        tri_ka=1.0e2,
+        tri_kd=0.0,
+        particle_radius=radius,
+    )
+    sheet_count = builder.particle_count
+    builder.add_soft_grid(
+        pos=wp.vec3(-0.03, -0.03, radius + 0.0015),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=3,
+        dim_y=3,
+        dim_z=1,
+        cell_x=0.02,
+        cell_y=0.02,
+        cell_z=0.02,
+        density=200.0,
+        k_mu=3.0e4,
+        k_lambda=3.0e4,
+        k_damp=0.0,
+        particle_radius=radius,
+    )
+    builder.color()
+    model = builder.finalize()
+    model.soft_contact_mu = mu
+    model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=10,
+        collision_pipeline=newton.CollisionPipeline(model, contact_matching=matching),
+        particle_enable_self_contact=True,
+        particle_self_contact_radius=radius,
+        particle_self_contact_margin=2.0 * radius,
+    )
+    state_0, state_1 = model.state(), model.state()
+
+    positions = []
+    for duration in seconds:
+        for _ in range(round(duration * fps * substeps)):
+            solver.step(state_0, state_1, None, None, dt)
+            state_0, state_1 = state_1, state_0
+        positions.append(state_0.particle_q.numpy()[sheet_count:].mean(axis=0))
+    return positions
+
+
+def _sticky_self_contacts_hold_static_load(test, device, substeps):
+    """With sticky contact matching, a soft block under a tangential load inside the friction cone stays put on cloth.
+
+    Self-contact friction is regularized like body-particle friction, so it holds no static load: the
+    block creeps about 3 mm/s here, 0.6 mm over the hold, at any time step. Each entry in ``substeps``
+    is a time step to check.
+    """
+    with wp.ScopedDevice(device):
+        for count in substeps:
+            settled, held = _soft_block_on_pinned_sheet(0.5, "sticky", count, (0.3, 0.2))
+            test.assertGreater(settled[2], 0.0)
+            test.assertLess(abs(held[0] - settled[0]), 2.0e-5, f"substeps={count}")
+
+
+def _sticky_self_contacts_slide_beyond_friction_cone(test, device):
+    """Sticky self-contacts slide like fresh ones once the tangential load exceeds mu * N."""
+    with wp.ScopedDevice(device):
+        (fresh,) = _soft_block_on_pinned_sheet(1.5, "disabled", 5, (0.3,))
+        (sticky,) = _soft_block_on_pinned_sheet(1.5, "sticky", 5, (0.3,))
+    test.assertGreater(fresh[0], 0.05)
+    np.testing.assert_allclose(sticky[0], fresh[0], rtol=0.02)
+
+
 def _d6_fully_free_structural_slots_are_inactive(test, device):
     """D6 structural slots should be inactive when all axes are free."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -6229,6 +6319,19 @@ add_function_test(
     TestSolverVBD,
     "test_self_contact_damping_uses_relative_gap_rate",
     _self_contact_damping_uses_relative_gap_rate,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_sticky_self_contacts_hold_static_load",
+    _sticky_self_contacts_hold_static_load,
+    devices=devices,
+    substeps=(5, 10),
+)
+add_function_test(
+    TestSolverVBD,
+    "test_sticky_self_contacts_slide_beyond_friction_cone",
+    _sticky_self_contacts_slide_beyond_friction_cone,
     devices=devices,
 )
 add_function_test(
