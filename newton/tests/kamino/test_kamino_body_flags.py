@@ -1,17 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for Kamino's rigid body flag support (KINEMATIC).
+"""Unit tests for Kamino's rigid body flag support (KINEMATIC / PROXY).
 
 Kamino treats a body as immovable when either its inverse mass and inverse
-inertia are both zero, or when its flags include KINEMATIC. This
-module exercises the resulting behavior end-to-end:
+inertia are both zero, or when its flags include KINEMATIC. It simulates PROXY
+bodies like any other body. This module exercises the resulting behavior end-to-end:
 
 - masking of Kamino-owned ``inv_m_i`` / ``inv_i_I_i`` arrays,
 - joint and contact constraint culling between two immovable endpoints,
 - integrator/PADMM stability with kinematic bodies (isolated and connected),
-- ``notify_model_changed`` propagation and rejection of runtime flag flips,
-- non-mutation of the underlying Newton model arrays.
+- ``notify_model_changed`` propagation and rejection of runtime KINEMATIC flips,
+- non-mutation of the underlying Newton model arrays,
+- piles resting on PROXY bodies coupled from MuJoCo, with the DVI and LOX backends.
 """
 
 from __future__ import annotations
