@@ -71,7 +71,13 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
-from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
+from newton.tests.kamino.utils.make import (
+    force_row_storage,
+    make_containers,
+    make_row_storage,
+    make_test_problem_fourbar,
+    update_containers,
+)
 from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 from newton.tests.utils import basics, testing
 
@@ -751,6 +757,116 @@ class TestDVISolver(NewtonTestCase):
         )
         self.assertIsNotNone(solver.data)
 
+    def test_01b_dvi_row_storage_matches_flat_storage(self):
+        """Match flat storage with per-world rows and mixed matrix layouts."""
+
+        def fixture(sparse: bool):
+            builder = basics.make_basics_heterogeneous_builder(ground=True)
+            model = ModelKamino.from_newton(builder.finalize(device=self.device, skip_validation_joints=True))
+            model, data, state, limits, detector, jacobians = make_containers(
+                model=model, max_world_contacts=16, sparse=sparse
+            )
+            update_containers(
+                model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians
+            )
+            return model, data, limits, detector.contacts, jacobians
+
+        def build(shared, sparse: bool):
+            model, data, limits, contacts, jacobians = shared
+            problem = DualProblem(
+                model=model,
+                data=data,
+                limits=limits,
+                contacts=contacts,
+                jacobians=jacobians,
+                solver=None if sparse else LLTBlockedSolver,
+                sparse=sparse,
+            )
+            problem.build(model=model, data=data, limits=limits, contacts=contacts, jacobians=jacobians)
+            return *shared, problem
+
+        def solve(setup, config: kamino_config.DVISolverConfig) -> DVISolver:
+            model, data, limits, contacts, jacobians, problem = setup
+            solver = DVISolver(
+                model=model,
+                data=data,
+                limits=limits,
+                contacts=contacts,
+                jacobians=jacobians,
+                problem=problem,
+                config=config,
+            )
+            solver.reset()
+            solver.coldstart()
+            solver.solve(problem)
+            return solver
+
+        cases = (
+            (False, "LLTB", "pgs", False),
+            (False, "LLTBRCM", "pgs", True),
+            (False, "LLTB", "apgd", True),
+            (True, "LLTB", "pgs", False),
+            (True, "LLTBRCM", "pgs", True),
+        )
+        exact = not self.device.is_cuda
+        # The 6144-element case keeps bilateral blocks flat and stores D and projected_D in rows.
+        for sparse, min_total in ((False, -1), (False, 6144), (True, -1)):
+            shared = fixture(sparse)
+            flat_setup = build(shared, sparse)
+            with force_row_storage(min_total):
+                row_setup = build(shared, sparse)
+            flat_problem, row_problem = flat_setup[-1], row_setup[-1]
+            for name, value in vars(flat_problem.data).items():
+                if isinstance(value, wp.array) and name not in ("D", "mio"):
+                    wp.copy(getattr(row_problem.data, name), value)
+            if not sparse:
+                matrices = make_row_storage(
+                    flat_problem.data.D.numpy(),
+                    flat_problem.data.mio.numpy(),
+                    np.square(flat_problem.data.maxdim.numpy()),
+                )
+                row_problem.data.D.assign(matrices)
+            for case_sparse, bilateral, unilateral, schur in cases:
+                if case_sparse != sparse:
+                    continue
+                if unilateral == "apgd" and self.device.is_cuda and not wp.is_conditional_graph_supported():
+                    continue
+                with self.subTest(
+                    sparse=sparse, min_total=min_total, bilateral=bilateral, unilateral=unilateral, schur=schur
+                ):
+                    config = kamino_config.DVISolverConfig(
+                        max_alternating_iterations=6,
+                        inequality_sweeps_per_iteration=2,
+                        tolerance=1e-6,
+                        regularization=1e-5,
+                        use_schur_complement=schur,
+                        unilateral_solver=unilateral,
+                        bilateral_solver_type=bilateral,
+                    )
+                    flat = solve(flat_setup, config)
+                    with force_row_storage(min_total):
+                        rows = solve(row_setup, config)
+                    bilateral_ndim = 2 if min_total < 0 else 1
+                    self.assertEqual(rows.data.bilateral_operator.mat.ndim, bilateral_ndim)
+                    self.assertEqual(rows._bilateral_solver.L.ndim, bilateral_ndim)
+                    if not sparse:
+                        self.assertEqual(row_setup[-1].data.D.ndim, 2)
+                        if schur and unilateral == "pgs":
+                            self.assertEqual(rows.data.state.projected_D.ndim, 2)
+                    for name in ("lambdas", "v_plus"):
+                        expected = getattr(flat.data.solution, name).numpy()
+                        actual = getattr(rows.data.solution, name).numpy()
+                        if exact:
+                            np.testing.assert_array_equal(actual.view(np.uint32), expected.view(np.uint32))
+                        else:
+                            # CUDA PGS accumulates atomically in a scheduling-dependent order.
+                            np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=3e-6)
+                    flat_status, row_status = flat.data.status.numpy(), rows.data.status.numpy()
+                    if exact:
+                        self.assertEqual(row_status.tobytes(), flat_status.tobytes())
+                    else:
+                        np.testing.assert_array_equal(row_status["converged"], flat_status["converged"])
+
     def test_02_public_solver_step_with_dvi(self):
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
@@ -775,26 +891,39 @@ class TestDVISolver(NewtonTestCase):
         builder.end_world()
         model = builder.finalize(device=self.device)
 
-        config = SolverKamino.Config(
-            dynamics_solver="dvi",
-            dvi=kamino_config.DVISolverConfig(
-                max_alternating_iterations=500,
-                inequality_sweeps_per_iteration=1,
-                tolerance=1e-5,
-            ),
-            collect_solver_info=True,
-        )
-        solver = SolverKamino(model, config=config)
-        state_in = model.state()
-        state_out = model.state()
-        solver.step(state_in, state_out, control=None, contacts=None, dt=1e-3)
-        body_q = state_out.body_q.numpy()
-        body_qd = state_out.body_qd.numpy()
-        self.assertTrue(np.all(np.isfinite(body_q)))
-        self.assertTrue(np.all(np.isfinite(body_qd)))
-        self.assertIsInstance(solver._solver_kamino.solver_fd, DVISolver)
-        self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
-        self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
+        for sparse, metrics in ((False, False), (False, True), (True, False), (True, True)):
+            with self.subTest(sparse=sparse, metrics=metrics):
+                config = SolverKamino.Config(
+                    dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(
+                        max_alternating_iterations=500,
+                        inequality_sweeps_per_iteration=1,
+                        tolerance=1e-5,
+                    ),
+                    collect_solver_info=True,
+                    sparse_dynamics=sparse,
+                    sparse_jacobian=sparse,
+                    compute_solution_metrics=metrics,
+                )
+                solver = SolverKamino(model, config=config)
+                state_in = model.state()
+                state_out = model.state()
+                solver.step(state_in, state_out, control=None, contacts=None, dt=1e-3)
+                body_q = state_out.body_q.numpy()
+                body_qd = state_out.body_qd.numpy()
+                self.assertTrue(np.all(np.isfinite(body_q)))
+                self.assertTrue(np.all(np.isfinite(body_qd)))
+                self.assertIsInstance(solver._solver_kamino.solver_fd, DVISolver)
+                self.assertFalse(solver._solver_kamino.config.dynamics.preconditioning)
+                self.assertIsNotNone(solver._solver_kamino.solver_fd.data.info)
+
+                if not sparse:
+                    self.assertIsNone(solver._solver_kamino.problem_fd.delassus._solver)
+                self.assertIsNotNone(solver._solver_kamino.solver_fd._bilateral_solver)
+                if metrics:
+                    values = solver._solver_kamino.metrics.data
+                    for name in ("r_eom", "r_v_plus", "r_ncp_primal", "r_ncp_dual", "r_ncp_compl", "r_vi_natmap"):
+                        self.assertTrue(np.isfinite(getattr(values, name).numpy()).all(), name)
 
     def test_02a_public_solver_reset_accepts_global_mask_slot(self):
         """Accept a global reset slot as a no-op for Kamino state."""
@@ -1952,7 +2081,7 @@ class TestDVISolver(NewtonTestCase):
 
     def test_03i_dvi_coldstart_is_repeatable(self):
         """Repeat cold starts without clearing overwritten Schur workspace."""
-        for sparse, schur in ((False, False), (True, False), (True, True)):
+        for sparse, schur in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(sparse=sparse, schur=schur):
                 test = TestSetup(
                     builder_fn=basics.build_boxes_hinged,
@@ -1980,9 +2109,9 @@ class TestDVISolver(NewtonTestCase):
                 if schur:
                     state = solver.data.state
                     response_arrays = (
-                        state.bilateral_coupling,
-                        state.bilateral_response_factor,
-                        state.bilateral_response,
+                        (state.bilateral_coupling, state.bilateral_response_factor, state.bilateral_response)
+                        if sparse
+                        else (state.projected_D,)
                     )
                     before_reset = tuple(array.numpy().copy() for array in response_arrays)
                 solver.reset()

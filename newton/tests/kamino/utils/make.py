@@ -5,8 +5,10 @@
 Utilities for constructing test problem containers and data.
 """
 
+import contextlib
 import math
-from collections.abc import Callable
+import sys
+from collections.abc import Callable, Iterator
 
 import numpy as np
 import warp as wp
@@ -30,6 +32,7 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
 )
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
+from newton._src.solvers.kamino._src.linalg import core as linalg_core
 from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 from .print import (
@@ -42,9 +45,11 @@ from .print import (
 ###
 
 __all__ = [
+    "force_row_storage",
     "make_containers",
     "make_generalized_mass_matrices",
     "make_inverse_generalized_mass_matrices",
+    "make_row_storage",
     "make_test_problem",
     "make_test_problem_fourbar",
     "update_containers",
@@ -56,6 +61,42 @@ __all__ = [
 ###
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
+
+
+# Dense storage layouts.
+
+
+def make_row_storage(flat: np.ndarray, offsets: list[int] | np.ndarray, sizes: list[int] | np.ndarray) -> np.ndarray:
+    """Copy flat per-block matrix data into one zero-padded row per block."""
+    sizes = np.asarray(sizes, dtype=np.int64)
+    rows = np.zeros((sizes.size, max(1, int(sizes.max(initial=0)))), dtype=np.asarray(flat).dtype)
+    for block, (offset, size) in enumerate(zip(offsets, sizes, strict=True)):
+        rows[block, :size] = flat[offset : offset + size]
+    return rows
+
+
+@contextlib.contextmanager
+def force_row_storage(min_total: int = -1) -> Iterator[None]:
+    """Allocate dense multi-block matrices larger than ``min_total`` elements with one row per block."""
+    original = linalg_core.dense_matrix_layout
+
+    def rows(block_sizes: list[int]) -> tuple[tuple[int, ...], list[int]]:
+        if sum(block_sizes) <= min_total:
+            return original(block_sizes)
+        return (len(block_sizes), max(block_sizes, default=0)), [0] * len(block_sizes)
+
+    modules = [
+        module
+        for name, module in list(sys.modules.items())
+        if name.startswith("newton._src.solvers.kamino") and getattr(module, "dense_matrix_layout", None) is original
+    ]
+    for module in modules:
+        module.dense_matrix_layout = rows
+    try:
+        yield
+    finally:
+        for module in modules:
+            module.dense_matrix_layout = original
 
 
 ###
