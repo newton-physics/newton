@@ -21,7 +21,6 @@ if TYPE_CHECKING:
 _NATIVE_JOINT_FIELDS = {
     "type": (wp.int32, -1),
     "springdamper": (wp.vec2, (0.0, 0.0)),
-    "range": (wp.vec2, (0.0, 0.0)),
     "limited": (wp.int32, 2),
     "actfrcrange": (wp.vec2, (0.0, 0.0)),
     "actfrclimited": (wp.int32, 2),
@@ -172,6 +171,7 @@ def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joi
     if not hasattr(attrs, "native_joint_type"):
         return {}
     fields = {name: getattr(attrs, f"native_joint_{name}").numpy() for name in _NATIVE_JOINT_FIELDS}
+    ranges = attrs.dof_limit_range.numpy()
     stiffness = attrs.dof_passive_stiffness.numpy()
     actgravcomp = attrs.jnt_actgravcomp.numpy()
     damping, armature, friction = (
@@ -194,24 +194,19 @@ def _apply_native_joint_parameters(model: Model, spec: mujoco.MjSpec, dof_to_joi
         joint.stiffness[:] = [stiffness[dof], *fields["stiffnesspoly"][dof]]
         joint.damping[:] = [damping[dof], *fields["dampingpoly"][dof]]
         joint.armature, joint.frictionloss = float(armature[dof]), float(friction[dof])
-        scalar_has_limits = int(joint.limited) == 1
-        joint.limited = int(fields["limited"][dof])
         joint.actgravcomp = bool(actgravcomp[dof])
         joint.actfrclimited = int(fields["actfrclimited"][dof])
         joint.actfrcrange[:] = fields["actfrcrange"][dof]
         joint.solref_friction[:] = constraint_fields["solreffriction"][dof]
         joint.solimp_friction[:] = constraint_fields["solimpfriction"][dof]
         if joint.type in (mujoco.mjtJoint.mjJNT_BALL, mujoco.mjtJoint.mjJNT_FREE):
+            joint.limited = int(fields["limited"][dof])
             joint.range[:] = (
-                np.rad2deg(fields["range"][dof])
-                if spec.compiler.degree and fields["limited"][dof] != 0
-                else fields["range"][dof]
+                np.rad2deg(ranges[dof]) if spec.compiler.degree and fields["limited"][dof] != 0 else ranges[dof]
             )
             joint.margin = float(constraint_fields["limit_margin"][dof])
             joint.solref_limit[:] = constraint_fields["solreflimit"][dof]
             joint.solimp_limit[:] = constraint_fields["solimplimit"][dof]
-        elif not scalar_has_limits:
-            joint.range[:] = fields["range"][dof]
         if np.all(fields["springdamper"][dof] > 0):
             resolved[dof] = int(index)
     return resolved
@@ -247,7 +242,7 @@ def _sync_native_actuator_ranges(model: Model) -> None:
     transmissions = attrs.actuator_trntype.numpy()
     tendon_ranges = attrs.tendon_range.numpy() if np.any(transmissions == SolverMuJoCo.TrnType.TENDON) else None
     lower, upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
-    refs, native_ranges = attrs.dof_ref.numpy(), attrs.native_joint_range.numpy()
+    refs, native_ranges = attrs.dof_ref.numpy(), attrs.dof_limit_range.numpy()
     dynamics = attrs.actuator_dyntype.numpy()
     control, activation = attrs.actuator_ctrlrange.numpy(), attrs.actuator_actrange.numpy()
     for row in np.flatnonzero(factors > 0):

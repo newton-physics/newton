@@ -139,11 +139,10 @@ attributes. The files stay in their existing directories. Legacy directory
 scoping remains available through ``add_mjcf()`` or the custom resolver above;
 native import without a resolver requires updating those asset paths.
 
-Native import honors the MJCF default ``type="sphere"`` when a geom references
+Both importers honor the MJCF default ``type="sphere"`` when a geom references
 a mesh without specifying or inheriting a type. The mesh is used to fit the
 sphere. Specify ``type="mesh"`` on the geom or in its defaults when a mesh
-collider is intended; the legacy importer infers that type from
-the ``mesh`` attribute alone.
+collider is intended.
 
 Planar mesh colliders remain supported through ``add_mjcf()``. Native compilation
 requires at least four mesh vertices and rejects planar collision hulls, even
@@ -186,12 +185,13 @@ not extensions to the XML format. Explicit zero values remain distinct from
 automatic values, and
 limit flags retain their ``auto`` / ``true`` / ``false`` state. Native compilation
 validates ranges and infers activation dimensions. Disabled angular ranges keep
-MuJoCo's authored-unit convention.
+MuJoCo's authored-unit convention. Both importers store disabled ranges in
+``mujoco.dof_limit_range``; later finite Newton bounds take precedence.
 
 Fixed tendons and joint equalities use the shared Newton joint-reference fields
 for scalar joints. Compound joints additionally retain the selected DOF;
-site and tendon equalities retain typed references because body and joint IDs
-cannot represent their targets.
+tendon equalities use the shared tendon-reference fields. Site equalities
+retain shape references because body and joint IDs cannot represent their targets.
 
 Joint ``solreflimit`` values, including inherited defaults, take precedence
 over builder limit gains. When omitted, customized builder ``limit_ke`` /
@@ -385,6 +385,13 @@ Joint types
 
 Joint reference values (``ref``)
 --------------------------------
+
+MJCF hinge and slide joints with ``limited="false"`` use unlimited Newton
+bounds. Their authored ranges remain available for MuJoCo export and actuator
+``inheritrange``, including integrated-velocity activation bounds. Disabled
+angular ranges retain their authored units, as in MuJoCo; slide ranges scale
+with the imported model. Editing the reference pose leaves these inactive
+ranges unchanged. Subsequent finite Newton bounds take precedence.
 
 MuJoCo scalar joints (hinge and slide) may carry a reference value
 (MJCF ``ref``, exposed as the ``mujoco.dof_ref`` custom attribute): the

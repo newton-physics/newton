@@ -442,6 +442,18 @@ class TestImportMjcfNativeSemantics(unittest.TestCase):
                         )
                     solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
                     np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0], reference.jnt_range, atol=1e-7)
+                    if kind == "hinge" and flag == "false":
+                        model = solver.model
+                        model.mujoco.dof_ref.assign([0.5])
+                        solver.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
+                        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0], reference.jnt_range)
+                        model.joint_limit_lower.assign([-0.25])
+                        model.joint_limit_upper.assign([0.75])
+                        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+                        np.testing.assert_allclose(solver.mjw_model.jnt_range.numpy()[0], [[0.25, 1.25]])
+                        rebuilt = SolverMuJoCo(model, disable_contacts=True)
+                        np.testing.assert_array_equal(rebuilt.mj_model.jnt_limited, [True])
+                        np.testing.assert_allclose(rebuilt.mj_model.jnt_range, [[0.25, 1.25]])
 
     def test_near_servo_parameters(self):
         """Preserve general gains and gears that only approximately match a servo."""

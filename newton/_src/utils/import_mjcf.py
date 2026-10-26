@@ -15,7 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
-from ..core.types import Axis, AxisType, Sequence, Transform, vec10
+from ..core.types import MAXVAL, Axis, AxisType, Sequence, Transform, vec10
 from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, ShapeFlags, compute_inertia_shape
 from ..geometry.types import Heightfield
@@ -2217,11 +2217,25 @@ def parse_mjcf(
                 # Only convert deg->rad when an explicit range is given; the default
                 # sentinel (+/-MAXVAL) represents "unlimited" and must not be scaled.
                 has_range = "range" in joint_attrib
+                limited = joint_attrib.get("limited", "auto").lower()
+                if limited not in {"false", "true", "auto"}:
+                    raise ValueError(f"Invalid MJCF joint limited value: {limited!r}.")
+                range_defined = has_range and (joint_range[0] != 0.0 or joint_range[1] != 0.0)
+                if (
+                    limited == "auto"
+                    and range_defined
+                    and compiler_attribs.get("autolimits", "true").lower() == "false"
+                ):
+                    raise ValueError(
+                        f"MJCF joint '{joint_name[-1]}' has range but no explicit limited setting "
+                        'while compiler autolimits="false".'
+                    )
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
                 if has_range and is_linear:
                     limit_lower *= scale
                     limit_upper *= scale
+                mjcf_joint_ranges[joint_name[-1]] = (limit_lower, limit_upper) if has_range else (0.0, 0.0)
                 # MJCF ranges use absolute qpos, while Newton joint coordinates use qpos - ref.
                 # SolverMuJoCo adds ref back when it builds jnt_range.
                 if has_range:
@@ -2233,6 +2247,17 @@ def parse_mjcf(
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
 
+                disabled_range = None
+                if limited == "true" and (not has_range or joint_range[0] >= joint_range[1]):
+                    raise ValueError("Joint range lower bound must be smaller than upper bound.")
+                if limited == "false" or (limited == "auto" and has_range and not joint_range[0] < joint_range[1]):
+                    # Disabled angular ranges retain their authored units in MuJoCo.
+                    disabled_range = wp.vec2(joint_range[0], joint_range[1]) if has_range else wp.vec2(0.0, 0.0)
+                    if is_linear:
+                        disabled_range *= scale
+                    mjcf_joint_ranges[joint_name[-1]] = tuple(disabled_range)
+                    limit_lower, limit_upper = -MAXVAL, MAXVAL
+
                 # ``solreflimit`` is a native MuJoCo solver parameter, not a
                 # force-space gain. Preserve it through the custom attribute and
                 # keep Newton's generic joint-limit gains at their configured
@@ -2242,29 +2267,26 @@ def parse_mjcf(
                 warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
-                if "actuatorfrcrange" in joint_attrib:
-                    actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
-                    if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
-                        actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
-                        autolimits_attr = builder.custom_attributes.get("mujoco:autolimits")
-                        autolimits_val = True
-                        if autolimits_attr is not None:
-                            autolimits_values = autolimits_attr.values
-                            autolimits_raw = (
-                                autolimits_values.get(0, autolimits_attr.default)
-                                if isinstance(autolimits_values, dict)
-                                else autolimits_attr.default
-                            )
-                            autolimits_val = bool(autolimits_raw)
-                        if actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and autolimits_val):
-                            effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
-                        elif verbose:
-                            logger.warning(
-                                "Joint '%s' has actuatorfrcrange but actuatorfrclimited='%s'. Force clamping "
-                                "will be disabled.",
-                                joint_attrib.get("name", "unnamed"),
-                                actuatorfrclimited,
-                            )
+                actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
+                if "actuatorfrcrange" in joint_attrib or actuatorfrclimited == "true":
+                    actuatorfrcrange = [float(value) for value in joint_attrib.get("actuatorfrcrange", "0 0").split()]
+                    if len(actuatorfrcrange) != 2:
+                        raise ValueError("Joint actuatorfrcrange must contain exactly two values.")
+                    lower, upper = actuatorfrcrange
+                    if (
+                        actuatorfrclimited == "auto"
+                        and compiler_attribs.get("autolimits", "true").lower() == "false"
+                        and (lower != 0.0 or upper != 0.0)
+                    ):
+                        raise ValueError(
+                            f"Joint {joint_name[-1]!r} has actuatorfrcrange but requires explicit "
+                            'actuatorfrclimited="true" or "false" when autolimits="false".'
+                        )
+                    force_limited = actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and lower < upper)
+                    if force_limited:
+                        if lower >= upper:
+                            raise ValueError("Joint actuatorfrcrange lower bound must be smaller than upper bound.")
+                        effort_limit = max(abs(lower), abs(upper))
 
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
@@ -2287,6 +2309,8 @@ def parse_mjcf(
                     parsing_mode="mjcf",
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
+                if disabled_range is not None:
+                    dof_attr["mujoco:dof_limit_range"] = disabled_range
                 if is_linear:
                     for attr_name in ("mujoco:dof_ref", "mujoco:dof_springref", "mujoco:limit_margin"):
                         if attr_name in dof_attr:
@@ -2943,6 +2967,7 @@ def parse_mjcf(
     # Used to resolve actuators targeting specific joints within combined Newton joints.
     mjcf_joint_name_to_dof: dict[str, int] = {}
     mjcf_slide_joint_names: set[str] = set()
+    mjcf_joint_ranges: dict[str, tuple[float, float]] = {}
     # Maps tendon names to their index in the tendon custom attributes.
     # Used to resolve actuators targeting tendons.
     tendon_name_to_idx: dict[str, int] = {}
@@ -3378,20 +3403,15 @@ def parse_mjcf(
         if not (inheritrange > 0 and joint_name and dof >= 0):
             return False
 
-        # Newton limits are relative to ref; actuator ranges use absolute qpos.
-        dof_ref = 0.0
-        ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
-        if ref_attr is not None and isinstance(ref_attr.values, dict):
-            dof_ref = float(ref_attr.values.get(dof, ref_attr.default))
-        lower = builder.joint_limit_lower[dof] + dof_ref
-        upper = builder.joint_limit_upper[dof] + dof_ref
-        if lower < upper:
-            mean = (upper + lower) / 2.0
-            radius = (upper - lower) / 2.0 * inheritrange
-            attrib[f"{prefix}range"] = f"{mean - radius} {mean + radius}"
-            attrib[f"{prefix}limited"] = "true"
-            return True
-        return False
+        if joint_name not in mjcf_joint_ranges:
+            raise ValueError("Actuator inheritrange requires a hinge or slide joint.")
+        lower, upper = mjcf_joint_ranges[joint_name]
+        if lower == upper:
+            raise ValueError(f"Actuator inheritrange requires a nonzero range on joint {joint_name!r}.")
+        mean = (upper + lower) / 2.0
+        radius = (upper - lower) / 2.0 * inheritrange
+        attrib[f"{prefix}range"] = f"{mean - radius} {mean + radius}"
+        return True
 
     def parse_actuators(actuator_section):
         """Preserve XML actuator order so direct-control indices remain stable."""
@@ -3598,6 +3618,8 @@ def parse_mjcf(
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv if kv > 0.0 else dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 actrange_is_derived = inherit_actuator_range(merged_attrib, joint_name, qd_start, "act")
+                # MuJoCo's intvelocity shortcut always infers activation limits.
+                merged_attrib["actlimited"] = "auto"
 
             elif actuator_type == "motor":
                 gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)

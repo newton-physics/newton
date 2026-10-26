@@ -1,0 +1,1 @@
+Match MuJoCo's scalar joint actuator force-limit semantics in MJCF import: leave non-increasing ranges disabled in automatic mode, reject invalid explicitly enabled ranges, and require an explicit `actuatorfrclimited` flag for nonzero ranges when compiler `autolimits` is disabled.

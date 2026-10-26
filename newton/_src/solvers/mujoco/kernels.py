@@ -2288,8 +2288,8 @@ def update_jnt_properties_kernel(
     jnt_qposadr: wp.array[int],
     qpos0: wp.array2d[float],
     native_joint_type: wp.array[int],
-    native_joint_range: wp.array[wp.vec2],
     native_joint_actfrcrange: wp.array[wp.vec2],
+    dof_limit_range: wp.array[wp.vec2],
     # outputs
     jnt_solimp: wp.array2d[vec5],
     jnt_stiffness: wp.array2d[float],
@@ -2327,16 +2327,20 @@ def update_jnt_properties_kernel(
     ref = float(0.0)
     if jnt_type[mjc_jnt] >= 2:  # mjJNT_SLIDE or mjJNT_HINGE
         ref = qpos0[world, jnt_qposadr[mjc_jnt]]
-    jnt_range[world, mjc_jnt] = wp.vec2(joint_limit_lower[newton_dof] + ref, joint_limit_upper[newton_dof] + ref)
+    lower = joint_limit_lower[newton_dof]
+    upper = joint_limit_upper[newton_dof]
+    jnt_range[world, mjc_jnt] = wp.vec2(lower + ref, upper + ref)
+    if dof_limit_range and lower <= -MAXVAL and upper >= MAXVAL:
+        authored_range = dof_limit_range[newton_dof]
+        if wp.isfinite(authored_range[0]) and wp.isfinite(authored_range[1]):
+            jnt_range[world, mjc_jnt] = authored_range
     # update joint actuator force range (effort limit)
     effort_limit = joint_effort_limit[newton_dof]
     jnt_actfrcrange[world, mjc_jnt] = wp.vec2(-effort_limit, effort_limit)
 
     if native_joint_type and native_joint_type[newton_dof] == jnt_type[mjc_jnt]:
-        if jnt_type[mjc_jnt] < 2 or (
-            joint_limit_lower[newton_dof] <= -MAXVAL and joint_limit_upper[newton_dof] >= MAXVAL
-        ):
-            jnt_range[world, mjc_jnt] = native_joint_range[newton_dof]
+        if jnt_type[mjc_jnt] < 2:
+            jnt_range[world, mjc_jnt] = dof_limit_range[newton_dof]
         jnt_actfrcrange[world, mjc_jnt] = native_joint_actfrcrange[newton_dof]
 
 
@@ -2347,6 +2351,9 @@ def update_jnt_reference_kernel(
     jnt_qposadr: wp.array[int],
     qpos0: wp.array2d[float],
     dof_ref: wp.array[float],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    dof_limit_range: wp.array[wp.vec2],
     jnt_range: wp.array2d[wp.vec2],
 ):
     """Shift scalar joint limits to a new reference without changing their relative bounds."""
@@ -2354,6 +2361,11 @@ def update_jnt_reference_kernel(
     dof = mjc_jnt_to_newton_dof[world, jnt]
     if dof < 0 or jnt_type[jnt] < 2:
         return
+    if dof_limit_range and joint_limit_lower[dof] <= -MAXVAL and joint_limit_upper[dof] >= MAXVAL:
+        authored_range = dof_limit_range[dof]
+        if wp.isfinite(authored_range[0]) and wp.isfinite(authored_range[1]):
+            jnt_range[world, jnt] = authored_range
+            return
     ref = float(0.0)
     if dof_ref:
         ref = dof_ref[dof]

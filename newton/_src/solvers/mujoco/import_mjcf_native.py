@@ -935,7 +935,7 @@ def parse_mjcf(
                     jnt_actgravcomp=bool(model.jnt_actgravcomp[native_joint]),
                     native_joint_type=int(model.jnt_type[native_joint]),
                     native_joint_springdamper=source_joint.springdamper,
-                    native_joint_range=model.jnt_range[native_joint],
+                    dof_limit_range=model.jnt_range[native_joint],
                     native_joint_limited=int(source_joint.limited),
                     native_joint_actfrcrange=model.jnt_actfrcrange[native_joint],
                     native_joint_actfrclimited=int(source_joint.actfrclimited),

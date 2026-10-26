@@ -266,7 +266,7 @@ class TestImportMjcfDirect(unittest.TestCase):
         """Reject unsupported semantics and native XML errors before adding bodies."""
         for content, error, message in (
             ('<geom size=".1" densitty="2"/>', ValueError, "densitty"),
-            ('<joint/><joint pos=".1 0 0"/><geom size=".1"/>', NotImplementedError, "different anchors"),
+            ('<joint type="slide"/><joint type="ball"/><geom size=".1"/>', NotImplementedError, "ball"),
         ):
             with self.subTest(content=content):
                 builder = newton.ModelBuilder()
