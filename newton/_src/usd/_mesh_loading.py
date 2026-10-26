@@ -452,8 +452,29 @@ def get_mesh(
                 This option may change without a formal deprecation cycle.
 
     Returns:
-        The loaded mesh, followed by UV indices and/or source point indices
-        when requested, in that order. Without either option, return only the mesh.
+        The loaded mesh, with the requested index arrays:
+
+        .. list-table::
+            :header-rows: 1
+
+            * - ``return_uv_indices``
+              - ``return_source_point_indices``
+              - Return value
+            * - ``False``
+              - ``False``
+              - ``mesh``
+            * - ``True``
+              - ``False``
+              - ``(mesh, uv_indices)``
+            * - ``False``
+              - ``True``
+              - ``(mesh, source_point_indices)``
+            * - ``True``
+              - ``True``
+              - ``(mesh, uv_indices, source_point_indices)``
+
+        ``uv_indices`` is ``None`` when no UV indices are available. Source point
+        indices always have one entry per output vertex when requested.
 
     Raises:
         ImportError: If ``usd-core`` is not installed.

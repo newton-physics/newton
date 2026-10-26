@@ -586,15 +586,15 @@ connection to the authored points:
 
 .. testcode:: deformable_visual_data
 
-   mesh, point_indices = newton.usd.get_mesh(
+   mesh, source_point_indices = newton.usd.get_mesh(
        visual_prim,
        load_normals=True,
        load_uvs=True,
        return_source_point_indices=True,
        compute_inertia=False,
    )
-   render_bind_points = bind_points[point_indices]
-   print(point_indices.tolist())
+   render_bind_points = bind_points[source_point_indices]
+   print(source_point_indices.tolist())
    print(render_bind_points.shape)
 
 .. testoutput:: deformable_visual_data
@@ -608,9 +608,24 @@ six render vertices the correct bind position. It does not change ``mesh.vertice
 
 This experimental option is limited to a single Mesh prim with no ``root_path``;
 point indices from several merged meshes would be ambiguous. The mapping is only
-computed when requested. If ``return_uv_indices=True`` is also requested, the
-result is ``(mesh, uv_indices, point_indices)``. Computing skinning weights and
-connecting visual geometry to simulation remain separate steps.
+computed when requested. To request both index arrays, unpack them in this order:
+
+.. testcode:: deformable_visual_data
+
+   mesh, uv_indices, source_point_indices = newton.usd.get_mesh(
+       visual_prim,
+       load_uvs=True,
+       return_uv_indices=True,
+       return_source_point_indices=True,
+       compute_inertia=False,
+   )
+   render_bind_points = bind_points[source_point_indices]
+   assert len(uv_indices) == len(mesh.indices)
+   assert len(render_bind_points) == len(mesh.vertices)
+
+UV indices refer to the loaded mesh's UV array. Source point indices refer to
+the original USD ``points`` array. Computing skinning weights and connecting
+visual geometry to simulation remain separate steps.
 
 Material Color Spaces
 ---------------------
