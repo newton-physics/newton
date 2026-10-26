@@ -10746,8 +10746,8 @@ class TestActuatorDampratio(unittest.TestCase):
     """Verify dampratio on position actuator shortcuts produces correct biasprm[2].
 
     MuJoCo's <position kp="K" dampratio="D"/> computes kd = D * 2 * sqrt(K * acc0)
-    during mj_setConst. Newton must use set_to_position on the MjSpec actuator so
-    the compiler resolves dampratio correctly.
+    during mj_setConst. Newton must keep the dampratio in biasprm[2] so the compiler
+    resolves it.
     """
 
     MJCF = """<?xml version="1.0" ?>
