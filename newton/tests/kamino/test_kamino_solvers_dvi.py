@@ -760,7 +760,7 @@ class TestDVISolver(NewtonTestCase):
         self.assertIsNotNone(solver.data)
 
     def test_02_public_solver_step_with_dvi(self):
-        """Verify the public DVI solver advances a model with finite state and diagnostics."""
+        """Verify the public DVI solver steps with opt-in LDL and finite state and diagnostics."""
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
         builder.default_shape_cfg.margin = 0.0
@@ -790,6 +790,7 @@ class TestDVISolver(NewtonTestCase):
                 max_alternating_iterations=500,
                 inequality_sweeps_per_iteration=1,
                 tolerance=1e-5,
+                bilateral_solver_type="LDL",
             ),
             collect_solver_info=True,
         )
