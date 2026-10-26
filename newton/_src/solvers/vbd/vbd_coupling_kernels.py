@@ -14,6 +14,7 @@ from ...geometry.tri_mesh_collision import (
     get_vertex_colliding_triangles_count,
 )
 from ...math import quat_velocity
+from ...sim import BodyFlags
 from .particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     evaluate_edge_edge_contact_2_vertices,
@@ -22,6 +23,58 @@ from .particle_vbd_kernels import (
 from .rigid_vbd_kernels import _NUM_CONTACT_THREADS_PER_BODY, _eval_body_particle_contact, _eval_soft_ef_contact
 
 wp.set_module_options({"enable_backward": False})
+
+
+@wp.kernel(enable_backward=False)
+def _set_body_momentum_target(
+    indices: wp.array[int],
+    target: wp.array[wp.spatial_vector],
+    mass: wp.array[float],
+    inertia: wp.array[wp.mat33],
+    inv_inertia: wp.array[wp.mat33],
+    flags: wp.array[int],
+    world: wp.array[int],
+    gravity: wp.array[wp.vec3],
+    q: wp.array[wp.transform],
+    qd: wp.array[wp.spatial_vector],
+    f: wp.array[wp.spatial_vector],
+    h: float,
+    accumulate: bool,
+):
+    # Invert VBD's free prediction without editing its pose or history.
+    row = wp.tid()
+    i = row
+    if indices:
+        i = indices[row]
+    if mass[i] <= 0.0 or (flags[i] & wp.static(int(BodyFlags.KINEMATIC))) != 0:
+        return
+    rot = wp.transform_get_rotation(q[i])
+    v0 = wp.spatial_top(qd[i])
+    wb0 = wp.quat_rotate_inv(rot, wp.spatial_bottom(qd[i]))
+    gyro = wp.cross(wb0, inertia[i] * wb0)
+    p = target[row]
+    v = wp.spatial_top(p) / mass[i]
+    wb = inv_inertia[i] * wp.quat_rotate_inv(rot, wp.spatial_bottom(p))
+    if accumulate:
+        v += v0 + h * (wp.spatial_top(f[i]) / mass[i] + gravity[world[i]])
+        # Express the existing inertial prediction as a rotation vector,
+        # then add the requested angular momentum increment.
+        predicted_wb = wb0 + h * (inv_inertia[i] * (wp.quat_rotate_inv(rot, wp.spatial_bottom(f[i])) - gyro))
+        speed = wp.length(predicted_wb)
+        scale = float(1.0)
+        if speed > 1.0e-8:
+            scale = 2.0 * wp.atan(0.5 * h * speed) / (h * speed)
+        wb += scale * predicted_wb
+    speed = wp.length(wb)
+    scale = float(1.0)
+    if speed > 1.0e-8:
+        scale = 2.0 * wp.tan(0.5 * h * speed) / (h * speed)
+    # Normalized quaternion Euler advances by 2*atan(h*|w|/2).
+    # Supply its inverse so the predicted rotation is Exp(h*target_w).
+    predicted_wb = scale * wb
+    force = mass[i] * ((v - v0) / h - gravity[world[i]])
+    torque = wp.quat_rotate(rot, inertia[i] * ((predicted_wb - wb0) / h) + gyro)
+    f[i] = wp.spatial_vector(force, torque)
 
 
 @wp.kernel(enable_backward=False)

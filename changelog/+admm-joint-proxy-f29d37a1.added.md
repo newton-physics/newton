@@ -1,0 +1,1 @@
+Add `CouplingInterface.coupling_set_inertial_target()` to set the motion a coupled solver prefers before constraints, and `CouplingInterface.coupling_uses_reduced_coordinates()` to mark solvers whose joint coordinates determine body motion.

@@ -283,6 +283,43 @@ def eval_mujoco_coupling_gravity_acceleration_kernel(
 
 
 @wp.kernel
+def apply_mujoco_momentum_gravcomp_kernel(
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_gravcomp: wp.array2d[float],
+    mass: wp.array[float],
+    flags: wp.array[wp.int32],
+    force: wp.array[wp.spatial_vector],
+    indices: wp.array[int],
+):
+    row = wp.tid()
+    body = row
+    if indices:
+        body = indices[row]
+    gravity_world = int(-1)
+    if body < body_world.shape[0]:
+        gravity_world = body_world[body]
+
+    mujoco_world = int(0)
+    if body_gravcomp.shape[0] > 1 and gravity_world >= 0:
+        mujoco_world = gravity_world
+
+    g = wp.vec3(0.0, 0.0, 0.0)
+    if gravity_world >= -1 and gravity_world < gravity.shape[0]:
+        g = gravity[gravity_world]
+
+    gravcomp = float(0.0)
+    mjc_body = find_mujoco_body_from_newton_body(mujoco_world, body, mjc_body_to_newton)
+    if mjc_body >= 0 and mjc_body < body_gravcomp.shape[1]:
+        gravcomp = body_gravcomp[mujoco_world, mjc_body]
+
+    correction = wp.spatial_vector(mass[body] * gravcomp * g, wp.vec3(0.0))
+    if mass[body] > 0.0 and (flags[body] & int(BodyFlags.KINEMATIC)) == 0:
+        force[body] += correction
+
+
+@wp.kernel
 def eval_mujoco_coupling_effective_mass_kernel(
     endpoint_kind: wp.array[int],
     endpoint_index: wp.array[int],

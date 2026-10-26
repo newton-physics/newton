@@ -75,6 +75,7 @@ from .kernels import (
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_qfrc_kernel,
+    apply_mujoco_momentum_gravcomp_kernel,
     build_ref_q_kernel,
     collect_overflow_kernel,
     compute_physical_meaninertia_kernel,
@@ -5365,6 +5366,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._last_nacon_count.zero_()
 
     @override
+    def coupling_uses_reduced_coordinates(self) -> bool:
+        """Represent rigid motion through articulation joint coordinates."""
+        return True
+
+    @override
+    def coupling_notify_input_state_update(
+        self, state: State, flags: StateFlags | int, *, iteration_restart: bool = False, dt: float = 0.0
+    ) -> None:
+        """Synchronize edited input coordinates without clearing MuJoCo's persistent history."""
+        super().coupling_notify_input_state_update(state, flags, iteration_restart=iteration_restart, dt=dt)
+        # The usual per-step upload consumes the changed public joint arrays.
+        # Sparse or disabled uploads need an immediate update on notification.
+        if self.update_data_interval != 1 and flags & (StateFlags.BODY | StateFlags.JOINT):
+            data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
+            self._update_mjc_data(data, self.model, state)
+
+    @override
     def coupling_eval_gravity_acceleration(
         self,
         out_body_acceleration: wp.array[wp.vec3] | None,
@@ -5392,6 +5410,49 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 body_gravcomp,
             ],
             outputs=[out_body_acceleration],
+            device=self.model.device,
+        )
+
+    @override
+    def coupling_set_inertial_target(
+        self,
+        state: State,
+        body_momentum: wp.array[wp.spatial_vector] | None,
+        particle_momentum: wp.array[wp.vec3] | None,
+        *,
+        body_indices: wp.array[int] | None = None,
+        particle_indices: wp.array[int] | None = None,
+        accumulate: bool = False,
+        dt: float,
+    ) -> None:
+        """Set inertial targets while accounting for MuJoCo gravity compensation."""
+        super().coupling_set_inertial_target(
+            state,
+            body_momentum,
+            particle_momentum,
+            dt=dt,
+            accumulate=accumulate,
+            body_indices=body_indices,
+            particle_indices=particle_indices,
+        )
+        if accumulate or body_momentum is None or self.model.body_count == 0:
+            return
+        body_gravcomp = getattr(self.mjw_model, "body_gravcomp", None) if self.mjw_model is not None else None
+        if body_gravcomp is None or self.mjc_body_to_newton is None:
+            return
+        wp.launch(
+            apply_mujoco_momentum_gravcomp_kernel,
+            dim=body_momentum.shape[0],
+            inputs=[
+                self.model.gravity,
+                self.model.body_world,
+                self.mjc_body_to_newton,
+                body_gravcomp,
+                self.model.body_mass,
+                self.model.body_flags,
+                state.body_f,
+                body_indices,
+            ],
             device=self.model.device,
         )
 
