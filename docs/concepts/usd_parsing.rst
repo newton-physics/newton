@@ -528,14 +528,13 @@ Reading deformable visual geometry
 
    :func:`~newton.usd.find_deformable_visual_prims` and
    :func:`~newton.usd.get_deformable_bind_pose` follow the AOUSD deformable proposal.
-   They read data without creating bindings or changing
-   :meth:`~newton.ModelBuilder.add_usd`. Automatic visual binding will follow the
-   native visual-mesh API (tracked in
-   `#3223 <https://github.com/newton-physics/newton/issues/3223>`__). See
-   :ref:`usd-deformable-limitations` for current cable, cloth, and volume import
-   behavior. Under a particle body, untagged meshes still load as static visuals.
-   If you bind visuals yourself, pass their paths in ``add_usd(ignore_paths=...)``
-   to avoid duplicate static visuals and unsupported-geometry warnings.
+   They read data without creating bindings. In this preview,
+   :meth:`~newton.ModelBuilder.add_usd` uses these readers to bind visual meshes
+   to imported cables, cloth, and volumes. Invalid visual data is logged and
+   skipped without discarding the simulation or valid sibling visuals.
+   Particle-body visual binding is not supported; untagged meshes under those
+   bodies still load as static visuals. If you bind visuals yourself, pass their
+   paths in ``add_usd(ignore_paths=...)`` to avoid importing them twice.
 
 Use :func:`~newton.usd.find_deformable_visual_prims` to find the visual geometry of
 one ``PhysicsDeformableBodyAPI`` prim. The proposal calls these *graphics geometries*.

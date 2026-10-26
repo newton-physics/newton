@@ -52,14 +52,14 @@ def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_r
     sim_prim = ctx.stage.GetPrimAtPath(sim_path)
     if not sim_prim or not sim_prim.IsValid():
         return None
-    bind = usd._get_deformable_bind_pose(sim_prim, strict=True)
-    if bind is None:
-        return None
+    bind = usd.get_deformable_bind_pose(sim_prim)
     p0, p1 = particle_range
     if len(bind) != p1 - p0:
         raise ValueError(
             f"invalid_bind_pose_count: {sim_path} bind pose has {len(bind)} points but the imported geometry has {p1 - p0} particles"
         )
+    if np.array_equal(bind, sim_prim.GetAttribute("points").Get()):
+        return None
     world_mat = ctx.get_prim_world_mat(sim_prim, None, ctx.incoming_world_xform)
     positions = np.array(ctx.builder.particle_q, dtype=np.float64)
     positions[p0:p1] = _transform_points_np(world_mat, bind)
@@ -101,8 +101,12 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources, normals=Non
             if path in authored:
                 continue
             prim = ctx.stage.GetPrimAtPath(path)
-            bind = usd._get_deformable_bind_pose(prim, strict=True)
-            if bind is not None:
+            bind = usd.get_deformable_bind_pose(prim)
+            # Keep the imported rod frames, including graph normals, when the
+            # visual reference is already the initial geometry.
+            if np.array_equal(bind, prim.GetAttribute("points").Get()):
+                bind = None
+            else:
                 matrix = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
                 bind = _transform_points_np(matrix, bind)
             authored[path] = bind
@@ -180,28 +184,18 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             if UsdGeom.Imageable(prim).ComputeVisibility() == UsdGeom.Tokens.invisible:
                 continue
             path = str(prim.GetPath())
-            mesh = ctx.get_mesh_cached(prim, load_uvs=True)
-            if mesh is None or len(mesh.vertices) == 0 or len(mesh.indices) == 0:
-                logger.warning("%s: graphics mesh has no geometry; skipping visual mesh.", path)
-                continue
-
             # Proposal bind pose (or the mesh points), in the common world frame the
             # simulation geometry was imported in.
             try:
-                bind = usd._get_deformable_bind_pose(prim, strict=True)
-            except ValueError as exc:
-                logger.warning("%s: invalid visual bind pose; skipping (%s)", path, exc)
-                continue
-            points = bind if bind is not None else np.asarray(mesh.vertices, dtype=np.float64)
-            if bind is not None and (source_vertices := getattr(mesh, "_usd_source_point_indices", None)) is not None:
-                points = bind[source_vertices]
-            if len(points) != len(mesh.vertices):
-                logger.warning(
-                    "%s: bind pose has %d points but the mesh has %d vertices; skipping visual mesh.",
-                    path,
-                    len(points),
-                    len(mesh.vertices),
+                mesh, source_point_indices = usd.get_mesh(
+                    prim, load_uvs=True, load_visual_materials=False, return_source_point_indices=True
                 )
+                points = usd.get_deformable_bind_pose(prim)[source_point_indices]
+            except ValueError as exc:
+                logger.warning("%s: invalid visual mesh or bind pose; skipping (%s)", path, exc)
+                continue
+            if len(mesh.vertices) == 0 or len(mesh.indices) == 0:
+                logger.warning("%s: graphics mesh has no geometry; skipping visual mesh.", path)
                 continue
             world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
             world_verts = _transform_points_np(world_mat, points).astype(np.float32)

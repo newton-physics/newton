@@ -451,8 +451,8 @@ def _prim_has_collision_api(prim) -> bool:
     return prim.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(prim, "PhysicsCollisionAPI")
 
 
-def _iter_deformable_pointbased_prims(body_root, ignore_paths: Sequence[str] = ()):
-    """Yield a deformable body's point-based geometry and Gaussian fields.
+def _iter_deformable_pointbased_prims(body_root, ignore_paths: Sequence[str] = (), *, include_gaussians: bool = False):
+    """Yield a deformable body's point-based geometry and optionally Gaussian fields.
 
     Nested body subtrees are pruned: a nested deformable body's geometry is its own, and a
     nested rigid body or articulation is native content the deformable must not claim.
@@ -471,7 +471,9 @@ def _iter_deformable_pointbased_prims(body_root, ignore_paths: Sequence[str] = (
         ):
             it.PruneChildren()
             continue
-        if not prim.IsA(UsdGeom.PointBased) and str(prim.GetTypeName()) != "ParticleField3DGaussianSplat":
+        if not prim.IsA(UsdGeom.PointBased) and not (
+            include_gaussians and str(prim.GetTypeName()) == "ParticleField3DGaussianSplat"
+        ):
             continue
         if ignore_paths and _is_ignored_path(str(prim.GetPath()), ignore_paths):
             continue
@@ -1433,43 +1435,39 @@ def _scout_deformable_prims(
                 buckets.cloth.append(prim)
                 claim_body(prim)
 
-    # Every PointBased prim governed by an imported deformable body belongs to the
-    # deformable contract, never to the native rigid loader: colliders feed the
-    # collision-gating approximation, and untagged graphics geometry must deform with
-    # the simulation geometry per the proposal. Embedding is not implemented, so the
-    # graphics geometry is skipped with a warning -- importing it as a static shape
-    # would leave a frozen copy behind while the deformable moves away. Resolved after
-    # the traversal over just the discovered body subtrees, so a stage without
-    # deformables pays nothing extra.
+    # Claim visuals before the rigid loader can create a frozen duplicate.
+    # Only discovered body subtrees are visited, not the whole stage again.
     if buckets.body_owner:
         stage = root_prim.GetStage()
-        for body_path, owner_path in buckets.body_owner.items():
+        for body_path in buckets.body_owner:
             body_prim = stage.GetPrimAtPath(body_path)
             if not body_prim or not body_prim.IsValid():
                 continue
-            for prim in _iter_deformable_pointbased_prims(body_prim, ignore_paths):
+            for prim in usd.find_deformable_visual_prims(body_prim):
+                path = str(prim.GetPath())
+                if _is_ignored_path(path, ignore_paths):
+                    continue
+                buckets.native_physics_exclude_paths.append(path)
+                if prim.IsA(UsdGeom.Mesh):
+                    buckets.visual_meshes.setdefault(body_path, []).append(prim)
+                elif not prim.IsA(UsdGeom.TetMesh) and str(prim.GetTypeName()) != "ParticleField3DGaussianSplat":
+                    # The volume pass already reports untagged TetMeshes.
+                    logger.warning(
+                        "%s: PointBased geometry under deformable body %s cannot deform with the simulation "
+                        "geometry (embedding is not implemented); skipping it.",
+                        path,
+                        body_path,
+                    )
+
+            # The public reader returns PointBased geometry. Gaussian fields are
+            # a separate preview extension; dedicated colliders are never visuals.
+            for prim in _iter_deformable_pointbased_prims(body_prim, ignore_paths, include_gaussians=True):
                 path = str(prim.GetPath())
                 if _prim_has_collision_api(prim):
                     buckets.native_physics_exclude_paths.append(path)
-                elif path != owner_path and not (prim.IsA(UsdGeom.TetMesh) or _is_aousd_deformable_sim_prim(prim)):
-                    # Simulation candidates of any family are handled (or warned) by their
-                    # own passes; everything else is graphics geometry. Untagged Meshes are
-                    # claimed by the render pass and skinned from the simulation state
-                    # (excluding them here keeps the native loader from importing a second,
-                    # static copy); other PointBased graphics cannot be embedded yet.
+                elif str(prim.GetTypeName()) == "ParticleField3DGaussianSplat":
                     buckets.native_physics_exclude_paths.append(path)
-                    if prim.IsA(UsdGeom.Mesh):
-                        buckets.visual_meshes.setdefault(body_path, []).append(prim)
-                    elif str(prim.GetTypeName()) == "ParticleField3DGaussianSplat":
-                        buckets.visual_gaussians.setdefault(body_path, []).append(prim)
-                    else:
-                        warnings.warn(
-                            f"{path}: PointBased geometry under deformable body {body_path} cannot "
-                            f"deform with the simulation geometry (embedding is not implemented); "
-                            f"skipping it.",
-                            NewtonWarning,
-                            stacklevel=2,
-                        )
+                    buckets.visual_gaussians.setdefault(body_path, []).append(prim)
     return buckets
 
 

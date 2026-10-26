@@ -529,7 +529,6 @@ def get_mesh(
     indices = np.array(authored_indices, dtype=np.int32)
     source_points = points
     source_indices = indices
-    source_vertices = None
     # Source point of every current vertex, gathered alongside ``points`` wherever the
     # layout changes so per-point data such as bind poses can follow the loaded mesh.
     source_point_indices = np.arange(len(points), dtype=np.int32) if return_source_point_indices else None
@@ -660,7 +659,6 @@ def get_mesh(
                 )
                 if return_source_point_indices:
                     source_point_indices = source_point_indices[split_sources]
-                source_vertices = split_sources
                 # Vertex splitting creates a new per-vertex layout (and UVs
                 # if available). Skip the later faceVarying UV split to avoid
                 # dropping/duplicating UVs.
@@ -727,7 +725,6 @@ def get_mesh(
             else:
                 if not preserve_facevarying_uvs:
                     points_original = points
-                    source_vertices = indices[corner_flat]
                     if return_source_point_indices:
                         source_point_indices = source_point_indices[indices[corner_flat]]
                     points = points_original[indices[corner_flat]]
@@ -758,7 +755,6 @@ def get_mesh(
         normals = np.repeat(face_normals, 3, axis=0)
         vertex_indices = faces.reshape(-1)
         points = points[vertex_indices]
-        source_vertices = vertex_indices if source_vertices is None else source_vertices[vertex_indices]
         if return_source_point_indices:
             source_point_indices = source_point_indices[vertex_indices]
         if (
@@ -797,9 +793,6 @@ def get_mesh(
         if material_props.get("texture_transform") is None
         else material_props["texture_transform"],
     )
-    if source_vertices is not None:
-        # Bind poses address authored points, not vertices duplicated for rendering.
-        mesh_out._usd_source_point_indices = source_vertices
     if compute_inertia and visual_topology:
         from ..geometry.inertia import compute_inertia_mesh  # noqa: PLC0415
 

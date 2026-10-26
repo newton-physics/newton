@@ -2177,7 +2177,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
 
         with self.assertLogs("newton", level="WARNING") as logs:
             builder = self._import(stage)
-        self.assertIn("invalid_bind_pose_count", "\n".join(logs.output))
+        self.assertIn("point count must match", "\n".join(logs.output))
 
         model = builder.finalize()
         self.assertEqual(model.deformable_visual_mesh_count, 0)
@@ -2252,29 +2252,49 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
 
         self.assertEqual(builder.finalize().deformable_visual_mesh_count, 0)
 
-    def test_non_finite_visual_bind_pose_skips_only_that_visual(self):
+    def test_invalid_visual_bind_pose_skips_only_that_visual(self):
         """A malformed visual is diagnosed without discarding a valid sibling visual."""
         from pxr import Sdf
 
-        stage = self._stage()
-        self._add_volume_body(stage, "/World/Tire")
-        bad = self._add_graphics_mesh(stage, "/World/Tire/BadSkin")
-        self._add_graphics_mesh(stage, "/World/Tire/GoodSkin")
-        bad.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
-        bad.GetPrim().CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
-            ["bindPose"]
-        )
-        bad.GetPrim().CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
-            [(float("nan"), 0.2, 0.2), (0.4, 0.2, 0.2), (0.2, 0.4, 0.2)]
-        )
+        for problem in ("non_finite", "missing_points", "multiple_poses", "sampled_geometry"):
+            with self.subTest(problem=problem):
+                stage = self._stage()
+                self._add_volume_body(stage, "/World/Tire")
+                bad = self._add_graphics_mesh(stage, "/World/Tire/BadSkin")
+                self._add_graphics_mesh(stage, "/World/Tire/GoodSkin")
+                prim = bad.GetPrim()
+                prim.AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
+                prim.CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+                    ["bindPose"]
+                )
+                points = [(0.2, 0.2, 0.2), (0.4, 0.2, 0.2), (0.2, 0.4, 0.2)]
+                if problem == "non_finite":
+                    points[0] = (float("nan"), 0.2, 0.2)
+                if problem != "missing_points":
+                    prim.CreateAttribute("physics:deformablePose:bind:points", Sdf.ValueTypeNames.Point3fArray).Set(
+                        points
+                    )
+                if problem == "multiple_poses":
+                    prim.AddAppliedSchema("PhysicsDeformablePoseAPI:other")
+                    prim.CreateAttribute("physics:deformablePose:other:purposes", Sdf.ValueTypeNames.TokenArray).Set(
+                        ["bindPose"]
+                    )
+                    prim.CreateAttribute("physics:deformablePose:other:points", Sdf.ValueTypeNames.Point3fArray).Set(
+                        points
+                    )
+                if problem == "sampled_geometry":
+                    bad.GetPointsAttr().Clear()
+                    bad.GetPointsAttr().Set(points, 1.0)
 
-        with self.assertLogs("newton", level="WARNING") as logs:
-            builder = self._import(stage)
-        self.assertIn("non_finite_bind_point", "\n".join(logs.output))
-
-        model = builder.finalize()
-        self.assertEqual(model.deformable_visual_mesh_count, 1)
-        self.assertEqual(model.deformable_visual_meshes[0].graphics_path, "/World/Tire/GoodSkin")
+                with self.assertLogs("newton", level="WARNING") as logs:
+                    builder = self._import(stage)
+                self.assertIn("/World/Tire/BadSkin", "\n".join(logs.output))
+                model = builder.finalize()
+                self.assertEqual(model.deformable_visual_mesh_count, 1)
+                self.assertEqual(model.deformable_visual_meshes[0].graphics_path, "/World/Tire/GoodSkin")
+                visuals = model.deformable_visuals()
+                model.update_deformable_visuals(model.state(), visuals)
+                self.assertTrue(np.isfinite(visuals.points.numpy()).all())
 
     def test_transforms_embed_in_common_frame(self):
         """Sim and graphics prims with different local transforms meet in the
@@ -2467,7 +2487,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         self._add_graphics_mesh(stage, "/World/Cable/Skin")
         with self.assertLogs("newton", level="WARNING") as logs:
             builder = self._import(stage)
-        self.assertIn("invalid_bind_pose_count", "\n".join(logs.output))
+        self.assertIn("point count must match", "\n".join(logs.output))
         model = builder.finalize()
         self.assertEqual(model.body_count, 2)
         self.assertEqual(model.deformable_visual_mesh_count, 0)
