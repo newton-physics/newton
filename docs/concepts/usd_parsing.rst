@@ -519,8 +519,6 @@ Reading deformable visual geometry
    `#3223 <https://github.com/newton-physics/newton/issues/3223>`__). See
    :ref:`usd-deformable-limitations` for current cable, cloth, and volume import
    behavior. Under a particle body, untagged meshes still load as static visuals.
-   If you bind visuals yourself, pass their paths in ``add_usd(ignore_paths=...)``
-   to avoid duplicate static visuals and unsupported-geometry warnings.
 
 Use :func:`~newton.usd.find_deformable_visual_prims` to find the visual geometry of
 one ``PhysicsDeformableBodyAPI`` prim. The proposal calls these *graphics geometries*.
