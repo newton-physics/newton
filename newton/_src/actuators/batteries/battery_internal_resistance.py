@@ -21,16 +21,16 @@ def _battery_update_kernel(
     min_voltage: wp.array[float],
     current_per_effort: wp.array[float],
     effort: wp.array[float],
+    current: wp.array[float],
     supply_voltage: wp.array[float],
 ):
     b = wp.tid()
     start = battery_actuator_start[b]
     end = battery_actuator_start[b + 1]
-    current = float(0.0)
     for k in range(start, end):
         a = battery_actuators[k]
-        current += current_per_effort[a] * effort[a]
-    voltage = wp.max(nominal_voltage[b] - resistance[b] * wp.max(current, 0.0), min_voltage[b])
+        current[b] += current_per_effort[a] * effort[a]
+    voltage = wp.max(nominal_voltage[b] - resistance[b] * wp.max(current[b], 0.0), min_voltage[b])
     for k in range(start, end):
         supply_voltage[battery_actuators[k]] = voltage
 
@@ -142,6 +142,9 @@ class BatteryInternalResistance(BatteryBase):
         """Internal resistance [Ω], shape (B,)."""
         self.min_voltage = min_voltage
         """Lowest voltage under load [V], shape (B,)."""
+        self._current = wp.zeros(
+            self.num_batteries, dtype=float, device=self.device, requires_grad=nominal_voltage.requires_grad
+        )
         for name in ("nominal_voltage", "resistance", "min_voltage"):
             shape = getattr(self, name).shape
             if shape != (self.num_batteries,):
@@ -171,6 +174,7 @@ class BatteryInternalResistance(BatteryBase):
         """
         if effort is None:
             effort = _require_array(sim_control, "actuator_applied_effort")
+        self._current.zero_()
         wp.launch(
             _battery_update_kernel,
             dim=self.num_batteries,
@@ -183,7 +187,7 @@ class BatteryInternalResistance(BatteryBase):
                 _require_array(sim_control, "actuator_supply_current_per_effort"),
                 effort,
             ],
-            outputs=[_require_array(sim_control, "actuator_supply_voltage")],
+            outputs=[self._current, _require_array(sim_control, "actuator_supply_voltage")],
             device=self.device,
         )
 

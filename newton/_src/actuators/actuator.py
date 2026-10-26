@@ -582,7 +582,8 @@ class Actuator:
         if drive.custom_outputs and actuator_indices is None:
             raise ValueError(f"{type(drive).__name__} declares custom outputs, which require actuator_indices")
         self._actuator_inputs = {
-            name: wp.zeros(len(indices), dtype=wp.float32, device=indices.device) for name in actuator_inputs
+            name: wp.zeros(len(indices), dtype=wp.float32, device=indices.device, requires_grad=requires_grad)
+            for name in actuator_inputs
         }
 
         self.device = indices.device

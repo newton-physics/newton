@@ -187,7 +187,9 @@ class DriveBAM(DriveBase):
         shape (N,)."""
         uses_battery = bool(self.supply_from_battery.numpy().any())
         self.custom_inputs = {"actuator_supply_voltage": Model.AttributeFrequency.ACTUATOR} if uses_battery else {}
-        self.supply_current_per_effort = wp.zeros(n, dtype=float, device=kp.device) if uses_battery else None
+        self.supply_current_per_effort = (
+            wp.zeros(n, dtype=float, device=kp.device, requires_grad=kp.requires_grad) if uses_battery else None
+        )
         """Battery current per unit of effort [A/(N·m) or A/N] of the last :meth:`compute`, or ``None`` without a
         battery, shape (N,)."""
         self.custom_outputs = (
