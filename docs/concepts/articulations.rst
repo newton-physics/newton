@@ -56,9 +56,9 @@ joints or modeled with another formulation. :class:`newton.Rod` stores
 initial and structural-rest geometry, segment frames, topology, and optional rod
 constitutive data before :meth:`newton.ModelBuilder.add_rod` assembles the
 simulation representation. Pass prepared data with
-``builder.add_rod(rod=rod)``. The raw ``add_rod(positions=...)`` and
-``add_rod_graph()`` forms are deprecated compatibility APIs in Newton 1.6; use
-``newton.Rod(points, ...)`` or ``newton.Rod(points, edges=...)`` respectively.
+``builder.add_rod(rod=rod)``. Construct an ordered chain with
+``newton.Rod(points, ...)`` or an explicit graph with
+``newton.Rod(points, edges=...)``.
 A rod may specify either an isotropic elastic material or a complete set of
 homogeneous stretch, shear, bend, and twist rigidities. These parameterizations
 are mutually exclusive. Direct per-joint stiffness values remain assembly controls on
