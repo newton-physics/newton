@@ -27,6 +27,37 @@ import newton.examples
 from newton.examples.tendon.utils import get_tendon_cable_lines
 
 
+@wp.kernel
+def update_kinematic_bodies(
+    sim_step: wp.array[int],
+    sim_dt: float,
+    lower_guide_idx: int,
+    top_idx: int,
+    middle_z: float,
+    right_angle: float,
+    left_angle: float,
+    body_q_0: wp.array[wp.transform],
+    body_q_1: wp.array[wp.transform],
+):
+    # Advance time on the device so the animation continues during graph replay.
+    t = float(sim_step[0]) * sim_dt
+    start = 0.25
+    duration = 3.0
+    angle = right_angle
+    if t > start and t < start + duration:
+        phase = (t - start) / duration
+        u = 0.5 - 0.5 * wp.cos(2.0 * wp.pi * phase)
+        angle = right_angle + (left_angle - right_angle) * u
+
+    lower_pose = wp.transform_identity()
+    top_pose = wp.transform(wp.vec3(0.0, 0.0, middle_z), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), angle))
+    body_q_0[lower_guide_idx] = lower_pose
+    body_q_1[lower_guide_idx] = lower_pose
+    body_q_0[top_idx] = top_pose
+    body_q_1[top_idx] = top_pose
+    sim_step[0] += 1
+
+
 class Example:
     def __init__(self, viewer, args):
         self.fps = 60
@@ -47,14 +78,12 @@ class Example:
         self.top_length = 0.60
         self.right_angle = 1.08
         self.left_angle = -0.27
-        self._initial_angle = self._top_angle(0.0)
-        self._identity_q = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
 
         self.anchor_idx = self._add_site_body(builder, (-0.72, 0.0, self.lower_z - 0.035), (0.90, 0.15, 0.15))
         self.lower_guide_idx = self._add_lower_guide_body(builder)
-        self.top_idx = self._add_top_capsule_body(builder, self._initial_angle)
+        self.top_idx = self._add_top_capsule_body(builder, self.right_angle)
 
         builder.add_tendon(
             [
@@ -113,6 +142,7 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+        self._sim_step = wp.zeros(1, dtype=int, device=self.model.device)
 
         self.lower_guide = 1
         self.middle_guide = 2
@@ -132,13 +162,20 @@ class Example:
         self._saw_middle_segment_disabled = False
         self._saw_middle_segment_enabled = False
 
-        self._update_kinematic_bodies(0.0)
-
         if self.viewer is not None:
             self.viewer.set_model(self.model)
             self.viewer.set_camera(pos=wp.vec3(0.18, -1.75, 0.58), pitch=0.0, yaw=90.0)
             if hasattr(self.viewer, "renderer"):
                 self.viewer.renderer.show_wireframe_overlay = True
+
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if self.model.device.is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedCapture(device=self.model.device) as capture:
+                self.simulate()
+            self.graph = capture.graph
 
     def _add_site_body(self, builder, pos, color):
         body = builder.add_body(xform=wp.transform(p=wp.vec3(*pos)), mass=0.0, is_kinematic=True)
@@ -193,25 +230,6 @@ class Example:
         )
         return body
 
-    def _top_angle(self, t):
-        start = 0.25
-        duration = 3.00
-        if t <= start or t >= start + duration:
-            return self.right_angle
-        phase = (t - start) / duration
-        u = 0.5 - 0.5 * math.cos(2.0 * math.pi * phase)
-        return self.right_angle + (self.left_angle - self.right_angle) * u
-
-    def _update_kinematic_bodies(self, t):
-        angle = self._top_angle(t)
-        body_q = self.state_0.body_q.numpy()
-        body_q[self.lower_guide_idx, :3] = (0.0, 0.0, 0.0)
-        body_q[self.lower_guide_idx, 3:] = self._identity_q
-        body_q[self.top_idx, :3] = (0.0, 0.0, self.middle_z)
-        body_q[self.top_idx, 3:] = _quat_y_np(angle)
-        self.state_0.body_q.assign(body_q)
-        self.state_1.body_q.assign(body_q)
-
     def _world_point_for_guide(self, guide_idx, body_q):
         body_idx = int(self.model.tendon_guide_body.numpy()[guide_idx])
         offset = self.model.tendon_guide_offset.numpy()[guide_idx]
@@ -245,17 +263,32 @@ class Example:
         return 0.0 < alpha < 1.0 and self.middle_orientation * signed_distance <= activation_radius
 
     def simulate(self):
-        for substep in range(self.sim_substeps):
-            t = self.sim_time + substep * self.sim_dt
-            self._update_kinematic_bodies(t)
+        for _ in range(self.sim_substeps):
+            wp.launch(
+                update_kinematic_bodies,
+                dim=1,
+                inputs=[
+                    self._sim_step,
+                    self.sim_dt,
+                    self.lower_guide_idx,
+                    self.top_idx,
+                    self.middle_z,
+                    self.right_angle,
+                    self.left_angle,
+                ],
+                outputs=[self.state_0.body_q, self.state_1.body_q],
+                device=self.model.device,
+            )
             self.state_0.clear_forces()
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
-        self._record_metrics()
 
     def _record_metrics(self):
         guide_active = self.solver.tendon_guide_active.numpy()
@@ -299,6 +332,7 @@ class Example:
             )
 
     def test_post_step(self):
+        self._record_metrics()
         body_q = self.state_0.body_q.numpy()
         assert np.isfinite(body_q).all(), "Non-finite values in switch-wrap body state"
 
@@ -380,10 +414,6 @@ class Example:
 
 def _quat_y(angle):
     return wp.quat(0.0, math.sin(0.5 * angle), 0.0, math.cos(0.5 * angle))
-
-
-def _quat_y_np(angle):
-    return np.array([0.0, math.sin(0.5 * angle), 0.0, math.cos(0.5 * angle)], dtype=np.float32)
 
 
 def _transform_point_np(pose, point):

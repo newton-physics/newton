@@ -167,7 +167,7 @@ def _build_convex_scene(
         _add_mixed_convex_shape(world_builder, body_b, shape_b, rocks, 2 * pair_index + 1, shape_cfg)
 
     builder = newton.ModelBuilder()
-    builder.replicate(world_builder, world_count=world_count)
+    builder.replicate(world_builder, world_count)
     return builder.finalize()
 
 
@@ -223,7 +223,7 @@ def _build_mesh_convex_scene(world_count: int, resolution: int) -> tuple[newton.
     world.add_shape_convex_hull(body=body, mesh=hull, cfg=shape_cfg)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.replicate(world, world_count=world_count)
+    builder.replicate(world, world_count)
     triangles_per_world = 4 * resolution * resolution
     return builder.finalize(), triangles_per_world * world_count
 
@@ -242,7 +242,7 @@ def _build_mesh_sdf_scene(world_count: int, device) -> newton.Model:
     world.add_shape_mesh(body=body_b, mesh=mesh_b)
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.replicate(world, world_count=world_count)
+    builder.replicate(world, world_count)
     return builder.finalize(device=device)
 
 

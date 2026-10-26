@@ -37,6 +37,11 @@ from ...core.reset import reset_world_selected
 from ...math.spatial import velocity_at_point
 from .friction import contact_tangent_basis
 
+# Steel orders its own order-dependent atomics; Warp's deterministic lowering would overflow on its loops.
+# Every Steel kernel module sets this option.
+WARP_DETERMINISM_OFF = {"deterministic": wp.DeterministicMode.NOT_GUARANTEED}
+wp.set_module_options(WARP_DETERMINISM_OFF)
+
 
 @wp.struct
 class FrictionPatches:

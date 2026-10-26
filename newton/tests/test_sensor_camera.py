@@ -11,6 +11,7 @@ import warp as wp
 import newton
 import newton._src.sensors.sensor_camera_render as internal_render
 import newton.geometry as geometry
+from newton._src.geometry.types import SH_C0
 from newton._src.sensors.sensor_camera_render.types import LightType
 from newton._src.sensors.sensor_camera_render.utils import Utils
 from newton.sensors import (
@@ -1708,6 +1709,52 @@ class TestSensorCamera(unittest.TestCase):
         camera.update(state, self._identity_transforms(view_count), rays, color_image=color)
         with self.assertRaisesRegex(ValueError, "views_per_row"):
             SensorCamera.Utils.flatten_color_image_to_rgba(color, views_per_row=0)
+
+    def _render_gaussian_hdr(self, color_space, positions, opacities, sh_coeffs):
+        gaussian = newton.Gaussian(
+            positions=np.asarray(positions, dtype=np.float32),
+            scales=np.full((len(positions), 3), 0.5, dtype=np.float32),
+            opacities=np.asarray(opacities, dtype=np.float32),
+            sh_coeffs=np.asarray(sh_coeffs, dtype=np.float32),
+            sh_color_space=color_space,
+        )
+        builder = newton.ModelBuilder()
+        builder.add_shape_gaussian(body=-1, gaussian=gaussian)
+        model = builder.finalize(device="cpu")
+
+        camera = SensorCamera(model)
+        hdr = camera.allocate_image_color_hdr(1, 1, 1)
+        camera.update(model.state(), self._identity_transforms(1), self._rays(1, 1), hdr_color_image=hdr)
+        return hdr.numpy().reshape(-1, 3)[0]
+
+    def test_gaussian_radiance_is_clamped_and_srgb_decoded(self):
+        """Clamp negative Gaussian radiance in both color spaces and decode only sRGB radiance to linear light."""
+        # Radiance (clamped to 0, 0.5, SH_C0 * 4 + 0.5) with the first two channels checked exactly.
+        bright = SH_C0 * 4.0 + 0.5
+        for color_space, expected in (
+            (newton.utils.ColorSpace.SRGB, [0.0, 0.21404114, newton.utils.color_srgb_to_linear([bright] * 3)[0]]),
+            (newton.utils.ColorSpace.LINEAR, [0.0, 0.5, bright]),
+        ):
+            with self.subTest(color_space=color_space):
+                color = self._render_gaussian_hdr(color_space, [[0.0, 0.0, -2.0]], [1.0], [[-4.0, 0.0, 4.0]])
+                np.testing.assert_allclose(color, expected, atol=1e-4)
+
+    def test_gaussian_srgb_overlapping_splats_blend_in_encoded_space(self):
+        """Blend overlapping sRGB splats in encoded space and decode the result once."""
+        # Two coincident-axis splats with alpha 0.5 each: the near one (0.8) is blended over the far one (0.2).
+        sh = [[(0.8 - 0.5) / SH_C0] * 3, [(0.2 - 0.5) / SH_C0] * 3]
+        color = self._render_gaussian_hdr(
+            newton.utils.ColorSpace.SRGB, [[0.0, 0.0, -2.0], [0.0, 0.0, -3.0]], [0.5, 0.5], sh
+        )
+        # 3DGS assets are trained by blending display-encoded colors, so the blend happens in sRGB and the
+        # result is decoded once: decode((0.8 * 0.5 + 0.2 * 0.25) / 0.75).
+        expected = newton.utils.color_srgb_to_linear([0.6] * 3)[0]
+        per_splat_decode = (
+            newton.utils.color_srgb_to_linear([0.8] * 3)[0] * 0.5
+            + newton.utils.color_srgb_to_linear([0.2] * 3)[0] * 0.25
+        ) / 0.75
+        self.assertGreater(abs(expected - per_splat_decode), 0.05)
+        np.testing.assert_allclose(color, [expected] * 3, atol=1e-4)
 
 
 if __name__ == "__main__":

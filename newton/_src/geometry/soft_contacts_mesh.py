@@ -445,8 +445,8 @@ def _build_rigid_features(
     edge_rows: list[np.ndarray] = []
     edge_outwards: list[np.ndarray] = []
     cache: dict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = {}
-    edge_ranges = model.shape_edge_range.numpy()
-    packed_edges = model.mesh_edge_indices.numpy()
+    edge_ranges = model._shape_edge_range.numpy()
+    packed_edges = model._mesh_edge_indices.numpy()
 
     for shape, mesh in meshes.items():
         start, count = (int(value) for value in edge_ranges[shape])
@@ -1442,7 +1442,7 @@ def allocate_soft_mesh_contact_buffers(contacts: Contacts) -> None:
     capacity = contacts.soft_contact_max
     device = contacts.device
     contacts._soft_contact_mesh_features = wp.full(capacity, wp.vec3i(-1, -1, -1), dtype=wp.vec3i, device=device)
-    contacts._soft_contact_mesh_params = wp.empty(capacity, dtype=float, device=device)
+    contacts._soft_contact_mesh_params = wp.zeros(capacity, dtype=float, device=device)
     # First mesh record, used only by detection-time geometry evaluation.
     contacts._soft_contact_mesh_state = wp.zeros(1, dtype=wp.int32, device=device)
 

@@ -20,6 +20,7 @@ import warp as wp
 from .contact_data import ContactData
 from .mpr import create_solve_mpr, create_support_map_function
 from .multicontact import create_build_manifold
+from .penetration import create_solve_box_penetration
 from .simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
 
 
@@ -141,7 +142,9 @@ def create_solve_convex_multi_contact(
 
     # Create support functions ONCE — shared between MPR and GJK.
     support_funcs = create_support_map_function(support_func, use_precomputed_center)
-    solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
+    solve_mpr = create_solve_mpr(
+        support_func, _support_funcs=support_funcs, depth_certificate=create_solve_box_penetration
+    )
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
     has_penetration_refiner = penetration_refiner is not None
 
@@ -287,7 +290,9 @@ def create_solve_convex_single_contact(
 
     # Create support functions ONCE — shared between MPR and GJK.
     support_funcs = create_support_map_function(support_func, use_precomputed_center)
-    solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
+    solve_mpr = create_solve_mpr(
+        support_func, _support_funcs=support_funcs, depth_certificate=create_solve_box_penetration
+    )
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
     has_penetration_refiner = penetration_refiner is not None
 

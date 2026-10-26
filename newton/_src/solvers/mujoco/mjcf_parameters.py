@@ -152,8 +152,6 @@ def _register_native_attributes(builder: ModelBuilder) -> None:
         ("native_equality_site2", "mujoco:equality_constraint", wp.int32, -1, "shape"),
         ("native_equality_dof1", "mujoco:equality_constraint", wp.int32, -1, "joint_dof"),
         ("native_equality_dof2", "mujoco:equality_constraint", wp.int32, -1, "joint_dof"),
-        ("native_equality_tendon1", "mujoco:equality_constraint", wp.int32, -1, "mujoco:tendon"),
-        ("native_equality_tendon2", "mujoco:equality_constraint", wp.int32, -1, "mujoco:tendon"),
     ):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(

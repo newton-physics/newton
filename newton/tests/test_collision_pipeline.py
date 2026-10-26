@@ -5,7 +5,6 @@ import gc
 import itertools
 import unittest
 import warnings
-import weakref
 from collections import Counter
 from enum import IntFlag, auto
 from unittest import mock
@@ -13,6 +12,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 import warp.examples
+from packaging.version import Version
 
 import newton
 from newton import GeoType
@@ -69,6 +69,9 @@ from newton.tests.unittest_utils import (
     get_test_devices,
 )
 from newton.tests.utils.soft_contacts import evaluate_soft_contact_force_mask
+
+# Older Warp destroys textures immediately during CUDA capture (NVIDIA/warp#2066).
+_WARP_NEEDS_CAPTURE_GC_GUARD = Version(wp.__version__) < Version("1.19.0.dev20261020")
 
 
 class TestLevel(IntFlag):
@@ -195,8 +198,9 @@ class CollisionSetup:
     def capture(self):
         if wp.get_device(self._device).is_cuda:
             # Cyclic GC can destroy an earlier scene's SDF textures, which CUDA forbids during capture.
-            gc_was_enabled = gc.isenabled()
-            gc.disable()
+            gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
+            if gc_was_enabled:
+                gc.disable()
             try:
                 with wp.ScopedCapture(device=self._device) as capture:
                     self.simulate()
@@ -759,77 +763,6 @@ def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase: str):
     test_mesh_mesh_sdf_modes(
         _test, device, sdf_max_resolution_a=None, sdf_max_resolution_b=None, broad_phase=broad_phase
     )
-
-
-def test_collision_capture_defers_sdf_texture_cleanup(test, device):
-    """Defer unreachable SDF texture cleanup until CUDA capture finishes."""
-    gc_was_enabled = gc.isenabled()
-    thresholds = gc.get_threshold()
-    gc.collect()
-    gc.enable()
-    gc.set_threshold(0)
-    try:
-        mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
-        mesh.build_sdf(max_resolution=16, device=device)
-        texture_ref = weakref.ref(mesh.sdf._coarse_texture)
-        # Keep a discarded scene pending cyclic collection regardless of Warp version.
-        discarded_scene = {"mesh": mesh}
-        discarded_scene["cycle"] = discarded_scene
-        del mesh, discarded_scene
-
-        simulate = CollisionSetup.simulate
-
-        def simulate_with_gc_pressure(setup):
-            gc.set_threshold(gc.get_count()[0] + 1, 1000000, 1000000)
-            allocations = [[] for _ in range(32)]
-            simulate(setup)
-            del allocations
-
-        with mock.patch.object(CollisionSetup, "simulate", simulate_with_gc_pressure):
-            setup = CollisionSetup(
-                viewer=newton.viewer.ViewerNull(),
-                device=device,
-                solver_fn=newton.solvers.SolverXPBD,
-                sim_substeps=2,
-                shape_type_a=GeoType.MESH,
-                shape_type_b=GeoType.MESH,
-                sdf_max_resolution_a=16,
-            )
-            setup.capture()
-
-        test.assertTrue(gc.isenabled())
-        setup.step()
-        test.assertTrue(np.isfinite(setup.state_0.body_q.numpy()).all())
-        gc.collect()
-        test.assertIsNone(texture_ref())
-
-        for gc_enabled in (False, True):
-            if gc_enabled:
-                gc.enable()
-            else:
-                gc.disable()
-            setup.capture()
-            test.assertEqual(gc.isenabled(), gc_enabled)
-            with mock.patch.object(setup, "simulate", side_effect=RuntimeError("capture interrupted")):
-                with test.assertRaisesRegex(RuntimeError, "capture interrupted"):
-                    setup.capture()
-            test.assertEqual(gc.isenabled(), gc_enabled)
-    finally:
-        gc.set_threshold(*thresholds)
-        gc.collect()
-        if gc_was_enabled:
-            gc.enable()
-        else:
-            gc.disable()
-
-
-add_function_test(
-    TestCollisionPipeline,
-    "test_collision_capture_defers_sdf_texture_cleanup",
-    test_collision_capture_defers_sdf_texture_cleanup,
-    devices=get_cuda_test_devices(),
-    check_output=False,
-)
 
 
 # Add mesh-mesh SDF mode tests for all broad phase modes
@@ -3629,6 +3562,7 @@ class TestCurvedPrimitiveSDFExclusion(unittest.TestCase):
 
 class TestPlanarSDFOptIn(unittest.TestCase):
     def test_default_box_does_not_build_general_sdf(self):
+        """Keep default boxes on the analytic path without SDF edge data."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
         box = builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5)
@@ -3636,7 +3570,7 @@ class TestPlanarSDFOptIn(unittest.TestCase):
         model = builder.finalize()
 
         self.assertEqual(int(model._shape_sdf_index.numpy()[box]), -1)
-        self.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 0)
+        self.assertEqual(int(model._shape_edge_range.numpy()[box][1]), 0)
 
     def test_default_convex_hull_does_not_build_general_sdf(self):
         builder = newton.ModelBuilder()
@@ -3740,6 +3674,50 @@ add_function_test(
     TestMeshConvexMidphase,
     "test_triangle_contact_with_hull_aabb_center_outside",
     test_triangle_contact_with_hull_aabb_center_outside,
+    devices=get_test_devices(),
+)
+
+
+def test_triangle_contact_independent_of_hull_tessellation(test, device):
+    """Keep triangle contacts for a hull sunk below the mean of its unevenly spaced vertices."""
+    # A 41 x 54 x 13 mm sole whose 5 mm bottom fillets carry most of its
+    # vertices. Its vertex mean sits 3.0 mm above the bottom and its volume
+    # centroid 6.6 mm. Sunk 5 mm into a floor, it must keep the floor contacts.
+    half_x, half_y, half_z, radius = 0.0205, 0.027, 0.0065, 0.005
+    profile = [(-half_x, half_z), (half_x, half_z)]
+    for center_x, start in ((half_x - radius, 0.0), (radius - half_x, -0.5 * np.pi)):
+        for angle in np.linspace(start, start - 0.5 * np.pi, 9):
+            profile.append((center_x + radius * np.cos(angle), radius - half_z + radius * np.sin(angle)))
+    vertices = np.array([[x, y, z] for y in (-half_y, half_y) for x, z in profile])
+    hull = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
+    depth = 0.005
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.0, gap=0.01)
+    floor = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]
+    builder.add_shape_mesh(-1, mesh=newton.Mesh(floor, [0, 1, 2, 0, 2, 3], compute_inertia=False), cfg=cfg)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, half_z - depth), wp.quat_identity()))
+    builder.add_shape_convex_hull(body, mesh=hull, cfg=cfg)
+    model = builder.finalize(device=device)
+    state = model.state()
+    interior_point = model._shape_interior_point
+    # Cover both the finalized interior points and the narrow-phase fallback.
+    for reduction, precomputed in itertools.product((False, True), (True, False)):
+        with test.subTest(reduce_contacts=reduction, precomputed=precomputed):
+            model._shape_interior_point = interior_point if precomputed else None
+            pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            distances = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances)
+            test.assertAlmostEqual(float(distances.numpy()[:count].min()), -depth, delta=1.0e-5)
+
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_triangle_contact_independent_of_hull_tessellation",
+    test_triangle_contact_independent_of_hull_tessellation,
     devices=get_test_devices(),
 )
 
@@ -3897,7 +3875,7 @@ def test_deferred_convex_sdf_edges_use_deduplicated_topology(test, device):
 
     model = builder.finalize(device=device)
 
-    test.assertGreater(int(model.shape_edge_range.numpy()[shape][1]), 0)
+    test.assertGreater(int(model._shape_edge_range.numpy()[shape][1]), 0)
     test.assertEqual(model._mesh_keep_alive[0].points.shape[0], 8)
 
 
@@ -4013,7 +3991,7 @@ def test_mesh_box_with_sdf_routes_to_sdf_contact(test, device):
 
     model = builder.finalize(device=device)
     test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[box]), 0)
-    test.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 12)
+    test.assertEqual(int(model._shape_edge_range.numpy()[box][1]), 12)
 
     pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
     contacts = pipeline.contacts()
@@ -4529,7 +4507,7 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
         builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25)
 
     replicated_builder = newton.ModelBuilder()
-    replicated_builder.replicate(builder, world_count=768)
+    replicated_builder.replicate(builder, copy_count=768)
     model = replicated_builder.finalize(device=device)
     split = newton.CollisionPipeline(
         model,
@@ -4898,15 +4876,15 @@ def test_packed_mesh_edges_use_mesh_coordinates(test, device):
     model = builder.finalize(device=device)
 
     # Ownership code zero allows both endpoints, as edges read from the mesh do.
-    edges = model.mesh_edge_indices.numpy()
+    edges = model._mesh_edge_indices.numpy()
     vertices = np.asarray(cube.vertices, dtype=np.float32)
     edge_v0, edge_v1 = vertices[edges[:, 0]], vertices[edges[:, 1]]
     halves = (edge_v1 - edge_v0) * 0.5
     radii = np.linalg.norm(halves, axis=1, keepdims=True)
     centers = np.concatenate(((edge_v0 + edge_v1) * 0.5, radii), axis=1)
     halves = np.concatenate((halves, np.zeros_like(radii)), axis=1)
-    np.testing.assert_allclose(model.mesh_edge_centers.numpy(), centers, rtol=1e-6)
-    np.testing.assert_allclose(model.mesh_edge_halves.numpy()[:, :3], halves[:, :3], rtol=1e-6)
+    np.testing.assert_allclose(model._mesh_edge_centers.numpy(), centers, rtol=1e-6)
+    np.testing.assert_allclose(model._mesh_edge_halves.numpy()[:, :3], halves[:, :3], rtol=1e-6)
 
     class PackedEdgeNarrowPhase(NarrowPhase):
         def __init__(self, wrapped, edge_centers, edge_halves):
@@ -7441,6 +7419,132 @@ for _expert_test in (
     test_expert_narrow_phase_empty_voxel_resolution,
 ):
     add_function_test(TestCollisionPipeline, _expert_test.__name__, _expert_test, devices=get_test_devices())
+
+
+def test_mesh_midphase_many_pairs(test, device):
+    """Find mesh contacts when there are more mesh pairs than midphase thread blocks.
+
+    Past one pair per block, the CUDA midphase switches from one tile block per
+    query to a launch with several one-warp blocks per tile block. Boxes and
+    cube hulls cover both query-bound builders.
+    """
+    side = 18
+    spacing = 0.5
+    half = 0.1
+    depth = 0.01
+    extent = 0.5 * spacing * side + 1.0
+    cells = 2 * side
+    grid = np.linspace(-extent, extent, cells + 1, dtype=np.float32)
+    xs, ys = np.meshgrid(grid, grid, indexing="ij")
+    ground_vertices = np.stack((xs.ravel(), ys.ravel(), np.zeros(xs.size, dtype=np.float32)), axis=1)
+    ground_indices = []
+    for i, j in itertools.product(range(cells), range(cells)):
+        v = i * (cells + 1) + j
+        ground_indices += [v, v + cells + 1, v + 1, v + 1, v + cells + 1, v + cells + 2]
+    cube_vertices = np.array(list(itertools.product((-1.0, 1.0), repeat=3)), dtype=np.float32)
+    cube_indices = [
+        0,
+        2,
+        1,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        5,
+        7,
+        6,
+        0,
+        1,
+        4,
+        1,
+        5,
+        4,
+        2,
+        6,
+        3,
+        3,
+        6,
+        7,
+        0,
+        4,
+        2,
+        2,
+        4,
+        6,
+        1,
+        3,
+        5,
+        3,
+        7,
+        5,
+    ]
+    cube = newton.Mesh(cube_vertices, np.array(cube_indices, dtype=np.int32), compute_inertia=False)
+
+    builder = newton.ModelBuilder()
+    # The ground (group -1) collides with every shape. Distinct positive groups
+    # keep the other shapes from pairing with each other, so the pair count
+    # stays small enough for the minimum number of midphase tile blocks.
+    cfg = builder.ShapeConfig(margin=0.0, gap=1.0e-3, density=0.0, collision_group=-1)
+    ground = builder.add_shape_mesh(
+        -1, mesh=newton.Mesh(ground_vertices, np.array(ground_indices, dtype=np.int32), compute_inertia=False), cfg=cfg
+    )
+    shapes = []
+    for i, j in itertools.product(range(side), range(side)):
+        cfg = builder.ShapeConfig(margin=0.0, gap=1.0e-3, density=0.0, collision_group=len(shapes) + 1)
+        position = wp.vec3((i - 0.5 * side) * spacing, (j - 0.5 * side) * spacing, half - depth)
+        body = builder.add_body(xform=wp.transform(position, wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3)))
+        if (i + j) % 2:
+            shapes.append(builder.add_shape_convex_hull(body, mesh=cube, scale=(half, half, half), cfg=cfg))
+        else:
+            shapes.append(builder.add_shape_box(body, hx=half, hy=half, hz=half, cfg=cfg))
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model, broad_phase="explicit", rigid_contact_max=64 * len(shapes))
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+
+    narrow_phase = pipeline.narrow_phase
+    mesh_pairs = int(narrow_phase.shape_pairs_mesh_count.numpy()[0])
+    test.assertEqual(mesh_pairs, len(shapes))
+    if device.is_cuda:
+        test.assertIsNotNone(narrow_phase._midphase_narrow_kernel)
+        test.assertGreater(mesh_pairs, narrow_phase.num_tile_blocks)
+
+    triangle_count = int(narrow_phase.triangle_pairs_count.numpy()[0])
+    triangle_pairs = narrow_phase.triangle_pairs.numpy()[:triangle_count]
+    test.assertEqual(len(np.unique(triangle_pairs, axis=0)), triangle_count)
+
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+    shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+    points0 = contacts.rigid_contact_point0.numpy()[:count]
+    points1 = contacts.rigid_contact_point1.numpy()[:count]
+    normals = contacts.rigid_contact_normal.numpy()[:count]
+    body_q = model.body_q.numpy()
+    shape_body = model.shape_body.numpy()
+    deepest = dict.fromkeys(shapes, -np.inf)
+    for i in range(count):
+        test.assertIn(ground, (shape0[i], shape1[i]))
+        shape = shape1[i] if shape0[i] == ground else shape0[i]
+        world = []
+        for index, point in ((shape0[i], points0[i]), (shape1[i], points1[i])):
+            body = shape_body[index]
+            pose = wp.transform(*body_q[body]) if body >= 0 else wp.transform_identity()
+            world.append(np.asarray(wp.transform_point(pose, wp.vec3(point))))
+        # Triangles that clip a box side can report lateral normals; the
+        # face contact must still match the resting depth.
+        if abs(float(normals[i][2])) < 0.99:
+            continue
+        # Normals point from shape 0 to shape 1.
+        deepest[shape] = max(deepest[shape], -float(np.dot(world[1] - world[0], normals[i])))
+    for shape in shapes:
+        test.assertAlmostEqual(deepest[shape], depth, delta=1.0e-4, msg=f"shape {shape}")
+
+
+add_function_test(
+    TestCollisionPipeline, "test_mesh_midphase_many_pairs", test_mesh_midphase_many_pairs, devices=get_test_devices()
+)
 
 
 if __name__ == "__main__":

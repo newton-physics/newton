@@ -1568,7 +1568,7 @@ def accumulate_self_contact_force_and_hessian(
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
     # self contact
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     collision_radius: float,
     soft_contact_ke: float,
     soft_contact_kd: float,
@@ -1580,8 +1580,6 @@ def accumulate_self_contact_force_and_hessian(
     particle_hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
-
     primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
     t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 
@@ -2058,14 +2056,12 @@ def apply_planar_truncation_parallel_by_collision(
     displacement_in: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     gamma: float,
     truncation_t_out: wp.array[float],
 ):
     """Truncate particle displacements against soft self-contact division planes, one thread group per EE or VT pair."""
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
-
     primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
     t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 
@@ -2875,7 +2871,7 @@ def accumulate_contact_force_and_hessian(
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
     # self contact
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     collision_radius: float,
     soft_contact_ke: float,
     soft_contact_kd: float,
@@ -2903,8 +2899,6 @@ def accumulate_contact_force_and_hessian(
     particle_hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
-
     primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
     t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 

@@ -19,7 +19,7 @@ class EqType(IntEnum):
     """Constrains one scalar joint coordinate to a quartic polynomial of another."""
 
     TENDON = 3
-    """Constrains one tendon length to a quartic polynomial of another."""
+    """Constrains one tendon length to a quartic polynomial of another, or to a constant offset."""
 
 
 # Mirrors of MuJoCo's mjtBias/mjtDyn/mjtGain, duplicated so MJCF and USD import do not

@@ -442,8 +442,6 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attr
             native_equality_site2=-1,
             native_equality_dof1=-1,
             native_equality_dof2=-1,
-            native_equality_tendon1=-1,
-            native_equality_tendon2=-1,
         )
         label, active = model.equality(i).name, bool(model.eq_active0[i])
         if kind == EqType.TENDON:
@@ -451,13 +449,18 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attr
                 continue
             attrs.update(
                 attributes(
-                    native_equality_tendon1=tendons[first],
-                    native_equality_tendon2=tendons.get(second, -1),
                     equality_constraint_objtype=int(mujoco.mjtObj.mjOBJ_TENDON),
                 )
             )
             _add_equality_constraint(
-                builder, kind, polycoef=data[:5].tolist(), label=label, enabled=active, custom_attributes=attrs
+                builder,
+                kind,
+                tendon1=tendons[first],
+                tendon2=tendons.get(second, -1),
+                polycoef=data[:5].tolist(),
+                label=label,
+                enabled=active,
+                custom_attributes=attrs,
             )
             continue
         if kind == EqType.JOINT:

@@ -37,7 +37,7 @@ class _ViewerGeometryBatchingProbe(ViewerNull):
         if self.model is None:
             return
 
-        # ViewerGL uses instanced cylinder + spheres and expects capsule body instance scales to be
+        # ViewerGL's specialized capsule path expects instance dimensions to be
         # `(radius, radius, half_height)`. Since this probe shares the same capsule hashing behavior
         # (dimensions ignored), we re-materialize the per-shape dimensions into per-instance scales.
         shape_scale_np = self.model.shape_scale.numpy()

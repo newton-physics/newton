@@ -1338,7 +1338,7 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
     """Keep iterative mimic rows with the propagation responses; pre-elimination falls back with a warning."""
     builder, _, _ = _build_two_revolute_chain(0.0, 1.0)
     model = builder.finalize(device=device)
-    for response in ("propagation", "propagation_fused", "propagation_colored"):
+    for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "propagation"):
                 solver = SolverSteel(model, articulated_contact_response=response, enable_bilateral_preelimination=True)
@@ -1349,7 +1349,7 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
 def test_propagation_rejects_loop_joints(test, device):
     """Reject loop-closing joints with the propagation responses."""
     model = _build_four_bar().finalize(device=device)
-    for response in ("propagation", "propagation_fused", "propagation_colored"):
+    for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(NotImplementedError, "Loop-closing joints.*articulated_contact_response"):
                 SolverSteel(model, articulated_contact_response=response)
@@ -1615,7 +1615,7 @@ def test_replicated_mimics_have_articulation_local_ranges(test, device):
     """Use one compact lookup range per articulation for replicated mimic rows."""
     template, _, _ = _build_two_revolute_chain(coef0=0.0, coef1=1.0)
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-    builder.replicate(template, world_count=4)
+    builder.replicate(template, copy_count=4)
     solver = SolverSteel(builder.finalize(device=device), solve_mode="matrix_free")
     test.assertEqual(solver._mimic_art_start.numpy().tolist(), [0, 1, 2, 3, 4])
     test.assertEqual(solver._mimic_art_list.numpy().tolist(), [0, 1, 2, 3])

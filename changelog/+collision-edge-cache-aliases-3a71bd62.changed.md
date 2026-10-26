@@ -1,0 +1,1 @@
+Document that runtime rescaling of mesh, convex-mesh, and heightfield shapes requires updating `Model.shape_collision_radius` and `Model.shape_collision_aabb_lower/upper`; `CollisionPipeline(dynamic_shape_scale=True)` does not update derived bounds or rebuild baked collision geometry. Explain how to rebuild a model with shapes at the new scale.

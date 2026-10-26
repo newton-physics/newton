@@ -319,23 +319,6 @@ class TestDeformableObjects(unittest.TestCase):
                     ],
                 )
 
-    def test_deprecated_curve_inputs_keep_recording(self):
-        """Preserve recording through the supported deprecation period for old rod inputs."""
-        points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
-        for graph in (False, True):
-            with self.subTest(graph=graph):
-                builder = newton.ModelBuilder()
-                with self.assertWarns(DeprecationWarning):
-                    if graph:
-                        builder.add_rod_graph(node_positions=points, edges=[(0, 1), (1, 2)], radius=0.02, label="cable")
-                    else:
-                        builder.add_rod(positions=points, radius=0.02, label="cable")
-                self.assertEqual(builder.curve_label, ["cable"])
-                self.assertEqual(_ranges(builder, "curve", "body"), [(0, 2)])
-                self.assertEqual(_ranges(builder, "curve", "joint"), [(0, 2)])
-                model = builder.finalize(device="cpu")
-                self.assertEqual((model.body_count, model.joint_count), (2, 2))
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

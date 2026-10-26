@@ -798,18 +798,17 @@ def test_articulated_contact_response_validation(test, device):
     test.assertEqual(solver.articulated_contact_response, "propagation")
     # Every contact row, free-body rows included, uses the propagation family.
     test.assertEqual(solver._propagation_max_constraints, 512 + 16)
-    solver = SolverSteel(model, articulated_contact_response="propagation_fused", articulation_constraint_max=16)
-    test.assertEqual(solver.articulated_contact_response, "propagation_fused")
-    test.assertEqual(solver._propagation_max_constraints, 16)
 
-    with test.assertRaisesRegex(ValueError, "articulated_contact_response"):
-        SolverSteel(model, articulated_contact_response="bad")
-    for response in ("immediate", "propagation_fused"):
+    for response in ("bad", "propagation_fused"):
+        with test.subTest(response=response):
+            with test.assertRaisesRegex(ValueError, f"articulated_contact_response must be .*got '{response}'"):
+                SolverSteel(model, articulated_contact_response=response)
+    for response in ("immediate", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
                 SolverSteel(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
 
-    # The fused kernel runs the tree passes of a single articulation size.
+    # The propagation responses solve trees of different articulation sizes in one model.
     mixed = newton.ModelBuilder()
     for num_links in (2, 3):
         chain = newton.ModelBuilder()
@@ -822,18 +821,17 @@ def test_articulated_contact_response_validation(test, device):
         chain.add_articulation(joints)
         mixed.add_world(chain)
     mixed_model = mixed.finalize(device=device)
-    with test.assertRaisesRegex(NotImplementedError, "propagation_fused"):
-        SolverSteel(mixed_model, articulated_contact_response="propagation_fused")
-    test.assertEqual(
-        SolverSteel(mixed_model, articulated_contact_response="propagation").articulated_contact_response,
-        "propagation",
-    )
+    for response in ("propagation", "propagation_colored"):
+        with test.subTest(response=response):
+            test.assertEqual(
+                SolverSteel(mixed_model, articulated_contact_response=response).articulated_contact_response, response
+            )
 
 
 def test_propagation_rejects_unsupported_options(test, device):
     """Reject the split solve and the options the propagation rows do not implement; accept the rest."""
     model = _build_chain_model(device, num_links=2, num_worlds=1)
-    for response in ("propagation", "propagation_fused", "propagation_colored"):
+    for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response, option="solve_mode"):
             with test.assertRaisesRegex(NotImplementedError, "requires solve_mode='matrix_free'"):
                 SolverSteel(model, solve_mode="split", articulated_contact_response=response)
@@ -873,7 +871,7 @@ def test_propagation_matrix_free_compiles_and_steps_with_velocity_limit_rows(tes
     """Step both propagation responses with dense joint velocity-limit rows."""
     model = _build_chain_model(device, num_links=3, num_worlds=1)
     model.joint_velocity_limit.assign(np.full(model.joint_dof_count, 0.1, dtype=np.float32))
-    for response in ("propagation", "propagation_fused", "propagation_colored"):
+    for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response):
             solver = SolverSteel(
                 model,

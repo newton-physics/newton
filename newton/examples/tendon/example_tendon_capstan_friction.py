@@ -226,6 +226,15 @@ class Example:
             if hasattr(self.viewer, "renderer"):
                 self.viewer.renderer.show_wireframe_overlay = True
 
+        self.capture()
+
+    def capture(self):
+        self.graph = None
+        if self.model.device.is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedCapture(device=self.model.device) as capture:
+                self.simulate()
+            self.graph = capture.graph
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -236,9 +245,11 @@ class Example:
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
-        self._record_motion_sample()
 
     @staticmethod
     def _hinge_y_angle(q):
@@ -275,6 +286,7 @@ class Example:
             )
 
     def test_post_step(self):
+        self._record_motion_sample()
         assert_tendon_total_length(self, rel_tol=0.60)
         body_q = self.state_0.body_q.numpy()
         assert np.isfinite(body_q).all(), "Dynamic capstan produced non-finite body state"

@@ -28,6 +28,40 @@ implementation can follow every coding standard while solving the wrong
 problem, or implement the specification while introducing an unsuitable
 public contract.
 
+.. _review-questions:
+
+Questions for every change
+--------------------------
+
+Ask these of every change, including small bug fixes, in proportion to its
+size. The Fit gates below add depth for large proposals.
+
+#. **Simplest:** Is this the smallest change that solves the stated problem?
+   Question each new parameter, mode, alias, public symbol, and file, and
+   prefer an existing mechanism. Check whether ``main`` or another open pull
+   request already covers the change, and whether unrelated parts should be
+   split out.
+#. **Principled:** Does it fix the cause at the right layer rather than a
+   symptom, proxy, or workaround? Prefer designs that are correct by
+   construction over detecting and reporting bad states, and upstream fixes
+   when Warp or another dependency owns the behavior. Treat loosened
+   thresholds, suppressed warnings, and special cases as prompts to look
+   deeper.
+#. **Honest contract:** Does every accepted input either take effect or get
+   rejected? Look for silent fallbacks, partially honored options, and
+   documentation, changelog entries, or tests that describe behavior the code
+   does not implement.
+#. **Siblings:** When the change fixes a defect or you find one, check
+   sibling code paths, such as other joint types, entity kinds, importers,
+   solvers, and duplicated helpers, for the same pattern.
+#. **Tests:** Would each new test fail without the change, for the failure
+   mode it claims? Could an existing test, class, or fixture be extended
+   instead? Are the model, step count, and device matrix as small as
+   possible?
+#. **Cost:** What does the change add to the default path? Setup, import,
+   memory, and steady-state costs need evidence even when the change is not
+   about performance.
+
 Review feedback
 ---------------
 

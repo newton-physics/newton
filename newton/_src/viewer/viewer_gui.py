@@ -25,9 +25,9 @@ import numpy as np
 import newton as nt
 from newton.selection import ArticulationView
 
+from ..core.host_transform import transform_assign, transform_assign_matrix, transform_to_matrix
 from ..core.types import Axis
 from .gl.gui import UI
-from .transform import transform_assign, transform_assign_matrix, transform_to_matrix
 
 # Width of the left sidebar in logical (96-DPI) pixels.
 _SIDEBAR_WIDTH_PX = 300.0

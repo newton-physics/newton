@@ -44,7 +44,7 @@ DENSE_PATH = 0
 PROPAGATION_PATH = 2
 
 
-RESPONSES = ("propagation", "propagation_fused", "propagation_colored")
+RESPONSES = ("propagation", "propagation_colored")
 
 
 def _chain(builder, x, n_links, root_z, joint="revolute"):
@@ -209,7 +209,7 @@ def test_propagation_row_overflow_is_flagged_and_reset(test, device):
     for response, capacity in (
         # Dense rows hold the two rows of each joint limit; one contact's three rows fit.
         ("propagation", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
-        ("propagation_fused", {"articulation_constraint_max": 4}),
+        ("propagation_colored", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
     ):
         with test.subTest(response=response):
             solver = SolverSteel(
@@ -1288,7 +1288,7 @@ for _fn in (
     add_function_test(TestSteelPropagationCombinations, _fn.__name__, _fn, devices=devices)
 
 
-PROPAGATION_RESPONSES = ("propagation", "propagation_fused", "propagation_colored")
+PROPAGATION_RESPONSES = ("propagation", "propagation_colored")
 
 
 REGULARIZED = {"baumgarte": 0.0, "cfm": 0.0, "contact_regularization": 3.0}
@@ -1297,7 +1297,6 @@ REGULARIZED = {"baumgarte": 0.0, "cfm": 0.0, "contact_regularization": 3.0}
 # (articulated_contact_response, propagation_cached_response)
 PROPAGATION_ROUTES = (
     ("propagation", False),
-    ("propagation_fused", False),
     ("propagation", True),
     ("propagation_colored", False),
     ("propagation_colored", True),
@@ -1595,7 +1594,7 @@ def test_default_routing_keeps_same_articulation_rows_dense(test, device):
 def test_flag_requires_propagation_mode(test, device):
     """Reject same-articulation propagation rows without the response that solves them."""
     model = _build_scissor_model(device)
-    for response in ("immediate", "propagation_fused", "propagation_colored"):
+    for response in ("immediate", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
                 SolverSteel(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
@@ -2817,10 +2816,11 @@ def test_schedule_validation(test, device):
             set_torsion_radius(model, 0.0)
             with test.assertRaisesRegex(NotImplementedError, "contact_compliance.*row_schedule='interleaved'"):
                 SolverSteel(model, row_schedule=schedule, contact_compliance=True, friction_anchor_beta=0.0)
-    with test.assertRaisesRegex(NotImplementedError, "propagation_fused"):
-        SolverSteel(model, row_schedule="contact_then_internal", articulated_contact_response="propagation_fused")
-    fused = SolverSteel(model, row_schedule="phased", articulated_contact_response="propagation_fused")
-    test.assertEqual(fused.row_schedule, "phased")
+    for response in ("propagation", "propagation_colored"):
+        for schedule in SCHEDULES[1:]:
+            with test.subTest(response=response, schedule=schedule):
+                solver = SolverSteel(model, row_schedule=schedule, articulated_contact_response=response)
+                test.assertEqual(solver.row_schedule, schedule)
 
 
 def test_split_rejects_schedules(test, device):

@@ -404,7 +404,7 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
     proxy_particle_flag: int,
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     collision_radius: float,
     soft_contact_ke: float,
     soft_contact_kd: float,
@@ -414,8 +414,6 @@ def _harvest_vbd_proxy_particle_self_contact_forces_kernel(
     out_particle_f: wp.array[wp.vec3],
 ):
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
-
     primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
     t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 
