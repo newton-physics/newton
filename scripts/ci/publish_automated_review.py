@@ -18,11 +18,23 @@ Both name the reviewer and link the workflow run, and the summary states the
 model and effort level, including any fallback model recorded in the run's
 execution file. Only display names are published, never model IDs.
 
+With ``REVIEW_MODE=follow-up`` (the workflow has reviewed the pull request
+before), only P0 and P1 findings are published, and the summary comment keeps
+the first review and replaces only its follow-up section. Because the next
+follow-up replaces that section, a follow-up's findings without a line are
+also posted in the body of its pull request review, which stays. The workflow's
+prepare step detects follow-ups from ``SUMMARY_MARKER``, ``FOLLOW_UP_MARKER``,
+``INCOMPLETE_MARKER``, and the last ``Reviewed commit <sha>`` line, so keep
+these formats in sync with it. Reviewer text is escaped so it cannot forge any
+of these markers. After a complete follow-up of the full diff (``FULL_DIFF``),
+the first review's incomplete warning is marked as covered, including warnings
+posted before ``INCOMPLETE_MARKER`` existed.
+
 Environment: ``REVIEW_OUTPUT``, ``GITHUB_REPOSITORY``, ``PR_NUMBER``,
 ``HEAD_SHA``, ``RUNNER_TEMP``, ``REVIEW_MODEL_NAME``, ``REVIEW_EFFORT``,
-``EXECUTION_FILE`` (optional), and the default ``GITHUB_SERVER_URL``,
-``GITHUB_RUN_ID``, and ``GITHUB_RUN_ATTEMPT``. The diff is read from
-``.pr-review/pr.diff``.
+``EXECUTION_FILE``, ``REVIEW_MODE``, and ``FULL_DIFF`` (optional), and the
+default ``GITHUB_SERVER_URL``, ``GITHUB_RUN_ID``, and ``GITHUB_RUN_ATTEMPT``.
+The diff is read from ``.pr-review/pr.diff``.
 """
 
 from __future__ import annotations
@@ -36,14 +48,20 @@ import sys
 from pathlib import Path
 
 SUMMARY_MARKER = "<!-- newton-automated-review -->"
+FOLLOW_UP_MARKER = "<!-- newton-automated-review-follow-up -->"
+INCOMPLETE_MARKER = "<!-- newton-automated-review-incomplete -->"
+INCOMPLETE_TEXT = "This review did not cover the whole change."
+INCOMPLETE_LINE_RE = re.compile(rf"^> {re.escape(INCOMPLETE_TEXT)}(?: {re.escape(INCOMPLETE_MARKER)})?$", re.MULTILINE)
 FINDING_MARKER = "<!-- newton-automated-review-finding:{} -->"
-FINDING_MARKER_RE = re.compile(r"newton-automated-review-finding:([0-9a-f]{16})")
+FINDING_MARKER_RE = re.compile(r"<!-- newton-automated-review-finding:([0-9a-f]{16}) -->")
 BOT_LOGIN = "github-actions[bot]"
 MAX_INLINE_COMMENTS = 15
 MAX_BODY_CHARS = 6000
+MAX_FIRST_REVIEW_CHARS = 30000
 REVIEWER_NAME = "Claude Code Action review"
 WORKFLOW_PATH = ".github/workflows/claude_code_review.yml"
 SEVERITY_LABELS = {"P0": "🔴 P0", "P1": "🟠 P1", "P2": "🔵 P2", "nit": "⚪ Nit"}
+FOLLOW_UP_SEVERITIES = ("P0", "P1")
 HUNK_RE = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
@@ -85,6 +103,38 @@ def clip(text: object, limit: int = MAX_BODY_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 20].rstrip() + "\n\n*(truncated)*"
 
 
+def posted_fingerprints(inline_bodies: list[str], review_bodies: list[str]) -> set[str]:
+    """Collect the fingerprints of findings this workflow already posted.
+
+    An inline comment carries its marker on its last line, after any suggestion block, which is reviewer code that
+    cannot be escaped, so only that line counts. Review bodies list findings with neutralized reviewer text.
+    """
+    posted = set()
+    for body in inline_bodies:
+        lines = body.rstrip().splitlines()
+        posted.update(FINDING_MARKER_RE.findall(lines[-1] if lines else ""))
+    for body in review_bodies:
+        posted.update(FINDING_MARKER_RE.findall(body))
+    return posted
+
+
+def neutralize(text: str) -> str:
+    """Break HTML comments and the incomplete warning in reviewer text, so it cannot forge what the workflow parses.
+
+    A zero-width space keeps the text readable, also inside code spans, where an HTML entity would show literally.
+    """
+    return text.replace("<!--", "<!\u200b--").replace(INCOMPLETE_TEXT, INCOMPLETE_TEXT.replace(" ", " \u200b", 1))
+
+
+def keep_tail_clip(text: str, limit: int) -> str:
+    """Clip a previous review section from the middle, keeping its incomplete-review warning and footer."""
+    if len(text) <= limit:
+        return text
+    starts = [i for i in (text.rfind("\n> [!WARNING]"), text.rfind("\n<sub>Reviewed commit")) if i >= 0]
+    split = min(starts) if starts else len(text)
+    return clip(text[:split], max(limit - (len(text) - split), 100)) + text[split:]
+
+
 def severity_label(finding: dict) -> str:
     return SEVERITY_LABELS.get(str(finding.get("severity")), SEVERITY_LABELS["nit"])
 
@@ -92,7 +142,8 @@ def severity_label(finding: dict) -> str:
 def comment_body(finding: dict, with_suggestion: bool = True) -> str:
     """Format a finding as an inline comment body, optionally without its suggestion block."""
     label = severity_label(finding)
-    parts = [f"{label[0]} **{label[2:]}: {clip(finding.get('title'), 300)}**", "", clip(finding.get("body"))]
+    title, body = neutralize(clip(finding.get("title"), 300)), neutralize(clip(finding.get("body")))
+    parts = [f"{label[0]} **{label[2:]}: {title}**", "", body]
     suggestion = finding.get("suggestion")
     if with_suggestion and isinstance(suggestion, str) and suggestion.strip() and "```" not in suggestion:
         parts += ["", "```suggestion", suggestion.rstrip("\n"), "```"]
@@ -187,28 +238,65 @@ def run_details(execution_file: str | None) -> list[str]:
     return lines + fallback_notes(execution_file, model_name)
 
 
+def finding_lines(findings: list[dict], with_marker: bool = False) -> list[str]:
+    """Format findings that have no inline comment as list items, optionally with their fingerprint markers."""
+    lines = []
+    for finding in findings:
+        path, line = finding.get("path"), finding.get("line")
+        location = neutralize(f"`{path}:{line}`" if path and line else f"`{path}`" if path else "General")
+        marker = f" {FINDING_MARKER.format(fingerprint(finding))}" if with_marker else ""
+        title, body = neutralize(clip(finding.get("title"), 300)), neutralize(clip(finding.get("body"), 800))
+        lines.append(f"- {severity_label(finding)} {location}: **{title}** {body}{marker}")
+    return lines
+
+
+def review_payload(head_sha: str, inline: list[dict], inline_findings: list[dict], listed: list[dict]) -> dict:
+    """Build a pull request review with the inline comments and, in its body, the findings in ``listed``."""
+    count = count_line(inline_findings)
+    body = [f"**{REVIEWER_NAME}**: {count + '. ' if count else ''}The summary comment has the overview."]
+    if listed:
+        body += ["", "**Not attached to a line:**", "", *finding_lines(listed, with_marker=True)]
+    payload = {"commit_id": head_sha, "event": "COMMENT", "body": "\n".join(body)}
+    if inline:
+        payload["comments"] = inline
+    return payload
+
+
 def summary_body(
-    output: dict, inline_findings: list[dict], elsewhere: list[dict], head_sha: str, details: list[str]
+    output: dict,
+    inline_findings: list[dict],
+    elsewhere: list[dict],
+    head_sha: str,
+    details: list[str],
+    previous: str | None = None,
+    covered_rest: bool = False,
 ) -> str:
-    """Format the summary comment: the assessment, a count of inline comments, and findings without a line."""
+    """Format the summary comment: the assessment, a count of inline comments, and findings without a line.
+
+    With ``previous``, the body of the existing summary comment, keep its first review and replace its follow-up section.
+    With ``covered_rest``, a complete follow-up checked the full diff, so clear the first review's incomplete state.
+    """
     summary = re.sub(r"\A(\s*#{1,6}[^\n]*\n)+", "", str(output.get("summary", "")).strip() + "\n").strip()
-    lines = [SUMMARY_MARKER, f"### {REVIEWER_NAME}", "", clip(summary, 3000)]
+    summary = neutralize(clip(summary, 3000))
+    if previous is None:
+        lines = [SUMMARY_MARKER, f"### {REVIEWER_NAME}", "", summary]
+    else:
+        # Reviewer text is neutralized, so the first marker is the generated section boundary.
+        first_review = keep_tail_clip(previous.split(FOLLOW_UP_MARKER, 1)[0].strip(), MAX_FIRST_REVIEW_CHARS)
+        if covered_rest:
+            first_review = INCOMPLETE_LINE_RE.sub(
+                f"> {INCOMPLETE_TEXT} A later follow-up checked the full diff for blocking issues.", first_review
+            )
+        lines = [first_review, "", FOLLOW_UP_MARKER, "#### Latest follow-up review", "", summary]
     if inline_findings:
         lines += ["", count_line(inline_findings)]
     if elsewhere:
-        lines += ["", "**Not attached to a line:**", ""]
-        for finding in elsewhere:
-            path, line = finding.get("path"), finding.get("line")
-            location = f"`{path}:{line}`" if path and line else f"`{path}`" if path else "General"
-            lines.append(
-                f"- {severity_label(finding)} {location}: **{clip(finding.get('title'), 300)}** "
-                f"{clip(finding.get('body'), 800)}"
-            )
+        lines += ["", "**Not attached to a line:**", "", *finding_lines(elsewhere)]
     if not output.get("complete", True):
         lines += [
             "",
             "> [!WARNING]",
-            "> This review did not cover the whole change.",
+            f"> {INCOMPLETE_TEXT} {INCOMPLETE_MARKER}",
         ]
     lines += ["", f"<sub>Reviewed commit {head_sha}. {' '.join(details)}</sub>"]
     return "\n".join(lines) + "\n"
@@ -229,40 +317,63 @@ def main() -> int:
     head_sha = os.environ["HEAD_SHA"]
     findings = [f for f in output.get("findings", []) if isinstance(f, dict)]
     details = run_details(os.environ.get("EXECUTION_FILE"))
+    follow_up = os.environ.get("REVIEW_MODE") == "follow-up"
+    if follow_up:
+        # Follow-up reviews only gate merges, so drop anything below P1 even if the reviewer reported it.
+        blocking = [f for f in findings if f.get("severity") in FOLLOW_UP_SEVERITIES]
+        print(f"Follow-up review: dropped {len(findings) - len(blocking)} finding(s) below P1")
+        findings = blocking
+        details.append("Follow-up reviews report only blocking (P0/P1) issues.")
 
-    result = gh_api(
-        "--paginate", f"repos/{repo}/pulls/{pr}/comments", "--jq", f'.[] | select(.user.login == "{BOT_LOGIN}") | .body'
-    )
-    posted = set(FINDING_MARKER_RE.findall(result.stdout))
+    bodies = {}
+    for endpoint in ("comments", "reviews"):
+        result = gh_api(
+            "--paginate",
+            f"repos/{repo}/pulls/{pr}/{endpoint}",
+            "--jq",
+            f'.[] | select(.user.login == "{BOT_LOGIN}") | {{body}}',
+        )
+        bodies[endpoint] = [json.loads(line)["body"] or "" for line in result.stdout.splitlines() if line.strip()]
+    posted = posted_fingerprints(bodies["comments"], bodies["reviews"])
     valid_lines = commentable_lines(Path(".pr-review/pr.diff").read_text(encoding="utf-8", errors="replace"))
     inline, inline_findings, elsewhere, skipped = plan_comments(findings, valid_lines, posted)
 
-    if inline:
-        review = {
-            "commit_id": head_sha,
-            "event": "COMMENT",
-            "body": f"**{REVIEWER_NAME}**: {count_line(inline_findings)}. The summary comment has the overview.",
-            "comments": inline,
-        }
+    # The next follow-up replaces this follow-up's summary section, so also keep its findings without a line
+    # in the review body, which stays.
+    if inline or (follow_up and elsewhere):
+        review = review_payload(head_sha, inline, inline_findings, elsewhere if follow_up else [])
         result = gh_api("--method", "POST", f"repos/{repo}/pulls/{pr}/reviews", payload=review)
-        if result.returncode != 0:
+        if result.returncode != 0 and inline:
             print(f"::warning::Posting inline comments failed; listing them in the summary: {result.stderr[:500]}")
             elsewhere = [f for f in findings if fingerprint(f) not in posted]
             inline, inline_findings = [], []
+            if follow_up:
+                result = gh_api(
+                    "--method",
+                    "POST",
+                    f"repos/{repo}/pulls/{pr}/reviews",
+                    payload=review_payload(head_sha, [], [], elsewhere),
+                )
+        if result.returncode != 0:
+            print(f"::warning::Posting the review failed: {result.stderr[:500]}")
     print(f"Inline comments: {len(inline)}; summary-only findings: {len(elsewhere)}; already posted: {skipped}")
 
-    summary_path = Path(os.environ["RUNNER_TEMP"]) / "review-summary.md"
-    summary_path.write_text(summary_body(output, inline_findings, elsewhere, head_sha, details), encoding="utf-8")
     result = gh_api(
         "--paginate",
         f"repos/{repo}/issues/{pr}/comments",
         "--jq",
-        f'.[] | select(.user.login == "{BOT_LOGIN}" and (.body | startswith("{SUMMARY_MARKER}"))) | .id',
+        f'.[] | select(.user.login == "{BOT_LOGIN}" and (.body | startswith("{SUMMARY_MARKER}"))) | {{id, body}}',
     )
-    comment_ids = result.stdout.split()
-    if comment_ids:
+    comments = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    previous = comments[-1]["body"] if comments and follow_up else None
+    covered_rest = os.environ.get("FULL_DIFF") == "true" and output.get("complete", True) is True
+    summary_path = Path(os.environ["RUNNER_TEMP"]) / "review-summary.md"
+    summary_path.write_text(
+        summary_body(output, inline_findings, elsewhere, head_sha, details, previous, covered_rest), encoding="utf-8"
+    )
+    if comments:
         result = gh_api(
-            "--method", "PATCH", f"repos/{repo}/issues/comments/{comment_ids[-1]}", "-F", f"body=@{summary_path}"
+            "--method", "PATCH", f"repos/{repo}/issues/comments/{comments[-1]['id']}", "-F", f"body=@{summary_path}"
         )
     else:
         result = gh_api("--method", "POST", f"repos/{repo}/issues/{pr}/comments", "-F", f"body=@{summary_path}")
