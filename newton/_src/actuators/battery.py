@@ -209,11 +209,9 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
     actuators in a fixed order, so the voltage is deterministic.
 
     Call once per step, after the actuators have stepped. The effort is
-    ``control.actuator_computed_effort`` by default: the effort of each
-    actuator before clamping, which actuators built by
-    :class:`~newton.ModelBuilder` write there on every step. Pass *effort*
-    when a later stage represents the motor effort better, e.g. after a
-    clamp that models a motor current limit.
+    ``control.actuator_applied_effort`` by default: the effort each actuator
+    applies to the simulation, which actuators built by
+    :class:`~newton.ModelBuilder` write there on every step.
 
     The battery parameters are ``model.actuation.battery_nominal_voltage``,
     ``battery_resistance`` and ``battery_min_voltage``, indexed by battery;
@@ -229,10 +227,10 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
     Args:
         model: Model with batteries.
         control: Object carrying ``actuator_supply_voltage`` and
-            ``actuator_supply_current_gain``, and ``actuator_computed_effort``
+            ``actuator_supply_current_gain``, and ``actuator_applied_effort``
             when *effort* is ``None``, e.g. :class:`~newton.Control`.
         effort: Effort of each actuator [N or N·m], one entry per actuator.
-            ``None`` reads ``control.actuator_computed_effort``.
+            ``None`` reads ``control.actuator_applied_effort``.
 
     Raises:
         AttributeError: *control* has no ``actuator_supply_voltage`` or
@@ -243,7 +241,7 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
     """
     batteries = _require_batteries(model)
     if effort is None:
-        effort = _get_attribute(control, "actuator_computed_effort", None)
+        effort = _get_attribute(control, "actuator_applied_effort", None)
     supply_voltage = _require_actuator_array(model, _require_array(control, SUPPLY_VOLTAGE_ATTR), SUPPLY_VOLTAGE_ATTR)
     current_gain = _require_actuator_array(
         model, _require_array(control, SUPPLY_CURRENT_GAIN_ATTR), SUPPLY_CURRENT_GAIN_ATTR

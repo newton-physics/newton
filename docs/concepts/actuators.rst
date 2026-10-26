@@ -286,7 +286,8 @@ frequency, i.e. what the array has one entry for:
   returns the index of each actuator, and the model stores its DOF as
   ``model.actuation.actuator_dof``.
   Every actuator built by the builder also writes its effort before clamping
-  to ``control.actuator_computed_effort``.
+  to ``control.actuator_computed_effort`` and the effort it applies to the
+  simulation to ``control.actuator_applied_effort``.
 
 For actuators created by :class:`~newton.ModelBuilder`, the declared arrays are
 registered on :class:`~newton.Control` automatically.  The caller writes them
@@ -645,16 +646,14 @@ resistance, so its voltage drops with the total current of its actuators.
   each battery to its world, e.g. to randomize the parameters per world.
   ``model.actuation.actuator_battery`` and ``actuator_dof`` give the battery
   and DOF of each actuator.
-* Each actuator built by :class:`~newton.ModelBuilder` writes its effort
-  before clamping to ``control.actuator_computed_effort``, one entry per
+* Each actuator built by :class:`~newton.ModelBuilder` writes the effort it
+  applies to the simulation to ``control.actuator_applied_effort``, one entry per
   actuator, and a drive that draws from a battery writes its battery current
   per unit of effort to ``control.actuator_supply_current_gain``.
   :func:`update_battery_supply` multiplies the two, sums the current per
   battery, drops the voltage, down to a minimum, and writes it into
   ``control.actuator_supply_voltage``.  Call it once per step after the
-  actuators; the drives read the voltage on the next step.  To use another
-  effort, e.g. after a clamp that models a motor current limit, pass it as
-  ``effort``.
+  actuators; the drives read the voltage on the next step.
 * :func:`reset_battery_supply` restores the nominal voltage, of all
   batteries or of the batteries in the worlds of a mask.  Batteries added
   outside any world are reset only without a mask.

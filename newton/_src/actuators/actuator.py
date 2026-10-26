@@ -85,13 +85,17 @@ def _scatter_add_kernel(
     accumulate_computed: bool,
     output: wp.array[float],
     computed_output: wp.array[float],
+    actuator_output: wp.array[float],
 ):
-    """Scatter-add effort into output; optionally scatter computed effort too, added per DOF or written per actuator."""
+    """Scatter-add effort into output; optionally scatter computed effort too, added per DOF or written per actuator,
+    and write effort per actuator."""
     i = wp.tid()
     idx = indices[i]
     wp.atomic_add(output, idx, forces[i])
+    j = computed_indices[i]
+    if actuator_output:
+        actuator_output[j] = forces[i]
     if computed_output:
-        j = computed_indices[i]
         if accumulate_computed:
             wp.atomic_add(computed_output, j, computed_forces[i])
         else:
@@ -463,6 +467,7 @@ class Actuator:
         *,
         input_processors: list[InputProcessorBase] | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
+        control_applied_output_attr: str | None = None,
         controller: DriveBase | object | None = _DEPRECATED_UNSET,
     ):
         """Initialize actuator.
@@ -507,7 +512,12 @@ class Actuator:
                 i.e. arrays with one entry per actuator of the model rather
                 than per DOF. Required when the drive declares per-actuator
                 :attr:`~DriveBase.custom_inputs` or any
-                :attr:`~DriveBase.custom_outputs`.
+                :attr:`~DriveBase.custom_outputs`, or
+                *control_applied_output_attr*.
+            control_applied_output_attr: Attribute on sim_control for the
+                effort each actuator applies to the simulation, written at
+                :attr:`actuator_indices`. None to skip. Skipped while
+                *sim_control* has no such array or it is ``None``.
             controller: Deprecated in Newton 1.6; use ``drive`` instead.
         """
         if controller is not _DEPRECATED_UNSET:
@@ -559,12 +569,15 @@ class Actuator:
         self.control_feedforward_attr = control_feedforward_attr
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
+        self.control_applied_output_attr = control_applied_output_attr
         self._custom_inputs = _custom_input_frequencies(drive)
         actuator_inputs = [name for name, frequency in self._custom_inputs.items() if frequency == ACTUATOR_FREQUENCY]
         if actuator_inputs and actuator_indices is None:
             raise ValueError(
                 f"{type(drive).__name__} declares per-actuator custom inputs, which require actuator_indices"
             )
+        if control_applied_output_attr is not None and actuator_indices is None:
+            raise ValueError("control_applied_output_attr requires actuator_indices")
         if drive.custom_outputs and actuator_indices is None:
             raise ValueError(f"{type(drive).__name__} declares custom outputs, which require actuator_indices")
         self._actuator_inputs = {
@@ -632,7 +645,7 @@ class Actuator:
         drive's :attr:`~DriveBase.custom_outputs` are registered as
         per-actuator arrays (``actuation:actuator`` frequency), and
         :attr:`control_computed_output_attr` too when :attr:`actuator_indices`
-        is set.
+        is set, as is :attr:`control_applied_output_attr`.
         Registration allocates the arrays but does not populate or clear
         them; the caller must update the declared inputs before each actuator
         evaluation.
@@ -648,6 +661,8 @@ class Actuator:
 
         frequencies = dict(self._custom_inputs)
         frequencies.update(dict.fromkeys(self.drive.custom_outputs, ACTUATOR_FREQUENCY))
+        if self.control_applied_output_attr is not None:
+            frequencies[self.control_applied_output_attr] = ACTUATOR_FREQUENCY
         if self.actuator_indices is not None and self.control_computed_output_attr is not None:
             frequencies[self.control_computed_output_attr] = ACTUATOR_FREQUENCY
         for name, frequency in frequencies.items():
@@ -791,6 +806,7 @@ class Actuator:
             self.control_feedforward_attr,
             self.control_output_attr,
             self.control_computed_output_attr,
+            self.control_applied_output_attr,
         ]
         required = {
             "sim_state": state_attrs,
@@ -824,8 +840,8 @@ class Actuator:
         4. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
-           The drive's :attr:`~DriveBase.custom_outputs` are written per
-           actuator.
+           The effort applied to the simulation and the drive's
+           :attr:`~DriveBase.custom_outputs` are written per actuator.
         5. **Drive state update** — write the drive's ``next_state``.
 
         Args:
@@ -935,6 +951,9 @@ class Actuator:
             and self.control_computed_output_attr != self.control_output_attr
         ):
             computed_output = _get_attribute(sim_control, self.control_computed_output_attr, None)
+        actuator_output = None
+        if self.control_applied_output_attr is not None:
+            actuator_output = _get_attribute(sim_control, self.control_applied_output_attr, None)
         per_actuator = self.actuator_indices is not None
         wp.launch(
             kernel=_scatter_add_kernel,
@@ -946,7 +965,7 @@ class Actuator:
                 self.actuator_indices if per_actuator else self.effort_indices,
                 not per_actuator,
             ],
-            outputs=[applied_output, computed_output],
+            outputs=[applied_output, computed_output, actuator_output],
             device=self.device,
         )
         for name, source in self.drive.custom_outputs.items():

@@ -2733,14 +2733,14 @@ class TestDriveBAM(unittest.TestCase):
         battery 1. The knee is its own actuator group and the ankle servos
         share one, so a battery spans groups and two servos of one group act
         on one DOF. A servo draws ``duty * effort / kt`` with the effort
-        before clamping, and ``joint_f`` gets the clamped efforts. In world 0
+        it applies to the simulation, which also goes to ``joint_f``. In world 0
         the ankle regenerates: it offsets the knee's current on battery 0 and
         leaves battery 1 at its nominal voltage. In world 1 battery 0 reaches
         its minimum voltage. ``replicate`` gives each world its own batteries,
         and a masked reset restores the nominal voltage of world 0 only.
         """
         kp, kt, resistance, max_pwm, max_effort, target, dt = 0.5, 0.6, 2.0, 0.9, 0.8, 1.0, 0.01
-        nominal_voltage, min_voltage, battery_resistance = np.array([6.0, 4.0]), np.array([5.4, 3.0]), 0.5
+        nominal_voltage, min_voltage, battery_resistance = np.array([6.0, 4.0]), np.array([5.4, 3.0]), 1.0
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         links = [template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3)]
         joints = [
@@ -2805,13 +2805,15 @@ class TestDriveBAM(unittest.TestCase):
             computed = kt * (voltage * duty - kt * qd[dof]) / resistance
             np.testing.assert_allclose(control.actuator_computed_effort.numpy(), computed, rtol=1e-5)
             np.testing.assert_allclose(control.actuator_supply_current_gain.numpy(), duty / kt, rtol=1e-5)
+            clamped = np.clip(computed, -max_effort, max_effort)
+            np.testing.assert_allclose(control.actuator_applied_effort.numpy(), clamped, rtol=1e-5)
             applied = np.zeros(model.joint_dof_count)
-            np.add.at(applied, dof, np.clip(computed, -max_effort, max_effort))
+            np.add.at(applied, dof, clamped)
             np.testing.assert_allclose(control.joint_f.numpy(), applied, rtol=1e-5)
             update_battery_supply(model, control)
-            drawn = np.bincount(battery, duty * computed / kt, minlength=4)
+            drawn = np.bincount(battery, duty * clamped / kt, minlength=4)
             if step == 0:
-                self.assertTrue(0.0 < drawn[0] < duty[0] * computed[0] / kt and drawn[1] < 0.0)
+                self.assertTrue(0.0 < drawn[0] < duty[0] * clamped[0] / kt and drawn[1] < 0.0)
         self.assertAlmostEqual(control.actuator_supply_voltage.numpy()[3], min_voltage[0], places=5)
 
         reset_battery_supply(model, control, world_mask=wp.array([True, False], dtype=wp.bool))

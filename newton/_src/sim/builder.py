@@ -15749,6 +15749,7 @@ class ModelBuilder:
                     input_processors=input_processor_objs,
                     actuator_indices=self._build_index_array(entry.actuator_indices, device) if has_rows else None,
                     control_computed_output_attr="actuator_computed_effort" if has_rows else None,
+                    control_applied_output_attr="actuator_applied_effort" if has_rows else None,
                 )
 
                 if "actuator_supply_voltage" in drive.custom_inputs:
