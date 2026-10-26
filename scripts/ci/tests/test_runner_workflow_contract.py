@@ -40,6 +40,16 @@ SCHEDULED_CALLERS = (
 
 
 class TestRunnerWorkflowContract(unittest.TestCase):
+    def test_minimum_deps_uses_pinned_ami_without_fallback(self):
+        """Keep the minimum-dependency job on a pre-R580 image."""
+        workflow = (ROOT / ".github/workflows/minimum_deps_tests.yml").read_text(encoding="utf-8")
+        action = START_RUNNER_ACTION.read_text(encoding="utf-8")
+        self.assertIn("  AWS_INSTANCE_TYPE: g6e.2xlarge\n", workflow)
+        self.assertIn("  AWS_AMI_NAME: Deep Learning Base AMI with Single CUDA (Ubuntu 22.04) 20250930\n", workflow)
+        self.assertIn("          ami-name: ${{ env.AWS_AMI_NAME }}\n", workflow)
+        self.assertNotIn("          fallback-instance-type:", workflow)
+        self.assertEqual(action.count("        AWS_AMI_NAME: ${{ inputs.ami-name }}\n"), 2)
+
     @staticmethod
     def _event_block(workflow: str, event: str, next_marker: str) -> str:
         start = workflow.index(f"  {event}:")

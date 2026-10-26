@@ -22,6 +22,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     _eval_soft_ef_contact,
     _reset_world_selected,
     dat_separation_epsilon,
+    evaluate_body_particle_attachment_particle_force_hessian,
     evaluate_body_particle_contact,
     find_edge_edge_separator,
     find_vertex_triangle_separator,
@@ -31,6 +32,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
+from ...geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionInfo,
     get_edge_colliding_edges_count,
@@ -502,7 +504,7 @@ def _test_compute_force_element_adjacency(
             bd_id, v_order = get_vertex_adjacent_edge_id_order(adjacency, vertex, i_bd)
 
             if edge_indices[bd_id, v_order] != vertex:
-                print("Error!!!")
+                print("Error!!!")  # noqa: T201
                 wp.printf("vertex: %d | num_adj_edges: %d\n", vertex, num_adj_edges)
                 wp.printf("--iBd: %d | ", i_bd)
                 wp.printf("edge id: %d | v_order: %d\n", bd_id, v_order)
@@ -517,7 +519,7 @@ def _test_compute_force_element_adjacency(
             )
 
             if face_indices[face, v_order] != vertex:
-                print("Error!!!")
+                print("Error!!!")  # noqa: T201
                 wp.printf("vertex: %d | num_adj_faces: %d\n", vertex, num_adj_faces)
                 wp.printf("--i_face: %d | face id: %d | v_order: %d\n", i_face, face, v_order)
                 wp.printf(
@@ -1566,7 +1568,7 @@ def accumulate_self_contact_force_and_hessian(
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
     # self contact
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     collision_radius: float,
     soft_contact_ke: float,
     soft_contact_kd: float,
@@ -1578,8 +1580,6 @@ def accumulate_self_contact_force_and_hessian(
     particle_hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
-
     primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
     t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 
@@ -1846,6 +1846,48 @@ def accumulate_spring_force_and_hessian(
 
 
 @wp.kernel
+def accumulate_body_particle_attachment_force_and_hessian(
+    dt: float,
+    current_color: int,
+    particle_q_prev: wp.array[wp.vec3],
+    particle_q: wp.array[wp.vec3],
+    particle_colors: wp.array[int],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    attachment_body: wp.array[int],
+    attachment_particle: wp.array[int],
+    attachment_body_point: wp.array[wp.vec3],
+    attachment_stiffness: wp.array[float],
+    attachment_damping: wp.array[float],
+    attachment_enabled: wp.array[bool],
+    particle_forces: wp.array[wp.vec3],
+    particle_hessians: wp.array[wp.mat33],
+):
+    """Accumulate particle-body attachment forces and Hessians on particles."""
+    attachment = wp.tid()
+    if not attachment_enabled[attachment]:
+        return
+
+    particle = attachment_particle[attachment]
+    if particle_colors[particle] != current_color:
+        return
+
+    body = attachment_body[attachment]
+    force, hessian = evaluate_body_particle_attachment_particle_force_hessian(
+        particle_q[particle],
+        particle_q_prev[particle],
+        body_q[body],
+        body_q_prev[body],
+        attachment_body_point[attachment],
+        attachment_stiffness[attachment],
+        attachment_damping[attachment],
+        dt,
+    )
+    wp.atomic_add(particle_forces, particle, force)
+    wp.atomic_add(particle_hessians, particle, hessian)
+
+
+@wp.kernel
 def accumulate_contact_force_and_hessian_no_self_contact(
     # inputs
     dt: float,
@@ -2014,14 +2056,12 @@ def apply_planar_truncation_parallel_by_collision(
     displacement_in: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     gamma: float,
     truncation_t_out: wp.array[float],
 ):
     """Truncate particle displacements against soft self-contact division planes, one thread group per EE or VT pair."""
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
-
     primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
     t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 
@@ -2178,7 +2218,7 @@ def build_particle_body_contact_adjacency_active(
     particle_contact_head: wp.array[int],
     particle_contact_next: wp.array[int],
 ):
-    """Build linked per-particle incidence lists over the compact active contact prefix."""
+    """Build per-particle candidate lists independent of current force eligibility."""
     contact_index = wp.tid()
     if contact_index >= min(body_particle_contact_max, body_particle_contact_count[0]):
         return
@@ -2227,6 +2267,7 @@ def gather_particle_body_contact_force_and_hessian(
     contact_normal: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     contact_barycentric: wp.array[wp.vec3],
+    contact_filter: _SoftContactFilterData,
     # outputs
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -2257,6 +2298,8 @@ def gather_particle_body_contact_force_and_hessian(
         last = node
 
         contact_index = node // 3
+        if not _soft_contact_force_enabled(contact_index, contact_filter):
+            continue
         corner = node - 3 * contact_index
         corners = body_particle_contact_indices[contact_index]
         contact_ke = body_particle_contact_penalty_k[contact_index]
@@ -2338,6 +2381,7 @@ def scatter_particle_body_contact_force_and_hessian(
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_count: wp.array[int],
+    contact_filter: _SoftContactFilterData,
     body_particle_contact_max: int,
     worker_count: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
@@ -2381,7 +2425,9 @@ def scatter_particle_body_contact_force_and_hessian(
         if corners[1] < 0:
             # Particle record (p, -1, -1).
             particle_index = corners[0]
-            if particle_colors[particle_index] == current_color:
+            if particle_colors[particle_index] == current_color and _soft_contact_force_enabled(
+                contact_index, contact_filter
+            ):
                 contact_force, contact_hessian = _eval_body_particle_contact(
                     particle_index,
                     pos[particle_index],
@@ -2415,7 +2461,7 @@ def scatter_particle_body_contact_force_and_hessian(
                 if corner_index >= 0:
                     if particle_colors[corner_index] == current_color:
                         active = True
-            if active:
+            if active and _soft_contact_force_enabled(contact_index, contact_filter):
                 bary = contact_barycentric[contact_index]
                 contact_force, contact_hessian, _cp_world = _eval_soft_ef_contact(
                     contact_index,
@@ -2825,7 +2871,7 @@ def accumulate_contact_force_and_hessian(
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
     # self contact
-    collision_info_array: wp.array[TriMeshCollisionInfo],
+    collision_info: TriMeshCollisionInfo,
     collision_radius: float,
     soft_contact_ke: float,
     soft_contact_kd: float,
@@ -2853,8 +2899,6 @@ def accumulate_contact_force_and_hessian(
     particle_hessians: wp.array[wp.mat33],
 ):
     t_id = wp.tid()
-    collision_info = collision_info_array[0]
-
     primitive_id = t_id // NUM_THREADS_PER_COLLISION_PRIMITIVE
     t_id_current_primitive = t_id % NUM_THREADS_PER_COLLISION_PRIMITIVE
 

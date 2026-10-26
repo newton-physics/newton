@@ -108,8 +108,8 @@ class Example:
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
 
-        self.time = 0.0
-        self.time_delta = 0.005
+        self.sim_time = 0.0
+        self.frame_dt = 0.005
 
         self.viewer = viewer
         self.show_robot_camera = False
@@ -131,7 +131,7 @@ class Example:
 
         robot_asset = newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf"
         robot_builder = newton.ModelBuilder()
-        robot_builder.add_urdf(robot_asset, floating=False)
+        robot_builder.add_urdf(robot_asset, floating=False, joint_damping_mode="passive")
         robot_camera_body = robot_builder.body_label.index("fr3/fr3_link6")
 
         gaussian = None
@@ -268,11 +268,11 @@ class Example:
         self.sensor_camera_transforms = wp.empty(view_count, dtype=wp.transformf, device=self.model.device)
         self.robot_sensor_camera_transforms = wp.empty(view_count, dtype=wp.transformf, device=self.model.device)
 
-        self.sensor_camera_color_image = self.sensor_camera.create_color_image_output(view_count, W, H)
-        self.sensor_camera_albedo_image = self.sensor_camera.create_albedo_image_output(view_count, W, H)
-        self.sensor_camera_depth_image = self.sensor_camera.create_depth_image_output(view_count, W, H)
-        self.sensor_camera_normal_image = self.sensor_camera.create_normal_image_output(view_count, W, H)
-        self.sensor_camera_shape_index_image = self.sensor_camera.create_shape_index_image_output(view_count, W, H)
+        self.sensor_camera_color_image = self.sensor_camera.allocate_image_color(view_count, W, H)
+        self.sensor_camera_albedo_image = self.sensor_camera.allocate_image_albedo(view_count, W, H)
+        self.sensor_camera_depth_image = self.sensor_camera.allocate_image_depth(view_count, W, H)
+        self.sensor_camera_normal_image = self.sensor_camera.allocate_image_normal(view_count, W, H)
+        self.sensor_camera_shape_index_image = self.sensor_camera.allocate_image_shape_index(view_count, W, H)
 
         # Palette for the "semantic" debug view: looked up by shape index.
         # Indices written into shape_index_image come from builder shape order,
@@ -303,7 +303,7 @@ class Example:
             animate_franka,
             self.model.joint_count,
             [
-                self.time,
+                self.sim_time,
                 self.model.joint_type,
                 self.model.joint_dof_dim,
                 self.model.joint_q_start,
@@ -314,12 +314,12 @@ class Example:
             outputs=[self.state.joint_q],
         )
         newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
-        self.time += self.time_delta
+        self.sim_time += self.frame_dt
 
     def render(self):
         sensor_image_is_main_view = self.render_sensors()
 
-        self.viewer.begin_frame(0.0)
+        self.viewer.begin_frame(self.sim_time)
         if not sensor_image_is_main_view:
             self.viewer.log_state(self.state)
         self.viewer.end_frame()
@@ -574,7 +574,7 @@ class Example:
             render_config.gaussians_max_num_hits = value
             show_compile_kernel_info = True
 
-        if show_compile_kernel_info:
+        if show_compile_kernel_info and isinstance(self.viewer, ViewerGL):
             display_width = self.viewer.renderer.window.width
             display_height = self.viewer.renderer.window.height
 

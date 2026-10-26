@@ -93,7 +93,6 @@ class Example:
             bend_damping=bend_damping,
             label="y_graph",
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
 
         # Pin one tip capsule (end of the first branch).
@@ -118,7 +117,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
         )
 
         self.state_0 = self.model.state()
@@ -131,13 +129,6 @@ class Example:
         self.pinned_body_q0 = self.state_0.body_q.numpy()[self.pinned_body].copy()
 
         self.viewer.set_model(self.model)
-
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            pick_state = picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = 0.1
-            pick_state[0]["pick_damping"] = 0.01
-            picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
             pos=wp.vec3(2.10, 0.0, z0 - 0.15),

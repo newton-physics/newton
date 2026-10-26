@@ -22,7 +22,7 @@ supported USD deformable imports populate these lists:
      - Native construction
      - USD deformable import
    * - ``curve_label`` / ``curve_world``
-     - :meth:`~newton.ModelBuilder.add_rod`, :meth:`~newton.ModelBuilder.add_rod_graph` (legacy)
+     - :meth:`~newton.ModelBuilder.add_rod`
      - Cable ``BasisCurves``
    * - ``surface_label`` / ``surface_world``
      - :meth:`~newton.ModelBuilder.add_cloth_mesh`, :meth:`~newton.ModelBuilder.add_cloth_grid`
@@ -64,7 +64,6 @@ Use the lists to identify assets while composing or cloning a builder:
    prototype.add_rod(
        rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
        label="cable",
-       body_frame_origin="com",
    )
 
    # Replace a template name with the application's asset name.

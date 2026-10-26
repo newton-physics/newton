@@ -111,6 +111,9 @@ Pre-release planning
          :ref:`developer guidance <experimental-features>`.
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``uv run docs/generate_api.py``).
+       - Reconcile authorable features with schema/importer coverage and
+         accepted deferrals under :ref:`source-code-guidelines`. Surface gaps
+         for an explicit release decision.
 
        Run the ``release-audit`` skill
        (``.agents/skills/release-audit``) in **pre-release mode** to automate

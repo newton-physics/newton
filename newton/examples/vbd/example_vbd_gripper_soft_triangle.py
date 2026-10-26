@@ -149,7 +149,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.params["solver_iterations"],
-            rigid_compliant_alm=True,
             integrate_with_external_rigid_solver=False,
             rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
         )
@@ -181,6 +180,8 @@ class Example:
         )
         if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = self.params["camera_fov"]
+
+        self.capture()
 
     # ── model construction ──────────────────────────────────────────────
 
@@ -327,6 +328,13 @@ class Example:
 
     # ── simulation loop ─────────────────────────────────────────────────
 
+    def capture(self):
+        self.graph = None
+        if self.model.device.is_cpu or not wp.config.verify_cuda:
+            with wp.ScopedCapture(device=self.model.device) as capture:
+                self.simulate()
+            self.graph = capture.graph
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -338,7 +346,10 @@ class Example:
     def step(self):
         self.frame += 1
         self._advance_waypoint()
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):

@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Vec3
+from ..exceptions import NewtonWarning
 from .inertia import compute_inertia_mesh
 from .types import (
     GeoType,
@@ -403,18 +404,11 @@ def load_mesh(filename: str, method: str | None = None):
 
             m = trimesh.load(filename)
             if hasattr(m, "geometry"):
-                # multiple meshes are contained in a scene; combine to one mesh
-                mesh_points = []
-                mesh_indices = []
-                index_offset = 0
-                for geom in m.geometry.values():
-                    vertices = np.array(geom.vertices, dtype=np.float32)
-                    faces = np.array(geom.faces.flatten(), dtype=np.int32)
-                    mesh_points.append(vertices)
-                    mesh_indices.append(faces + index_offset)
-                    index_offset += len(vertices)
-                mesh_points = np.concatenate(mesh_points, axis=0)
-                mesh_indices = np.concatenate(mesh_indices)
+                # Combine scene parts with their node transforms applied;
+                # raw vertices are in node-local space.
+                combined = m.to_mesh()
+                mesh_points = np.array(combined.vertices, dtype=np.float32)
+                mesh_indices = np.array(combined.faces.flatten(), dtype=np.int32)
             else:
                 # a single mesh
                 mesh_points = np.array(m.vertices, dtype=np.float32)
@@ -575,7 +569,9 @@ def remesh_ftetwild(
 
     if len(new_vertices) == 0 or len(new_faces) == 0:
         warnings.warn(
-            "Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.", stacklevel=2
+            "Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.",
+            NewtonWarning,
+            stacklevel=2,
         )
         return vertices, faces
 
@@ -787,7 +783,7 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
             f"remesh_convex_hull: input point cloud is {rank}; returning a "
             "zero-volume fallback mesh. Downstream inertia computations will "
             "produce zero mass / COM / inertia.",
-            UserWarning,
+            NewtonWarning,
             stacklevel=2,
         )
 

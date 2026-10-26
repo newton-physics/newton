@@ -9,6 +9,7 @@ from typing import Literal
 import warp as wp
 from warp import DeviceLike as Devicelike
 
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 
 GENERATION_SENTINEL = -1
@@ -32,7 +33,7 @@ def _warn_rigid_contact_diff_deprecated(name: str) -> None:
     replacement = _RIGID_CONTACT_DIFF_REPLACEMENTS[name]
     warnings.warn(
         f"Contacts.{name} is deprecated in Newton 1.6 and will be removed in a future release; {replacement}.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=3,
     )
 
@@ -131,14 +132,12 @@ class Contacts:
 
     EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(("force",))
     """
-    Names of optional extended contact attributes that are not allocated by default.
+    Deprecated optional solver-produced contact attributes.
 
-    These can be requested via :meth:`newton.ModelBuilder.request_contact_attributes` or
-    :meth:`newton.Model.request_contact_attributes` before calling
-    :meth:`newton.CollisionPipeline.contacts`. When constructing :class:`newton.Contacts` directly,
-    pass the names via ``requested_attributes``.
+    .. deprecated:: 1.7
 
-    See :ref:`extended_contact_attributes` for details and usage.
+        Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the
+        solver instead.
     """
 
     @classmethod
@@ -208,8 +207,8 @@ class Contacts:
                 If False (default), clear() only resets counts in a single fused kernel launch,
                 relying on collision detection to overwrite active contacts. This is much faster
                 than the conservative path and safe since solvers only read up to contact_count.
-            requested_attributes: Set of extended contact attribute names to allocate.
-                See :attr:`EXTENDED_ATTRIBUTES` for available options.
+            requested_attributes: Deprecated set of solver-produced contact
+                attribute names to allocate. See :attr:`EXTENDED_ATTRIBUTES`.
             contact_matching: Allocate a per-contact match index array
                 (:attr:`rigid_contact_match_index`) that stores frame-to-frame
                 contact correspondences filled by the collision pipeline.
@@ -247,20 +246,23 @@ class Contacts:
         self.clear_buffers = clear_buffers
         self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
         with wp.ScopedDevice(device):
-            # One int32[3] array holding two independent contact counts, [0] rigid and [1] soft,
-            # plus [2] an internal flag set when global contact reduction lost candidates.
+            # Two contact counts, [0] rigid and [1] soft, plus overflow flags:
+            # [2] global contact reduction and [3] a coupled source's soft-contact buffer.
             # rigid_contact_count (the [0:1] view) and soft_contact_count (the [1:2] view) index
             # into this same array, so each remains a separate count; they share one array only so
             # a single kernel can reset all slots to zero in one launch. The reset
             # happens at the start of every collision pass -- folded into the first kernel that
             # runs, compute_shape_aabbs -- and clear() resets them as well.
-            self.contact_counters = wp.zeros(3, dtype=wp.int32)
+            self.contact_counters = wp.zeros(4, dtype=wp.int32)
             # Sliced view for the rigid counter (no additional allocation)
             self.rigid_contact_count = self.contact_counters[0:1]
             # Nonzero when the collision pass that filled this buffer dropped contact candidates
             # inside global contact reduction (reducer buffer or hashtable full). Owned by this
             # contact stream rather than aliased to a pipeline's reusable reducer counters.
             self._reduction_overflow = self.contact_counters[2:3]
+            # Coupling packs stored rows and loses the source count's overflow sentinel.
+            # Preserve that loss so force consumers keep the source's overflow policy.
+            self._soft_contact_source_overflow = self.contact_counters[3:4]
 
             self.contact_generation = wp.zeros(1, dtype=wp.int32)
             """Device-side generation counter, incremented each time :meth:`clear` is called.
@@ -353,8 +355,18 @@ class Contacts:
                 Non-negative elements index matching contacts in the previous sorted contact buffer.
                 Negative elements indicate new or broken contacts.
                 Shape (rigid_contact_max,), dtype int32."""
+                self.rigid_contact_match_generation = wp.full(1, GENERATION_SENTINEL, dtype=wp.int32)
+                """:attr:`contact_generation` of this buffer's contact set that
+                :attr:`rigid_contact_match_index` refers to.
+
+                ``-1`` when the indices refer to no earlier contact set of this buffer:
+                the pipeline's previous collision pass wrote another buffer, or wrote none,
+                or the buffer was written without matching. Consumers that carry
+                per-contact state across frames can compare it with the generation they
+                saved. Shape (1,), dtype int32."""
             else:
                 self.rigid_contact_match_index = None
+                self.rigid_contact_match_generation = None
 
             if contact_report:
                 self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
@@ -398,6 +410,15 @@ class Contacts:
             Particle contact ``(p, -1, -1)``, edge contact ``(v0, v1, -1)``, face contact
             ``(v0, v1, v2)``. Pair with :attr:`soft_contact_barycentric` to recover the contact
             point over the non-negative slots."""
+            # Detected mesh feature IDs are discrete and unchanged through backward replay.
+            # Records use the final contact slots, never an intermediate candidate pool. The
+            # parameter holds a detection-time soft-edge parameter for penetration recovery.
+            # Detection reports every feature pair. Force evaluation uses these
+            # records and the topology reference to test the current configuration.
+            self._soft_contact_mesh_features = None
+            self._soft_contact_mesh_params = None
+            self._soft_contact_mesh_state = None
+            self._soft_contact_mesh_data = None
             # Particle-only view kept for solvers that consume particle contacts exclusively (XPBD,
             # semi-implicit, Style3D). Holds the particle id for particle contacts; -1 for edge/face.
             self.soft_contact_particle = wp.full(soft_contact_max, -1, dtype=int)
@@ -431,7 +452,7 @@ class Contacts:
             # lives at the consuming solver. Kept private to avoid a public API/deprecation surface.
             self._enable_rigid_soft_full_surface_contact = False
 
-            # Extended contact attributes (optional, allocated on demand)
+            # Deprecated contact attributes (optional compatibility allocation)
             self.force: wp.array | None = None
             """Contact forces (spatial) [N, N·m], shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
             Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
@@ -445,7 +466,9 @@ class Contacts:
             static. Negating the force gives the force on the soft contact point. Which rows a solver populates
             is documented by its ``update_contacts`` method; unpopulated rows are left unwritten.
 
-            This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.
+            .. deprecated:: 1.7
+                Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` and read
+                :attr:`newton.solvers.SolverBase.Observables.contact_f` instead.
             """
             if requested_attributes and "force" in requested_attributes:
                 total_contacts = rigid_contact_max + soft_contact_max
@@ -539,11 +562,14 @@ class Contacts:
 
             if self.rigid_contact_match_index is not None:
                 self.rigid_contact_match_index.fill_(-1)
+                self.rigid_contact_match_generation.fill_(GENERATION_SENTINEL)
 
             self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
             self.soft_contact_particle.fill_(-1)
             self.soft_contact_shape.fill_(-1)
             self.soft_contact_tids.fill_(-1)
+            if self._soft_contact_mesh_features is not None:
+                self._soft_contact_mesh_features.fill_(wp.vec3i(-1, -1, -1))
         # else: Optimized path (default) - only counter clear needed
         #   Collision detection overwrites all active contacts [0, contact_count)
         #   Solvers only read [0, contact_count), so stale data is never accessed

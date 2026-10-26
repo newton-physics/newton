@@ -26,31 +26,58 @@ Minimum Requirements
      - Notes
    * - Python
      - 3.10
-     - 3.11+ recommended
+     - 3.10 support is deprecated; removal planned for Newton 1.9. Use 3.11+.
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
      - macOS has no GPU acceleration
-   * - NVIDIA GPU
-     - Compute capability 5.0+ (Maxwell)
-     - Any GeForce GTX 9xx or newer
-   * - NVIDIA Driver
-     - 545 or newer (CUDA 12)
-     - 550 or newer (CUDA 12.4) recommended for best performance
-   * - CUDA
-     - 12, 13
-     - No local CUDA Toolkit required; `Warp <https://github.com/NVIDIA/warp>`__ bundles its own runtime. See :ref:`cuda-compatibility` for version-specific notes.
+
+GPU requirements depend on the installed `Warp
+<https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__ wheel:
+
+.. list-table::
+   :widths: 20 25 25 30
+   :header-rows: 1
+
+   * - Warp wheel
+     - NVIDIA GPU
+     - NVIDIA driver
+     - CUDA support
+   * - 1.18+ (fresh installs)
+     - 1.18: compute capability 7.5+ (Turing)
+     - 1.18: R580 or newer
+     - Standard 1.18 wheel uses CUDA 13.4; check Warp's requirements for later releases
+   * - 1.17
+     - Compute capability 5.2+ (Maxwell) on x86-64; see the ARM64 limitation below
+     - 545 or newer (Newton 1.7 requirement)
+     - Standard wheel uses CUDA 12.9
+
+Newton 1.7 deprecates CUDA 12 GPU support, while retaining it with a Warp
+wheel built with CUDA 12 throughout the 1.7 release line. To use the standard
+Warp 1.17 wheel on an R545–R579 driver or an older supported GPU, install both
+packages in one request::
+
+    python -m pip install "newton" "warp-lang==1.17.0"
+
+Keep the Warp pin in your application's requirements or constraints file for
+later installs. A local CUDA Toolkit is not needed for standard Warp wheels.
+See :ref:`cuda-compatibility` for version-specific notes.
 
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+**Linux**
+
+On Linux, the ``importers`` and ``remesh`` extras (and extras that include them,
+such as ``examples`` and ``dev``) require GLIBC 2.35 or newer, e.g. Ubuntu
+22.04+. RHEL 9 and Amazon Linux 2023 can install only the base package.
+
 **Linux aarch64 (ARM64)**
 
-On ARM64 Linux, the ``importers`` extra requires GLIBC 2.35 or newer because
-`usd-exchange <https://pypi.org/project/usd-exchange/>`__ publishes its Linux
-ARM64 wheels for ``manylinux_2_35``. This also applies to extras that include
-``importers``, such as ``examples`` and ``dev``. Distributions with an older
-GLIBC, including RHEL 9 with GLIBC 2.34, can install the base Newton package but
-cannot install these extras from the published wheels.
+The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
+``sm_70`` targets on Linux ARM64. The installation command above does not
+enable these GPUs. They need a Warp wheel built with an earlier CUDA 12
+toolkit; see `Warp's CUDA 12.9 ARM64 limitation
+<https://nvidia.github.io/warp/v1.17/user_guide/installation.html#cuda-12-9-limitation-on-linux-arm-platforms>`__.
 
 Installing the ``examples`` extra on ARM64 Linux systems such as NVIDIA Jetson
 Thor and DGX Spark also requires X11 development libraries to build
@@ -115,8 +142,8 @@ with other packages:
 .. note::
 
     Users on Python 3.10 may experience issues when installing ``imgui_bundle`` (a dependency of the
-    ``examples`` extra). If you encounter installation errors, we recommend upgrading to a later
-    Python version, or follow the :doc:`development` guide to install Newton using ``uv``.
+    ``examples`` extra). If you encounter installation errors, we recommend upgrading to
+    Python 3.11 or newer, or follow the :doc:`development` guide to install Newton using ``uv``.
 
 .. _running-examples:
 
@@ -202,7 +229,7 @@ simultaneously on the GPU:
 
     # Replicate into parallel worlds
     builder = newton.ModelBuilder()
-    builder.replicate(template, world_count=1024)
+    builder.replicate(template, copy_count=1024)
     builder.add_ground_plane()
     model = builder.finalize()
 
@@ -238,7 +265,11 @@ Additional optional dependency sets are defined in ``pyproject.toml``:
    * - ``examples``
      - Dependencies for running examples, including visualization and ONNX policy inference (includes ``sim`` + ``importers`` + ``onnx``)
    * - ``torch-cu12``
-     - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
+     - PyTorch (CUDA 12.8+) for workflows that explicitly need PyTorch, such as
+       training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes
+       ``examples``). On an R545–R579 driver, install with
+       ``python -m pip install "newton[torch-cu12]" "warp-lang==1.17.0"``; the extra
+       does not select Warp 1.17 by itself.
    * - ``torch-cu13``
      - PyTorch (CUDA 13) for workflows that explicitly need PyTorch, such as training or running Torch ``.pt2`` / ``.pt`` / ``.pth`` policies (includes ``examples``)
    * - ``notebook``

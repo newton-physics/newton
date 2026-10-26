@@ -13,6 +13,8 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..utils.color import ColorSpace
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
@@ -231,7 +233,7 @@ class Mesh:
         self._validate_indices(self._vertices, self._indices)
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
-        self._color: Vec3 | None = None
+        self._color: wp.vec3 | None = None
         self.color = color
         self._opacity: float | None = None
         self.opacity = opacity
@@ -416,19 +418,25 @@ class Mesh:
         compute_uvs: bool = True,
         compute_inertia: bool = True,
     ) -> "Mesh":
-        """Create a capsule mesh.
+        """Create a capsule mesh with shared equators and pole vertices.
+
+        Positive-radius meshes are watertight. A zero radius produces degenerate
+        geometry for compatibility with zero-size shapes.
 
         Args:
-            radius [m]: Radius of the capsule hemispheres and cylindrical body.
-            half_height [m]: Half-height of the cylindrical section.
+            radius [m]: Nonnegative radius of the capsule hemispheres and cylindrical body.
+            half_height [m]: Nonnegative half-height of the cylindrical section. Zero creates a sphere.
             up_axis: Long axis as a ``newton.Axis`` value.
-            segments: Tessellation resolution for both caps and body.
+            segments: Tessellation resolution for both caps and body, at least 3.
             compute_normals: If ``True``, generate per-vertex normals.
             compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
             A capsule mesh.
+
+        Raises:
+            ValueError: If the dimensions, segment count, or up axis are invalid.
         """
         from ..utils.mesh import create_mesh_capsule  # noqa: PLC0415
 
@@ -796,6 +804,8 @@ class Mesh:
         """
         Create a copy of this mesh, optionally with new vertices or indices.
 
+        Mesh data is copied independently; the SDF is shared when ``vertices`` and ``indices`` are omitted.
+
         Args:
             vertices: New vertices to use (default: current vertices).
             indices: New indices to use (default: current indices).
@@ -831,9 +841,9 @@ class Mesh:
             texture_transform=self._texture_transform,
         )
         if not recompute_inertia:
-            m.inertia = self.inertia
+            m.inertia = wp.mat33(self.inertia)
             m.mass = self.mass
-            m.com = self.com
+            m.com = wp.vec3(self.com)
             m.has_inertia = self.has_inertia
         # Only carry mesh-topology-derived caches forward when the geometry
         # is unchanged. ``_collision_edges`` indexes the original vertex
@@ -1543,13 +1553,13 @@ class Mesh:
         return self._uvs
 
     @property
-    def color(self) -> Vec3 | None:
+    def color(self) -> wp.vec3 | None:
         """Optional display RGB color with values in [0, 1]."""
         return self._color
 
     @color.setter
     def color(self, value: Vec3 | None):
-        self._color = value
+        self._color = wp.vec3(value) if value is not None else None
 
     @property
     def opacity(self) -> float | None:
@@ -1755,17 +1765,9 @@ class Mesh:
         Returns:
             Mesh: A new Mesh instance.
         """
-        from ..usd.utils import get_mesh  # noqa: PLC0415
+        from ..usd._mesh_loading import _create_mesh  # noqa: PLC0415
 
-        if prim is not None:
-            if source is not None:
-                raise TypeError("Mesh.create_from_usd() received both 'source' and legacy 'prim'; pass only one.")
-            source = prim
-
-        result = get_mesh(source, **kwargs)
-        if isinstance(result, tuple):
-            return result[0]
-        return result
+        return _create_mesh(source, prim=prim, **kwargs)
 
     @staticmethod
     def create_from_file(filename: str, method: str | None = None, **kwargs) -> "Mesh":
@@ -2304,6 +2306,7 @@ class TetMesh:
                 warnings.warn(
                     f"Custom attribute '{name}' with frequency {freq} cannot be saved to meshio format "
                     f"(only PARTICLE and TETRAHEDRON are supported). Skipping.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -2524,6 +2527,10 @@ class Heightfield:
         return self._cached_hash
 
 
+SH_C0 = 0.28209479177387814
+"""Zeroth-order real spherical-harmonics basis constant, :math:`1 / (2\\sqrt{\\pi})`."""
+
+
 class Gaussian:
     """Represents a Gaussian splat asset for rendering and rigid body attachment.
 
@@ -2566,6 +2573,7 @@ class Gaussian:
         scales: wp.array[wp.vec3f]
         opacities: wp.array[wp.float32]
         sh_coeffs: wp.array2d[wp.float32]
+        sh_color_space: wp.int32
         bvh_id: wp.uint64
         min_response: wp.float32
         sorting_mode: wp.int32
@@ -2586,6 +2594,8 @@ class Gaussian:
         sh_degree: int | None = None,
         min_response: float = 0.1,
         sorting_mode: SortingMode = SortingMode.RAY_HIT_DISTANCE,
+        *,
+        sh_color_space: ColorSpace = ColorSpace.SRGB,
     ):
         """Construct a Gaussian splat asset from arrays.
 
@@ -2605,6 +2615,11 @@ class Gaussian:
             sorting_mode: Sorting strategy for depth-ordering Gaussian
                 intersections along each ray before alpha compositing
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
+            sh_color_space: Color space of evaluated SH radiance. Defaults to
+                sRGB (display-encoded); pass :attr:`~newton.utils.ColorSpace.LINEAR`
+                for scene-linear radiance. Only :class:`~newton.sensors.SensorCamera`
+                honors this; the deprecated :class:`~newton.sensors.SensorTiledCamera`
+                ignores it.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2640,6 +2655,7 @@ class Gaussian:
         self._min_response = float(min_response)
 
         self._sorting_mode = sorting_mode
+        self._sh_color_space = ColorSpace(sh_color_space)
 
         self._cached_hash = None
         self._positions.setflags(write=False)
@@ -2697,6 +2713,11 @@ class Gaussian:
         return self._sh_degree
 
     @property
+    def sh_color_space(self) -> ColorSpace:
+        """Color space of evaluated spherical-harmonics radiance."""
+        return self._sh_color_space
+
+    @property
     def min_response(self) -> float:
         """Min response, float."""
         return self._min_response
@@ -2723,12 +2744,12 @@ class Gaussian:
         .. deprecated:: 1.6
             Use the :class:`Data` object returned by :meth:`finalize` instead.
         """
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._warp_data
 
     @warp_data.setter
     def warp_data(self, value: "Gaussian.Data | None") -> None:
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._warp_data = value
 
     @property
@@ -2738,12 +2759,12 @@ class Gaussian:
         .. deprecated:: 1.6
             Use :attr:`bvh` instead.
         """
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._warp_bvh
 
     @warp_bvh.setter
     def warp_bvh(self, value: wp.Bvh | None) -> None:
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._warp_bvh = value
 
     def _find_sh_degree(self) -> int:
@@ -2777,6 +2798,7 @@ class Gaussian:
             warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
             warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
             warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            warp_data.sh_color_space = int(self._sh_color_space)
             warp_data.min_response = self.min_response
             warp_data.sorting_mode = self.sorting_mode
             warp_data.num_points = warp_data.transforms.shape[0]
@@ -2825,110 +2847,67 @@ class Gaussian:
     # ---- Factory methods -----------------------------------------------------
 
     @staticmethod
-    def create_from_ply(filename: str, min_response: float = 0.1) -> "Gaussian":
+    def create_from_ply(
+        filename: str, min_response: float = 0.1, *, sh_color_space: ColorSpace = ColorSpace.SRGB
+    ) -> "Gaussian":
         """Load Gaussian splat data from a ``.ply`` file (standard 3DGS format).
 
         Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
         (``scale_0..2``, stored as log-scale), opacities (logit-space),
         and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
-        and logit-opacity to linear values.
+        and logit-opacity to linear values. SH radiance is treated as sRGB
+        unless ``sh_color_space`` says otherwise. Requires Open3D 0.20 or newer.
 
         Args:
             filename: Path to a ``.ply`` file in standard 3DGS format.
             min_response: Min response (default = 0.1).
+            sh_color_space: Color space of the SH radiance (default:
+                :attr:`~newton.utils.ColorSpace.SRGB`, as 3DGS assets are
+                display-referred).
 
         Returns:
             A new :class:`Gaussian` instance.
         """
         import open3d as o3d
 
+        if tuple(int(part) for part in o3d.__version__.split(".")[:2]) < (0, 20):
+            raise ImportError(f"Gaussian.create_from_ply requires open3d>=0.20, found {o3d.__version__}")
+
         pcd = o3d.t.io.read_point_cloud(filename)
-        point_attrs = {name: np.asarray(tensor.numpy()) for name, tensor in pcd.point.items()}
+        point_attrs = {name: np.asarray(tensor.numpy(), dtype=np.float32) for name, tensor in pcd.point.items()}
 
         positions = point_attrs.get("positions")
         if positions is None:
             raise ValueError("PLY Gaussian point cloud is missing required 'positions' attribute")
-        positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+        positions = np.ascontiguousarray(positions.reshape(-1, 3))
+        count = positions.shape[0]
 
-        def _get_point_attr(name: str, width: int | None = None) -> np.ndarray | None:
-            values = point_attrs.get(name)
-            if values is None:
-                return None
-
-            values = np.asarray(values, dtype=np.float32)
-            if width is None:
-                return np.ascontiguousarray(values.reshape(-1))
-            return np.ascontiguousarray(values.reshape(-1, width))
-
-        def _require_point_attr(name: str, message: str) -> np.ndarray:
-            values = _get_point_attr(name)
-            if values is None:
-                raise ValueError(message)
-            return values
-
-        # Rotations (quaternion w,x,y,z)
-        if "rot_0" in point_attrs:
-            missing_rotation = "PLY Gaussian point cloud is missing one or more rotation attributes"
-            rot_0 = _require_point_attr("rot_0", missing_rotation)
-            rot_1 = _require_point_attr("rot_1", missing_rotation)
-            rot_2 = _require_point_attr("rot_2", missing_rotation)
-            rot_3 = _require_point_attr("rot_3", missing_rotation)
-
-            rotations = np.stack([rot_1, rot_2, rot_3, rot_0], axis=1).astype(np.float32)
+        rotations = None
+        if "rot" in point_attrs:
+            # Open3D stores quaternions as wxyz.
+            rotations = np.ascontiguousarray(point_attrs["rot"].reshape(count, 4)[:, [1, 2, 3, 0]])
             rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-12)
-        else:
-            rotations = None
 
-        # Scales (stored as log-scale in standard 3DGS)
-        if "scale_0" in point_attrs:
-            missing_scale = "PLY Gaussian point cloud is missing one or more scale attributes"
-            scale_0 = _require_point_attr("scale_0", missing_scale)
-            scale_1 = _require_point_attr("scale_1", missing_scale)
-            scale_2 = _require_point_attr("scale_2", missing_scale)
+        scales = None
+        if "scale" in point_attrs:
+            scales = point_attrs["scale"].reshape(count, 3)
+            # Open3D converts scales to linear only when all 3DGS attributes are present.
+            if not all(name in point_attrs for name in ("opacity", "rot", "f_dc")):
+                scales = np.exp(scales)
+            scales = np.ascontiguousarray(scales)
 
-            log_scales = np.stack([scale_0, scale_1, scale_2], axis=1).astype(np.float32)
-            scales = np.exp(log_scales)
-        else:
-            scales = None
-
-        # Opacities (stored in logit-space in standard 3DGS)
+        opacities = None
         if "opacity" in point_attrs:
-            logit_opacities = _get_point_attr("opacity")
-            opacities = 1.0 / (1.0 + np.exp(-logit_opacities))
-        else:
-            opacities = None
-
-        # Spherical harmonic coefficients
-        sh_dc_names = [f"f_dc_{i}" for i in range(3)]
-        has_sh_dc = all(name in point_attrs for name in sh_dc_names)
+            opacities = 1.0 / (1.0 + np.exp(-point_attrs["opacity"].reshape(-1)))
 
         sh_coeffs = None
-        if has_sh_dc:
-            sh_dc = np.stack(
-                [
-                    _require_point_attr(name, "PLY Gaussian point cloud is missing SH DC attributes")
-                    for name in sh_dc_names
-                ],
-                axis=1,
-            ).astype(np.float32)
-
-            rest_names = []
-            i = 0
-            while f"f_rest_{i}" in point_attrs:
-                rest_names.append(f"f_rest_{i}")
-                i += 1
-
-            if rest_names:
-                sh_rest = np.stack(
-                    [
-                        _require_point_attr(name, "PLY Gaussian point cloud is missing SH rest attributes")
-                        for name in rest_names
-                    ],
-                    axis=1,
-                ).astype(np.float32)
-                sh_coeffs = np.concatenate([sh_dc, sh_rest], axis=1)
-            else:
-                sh_coeffs = sh_dc
+        if "f_dc" in point_attrs:
+            sh_coeffs = point_attrs["f_dc"].reshape(count, 3)
+            if "f_rest" in point_attrs:
+                # Open3D stores f_rest basis-major (N, K, 3); restore the file's channel-major order.
+                sh_rest = point_attrs["f_rest"].reshape(count, -1, 3).transpose(0, 2, 1).reshape(count, -1)
+                sh_coeffs = np.concatenate([sh_coeffs, sh_rest], axis=1)
+            sh_coeffs = np.ascontiguousarray(sh_coeffs)
 
         return Gaussian(
             positions=positions,
@@ -2937,6 +2916,7 @@ class Gaussian:
             opacities=opacities,
             sh_coeffs=sh_coeffs,
             min_response=min_response,
+            sh_color_space=sh_color_space,
         )
 
     @staticmethod
@@ -2944,6 +2924,11 @@ class Gaussian:
         """Load Gaussian splat data from a USD prim.
 
         Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+        The (possibly inherited) USD color space of the SH radiance selects :attr:`sh_color_space`:
+        untagged, ``srgb_rec709_scene`` and ``srgb_rec709_display`` radiance is :attr:`~newton.utils.ColorSpace.SRGB`, and
+        ``lin_rec709_scene`` and other Rec.709 linear names are :attr:`~newton.utils.ColorSpace.LINEAR`.
+        Other color spaces are imported without conversion and a warning is logged; see the
+        USD parsing documentation for the full list of supported names.
 
         Args:
             prim: A USD prim containing Gaussian splat data.
@@ -3029,6 +3014,7 @@ class Gaussian:
                     self._sh_coeffs.data.tobytes(),
                     float(self._min_response),
                     int(self._sorting_mode),
+                    int(self._sh_color_space),
                 )
             )
         return self._cached_hash
@@ -3045,4 +3031,5 @@ class Gaussian:
             and np.array_equal(self._sh_coeffs, other._sh_coeffs)
             and self._min_response == other._min_response
             and self._sorting_mode == other._sorting_mode
+            and self._sh_color_space == other._sh_color_space
         )

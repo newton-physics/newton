@@ -12,6 +12,7 @@ from unittest import mock
 
 import numpy as np
 import warp as wp
+from packaging.version import Version
 
 import newton
 import newton.tests.unittest_utils
@@ -19,9 +20,19 @@ from newton._src.solvers.semi_implicit import kernels_particle as semi_implicit_
 from newton._src.solvers.solver import _set_module_options_if_changed
 from newton._src.solvers.vbd import particle_vbd_kernels, vbd_coupling_kernels
 from newton._src.solvers.xpbd import kernels as xpbd_kernels
+from newton._src.solvers.xpbd import tendon_kernels as xpbd_tendon_kernels
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DETERMINISTIC_MODE = wp.DeterministicMode.RUN_TO_RUN
+
+# Warp 1.19 rejects MuJoCo Warp kernels that read and atomically update one array
+# (_accumulate_subtreemass, _qLD_acc) in deterministic mode.
+_MUJOCO_WARP_DETERMINISM_UNSUPPORTED = Version(wp.__version__) >= Version("1.19.0.dev0")
+
+
+def _skip_unsupported_mujoco_determinism(test):
+    if _MUJOCO_WARP_DETERMINISM_UNSUPPORTED:
+        test.skipTest("MuJoCo Warp does not compile in Warp 1.19 deterministic mode")
 
 
 def _run_isolated(test, function_name, *args):
@@ -192,6 +203,7 @@ def _check_mujoco_sparse_articulation_construction(device):
 
 
 def test_mujoco_sparse_articulation_construction(test, device):
+    _skip_unsupported_mujoco_determinism(test)
     _run_isolated(test, "_check_mujoco_sparse_articulation_construction", str(device))
 
 
@@ -234,6 +246,8 @@ def _check_articulation_determinism(device, solver_name):
 
 
 def test_articulation_determinism(test, device, solver_name):
+    if solver_name == "mujoco":
+        _skip_unsupported_mujoco_determinism(test)
     _run_isolated(test, "_check_articulation_determinism", str(device), solver_name)
 
 
@@ -266,6 +280,7 @@ class TestSolverDeterminismOptions(unittest.TestCase):
     def setUp(self):
         self._modules = (
             xpbd_kernels,
+            xpbd_tendon_kernels,
             particle_vbd_kernels,
             semi_implicit_particle_kernels,
             vbd_coupling_kernels,
@@ -291,12 +306,18 @@ class TestSolverDeterminismOptions(unittest.TestCase):
             options = wp.get_module_options(module=xpbd_kernels)
             self.assertEqual(options["deterministic"], DETERMINISTIC_MODE)
             self.assertEqual(options["deterministic_max_records"], 0)
+            tendon_options = wp.get_module_options(module=xpbd_tendon_kernels)
+            self.assertEqual(tendon_options["deterministic"], DETERMINISTIC_MODE)
+            self.assertEqual(tendon_options["deterministic_max_records"], 0)
 
             wp.config.deterministic = wp.DeterministicMode.NOT_GUARANTEED
             newton.solvers.SolverXPBD(model)
             options = wp.get_module_options(module=xpbd_kernels)
             self.assertEqual(options["deterministic"], wp.DeterministicMode.NOT_GUARANTEED)
             self.assertEqual(options["deterministic_max_records"], 0)
+            tendon_options = wp.get_module_options(module=xpbd_tendon_kernels)
+            self.assertEqual(tendon_options["deterministic"], wp.DeterministicMode.NOT_GUARANTEED)
+            self.assertEqual(tendon_options["deterministic_max_records"], 0)
 
     def test_matching_module_options_are_not_reapplied(self):
         options = {
@@ -357,10 +378,18 @@ class TestSolverDeterminismOptions(unittest.TestCase):
 
             deterministic_solver.step(state_0, state_1, None, None, 1.0 / 60.0)
             self.assertEqual(wp.get_module_options(module=xpbd_kernels)["deterministic"], DETERMINISTIC_MODE)
+            self.assertEqual(
+                wp.get_module_options(module=xpbd_tendon_kernels)["deterministic"],
+                DETERMINISTIC_MODE,
+            )
 
             default_solver.step(state_1, state_0, None, None, 1.0 / 60.0)
             self.assertEqual(
                 wp.get_module_options(module=xpbd_kernels)["deterministic"],
+                wp.DeterministicMode.NOT_GUARANTEED,
+            )
+            self.assertEqual(
+                wp.get_module_options(module=xpbd_tendon_kernels)["deterministic"],
                 wp.DeterministicMode.NOT_GUARANTEED,
             )
 
