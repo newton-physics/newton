@@ -646,7 +646,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                     model.tet_count * 2, dtype=float, device=model.device, requires_grad=requires_grad
                 )
 
-            if model.tendon_segment_count > 0 and body_q is not None:
+            if model.tendon_segment_count > 0:
                 self._load_tendon_history(state_in)
                 self._snapshot_tendon_step_state()
                 # Route activation is based on the accepted pose at the start
@@ -974,7 +974,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
                         body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
-                    if model.tendon_segment_count > 0 and body_q is not None:
+                    if model.tendon_segment_count > 0:
                         wp.launch(
                             kernel=update_tendon_attachments,
                             dim=model.tendon_segment_count,
@@ -1061,10 +1061,11 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                             device=model.device,
                         )
 
-                        if requires_grad:
-                            body_deltas = wp.zeros_like(body_deltas)
-                        else:
-                            body_deltas.zero_()
+                        if model.body_count:
+                            if requires_grad:
+                                body_deltas = wp.zeros_like(body_deltas)
+                            else:
+                                body_deltas.zero_()
 
                         wp.launch(
                             kernel=solve_tendon_stretch,
@@ -1099,12 +1100,12 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                             device=model.device,
                         )
 
-                        body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
-
-                        if requires_grad:
-                            body_deltas = wp.zeros_like(body_deltas)
-                        else:
-                            body_deltas.zero_()
+                        if model.body_count:
+                            body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
+                            if requires_grad:
+                                body_deltas = wp.zeros_like(body_deltas)
+                            else:
+                                body_deltas.zero_()
 
                         wp.launch(
                             kernel=solve_tendon_slip,
@@ -1132,9 +1133,10 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                             device=model.device,
                         )
 
-                        body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
+                        if model.body_count:
+                            body_q, body_qd = self._apply_body_deltas(model, state_in, state_out, body_deltas, dt)
 
-            if model.tendon_segment_count > 0 and body_q is not None:
+            if model.tendon_segment_count > 0:
                 # The final tendon correction changes the accepted route after
                 # the last in-iteration geometry and tension evaluation.
                 wp.launch(
