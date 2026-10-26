@@ -22,7 +22,7 @@ supported USD deformable imports populate these lists:
      - Native construction
      - USD deformable import
    * - ``curve_label`` / ``curve_world``
-     - :meth:`~newton.ModelBuilder.add_rod`, :meth:`~newton.ModelBuilder.add_rod_graph` (legacy)
+     - :meth:`~newton.ModelBuilder.add_rod`
      - Cable ``BasisCurves``
    * - ``surface_label`` / ``surface_world``
      - :meth:`~newton.ModelBuilder.add_cloth_mesh`, :meth:`~newton.ModelBuilder.add_cloth_grid`

@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import warnings
 
 import warp as wp
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...sim import Contacts, Control, JointType, Model, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -28,6 +30,11 @@ from .kernels_particle import (
     eval_spring_forces,
     eval_tetrahedra_forces,
     eval_triangle_forces,
+)
+
+_FRICTION_SMOOTHING_DEPRECATION_MSG = (
+    "friction_smoothing is deprecated in Newton 1.8 and is ignored. "
+    "Remove its use; configure shape material kf for the low-speed friction slope and mu for the Coulomb limit."
 )
 
 
@@ -78,7 +85,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         model: Model,
         *,
         angular_damping: float = 0.05,
-        friction_smoothing: float = 1.0,
+        friction_smoothing: float | None = None,
         joint_attach_ke: float = 1.0e4,
         joint_attach_kd: float = 1.0e2,
         joint_mimic_ke: float = 1.0e2,
@@ -90,7 +97,11 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         Args:
             model: The model to be simulated.
             angular_damping: Angular damping factor to be used in rigid body integration. Defaults to 0.05.
-            friction_smoothing: Huber norm delta used for friction velocity normalization (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`). Defaults to 1.0.
+            friction_smoothing: Deprecated, ignored compatibility argument.
+
+                .. deprecated:: 1.8
+                    Remove this argument. Shape material ``kf`` controls the low-speed
+                    friction slope and ``mu`` controls the Coulomb limit.
             joint_attach_ke: Joint attachment spring stiffness. Defaults to 1.0e4.
             joint_attach_kd: Joint attachment spring damping. Defaults to 1.0e2.
             joint_mimic_ke: Global position-error gain for joint mimic penalty springs. The units are
@@ -128,7 +139,13 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         for module in deterministic_modules:
             self._set_module_options(options, module=module)
         self.angular_damping = angular_damping
-        self.friction_smoothing = friction_smoothing
+        if friction_smoothing is not None:
+            warnings.warn(
+                _FRICTION_SMOOTHING_DEPRECATION_MSG,
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
+        self._friction_smoothing = 1.0 if friction_smoothing is None else friction_smoothing
         self.joint_attach_ke = joint_attach_ke
         self.joint_attach_kd = joint_attach_kd
         for name, value in (("joint_mimic_ke", joint_mimic_ke), ("joint_mimic_kd", joint_mimic_kd)):
@@ -143,6 +160,23 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         if model.particle_count > 1 and model.particle_grid is not None:
             with wp.ScopedDevice(model.device):
                 model.particle_grid.reserve(model.particle_count)
+
+    @property
+    def friction_smoothing(self) -> float:
+        """Legacy value retained for attribute access; it has no effect on friction.
+
+        .. deprecated:: 1.8
+            Reading or assigning this attribute warns. Use shape material ``kf``
+            for the low-speed friction slope and ``mu`` for the Coulomb limit.
+        """
+        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        return self._friction_smoothing
+
+    @friction_smoothing.setter
+    def friction_smoothing(self, value: float) -> None:
+        """Store the legacy value without changing the friction force."""
+        warnings.warn(_FRICTION_SMOOTHING_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        self._friction_smoothing = value
 
     @override
     def step(
@@ -238,9 +272,7 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 eval_triangle_contact_forces(model, state_in, particle_f)
 
             # body contacts
-            eval_body_contact_forces(
-                model, state_in, contacts, friction_smoothing=self.friction_smoothing, body_f_out=body_f_work
-            )
+            eval_body_contact_forces(model, state_in, contacts, body_f_out=body_f_work)
 
             # particle shape contact
             eval_particle_body_contact_forces(model, state_in, contacts, particle_f, body_f_work)
