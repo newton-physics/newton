@@ -210,11 +210,7 @@ def _import_usd_cameras(
 
         camera = UsdGeom.Camera(prim)
         if camera.GetProjectionAttr().Get() == UsdGeom.Tokens.orthographic:
-            warnings.warn(
-                f"Orthographic camera {path} is not supported; skipping.",
-                NewtonWarning,
-                stacklevel=_external_warning_stacklevel(),
-            )
+            logger.warning("Orthographic camera %s is not supported; skipping.", path)
             continue
 
         body = path_body_map[body_path] if body_path is not None else -1
@@ -251,11 +247,7 @@ def _import_usd_cameras(
                 else None,
             )
         except ValueError as e:
-            warnings.warn(
-                f"Camera {path} has invalid intrinsics and is skipped: {e}",
-                NewtonWarning,
-                stacklevel=_external_warning_stacklevel(),
-            )
+            logger.warning("Camera %s has invalid intrinsics and is skipped: %s", path, e)
             continue
         path_camera_map[path] = camera_id
         if verbose:
@@ -399,7 +391,7 @@ def parse_usd(
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
             (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
-            ancestor or fixed in the world. Orthographic cameras are skipped with a warning. Default is True.
+            ancestor or fixed in the world. Orthographic cameras are skipped and logged. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
         load_static_visual_shapes: If True, supported visual-only geometry outside
             rigid-body hierarchies is loaded as static shapes when

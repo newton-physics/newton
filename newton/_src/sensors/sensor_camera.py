@@ -259,6 +259,13 @@ class SensorCamera:
         view per selected camera or site and world, computes view poses from the
         state, and needs no camera transforms or rays in :meth:`update`.
 
+        All bound sensors of a model with the same ``load_textures`` value share one
+        internal renderer, so its scene state is shared too: lights, ambient light,
+        and checkerboard materials set through :meth:`create_default_light`,
+        :meth:`set_ambient_light`, or :meth:`assign_checkerboard_material` on one bound
+        sensor apply to all of them. A sensor without ``cameras`` or ``sites`` keeps
+        its own renderer and scene state.
+
         .. experimental::
 
             ``cameras``, ``sites``, ``width``, ``height``, ``sample_count``,
@@ -1318,6 +1325,9 @@ class SensorCamera:
     ) -> None:
         """Create a default directional light for the rendered scene.
 
+        On a bound sensor the light is shared with every bound sensor of the model
+        that uses the same ``load_textures`` setting.
+
         Args:
             enable_shadows: Enable shadow casting for this light. Shadows are
                 only rendered when the render config also enables them, i.e.
@@ -1343,7 +1353,9 @@ class SensorCamera:
         Surfaces facing the model's up axis receive *sky_color*, surfaces facing
         away receive *ground_color*, and other orientations blend between the
         two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
-        Changing the colors does not recompile the render kernel.
+        Changing the colors does not recompile the render kernel. On a bound sensor
+        the ambient light is shared with every bound sensor of the model that uses
+        the same ``load_textures`` setting.
 
         Args:
             sky_color: Linear RGB ambient radiance from above.
@@ -1360,6 +1372,9 @@ class SensorCamera:
         checker_size: int = 32,
     ) -> None:
         """Assign a gray checkerboard texture material to selected shapes.
+
+        On a bound sensor the material is shared with every bound sensor of the
+        model that uses the same ``load_textures`` setting.
 
         Args:
             shape_indices: Shape indices that should use the checkerboard texture.
@@ -1417,9 +1432,17 @@ class SensorCamera:
     ) -> None:
         """Render this camera sensor.
 
-        The number of views is inferred from ``camera_transforms.shape[0]``; all
-        non-``None`` output arrays must have shape ``(view_count, height, width)``
-        matching the ``camera_rays`` image dimensions.
+        On a sensor without ``cameras`` or ``sites``, ``camera_transforms`` and
+        ``camera_rays`` are required: the number of views is inferred from
+        ``camera_transforms.shape[0]``, and all non-``None`` output arrays must have
+        shape ``(view_count, height, width)`` matching the ``camera_rays`` image
+        dimensions.
+
+        On a bound sensor both are optional: view poses come from *state*, rays from
+        the sensor's ray source, and outputs have shape
+        ``(view_count, height, width)`` with :attr:`view_count`, :attr:`height`, and
+        :attr:`width` of the sensor. Passing ``camera_transforms`` or ``camera_rays``
+        overrides the computed poses or rays for this call.
 
         On any frame whose geometry moved, refit the model's shape and particle
         BVHs with :meth:`~newton.Model.bvh_refit_shapes` and
@@ -1466,6 +1489,24 @@ class SensorCamera:
             sync_deformables: Sync deformable triangle-mesh points from *state*
                 before rendering (a no-op for rigid-only scenes). Set ``False``
                 if you already called :meth:`sync_deformable_meshes` this frame.
+            view_mask: Per-view render switch, shape ``(view_count,)`` of ``bool``.
+                Views set to ``False`` are skipped and keep their previous output
+                values. Requires a sensor constructed with ``cameras`` or
+                ``sites`` and cannot be combined with ``world_indices``.
+
+                .. experimental::
+            face_index_image: Output hit-element index (``int32``): the triangle
+                index into :attr:`~newton.Model.tri_indices` for deformable-surface
+                hits, the mesh face index for mesh shapes, the particle index for
+                particle hits, and ``-1`` where nothing is hit.
+
+                .. experimental::
+            barycentric_image: Output barycentric coordinates ``(u, v)`` of
+                triangle hits (``vec2f``), with the hit point at
+                ``u * p0 + v * p1 + (1 - u - v) * p2``; ``(0, 0)`` where nothing is
+                hit.
+
+                .. experimental::
         """
         render_context = self._render_context
         model = render_context.model

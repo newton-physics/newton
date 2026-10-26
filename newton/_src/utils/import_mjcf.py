@@ -413,7 +413,7 @@ def parse_mjcf(
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
         parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
             :meth:`~newton.ModelBuilder.add_camera`). Tracking modes and targets are imported as fixed
-            mounts; orthographic cameras are skipped with a warning. Default is True.
+            mounts; orthographic cameras are skipped and logged. Default is True.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -1841,11 +1841,7 @@ def parse_mjcf(
                 continue
 
             if camera_attrib.get("orthographic", "false").lower() == "true":
-                warnings.warn(
-                    f"MJCF camera '{camera_name}' is orthographic, which is not supported; skipping.",
-                    NewtonWarning,
-                    stacklevel=2,
-                )
+                logger.warning("MJCF camera '%s' is orthographic, which is not supported; skipping.", camera_name)
                 continue
             mode = camera_attrib.get("mode", "fixed")
             if mode != "fixed" or "target" in camera_attrib:
@@ -1880,10 +1876,8 @@ def parse_mjcf(
                     focal = np.array(camera_attrib["focal"].split(), dtype=float)[:2]
                 elif "focalpixel" in camera_attrib:
                     if pitch is None:
-                        warnings.warn(
-                            f"MJCF camera '{camera_name}' sets focalpixel without a resolution; using fovy.",
-                            NewtonWarning,
-                            stacklevel=2,
+                        logger.warning(
+                            "MJCF camera '%s' sets focalpixel without a resolution; using fovy.", camera_name
                         )
                     else:
                         focal = np.array(camera_attrib["focalpixel"].split(), dtype=float)[:2] * pitch
@@ -1896,10 +1890,8 @@ def parse_mjcf(
                     principal = np.array(camera_attrib["principal"].split(), dtype=float)[:2]
                 elif "principalpixel" in camera_attrib:
                     if pitch is None:
-                        warnings.warn(
-                            f"MJCF camera '{camera_name}' sets principalpixel without a resolution; ignoring it.",
-                            NewtonWarning,
-                            stacklevel=2,
+                        logger.warning(
+                            "MJCF camera '%s' sets principalpixel without a resolution; ignoring it.", camera_name
                         )
                     else:
                         principal = np.array(camera_attrib["principalpixel"].split(), dtype=float)[:2] * pitch

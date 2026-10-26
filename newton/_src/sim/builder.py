@@ -4669,7 +4669,7 @@ class ModelBuilder:
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
                 (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
-                ancestor or fixed in the world. Orthographic cameras are skipped with a warning. Default is True.
+                ancestor or fixed in the world. Orthographic cameras are skipped and logged. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             load_static_visual_shapes: If True, supported visual-only geometry outside
                 rigid-body hierarchies is loaded as static shapes when
@@ -5001,7 +5001,7 @@ class ModelBuilder:
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
             parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
                 :meth:`~newton.ModelBuilder.add_camera`). Tracking modes and targets are imported as fixed
-                mounts; orthographic cameras are skipped with a warning. Default is True.
+                mounts; orthographic cameras are skipped and logged. Default is True.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
