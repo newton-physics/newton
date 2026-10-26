@@ -44,9 +44,9 @@ jobs:
       - name: Check uv lockfile
         run: uv lock --check
 
+  # No secrets: ci.yml only needs CODECOV_TOKEN for uploads, which run on main.
   run-newton-tests:
     uses: ./.github/workflows/ci.yml
-    secrets: inherit
 
   pull-request-docs:
     runs-on: ubuntu-latest

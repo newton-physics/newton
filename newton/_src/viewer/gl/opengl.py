@@ -216,6 +216,7 @@ class MeshGL:
         self.texture_id = None
         self._texture_source = None
         self.opacity = 1.0
+        self._capsule_instancing = False
 
         # Set up vertex attributes in the packed format the shaders expect
         self.vertex_byte_size = 12 + 12 + 8
@@ -453,6 +454,7 @@ class MeshGL:
 
             gl.glBindVertexArray(self.vao)
             gl.glVertexAttrib1f(9, self.opacity)
+            gl.glVertexAttrib1f(10, 0.0)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
             gl.glBindVertexArray(0)
 
@@ -1105,6 +1107,7 @@ class MeshInstancerGL:
             gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
         gl.glBindVertexArray(self.vao)
+        gl.glVertexAttrib1f(10, float(self.mesh._capsule_instancing))
         gl.glDrawElementsInstanced(
             gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
         )
