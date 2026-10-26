@@ -1425,24 +1425,33 @@ def test_mesh_tv_shared_soft_edge_has_one_owner(test, device):
         np.testing.assert_allclose(force_weights, (0.5, 0.0, 0.5, 0.0), atol=1.0e-6)
 
 
-def test_mesh_tv_owner_includes_fixed_triangle(test, device):
-    """Give a shared TV feature one owner even when its first incident triangle is fixed."""
+def test_mesh_tv_owner_requires_active_triangle(test, device):
+    """Retain every TV row but assign a shared feature to its first active triangle."""
     for points in (
         # Closest target is shared vertex 0.
         [(0.103, 0.104, 0.055), (0.15, 0.104, 0.055), (0.15, 0.15, 0.055), (0.103, 0.15, 0.055)],
         # Closest target is shared edge 0--2.
         [(0.095, 0.095, 0.055), (0.105, 0.095, 0.055), (0.105, 0.105, 0.055), (0.095, 0.105, 0.055)],
     ):
-        model, state, contacts = _box_patch_contacts(
-            device, points, [(0, 1, 2), (0, 2, 3)], inactive_particles=(0, 1, 2)
-        )
-        mask = evaluate_soft_contact_force_mask(model, state, contacts)
-        rows = _force_contact_rows(contacts, mask)
-
-        features = contacts._soft_contact_mesh_features.numpy()[rows]
-        tv = features[(features[:, 0] & 7) == 1]
-        test.assertEqual(len(tv), 1)
-        test.assertEqual(int(tv[0, 1]), 0)
+        for triangles in ([(0, 1, 2), (0, 2, 3)], [(0, 2, 3), (0, 1, 2)]):
+            model, state, contacts = _box_patch_contacts(device, points, triangles)
+            count = int(contacts.soft_contact_count.numpy()[0])
+            features_np = contacts._soft_contact_mesh_features.numpy()[:count].copy()
+            tv_rows = np.flatnonzero((features_np[:, 0] & 7) == 1)
+            np.testing.assert_array_equal(np.sort(features_np[tv_rows, 1]), (0, 1))
+            particle_flags_np = model.particle_flags.numpy().copy()
+            # Vertex 3 makes only triangle (0, 2, 3) active, even when its
+            # barycentric weight is zero. Mixed triangles remain eligible.
+            active_owner = triangles.index((0, 2, 3))
+            for inactive, expected in (((0, 1, 2), [active_owner]), ((0,), [0]), ((0, 1, 2, 3), []), ((), [0])):
+                with test.subTest(target=points[0], triangles=triangles, inactive=inactive):
+                    current_flags_np = particle_flags_np.copy()
+                    current_flags_np[list(inactive)] &= ~int(newton.ParticleFlags.ACTIVE)
+                    model.particle_flags.assign(current_flags_np)
+                    mask_np = evaluate_soft_contact_force_mask(model, state, contacts).numpy()
+                    np.testing.assert_array_equal(features_np[tv_rows[mask_np[tv_rows]], 1], expected)
+                    np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy()[:count], features_np)
+                    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), count)
 
 
 def test_vbd_preserves_unfiltered_mesh_contacts(test, device):
@@ -1673,6 +1682,18 @@ def test_mesh_edge_recovery_shared_triangle_boundary(test, device):
                 if expected:
                     weights = contacts.soft_contact_barycentric.numpy()[rows][target][0]
                     np.testing.assert_allclose(weights, (0.5, 0.5, 0.0), atol=1.0e-6)
+                    if permutation == 0 and p == (0.0, 0.0, -0.08):
+                        # EE-depth detection skips inactive edges; change flags
+                        # after detection to exercise its force-time gate.
+                        depth_rows = rows[target]
+                        model.particle_flags.zero_()
+                        mask = evaluate_soft_contact_force_mask(model, state, contacts).numpy()
+                        test.assertFalse(np.any(mask[depth_rows]))
+                        flags = model.particle_flags.numpy()
+                        flags[0] = int(newton.ParticleFlags.ACTIVE)
+                        model.particle_flags.assign(flags)
+                        mask = evaluate_soft_contact_force_mask(model, state, contacts).numpy()
+                        test.assertTrue(np.all(mask[depth_rows]))
 
 
 def test_mesh_filter_preserves_overflow(test, device):
@@ -1706,16 +1727,33 @@ def test_mesh_filter_preserves_overflow(test, device):
         np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy(), features)
         np.testing.assert_array_equal(contacts.soft_contact_body_pos.numpy(), positions)
     test.assertTrue(np.all(mask.numpy()))
+    model.particle_flags.zero_()
+    test.assertFalse(np.any(evaluate_soft_contact_force_mask(model, state, contacts).numpy()))
+    np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy(), features)
+    np.testing.assert_array_equal(contacts.soft_contact_body_pos.numpy(), positions)
 
     # The printed requirement must fit a complete rerun of the same collision pass.
     capture.begin()
     try:
-        _, _, complete = _box_patch_contacts(device, points, [], capacity=required)
+        complete_model, complete_state, complete = _box_patch_contacts(device, points, [], capacity=required)
         test.assertEqual(int(complete.soft_contact_count.numpy()[0]), required)
     finally:
         output = capture.end()
     if sys.platform != "win32":
         test.assertNotIn("Mesh soft-contact capacity exceeded", output)
+    # Source overflow bypasses geometric selection, but never particle activity.
+    # Check the stored row's own particle, without assuming append order.
+    complete._soft_contact_source_overflow.fill_(1)
+    flags = complete_model.particle_flags.numpy()
+    flags[0] &= ~int(newton.ParticleFlags.ACTIVE)
+    complete_model.particle_flags.assign(flags)
+    indices = complete.soft_contact_indices.numpy()[:, 0]
+    expected = (flags[indices] & int(newton.ParticleFlags.ACTIVE)) != 0
+    np.testing.assert_array_equal(
+        evaluate_soft_contact_force_mask(complete_model, complete_state, complete).numpy(), expected
+    )
+    test.assertTrue(np.any(expected))
+    test.assertTrue(np.any(~expected))
 
 
 def _add_bvh_dat_patch(builder, points):
@@ -1786,7 +1824,15 @@ def test_mesh_complete_rigid_indices_and_reuse(test, device):
     features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0]
     recovery_np = (features_np >= 0) & ((features_np & int(soft_contacts_mesh._MESH_FEATURE_RECOVERY)) != 0)
     test.assertTrue(np.any(recovery_np))
+    test.assertTrue(np.all((features_np[recovery_np] & 7) == int(soft_contacts_mesh._MESH_FEATURE_VT)))
     test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy()[:count][recovery_np] == -1))
+    mask = evaluate_soft_contact_force_mask(model, state, contacts).numpy()[:count]
+    test.assertTrue(np.all(mask[recovery_np]))
+    model.particle_flags.zero_()
+    mask = evaluate_soft_contact_force_mask(model, state, contacts).numpy()[:count]
+    # Analytic rows retain their existing behavior; mesh recovery cannot bypass activity.
+    np.testing.assert_array_equal(mask, features_np < 0)
+    np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy()[:count, 0], features_np)
 
 
 def test_mesh_complete_bvh_query_coverage(test, device):
@@ -1908,7 +1954,7 @@ for device in get_test_devices():
         test_mesh_tv_shared_soft_vertex_has_one_owner,
         test_mesh_tv_checks_soft_target_block,
         test_mesh_tv_shared_soft_edge_has_one_owner,
-        test_mesh_tv_owner_includes_fixed_triangle,
+        test_mesh_tv_owner_requires_active_triangle,
         test_vbd_preserves_unfiltered_mesh_contacts,
         test_mesh_force_mask_matches_compacted_solve,
         test_coupled_vbd_mesh_force_mask_replay,

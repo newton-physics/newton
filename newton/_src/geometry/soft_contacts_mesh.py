@@ -185,6 +185,7 @@ def _face_valid(
 @wp.func
 def _soft_face_valid(
     particle_q: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
     tri_indices: wp.array2d[int],
     adjacency: MeshAdjacencyData,
     point: wp.vec3,
@@ -192,6 +193,7 @@ def _soft_face_valid(
     bary: wp.vec3,
     face: int,
 ) -> bool:
+    """Test the soft target's normal cone and choose its first active incident face."""
     # TV is a rigid-vertex query against the SOFT target surface. As in VT,
     # a target face interior needs no cone test; a target edge/vertex must pass
     # all its incident-neighbor tests and have just one representing triangle.
@@ -224,9 +226,13 @@ def _soft_face_valid(
             if not contains_other:
                 continue
         if adjacent_face < face:
-            # Complete detection includes fixed triangles, so ownership depends
-            # only on topology, not on which vertices the solver can update.
-            return False
+            # Inactive triangles remain in detection for DAT and constrain the
+            # cone, but cannot own a force that suppresses an active neighbor.
+            active = int(0)
+            for k in range(3):
+                active |= particle_flags[tri_indices[adjacent_face, k]] & ParticleFlags.ACTIVE
+            if active != 0:
+                return False
         for k in range(3):
             neighbor_index = tri_indices[adjacent_face, k]
             if neighbor_index != vertex and neighbor_index != other:
@@ -1408,6 +1414,7 @@ def mesh_contact_valid(
     feature: wp.vec3i,
     shape_index: int,
     particle_q: wp.array[wp.vec3],
+    particle_flags: wp.array[wp.int32],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
     body_q: wp.array[wp.transform],
@@ -1423,14 +1430,15 @@ def mesh_contact_valid(
     neighbors: wp.array[int],
     soft_adjacency: MeshAdjacencyData,
 ) -> bool:
-    """Whether a mesh feature record is the canonical representation of its surface patch.
+    """Test current geometry and canonical ownership of an activity-eligible mesh record.
 
     VT/TV test the closest TARGET feature's incident neighbors and keep one owner face for a
-    shared target vertex/edge. Reverse VT and TV queries are separate energy contributions,
+    shared target vertex/edge. TV ownership ignores wholly inactive triangles, which still
+    constrain the target cone. Reverse VT and TV queries are separate energy contributions,
     even at vertex endpoints. EE tests both sides and defers endpoint solutions to VT/TV. This
     test is discrete: a small motion can flip it, so solvers should apply it to force evaluation
-    only and keep every record for penetration prevention. Penetration recovery records always
-    pass.
+    only and keep every record for penetration prevention. The caller checks particle activity;
+    penetration recovery records need no further geometric selection here.
     """
     if (feature[0] & _MESH_FEATURE_RECOVERY) != 0:
         return True
@@ -1470,7 +1478,9 @@ def mesh_contact_valid(
         t1 = tri_indices[feature[1], 1]
         t2 = tri_indices[feature[1], 2]
         cp, bary, _feature = triangle_closest_point(particle_q[t0], particle_q[t1], particle_q[t2], x_w)
-        return _soft_face_valid(particle_q, tri_indices, soft_adjacency, cp, sign * (x_w - cp), bary, feature[1])
+        return _soft_face_valid(
+            particle_q, particle_flags, tri_indices, soft_adjacency, cp, sign * (x_w - cp), bary, feature[1]
+        )
 
     entry = rigid_edge_table[feature[2]]
     r0_w = wp.transform_point(X_ws, wp.cw_mul(wp.mesh_get_point(mesh, entry[1]), scale))
@@ -1493,7 +1503,9 @@ class _SoftContactFilterData:
     contact_max: int
     contact_shapes: wp.array[wp.int32]
     source_overflow: wp.array[wp.int32]
+    soft_contact_indices: wp.array[wp.vec3i]
     particle_q: wp.array[wp.vec3]
+    particle_flags: wp.array[wp.int32]
     tri_indices: wp.array2d[wp.int32]
     edge_indices: wp.array2d[wp.int32]
     body_q: wp.array[wp.transform]
@@ -1530,7 +1542,9 @@ def _make_soft_contact_filter_data(
     result.contact_max = contacts.soft_contact_max
     result.source_overflow = contacts._soft_contact_source_overflow
     result.contact_shapes = contacts.soft_contact_shape
+    result.soft_contact_indices = contacts.soft_contact_indices
     result.particle_q = particle_q
+    result.particle_flags = model.particle_flags
     result.tri_indices = model.tri_indices
     result.edge_indices = model.edge_indices
     result.body_q = body_q
@@ -1553,21 +1567,36 @@ def _make_soft_contact_filter_data(
 
 @wp.func
 def _soft_contact_force_enabled(contact_index: int, data: _SoftContactFilterData) -> bool:
-    """Select a force from the consumer's current geometry."""
+    """Select mesh forces from live particle activity, geometry, and feature ownership.
+
+    Preserve all raw records for DAT. Recovery and overflow can bypass geometric
+    selection, but a mesh row still needs at least one ACTIVE particle. Zero
+    inverse mass does not make an ACTIVE particle ineligible for contact forces.
+    """
     if not data.features:
         return True
     count = wp.min(data.contact_count[0], data.contact_max)
     if contact_index >= count:
         return False
     feature = data.features[contact_index]
-    # Analytic rows have no mesh feature. Keep the existing overflow policy:
-    # accept stored rows if this buffer or its coupled source overflowed.
-    if feature[0] < 0 or data.contact_count[0] > data.contact_max or data.source_overflow[0] != 0:
+    # Analytic rows retain their existing force behavior.
+    if feature[0] < 0:
+        return True
+    active = int(0)
+    corners = data.soft_contact_indices[contact_index]
+    for k in range(3):
+        if corners[k] >= 0:
+            active |= data.particle_flags[corners[k]] & ParticleFlags.ACTIVE
+    if active == 0:
+        return False
+    # Preserve the geometric fallback for stored, active rows after overflow.
+    if data.contact_count[0] > data.contact_max or data.source_overflow[0] != 0:
         return True
     return mesh_contact_valid(
         feature,
         data.contact_shapes[contact_index],
         data.particle_q,
+        data.particle_flags,
         data.tri_indices,
         data.edge_indices,
         data.body_q,

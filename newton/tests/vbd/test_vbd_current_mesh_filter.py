@@ -35,6 +35,7 @@ _RECORD_FIELDS = (
 
 
 def _scene(device, two_bodies=False):
+    """Create a perturbed cloth patch contacting a mesh body with a nonzero global ID."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
     # The contacted body has global ID 1; a coupled view must map it to local ID 0.
     builder.add_body(xform=wp.transform(wp.vec3(10.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -81,6 +82,7 @@ def _scene(device, two_bodies=False):
 
 
 def _solver(model, contacts):
+    """Prepare both gather and scatter consumers for the supplied raw contacts."""
     solver = SolverVBD(model, iterations=2)
     # Build gather adjacency even when a subsequent evaluation chooses scatter.
     solver._particle_contact_use_gather = True
@@ -236,6 +238,7 @@ def _evaluate(solver, state, contacts, gather, buffers):
 
 
 def _buffers(model, contacts):
+    """Allocate force, Hessian, export, and feedback outputs for the production consumers."""
     device = model.device
     return [
         wp.zeros(model.particle_count, dtype=wp.vec3, device=device),
@@ -250,7 +253,7 @@ def _buffers(model, contacts):
 
 
 def test_current_mesh_filter_consumers(test, device):
-    """Match fresh row removal after particle/body motion, including captured force and coupling replay."""
+    """Refresh geometry and activity across force consumers, including CUDA graph replay."""
     # Warp CPU printf capture is unreliable on Windows; verify overflow through its counter.
     test.allowOutputRegex(
         r"^Warning: Per-body particle contact buffer overflowed \d+ > 256; scanning all stored contacts\.$",
@@ -314,6 +317,66 @@ def test_current_mesh_filter_consumers(test, device):
             for name, value in original.items():
                 np.testing.assert_array_equal(getattr(contacts, name).numpy(), value)
             test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), count)
+        # Independent activity oracles: no force from an entirely inactive mesh,
+        # and unchanged forces from ACTIVE particles with zero inverse mass.
+        # The graph was captured before these in-place changes to particle flags.
+        baseline = [array.numpy().copy() for array in full_buffers[:9]]
+        baseline_penalty_np = solver.body_particle_contact_penalty_k.numpy().copy()
+        particle_flags_np = model.particle_flags.numpy().copy()
+        particle_inv_mass_np = model.particle_inv_mass.numpy().copy()
+        soft_contact_indices_np = original["soft_contact_indices"][:count]
+        families_np = original["_soft_contact_mesh_features"][:count, 0] & 7
+        interior_tv_np = np.all(original["soft_contact_barycentric"][:count] > 0.0, axis=1)
+        stable_owner_np = (families_np != 1) | interior_tv_np
+        for activity in ("inactive", "mixed", "active_zero_mass", "restored"):
+            with test.subTest(gather=gather, activity=activity):
+                current_flags_np = particle_flags_np.copy()
+                if activity == "inactive":
+                    current_flags_np &= ~int(newton.ParticleFlags.ACTIVE)
+                elif activity == "mixed":
+                    current_flags_np[q0[:, 0] <= 0.0] &= ~int(newton.ParticleFlags.ACTIVE)
+                model.particle_flags.assign(current_flags_np)
+                model.particle_inv_mass.assign(
+                    np.zeros_like(particle_inv_mass_np) if activity == "active_zero_mass" else particle_inv_mass_np
+                )
+                if device.is_cuda:
+                    wp.capture_launch(capture.graph)
+                else:
+                    _evaluate(solver, state, contacts, gather, full_buffers)
+                penalty_np = solver.body_particle_contact_penalty_k.numpy()
+                if activity == "inactive":
+                    for array in full_buffers[:9]:
+                        np.testing.assert_array_equal(array.numpy(), 0.0)
+                    np.testing.assert_array_equal(penalty_np, 100.0)
+                elif activity == "mixed":
+                    active_np = np.any(
+                        (soft_contact_indices_np >= 0)
+                        & (
+                            (
+                                current_flags_np[np.maximum(soft_contact_indices_np, 0)]
+                                & int(newton.ParticleFlags.ACTIVE)
+                            )
+                            != 0
+                        ),
+                        axis=1,
+                    )
+                    test.assertTrue(np.any(~active_np))
+                    exported_np = full_buffers[7].numpy()[:count]
+                    np.testing.assert_array_equal(exported_np[~active_np], 0.0)
+                    np.testing.assert_array_equal(penalty_np[:count][~active_np], 100.0)
+                    retained_np = active_np & stable_owner_np
+                    test.assertTrue(np.any(np.linalg.norm(baseline[7][:count][retained_np], axis=1) > 0.0))
+                    np.testing.assert_allclose(
+                        exported_np[retained_np], baseline[7][:count][retained_np], rtol=2e-5, atol=1e-5
+                    )
+                else:
+                    test.assertGreater(np.linalg.norm(baseline[2]), 0.0)
+                    for array, expected in zip(full_buffers[:9], baseline, strict=True):
+                        np.testing.assert_allclose(array.numpy(), expected, rtol=3e-5, atol=3e-4)
+                    np.testing.assert_allclose(penalty_np, baseline_penalty_np, atol=1e-6)
+                for name, value in original.items():
+                    np.testing.assert_array_equal(getattr(contacts, name).numpy(), value)
+                test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), count)
     families = original["_soft_contact_mesh_features"][:count, 0] & 7
     changed = (masks[0] != masks[1])[:count] | (masks[0] != masks[2])[:count]
     test.assertTrue({0, 1, 2} <= set(families[changed]))
