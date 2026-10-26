@@ -1833,6 +1833,7 @@ class SparseSystemJacobians:
         joint_friction_cts_offset_total_cts = model.joints.friction_cts_offset_total_cts.numpy()
         joint_effort_cts_offset_total_cts = model.joints.effort_cts_offset_total_cts.numpy()
         world_cts_offset = model.info.total_cts_offset.numpy()
+        # World bounded rows group friction before effort; sparse blocks are grouped per joint.
         bounded_row_base = (
             model.info.joint_bounded_cts_offset.numpy()[joint_wid]
             - world_cts_offset[joint_wid]
@@ -1887,6 +1888,7 @@ class SparseSystemJacobians:
         J_cts_bounded_nzb_offsets_B = np.full(model.size.sum_of_num_bounded_joint_cts, -1, dtype=np.int64)
         joint_col_F = 6 * (joint_bid_F - bodies_offset[joint_wid])
         joint_col_B = 6 * (joint_bid_B - bodies_offset[joint_wid])
+        # Per-joint blocks must remain dynamic, kinematic, friction, effort, with F before B in each group.
         constraint_groups = {
             "dynamic": (joint_num_dynamic_cts, joint_dynamic_cts_offset_total_cts),
             "kinematic": (joint_num_kinematic_cts, joint_kinematic_cts_offset_total_cts),

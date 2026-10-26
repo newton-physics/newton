@@ -1222,9 +1222,10 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
         self.assertTrue(np.any((joint_num_effort_cts > 0) & (joint_bid_B > -1)))
         self.assertTrue(np.any((joint_num_effort_cts > 0) & (joint_bid_B == -1)))
 
-        # Bounded rows group all friction rows before all effort rows within each world.
+        # Check per-joint block order even when friction and effort have identical Jacobian rows.
         num_checked_rows = 0
         for j, w in enumerate(joint_wid):
+            previous_F_offset = -1
             categories = (
                 (joint_num_friction_cts[j], joint_friction_cts_offset[j]),
                 (joint_num_effort_cts[j], joint_effort_cts_offset[j]),
@@ -1234,6 +1235,8 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
                     row = row_offset + r - world_cts_offset[w]
                     bounded_row = world_bounded_cts_offset[w] + row - world_num_bilateral_cts[w]
                     offset_F, offset_B = bounded_nzb_offsets[bounded_row]
+                    self.assertGreater(offset_F, previous_F_offset)
+                    previous_F_offset = offset_F
                     np.testing.assert_array_equal(nzb_coords[offset_F], [row, 6 * (joint_bid_F[j] - bodies_offset[w])])
                     if joint_bid_B[j] > -1:
                         np.testing.assert_array_equal(
@@ -1259,9 +1262,9 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
         )
         single_world_contacts = ContactsKamino(capacity=12, device=self.default_device)
 
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, r"`contacts`.*capacities"):
             SparseSystemJacobians(model=model, limits=limits, contacts=single_world_contacts)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, r"`limits`.*capacities"):
             SparseSystemJacobians(model=model, limits=single_world_limits, contacts=contacts)
 
 

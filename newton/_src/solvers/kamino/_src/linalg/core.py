@@ -564,7 +564,7 @@ def prefix_offsets(sizes: Sequence[int] | np.ndarray, *, validate_dtype: np.dtyp
     The sums are accumulated in 64-bit integers regardless of the dtype of ``sizes``.
 
     Args:
-        sizes: The size of each block, in storage order.
+        sizes: Non-negative block sizes, in storage order.
         validate_dtype: An optional NumPy integer dtype whose range must contain the total size.
 
     Returns:
@@ -572,8 +572,7 @@ def prefix_offsets(sizes: Sequence[int] | np.ndarray, *, validate_dtype: np.dtyp
         is the offset of block ``i`` and the last entry is the total size.
 
     Raises:
-        OverflowError: If the total size does not fit in ``validate_dtype``. The offsets never
-            exceed the total size, so they fit as well.
+        OverflowError: If the total size does not fit in ``validate_dtype``.
     """
     offsets = np.zeros(len(sizes) + 1, dtype=np.int64)
     np.cumsum(sizes, dtype=np.int64, out=offsets[1:])

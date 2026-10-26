@@ -47,12 +47,12 @@ class TestLinAlgCorePrefixOffsets(unittest.TestCase):
         )
         for info_type, dims, int16_dims in cases:
             with self.subTest(info_type=info_type.__name__):
-                with self.assertRaises(OverflowError):
+                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
                     info_type().finalize(dimensions=dims, itype=wp.int32)
                 # Every block starts within the index range, but the last one ends past it
-                with self.assertRaises(OverflowError):
+                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
                     info_type().finalize(dimensions=dims[::-1], itype=wp.int32)
-                with self.assertRaises(OverflowError):
+                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
                     info_type().finalize(dimensions=int16_dims, itype=wp.int16)
                 info = info_type()
                 info.finalize(dimensions=dims, itype=wp.int64)
