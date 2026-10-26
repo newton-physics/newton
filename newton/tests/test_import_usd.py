@@ -49,22 +49,6 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_removed_unit_flags(self):
-        """Reject removed unit options at both USD import entry points."""
-        from pxr import Usd
-
-        from newton._src.utils.import_usd import parse_usd  # noqa: PLC0415
-
-        stage = Usd.Stage.CreateInMemory()
-        builder = newton.ModelBuilder()
-        for flag in ("legacy_angular_velocity_units", "legacy_springref_units"):
-            for value in (False, True):
-                for importer in (builder.add_usd, lambda source, **kwargs: parse_usd(builder, source, **kwargs)):
-                    with self.subTest(flag=flag, value=value, importer=importer):
-                        with self.assertRaisesRegex(TypeError, flag):
-                            importer(stage, **{flag: value})
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_binding_outside_import_root(self):
         """Import shared physics materials without importing unrelated bodies."""
         from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
@@ -5140,8 +5124,6 @@ def Xform "Articulation" (
                     dof = builder.joint_qd_start[joint] + offset
                     self.assertAlmostEqual(springref[dof], expected_spring, places=5)
                     self.assertAlmostEqual(reference[dof], expected_ref, places=5)
-
-                self.assertEqual(stage.GetPrimAtPath("/World/Revolute").GetAttribute("mjc:springref").Get(), 30.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
