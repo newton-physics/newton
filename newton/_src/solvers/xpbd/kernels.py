@@ -243,7 +243,41 @@ def solve_particle_shape_contacts(
         wp.atomic_sub(body_delta, body_index, wp.spatial_vector(delta_v, delta_w))
 
 
-@wp.kernel
+@wp.func(inline=True)
+def sol_xpbd_grid_axis(coordinate: int, dimension: int):
+    coordinate = wp.max(coordinate + 1048576, 0)
+    mask = dimension - 1
+    result = int(0)
+    if (dimension & mask) == 0:
+        result = coordinate & mask
+    else:
+        result = coordinate % dimension
+    return result
+
+
+@wp.func(inline=True)
+def sol_xpbd_grid_cell(cell_x: int, cell_y: int, cell_z: int, dim_x: int, dim_y: int, dim_z: int, direct_mask: bool):
+    physical_x = int(0)
+    physical_y = int(0)
+    physical_z = int(0)
+    if direct_mask:
+        physical_x = cell_x & (dim_x - 1)
+        physical_y = cell_y & (dim_y - 1)
+        physical_z = cell_z & (dim_z - 1)
+    else:
+        physical_x = sol_xpbd_grid_axis(cell_x, dim_x)
+        physical_y = sol_xpbd_grid_axis(cell_y, dim_y)
+        physical_z = sol_xpbd_grid_axis(cell_z, dim_z)
+    return physical_z * (dim_x * dim_y) + physical_y * dim_x + physical_x
+
+
+@wp.func(inline=True)
+def sol_xpbd_contact_far(separation: wp.vec3, radius: float, neighbor_radius: float, cohesion: float):
+    lower_distance = wp.max(wp.abs(separation[0]), wp.max(wp.abs(separation[1]), wp.abs(separation[2])))
+    return lower_distance >= 1.0e-18 and lower_distance - radius - neighbor_radius > cohesion
+
+
+@wp.kernel(cuda_max_registers=64, grid_stride=False)
 def solve_particle_particle_contacts(
     grid: wp.uint64,
     particle_x: wp.array[wp.vec3],
@@ -256,65 +290,107 @@ def solve_particle_particle_contacts(
     max_radius: float,
     dt: float,
     relaxation: float,
-    # outputs
     deltas: wp.array[wp.vec3],
 ):
     tid = wp.tid()
-
-    # order threads by cell
-    i = wp.hash_grid_point_id(grid, tid)
-    if i == -1:
-        # hash grid has not been built yet
+    particle_index = wp.hash_grid_point_id(grid, tid)
+    if particle_index == -1:
         return
-    particle_flag = particle_flags[i]
-    if (particle_flag & ParticleFlags.ACTIVE) == 0:
+    particle_flag = particle_flags[particle_index]
+    if (particle_flag & 1) == 0:
         return
-    is_proxy = particle_flag & ParticleFlags.PROXY
-
-    x = particle_x[i]
-    v = particle_v[i]
-    radius = particle_radius[i]
-    w1 = particle_invmass[i]
-
-    # particle contact
-    query = wp.hash_grid_query(grid, x, radius + max_radius + k_cohesion)
-    index = int(0)
-
+    is_proxy = particle_flag & 2
+    position = particle_x[particle_index]
+    velocity = particle_v[particle_index]
+    radius = particle_radius[particle_index]
+    w1 = particle_invmass[particle_index]
+    grid_words = wp.array(ptr=grid, shape=(5,), dtype=wp.uint64)
+    if grid_words[0] == wp.uint64(0):
+        return
+    grid_dimensions = wp.array(ptr=grid + wp.uint64(40), shape=(4,), dtype=wp.int32)
+    grid_scalars = wp.array(ptr=grid + wp.uint64(80), shape=(2,), dtype=wp.float32)
+    dim_x = grid_dimensions[0]
+    dim_y = grid_dimensions[1]
+    dim_z = grid_dimensions[2]
+    num_points = grid_dimensions[3]
+    num_cells = dim_x * dim_y * dim_z
+    point_ids = wp.array(ptr=grid_words[1], shape=(num_points,), dtype=wp.int32)
+    cell_starts = wp.array(ptr=grid_words[3], shape=(num_cells,), dtype=wp.int32)
+    cell_ends = wp.array(ptr=grid_words[4], shape=(num_cells,), dtype=wp.int32)
+    cell_width_inverse = grid_scalars[1]
+    query_radius = radius + max_radius + k_cohesion
+    x_start = int(wp.floor((position[0] - query_radius) * cell_width_inverse))
+    y_start = int(wp.floor((position[1] - query_radius) * cell_width_inverse))
+    z_start = int(wp.floor((position[2] - query_radius) * cell_width_inverse))
+    x_end = wp.min(int(wp.floor((position[0] + query_radius) * cell_width_inverse)), x_start + dim_x - 1)
+    y_end = wp.min(int(wp.floor((position[1] + query_radius) * cell_width_inverse)), y_start + dim_y - 1)
+    z_end = wp.min(int(wp.floor((position[2] + query_radius) * cell_width_inverse)), z_start + dim_z - 1)
+    direct_mask = (
+        (dim_x & (dim_x - 1)) == 0
+        and dim_x <= 1048576
+        and (dim_y & (dim_y - 1)) == 0
+        and dim_y <= 1048576
+        and (dim_z & (dim_z - 1)) == 0
+        and dim_z <= 1048576
+        and x_start >= -1048576
+        and x_end >= x_start
+        and x_end <= 2146435071
+        and y_start >= -1048576
+        and y_end >= y_start
+        and y_end <= 2146435071
+        and z_start >= -1048576
+        and z_end >= z_start
+        and z_end <= 2146435071
+    )
+    cell_x = x_start + 0
+    cell_y = y_start + 0
+    cell_z = z_start + 0
+    cell = sol_xpbd_grid_cell(cell_x, cell_y, cell_z, dim_x, dim_y, dim_z, direct_mask)
+    cursor = cell_starts[cell]
+    cursor_end = cell_ends[cell]
     delta = wp.vec3(0.0)
-
-    while wp.hash_grid_query_next(query, index):
-        neighbor_flag = particle_flags[index]
-        if (
-            (neighbor_flag & ParticleFlags.ACTIVE) != 0
-            and (is_proxy == 0 or ((neighbor_flag & ParticleFlags.PROXY) == 0 and particle_invmass[index] > 0.0))
-            and index != i
-        ):
-            # compute distance to point
-            n = x - particle_x[index]
-            d = wp.length(n)
-            err = d - radius - particle_radius[index]
-
-            # compute inverse masses
-            w2 = particle_invmass[index]
-            denom = w1 + w2
-
-            if err <= k_cohesion and denom > 0.0 and d > 0.0:
-                n = n / d
-                vrel = v - particle_v[index]
-
-                # normal
-                lambda_n = err
-                delta_n = n * lambda_n
-
-                # friction
-                vn = wp.dot(n, vrel)
-                vt = vrel - n * vn
-
-                lambda_f = wp.max(k_mu * lambda_n, -wp.length(vt) * dt)
-                delta_f = wp.normalize(vt) * lambda_f
-                delta += (delta_f - delta_n) / denom
-
-    wp.atomic_add(deltas, i, delta * w1 * relaxation)
+    while True:
+        if cursor >= cursor_end:
+            cell_x += 1
+            if cell_x > x_end:
+                cell_x = x_start
+                cell_y += 1
+            if cell_y > y_end:
+                cell_y = y_start
+                cell_z += 1
+            if cell_z > z_end:
+                break
+            cell = sol_xpbd_grid_cell(cell_x, cell_y, cell_z, dim_x, dim_y, dim_z, direct_mask)
+            cursor = cell_starts[cell]
+            cursor_end = cell_ends[cell]
+            continue
+        candidate_index = point_ids[cursor]
+        cursor += 1
+        if candidate_index != particle_index:
+            normal = position - particle_x[candidate_index]
+            neighbor_radius = particle_radius[candidate_index]
+            if particle_x.shape[0] < 8192 or not sol_xpbd_contact_far(normal, radius, neighbor_radius, k_cohesion):
+                distance = wp.length(normal)
+                err = distance - radius - neighbor_radius
+                if err <= k_cohesion and distance > 0.0:
+                    neighbor_flag = particle_flags[candidate_index]
+                    w2 = particle_invmass[candidate_index]
+                    denom = w1 + w2
+                    if (
+                        denom > 0.0
+                        and (neighbor_flag & 1) != 0
+                        and (is_proxy == 0 or ((neighbor_flag & 2) == 0 and w2 > 0.0))
+                    ):
+                        normal = normal / distance
+                        vrel = velocity - particle_v[candidate_index]
+                        lambda_n = err
+                        delta_n = normal * lambda_n
+                        vn = wp.dot(normal, vrel)
+                        vt = vrel - normal * vn
+                        lambda_f = wp.max(k_mu * lambda_n, -wp.length(vt) * dt)
+                        delta_f = wp.normalize(vt) * lambda_f
+                        delta += (delta_f - delta_n) / denom
+    wp.atomic_add(deltas, particle_index, delta * w1 * relaxation)
 
 
 @wp.kernel

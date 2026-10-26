@@ -1,0 +1,1 @@
+Replace XPBD particle-contact neighbor traversal with an experimental candidate using the Warp 1.18 private HashGrid layout; preserve the existing kernel signature and caller configuration. This draft requires compatibility and trajectory qualification before release.
