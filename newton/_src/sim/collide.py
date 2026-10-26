@@ -2705,6 +2705,11 @@ class CollisionPipeline:
         # ignore them. Mirrors the assignment in CollisionPipeline.contacts().
         contacts._enable_rigid_soft_full_surface_contact = self.enable_rigid_soft_full_surface_contact
 
+        # Sticky mode: remember the buffer's soft records as the solver left them, before this pass
+        # rewrites them.
+        if self._soft_contact_matcher is not None:
+            self._soft_contact_matcher.save(contacts)
+
         # A reused buffer can retain mesh tags from a full-surface pipeline. The mesh pass
         # resets them itself; without that pass, replacement particle rows need invalid tags.
         if self._soft_mesh_contact_data is None and contacts._soft_contact_mesh_features is not None:
@@ -3227,7 +3232,7 @@ class CollisionPipeline:
         # Sticky mode: keep matched soft records on the contact points they had, once every soft
         # producer has written its records.
         if self._soft_contact_matcher is not None and state.particle_q:
-            self._soft_contact_matcher.replay_and_save(model, state, contacts)
+            self._soft_contact_matcher.replay(model, state, contacts)
 
         # Preserve the previous provenance if validation or collision setup fails.
         contacts._contact_matching_mode = self.contact_matching

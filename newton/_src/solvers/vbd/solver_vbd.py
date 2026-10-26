@@ -90,6 +90,7 @@ from .rigid_vbd_kernels import (
     init_rod_rest_bend_twist,
     refresh_body_structural_k,
     refresh_joint_material_params,
+    relax_body_particle_contact_anchors,
     reset_rigid_state,
     snapshot_body_body_contact_history,
     step_body_body_contact_C0_lambda,
@@ -2837,7 +2838,33 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if update_tendon_diagnostics:
             self._update_tendon_segment_diagnostics(state_out, dt)
         self._finalize_particles(state_out, dt)
+        self._relax_body_particle_contact_anchors(state_out, contacts, dt)
         self._save_tendon_history(state_out)
+
+    def _relax_body_particle_contact_anchors(self, state_out: State, contacts: Contacts | None, dt: float):
+        """Keep persistent body-particle contact points within the friction regularization length."""
+        if contacts is None or not _anchored_soft_contacts(contacts) or self._particle_contact_worker_count == 0:
+            return
+        wp.launch(
+            relax_body_particle_contact_anchors,
+            dim=self._particle_contact_worker_count,
+            inputs=[
+                self.friction_epsilon * dt,
+                self._particle_contact_worker_count,
+                state_out.particle_q,
+                state_out.body_q if state_out.body_q is not None else self._empty_body_q,
+                self.model.shape_body,
+                contacts.soft_contact_count,
+                contacts.soft_contact_max,
+                contacts.soft_contact_indices,
+                contacts.soft_contact_barycentric,
+                contacts.soft_contact_shape,
+                contacts.soft_contact_normal,
+                contacts.soft_contact_body_vel,
+            ],
+            outputs=[contacts.soft_contact_body_pos],
+            device=self.device,
+        )
 
     @override
     def reset(

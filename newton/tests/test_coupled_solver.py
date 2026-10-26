@@ -3,6 +3,7 @@
 
 """Smoke tests for the coupled solver prototype."""
 
+import math
 import unittest
 from typing import ClassVar
 from unittest import mock
@@ -4173,6 +4174,75 @@ add_function_test(
     TestSolverCoupledBasic,
     "test_soft_contact_filter_preserves_unified_fields",
     _coupled_soft_contact_filter_preserves_unified_fields,
+    devices=get_test_devices(mode="basic"),
+)
+
+
+def _coupled_vbd_keeps_relaxed_soft_contact_points(test, device):
+    """A VBD entry's dragged body points reach the caller's sticky contacts, so a stopped block stays put.
+
+    The coupled solver hands VBD a filtered copy of the contacts. VBD drags the kept body points of a
+    sliding contact along after each step; unless they are copied back, the pipeline replays the old
+    ones and friction pulls the block back up to 0.3 mm once it stops.
+    """
+    mu = 0.5
+    substeps = 300
+
+    def set_load(model, load):
+        tilt = math.atan(load * mu)
+        model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
+
+    with wp.ScopedDevice(device):
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, -0.01)), hx=0.5, hy=0.5, hz=0.01)
+        builder.add_soft_grid(
+            pos=wp.vec3(-0.03, -0.03, 0.006),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=3,
+            dim_y=3,
+            dim_z=1,
+            cell_x=0.02,
+            cell_y=0.02,
+            cell_z=0.02,
+            density=200.0,
+            k_mu=3.0e4,
+            k_lambda=3.0e4,
+            k_damp=0.0,
+            particle_radius=0.004,
+        )
+        builder.color()
+        model = builder.finalize()
+        model.soft_contact_mu = mu
+        model.shape_material_mu.fill_(mu)
+        set_load(model, 1.5)
+        pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
+        coupled = SolverCoupled(
+            model,
+            (
+                SolverCoupled.Entry(
+                    "vbd", lambda view: SolverVBD(view, iterations=10), particles=range(model.particle_count)
+                ),
+            ),
+        )
+        state_0, state_1, contacts = model.state(), model.state(), pipeline.contacts()
+        xs = []
+        for step in range(round(0.42 * substeps)):
+            if step == round(0.12 * substeps):
+                set_load(model, 0.0)
+            pipeline.collide(state_0, contacts)
+            coupled.step(state_0, state_1, None, contacts, 1.0 / substeps)
+            state_0, state_1 = state_1, state_0
+            if step >= round(0.12 * substeps) and step % 3 == 2:
+                xs.append(state_0.particle_q.numpy()[:, 0].mean())
+    xs = np.array(xs)
+    test.assertLess(xs.max() - xs[-1], 1.0e-4)
+
+
+add_function_test(
+    TestSolverCoupledBasic,
+    "test_vbd_keeps_relaxed_soft_contact_points",
+    _coupled_vbd_keeps_relaxed_soft_contact_points,
     devices=get_test_devices(mode="basic"),
 )
 

@@ -1280,7 +1280,7 @@ def test_sticky_soft_contact_points_cuda_graph(test, device):
 
 
 def test_sticky_soft_contact_history_follows_world_and_buffer(test, device):
-    """A masked reset restarts only the selected world's soft points, and a buffer never replays another's."""
+    """A masked reset restarts only the selected world's soft points, and each buffer replays its own."""
     with wp.ScopedDevice(device):
         model, state = _build_soft_particle_scene(device, world_count=2)
         pipeline = newton.CollisionPipeline(model, soft_contact_gap=0.01, contact_matching="sticky")
@@ -1300,7 +1300,7 @@ def test_sticky_soft_contact_history_follows_world_and_buffer(test, device):
 
         other = pipeline.contacts()
         np.testing.assert_allclose(body_points_at(0.0004, other), [0.0004, 0.0004], atol=1.0e-7)
-        np.testing.assert_allclose(body_points_at(0.0005), [0.0005, 0.0005], atol=1.0e-7)
+        np.testing.assert_allclose(body_points_at(0.0004), [0.0002, 0.0], atol=1.0e-7)
 
         # Differentiable pipelines keep fresh points, so their contacts must not claim persistent ones.
         differentiable = newton.CollisionPipeline(

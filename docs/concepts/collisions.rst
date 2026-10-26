@@ -2620,11 +2620,16 @@ slipped apart tangentially by at most ``contact_matching_pos_threshold``.  The
 test compares the saved points with each other rather than with the fresh ones,
 because a soft edge or face lying flat on a surface has no unique closest point.
 The normal stays fresh.  Records on a surface with surface velocity, and all
-records of a pipeline with ``requires_grad``, keep fresh points.
+records of a pipeline with ``requires_grad``, keep fresh points.  The pipeline
+saves a buffer's records as its consumers left them before the next pass, so
+each :class:`~newton.Contacts` buffer replays its own records.
 
 :class:`~newton.solvers.SolverVBD` measures body-particle friction slip as the
 drift between the kept points, so soft bodies hold static tangential loads that
-the regularized friction law would otherwise let them creep under.  Other solvers
+the regularized friction law would otherwise let them creep under.  After each
+step it drags the kept body points to within ``friction_epsilon * dt`` of their
+soft points: drift beyond that within a step is sliding, and friction then does
+not pull a body back once it stops.  Other solvers
 read the kept points as contact geometry; their contact point may then lag the
 closest point by up to the threshold.
 

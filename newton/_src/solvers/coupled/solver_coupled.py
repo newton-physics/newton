@@ -2853,6 +2853,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         control_callback: Callable[[Control | None], None] | None = None,
     ) -> Contacts | None:
         """Step one sub-solver entry, honoring its local substep count."""
+        source = contacts
         if filter_contacts:
             contacts = self._contacts_for_entry(entry, contacts)
         control = _copy_control_to_entry(control, entry)
@@ -2876,11 +2877,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
             substep_dt = dt / float(entry.substeps)
             for _ in range(entry.substeps):
                 step_solver(entry.state_0, entry.state_0, substep_dt)
-            return contacts
+            return self._write_back_kept_soft_contact_points(entry, source, contacts)
 
         if entry.substeps == 1:
             step_solver(entry.state_0, entry.state_1, dt)
-            return contacts
+            return self._write_back_kept_soft_contact_points(entry, source, contacts)
 
         substep_dt = dt / float(entry.substeps)
         if entry.state_tmp is None:
@@ -2895,7 +2896,24 @@ class SolverCoupled(SolverBase, CouplingInterface):
             state_in, state_out = state_out, state_in
         if state_in is entry.state_tmp:
             _copy_same_view_state(entry.state_tmp, entry.state_1)
-        return contacts
+        return self._write_back_kept_soft_contact_points(entry, source, contacts)
+
+    def _write_back_kept_soft_contact_points(
+        self, entry: SolverEntry, source: Contacts | None, filtered: Contacts | None
+    ) -> Contacts | None:
+        """Copy the entry's kept body points back, so the collision pipeline replays what it left."""
+        if source is None or filtered is source or not filtered._soft_contact_points_persist:
+            return filtered
+        src_to_dst = self._entry_soft_contact_src_to_dst.get(entry.name)
+        if src_to_dst is not None and source.soft_contact_max > 0:
+            wp.launch(
+                _write_back_soft_contact_body_pos_kernel,
+                dim=source.soft_contact_max,
+                inputs=[source.soft_contact_count, src_to_dst, filtered.soft_contact_body_pos],
+                outputs=[source.soft_contact_body_pos],
+                device=self.model.device,
+            )
+        return filtered
 
     def _contacts_for_entry(self, entry: SolverEntry, contacts: Contacts | None) -> Contacts | None:
         if contacts is None:
@@ -3749,6 +3767,21 @@ def _add_mapped_particle_forces_kernel(
         return
 
     dst_f[local_id] = dst_f[local_id] + src_f[global_id]
+
+
+@wp.kernel(enable_backward=False)
+def _write_back_soft_contact_body_pos_kernel(
+    src_count: wp.array[int],
+    src_to_dst: wp.array[wp.int32],
+    dst_body_pos: wp.array[wp.vec3],
+    src_body_pos: wp.array[wp.vec3],
+):
+    contact_id = wp.tid()
+    if contact_id >= src_count[0]:
+        return
+    dst_id = src_to_dst[contact_id]
+    if dst_id >= 0:
+        src_body_pos[contact_id] = dst_body_pos[dst_id]
 
 
 @wp.kernel(enable_backward=False)

@@ -2098,6 +2098,51 @@ def _body_particle_friction_translation(
     return relative_translation
 
 
+@wp.kernel(enable_backward=False)
+def relax_body_particle_contact_anchors(
+    max_slip: float,
+    worker_count: int,
+    particle_q: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    shape_body: wp.array[int],
+    soft_contact_count: wp.array[int],
+    soft_contact_max: int,
+    soft_contact_indices: wp.array[wp.vec3i],
+    soft_contact_barycentric: wp.array[wp.vec3],
+    soft_contact_shape: wp.array[int],
+    soft_contact_normal: wp.array[wp.vec3],
+    soft_contact_body_vel: wp.array[wp.vec3],
+    # in/out
+    soft_contact_body_pos: wp.array[wp.vec3],
+):
+    """Drag each kept body point along so its soft point is at most ``max_slip`` away tangentially.
+
+    Drift beyond the friction regularization length within a step is sliding. Kept, it would pull a
+    body back once it stops; the collision pipeline replays the dragged point instead.
+    """
+    for i in range(wp.tid(), wp.min(soft_contact_count[0], soft_contact_max), worker_count):
+        corners = soft_contact_indices[i]
+        if corners[0] < 0 or wp.length_sq(soft_contact_body_vel[i]) > 0.0:
+            continue
+        bary = soft_contact_barycentric[i]
+        x = bary[0] * particle_q[corners[0]]
+        for k in range(1, 3):
+            if corners[k] >= 0:
+                x += bary[k] * particle_q[corners[k]]
+        X_wb = wp.transform_identity()
+        body = shape_body[soft_contact_shape[i]]
+        if body >= 0:
+            X_wb = body_q[body]
+        bx = wp.transform_point(X_wb, soft_contact_body_pos[i])
+        n = soft_contact_normal[i]
+        d = x - bx
+        slip = d - wp.dot(d, n) * n
+        slip_length = wp.length(slip)
+        if slip_length > max_slip:
+            bx += slip * (1.0 - max_slip / slip_length)
+            soft_contact_body_pos[i] = wp.transform_point(wp.transform_inverse(X_wb), bx)
+
+
 @wp.func
 def _compute_body_particle_contact_force(
     distance: float,

@@ -2163,14 +2163,13 @@ def _body_particle_contact_damping_is_absolute(test, device):
         np.testing.assert_allclose(damping_low_ke, [0.0, 0.0, 2.0], rtol=1.0e-6, atol=1.0e-6)
 
 
-def _soft_block_on_tilted_box(load: float, full_surface: bool, sticky: bool, substeps: int, seconds: tuple):
+def _soft_block_on_tilted_box(load: float | tuple, full_surface: bool, sticky: bool, substeps: int, seconds: tuple):
     """Mean positions of a soft block resting on a static box under gravity tilted along x.
 
     The tangential load is ``load`` times the friction limit mu * N. Returns the block's mean position
     after each duration in ``seconds``, advanced in turn.
     """
     mu = 0.5
-    tilt = math.atan(load * mu)
     fps = 60
     dt = 1.0 / (fps * substeps)
     builder = newton.ModelBuilder()
@@ -2197,7 +2196,6 @@ def _soft_block_on_tilted_box(load: float, full_surface: bool, sticky: bool, sub
     model = builder.finalize()
     model.soft_contact_mu = mu
     model.shape_material_mu.fill_(mu)
-    model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
     pipeline = newton.CollisionPipeline(
         model,
         soft_contact_gap=0.01,
@@ -2208,7 +2206,10 @@ def _soft_block_on_tilted_box(load: float, full_surface: bool, sticky: bool, sub
     state_0, state_1, contacts = model.state(), model.state(), pipeline.contacts()
 
     positions = []
-    for duration in seconds:
+    loads = load if isinstance(load, tuple) else (load,) * len(seconds)
+    for duration, window_load in zip(seconds, loads, strict=True):
+        tilt = math.atan(window_load * mu)
+        model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
         for _ in range(round(duration * fps * substeps)):
             pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, None, contacts, dt)
@@ -2239,6 +2240,20 @@ def _sticky_soft_contacts_slide_beyond_friction_cone(test, device):
         (sticky,) = _soft_block_on_tilted_box(1.5, False, True, 5, (0.3,))
     test.assertGreater(fresh[0], 0.05)
     np.testing.assert_allclose(sticky[0], fresh[0], rtol=0.02)
+
+
+def _sticky_soft_contacts_stop_without_springback(test, device, full_surface):
+    """A block that slides on sticky body-particle contacts and then stops stays where it stopped.
+
+    While the block decelerates, each collision pass moves it less than the matching threshold, so the
+    kept points could trail it by nearly the threshold and pull it back up to 0.3 mm once it stops.
+    VBD drags them to within the friction regularization length after each step.
+    """
+    with wp.ScopedDevice(device):
+        positions = _soft_block_on_tilted_box((1.5,) + (0.0,) * 30, full_surface, True, 5, (0.12,) + (0.01,) * 30)
+    xs = np.array([p[0] for p in positions[1:]])
+    test.assertGreater(xs.max() - positions[0][0], 5.0e-4)
+    test.assertLess(xs.max() - xs[-1], 1.0e-4)
 
 
 def _sticky_soft_contacts_hold_pinched_block(test, device):
@@ -6331,6 +6346,20 @@ add_function_test(
     "test_sticky_soft_contacts_slide_beyond_friction_cone",
     _sticky_soft_contacts_slide_beyond_friction_cone,
     devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_sticky_soft_contacts_stop_without_springback",
+    _sticky_soft_contacts_stop_without_springback,
+    devices=devices,
+    full_surface=False,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_sticky_soft_contacts_stop_without_springback_full_surface",
+    _sticky_soft_contacts_stop_without_springback,
+    devices=devices,
+    full_surface=True,
 )
 add_function_test(
     TestSolverVBD,
