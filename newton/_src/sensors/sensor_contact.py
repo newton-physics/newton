@@ -692,9 +692,12 @@ class SensorContact:
             self.position_matrix.zero_()
             self._position_weight.zero_()
         update_contact_positions = self.position_matrix is not None and state is not None and state.body_q is not None
+        contact_count = contacts.rigid_contact_max
+        if self.device.is_cpu:
+            contact_count = min(contact_count, int(contacts.rigid_contact_count.numpy()[0]))
         wp.launch(
             accumulate_contact_forces_kernel,
-            dim=contacts.rigid_contact_max,
+            dim=contact_count,
             inputs=[
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_shape0,
