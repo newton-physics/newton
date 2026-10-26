@@ -1129,7 +1129,8 @@ by joint type:
   without MuJoCo joints, posed from :attr:`~newton.State.joint_q` every
   step. MuJoCo requires mass of movable bodies, so such a root can never
   be dynamic. Mocap bodies have zero velocity in MuJoCo: contact friction
-  against the root and its dynamic descendants do not see its motion.
+  against the root and its dynamic descendants follow its pose but do not
+  see its velocity.
   Give the body mass if that coupling matters.
 - **World-attached shapes that are not part of an articulation**
   remain ordinary static MuJoCo geometry rather than mocap bodies.
