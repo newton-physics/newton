@@ -1799,7 +1799,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.rigid_soft_contact_use_log_barrier,
                     self.model.particle_radius,
                     contacts.soft_contact_count,
-                    _make_soft_contact_filter_data(self.model, contacts, state.particle_q, body_q_for_particles),
+                    _make_soft_contact_filter_data(self.model, contacts, state_out.particle_q, body_q_for_particles),
                     contacts.soft_contact_particle,
                     self.body_particle_contact_penalty_k,
                     self.body_particle_contact_material_kd,
