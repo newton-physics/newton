@@ -988,6 +988,7 @@ class TestDVIAPGDDynamics(unittest.TestCase):
                 self._check_dr_legs_support_and_reset(ordering)
 
     def _check_dr_legs_support_and_reset(self, ordering):
+        """Check DR Legs APGD support, effort limits, and reset with the requested LDL ordering."""
         from newton.examples.kamino.example_kamino_robot_dr_legs import Example  # noqa: PLC0415
 
         with wp.ScopedDevice("cuda:0"):

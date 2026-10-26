@@ -66,6 +66,7 @@ def _dense_values(
     scale: wp.array[wp.float32],
     values: wp.array3d[wp.float32],
 ):
+    """Gather and diagonally normalize dense bilateral blocks, regularizing their diagonal."""
     block, r, c = wp.tid()
     i, j = block_i[block], block_j[block]
     world = worlds[i]
@@ -119,6 +120,7 @@ def _sparse_diagonal(
     scale: wp.array[wp.float32],
     values: wp.array3d[wp.float32],
 ):
+    """Initialize normalized bilateral diagonals and record row scales, including identity padding."""
     pivot, r = wp.tid()
     world, row = worlds[pivot], rows[pivot, r]
     value = wp.float32(1.0)
@@ -148,6 +150,7 @@ def _sparse_entries(
     pivots: int,
     values: wp.array[wp.float32],
 ):
+    """Assemble normalized off-diagonal bilateral entries from shared-body Jacobian products."""
     entry = wp.tid()
     first = starts[entry]
     value = wp.float32(0.0)
@@ -231,6 +234,7 @@ def _prepare_response(
     columns: wp.array[wp.int32],
     result: wp.array[wp.float32],
 ):
+    """Scale bilateral coupling columns and select each world's dense or compact RHS layout."""
     world, row, column = wp.tid()
     n, nu = njc[world], dim[world] - njc[world]
     stride = capacity[world]
@@ -266,6 +270,7 @@ def _finish_response(
     forward: wp.array[wp.float32],
     full: wp.array[wp.float32],
 ):
+    """Store whitened compact responses or undo normalization on full inverse responses."""
     world, row, column = wp.tid()
     n, nu = njc[world], dim[world] - njc[world]
     if row >= n or column >= nu:

@@ -398,6 +398,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
         assert_solver_config(self, config)
         self.assertEqual(config.rotation_correction, "twopi")
         self.assertEqual(config.dynamics.linear_solver_type, "LLTB")
+        self.assertEqual(config.dvi.bilateral_solver_type, "LLTB")
         self.assertEqual(config.padmm.warmstart_mode, "containers")
         self.assertEqual(config.padmm.warmstart_scale, 0.9)
 
@@ -427,6 +428,88 @@ class TestSolverKaminoConfig(unittest.TestCase):
                 sparse_dynamics=False,
                 padmm=kamino_config.PADMMSolverConfig(penalty_update_method="balanced"),
             )
+
+    def test_ldl_supported_dynamics(self):
+        """Reject sparse PADMM LDL while accepting dense PADMM and sparse DVI LDL."""
+        with self.assertRaisesRegex(ValueError, "Sparse PADMM.*LDL"):
+            SolverKamino.Config(
+                dynamics_solver="padmm",
+                sparse_dynamics=True,
+                sparse_jacobian=True,
+                dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type="LDL"),
+            )
+        SolverKamino.Config(
+            dynamics_solver="padmm",
+            sparse_dynamics=False,
+            dynamics=kamino_config.ConstrainedDynamicsConfig(linear_solver_type="LDL"),
+        )
+        SolverKamino.Config(
+            dynamics_solver="dvi",
+            sparse_dynamics=True,
+            dvi=kamino_config.DVISolverConfig(bilateral_solver_type="LDL"),
+        )
+
+    def test_ldl_example_options(self):
+        """Opt in through either LDL flag, preserving explicit backends and solver kwargs."""
+        from newton.examples.kamino.example_kamino_robot_dr_legs import Example as DRLegs  # noqa: PLC0415
+        from newton.examples.kamino.utils.ldl import configure_ldl  # noqa: PLC0415
+        from newton.examples.robot.example_robot_g1 import Example as G1  # noqa: PLC0415
+        from newton.examples.robot.example_robot_h1 import Example as H1  # noqa: PLC0415
+
+        for example, mode, selector, default in (
+            (G1, "dvi", "bilateral", "LLTBRCM"),
+            (H1, "dvi", "bilateral", "LLTBRCM"),
+            (DRLegs, "padmm", "linear", "LLTB"),
+            (DRLegs, "dvi", "bilateral", "LLTBRCM"),
+        ):
+            parser = example.create_parser()
+            base_flags = ["--dynamics-solver", mode] if example is DRLegs else ["--solver", "kamino"]
+            for flags, backend, ordering in (
+                ([], default, None),
+                (["--ldl"], "LDL", "meca"),
+                (["--ldl-ordering", "rcm"], "LDL", "rcm"),
+                (["--ldl-ordering", "meca"], "LDL", "meca"),
+                ([f"--{selector}-solver-type", "LDL"], "LDL", "meca"),
+            ):
+                with self.subTest(example=example.__module__, flags=flags):
+                    args = parser.parse_args([*base_flags, *flags])
+                    config = SolverKamino.Config(dynamics_solver=mode)
+                    subconfig = config.dvi if mode == "dvi" else config.dynamics
+                    selected = getattr(args, f"{selector}_solver_type") or default
+                    setattr(subconfig, f"{selector}_solver_type", selected)
+                    configure_ldl(config, args)
+                    self.assertEqual(getattr(subconfig, f"{selector}_solver_type"), backend)
+                    if ordering is not None:
+                        self.assertEqual(getattr(subconfig, f"{selector}_solver_kwargs")["ordering"], ordering)
+
+            for flags in (["--ldl"], ["--ldl-ordering", "rcm"]):
+                with self.subTest(example=example.__module__, conflict=flags):
+                    args = parser.parse_args([*base_flags, f"--{selector}-solver-type", "LLTBRCM", *flags])
+                    config = SolverKamino.Config(dynamics_solver=mode)
+                    with self.assertRaisesRegex(ValueError, "conflict"):
+                        configure_ldl(config, args)
+
+        config = SolverKamino.Config(
+            dynamics_solver="dvi",
+            dvi=kamino_config.DVISolverConfig(
+                bilateral_solver_type="LDL", bilateral_solver_kwargs={"ordering": "rcm", "failed_pivot_shift": 1.0e-5}
+            ),
+        )
+        configure_ldl(config, G1.create_parser().parse_args(["--ldl"]))
+        self.assertEqual(config.dvi.bilateral_solver_kwargs, {"ordering": "rcm", "failed_pivot_shift": 1.0e-5})
+        with self.assertRaisesRegex(ValueError, "dense PADMM"):
+            configure_ldl(
+                SolverKamino.Config(dynamics_solver="padmm", sparse_dynamics=True, sparse_jacobian=True),
+                DRLegs.create_parser().parse_args(["--ldl-ordering", "rcm"]),
+            )
+
+    def test_ldl_requires_kamino_example(self):
+        """Reject LDL options before loading a model with another physics solver."""
+        from newton.examples.robot.example_robot_g1 import Example  # noqa: PLC0415
+
+        for flags in (["--ldl"], ["--ldl-ordering", "rcm"], ["--bilateral-solver-type", "LDL"]):
+            with self.subTest(flags=flags), self.assertRaisesRegex(ValueError, "Kamino"):
+                Example(None, Example.create_parser().parse_args(["--solver", "mujoco", *flags]))
 
     def test_02_lox_config_validation(self):
         """Accept supported LOX settings and reject one invalid value of each validated kind."""

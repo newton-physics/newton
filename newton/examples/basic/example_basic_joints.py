@@ -35,9 +35,12 @@ def _slider_constrained_motion_has_stopped(q: wp.transform, qd: wp.spatial_vecto
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the joint-type demonstration with the requested solver options."""
         self.viewer = viewer
         self.args = args
         self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
 
         # setup simulation parameters first
         self.fps = 100
@@ -201,6 +204,7 @@ class Example:
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
             configure_ldl(solver_config, args)
             solver_config.dvi.max_alternating_iterations = 5
             solver_config.dvi.bilateral_solve_interval = 5

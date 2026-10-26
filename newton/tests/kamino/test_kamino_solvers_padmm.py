@@ -50,6 +50,7 @@ class TestSetup:
         **kwargs,
     ):
         # Cache the max contacts allocated for the test problem
+        """Build a PADMM problem with the requested topology, device, and linear solver."""
         self.max_world_contacts = max_world_contacts
 
         # Construct the model description using model builders for different systems
@@ -897,6 +898,7 @@ class TestPADMMSolver(unittest.TestCase):
                 self._check_apadmm_restart_reference(linear_solver, ordering)
 
     def _check_apadmm_restart_reference(self, linear_solver, ordering):
+        """Compare accelerated PADMM restart state against the reference with the selected factorization."""
         test = TestSetup(
             builder_fn=basics.build_box_pendulum,
             max_world_contacts=1,

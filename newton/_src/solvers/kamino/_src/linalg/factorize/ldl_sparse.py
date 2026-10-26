@@ -63,6 +63,7 @@ def _symbolic(groups, edges, ordering):
     rcm_order = _rcm_ordering(graph) if ordering == "rcm" else None
 
     def meca_pivot():
+        """Choose the remaining block that adds the fewest fill edges, breaking ties by block index."""
         best_node, best_fill = -1, float("inf")
         for node in sorted(remaining):
             neighbors = sorted(graph[node] & remaining)
@@ -99,6 +100,7 @@ def _gather_matrix(
     source: wp.array[wp.float32],
     values: wp.array3d[wp.float32],
 ):
+    """Gather reordered sparse blocks from packed dense matrices and add identity padding."""
     block, r, c = wp.tid()
     i, j = block_i[block], block_j[block]
     world = worlds[i]
@@ -184,6 +186,7 @@ def _factor_level(
 
 @wp.kernel
 def _check_factors(worlds: wp.array[wp.int32], diagonal: wp.array2d[wp.float32], failed: wp.array[wp.int32]):
+    """Flag worlds containing nonpositive or nonfinite diagonal pivots for a shifted retry."""
     pivot, row = wp.tid()
     value = diagonal[pivot, row]
     if not wp.isfinite(value) or value <= 0.0:
@@ -192,6 +195,8 @@ def _check_factors(worlds: wp.array[wp.int32], diagonal: wp.array2d[wp.float32],
 
 @cache
 def _make_solve_kernel(forward: bool, serial: bool):
+    """Specialize triangular substitution for forward/backward and serial/level scheduling."""
+
     @wp.kernel(module="unique")
     def solve_kernel(
         pivots: wp.array[wp.int32],
@@ -210,6 +215,7 @@ def _make_solve_kernel(forward: bool, serial: bool):
         source: wp.array[wp.float32],
         result: wp.array[wp.float32],
     ):
+        """Solve each scheduled block against previously solved neighbors in original RHS row order."""
         local, column = wp.tid()
         first, last = offset + local, offset + local + 1
         if wp.static(serial):
@@ -275,6 +281,7 @@ def _solve_diagonal(
     source: wp.array[wp.float32],
     result: wp.array[wp.float32],
 ):
+    """Scale valid RHS entries by inverse D or inverse square-root D, skipping padded rows."""
     pivot, r, column = wp.tid()
     world, row = worlds[pivot], rows[pivot, r]
     if row < 0 or row >= dim[world] or column >= columns[world]:
@@ -297,6 +304,7 @@ def _factor_entry(
     slots: wp.array[wp.int32],
     factors: wp.array3d[wp.float32],
 ):
+    """Read a scalar entry of unit-lower L, returning zero outside its sparse pattern."""
     value = wp.float32(0.0)
     if i == j and r >= c:
         value = factors[i, r, c]
@@ -320,6 +328,7 @@ def _reconstruct(
     diagonal: wp.array2d[wp.float32],
     result: wp.array[wp.float32],
 ):
+    """Reconstruct packed dense matrices from sparse L and D in original row order."""
     world, row, col = wp.tid()
     n = dim[world]
     if row >= n or col >= n:
@@ -368,6 +377,7 @@ class LDLBlockSparseSolver(DirectSolver):
         dtype: type = wp.float32,
         device: wp.DeviceLike | None = None,
     ) -> None:
+        """Configure block ordering and failed-pivot regularization, optionally allocating an operator."""
         if ordering not in {"meca", "rcm"}:
             raise ValueError(f"Unknown LDL ordering {ordering!r}; expected 'meca' or 'rcm'.")
         if not np.isfinite(failed_pivot_shift) or failed_pivot_shift < 0:
@@ -385,6 +395,7 @@ class LDLBlockSparseSolver(DirectSolver):
         return self._ordering
 
     def _allocate_impl(self, operator: DenseLinearOperatorData) -> None:
+        """Build symbolic fill and schedules, or allocate implicit complete-pattern storage."""
         if not isinstance(operator.info, DenseSquareMultiLinearInfo):
             raise ValueError("LDL factorization requires a square matrix.")
         if operator.info.dtype != wp.float32:
@@ -473,6 +484,7 @@ class LDLBlockSparseSolver(DirectSolver):
         self._levels = list(zip(np.cumsum([0, *counts[:-1]]).tolist(), counts, strict=True)) if len(counts) else []
 
         def ints(values):
+            """Copy packed symbolic indices to an int32 device array."""
             return wp.array(values, dtype=wp.int32, device=self.device)
 
         self.rows = ints(np.asarray(rows, dtype=np.int32).reshape(-1, 6))
@@ -504,9 +516,11 @@ class LDLBlockSparseSolver(DirectSolver):
         return np.asarray(result, dtype=np.int32)
 
     def _reset_impl(self) -> None:
+        """Invalidate the cached numeric factorization while retaining symbolic storage."""
         self._has_factors = False
 
     def _factorize_impl(self, A: wp.array[wp.float32]) -> None:
+        """Factor packed dense input through the explicit sparse pattern or complete-pattern storage."""
         if self._dense is not None:
             self._dense.factorize(A, self._failed_pivot_shift)
             return
@@ -544,6 +558,7 @@ class LDLBlockSparseSolver(DirectSolver):
         self._has_factors = True
 
     def _factor_levels(self, retry: bool) -> None:
+        """Launch independent pivots by elimination level, optionally retrying only failed worlds."""
         for offset, count in self._levels:
             wp.launch_tiled(
                 _factor_level,
@@ -716,12 +731,15 @@ class LDLBlockSparseSolver(DirectSolver):
         )
 
     def _solve_impl(self, b: wp.array[wp.float32], x: wp.array[wp.float32]) -> None:
+        """Solve one packed vector per world using the current L D L transpose factors."""
         self.solve_matrix(b, x, offsets=self.operator.info.vio, strides=self._ones, columns=self._ones, max_columns=1)
 
     def _solve_inplace_impl(self, x: wp.array[wp.float32]) -> None:
+        """Replace each packed vector with its solution using the current factorization."""
         self._solve_impl(x, x)
 
     def _reconstruct_impl(self, A: wp.array[wp.float32]) -> None:
+        """Reconstruct the factored operator in its original packed dense layout."""
         if self._dense is not None:
             self._dense.reconstruct(A)
             return

@@ -498,6 +498,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                     "The DVI solver currently requires `dynamics.preconditioning=False` so convergence checks and "
                     "contact cone updates stay in physical constraint units."
                 )
+            if self.dynamics_solver == "padmm" and self.sparse_dynamics and self.dynamics.linear_solver_type == "LDL":
+                raise ValueError("Sparse PADMM does not support LDL; use dense PADMM or an iterative linear solver.")
             if (
                 self.dynamics_solver == "padmm"
                 and not self.sparse_dynamics

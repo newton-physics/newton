@@ -22,6 +22,7 @@ from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the ANYmal D robot simulation with the requested solver options."""
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -30,6 +31,8 @@ class Example:
 
         self.world_count = args.world_count
         self.solver_type = args.solver
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
 
         self.viewer = viewer
 
@@ -98,6 +101,7 @@ class Example:
             # Eliminate bilateral rows once before the projected inequality sweeps.
             solver_config.dvi.max_alternating_iterations = 32
             solver_config.dvi.use_schur_complement = True
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
             configure_ldl(solver_config, args)
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
@@ -220,6 +224,7 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
         add_ldl_arguments(parser)
         newton.examples.add_world_count_arg(parser)

@@ -13,6 +13,7 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.func
 def _row(index: int, padded: int, reverse: bool):
+    """Map a scalar row through the optional reversal of padded six-row groups."""
     return (padded // 6 - 1 - index // 6) * 6 + index % 6 if reverse else index
 
 
@@ -30,6 +31,7 @@ def _factor(
     retry: bool,
     shift: float,
 ):
+    """Factor each active world into unit-lower L and diagonal D, with optional shifted retry."""
     world = wp.tid()
     if retry and failed[world] == 0:
         return
@@ -102,6 +104,7 @@ def _triangular(
     reverse: bool,
     forward: bool,
 ):
+    """Solve L or its transpose for active columns stored in each world's strided RHS layout."""
     world, column = wp.tid()
     if column >= columns[world]:
         return
@@ -153,6 +156,7 @@ def _diagonal(
     reverse: bool,
     inverse_sqrt: bool,
 ):
+    """Scale active RHS entries by inverse D or inverse square-root D in original row order."""
     world, row, column = wp.tid()
     if row >= active[world] or column >= columns[world]:
         return
@@ -175,6 +179,7 @@ def _reconstruct(
     a: wp.array[wp.float32],
     reverse: bool,
 ):
+    """Write L D L transpose into the original packed matrix layout, excluding padding."""
     world, row, column = wp.tid()
     n = dims[world]
     if row >= n or column >= n:
@@ -191,6 +196,7 @@ class DenseLDLStorage:
     """Represent a complete block graph implicitly, with quadratic storage only."""
 
     def __init__(self, operator, ordering, device):
+        """Allocate padded factors at each world's maximum capacity and cache its block ordering."""
         self.info = operator.info
         self.device = device
         self.reverse = ordering == "rcm"
@@ -204,6 +210,7 @@ class DenseLDLStorage:
         self.failed = wp.zeros(self.worlds, dtype=wp.int32, device=device)
 
     def factorize(self, a, shift):
+        """Factor active matrices, retrying only failed worlds with the requested diagonal shift."""
         self.failed.zero_()
         for retry in (False, True) if shift > 0.0 else (False,):
             wp.launch_tiled(
@@ -227,6 +234,7 @@ class DenseLDLStorage:
             )
 
     def triangular(self, b, x, *, offsets, strides, columns, max_columns, forward, active_dim):
+        """Apply forward or backward substitution to packed RHS columns; b and x may alias."""
         wp.launch_tiled(
             _triangular,
             dim=(self.worlds, max_columns),
@@ -248,6 +256,7 @@ class DenseLDLStorage:
         )
 
     def scale(self, b, x, *, offsets, strides, columns, max_columns, inverse_sqrt, active_dim):
+        """Apply inverse D or inverse square-root D to active packed RHS columns; b and x may alias."""
         wp.launch(
             _diagonal,
             dim=(self.worlds, self.maxdim, max_columns),
@@ -268,6 +277,7 @@ class DenseLDLStorage:
         )
 
     def reconstruct(self, a):
+        """Reconstruct active matrices in the operator's original row order."""
         wp.launch(
             _reconstruct,
             dim=(self.worlds, self.maxdim, self.maxdim),

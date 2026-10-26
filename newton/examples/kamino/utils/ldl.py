@@ -18,26 +18,43 @@ def add_ldl_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--ldl-ordering",
         choices=("meca", "rcm"),
-        default="meca",
-        help="LDL block ordering: minimum edge creation (default) or Reverse Cuthill-McKee.",
+        default=None,
+        help="Select LDL with minimum edge creation (meca) or Reverse Cuthill-McKee (rcm) ordering.",
     )
 
 
-def configure_ldl(config: SolverKamino.Config, args: argparse.Namespace | None) -> None:
-    """Apply LDL options before constructing the solver and capturing its kernels."""
-    requested = getattr(args, "ldl", False)
-    ordering = getattr(args, "ldl_ordering", "meca")
+def configure_ldl(config: SolverKamino.Config | None, args: argparse.Namespace | None) -> None:
+    """Apply explicit LDL options, rejecting conflicting or unsupported backends.
+
+    Pass ``None`` for examples using another physics solver to reject Kamino-only
+    options before loading assets. Unspecified options preserve the configuration,
+    including an existing LDL ordering and numerical settings.
+    """
+    ordering = getattr(args, "ldl_ordering", None)
+    requested = getattr(args, "ldl", False) or ordering is not None
+    if config is None:
+        if requested or getattr(args, "bilateral_solver_type", None) is not None:
+            raise ValueError("LDL and bilateral solver options require the Kamino solver (--solver kamino).")
+        return
+
     if config.dynamics_solver == "dvi":
-        if requested:
-            config.dvi.bilateral_solver_type = "LDL"
-            config.dvi.bilateral_solver_kwargs = {}
-        if config.dvi.bilateral_solver_type == "LDL":
-            config.dvi.bilateral_solver_kwargs["ordering"] = ordering
+        subconfig, prefix = config.dvi, "bilateral"
     elif config.dynamics_solver == "padmm" and not config.sparse_dynamics:
-        if requested:
-            config.dynamics.linear_solver_type = "LDL"
-            config.dynamics.linear_solver_kwargs = {}
-        if config.dynamics.linear_solver_type == "LDL":
-            config.dynamics.linear_solver_kwargs["ordering"] = ordering
-    elif requested:
-        raise ValueError("The LDL example option requires DVI or dense PADMM dynamics.")
+        subconfig, prefix = config.dynamics, "linear"
+    else:
+        if requested or config.dynamics.linear_solver_type == "LDL":
+            raise ValueError("The LDL example option requires DVI or dense PADMM dynamics.")
+        return
+
+    explicit_backend = getattr(args, f"{prefix}_solver_type", None)
+    if requested and explicit_backend not in (None, "LDL"):
+        raise ValueError(f"LDL options conflict with --{prefix}-solver-type {explicit_backend}.")
+    if requested and getattr(subconfig, f"{prefix}_solver_type") != "LDL":
+        setattr(subconfig, f"{prefix}_solver_type", "LDL")
+        setattr(subconfig, f"{prefix}_solver_kwargs", {})
+    if getattr(subconfig, f"{prefix}_solver_type") == "LDL":
+        kwargs = getattr(subconfig, f"{prefix}_solver_kwargs")
+        if ordering is not None:
+            kwargs["ordering"] = ordering
+        else:
+            kwargs.setdefault("ordering", "meca")

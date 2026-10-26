@@ -1029,17 +1029,17 @@ add_example_test(
     test_suffix="kamino",
     variants=[
         {
-            "test_suffix": f"kamino_{backend}_{ordering}",
+            "test_suffix": f"kamino_{backend}_{ordering or 'default'}",
             "test_options": {
                 "usd_required": True,
                 "num-frames": 500,
                 "world-count": 4,
                 "solver": "kamino",
                 "bilateral-solver-type": backend,
-                "ldl-ordering": ordering,
+                **({"ldl-ordering": ordering} if ordering else {}),
             },
         }
-        for backend, ordering in (("LLTBRCM", "meca"), ("LDL", "meca"), ("LDL", "rcm"))
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "meca"), ("LDL", "rcm"))
     ],
 )
 add_example_test(
@@ -1057,17 +1057,17 @@ add_example_test(
     test_suffix="kamino",
     variants=[
         {
-            "test_suffix": f"kamino_{backend}_{ordering}",
+            "test_suffix": f"kamino_{backend}_{ordering or 'default'}",
             "test_options": {
                 "usd_required": True,
                 "num-frames": 500,
                 "world-count": 4,
                 "solver": "kamino",
                 "bilateral-solver-type": backend,
-                "ldl-ordering": ordering,
+                **({"ldl-ordering": ordering} if ordering else {}),
             },
         }
-        for backend, ordering in (("LLTBRCM", "meca"), ("LDL", "meca"), ("LDL", "rcm"))
+        for backend, ordering in (("LLTBRCM", None), ("LDL", "meca"), ("LDL", "rcm"))
     ],
 )
 add_example_test(

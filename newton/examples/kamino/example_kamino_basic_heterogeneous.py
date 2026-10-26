@@ -22,6 +22,7 @@ from newton.tests.utils import basics
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        """Build the Kamino heterogeneous-world simulation with the requested solver options."""
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.0025
@@ -157,11 +158,13 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Verify final body poses and velocities remain finite."""
         assert np.isfinite(self.state_0.body_q.numpy()).all(), "Body poses must remain finite"
         assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         parser = newton.examples.create_parser()
         add_ldl_arguments(parser)
         parser.add_argument(

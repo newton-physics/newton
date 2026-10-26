@@ -986,12 +986,13 @@ class DVISolverConfig:
     Defaults to `0.97`.
     """
 
-    bilateral_solver_type: Literal["LLTB", "LLTBRCM", "LDL"] = "LDL"
+    bilateral_solver_type: Literal["LLTB", "LLTBRCM", "LDL"] = "LLTB"
     """
     Direct linear solver used for the bilateral constraint block.
-    Defaults to ``LDL``, a block-sparse LDL transpose factorization with
-    unit-lower L, explicit diagonal D, and one padded block per joint.
-    MECA (minimum edge creation) is the default block ordering. Set
+    Defaults to ``LLTB``, the dense blocked Cholesky solver. Opt in to
+    ``LDL`` for a block-sparse LDL transpose factorization with unit-lower L,
+    explicit diagonal D, and one padded block per joint.
+    MECA (minimum edge creation) is the default LDL block ordering. Set
     ``bilateral_solver_kwargs={"ordering": "rcm"}`` for Reverse Cuthill-McKee,
     or ``{"ordering": "meca"}`` to select the default explicitly.
     It requires a positive-definite matrix and uses no numerical pivoting.

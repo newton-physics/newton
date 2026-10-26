@@ -46,7 +46,7 @@ Kamino provides three forward-dynamics backends:
   integrator. It is the slower, more robust option because it solves equality
   and inequality constraints together.
 * ``"dvi"`` (opt-in): projected dual iterations, sparse Jacobians, dense dynamics,
-  block-sparse LDL transpose bilateral solves, and the Euler integrator. It is
+  dense blocked Cholesky bilateral solves, and the Euler integrator. It is
   generally faster, but approximates the coupled problem by alternating between
   a direct solve for equality constraints and projected iterations for
   inequality constraints. As a rule of thumb, DVI solves inequality constraints
@@ -71,9 +71,10 @@ Set ``sparse_jacobian=False`` for fully dense DVI, or set
 ``sparse_dynamics=True`` to use sparse dynamics with the Conjugate Residual
 solver.
 
-DVI defaults to ``"LDL"`` for its bilateral joint solve. This block-sparse
-backend factors the reordered matrix as :math:`L D L^T`, storing unit-lower
-:math:`L` separately from the scalar diagonal :math:`D`. It stores only joint
+DVI defaults to ``"LLTB"`` for its bilateral joint solve. Select ``"LDL"``
+explicitly to use the block-sparse backend, which factors the reordered matrix
+as :math:`L D L^T`, storing unit-lower :math:`L` separately from the scalar
+diagonal :math:`D`. It stores only joint
 blocks and symbolic fill, supports CPU and CUDA execution, and reuses its
 factorization across unilateral iterations. Numeric factorization uses no
 square roots or numerical pivoting and requires positive-definite systems.
@@ -119,9 +120,11 @@ iterative linear solver; ``"LDL"`` is not supported with sparse PADMM.
 
 All six Kamino examples accept ``--ldl --ldl-ordering meca`` and
 ``--ldl --ldl-ordering rcm``. This selects LDL for the DVI bilateral solver or
-the dense PADMM linear solver. The DR Legs and earworm DVI examples default
-to LDL with MECA. The shared H1 and G1 robot examples also accept these
-options with ``--solver kamino``, default to LDL with MECA, and expose
+the dense PADMM linear solver. An explicit ``--ldl-ordering`` also selects LDL;
+``--ldl`` alone uses MECA.
+The DR Legs and earworm DVI examples retain their LLTBRCM defaults. The
+shared H1 and G1 robot examples also accept these options with
+``--solver kamino``, retain their LLTBRCM defaults, and expose
 ``--bilateral-solver-type {LDL,LLTB,LLTBRCM}`` for comparisons. For example:
 
 .. code-block:: console
@@ -131,8 +134,11 @@ options with ``--solver kamino``, default to LDL with MECA, and expose
    uv run -m newton.examples robot_h1 --solver kamino --ldl-ordering rcm --viewer null --num-frames 500 --test
 
 The shared pendulum, joints, URDF, ANYmal D, and Allegro hand examples also
-accept ``--ldl-ordering`` with ``--solver kamino`` and use LDL with MECA by
-default.
+accept these options with ``--solver kamino`` and retain their LLTBRCM
+defaults. LDL options raise an error with another physics solver, sparse
+PADMM, or an explicitly selected LLT backend. Selecting an ordering never
+silently overrides an explicit ``--bilateral-solver-type LLTBRCM`` or
+``--linear-solver-type LLTB``.
 
 DVI unilateral subsolvers
 ^^^^^^^^^^^^^^^^^^^^^^^^^

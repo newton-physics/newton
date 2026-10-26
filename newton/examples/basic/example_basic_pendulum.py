@@ -21,6 +21,7 @@ from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the double-pendulum simulation with the requested solver options."""
         # setup simulation parameters first
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
@@ -31,6 +32,8 @@ class Example:
         self.viewer = viewer
         self.args = args
         self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
+        if self.solver_type != "kamino":
+            configure_ldl(None, args)
         if self.solver_type == "kamino":
             self.sim_substeps = 2
             self.sim_dt = self.frame_dt / self.sim_substeps
@@ -84,6 +87,7 @@ class Example:
                 sparse_dynamics=True,
                 sparse_jacobian=True,
             )
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
             configure_ldl(solver_config, args)
             solver_config.dvi.max_alternating_iterations = 8
             solver_config.dvi.bilateral_solve_interval = 8

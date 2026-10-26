@@ -20,6 +20,7 @@ from newton.examples.kamino.utils.ldl import add_ldl_arguments, configure_ldl
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
+        """Build the Kamino DR Legs robot simulation with the requested solver options."""
         # Set simulation run-time configurations
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
@@ -27,7 +28,7 @@ class Example:
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
         self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
-        self.linear_solver_type = getattr(args, "linear_solver_type", "LLTB") if args else "LLTB"
+        self.linear_solver_type = getattr(args, "linear_solver_type", None) or "LLTB"
         self.linear_solver_kwargs = getattr(args, "linear_solver_kwargs", {}) if args else {}
         target_sim_dt = self.frame_dt / 12 if self.dynamics_solver == "dvi" else 0.01
         self.sim_substeps = max(1, round(self.frame_dt / target_sim_dt))
@@ -125,7 +126,7 @@ class Example:
             self.config.dynamics.preconditioning = False
             self.config.dynamics.linear_solver_type = "CR"
             self.config.dynamics.linear_solver_kwargs = {"maxiter": 9}
-            self.config.dvi.bilateral_solver_type = getattr(args, "bilateral_solver_type", "LDL")
+            self.config.dvi.bilateral_solver_type = getattr(args, "bilateral_solver_type", None) or "LLTBRCM"
             if self.config.dvi.bilateral_solver_type == "LLTBRCM":
                 self.config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
             self.config.dvi.tolerance = 1e-4
@@ -238,6 +239,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Verify finite body states and successful LOX status when that backend is selected."""
         assert np.isfinite(self.state_0.body_q.numpy()).all(), "Body poses must remain finite"
         assert np.isfinite(self.state_0.body_qd.numpy()).all(), "Body velocities must remain finite"
         if self.dynamics_solver == "lox":
@@ -333,6 +335,7 @@ class Example:
 
     @staticmethod
     def create_parser():
+        """Create simulation arguments, including optional Kamino LDL backend and ordering selection."""
         import argparse  # noqa: PLC0415
 
         parser = newton.examples.create_parser()
@@ -360,16 +363,16 @@ class Example:
         parser.add_argument(
             "--linear-solver-type",
             choices=("LLTB", "LLTBRCM", "LDL", "CR"),
-            default="LLTB",
+            default=None,
             type=str.upper,
-            help="Kamino dynamics linear solver to use.",
+            help="Kamino dynamics linear solver (default: LLTB).",
         )
         parser.add_argument(
             "--bilateral-solver-type",
             choices=("LLTB", "LLTBRCM", "LDL"),
-            default="LDL",
+            default=None,
             type=str.upper,
-            help="DVI bilateral solver (default: LDL with MECA ordering).",
+            help="DVI bilateral solver (default: LLTBRCM).",
         )
         parser.add_argument(
             "--no-graph-conditionals",

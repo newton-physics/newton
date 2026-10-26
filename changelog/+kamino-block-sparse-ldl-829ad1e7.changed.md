@@ -1,1 +1,0 @@
-Use LDL with MECA ordering by default for Kamino DVI bilateral joint solves, including the Kamino and shared robot/joint examples that previously selected LLTBRCM; select `dvi.bilateral_solver_type="LLTB"` to retain the previous dense blocked solver, or set `dvi.bilateral_solver_kwargs={"ordering": "rcm"}` to use LDL with RCM.

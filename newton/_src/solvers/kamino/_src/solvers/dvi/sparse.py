@@ -1022,6 +1022,7 @@ def _sparse_bilateral_matvec(path: SparseDVIPath, problem: DualProblem) -> None:
 
 
 def _factor_sparse_bilateral_block(path: SparseDVIPath, problem: DualProblem) -> None:
+    """Assemble and factor the bilateral block with the selected LDL or LLT backend."""
     operator = path.data.bilateral_operator
     operator.info.dim = path.data.bilateral_dim
     if isinstance(path.bilateral_solver, LDLBlockSparseSolver):
