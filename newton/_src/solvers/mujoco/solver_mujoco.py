@@ -4359,11 +4359,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 :meth:`observables` and check the bitmask after each step.
             kinematic_switchable_roots: If ``True``, every movable root body can be
                 made kinematic at runtime through :attr:`~newton.Model.body_flags`,
-                at the cost of a mocap body and an inactive weld per root in the
-                MuJoCo model. Making a root kinematic that was dynamic in every
-                world at construction is deprecated. If ``False``, only roots that
-                are kinematic in some world at construction can switch, which is
-                the future default.
+                at the cost of an inactive weld per root in the MuJoCo model.
+                Making a root kinematic that was dynamic in every world at
+                construction is deprecated. If ``False``, only roots that are
+                kinematic in some world at construction can switch, which is the
+                future default.
         """
         super().__init__(model)
         self._kinematic_switchable_roots = kinematic_switchable_roots
@@ -9574,7 +9574,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._update_dof_armature()
         if self.use_mujoco_cpu:
             physical = self.mjw_model.dof_armature.numpy()[0]
-            if self.mj_model.nv:
+            if self.mj_model.nv and hasattr(self.mj_model.stat, "meaninertia"):
                 self.mj_model.stat.meaninertia -= (self.mj_model.dof_armature - physical).sum() / self.mj_model.nv
             self.mj_model.dof_armature[:] = physical
         elif hasattr(self.mjw_model.stat, "meaninertia"):
