@@ -48,6 +48,43 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _extract_custom_attributes(builder, spec, scale, parse_options):
+    frequency = Model.AttributeFrequency
+    sources = {
+        frequency.BODY: spec.bodies[1:],
+        frequency.SHAPE: [*spec.geoms, *spec.sites],
+        frequency.JOINT: spec.joints,
+        frequency.JOINT_DOF: spec.joints,
+        frequency.WORLD: [spec] if parse_options else [],
+        frequency.ONCE: [spec] if parse_options else [],
+        "mujoco:actuator": spec.actuators,
+        "mujoco:tendon": spec.tendons,
+        "mujoco:pair": spec.pairs,
+        "mujoco:equality_constraint": spec.equalities,
+    }
+    values = {}
+    for attr in builder.custom_attributes.values():
+        hook = attr.mjcf_native_value_transformer
+        if hook is None:
+            continue
+        if attr.frequency not in sources:
+            raise ValueError(f"Native MJCF extraction does not support frequency {attr.frequency!r} for {attr.key!r}.")
+        for element in sources[attr.frequency]:
+            value = hook(element, {"spec": spec, "attr": attr, "scale": scale})
+            if value is not None:
+                # Compilation and scaling mutate native arrays in place.
+                if attr.dtype is not str:
+                    value = np.array(value, copy=True)
+                    if value.ndim == 0:
+                        value = value.item()
+                values.setdefault((attr.frequency, element), {})[attr.key] = value
+
+    def lookup(frequency, element):
+        return values.get((frequency, element), {})
+
+    return lookup
+
+
 def _transform(pos: np.ndarray, quat: np.ndarray) -> wp.transform:
     return wp.transform(pos, wp.quat(*quat[1:], quat[0]))
 
@@ -337,7 +374,7 @@ def _joint_target(builder, model, i, dof, bias, values, *, dof_count=1):
     )
 
 
-def _tendons(builder, spec, model, joints, dofs, geoms, sites, attributes):
+def _tendons(builder, spec, model, joints, dofs, geoms, sites, attributes, custom):
     import mujoco
 
     mapping = {}
@@ -423,11 +460,12 @@ def _tendons(builder, spec, model, joints, dofs, geoms, sites, attributes):
             tendon_actuator_force_limited=int(spec.tendons[i].actfrclimited),
             tendon_actuator_force_range=model.tendon_actfrcrange[i],
         )
+        values.update(custom("mujoco:tendon", spec.tendons[i]))
         mapping[i] = builder.add_custom_values(**values)["mujoco:tendon_world"]
     return mapping
 
 
-def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attributes, convert):
+def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attributes, convert, custom):
     import mujoco
 
     for i in range(model.neq):
@@ -443,6 +481,7 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attr
             native_equality_dof1=-1,
             native_equality_dof2=-1,
         )
+        attrs.update(custom("mujoco:equality_constraint", spec.equalities[i]))
         label, active = model.equality(i).name, bool(model.eq_active0[i])
         if kind == EqType.TENDON:
             if first not in tendons or (second >= 0 and second not in tendons):
@@ -551,7 +590,8 @@ def _equalities(builder, spec, model, bodies, joints, dofs, sites, tendons, attr
         builder._process_custom_attributes(row, attrs, "mujoco:equality_constraint")
 
 
-def _contacts(builder, model, bodies, geoms, attributes, start_shape, self_collisions):
+def _contacts(builder, spec, model, bodies, geoms, attributes, start_shape, self_collisions, custom):
+    pairs = {pair.id: pair for pair in spec.pairs}
     for i in range(model.npair):
         first, second = int(model.pair_geom1[i]), int(model.pair_geom2[i])
         if first not in geoms or second not in geoms:
@@ -560,6 +600,7 @@ def _contacts(builder, model, bodies, geoms, attributes, start_shape, self_colli
         for name in ("dim", "solref", "solreffriction", "solimp", "margin", "gap", "friction"):
             key = "condim" if name == "dim" else name
             values.update(attributes(**{f"pair_{key}": getattr(model, f"pair_{name}")[i]}))
+        values.update(custom("mujoco:pair", pairs[i]))
         builder.add_custom_values(**values)
     for signature in model.exclude_signature:
         first, second = int(signature) >> 16, int(signature) & 65535
@@ -757,6 +798,7 @@ def parse_mjcf(
         spec, default_limits = _parse_spec(builder, source, scale)
     except (ValueError, ET.ParseError) as exc:
         raise ValueError(f"Native MJCF parsing failed: {exc}") from exc
+    custom = _extract_custom_attributes(builder, spec, scale, parse_mujoco_options)
     if skip_equality_constraints:
         for equality in list(spec.equalities):
             spec.delete(equality)
@@ -793,13 +835,21 @@ def parse_mjcf(
         raise NotImplementedError("Native MJCF import does not support SDF geometry.")
     if np.any(model.actuator_ctrlnum != 1):
         raise NotImplementedError("Newton actuator controls require one scalar per actuator.")
-    if (
-        any(
-            getattr(model, f"nuser_{kind}")
-            for kind in ("body", "jnt", "geom", "site", "cam", "tendon", "actuator", "sensor")
-        )
-        or model.nuserdata
-    ):
+    hooked = {attr.frequency for attr in builder.custom_attributes.values() if attr.mjcf_native_value_transformer}
+    frequency = Model.AttributeFrequency
+    user_frequencies = {
+        "body": {frequency.BODY},
+        "jnt": {frequency.JOINT, frequency.JOINT_DOF},
+        "geom": {frequency.SHAPE},
+        "site": {frequency.SHAPE},
+        "tendon": {"mujoco:tendon"},
+        "actuator": {"mujoco:actuator"},
+        "cam": set(),
+        "sensor": set(),
+    }
+    if any(
+        getattr(model, f"nuser_{kind}") and not hooked.intersection(freqs) for kind, freqs in user_frequencies.items()
+    ) or (model.nuserdata and not (parse_mujoco_options and hooked.intersection({frequency.WORLD, frequency.ONCE}))):
         warnings.warn("Native MJCF import omits MuJoCo user data.", NewtonWarning, stacklevel=2)
     for i in range(1, model.nbody):
         start, count = model.body_jntadr[i], model.body_jntnum[i]
@@ -827,6 +877,8 @@ def parse_mjcf(
 
     if parse_mujoco_options:
         _import_options(builder, spec, attributes)
+        for freq, row in ((frequency.ONCE, 0), (frequency.WORLD, max(builder.current_world, 0))):
+            builder._process_custom_attributes(row, custom(freq, spec), freq)
     disableflags = builder.custom_attributes["mujoco:native_option_disableflags"]
     filter_parent = not bool(
         disableflags.values.get(0, disableflags.default) & mujoco.mjtDisableBit.mjDSBL_FILTERPARENT
@@ -870,7 +922,8 @@ def parse_mjcf(
             lock_inertia=True,
             label=label,
             is_kinematic=bool(model.body_mocapid[i] >= 0),
-            custom_attributes=attributes(gravcomp=model.body_gravcomp[i], sleep_policy=int(spec.bodies[i].sleep)),
+            custom_attributes=attributes(gravcomp=model.body_gravcomp[i], sleep_policy=int(spec.bodies[i].sleep))
+            | custom(frequency.BODY, spec.bodies[i]),
         )
         bodies.append(body)
         roots[i] = i if native_parent == 0 else roots[native_parent]
@@ -953,6 +1006,14 @@ def parse_mjcf(
                 for key, value in extra.items():
                     for k in range(1 if key.startswith("mujoco:native_joint_") else count):
                         builder.custom_attributes[key].values[dof + k] = value
+                for k in range(count):
+                    builder._process_custom_attributes(
+                        dof + k, custom(frequency.JOINT_DOF, source_joint), frequency.JOINT_DOF
+                    )
+            if selected:
+                builder._process_custom_attributes(
+                    joint, custom(frequency.JOINT, spec.joints[selected[0]]), frequency.JOINT
+                )
         root_joints[roots[i]].append(joint)
         set_mjcf_joint_collision_filter(builder, joint, filter_parent)
 
@@ -1083,7 +1144,8 @@ def parse_mjcf(
                 solref=model.geom_solref[i],
                 geom_solimp=model.geom_solimp[i],
                 solref_mode=SOLREF_MODE_RAW,
-            ),
+            )
+            | custom(frequency.SHAPE, spec.geoms[i]),
         )
         geoms[i] = shape
         (collider_shapes if collider else visual_shapes).append(shape)
@@ -1106,12 +1168,15 @@ def parse_mjcf(
                 scale=model.site_size[i],
                 visible=False,
                 label=f"{body_labels[native_body]}/{sanitize_name(model.site(i).name or f'site_{i}')}",
-                custom_attributes=attributes(site_size_is_display=True)
-                if model.site_type[i] == mujoco.mjtGeom.mjGEOM_CYLINDER
-                else None,
+                custom_attributes=(
+                    attributes(site_size_is_display=True)
+                    if model.site_type[i] == mujoco.mjtGeom.mjGEOM_CYLINDER
+                    else {}
+                )
+                | custom(frequency.SHAPE, spec.sites[i]),
             )
 
-    tendons = _tendons(builder, spec, model, joint_ids, joints, geoms, sites, attributes)
+    tendons = _tendons(builder, spec, model, joint_ids, joints, geoms, sites, attributes, custom)
 
     actuator_start = builder._custom_frequency_counts.get("mujoco:actuator", 0)
     skipped_actuators = 0
@@ -1190,6 +1255,7 @@ def parse_mjcf(
                 values,
                 dof_count=3 if model.jnt_type[source_target] == mujoco.mjtJoint.mjJNT_BALL else 1,
             )
+        values.update(custom("mujoco:actuator", spec.actuators[i]))
         builder.add_custom_values(**values)
 
     imported_actuators = builder._custom_frequency_counts.get("mujoco:actuator", 0) - actuator_start
@@ -1217,9 +1283,10 @@ def parse_mjcf(
             tendons,
             attributes,
             convert_mjc_equality_constraints,
+            custom,
         )
     add_mjcf_body_collision_filters(builder, [j for group in root_joints.values() for j in group], start_shape)
-    _contacts(builder, model, bodies, geoms, attributes, start_shape, enable_self_collisions)
+    _contacts(builder, spec, model, bodies, geoms, attributes, start_shape, enable_self_collisions, custom)
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
     elif collapse_massless_fixed_root:

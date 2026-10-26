@@ -17,7 +17,7 @@ from bisect import bisect_left
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 import numpy as np
@@ -1429,6 +1429,16 @@ class ModelBuilder:
         Replication invokes the callback separately for each copy with its own offsets.
 
         Mutually exclusive with :attr:`references`; the callback owns reference remapping.
+        """
+
+        mjcf_native_value_transformer: Callable[[Any, dict[str, Any]], Any] | None = field(default=None, kw_only=True)
+        """Experimental extraction hook for :meth:`ModelBuilder.add_mjcf_native`.
+
+        Receives a parsed MuJoCo element and a context containing ``spec``, ``attr``,
+        and import ``scale``. Defaults are resolved; compilation and scaling have
+        not run. Return a dtype-compatible value, or None to retain this attribute's
+        default. Treat native objects as read-only and do not retain them.
+        See :ref:`native-mjcf-custom-attributes` for supported frequencies and mapping.
         """
 
         def __post_init__(self):

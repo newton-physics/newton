@@ -20,6 +20,156 @@ from newton.solvers import SolverMuJoCo
 
 @unittest.skipUnless(importlib.util.find_spec("mujoco"), "MuJoCo is required")
 class TestImportMjcfNativeSemantics(unittest.TestCase):
+    def test_native_custom_attribute_mapping(self):
+        """Extract inherited values before scaling and retain their filtered, reordered, copied rows."""
+        frequency = newton.Model.AttributeFrequency
+        builder = newton.ModelBuilder()
+
+        def source_size(element, context):
+            self.assertEqual(context["scale"], 2)
+            self.assertIs(context["attr"].dtype, wp.vec3)
+            self.assertTrue(context["spec"].compiler.degree)
+            return element.size
+
+        for name, freq, dtype, default, transform in (
+            ("body_tag", frequency.BODY, wp.float32, -1, lambda e, _: e.userdata[0] if len(e.userdata) else None),
+            ("shape_tag", frequency.SHAPE, wp.float32, -1, lambda e, _: e.userdata[0] if len(e.userdata) else None),
+            ("source_size", frequency.SHAPE, wp.vec3, wp.vec3(), source_size),
+            ("joint_tag", frequency.JOINT, wp.float32, -1, lambda e, _: e.userdata[0]),
+            ("dof_tag", frequency.JOINT_DOF, wp.float32, -1, lambda e, _: e.userdata[0]),
+        ):
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency=freq,
+                    dtype=dtype,
+                    default=default,
+                    mjcf_native_value_transformer=transform,
+                )
+            )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "parts.xml").write_text("""<mujoco>
+                <body name="omit" user="99"><geom size=".1"/></body>
+                <body name="arm" user="10"><joint name="hinge" user="1"/>
+                    <joint name="slide" type="slide" user="2"/><geom size=".1"/>
+                    <site name="site" size=".02" user="8"/></body>
+                <body name="ball"><joint type="ball"/><geom size=".2"/></body>
+                <body name="free"><joint type="free" user="9"/><geom size=".3"/></body>
+            </mujoco>""")
+            (path / "main.xml").write_text("""<mujoco><default><joint user="3"/>
+                <geom user="7"/></default><worldbody><include file="parts.xml"/></worldbody></mujoco>""")
+            builder.add_mjcf_native(path / "main.xml", scale=2, ignore_names=("omit",))
+        builder.add_mjcf_native(
+            '<mujoco><worldbody><body user="11"><geom size=".4"/></body></worldbody></mujoco>',
+            parent_body=2,
+            scale=2,
+            parse_mujoco_options=False,
+        )
+        copied = newton.ModelBuilder()
+        copied.replicate(builder, 2)
+        model = copied.finalize()
+        np.testing.assert_array_equal(model.body_tag.numpy(), [10, -1, -1, 11] * 2)
+        np.testing.assert_array_equal(model.shape_tag.numpy(), [7, 7, 7, 8, -1] * 2)
+        np.testing.assert_array_equal(model.joint_tag.numpy(), [1, 3, 9, -1] * 2)
+        np.testing.assert_array_equal(model.dof_tag.numpy(), [2, 1, 3, 3, 3, 9, 9, 9, 9, 9, 9] * 2)
+        np.testing.assert_allclose(model.source_size.numpy()[:, 0], [0.1, 0.2, 0.3, 0.02, 0.4] * 2)
+
+    def test_native_custom_attribute_rows(self):
+        """Map custom-frequency and option values through repeated imports and composition."""
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for kind in ("tendon", "actuator", "pair", "equality_constraint"):
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=f"source_{kind}",
+                    frequency=f"mujoco:{kind}",
+                    dtype=str,
+                    mjcf_native_value_transformer=lambda e, _: e.name,
+                )
+            )
+        for name, frequency, transform in (
+            ("source_model", newton.Model.AttributeFrequency.ONCE, lambda spec, _: spec.modelname),
+            ("source_angle", newton.Model.AttributeFrequency.WORLD, lambda spec, _: str(spec.compiler.degree)),
+        ):
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency=frequency,
+                    dtype=str,
+                    mjcf_native_value_transformer=transform,
+                )
+            )
+        xml = """<mujoco model="custom"><worldbody>
+            <body><joint name="j"/><geom name="a" size=".1"/></body>
+            <body><joint name="k"/><geom name="b" size=".1"/></body>
+            <body><joint/><geom name="c" size=".1"/></body></worldbody>
+            <tendon><fixed name="t"><joint joint="j" coef="1"/></fixed></tendon>
+            <actuator><motor name="motor" joint="j"/></actuator>
+            <contact><pair name="bc" geom1="b" geom2="c"/>
+                <pair name="ab" geom1="a" geom2="b"/></contact>
+            <equality><joint name="equality" joint1="j" joint2="k"/></equality></mujoco>"""
+        builder.add_mjcf_native(xml)
+        builder.add_mjcf_native(
+            xml.replace('model="custom"', 'model="later"').replace(
+                "<worldbody>", '<compiler angle="radian"/><worldbody>'
+            ),
+            parse_mujoco_options=False,
+        )
+        copied = newton.ModelBuilder()
+        copied.replicate(builder, 2)
+        model = copied.finalize()
+        for kind, expected in (
+            ("tendon", "t"),
+            ("actuator", "motor"),
+            ("equality_constraint", "equality"),
+        ):
+            self.assertEqual(getattr(model, f"source_{kind}"), [expected] * 4)
+        self.assertEqual(model.source_pair, ["ab", "bc"] * 4)
+        self.assertEqual(model.source_model, ["custom"])
+        self.assertEqual(model.source_angle, ["True", "True"])
+
+    def test_native_custom_attribute_compiler_fusion(self):
+        """Keep source values with surviving elements when MuJoCo fuses static bodies."""
+        builder = newton.ModelBuilder()
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="source_body",
+                frequency=newton.Model.AttributeFrequency.BODY,
+                dtype=str,
+                mjcf_native_value_transformer=lambda body, _: body.name,
+            )
+        )
+        builder.add_mjcf_native("""<mujoco><compiler fusestatic="true"/><worldbody>
+            <body name="fixed"><geom size=".1"/></body>
+            <body name="moving"><joint/><geom size=".1"/></body></worldbody></mujoco>""")
+        self.assertEqual(builder.finalize().source_body, ["moving"])
+
+    def test_native_custom_attribute_errors(self):
+        """Propagate hook errors and reject unmapped frequencies before adding entities."""
+
+        def fail(_element, _context):
+            raise RuntimeError("extraction failed")
+
+        xml = '<mujoco><worldbody><body><geom size=".1"/></body></worldbody></mujoco>'
+        for frequency, hook, error, message in (
+            (newton.Model.AttributeFrequency.BODY, fail, RuntimeError, "extraction failed"),
+            (newton.Model.AttributeFrequency.PARTICLE, lambda e, c: 1, ValueError, "frequency"),
+        ):
+            with self.subTest(frequency=frequency):
+                builder = newton.ModelBuilder()
+                builder.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name="value",
+                        frequency=frequency,
+                        dtype=wp.float32,
+                        mjcf_native_value_transformer=hook,
+                    )
+                )
+                with self.assertRaisesRegex(error, message):
+                    builder.add_mjcf_native(xml)
+                self.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), (0, 0, 0))
+
     def test_joint_limit_default_provenance(self):
         cases = (
             ("", "", None),

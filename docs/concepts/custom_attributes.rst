@@ -463,6 +463,7 @@ Custom attributes can also be parsed from MJCF and URDF files. Each :class:`~new
 
 * :attr:`~newton.ModelBuilder.CustomAttribute.mjcf_attribute_name` — name of the XML attribute to read (defaults to the attribute ``name``)
 * :attr:`~newton.ModelBuilder.CustomAttribute.mjcf_value_transformer` — callable that converts the XML string value to the target dtype
+* :attr:`~newton.ModelBuilder.CustomAttribute.mjcf_native_value_transformer` — experimental callback that extracts typed values from native MuJoCo elements; see :ref:`native-mjcf-custom-attributes`
 * :attr:`~newton.ModelBuilder.CustomAttribute.urdf_attribute_name` — name of the XML attribute to read (defaults to the attribute ``name``)
 * :attr:`~newton.ModelBuilder.CustomAttribute.urdf_value_transformer` — callable that converts the XML string value to the target dtype
 

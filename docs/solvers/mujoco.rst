@@ -272,10 +272,9 @@ flexes, plugins, SDF geometry, actuator callbacks, PID dynamics, actuator
 armature/damping, and actuators requiring multiple control values. These need
 additional Newton representations or solver support. Sensors, cameras, lights,
 keyframes, skins, custom elements, and MuJoCo user data are omitted with a
-warning. Arbitrary user-registered XML attribute extraction through
-``CustomAttribute.mjcf_attribute_name`` and ``mjcf_value_transformer`` still
-requires the existing importer; the native importer maps its supported MJCF
-fields directly.
+warning. Custom extraction from parsed elements is available through
+:ref:`native-mjcf-custom-attributes`. XML-string callbacks and nonstandard XML
+attributes still require the existing importer.
 Native parsing validates MJCF before conversion. Use ``childclass``
 for descendant defaults and author body properties, pair endpoints, and mesh
 reference poses on their concrete elements. References to generated Newton
@@ -324,6 +323,58 @@ The contact test closes a finger against a stationary sphere for 0.2 seconds
 in 34 worlds, checking contact pairs, force impulses, and joint motion without
 copying reference parameters into Newton. This covers MuJoCo Warp contacts;
 it does not establish grasp stability or parity with Newton's collision pipeline.
+
+.. _native-mjcf-custom-attributes:
+
+Custom attribute extraction
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Register an experimental
+:attr:`ModelBuilder.CustomAttribute.mjcf_native_value_transformer` to extract
+standard MJCF fields or application metadata from ``user`` arrays:
+
+.. code-block:: python
+
+   builder.add_custom_attribute(newton.ModelBuilder.CustomAttribute(
+       name="surface_tag",
+       dtype=wp.float32,
+       frequency=newton.Model.AttributeFrequency.SHAPE,
+       default=-1.0,
+       mjcf_native_value_transformer=lambda element, context:
+           element.userdata[0] if len(element.userdata) else None,
+   ))
+   builder.add_mjcf_native("robot.xml")
+
+The callback receives a typed ``MjSpec`` element after native parsing resolves
+defaults and includes, but before import scaling and compilation. The context
+contains ``spec``, the ``CustomAttribute`` as ``attr``, and import ``scale``.
+Return a dtype-compatible value, or ``None`` to leave the custom attribute at
+its Newton default. Returned numeric arrays are copied. Treat native objects
+as read-only and do not retain them. Values follow the parsed spec's units and
+sentinels; the importer does not scale custom values automatically.
+
+Supported frequencies are:
+
+* ``BODY``: body elements, excluding the world body.
+* ``SHAPE``: geom and site elements.
+* ``JOINT``: the first retained authored joint of each Newton joint.
+* ``JOINT_DOF``: each source joint, broadcast to its DOFs and reordered with them.
+* ``WORLD`` and ``ONCE``: the whole spec, when ``parse_mujoco_options=True``.
+* ``mujoco:actuator``, ``mujoco:tendon``, ``mujoco:pair``, and
+  ``mujoco:equality_constraint``: the corresponding native elements. Register
+  these frequencies first with ``SolverMuJoCo.register_custom_attributes(builder)``.
+
+Callbacks run on parsed elements before filtering. Values are attached only
+to elements retained by compilation and conversion. Synthetic fixed/base joints
+keep attribute defaults, and replaced root joints do not transfer source joint
+values. Builder attachment, copying, replication, and collapsing subsequently
+use the ordinary custom-attribute rules. Other frequencies raise ``ValueError``;
+callback exceptions propagate before any bodies, shapes, or joints are added.
+
+This hook is independent of ``mjcf_attribute_name`` and the legacy
+``mjcf_value_transformer``. It receives typed values, including built-in defaults,
+and cannot distinguish an omitted field from an explicitly authored default.
+Unknown XML attributes remain native parser errors.
 
 To compare compatibility with the existing importer, run the same MJCF,
 site, and actuator tests against both entry points:
