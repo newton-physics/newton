@@ -2664,7 +2664,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         builder.replicate(template, 2)
         model = builder.finalize()
         # The first world starts dynamic, so its welds are missing from MuJoCo's initial constraint count.
-        body_flags = model.body_flags.numpy()
+        body_flags = model.body_flags.numpy().copy()
         body_flags[:20] = int(BodyFlags.DYNAMIC)
         model.body_flags.assign(body_flags)
 
