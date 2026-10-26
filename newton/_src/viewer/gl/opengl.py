@@ -428,9 +428,9 @@ class MeshGL:
 
         self._texture_source = None
         texture_id = _upload_texture_from_file(gl, texture_image)
-        if not texture_id:
-            return
-        self.texture_id = texture_id
+        if texture_id:
+            self.texture_id = texture_id
+        # Cache deterministic rejection, but leave exceptions retryable.
         self._texture_source = texture
 
     def render(self):

@@ -1313,6 +1313,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
 
     def test_gl_reuses_skinned_textures_but_updates_regular_meshes(self):
         """Reuse visual textures untinted by default; preserve explicit colors and ordinary uploads."""
+        from newton._src.utils.texture import load_texture  # noqa: PLC0415
         from newton._src.viewer.gl.opengl import RendererGL  # noqa: PLC0415
         from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip  # noqa: PLC0415
 
@@ -1402,6 +1403,13 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                     mesh.texture = None
                     untextured = center_pixel(state)
                     self.assertGreater(untextured[0], untextured[2] + 30)
+                    max_size = RendererGL.gl.GLint()
+                    RendererGL.gl.glGetIntegerv(RendererGL.gl.GL_MAX_TEXTURE_SIZE, max_size)
+                    mesh.texture = np.zeros((1, max_size.value + 1, 3), dtype=np.uint8)
+                    with mock.patch("newton._src.utils.texture.load_texture", wraps=load_texture) as load:
+                        for _ in range(2):
+                            np.testing.assert_allclose(center_pixel(state), untextured, atol=2)
+                        self.assertEqual(load.call_count, 1, "Do not reload a rejected immutable texture")
                     for value in (200, 100):
                         with self.subTest(gray=value):
                             mesh.texture = np.full((2, 2, 3), value, dtype=np.uint8)
