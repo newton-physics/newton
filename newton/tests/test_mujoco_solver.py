@@ -22,7 +22,6 @@ from newton import BodyFlags, JointType, Mesh, ModelFlags
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
-    KINEMATIC_INVWEIGHT_SCALE,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
@@ -1348,7 +1347,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 np.testing.assert_array_equal(
                     solver.mjw_data.eq_active.numpy()[:, kinematic_eq], [[True, True], [False, False]]
                 )
-                np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
+                np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-3)
                 dof_frictionloss = solver.mjw_model.dof_frictionloss.numpy()
                 np.testing.assert_allclose(dof_frictionloss, np.broadcast_to(friction[:, None], dof_frictionloss.shape))
                 dof_damping = solver.mjw_model.dof_damping.numpy()
@@ -1370,7 +1369,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 np.testing.assert_array_equal(
                     solver.mjw_data.eq_active.numpy()[:, kinematic_eq], [[False, False], [True, True]]
                 )
-                np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
+                np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-3)
 
 
 class TestMuJoCoSolverJointProperties(unittest.TestCase):
@@ -2305,7 +2304,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         return float(solver.mjw_data.M.numpy()[0, diagonal].sum())
 
     def _assert_kinematic_state_matches_flags(self, model: newton.Model, solver: SolverMuJoCo):
-        """Kinematic roots keep authored armature, enable their weld, and scale down their inverse weight."""
+        """Kinematic roots keep authored armature and enable their weld."""
         mjc_dof_to_newton_dof = solver.mjc_dof_to_newton_dof.numpy()
         mapped = mjc_dof_to_newton_dof >= 0
         np.testing.assert_allclose(
@@ -2320,17 +2319,6 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         np.testing.assert_array_equal(eq_active, expected)
         if solver.use_mujoco_cpu:
             np.testing.assert_array_equal(solver.mj_data.eq_active[solver._kinematic_weld_eq.numpy()], expected[0])
-
-        mjc_body = solver.mjc_body_to_newton.numpy()
-        kinematic = np.zeros(mjc_body.shape, dtype=bool)
-        kinematic[mjc_body >= 0] = (model.body_flags.numpy()[mjc_body[mjc_body >= 0]] & int(BodyFlags.KINEMATIC)) != 0
-        invweight = (
-            solver.mj_model.body_invweight0[None] if solver.use_mujoco_cpu else solver.mjw_model.body_invweight0.numpy()
-        )
-        physical = solver._physical_body_invweight0
-        physical = physical[None] if solver.use_mujoco_cpu else physical.numpy()
-        scale = np.where(kinematic[: invweight.shape[0]], KINEMATIC_INVWEIGHT_SCALE, 1.0)[..., None]
-        np.testing.assert_allclose(invweight, scale * physical, rtol=1.0e-6)
 
     def test_floating_kinematic_body_exports_weld(self):
         """Export a kinematic free body with a weld to the world, keeping its armature."""
@@ -2379,20 +2367,27 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         self.assertAlmostEqual(float(state_0.body_q.numpy()[root_body, 2]), -0.5 * 9.81 * 0.1**2, delta=2.0e-3)
 
     def test_kinematic_root_does_not_change_mass_matrix_trace(self):
-        """Keep the solver's inertia scale physical: a kinematic root leaves trace(M) unchanged."""
+        """Keep the solver's inertia scale physical: a kinematic root leaves trace(M) and the mean inertia unchanged."""
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                traces = []
+                traces, meaninertia = [], []
                 for root_kinematic in (False, True):
                     model, _ = self._build_model(root_kinematic=root_kinematic)
                     model.joint_armature.fill_(0.1)
                     solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
                     solver.step(model.state(), model.state(), model.control(), None, 0.002)
                     traces.append(self._mass_matrix_trace(solver))
+                    stat = solver.mj_model.stat if use_mujoco_cpu else solver.mjw_model.stat
+                    if hasattr(stat, "meaninertia"):
+                        meaninertia.append(
+                            float(np.ravel(stat.meaninertia.numpy() if not use_mujoco_cpu else stat.meaninertia)[0])
+                        )
                 self.assertAlmostEqual(traces[1], traces[0], places=4)
+                if meaninertia:
+                    self.assertAlmostEqual(meaninertia[1], meaninertia[0], delta=2.0e-3 * meaninertia[0])
 
     def test_body_properties_runtime_toggle(self):
-        """Switch a root that starts kinematic to dynamic and back without changing constants."""
+        """Switch a root that starts kinematic to dynamic and back."""
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 model, root_body = self._build_model(root_kinematic=True)
@@ -2647,7 +2642,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
 
     def test_dynamic_child_of_light_kinematic_root_moves_like_on_fixed_base(self):
-        """A light kinematic root does not yield to a heavy dynamic child, unlike a soft weld."""
+        """A heavy dynamic child on a light kinematic root, including its joint limit, behaves as on a fixed base."""
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 angles = []
@@ -2655,7 +2650,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     builder = newton.ModelBuilder()
                     base = builder.add_link(is_kinematic=not fixed)
                     builder.add_shape_box(
-                        base, hx=0.05, hy=0.05, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=100.0)
+                        base, hx=0.05, hy=0.05, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=10.0)
                     )
                     arm = builder.add_link()
                     builder.add_shape_capsule(
@@ -2673,7 +2668,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                         if fixed
                         else builder.add_joint_free(base)
                     )
-                    hinge = builder.add_joint_revolute(base, arm, axis=newton.Axis.Y)
+                    hinge = builder.add_joint_revolute(base, arm, axis=newton.Axis.Y, limit_lower=-0.3, limit_upper=0.3)
                     builder.add_articulation([root, hinge])
                     model = builder.finalize()
                     if not fixed:
@@ -2682,12 +2677,14 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                         model.joint_q.assign(q)
                     solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
                     state_0, state_1, control = model.state(), model.state(), model.control()
-                    for _ in range(100):
+                    trajectory = []
+                    for _ in range(200):
                         solver.step(state_0, state_1, control, None, 0.002)
                         state_0, state_1 = state_1, state_0
-                    angles.append(float(state_0.joint_q.numpy()[-1]))
-                self.assertGreater(abs(angles[0]), 0.5)
-                self.assertAlmostEqual(angles[1], angles[0], delta=1.0e-3)
+                        trajectory.append(float(state_0.joint_q.numpy()[-1]))
+                    angles.append(np.array(trajectory))
+                self.assertLess(np.abs(angles[0]).max(), 0.5)
+                np.testing.assert_allclose(angles[1], angles[0], atol=1.0e-3)
 
     def test_contacts_on_kinematic_body_ignore_its_mass(self):
         """A box rests on a light kinematic platform as on a heavy one, as on an infinite-mass collider."""

@@ -17,11 +17,11 @@ DEFAULT_LIMIT_SOLREF_TIMECONST = DEFAULT_LIMIT_SOLREF[0]
 HINGE_CONNECT_HALF_SPAN = 0.05
 """Distance [m] along the hinge axis from a revolute loop joint's anchor to each of its two CONNECT points."""
 
-KINEMATIC_INVWEIGHT_SCALE = 1.0e-4
-"""Factor on MuJoCo ``body_invweight0`` of kinematic bodies.
+KINEMATIC_LOCK_INERTIA_RATIO = 1.0e4
+"""Armature, relative to a DOF's own inertia, that locks kinematic root DOFs while MuJoCo computes its constants.
 
-Regularizes their welds and contacts as nearly infinite mass; exactly zero makes
-those rows too stiff for MuJoCo Warp's float32 CG solver."""
+Large enough for constraint regularization to treat the root as immovable, small enough
+to keep its weld and contact rows conditioned for MuJoCo Warp's float32 CG solver."""
 
 MJ_MINMU = 1.0e-5
 """MuJoCo's minimum friction coefficient clamp."""

@@ -1156,14 +1156,15 @@ weld equality to the world that is active exactly while the root is kinematic:
   toward a pose it locks the root's acceleration: through each step the root
   keeps the pose and velocity pushed from :attr:`~newton.State.joint_q` and
   :attr:`~newton.State.joint_qd`, under every integrator.
-- MuJoCo's ``body_invweight0`` of kinematic bodies is scaled down by a factor
-  of ``1e-4``, so the weld and contacts treat them as nearly infinitely
-  massive: neither dynamic descendants nor contacting bodies move a kinematic
-  root.
+- MuJoCo computes its inverse-weight constants, which scale constraint
+  softness, with kinematic roots locked. The weld and contacts therefore treat
+  a kinematic root as immovable, and joint limits of its dynamic descendants
+  behave as on a fixed base.
 
 Unlike a large armature, the weld leaves the mass matrix, and with it the
 solver's convergence tolerance, physical. Kinematic roots keep their authored
-:attr:`~newton.Model.joint_armature`.
+:attr:`~newton.Model.joint_armature`. Switching a root between kinematic and
+dynamic recomputes these constants, as other inertial updates do.
 
 .. _mujoco-kinematic-switching:
 

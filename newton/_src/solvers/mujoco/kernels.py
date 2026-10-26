@@ -2291,33 +2291,41 @@ def update_dof_force_properties_kernel(
 def update_dof_armature_kernel(
     mjc_dof_to_newton_dof: wp.array2d[wp.int32],
     joint_armature: wp.array[float],
+    newton_dof_to_body: wp.array[wp.int32],
+    body_flags: wp.array[wp.int32],
+    lock_armature: wp.array[float],
     # outputs
     dof_armature: wp.array2d[float],
 ):
-    """Update MuJoCo dof_armature from Newton joint_armature."""
+    """Update MuJoCo dof_armature from Newton joint_armature, adding ``lock_armature`` to kinematic DOFs if given."""
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
-    dof_armature[world, mjc_dof] = joint_armature[newton_dof]
+    armature = joint_armature[newton_dof]
+    if lock_armature and (body_flags[newton_dof_to_body[newton_dof]] & BodyFlags.KINEMATIC) != 0:
+        armature += lock_armature[mjc_dof]
+    dof_armature[world, mjc_dof] = armature
 
 
 @wp.kernel
-def update_kinematic_body_invweight_kernel(
-    mjc_body_to_newton: wp.array2d[wp.int32],
+def remove_lock_armature_from_meaninertia_kernel(
+    mjc_dof_to_newton_dof: wp.array2d[wp.int32],
+    newton_dof_to_body: wp.array[wp.int32],
     body_flags: wp.array[wp.int32],
-    physical_invweight0: wp.array2d[wp.vec2],
-    kinematic_scale: float,
+    lock_armature: wp.array[float],
     # outputs
-    body_invweight0: wp.array2d[wp.vec2],
+    meaninertia: wp.array[float],
 ):
-    """Scale down the inverse weights of kinematic bodies so MuJoCo regularizes their constraints as near-infinite mass."""
-    world, mjc_body = wp.tid()
-    invweight = physical_invweight0[world, mjc_body]
-    newton_body = mjc_body_to_newton[world, mjc_body]
-    if newton_body >= 0 and (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
-        invweight = invweight * kinematic_scale
-    body_invweight0[world, mjc_body] = invweight
+    """Restore the physical mean inertia that MuJoCo computed with kinematic DOFs locked."""
+    world = wp.tid()
+    nv = mjc_dof_to_newton_dof.shape[1]
+    total = float(0.0)
+    for mjc_dof in range(nv):
+        newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
+        if newton_dof >= 0 and (body_flags[newton_dof_to_body[newton_dof]] & BodyFlags.KINEMATIC) != 0:
+            total += lock_armature[mjc_dof]
+    meaninertia[world % meaninertia.shape[0]] -= total / float(nv)
 
 
 @wp.kernel

@@ -239,6 +239,8 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                     mapping = solver.mjc_dof_to_newton_dof.numpy()
                     armature = solver.mjw_model.dof_armature.numpy().copy()
                     invweight = solver.mjw_model.dof_invweight0.numpy().copy()
+                    # Native MuJoCo owns its constants, which see the kinematic root as locked.
+                    native_invweight = solver.mj_model.dof_invweight0.copy() if cpu else None
                     initial_solref = solver.mjw_model.dof_solref.numpy().copy()
                     initial_solimp = solver.mjw_model.dof_solimp.numpy().copy()
                     friction = np.arange(1, model.joint_dof_count + 1, dtype=np.float32)
@@ -265,8 +267,9 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                     for name, values in expected.items():
                         np.testing.assert_allclose(getattr(solver.mjw_model, name).numpy(), values, err_msg=name)
                         if cpu:
+                            native = native_invweight if name == "dof_invweight0" else values[0]
                             np.testing.assert_allclose(
-                                getattr(solver.mj_model, name), values[0], rtol=1.0e-5, err_msg=name
+                                getattr(solver.mj_model, name), native, rtol=1.0e-5, err_msg=name
                             )
 
     def test_force_flags_rearm_raw_limit_validation(self):
