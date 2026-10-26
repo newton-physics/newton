@@ -3562,6 +3562,7 @@ class TestCurvedPrimitiveSDFExclusion(unittest.TestCase):
 
 class TestPlanarSDFOptIn(unittest.TestCase):
     def test_default_box_does_not_build_general_sdf(self):
+        """Keep default boxes on the analytic path without SDF edge data."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
         box = builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5)
@@ -3569,7 +3570,7 @@ class TestPlanarSDFOptIn(unittest.TestCase):
         model = builder.finalize()
 
         self.assertEqual(int(model._shape_sdf_index.numpy()[box]), -1)
-        self.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 0)
+        self.assertEqual(int(model._shape_edge_range.numpy()[box][1]), 0)
 
     def test_default_convex_hull_does_not_build_general_sdf(self):
         builder = newton.ModelBuilder()
@@ -3874,7 +3875,7 @@ def test_deferred_convex_sdf_edges_use_deduplicated_topology(test, device):
 
     model = builder.finalize(device=device)
 
-    test.assertGreater(int(model.shape_edge_range.numpy()[shape][1]), 0)
+    test.assertGreater(int(model._shape_edge_range.numpy()[shape][1]), 0)
     test.assertEqual(model._mesh_keep_alive[0].points.shape[0], 8)
 
 
@@ -3990,7 +3991,7 @@ def test_mesh_box_with_sdf_routes_to_sdf_contact(test, device):
 
     model = builder.finalize(device=device)
     test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[box]), 0)
-    test.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 12)
+    test.assertEqual(int(model._shape_edge_range.numpy()[box][1]), 12)
 
     pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
     contacts = pipeline.contacts()
@@ -4506,7 +4507,7 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
         builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25)
 
     replicated_builder = newton.ModelBuilder()
-    replicated_builder.replicate(builder, world_count=768)
+    replicated_builder.replicate(builder, copy_count=768)
     model = replicated_builder.finalize(device=device)
     split = newton.CollisionPipeline(
         model,
@@ -4875,15 +4876,15 @@ def test_packed_mesh_edges_use_mesh_coordinates(test, device):
     model = builder.finalize(device=device)
 
     # Ownership code zero allows both endpoints, as edges read from the mesh do.
-    edges = model.mesh_edge_indices.numpy()
+    edges = model._mesh_edge_indices.numpy()
     vertices = np.asarray(cube.vertices, dtype=np.float32)
     edge_v0, edge_v1 = vertices[edges[:, 0]], vertices[edges[:, 1]]
     halves = (edge_v1 - edge_v0) * 0.5
     radii = np.linalg.norm(halves, axis=1, keepdims=True)
     centers = np.concatenate(((edge_v0 + edge_v1) * 0.5, radii), axis=1)
     halves = np.concatenate((halves, np.zeros_like(radii)), axis=1)
-    np.testing.assert_allclose(model.mesh_edge_centers.numpy(), centers, rtol=1e-6)
-    np.testing.assert_allclose(model.mesh_edge_halves.numpy()[:, :3], halves[:, :3], rtol=1e-6)
+    np.testing.assert_allclose(model._mesh_edge_centers.numpy(), centers, rtol=1e-6)
+    np.testing.assert_allclose(model._mesh_edge_halves.numpy()[:, :3], halves[:, :3], rtol=1e-6)
 
     class PackedEdgeNarrowPhase(NarrowPhase):
         def __init__(self, wrapped, edge_centers, edge_halves):

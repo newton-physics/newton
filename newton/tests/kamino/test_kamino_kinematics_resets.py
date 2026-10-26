@@ -288,7 +288,7 @@ def setup_test_fourbar_model(
         builder=build_boxes_fourbar(
             limits=False, actuator_ids=[1], floatingbase=base_joint, fixedbase=False, ground=False
         ),
-        world_count=num_worlds,
+        copy_count=num_worlds,
     )
     if base_joint:
         # Set non-trivial r_B, X_B, r_F, X_F into base joint for testing (while preserving initial pose)
@@ -571,7 +571,7 @@ class TestSetFloatingBase(unittest.TestCase):
             builder=build_boxes_fourbar(
                 limits=False, actuator_ids=[1], floatingbase=False, fixedbase=True, ground=False
             ),
-            world_count=num_worlds,
+            copy_count=num_worlds,
         )
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 

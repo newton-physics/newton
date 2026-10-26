@@ -1028,7 +1028,7 @@ def _make_project_dual_convergence_accel_kernel(reduction_size: int):
                 status.converged = 1
 
             if status.converged or status.iterations >= config.max_iterations:
-                solver_state_done[0] -= 1
+                wp.atomic_sub(solver_state_done, 0, 1)
 
             if status.converged:
                 status.restart = 0
@@ -1359,7 +1359,7 @@ def _make_compute_infnorm_residuals_kernel(tile_size: int, n_cts_max: int, n_com
 
             # If converged or reached max iterations, decrement the number of active worlds
             if status.converged or status.iterations >= maxiters:
-                solver_state_done[0] -= 1
+                wp.atomic_sub(solver_state_done, 0, 1)
 
             # Store the updated status
             solver_status[wid] = status

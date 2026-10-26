@@ -25,9 +25,6 @@ from .types import GeoType
 # Configuration flag for multi-contact generation
 ENABLE_MULTI_CONTACT = True
 
-# Configuration flag for tiled BVH queries (experimental)
-ENABLE_TILE_BVH_QUERY = True
-
 # Type definitions for multi-contact manifolds
 _mat53f = wp.types.matrix((5, 3), wp.float32)
 
@@ -1161,7 +1158,7 @@ def mesh_vs_convex_midphase(
     aabb_lower = wp.vec3(0.0)
     aabb_upper = wp.vec3(0.0)
     center_in_bvh = wp.vec3(0.0)
-    if wp.static(ENABLE_TILE_BVH_QUERY) and shape_type[non_mesh_shape] == GeoType.CONVEX_MESH:
+    if shape_type[non_mesh_shape] == GeoType.CONVEX_MESH:
         # A hull's bounds scan every vertex; split that scan across the block.
         aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_hull_query_aabb_tiled(
             mesh_shape,
@@ -1174,7 +1171,7 @@ def mesh_vs_convex_midphase(
             non_mesh_center,
             idx_in_thread_block,
         )
-    elif wp.static(ENABLE_TILE_BVH_QUERY):
+    else:
         # All lanes query the same pair, so compute the bounds once per block.
         if idx_in_thread_block == 0:
             aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_convex_query_aabb(
@@ -1205,56 +1202,33 @@ def mesh_vs_convex_midphase(
         aabb_lower = wp.vec3(bounds[0, 0], bounds[0, 1], bounds[0, 2])
         aabb_upper = wp.vec3(bounds[1, 0], bounds[1, 1], bounds[1, 2])
         center_in_bvh = wp.vec3(bounds[2, 0], bounds[2, 1], bounds[2, 2])
-    else:
-        aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_convex_query_aabb(
-            mesh_shape,
-            non_mesh_shape,
-            X_mesh_ws,
-            X_ws,
-            shape_type,
-            shape_data,
-            shape_source_ptr,
-            contact_threshold,
-            non_mesh_center,
-        )
 
-    if wp.static(ENABLE_TILE_BVH_QUERY):
-        # Query mesh BVH for overlapping triangles in mesh local space using tiled version
-        query = wp.tile_mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
+    # Query mesh BVH for overlapping triangles in mesh local space using tiled version
+    query = wp.tile_mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
 
-        while wp.tile_query_valid(query):
-            result_tile = wp.tile_mesh_query_aabb_next(query)
-            tri_index = wp.untile(result_tile)
-            if tri_index >= 0 and not _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
-                tri_index = -1
+    while wp.tile_query_valid(query):
+        result_tile = wp.tile_mesh_query_aabb_next(query)
+        tri_index = wp.untile(result_tile)
+        if tri_index >= 0 and not _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
+            tri_index = -1
 
-            # Add this triangle pair to the output buffer if valid
-            # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
-            has_tri = 0
-            if tri_index >= 0:
-                has_tri = 1
-            count_tile = wp.tile(has_tri)
-            inclusive_scan = wp.tile_scan_inclusive(count_tile)
-            offset = 0
-            if idx_in_thread_block == wp.block_dim() - 1:
-                offset = wp.atomic_add(triangle_pairs_count, 0, inclusive_scan[wp.block_dim() - 1])
-            offset_broadcast_tile = wp.tile(offset)
-            offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
+        # Add this triangle pair to the output buffer if valid
+        # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
+        has_tri = 0
+        if tri_index >= 0:
+            has_tri = 1
+        count_tile = wp.tile(has_tri)
+        inclusive_scan = wp.tile_scan_inclusive(count_tile)
+        offset = 0
+        if idx_in_thread_block == wp.block_dim() - 1:
+            offset = wp.atomic_add(triangle_pairs_count, 0, inclusive_scan[wp.block_dim() - 1])
+        offset_broadcast_tile = wp.tile(offset)
+        offset_broadcast = offset_broadcast_tile[wp.block_dim() - 1]
 
-            if tri_index >= 0:
-                out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
-                if out_idx < triangle_pairs.shape[0]:
-                    triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
-    else:
-        query = wp.mesh_query_aabb(mesh_id, aabb_lower, aabb_upper)
-        tri_index = wp.int32(0)
-        while wp.mesh_query_aabb_next(query, tri_index):
-            # Add this triangle pair to the output buffer if valid
-            # Store (mesh_shape, non_mesh_shape, tri_index) to guarantee mesh is always first
-            if tri_index >= 0 and _mesh_triangle_is_front_facing_local(mesh_id, center_in_bvh, tri_index):
-                out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
-                if out_idx < triangle_pairs.shape[0]:
-                    triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
+        if tri_index >= 0:
+            out_idx = offset_broadcast + inclusive_scan[idx_in_thread_block] - has_tri
+            if out_idx < triangle_pairs.shape[0]:
+                triangle_pairs[out_idx] = wp.vec3i(mesh_shape, non_mesh_shape, tri_index)
 
 
 @wp.func

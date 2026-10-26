@@ -1669,6 +1669,13 @@ class CollisionPipeline:
                 scale; routing a rescaled shape through mesh-SDF collision makes the device print a
                 warning once and a later :meth:`collide` call outside graph capture raise
                 :class:`RuntimeError`. Mesh-plane and mesh-convex contacts are unaffected.
+                This option does not update derived collision bounds. After rescaling meshes,
+                convex meshes, or heightfields, also update :attr:`Model.shape_collision_radius`,
+                :attr:`Model.shape_collision_aabb_lower`, and :attr:`Model.shape_collision_aabb_upper`
+                to match the new scale, or broadphase culling can miss contacts. It does not rebuild
+                baked SDFs or heightfield collision data. Recreate affected shapes at the new scale
+                on a :class:`ModelBuilder`, then finalize a new model and construct a new collision pipeline.
+                For explicitly prebuilt mesh SDFs, first rerun :meth:`Mesh.build_sdf` with the new scale.
                 Ignored when ``narrow_phase`` is provided. Defaults to ``False``.
             publish_capacity: Whether to publish the resolved capacities as the model's
                 default :attr:`~newton.Model.rigid_contact_max` and
@@ -1921,11 +1928,11 @@ class CollisionPipeline:
                 if (
                     hasattr(model, "_shape_sdf_index")
                     and model._shape_sdf_index is not None
-                    and hasattr(model, "shape_edge_range")
-                    and model.shape_edge_range is not None
+                    and hasattr(model, "_shape_edge_range")
+                    and model._shape_edge_range is not None
                 ):
                     shape_sdf_index = model._shape_sdf_index.numpy()
-                    shape_edge_range = model.shape_edge_range.numpy()
+                    shape_edge_range = model._shape_edge_range.numpy()
                     planar_sdf_mask = route_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
                     has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
@@ -2886,8 +2893,8 @@ class CollisionPipeline:
         narrow_phase_extension_kwargs = {}
         if type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write:
             narrow_phase_extension_kwargs.update(
-                mesh_edge_centers=model.mesh_edge_centers,
-                mesh_edge_halves=model.mesh_edge_halves,
+                mesh_edge_centers=model._mesh_edge_centers,
+                mesh_edge_halves=model._mesh_edge_halves,
                 shape_support_data=model._shape_support_data,
                 support_lut=model._convex_support_lut,
                 support_vertex_offsets=model._convex_support_vertex_offsets,
@@ -2924,8 +2931,8 @@ class CollisionPipeline:
             shape_heightfield_index=model.shape_heightfield_index,
             heightfield_data=model.heightfield_data,
             heightfield_elevations=model.heightfield_elevations,
-            mesh_edge_indices=model.mesh_edge_indices,
-            shape_edge_range=model.shape_edge_range,
+            mesh_edge_indices=model._mesh_edge_indices,
+            shape_edge_range=model._shape_edge_range,
             writer_data=writer_data,
             device=self.device,
             **narrow_phase_extension_kwargs,

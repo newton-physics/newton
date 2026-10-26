@@ -661,6 +661,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_depth",
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_color_only",
             "simulation.bench_sensor_camera.FastSensorCameraPixel.time_render_depth_only",
+            "simulation.bench_actuators.ActuatorG1.time_step",
         )
 
         for benchmark in blocking_benchmarks + dashboard_benchmarks:
