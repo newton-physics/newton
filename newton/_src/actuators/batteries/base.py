@@ -8,33 +8,10 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 
 if TYPE_CHECKING:
-    from ...sim.builder import ModelBuilder
     from ...sim.model import Model
 
 SUPPLY_VOLTAGE_ATTR = "actuator_supply_voltage"
 SUPPLY_CURRENT_PER_EFFORT_ATTR = "actuator_supply_current_per_effort"
-
-
-def register_battery_attributes(builder: ModelBuilder) -> None:
-    """Register the per-actuator supply voltage and supply current per effort on Control.
-
-    :meth:`~newton.ModelBuilder.add_battery` calls this with the first battery.
-
-    Args:
-        builder: Newton model builder on which to register the attributes.
-    """
-    from ...sim.model import Model  # noqa: PLC0415
-
-    for name in (SUPPLY_VOLTAGE_ATTR, SUPPLY_CURRENT_PER_EFFORT_ATTR):
-        builder.add_custom_attribute(
-            builder.CustomAttribute(
-                name=name,
-                dtype=wp.float32,
-                frequency=Model.AttributeFrequency.ACTUATOR,
-                assignment=Model.AttributeAssignment.CONTROL,
-                default=0.0,
-            )
-        )
 
 
 class BatteryBase:

@@ -96,6 +96,7 @@ from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
 if TYPE_CHECKING:
     from pxr import Usd
 
+    from ..actuators.batteries.base import BatteryBase
     from ..actuators.clamping.base import ClampingBase
     from ..actuators.drives.base import DriveBase
     from ..actuators.input_processors.base import InputProcessorBase
@@ -3416,46 +3417,33 @@ class ModelBuilder:
         entry.actuator_indices.append(actuator)
         return actuator
 
-    def add_battery(self, battery_class: type, actuators: Sequence[int], **params: Any) -> int:
-        """Add a battery shared by the given actuators.
+    def add_battery(self, battery_class: type[BatteryBase], actuators: Sequence[int], **kwargs: Any) -> int:
+        """Add a battery shared by several actuators.
 
-        :meth:`finalize` creates one object per battery class in
-        :attr:`Model.batteries <newton.Model.batteries>`, holding all
-        batteries of that class. Each step, its
-        :meth:`~newton.actuators.BatteryBase.step` sets
-        ``control.actuator_supply_voltage`` from the current of *actuators*,
-        and its :meth:`~newton.actuators.BatteryBase.reset` restores the
-        voltage of a full battery, at which ``control.actuator_supply_voltage``
-        also starts. :meth:`replicate` copies the batteries into every world.
-        :meth:`add_usd` calls this method for each ``NewtonBattery`` prim.
+        Multiple calls with the same *battery_class* are accumulated into one
+        :class:`~newton.actuators.BatteryBase` instance during
+        :meth:`finalize <ModelBuilder.finalize>`.  Per-battery parameters,
+        such as the nominal voltage, may differ within the same group.
 
         Args:
-            battery_class: Battery class, e.g.
-                :class:`~newton.actuators.BatteryInternalResistance`.
-            actuators: Actuators that draw from the battery, as returned by
-                :meth:`add_actuator`, so the actuators are added first. At
-                least one is required, and they must draw from a battery, e.g.
-                :class:`~newton.actuators.DriveBAM` actuators added with
-                ``supply_from_battery=True``.
-            **params: Battery parameters, resolved by the class's
-                :meth:`~newton.actuators.BatteryBase.resolve_arguments`.
+            battery_class: Battery class (e.g. :class:`~newton.actuators.BatteryInternalResistance`).
+            actuators: Actuator indices returned by :meth:`add_actuator`. At
+                least one is required, and each must draw from a battery
+                (e.g. :class:`~newton.actuators.DriveBAM` with ``supply_from_battery=True``).
+            **kwargs: Per-battery parameters (e.g. ``nominal_voltage``, ``resistance``).
 
         Returns:
-            The index of the battery.
+            The index of the battery in per-battery arrays.
 
         Raises:
             ValueError: *actuators* is empty, an actuator does not exist,
-                does not draw from a battery, or
-                already has a battery, or the battery class rejects *params*.
+                does not draw from a battery or already has a battery, or a
+                battery parameter is invalid.
         """
-        from ..actuators.batteries.base import register_battery_attributes  # noqa: PLC0415
-
-        args = battery_class.resolve_arguments(params)
+        args = battery_class.resolve_arguments(kwargs)
         actuators = [int(actuator) for actuator in actuators]
         if not actuators:
             raise ValueError("add_battery: at least one actuator is required")
-        if not self.has_custom_attribute("actuator_supply_voltage"):
-            register_battery_attributes(self)
         for actuator in actuators:
             if not 0 <= actuator < self.actuator_count:
                 raise ValueError(f"add_battery: actuator {actuator} does not exist")
@@ -3484,11 +3472,6 @@ class ModelBuilder:
         entry.world.append(self.current_world)
         for actuator in actuators:
             self._actuator_battery[actuator] = battery
-        self._process_custom_attributes(
-            actuators,
-            {"actuator_supply_voltage": battery_class.initial_supply_voltage(args)},
-            Model.AttributeFrequency.ACTUATOR,
-        )
         return battery
 
     def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
@@ -15761,6 +15744,12 @@ class ModelBuilder:
 
             m.batteries = []
             for entry in self.battery_entries.values():
+                for args, actuators in zip(entry.args, entry.actuators, strict=True):
+                    self._process_custom_attributes(
+                        actuators,
+                        {"actuator_supply_voltage": entry.battery_class.initial_supply_voltage(args)},
+                        Model.AttributeFrequency.ACTUATOR,
+                    )
                 actuator_counts = [len(actuators) for actuators in entry.actuators]
                 m.batteries.append(
                     entry.battery_class(
