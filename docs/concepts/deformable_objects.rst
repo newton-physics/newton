@@ -208,8 +208,6 @@ Rod graphs
 A :class:`~newton.Rod` with explicit edges can describe a graph with shared
 junctions. Pass it to :meth:`~newton.ModelBuilder.add_rod` with ``rod=...``.
 One call records the complete graph, not separate objects for its branches.
-The deprecated :meth:`~newton.ModelBuilder.add_rod_graph` also records one
-object per call; use ``add_rod(rod=...)`` for new code.
 
 A welded USD graph uses the same construction path. Its record includes all
 created segment bodies and joints, including generated roots. The source
