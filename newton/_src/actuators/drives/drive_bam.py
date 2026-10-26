@@ -28,7 +28,7 @@ def _bam_effort_kernel(
     supply_from_battery: wp.array[float],
     supply_voltage: wp.array[float],
     efforts: wp.array[float],
-    supply_current_gain: wp.array[float],
+    supply_current_per_effort: wp.array[float],
 ):
     i = wp.tid()
     vel = velocities[vel_indices[i]]
@@ -46,8 +46,8 @@ def _bam_effort_kernel(
 
     current = (supply * duty - kt[i] * vel) / resistance[i]
     efforts[i] = kt[i] * current
-    if supply_current_gain:
-        supply_current_gain[i] = duty / kt[i]
+    if supply_current_per_effort:
+        supply_current_per_effort[i] = duty / kt[i]
 
 
 class DriveBAM(DriveBase):
@@ -80,7 +80,7 @@ class DriveBAM(DriveBase):
     <newton.actuators.DriveBase.custom_inputs>`), which the battery's
     :meth:`~newton.actuators.BatteryBase.step` writes every step, and
     ignores ``vin``. It then also writes :math:`d / k_t` into the
-    ``actuator_supply_current_gain`` output (see :attr:`DriveBase.custom_outputs
+    ``actuator_supply_current_per_effort`` output (see :attr:`DriveBase.custom_outputs
     <newton.actuators.DriveBase.custom_outputs>`): times the effort, it gives
     the current the actuator draws from the battery, since the battery
     supplies the motor current only during the PWM on-time.
@@ -177,10 +177,12 @@ class DriveBAM(DriveBase):
         shape (N,)."""
         uses_battery = bool(self.supply_from_battery.numpy().any())
         self.custom_inputs = {"actuator_supply_voltage": Model.AttributeFrequency.ACTUATOR} if uses_battery else {}
-        self.supply_current_gain = wp.zeros(n, dtype=float, device=kp.device) if uses_battery else None
+        self.supply_current_per_effort = wp.zeros(n, dtype=float, device=kp.device) if uses_battery else None
         """Battery current per unit of effort [A/(N·m) or A/N] of the last :meth:`compute`, or ``None`` without a
         battery, shape (N,)."""
-        self.custom_outputs = {"actuator_supply_current_gain": self.supply_current_gain} if uses_battery else {}
+        self.custom_outputs = (
+            {"actuator_supply_current_per_effort": self.supply_current_per_effort} if uses_battery else {}
+        )
         for name in ("kt", "resistance", "vin", "max_pwm", "max_current", "supply_from_battery"):
             shape = getattr(self, name).shape
             if shape != n:
@@ -251,6 +253,6 @@ class DriveBAM(DriveBase):
                 self.supply_from_battery,
                 supply_voltage,
             ],
-            outputs=[forces, self.supply_current_gain],
+            outputs=[forces, self.supply_current_per_effort],
             device=device,
         )

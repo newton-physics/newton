@@ -3277,8 +3277,7 @@ class ModelBuilder:
 
         Returns:
             The index of the actuator in per-actuator arrays, e.g. for
-            :meth:`add_battery`. The model stores the DOF of each actuator
-            as ``model.actuation.actuator_dof``.
+            :meth:`add_battery`.
 
         Raises:
             ValueError: *index* belongs to another world than the current
@@ -3406,16 +3405,9 @@ class ModelBuilder:
             ),
         )
 
-        from ..actuators.actuator import ACTUATOR_NAMESPACE, register_actuator_attributes  # noqa: PLC0415
-
-        if not self.has_custom_attribute(f"{ACTUATOR_NAMESPACE}:actuator_dof"):
-            register_actuator_attributes(self)
         actuator = self.actuator_count
         self.actuator_count += 1
         self._actuator_battery.append(-1)
-        self._process_custom_attributes(
-            actuator, {f"{ACTUATOR_NAMESPACE}:actuator_dof": index}, Model.AttributeFrequency.ACTUATOR
-        )
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.drive_args.append(drive_array_params)
@@ -3425,7 +3417,7 @@ class ModelBuilder:
         return actuator
 
     def add_battery(self, battery_class: type, actuators: Sequence[int], **params: Any) -> int:
-        """Add a battery shared by the given actuators of the current world.
+        """Add a battery shared by the given actuators.
 
         :meth:`finalize` creates one object per battery class in
         :attr:`Model.batteries <newton.Model.batteries>`, holding all
@@ -3442,8 +3434,7 @@ class ModelBuilder:
                 :class:`~newton.actuators.BatteryInternalResistance`.
             actuators: Actuators that draw from the battery, as returned by
                 :meth:`add_actuator`, so the actuators are added first. At
-                least one is required, they must belong to the current
-                world, and they must draw from a battery, e.g.
+                least one is required, and they must draw from a battery, e.g.
                 :class:`~newton.actuators.DriveBAM` actuators added with
                 ``supply_from_battery=True``.
             **params: Battery parameters, resolved by the class's
@@ -3454,30 +3445,20 @@ class ModelBuilder:
 
         Raises:
             ValueError: *actuators* is empty, an actuator does not exist,
-                belongs to another world, does not draw from a battery, or
+                does not draw from a battery, or
                 already has a battery, or the battery class rejects *params*.
         """
-        from ..actuators.actuator import ACTUATOR_NAMESPACE  # noqa: PLC0415
         from ..actuators.batteries.base import register_battery_attributes  # noqa: PLC0415
 
         args = battery_class.resolve_arguments(params)
         actuators = [int(actuator) for actuator in actuators]
         if not actuators:
             raise ValueError("add_battery: at least one actuator is required")
-        actuator_dof = (
-            self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_dof"].values if self.actuator_count else {}
-        )
         if not self.has_custom_attribute("actuator_supply_voltage"):
             register_battery_attributes(self)
         for actuator in actuators:
             if not 0 <= actuator < self.actuator_count:
                 raise ValueError(f"add_battery: actuator {actuator} does not exist")
-            dof = actuator_dof[actuator]
-            if not 0 <= dof < self.joint_dof_count:
-                raise ValueError(f"add_battery: actuator {actuator} acts on DOF {dof}, which does not exist")
-            world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
-            if world != self.current_world:
-                raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
             drive_args = next(
                 (
                     args

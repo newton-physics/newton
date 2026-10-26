@@ -282,8 +282,8 @@ frequency, i.e. what the array has one entry for:
   one entry per DOF;
 * :attr:`Model.AttributeFrequency.ACTUATOR <newton.Model.AttributeFrequency.ACTUATOR>`,
   one entry per actuator. :meth:`~newton.ModelBuilder.add_actuator`
-  returns the index of each actuator, and the model stores its DOF as
-  ``model.actuation.actuator_dof``.
+  returns the index of each actuator, and :attr:`Actuator.actuator_indices`
+  gives the index of each slot of an actuator.
   Every actuator built by the builder also writes its effort before clamping
   to ``control.actuator_computed_effort`` and the effort it applies to the
   simulation to ``control.actuator_applied_effort``.
@@ -646,12 +646,11 @@ models subclass :class:`BatteryBase`.
   holding all batteries in ``model.batteries``.  Its parameter arrays have one
   entry per battery, and :attr:`BatteryBase.world` maps each battery to its world,
   e.g. to randomize the parameters per world.  :attr:`BatteryBase.actuators` and
-  :attr:`BatteryBase.actuator_start` give the actuators of each battery, and
-  ``model.actuation.actuator_dof`` the DOF of each actuator.
+  :attr:`BatteryBase.actuator_start` give the actuators of each battery.
 * Each actuator built by :class:`~newton.ModelBuilder` writes the effort it
   applies to the simulation to ``control.actuator_applied_effort``, one entry per
   actuator, and a drive that draws from a battery writes its battery current
-  per unit of effort to ``control.actuator_supply_current_gain``.
+  per unit of effort to ``control.actuator_supply_current_per_effort``.
   :meth:`BatteryInternalResistance.step` multiplies the two, sums the current per
   battery, drops the voltage, down to a minimum, and writes it into
   ``control.actuator_supply_voltage``.  Call it once per step after the
@@ -662,7 +661,7 @@ models subclass :class:`BatteryBase`.
 
 :class:`DriveBAM` with ``supply_from_battery=True`` reads its supply voltage
 from ``control.actuator_supply_voltage`` and writes
-``control.actuator_supply_current_gain``.  The drive lists these arrays in its
+``control.actuator_supply_current_per_effort``.  The drive lists these arrays in its
 :attr:`DriveBase.custom_inputs` with the frequency
 :attr:`Model.AttributeFrequency.ACTUATOR <newton.Model.AttributeFrequency.ACTUATOR>` and in its :attr:`DriveBase.custom_outputs`.  Only
 actuators that draw from a battery this way can be added to a battery.

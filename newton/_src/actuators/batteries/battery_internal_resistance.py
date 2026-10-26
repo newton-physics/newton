@@ -8,7 +8,7 @@ from typing import Any
 import warp as wp
 
 from ..actuator import _require_array
-from .base import SUPPLY_CURRENT_GAIN_ATTR, SUPPLY_VOLTAGE_ATTR, BatteryBase
+from .base import SUPPLY_CURRENT_PER_EFFORT_ATTR, SUPPLY_VOLTAGE_ATTR, BatteryBase
 
 
 @wp.kernel
@@ -18,7 +18,7 @@ def _battery_update_kernel(
     nominal_voltage: wp.array[float],
     resistance: wp.array[float],
     min_voltage: wp.array[float],
-    current_gain: wp.array[float],
+    current_per_effort: wp.array[float],
     effort: wp.array[float],
     supply_voltage: wp.array[float],
 ):
@@ -28,7 +28,7 @@ def _battery_update_kernel(
     current = float(0.0)
     for k in range(start, end):
         a = battery_actuators[k]
-        current += current_gain[a] * effort[a]
+        current += current_per_effort[a] * effort[a]
     voltage = wp.max(nominal_voltage[b] - resistance[b] * wp.max(current, 0.0), min_voltage[b])
     for k in range(start, end):
         supply_voltage[battery_actuators[k]] = voltage
@@ -64,7 +64,7 @@ class BatteryInternalResistance(BatteryBase):
 
     over the actuators assigned to it, where :math:`g \\tau` is the current an
     actuator draws from the battery: :math:`g` is
-    ``actuator_supply_current_gain``, written by the drive, e.g.
+    ``actuator_supply_current_per_effort``, written by the drive, e.g.
     :math:`d / k_t` for :class:`~newton.actuators.DriveBAM`, and :math:`\\tau`
     is ``actuator_applied_effort``. The sum is signed, so a regenerating
     actuator offsets a driving one, and regeneration does not raise the
@@ -156,14 +156,14 @@ class BatteryInternalResistance(BatteryBase):
 
         Args:
             sim_control: Object carrying ``actuator_supply_voltage`` and
-                ``actuator_supply_current_gain``, and ``actuator_applied_effort``
+                ``actuator_supply_current_per_effort``, and ``actuator_applied_effort``
                 when *effort* is ``None``, e.g. :class:`~newton.Control`.
             effort: Effort of each actuator of the scene [N or N·m]. ``None``
                 reads ``actuator_applied_effort``.
 
         Raises:
             AttributeError: *sim_control* has no ``actuator_supply_voltage``
-                or ``actuator_supply_current_gain``, or no
+                or ``actuator_supply_current_per_effort``, or no
                 ``actuator_applied_effort`` when *effort* is ``None``.
             ValueError: One of these arrays is ``None``.
         """
@@ -178,7 +178,7 @@ class BatteryInternalResistance(BatteryBase):
                 self.nominal_voltage,
                 self.resistance,
                 self.min_voltage,
-                _require_array(sim_control, SUPPLY_CURRENT_GAIN_ATTR),
+                _require_array(sim_control, SUPPLY_CURRENT_PER_EFFORT_ATTR),
                 effort,
             ],
             outputs=[_require_array(sim_control, SUPPLY_VOLTAGE_ATTR)],

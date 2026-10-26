@@ -50,32 +50,6 @@ _CONTROLLER_STATE_DEPRECATION_MSG = (
 )
 
 
-ACTUATOR_NAMESPACE = "actuation"
-
-
-def register_actuator_attributes(builder: ModelBuilder) -> None:
-    """Register the per-actuator ``actuator_dof`` attribute.
-
-    :meth:`~newton.ModelBuilder.add_actuator` calls this automatically with
-    the first actuator.
-
-    Args:
-        builder: Newton model builder on which to register the attribute.
-    """
-    from ..sim.model import Model  # noqa: PLC0415
-
-    builder.add_custom_attribute(
-        builder.CustomAttribute(
-            name="actuator_dof",
-            dtype=wp.int32,
-            frequency=Model.AttributeFrequency.ACTUATOR,
-            default=-1,
-            references="joint_dof",
-            namespace=ACTUATOR_NAMESPACE,
-        )
-    )
-
-
 @wp.kernel
 def _scatter_add_kernel(
     forces: wp.array[float],

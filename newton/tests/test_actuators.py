@@ -677,6 +677,14 @@ class TestDrivePID(unittest.TestCase):
             self.assertAlmostEqual(forces.numpy()[0], expected, places=4, msg=f"step {step_i}")
 
 
+def _actuator_dofs(model):
+    """Return the DOF of each actuator of *model*, indexed like per-actuator arrays."""
+    dofs = np.full(model.actuator_count, -1)
+    for actuator in model.actuators:
+        dofs[actuator.actuator_indices.numpy()] = actuator.indices.numpy()
+    return dofs
+
+
 def _delay_of(actuator):
     """Return the actuator's InputProcessorDelay, or None."""
     return next((p for p in actuator.input_processors if isinstance(p, InputProcessorDelay)), None)
@@ -2794,7 +2802,7 @@ class TestDriveBAM(unittest.TestCase):
         state.joint_q.assign(q)
         state.joint_qd.assign(qd)
         control.joint_target_q.fill_(target)
-        dof = model.actuation.actuator_dof.numpy()
+        dof = _actuator_dofs(model)
         knees = dof % template.joint_dof_count == knee
         measured = q[dof]
         measured[knees] += q[dof[knees] + 1]
@@ -2811,7 +2819,7 @@ class TestDriveBAM(unittest.TestCase):
             np.testing.assert_allclose(control.actuator_supply_voltage.numpy(), voltage, rtol=1e-5)
             computed = kt * (voltage * duty - kt * qd[dof]) / resistance
             np.testing.assert_allclose(control.actuator_computed_effort.numpy(), computed, rtol=1e-5)
-            np.testing.assert_allclose(control.actuator_supply_current_gain.numpy(), duty / kt, rtol=1e-5)
+            np.testing.assert_allclose(control.actuator_supply_current_per_effort.numpy(), duty / kt, rtol=1e-5)
             clamped = np.clip(computed, -max_effort, max_effort)
             np.testing.assert_allclose(control.actuator_applied_effort.numpy(), clamped, rtol=1e-5)
             applied = np.zeros(model.joint_dof_count)
@@ -4993,7 +5001,6 @@ class TestActuatorBuilder(unittest.TestCase):
             "already draws": ([1], 12.0, 0.5, 9.0),
             "does not draw from a battery": ([2], 12.0, 0.5, 9.0),
             "does not exist": ([3], 12.0, 0.5, 9.0),
-            "belongs to world 0": ([0], 12.0, 0.5, 9.0),
         }
         for message, (actuators, nominal_voltage, resistance, min_voltage) in cases.items():
             with self.subTest(message), self.assertRaisesRegex(ValueError, message):
@@ -5041,7 +5048,6 @@ class TestActuatorBuilder(unittest.TestCase):
         battery = newton.Model.AttributeFrequency.BATTERY
 
         self.assertEqual((model.actuator_count, model.battery_count), (6, 3))
-        self.assertEqual(model.get_attribute_frequency("actuation:actuator_dof"), actuator)
         (batteries,) = model.batteries
         self.assertEqual(batteries.get_attribute_frequency("resistance"), battery)
         np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 1, 2, 3])
@@ -5062,7 +5068,7 @@ class TestActuatorBuilder(unittest.TestCase):
             (sim_control, "joint_f", newton.Model.AttributeFrequency.JOINT_DOF),
             (sim_control, "actuator_applied_effort", actuator),
             (sim_control, "actuator_supply_voltage", actuator),
-            (sim_control, "actuator_supply_current_gain", actuator),
+            (sim_control, "actuator_supply_current_per_effort", actuator),
         ):
             self.assertEqual(source.get_attribute_frequency(name), frequency)
         for source, name in (
@@ -5117,7 +5123,7 @@ class TestActuatorBuilder(unittest.TestCase):
         q[[knee + coords, backlash + coords, ankle + coords, toe + coords]] = [-0.2, -0.017, 0.4, -0.3]
         measured = np.array([[q[knee + c] + q[backlash + c], q[ankle + c], q[toe + c]] for c in (0, coords)]).ravel()
         supply = np.tile([6.0, 6.0, 5.0], 2)
-        dof = model.actuation.actuator_dof.numpy()
+        dof = _actuator_dofs(model)
         state = model.state()
         control = model.control()
         state.joint_q.assign(q)

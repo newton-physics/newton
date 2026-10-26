@@ -12,11 +12,11 @@ if TYPE_CHECKING:
     from ...sim.model import Model
 
 SUPPLY_VOLTAGE_ATTR = "actuator_supply_voltage"
-SUPPLY_CURRENT_GAIN_ATTR = "actuator_supply_current_gain"
+SUPPLY_CURRENT_PER_EFFORT_ATTR = "actuator_supply_current_per_effort"
 
 
 def register_battery_attributes(builder: ModelBuilder) -> None:
-    """Register the per-actuator supply voltage and supply current gain on Control.
+    """Register the per-actuator supply voltage and supply current per effort on Control.
 
     :meth:`~newton.ModelBuilder.add_battery` calls this with the first battery.
 
@@ -25,7 +25,7 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
     """
     from ...sim.model import Model  # noqa: PLC0415
 
-    for name in (SUPPLY_VOLTAGE_ATTR, SUPPLY_CURRENT_GAIN_ATTR):
+    for name in (SUPPLY_VOLTAGE_ATTR, SUPPLY_CURRENT_PER_EFFORT_ATTR):
         builder.add_custom_attribute(
             builder.CustomAttribute(
                 name=name,
