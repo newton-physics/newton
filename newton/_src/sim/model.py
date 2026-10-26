@@ -239,8 +239,6 @@ class Model:
         """Straight spans between consecutive tendon guides."""
         ACTUATOR = 23
         """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
-        BATTERY = 24
-        """Attribute frequency follows the number of batteries (see :attr:`~newton.Model.battery_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -591,7 +589,6 @@ class Model:
         AttributeFrequency.WORLD: "world_count",
         AttributeFrequency.ATTACHMENT_PARTICLE_BODY: "attachment_particle_body_count",
         AttributeFrequency.ACTUATOR: "actuator_count",
-        AttributeFrequency.BATTERY: "battery_count",
         AttributeFrequency.CONTACT: "contact_max",
         AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
         AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
@@ -1636,7 +1633,6 @@ class Model:
             "tendon_segment": Model.AttributeFrequency.TENDON_SEGMENT,
             "attachment_particle_body": Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             "actuator": Model.AttributeFrequency.ACTUATOR,
-            "battery": Model.AttributeFrequency.BATTERY,
             "world": Model.AttributeFrequency.WORLD,
         }
         frequency = built_in.get(references)

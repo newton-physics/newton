@@ -602,33 +602,6 @@ class Actuator:
 
         self._effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
 
-    def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency:
-        """Get the frequency of a parameter array of this actuator.
-
-        The parameter arrays of the drive, clampings and input processors
-        (e.g. ``drive.kp``) have one entry per slot of this actuator. Their
-        frequency is :attr:`Model.AttributeFrequency.ACTUATOR
-        <newton.Model.AttributeFrequency.ACTUATOR>` limited to this actuator:
-        entry ``i`` belongs to the model actuator ``actuator_indices[i]``.
-
-        Args:
-            name: Name of the parameter array, e.g. ``"kp"``.
-
-        Returns:
-            The frequency of the parameter array.
-
-        Raises:
-            KeyError: If no component of this actuator has a parameter array
-                with this name.
-        """
-        from ..sim.model import Model  # noqa: PLC0415
-
-        for component in (self.drive, *self.clamping, *self.input_processors):
-            value = getattr(component, name, None)
-            if isinstance(value, wp.array) and value.shape == (self.num_actuators,):
-                return Model.AttributeFrequency.ACTUATOR
-        raise KeyError(f"Attribute frequency of '{name}' is not known")
-
     def sim_state(self) -> Any:
         """Return an empty container with the fields this actuator reads from ``sim_state``.
 

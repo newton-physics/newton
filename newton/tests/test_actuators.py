@@ -5016,7 +5016,7 @@ class TestActuatorBuilder(unittest.TestCase):
             builder.finalize()
 
     def test_attribute_frequencies(self):
-        """Model, Actuator and Control report the frequencies of the actuator and battery arrays."""
+        """Control and the actuator containers report the frequencies of their arrays."""
         template = newton.ModelBuilder()
         links = [template.add_link() for _ in range(2)]
         joints = [
@@ -5045,11 +5045,9 @@ class TestActuatorBuilder(unittest.TestCase):
         model = builder.finalize()
         control = model.control()
         actuator = newton.Model.AttributeFrequency.ACTUATOR
-        battery = newton.Model.AttributeFrequency.BATTERY
 
         self.assertEqual((model.actuator_count, model.battery_count), (6, 3))
         (batteries,) = model.batteries
-        self.assertEqual(batteries.get_attribute_frequency("resistance"), battery)
         np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 1, 2, 3])
         np.testing.assert_array_equal(batteries.actuators.numpy(), [1, 3, 5])
         np.testing.assert_array_equal(batteries.world.numpy(), [0, 1, 2])
@@ -5059,9 +5057,7 @@ class TestActuatorBuilder(unittest.TestCase):
             "joint_target_q": newton.Model.AttributeFrequency.JOINT_COORD,
         }.items():
             self.assertEqual(control.get_attribute_frequency(name), frequency)
-        pd, bam = sorted(model.actuators, key=lambda a: isinstance(a.drive, DriveBAM))
-        for act, name in ((pd, "kp"), (pd, "max_effort"), (bam, "kt")):
-            self.assertEqual(act.get_attribute_frequency(name), actuator)
+        bam = next(a for a in model.actuators if isinstance(a.drive, DriveBAM))
         sim_state, sim_control = bam.sim_state(), bam.sim_control()
         for source, name, frequency in (
             (sim_state, "joint_q", newton.Model.AttributeFrequency.JOINT_COORD),
@@ -5071,13 +5067,7 @@ class TestActuatorBuilder(unittest.TestCase):
             (sim_control, "actuator_supply_current_per_effort", actuator),
         ):
             self.assertEqual(source.get_attribute_frequency(name), frequency)
-        for source, name in (
-            (pd, "kt"),
-            (pd, "indices"),
-            (control, "kp"),
-            (sim_control, "kp"),
-            (batteries, "actuator_start"),
-        ):
+        for source, name in ((control, "kp"), (sim_control, "kp")):
             with self.subTest(name=name), self.assertRaisesRegex(KeyError, f"'{name}' is not known"):
                 source.get_attribute_frequency(name)
 

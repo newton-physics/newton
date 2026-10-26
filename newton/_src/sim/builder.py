@@ -771,9 +771,6 @@ class ModelBuilder:
             Model.AttributeFrequency.ONCE,
             compaction_policy="passthrough",
         ),
-        "_actuator_battery": Model.AttributeSpec(
-            Model.AttributeFrequency.ACTUATOR, references=Model.AttributeFrequency.BATTERY
-        ),
     }
 
     _BUILDER_GROUP_REFERENCES: ClassVar[dict[str, dict[str, Model.AttributeFrequency]]] = {
@@ -2363,8 +2360,6 @@ class ModelBuilder:
         """Total joint constraint count propagated to :attr:`Model.joint_constraint_count`."""
         self.actuator_count: int = 0
         """Total actuator count propagated to :attr:`Model.actuator_count`."""
-        self._actuator_battery: list[int] = []
-        """Battery of each actuator, ``-1`` for none."""
         self.battery_count: int = 0
         """Total battery count propagated to :attr:`Model.battery_count`."""
 
@@ -3408,7 +3403,6 @@ class ModelBuilder:
 
         actuator = self.actuator_count
         self.actuator_count += 1
-        self._actuator_battery.append(-1)
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.drive_args.append(drive_array_params)
@@ -3444,6 +3438,7 @@ class ModelBuilder:
         actuators = [int(actuator) for actuator in actuators]
         if not actuators:
             raise ValueError("add_battery: at least one actuator is required")
+        with_battery = self._actuators_with_battery()
         for actuator in actuators:
             if not 0 <= actuator < self.actuator_count:
                 raise ValueError(f"add_battery: actuator {actuator} does not exist")
@@ -3460,19 +3455,24 @@ class ModelBuilder:
                 raise ValueError(
                     f"add_battery: actuator {actuator} does not draw from a battery; add it with supply_from_battery=True"
                 )
-            if self._actuator_battery[actuator] >= 0:
-                raise ValueError(
-                    f"add_battery: actuator {actuator} already draws from battery {self._actuator_battery[actuator]}"
-                )
+            if actuator in with_battery:
+                raise ValueError(f"add_battery: actuator {actuator} already draws from a battery")
         battery = self.battery_count
         self.battery_count += 1
         entry = self.battery_entries.setdefault(battery_class, ModelBuilder.BatteryEntry(battery_class=battery_class))
         entry.args.append(args)
         entry.actuators.append(actuators)
         entry.world.append(self.current_world)
-        for actuator in actuators:
-            self._actuator_battery[actuator] = battery
         return battery
+
+    def _actuators_with_battery(self) -> set[int]:
+        """Return the actuators that draw from a battery added with :meth:`add_battery`."""
+        return {
+            actuator
+            for entry in self.battery_entries.values()
+            for actuators in entry.actuators
+            for actuator in actuators
+        }
 
     def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
         """Resolve a joint index or joint label to a single-DOF joint index.
@@ -4262,7 +4262,7 @@ class ModelBuilder:
             )
             self._merge_builder_batteries(builder, entity_offsets["actuator"], world)
         self.actuator_count += copy_count * counts["actuator"]
-        self.battery_count += copy_count * counts["battery"]
+        self.battery_count += copy_count * builder.battery_count
 
     @staticmethod
     @functools.cache
@@ -15673,6 +15673,7 @@ class ModelBuilder:
             from ..actuators.actuator import Actuator  # noqa: PLC0415
 
             m.actuators = []
+            with_battery = self._actuators_with_battery()
             for entry in self.actuator_entries.values():
                 indices = self._build_index_array(entry.indices, device)
 
@@ -15729,7 +15730,7 @@ class ModelBuilder:
                     missing = [
                         row
                         for row, args in zip(entry.actuator_indices, entry.drive_args, strict=True)
-                        if args.get("supply_from_battery") and self._actuator_battery[row] < 0
+                        if args.get("supply_from_battery") and row not in with_battery
                     ]
                     if missing:
                         warnings.warn(

@@ -8,10 +8,7 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 
 if TYPE_CHECKING:
-    from ...sim.model import Model
-
-SUPPLY_VOLTAGE_ATTR = "actuator_supply_voltage"
-SUPPLY_CURRENT_PER_EFFORT_ATTR = "actuator_supply_current_per_effort"
+    pass
 
 
 class BatteryBase:
@@ -83,30 +80,6 @@ class BatteryBase:
         """World of each battery, ``-1`` for none, shape (B,)."""
         if self.world.shape != (self.num_batteries,):
             raise ValueError(f"world shape {self.world.shape} must be ({self.num_batteries},)")
-
-    def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency:
-        """Get the frequency of a parameter array of these batteries.
-
-        The parameter arrays (e.g. :attr:`world`) have one entry per battery
-        of this object. Their frequency is
-        :attr:`Model.AttributeFrequency.BATTERY
-        <newton.Model.AttributeFrequency.BATTERY>` limited to this object.
-
-        Args:
-            name: Name of the parameter array, e.g. ``"world"``.
-
-        Returns:
-            The frequency of the parameter array.
-
-        Raises:
-            KeyError: If there is no parameter array with this name.
-        """
-        from ...sim.model import Model  # noqa: PLC0415
-
-        value = getattr(self, name, None)
-        if isinstance(value, wp.array) and value.shape == (self.num_batteries,):
-            return Model.AttributeFrequency.BATTERY
-        raise KeyError(f"Attribute frequency of '{name}' is not known")
 
     def step(self, sim_control: Any) -> None:
         """Update the supply voltage of the actuators from the current they draw.

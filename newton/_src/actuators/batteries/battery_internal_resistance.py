@@ -8,7 +8,7 @@ from typing import Any
 import warp as wp
 
 from ..actuator import _require_array
-from .base import SUPPLY_CURRENT_PER_EFFORT_ATTR, SUPPLY_VOLTAGE_ATTR, BatteryBase
+from .base import BatteryBase
 
 
 @wp.kernel
@@ -178,10 +178,10 @@ class BatteryInternalResistance(BatteryBase):
                 self.nominal_voltage,
                 self.resistance,
                 self.min_voltage,
-                _require_array(sim_control, SUPPLY_CURRENT_PER_EFFORT_ATTR),
+                _require_array(sim_control, "actuator_supply_current_per_effort"),
                 effort,
             ],
-            outputs=[_require_array(sim_control, SUPPLY_VOLTAGE_ATTR)],
+            outputs=[_require_array(sim_control, "actuator_supply_voltage")],
             device=self.device,
         )
 
@@ -205,6 +205,6 @@ class BatteryInternalResistance(BatteryBase):
             _battery_reset_kernel,
             dim=self.num_batteries,
             inputs=[self.actuator_start, self.actuators, self.world, self.nominal_voltage, world_mask],
-            outputs=[_require_array(sim_control, SUPPLY_VOLTAGE_ATTR)],
+            outputs=[_require_array(sim_control, "actuator_supply_voltage")],
             device=self.device,
         )
