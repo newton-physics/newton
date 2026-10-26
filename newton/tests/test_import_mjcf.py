@@ -3573,57 +3573,33 @@ f 4 5 8
             msg="Actuator with explicit ctrllimited='false' should not be limited",
         )
 
-    def test_autolimits_false_joint_effort_limit(self):
-        """Test that autolimits=false prevents auto-applying effort_limit from actuatorfrcrange."""
-        mjcf_autolimits_true = """<?xml version="1.0" ?>
-<mujoco>
-  <worldbody>
-    <body name="root" pos="0 0 0">
-      <geom type="box" size="0.1 0.1 0.1"/>
-      <body name="link1" pos="0 -0.5 0">
-        <joint name="joint1" type="slide" axis="1 0 0" range="-1 1"
-               actuatorfrcrange="-100 100"/>
-        <geom type="cylinder" size="0.05 0.025"/>
-        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
-      </body>
-    </body>
-  </worldbody>
-</mujoco>
-"""
-        mjcf_autolimits_false = """<?xml version="1.0" ?>
-<mujoco>
-  <compiler autolimits="false"/>
-  <worldbody>
-    <body name="root" pos="0 0 0">
-      <geom type="box" size="0.1 0.1 0.1"/>
-      <body name="link1" pos="0 -0.5 0">
-        <joint name="joint1" type="slide" axis="1 0 0" range="-1 1" limited="true"
-               actuatorfrcrange="-100 100"/>
-        <geom type="cylinder" size="0.05 0.025"/>
-        <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
-      </body>
-    </body>
-  </worldbody>
-</mujoco>
-"""
-        # With autolimits=true (default), actuatorfrclimited="auto" resolves to true
-        builder_true = newton.ModelBuilder()
-        builder_true.add_mjcf(mjcf_autolimits_true)
-        model_true = newton.ModelBuilder()
-        model_true.add_world(builder_true)
-        model_true = model_true.finalize()
-        effort_limit_true = model_true.joint_effort_limit.numpy()[0]
-        self.assertAlmostEqual(effort_limit_true, 100.0, places=4)
-
-        # With autolimits=false, actuatorfrclimited="auto" should NOT apply force limit
-        builder_false = newton.ModelBuilder()
-        builder_false.add_mjcf(mjcf_autolimits_false)
-        model_false = newton.ModelBuilder()
-        model_false.add_world(builder_false)
-        model_false = model_false.finalize()
-        effort_limit_false = model_false.joint_effort_limit.numpy()[0]
-        # Should use default effort limit, not 100.0 from actuatorfrcrange
-        self.assertNotAlmostEqual(effort_limit_false, 100.0, places=4)
+    def test_joint_effort_limit_sentinels(self):
+        """Match MuJoCo's scalar joint force-limit flags, defaults, and range sentinels."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        for joint_type in ("hinge", "slide"):
+            for autolimits in ("true", "false"):
+                for limited in ("auto", "true", "false"):
+                    for bounds in (None, "0 0", "2 2", "2 -1", "-2 5"):
+                        with self.subTest(joint_type=joint_type, autolimits=autolimits, limited=limited, bounds=bounds):
+                            range_attr = "" if bounds is None else f'actuatorfrcrange="{bounds}"'
+                            xml = f'''<mujoco><compiler autolimits="{autolimits}"/>
+                                <default><joint actuatorfrclimited="{limited}" {range_attr}/></default>
+                                <worldbody><body><joint type="{joint_type}"/><geom size=".1"/></body></worldbody>
+                                </mujoco>'''
+                            builder = newton.ModelBuilder()
+                            try:
+                                reference = mujoco.MjModel.from_xml_string(xml)
+                            except ValueError:
+                                with self.assertRaises(ValueError):
+                                    builder.add_mjcf(xml, parse_mujoco_options=False)
+                                continue
+                            builder.add_mjcf(xml, parse_mujoco_options=False)
+                            expected = (
+                                max(abs(reference.jnt_actfrcrange[0]))
+                                if reference.jnt_actfrclimited[0]
+                                else builder.default_joint_cfg.effort_limit
+                            )
+                            self.assertEqual(builder.joint_effort_limit, [expected])
 
     def test_single_mujoco_fixed_tendon_auto_springlength(self):
         """Test that springlength=-1 auto-computes the spring length from initial joint positions.

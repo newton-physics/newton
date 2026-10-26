@@ -2242,29 +2242,26 @@ def parse_mjcf(
                 warn_invalid_joint_solreflimit(joint_attrib)
 
                 effort_limit = default_joint_effort_limit
-                if "actuatorfrcrange" in joint_attrib:
-                    actuatorfrcrange = parse_vec(joint_attrib, "actuatorfrcrange", None)
-                    if actuatorfrcrange is not None and len(actuatorfrcrange) == 2:
-                        actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
-                        autolimits_attr = builder.custom_attributes.get("mujoco:autolimits")
-                        autolimits_val = True
-                        if autolimits_attr is not None:
-                            autolimits_values = autolimits_attr.values
-                            autolimits_raw = (
-                                autolimits_values.get(0, autolimits_attr.default)
-                                if isinstance(autolimits_values, dict)
-                                else autolimits_attr.default
-                            )
-                            autolimits_val = bool(autolimits_raw)
-                        if actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and autolimits_val):
-                            effort_limit = max(abs(actuatorfrcrange[0]), abs(actuatorfrcrange[1]))
-                        elif verbose:
-                            logger.warning(
-                                "Joint '%s' has actuatorfrcrange but actuatorfrclimited='%s'. Force clamping "
-                                "will be disabled.",
-                                joint_attrib.get("name", "unnamed"),
-                                actuatorfrclimited,
-                            )
+                actuatorfrclimited = joint_attrib.get("actuatorfrclimited", "auto").lower()
+                if "actuatorfrcrange" in joint_attrib or actuatorfrclimited == "true":
+                    actuatorfrcrange = [float(value) for value in joint_attrib.get("actuatorfrcrange", "0 0").split()]
+                    if len(actuatorfrcrange) != 2:
+                        raise ValueError("Joint actuatorfrcrange must contain exactly two values.")
+                    lower, upper = actuatorfrcrange
+                    if (
+                        actuatorfrclimited == "auto"
+                        and compiler_attribs.get("autolimits", "true").lower() == "false"
+                        and (lower != 0.0 or upper != 0.0)
+                    ):
+                        raise ValueError(
+                            f"Joint {joint_name[-1]!r} has actuatorfrcrange but requires explicit "
+                            'actuatorfrclimited="true" or "false" when autolimits="false".'
+                        )
+                    force_limited = actuatorfrclimited == "true" or (actuatorfrclimited == "auto" and lower < upper)
+                    if force_limited:
+                        if lower >= upper:
+                            raise ValueError("Joint actuatorfrcrange lower bound must be smaller than upper bound.")
+                        effort_limit = max(abs(lower), abs(upper))
 
                 ax = ModelBuilder.JointDofConfig(
                     axis=axis_vec,
