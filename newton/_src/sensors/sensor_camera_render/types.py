@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import warp as wp
 
@@ -99,7 +99,7 @@ class RenderConfig:
     """Include shapes that belong to no specific world."""
 
     enable_textures: bool = False
-    """Enable texture-mapped rendering for shapes."""
+    """Enable texture-mapped rendering for shapes and skinned meshes."""
 
     texture_projection_mode: TextureProjectionMode = TextureProjectionMode.CUBIC
     """Projection mode for texture-mapped shapes without UVs."""
@@ -119,9 +119,15 @@ class RenderConfig:
     enable_particles: bool = True
     """Enable standalone particle rendering.
 
-    Particles referenced by rendered triangle or tetrahedral deformable topology
-    are rendered by the triangle mesh path and are not emitted as particle
-    spheres.
+    Particles referenced by simulation triangles or tetrahedra are not emitted
+    as spheres, even when the simulation surface is hidden.
+    """
+
+    enable_simulation_triangles: bool = field(default=True, kw_only=True)
+    """Include coarse simulation surfaces. Set when constructing the sensor.
+
+    .. experimental::
+        This deformable-visual rendering option may change without a formal deprecation cycle.
     """
 
     enable_backface_culling: bool = True

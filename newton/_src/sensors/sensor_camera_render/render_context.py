@@ -11,8 +11,10 @@ import warp as wp
 
 from ...core import Axis
 from ...geometry import GeoType, Mesh
+from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
+from ...utils.texture import compute_texture_hash
 from .render import create_kernel
 from .types import AntiAliasing, ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
 
@@ -29,6 +31,7 @@ class RenderContext:
         num_gaussians: int = 0
         has_particles: bool = False
         has_world_indices: bool = False
+        has_triangle_mesh_textures: bool = False
         render_color: bool = False
         render_depth: bool = False
         render_forward_depth: bool = False
@@ -40,7 +43,7 @@ class RenderContext:
     DEFAULT_CLEAR_DATA = ClearData()
     DEFAULT_RENDER_CONFIG = RenderConfig()
 
-    def __init__(self, model: Model, load_textures: bool = True):
+    def __init__(self, model: Model, load_textures: bool = True, *, enable_simulation_triangles: bool = True):
         """Create a render context for a Newton simulation model.
 
         Populates shape, triangle, and texture data from *model*. BVH
@@ -53,8 +56,10 @@ class RenderContext:
 
         Args:
             model: Newton simulation model providing shapes and particles.
-            load_textures: Load mesh textures from disk. Set False for
+            load_textures: Load mesh textures from file paths or in-memory images. Set False for
                 checkerboard or custom texture workflows.
+            enable_simulation_triangles: Include the coarse simulation surface
+                alongside any deformable visual meshes.
         """
         self._model = model
         self._render_state = RenderContext.RenderState()
@@ -70,6 +75,14 @@ class RenderContext:
         self._triangle_indices: wp.array[wp.int32] | None = None
         self._topology_particle_mask: wp.array[wp.bool] | None = None
 
+        self._dynamic_triangle_points: wp.array[wp.vec3f] | None = None
+        self._dynamic_triangle_particle_count = 0
+        self._deformable_visual_texture_ids: list[int] = []
+        self._triangle_world = model.particle_world
+        self._triangle_colors: wp.array[wp.vec3f] | None = None
+        self._triangle_mesh_uvs = wp.empty(0, dtype=wp.vec2f, device=self.device)
+        self._triangle_mesh_texture_ids = wp.empty(0, dtype=wp.int32, device=self.device)
+
         self._has_particles: bool = False
 
         self._shape_texture_ids: wp.array[wp.int32] | None = None
@@ -80,6 +93,7 @@ class RenderContext:
         self._mesh_data: wp.array[MeshData] | None = None
         self._texture_data: wp.array[TextureData] | None = None
         self._texture_data_source: list[TextureData] = []
+        self._checkerboard_texture_id: int | None = None
         self._mesh_data_source: list[MeshData] = []
 
         self._lights_active: wp.array[wp.bool] | None = None
@@ -107,6 +121,8 @@ class RenderContext:
                 shape_type_np[as_mesh] = int(GeoType.MESH)
                 self._shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
 
+        deformable_visual_meshes = model.deformable_visual_meshes
+        has_simulation_triangles = bool(enable_simulation_triangles and model.particle_count and model.tri_count)
         if model.particle_q is not None and model.particle_q.shape[0]:
             self._has_particles = True
             self._render_state.has_particles = True
@@ -116,11 +132,14 @@ class RenderContext:
                 if indices is not None and indices.shape[0]:
                     topology_particle_mask[indices.numpy().reshape(-1)] = True
 
-            if model.tri_indices is not None and model.tri_indices.shape[0]:
-                self._set_triangle_points(model.particle_q)
-                self._set_triangle_indices(model.tri_indices.flatten())
-                # Deformable-owned vertices render through the triangle mesh; tet indices catch
-                # interior volume particles that are not referenced by boundary triangles.
+            if has_simulation_triangles:
+                if deformable_visual_meshes:
+                    self._dynamic_triangle_particle_count = model.particle_count
+                else:
+                    self._set_triangle_points(model.particle_q)
+                    self._set_triangle_indices(model.tri_indices.flatten())
+            if model.tri_count:
+                # Hiding the coarse surface must not expose its particles as spheres.
                 mask_topology_particles(model.tri_indices)
                 mask_topology_particles(model.tet_indices)
             self._topology_particle_mask = wp.array(
@@ -131,6 +150,8 @@ class RenderContext:
             self._render_state.num_gaussians = model.gaussians_data.shape[0]
 
         self._load_texture_and_mesh_data(model, load_textures)
+        if deformable_visual_meshes:
+            self._init_deformable_visual_triangle_mesh(model, deformable_visual_meshes, has_simulation_triangles)
 
     @property
     def model(self) -> Model:
@@ -149,7 +170,15 @@ class RenderContext:
         return Axis.from_any(self.model.up_axis)
 
     def _get_triangle_colors(self) -> wp.array[wp.vec3f]:
-        """Per-triangle display colors (sRGB) of the deformable triangle mesh; empty without ``Model.tri_color``."""
+        """Per-face display colors (sRGB) for simulation and visual triangles."""
+        if self._triangle_colors is not None:
+            if (
+                self._dynamic_triangle_particle_count
+                and self.model.tri_color is not None
+                and self.model.tri_color.shape[0] == self.model.tri_count
+            ):
+                wp.copy(self._triangle_colors, self.model.tri_color, count=self.model.tri_count)
+            return self._triangle_colors
         colors = self.model.tri_color
         if colors is not None and colors.shape[0] == self.model.tri_count:
             return colors
@@ -162,7 +191,7 @@ class RenderContext:
             return self._shape_render_type
         return self.model.shape_type
 
-    def update(self, state: State):
+    def update(self, state: State, deformable_visuals: DeformableVisuals | None = None):
         """Synchronize triangle-mesh points from the current simulation state.
 
         Shape and particle BVHs are built by :meth:`~newton.ModelBuilder.finalize`
@@ -171,9 +200,24 @@ class RenderContext:
 
         Args:
             state: Current simulation state with particle positions.
+            deformable_visuals: Updated geometry for the model's deformable
+                visual payloads, or ``None`` when the model has none.
         """
 
-        if self._has_triangle_mesh:
+        if self._dynamic_triangle_points is not None:
+            if deformable_visuals is None:
+                raise ValueError("deformable_visuals is required by this render context")
+            if self._dynamic_triangle_particle_count:
+                wp.copy(self._dynamic_triangle_points, state.particle_q, count=self._dynamic_triangle_particle_count)
+            # Both buffers pack visual meshes in model order, after any simulation vertices.
+            wp.copy(
+                self._dynamic_triangle_points,
+                deformable_visuals.points,
+                dest_offset=self._dynamic_triangle_particle_count,
+                count=deformable_visuals.points.shape[0],
+            )
+            self._sync_triangle_mesh()
+        elif self._has_triangle_mesh:
             self._set_triangle_points(state.particle_q)
             self._sync_triangle_mesh()
 
@@ -272,7 +316,9 @@ class RenderContext:
         pixels = np.where(checkerboard, 0xFF808080, 0xFFBFBFBF).astype(np.uint32)
 
         texture_ids = np.full(self.model.shape_count, fill_value=-1, dtype=np.int32)
-        texture_ids[shape_indices] = 0
+        if self._checkerboard_texture_id is None:
+            self._checkerboard_texture_id = len(self._texture_data_source)
+        texture_ids[shape_indices] = self._checkerboard_texture_id
 
         checkerboard_data = TextureData()
         checkerboard_data.texture = wp.Texture2D(
@@ -287,7 +333,11 @@ class RenderContext:
 
         checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
-        self._texture_data_source = [checkerboard_data]
+        # Keep skinned-mesh texture IDs valid when adding a ground checkerboard.
+        if self._checkerboard_texture_id == len(self._texture_data_source):
+            self._texture_data_source.append(checkerboard_data)
+        else:
+            self._texture_data_source[self._checkerboard_texture_id] = checkerboard_data
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
         self._shape_texture_ids = wp.array(texture_ids, dtype=wp.int32, device=self.device)
 
@@ -511,6 +561,8 @@ class RenderContext:
                     self._triangle_mesh.id if self._triangle_mesh is not None else 0,
                     self._triangle_mesh_group_roots,
                     self._get_triangle_colors(),
+                    self._triangle_mesh_uvs,
+                    self._triangle_mesh_texture_ids,
                     # Meshes
                     self._mesh_data,
                     # Gaussians
@@ -565,8 +617,8 @@ class RenderContext:
     def _sync_triangle_mesh(self):
         if self._triangle_mesh is None:
             triangle_indices_np = self._triangle_indices.reshape((-1, 3)).numpy()
-            particle_world_np = self.model.particle_world.numpy()
-            triangle_world_np = particle_world_np[triangle_indices_np[:, 0]]
+            vertex_world_np = self._triangle_world.numpy()
+            triangle_world_np = vertex_world_np[triangle_indices_np[:, 0]]
             triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(np.int32)
             triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
 
@@ -597,8 +649,8 @@ class RenderContext:
 
         Args:
             model: Newton simulation model containing shape sources.
-            load_textures: If ``True``, load image textures from disk;
-                otherwise assign ``-1`` texture IDs to all shapes.
+            load_textures: Load image textures from paths or in-memory images.
+                Otherwise leave shapes and visual meshes untextured.
         """
         self._mesh_data_source = []
         self._texture_data_source = []
@@ -609,40 +661,37 @@ class RenderContext:
         mesh_data_ids = []
         texture_data_ids = []
 
+        def texture_id(texture, texture_hash):
+            if texture is None or not load_textures:
+                return -1
+            if texture_hash not in texture_hashes:
+                pixels = load_texture(texture)
+                if pixels is None:
+                    raise ValueError(f"Failed to load texture: {texture}")
+                pixels = normalize_texture(pixels, require_channels=True)
+                if pixels.shape[2] == 3:
+                    # RGB and grayscale sources need an opaque alpha channel.
+                    alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
+                    pixels = np.concatenate((pixels, alpha), axis=2)
+                texture_hashes[texture_hash] = len(self._texture_data_source)
+                data = TextureData()
+                data.texture = wp.Texture2D(
+                    pixels,
+                    filter_mode=wp.TextureFilterMode.LINEAR,
+                    address_mode=wp.TextureAddressMode.WRAP,
+                    normalized_coords=True,
+                    dtype=wp.uint8,
+                    num_channels=4,
+                    device=self.device,
+                )
+                data.repeat = wp.vec2f(1.0, 1.0)
+                self._texture_data_source.append(data)
+            return texture_hashes[texture_hash]
+
         shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
         for shape, shape_type in zip(model.shape_source, shape_types, strict=True):
             if isinstance(shape, Mesh):
-                if shape.texture is not None and load_textures:
-                    if shape.texture_hash not in texture_hashes:
-                        pixels = load_texture(shape.texture)
-                        if pixels is None:
-                            raise ValueError(f"Failed to load texture: {shape.texture}")
-
-                        # Normalize texture to a uint8 array with 3 or 4 channels
-                        pixels = normalize_texture(pixels, require_channels=True)
-                        if pixels.shape[2] == 3:
-                            # In-memory RGB (and expanded grayscale) images are opaque; textures have 4 channels.
-                            alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
-                            pixels = np.concatenate((pixels, alpha), axis=2)
-
-                        texture_hashes[shape.texture_hash] = len(self._texture_data_source)
-
-                        data = TextureData()
-                        data.texture = wp.Texture2D(
-                            pixels,
-                            filter_mode=wp.TextureFilterMode.LINEAR,
-                            address_mode=wp.TextureAddressMode.WRAP,
-                            normalized_coords=True,
-                            dtype=wp.uint8,
-                            num_channels=4,
-                            device=self.device,
-                        )
-                        data.repeat = wp.vec2f(1.0, 1.0)
-                        self._texture_data_source.append(data)
-
-                    texture_data_ids.append(texture_hashes[shape.texture_hash])
-                else:
-                    texture_data_ids.append(-1)
+                texture_data_ids.append(texture_id(shape.texture, shape.texture_hash))
 
                 # A convex hull renders its collision mesh, whose vertices may be deduplicated, so
                 # the per-vertex UVs and normals of its source mesh do not match the hit faces.
@@ -667,8 +716,61 @@ class RenderContext:
                 texture_data_ids.append(-1)
                 mesh_data_ids.append(-1)
 
+        self._deformable_visual_texture_ids = [
+            texture_id(mesh.texture, compute_texture_hash(mesh.texture)) if mesh.uvs is not None else -1
+            for mesh in model.deformable_visual_meshes
+        ]
+        self._render_state.has_triangle_mesh_textures = any(i >= 0 for i in self._deformable_visual_texture_ids)
+
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
         self._shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
 
         self._mesh_data = wp.array(self._mesh_data_source, dtype=MeshData, device=self.device)
         self._shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
+
+    def _init_deformable_visual_triangle_mesh(
+        self,
+        model: Model,
+        deformable_visual_meshes: list[DeformableVisualMesh],
+        has_simulation_triangles: bool,
+    ):
+        """Build the static index buffer and dynamic point buffer for skinned visual meshes."""
+        triangle_indices: list[np.ndarray] = []
+        triangle_uvs: list[np.ndarray] = []
+        triangle_texture_ids: list[np.ndarray] = []
+        vertex_worlds: list[np.ndarray] = []
+        vertex_offset = 0
+
+        if has_simulation_triangles:
+            sim_indices = model.tri_indices.numpy().astype(np.int32, copy=False)
+            triangle_indices.append(sim_indices.reshape(-1))
+            triangle_uvs.append(np.zeros((model.particle_q.shape[0], 2), dtype=np.float32))
+            triangle_texture_ids.append(np.full(sim_indices.shape[0], -1, dtype=np.int32))
+            vertex_worlds.append(model.particle_world.numpy().astype(np.int32, copy=False))
+            vertex_offset = model.particle_q.shape[0]
+
+        for mesh_index, mesh in enumerate(deformable_visual_meshes):
+            visual_indices = mesh.indices.numpy().astype(np.int32, copy=False)
+            triangle_indices.append(visual_indices + vertex_offset)
+            if mesh.uvs is None:
+                triangle_uvs.append(np.zeros((mesh.vertex_count, 2), dtype=np.float32))
+                texture_id = -1
+            else:
+                triangle_uvs.append(mesh.uvs.numpy().astype(np.float32, copy=False).reshape(-1, 2))
+                texture_id = self._deformable_visual_texture_ids[mesh_index]
+            triangle_texture_ids.append(np.full(visual_indices.size // 3, texture_id, dtype=np.int32))
+            vertex_worlds.append(np.full(mesh.vertex_count, mesh.world, dtype=np.int32))
+
+            vertex_offset += mesh.vertex_count
+
+        self._dynamic_triangle_points = wp.empty(vertex_offset, dtype=wp.vec3f, device=self.device)
+        self._set_triangle_points(self._dynamic_triangle_points)
+        self._set_triangle_indices(wp.array(np.concatenate(triangle_indices), dtype=wp.int32, device=self.device))
+        self._triangle_mesh_uvs = wp.array(np.concatenate(triangle_uvs), dtype=wp.vec2f, device=self.device)
+        self._triangle_mesh_texture_ids = wp.array(
+            np.concatenate(triangle_texture_ids), dtype=wp.int32, device=self.device
+        )
+        self._triangle_world = wp.array(np.concatenate(vertex_worlds), dtype=wp.int32, device=self.device)
+        self._triangle_colors = wp.full(
+            sum(len(indices) // 3 for indices in triangle_indices), wp.vec3f(1.0), dtype=wp.vec3f, device=self.device
+        )

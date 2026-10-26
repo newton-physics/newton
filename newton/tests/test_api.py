@@ -90,6 +90,23 @@ def _check_builder_method_matches_importer_function_signature(func, method):
 
 
 class TestApi(unittest.TestCase):
+    def test_camera_render_config_preserves_positional_options(self):
+        """Keep existing positional render settings when adding a keyword-only option."""
+        from newton.sensors import SensorCamera  # noqa: PLC0415
+
+        config = SensorCamera.RenderConfig(
+            True,
+            False,
+            SensorCamera.TextureProjectionMode.CUBIC,
+            False,
+            True,
+            True,
+            False,
+            enable_simulation_triangles=False,
+        )
+        self.assertFalse(config.enable_backface_culling)
+        self.assertFalse(config.enable_simulation_triangles)
+
     def test_joint_target_layout_flag_removed(self):
         """Expose coordinate-shaped position targets without a layout switch."""
         import newton  # noqa: PLC0415
