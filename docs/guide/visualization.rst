@@ -511,21 +511,15 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 
     uv sync --extra rtx
 
-This installs ``ovrtx`` 0.5 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2 or newer for runtime scene
-management, and ``usd-core``, in addition to ``pyglet`` for the window.
+This installs ``ovrtx`` 0.5.1.385782 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2.1.385922 or newer
+for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for the window.
 
-ViewerRTX has been validated with the following renderer configurations:
+ViewerRTX has been validated with the following renderer configuration:
 
-- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349`` (minimum-dependency CI; Isaac Sim 6.2)
-- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (GPU CI; Isaac Lab 3.0)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency and GPU CI; Isaac Lab 3.0)
 
-Only the exact configurations above are part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
+Only the exact configuration above is part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
 together; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
-
-.. warning::
-    With ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave ViewerRTX showing a uniform
-    gray image, commonly after switching examples in the same process. OVStage 0.2.1 no longer shows this. See
-    `issue #4283 <https://github.com/newton-physics/newton/issues/4283>`__.
 
 .. code-block:: python
 
