@@ -33,7 +33,7 @@ def _import_contact_force_fn():
 
 # Custom vector types
 vec10 = wp.types.vector(length=10, dtype=wp.float32)
-vec11 = wp.types.vector(length=11, dtype=wp.float32)
+vec12 = wp.types.vector(length=12, dtype=wp.float32)
 
 
 # Utility functions
@@ -1239,7 +1239,7 @@ def update_connect_constraint_anchors_kernel(
     connect_anchor2_q: wp.array[wp.quat],
     connect_anchor2_t: wp.array[wp.vec3],
     # output
-    eq_data_out: wp.array2d[vec11],
+    eq_data_out: wp.array2d[vec12],
 ):
     """Write CONNECT constraint anchors into MuJoCo ``eq_data``.
 
@@ -1267,7 +1267,7 @@ def update_connect_constraint_anchors_kernel(
             constraint, shape ``[equality_constraint_count]``,
             dtype ``wp.vec3``.
         eq_data_out: *(output)* MuJoCo equality constraint data,
-            shape ``[world_count, neq]``, dtype ``vec11``.
+            shape ``[world_count, neq]``, dtype ``vec12``.
             Slots ``[0:3]`` receive ``anchor1`` and ``[3:6]`` receive
             ``anchor2``.
     """
@@ -1430,7 +1430,7 @@ def update_jnt_connect_constraint_anchors_kernel(
     jnt_eq_q_rel: wp.array2d[wp.quat],
     jnt_eq_t_rel: wp.array2d[wp.vec3],
     # output
-    eq_data_out: wp.array2d[vec11],
+    eq_data_out: wp.array2d[vec12],
 ):
     """Write joint-synthesized CONNECT constraint anchors into MuJoCo ``eq_data``.
 
@@ -1452,7 +1452,7 @@ def update_jnt_connect_constraint_anchors_kernel(
         jnt_eq_t_rel: Relative translation [m] per ``[world, eq]``,
             shape ``[world_count, neq]``, dtype ``wp.vec3``.
         eq_data_out: *(output)* MuJoCo equality constraint data,
-            shape ``[world_count, neq]``, dtype ``vec11``.
+            shape ``[world_count, neq]``, dtype ``vec12``.
             Slots ``[0:3]`` receive ``anchor1`` and ``[3:6]`` receive
             ``anchor2``.
     """
@@ -2781,24 +2781,88 @@ def update_jnt_solref_from_invweight0_kernel(
 
 
 @wp.kernel
-def compute_physical_meaninertia_kernel(
+def compute_inertia_trace_kernel(
     nv: int,
     M_rownnz: wp.array[wp.int32],
     M_rowadr: wp.array[wp.int32],
     M: wp.array2d[float],
-    meaninertia: wp.array[float],
+    dof_armature: wp.array2d[float],
+    trace_out: wp.array[wp.vec2],
 ):
-    """Remove kinematic locking armature from MuJoCo's mean-inertia statistic."""
+    """Store the inertia-matrix trace and the armature it includes, per world."""
     world = wp.tid()
-    if nv == 0:
-        meaninertia[world % meaninertia.shape[0]] = 1.0
+    trace = float(0.0)
+    armature = float(0.0)
+    for dof in range(nv):
+        trace += M[world, M_rowadr[dof] + M_rownnz[dof] - 1]
+        armature += dof_armature[world % dof_armature.shape[0], dof]
+    trace_out[world] = wp.vec2(trace, armature)
+
+
+@wp.kernel
+def scale_tolerance_for_kinematic_armature_kernel(
+    nv: int,
+    dof_armature: wp.array2d[float],
+    physical_trace: wp.array[wp.vec2],
+    tolerance: wp.array[float],
+    tolerance_out: wp.array[float],
+):
+    """Scale the tolerance so MuJoCo's inertia-trace convergence scaling ignores locking armature at qpos0."""
+    world = wp.tid()
+    armature = float(0.0)
+    for dof in range(nv):
+        armature += dof_armature[world % dof_armature.shape[0], dof]
+    trace = physical_trace[world]
+    locked_trace = trace[0] + armature - trace[1]
+    scale = float(1.0)
+    if locked_trace > MJ_MINVAL:
+        scale = trace[0] / locked_trace
+    tolerance_out[world] = tolerance[world % tolerance.shape[0]] * scale
+
+
+@wp.kernel
+def copy_actuator_moment_kernel(
+    actuator: int,
+    moment_rownnz: wp.array2d[int],
+    moment_rowadr: wp.array2d[int],
+    moment_colind: wp.array2d[int],
+    actuator_moment: wp.array2d[float],
+    moment_out: wp.array2d[float],
+):
+    """Scatter one row of MuJoCo Warp's sparse actuator moment into a dense ``[world, nv]`` array."""
+    world = wp.tid()
+    for i in range(moment_out.shape[1]):
+        moment_out[world, i] = 0.0
+    adr = moment_rowadr[world, actuator]
+    for i in range(moment_rownnz[world, actuator]):
+        moment_out[world, moment_colind[world, adr + i]] = actuator_moment[world, adr + i]
+
+
+@wp.kernel
+def resolve_actuator_dampratio_kernel(
+    actuator: int,
+    actuator_gainprm: wp.array2d[vec10],
+    moment: wp.array2d[float],
+    inv_mass_moment: wp.array2d[float],
+    actuator_biasprm: wp.array2d[vec10],
+):
+    """Convert a positive ``biasprm[2]`` dampratio to damping, which MuJoCo resolves only at compile time."""
+    world = wp.tid()
+    kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
+    bias = actuator_biasprm[world, actuator]
+    if wp.abs(kp + bias[1]) > MJ_MINVAL or bias[2] <= 0.0:
         return
 
-    total = float(0.0)
-    for mjc_dof in range(nv):
-        total += M[world, M_rowadr[mjc_dof] + M_rownnz[mjc_dof] - 1]
+    # Reflected inertia 1 / (J M^-1 J^T) at qpos0.
+    inv_weight = float(0.0)
+    for i in range(moment.shape[1]):
+        inv_weight += moment[world, i] * inv_mass_moment[world, i]
+    mass = float(0.0)
+    if inv_weight > MJ_MINVAL:
+        mass = 1.0 / inv_weight
 
-    meaninertia[world % meaninertia.shape[0]] = total / float(nv)
+    bias[2] = -bias[2] * 2.0 * wp.sqrt(kp * mass)
+    actuator_biasprm[world, actuator] = bias
 
 
 @wp.kernel(enable_backward=False)
@@ -2978,9 +3042,8 @@ def update_eq_data_and_active_kernel(
     eq_constraint_polycoef: wp.array2d[wp.float32],
     eq_constraint_torquescale: wp.array[wp.float32],
     eq_constraint_enabled: wp.array[wp.bool],
-    preserve_inferred_poses: bool,
     # outputs
-    eq_data_out: wp.array2d[vec11],
+    eq_data_out: wp.array2d[vec12],
     eq_active_out: wp.array2d[wp.bool],
 ):
     """Update MuJoCo equality constraint data and active status from Newton properties.
@@ -3022,11 +3085,10 @@ def update_eq_data_and_active_kernel(
         data[1] = anchor[1]
         data[2] = anchor[2]
 
-        # A zero quaternion leaves relpose to the MuJoCo compiler. Preserve
-        # that compiled pose when synchronizing the authored equality row.
+        # A zero quaternion keeps the relpose MuJoCo inferred at construction.
         relpose = eq_constraint_relpose[newton_eq]
         quat = quat_xyzw_to_wxyz(wp.transform_get_rotation(relpose))
-        if not preserve_inferred_poses or wp.dot(quat, quat) > 0.0:
+        if wp.dot(quat, quat) > 0.0:
             pos = wp.transform_get_translation(relpose)
             data[3] = pos[0]
             data[4] = pos[1]
@@ -3049,7 +3111,7 @@ def update_mimic_eq_data_and_active_kernel(
     constraint_mimic_coef1: wp.array[wp.float32],
     constraint_mimic_enabled: wp.array[wp.bool],
     # outputs
-    eq_data_out: wp.array2d[vec11],
+    eq_data_out: wp.array2d[vec12],
     eq_active_out: wp.array2d[wp.bool],
 ):
     """Update MuJoCo equality constraint data and active status from Newton mimic constraint properties.
@@ -3082,7 +3144,7 @@ def update_joint_mimic_eq_data_kernel(
     mjc_eq_to_newton_joint_mimic: wp.array2d[wp.int32],
     joint_mimic_coeffs: wp.array[wp.vec2],
     # outputs
-    eq_data_out: wp.array2d[vec11],
+    eq_data_out: wp.array2d[vec12],
 ):
     """Update MuJoCo equality data from joint-owned mimic coefficients."""
     world, mjc_eq = wp.tid()

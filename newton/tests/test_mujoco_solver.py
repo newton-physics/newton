@@ -1280,7 +1280,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 model = builder.finalize(device=device)
                 self.assertEqual(model.world_count, world_count)
                 model.joint_armature.fill_(0.25)
-                # Distinct per-world tendon armature makes the mean inertia differ
+                # Distinct per-world tendon armature makes the inertia trace differ
                 # between worlds and must be included like in ``set_const_0``.
                 tendon_armature = np.array([0.5, 1.5], dtype=np.float32)
                 model.mujoco.tendon_armature.assign(
@@ -1300,20 +1300,24 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 self.assertGreater(solver.mj_model.neq, 0)
                 self.assertGreater(solver.mj_model.ntendon, 0)
                 self.assertGreater(solver.mj_model.nu, 0)
-                physical_meaninertia = solver.mjw_model.stat.meaninertia.numpy().copy()
+                nv = solver.mj_model.nv
+                physical_trace = solver._notify_physical_trace.numpy()[:, 0].copy()
                 # World 0 matches MuJoCo's compiled statistic. The fixed tendon has
                 # unit coefficients on both DOFs, so its armature adds to each diagonal.
-                self.assertAlmostEqual(physical_meaninertia[0], solver.mj_model.stat.meaninertia, places=5)
+                self.assertAlmostEqual(physical_trace[0] / nv, solver.mj_model.stat.meaninertia, places=5)
                 self.assertAlmostEqual(
-                    physical_meaninertia[1] - physical_meaninertia[0],
+                    (physical_trace[1] - physical_trace[0]) / nv,
                     tendon_armature[1] - tendon_armature[0],
                     places=5,
                 )
 
-                # Compare every world against the upstream implementation to catch
-                # drift in its mass-matrix assembly or mean-inertia reduction.
-                solver._mujoco_warp.set_const_0(solver.mjw_model, solver.mjw_data)
-                np.testing.assert_allclose(physical_meaninertia, solver.mjw_model.stat.meaninertia.numpy(), rtol=1.0e-5)
+                # Compare every world against the upstream mass matrix at qpos0 to
+                # catch drift in its assembly.
+                solver._mujoco_warp.set_const_0(solver.mjw_model, solver.mjw_data, restore=False)
+                M = solver.mjw_data.M.numpy()
+                diag = solver.mjw_model.M_rowadr.numpy() + solver.mjw_model.M_rownnz.numpy() - 1
+                np.testing.assert_allclose(physical_trace, M[:, diag].sum(axis=1), rtol=1.0e-5)
+                tolerance = solver.mjw_model.opt.tolerance.numpy().copy()
 
                 with wp.ScopedCapture(device=device) as capture:
                     solver.notify_model_changed(ModelFlags.ALL)
@@ -1345,7 +1349,13 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 dof_armature = solver.mjw_model.dof_armature.numpy()
                 np.testing.assert_allclose(dof_armature[0], KINEMATIC_ARMATURE)
                 np.testing.assert_allclose(dof_armature[1], 0.25)
-                np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
+                np.testing.assert_allclose(solver._notify_physical_trace.numpy()[:, 0], physical_trace, rtol=1.0e-5)
+                locking = nv * (KINEMATIC_ARMATURE - 0.25)
+                np.testing.assert_allclose(
+                    solver.mjw_model.opt.tolerance.numpy(),
+                    tolerance * physical_trace / (physical_trace + np.array([locking, 0.0])),
+                    rtol=1.0e-5,
+                )
                 dof_frictionloss = solver.mjw_model.dof_frictionloss.numpy()
                 np.testing.assert_allclose(dof_frictionloss, np.broadcast_to(friction[:, None], dof_frictionloss.shape))
                 dof_damping = solver.mjw_model.dof_damping.numpy()
@@ -1366,7 +1376,12 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 dof_armature = solver.mjw_model.dof_armature.numpy()
                 np.testing.assert_allclose(dof_armature[0], 0.25)
                 np.testing.assert_allclose(dof_armature[1], KINEMATIC_ARMATURE)
-                np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
+                np.testing.assert_allclose(solver._notify_physical_trace.numpy()[:, 0], physical_trace, rtol=1.0e-5)
+                np.testing.assert_allclose(
+                    solver.mjw_model.opt.tolerance.numpy(),
+                    tolerance * physical_trace / (physical_trace + np.array([0.0, locking])),
+                    rtol=1.0e-5,
+                )
 
 
 class TestMuJoCoSolverJointProperties(unittest.TestCase):
@@ -2291,10 +2306,8 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         return dof_to_body
 
     @staticmethod
-    def _get_meaninertia(solver: SolverMuJoCo) -> float:
-        if solver.use_mujoco_cpu:
-            return float(solver.mj_model.stat.meaninertia)
-        return float(solver.mjw_model.stat.meaninertia.numpy()[0])
+    def _get_physical_trace(solver: SolverMuJoCo) -> float:
+        return float(solver._notify_physical_trace.numpy()[0, 0])
 
     def _assert_armature_matches_flags(self, model: newton.Model, solver: SolverMuJoCo):
         dof_to_body = self._compute_dof_to_body(model)
@@ -2361,121 +2374,107 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
         self._assert_armature_matches_flags(model, solver)
 
-    def test_kinematic_armature_does_not_affect_initial_meaninertia(self):
-        for use_mujoco_cpu in (False, True):
-            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                dynamic_model, _ = self._build_model(root_kinematic=False)
-                kinematic_model, _ = self._build_model(root_kinematic=True)
-                armature = np.linspace(
-                    0.1,
-                    0.1 * dynamic_model.joint_dof_count,
-                    dynamic_model.joint_dof_count,
-                    dtype=np.float32,
-                )
-                dynamic_model.joint_armature.assign(armature)
-                kinematic_model.joint_armature.assign(armature)
+    def test_kinematic_armature_does_not_affect_solver_tolerance(self):
+        dynamic_model, _ = self._build_model(root_kinematic=False)
+        kinematic_model, _ = self._build_model(root_kinematic=True)
+        armature = np.linspace(
+            0.1,
+            0.1 * dynamic_model.joint_dof_count,
+            dynamic_model.joint_dof_count,
+            dtype=np.float32,
+        )
+        dynamic_model.joint_armature.assign(armature)
+        kinematic_model.joint_armature.assign(armature)
 
-                dynamic_solver = SolverMuJoCo(
-                    dynamic_model,
-                    iterations=1,
-                    disable_contacts=True,
-                    use_mujoco_cpu=use_mujoco_cpu,
-                )
-                kinematic_solver = SolverMuJoCo(
-                    kinematic_model,
-                    iterations=1,
-                    disable_contacts=True,
-                    use_mujoco_cpu=use_mujoco_cpu,
-                )
+        dynamic_solver = SolverMuJoCo(dynamic_model, iterations=1, disable_contacts=True)
+        kinematic_solver = SolverMuJoCo(kinematic_model, iterations=1, disable_contacts=True)
 
-                self.assertAlmostEqual(
-                    self._get_meaninertia(kinematic_solver),
-                    self._get_meaninertia(dynamic_solver),
-                    places=5,
-                )
+        # MuJoCo scales convergence checks by the inertia trace, so the threshold
+        # tolerance * trace must not see the locking armature.
+        physical_trace = self._get_physical_trace(dynamic_solver)
+        self.assertAlmostEqual(self._get_physical_trace(kinematic_solver), physical_trace, places=3)
+        locking = float(np.sum(kinematic_solver.mjw_model.dof_armature.numpy()[0] - armature))
+        self.assertGreater(locking, 0.0)
+        tolerance = float(dynamic_solver.mjw_model.opt.tolerance.numpy()[0])
+        self.assertAlmostEqual(
+            float(kinematic_solver.mjw_model.opt.tolerance.numpy()[0]) * (physical_trace + locking) / tolerance,
+            physical_trace,
+            delta=1.0e-5 * physical_trace,
+        )
 
-    def test_kinematic_meaninertia_tracks_inertial_updates(self):
-        for use_mujoco_cpu in (False, True):
-            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                model, root_body = self._build_model(root_kinematic=False)
-                solver = SolverMuJoCo(
-                    model,
-                    iterations=1,
-                    disable_contacts=True,
-                    use_mujoco_cpu=use_mujoco_cpu,
-                )
-                initial_meaninertia = self._get_meaninertia(solver)
+    def test_kinematic_inertia_trace_tracks_inertial_updates(self):
+        model, root_body = self._build_model(root_kinematic=False)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        initial_trace = self._get_physical_trace(solver)
+        tolerance = float(solver.mjw_model.opt.tolerance.numpy()[0])
 
-                body_flags = model.body_flags.numpy()
-                body_flags[root_body] = int(BodyFlags.KINEMATIC)
-                model.body_flags.assign(body_flags)
-                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-                self.assertAlmostEqual(self._get_meaninertia(solver), initial_meaninertia, places=5)
+        body_flags = model.body_flags.numpy()
+        body_flags[root_body] = int(BodyFlags.KINEMATIC)
+        model.body_flags.assign(body_flags)
+        solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+        self.assertAlmostEqual(self._get_physical_trace(solver), initial_trace, places=4)
+        self.assertLess(float(solver.mjw_model.opt.tolerance.numpy()[0]), tolerance)
 
-                body_mass = model.body_mass.numpy()
-                body_mass[root_body] *= 2.0
-                model.body_mass.assign(body_mass)
-                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
-                mass_meaninertia = self._get_meaninertia(solver)
-                self.assertNotAlmostEqual(mass_meaninertia, initial_meaninertia, places=5)
+        body_mass = model.body_mass.numpy()
+        body_mass[root_body] *= 2.0
+        model.body_mass.assign(body_mass)
+        solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        mass_trace = self._get_physical_trace(solver)
+        self.assertNotAlmostEqual(mass_trace, initial_trace, places=4)
 
-                joint_armature = model.joint_armature.numpy()
-                joint_armature += 0.5
-                model.joint_armature.assign(joint_armature)
-                solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
-                updated_meaninertia = self._get_meaninertia(solver)
-                self.assertNotAlmostEqual(updated_meaninertia, mass_meaninertia, places=5)
+        joint_armature = model.joint_armature.numpy()
+        joint_armature += 0.5
+        model.joint_armature.assign(joint_armature)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        updated_trace = self._get_physical_trace(solver)
+        self.assertNotAlmostEqual(updated_trace, mass_trace, places=4)
 
-                body_flags[root_body] = int(BodyFlags.DYNAMIC)
-                model.body_flags.assign(body_flags)
-                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-                self.assertAlmostEqual(self._get_meaninertia(solver), updated_meaninertia, places=5)
+        body_flags[root_body] = int(BodyFlags.DYNAMIC)
+        model.body_flags.assign(body_flags)
+        solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+        self.assertAlmostEqual(self._get_physical_trace(solver), updated_trace, places=4)
+        self.assertEqual(float(solver.mjw_model.opt.tolerance.numpy()[0]), tolerance)
 
-    def test_meaninertia_update_preserves_dampratio_resolution(self):
+    def test_constant_refresh_resolves_dampratio_with_kinematic_armature(self):
         mjcf = """
         <mujoco>
             <worldbody>
                 <body name="base">
-                    <joint name="j1" type="hinge" axis="0 0 1"/>
+                    <joint name="j1" type="hinge" axis="0 0 1" armature="{armature}"/>
                     <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1"/>
                 </body>
             </worldbody>
             <actuator>
-                <position joint="j1" kp="100" dampratio="1"/>
+                <position joint="j1" kp="100" dampratio="{dampratio}"/>
             </actuator>
         </mujoco>
         """
-
-        def build_solver(use_mujoco_cpu: bool) -> SolverMuJoCo:
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf, ctrl_direct=True)
-            model = builder.finalize()
-            model.body_flags.fill_(int(BodyFlags.KINEMATIC))
-            return SolverMuJoCo(model, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+        # Runtime resolution uses the locked inertia, like MuJoCo compiling the locking armature.
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native = mujoco.MjModel.from_xml_string(mjcf.format(armature=KINEMATIC_ARMATURE, dampratio=0.5))
+        expected = native.actuator_biasprm[0, 2]
 
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                solver = build_solver(use_mujoco_cpu)
-                reference = build_solver(use_mujoco_cpu)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf.format(armature=0.0, dampratio=1.0), ctrl_direct=True)
+                model = builder.finalize()
+                model.body_flags.fill_(int(BodyFlags.KINEMATIC))
+                solver = SolverMuJoCo(model, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
 
                 if use_mujoco_cpu:
                     solver.mj_model.actuator_biasprm[0, 2] = 0.5
-                    reference.mj_model.actuator_biasprm[0, 2] = 0.5
-                    solver._set_const_0_with_physical_meaninertia()
-                    reference._mujoco.mj_setConst(reference.mj_model, reference.mj_data)
+                    solver._set_const_0()
                     actual = solver.mj_model.actuator_biasprm[0, 2]
-                    expected = reference.mj_model.actuator_biasprm[0, 2]
                 else:
-                    for current_solver in (solver, reference):
-                        biasprm = current_solver.mjw_model.actuator_biasprm.numpy()
-                        biasprm[0, 0, 2] = 0.5
-                        current_solver.mjw_model.actuator_biasprm.assign(biasprm)
-                    solver._set_const_0_with_physical_meaninertia()
-                    reference._mujoco_warp.set_const_0(reference.mjw_model, reference.mjw_data)
+                    biasprm = solver.mjw_model.actuator_biasprm.numpy()
+                    biasprm[0, 0, 2] = 0.5
+                    solver.mjw_model.actuator_biasprm.assign(biasprm)
+                    with wp.ScopedDevice(model.device):
+                        solver._set_const_0()
                     actual = solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
-                    expected = reference.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
 
-                self.assertAlmostEqual(float(actual), float(expected), places=5)
+                self.assertAlmostEqual(float(actual), float(expected), delta=1.0e-5 * abs(expected))
 
     def test_body_properties_runtime_update_and_dof_updates(self):
         model, root_body = self._build_model(root_kinematic=False)
@@ -11170,14 +11169,14 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
 
         acc0 = self.solver.mjw_model.actuator_acc0.numpy()
         biasprm = self.solver.mjw_model.actuator_biasprm.numpy()
-        meaninertia = self.solver.mjw_model.stat.meaninertia.numpy()
+        trace = self.solver._notify_physical_trace.numpy()[:, 0]
 
         self.assertNotAlmostEqual(float(acc0[0, 0]), float(acc0[1, 0]), places=6)
         self.assertLess(float(biasprm[0, 0, 2]), 0.0)
         self.assertLess(float(biasprm[1, 0, 2]), 0.0)
         self.assertNotAlmostEqual(float(biasprm[0, 0, 2]), float(biasprm[1, 0, 2]), places=6)
-        self.assertEqual(meaninertia.shape, (self.model.world_count,))
-        np.testing.assert_allclose(meaninertia[1], 2.0 * meaninertia[0], rtol=1e-5)
+        self.assertEqual(trace.shape, (self.model.world_count,))
+        np.testing.assert_allclose(trace[1], 2.0 * trace[0], rtol=1e-5)
 
     def test_joint_target_initial_damping(self):
         """Resolve each world's gains, armature, and ratio despite skipped metadata."""
