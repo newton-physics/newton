@@ -2708,6 +2708,40 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         # The 0.1 kg platform carries an 80 kg box.
         self.assertAlmostEqual(gaps[0], gaps[1], delta=1.0e-4)
 
+    def test_massless_kinematic_roots_in_several_worlds(self):
+        """Pose the mocap body of a massless kinematic root in every world from that world's joint_q."""
+        template = newton.ModelBuilder()
+        root = template.add_body(is_kinematic=True)
+        template.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, separate_worlds=True, disable_contacts=True)
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                q = state_0.joint_q.numpy()
+                q[[0, 7]] = (0.25, -0.5)
+                state_0.joint_q.assign(q)
+                solver.step(state_0, state_1, control, None, 0.002)
+                if use_mujoco_cpu:
+                    np.testing.assert_allclose(solver.mj_data.mocap_pos[0, 0], 0.25, atol=1.0e-6)
+                else:
+                    np.testing.assert_allclose(solver.mjw_data.mocap_pos.numpy()[:, 0, 0], (0.25, -0.5), atol=1.0e-6)
+
+    def test_root_massless_and_kinematic_in_one_world_cannot_be_dynamic_in_another(self):
+        """Reject a root that is a massless kinematic mocap body in one world but dynamic in another."""
+        builder = newton.ModelBuilder()
+        for kinematic in (True, False):
+            world = newton.ModelBuilder()
+            root = world.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), is_kinematic=kinematic)
+            density = 0.0 if kinematic else 1000.0
+            world.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=density))
+            builder.add_world(world)
+        model = builder.finalize()
+        with self.assertRaisesRegex(ValueError, "mocap body in every world"):
+            SolverMuJoCo(model, disable_contacts=True)
+
     def test_kinematic_roots_reserve_weld_rows(self):
         """njmax leaves room for welds inactive in the first world, or warns when it cannot."""
         template = newton.ModelBuilder()

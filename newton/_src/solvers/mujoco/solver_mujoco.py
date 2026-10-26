@@ -5877,8 +5877,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             xfrc = mj_data.xfrc_applied
             nworld = mj_data.nworld
         else:
-            effective_dof_count = model.joint_dof_count - self._total_unmapped_joint_dofs
-            single_world_template = len(mj_data.qfrc_applied) < effective_dof_count
+            single_world_template = self.mj_q_start.shape[0] < model.joint_count
             ctrl = wp.zeros((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
             qfrc = wp.zeros((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
             xfrc = wp.zeros((1, len(mj_data.xfrc_applied)), dtype=wp.spatial_vector, device=model.device)
@@ -6017,7 +6016,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         else:
             # we have an MjData object from Mujoco
             effective_coord_count = model.joint_coord_count - self._total_unmapped_joint_coords
-            single_world_template = len(mj_data.qpos) < effective_coord_count
+            # Native MuJoCo holds only the template world when worlds are separate.
+            single_world_template = self.mj_q_start.shape[0] < model.joint_count
             expected_qpos = (
                 effective_coord_count // model.world_count if single_world_template else effective_coord_count
             )
@@ -6231,8 +6231,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nworld = mj_data.nworld
         else:
             # we have an MjData object from Mujoco
-            effective_coord_count = model.joint_coord_count - self._total_unmapped_joint_coords
-            single_world_template = len(mj_data.qpos) < effective_coord_count
+            single_world_template = self.mj_q_start.shape[0] < model.joint_count
             qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
             qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
             nworld = 1
@@ -7177,23 +7176,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
 
-        # Count the total joint coordinates and DOFs without MuJoCo joints across
-        # all worlds: loop joints here, massless kinematic roots once exported. When
+        # Count the total joint coordinates without MuJoCo joints across all
+        # worlds: loop joints here, massless kinematic roots once exported. When
         # separate_worlds=True, joints_loop is per-template so we multiply by
         # world_count; otherwise it already spans all worlds.
         joint_q_start_np = model.joint_q_start.numpy()
-        joint_qd_start_np = model.joint_qd_start.numpy()
         loop_coord_count = 0
-        loop_dof_count = 0
         for j in joints_loop:
             loop_coord_count += int(joint_q_start_np[j + 1]) - int(joint_q_start_np[j])
-            loop_dof_count += int(joint_qd_start_np[j + 1]) - int(joint_qd_start_np[j])
         if separate_worlds:
             self._total_unmapped_joint_coords = loop_coord_count * model.world_count
-            self._total_unmapped_joint_dofs = loop_dof_count * model.world_count
         else:
             self._total_unmapped_joint_coords = loop_coord_count
-            self._total_unmapped_joint_dofs = loop_dof_count
 
         selected_shapes_set = set(selected_shapes)
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -7887,7 +7881,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 kinematic_mocap_root_joints.append(int(j))
                 worlds = model.world_count if separate_worlds else 1
                 self._total_unmapped_joint_coords += worlds * int(joint_q_start_np[j + 1] - joint_q_start_np[j])
-                self._total_unmapped_joint_dofs += worlds * int(joint_qd_start_np[j + 1] - joint_qd_start_np[j])
                 add_geoms(child)
                 continue
             if (
@@ -9620,8 +9613,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dynamic_mocap_root = np.flatnonzero(~kinematic & mocap_roots) if mocap_roots is not None else []
             if len(dynamic_mocap_root):
                 raise ValueError(
-                    f"Body {self.model.body_label[dynamic_mocap_root[0]]!r} cannot be dynamic: it has no mass or "
-                    "inertia, which MuJoCo requires of movable bodies."
+                    f"Body {self.model.body_label[dynamic_mocap_root[0]]!r} cannot be dynamic: it is kinematic "
+                    "without mass or inertia in some world, so SolverMuJoCo drives it as a MuJoCo mocap body in "
+                    "every world."
                 )
             invalid = np.flatnonzero(kinematic & self._kinematic_unsupported_bodies)
             if invalid.size:
