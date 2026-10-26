@@ -24,7 +24,11 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import extract_cts_jacobians, extract_dofs_jacobians
-from newton.tests.kamino.utils.make import make_test_problem_fourbar, make_test_problem_heterogeneous
+from newton.tests.kamino.utils.make import (
+    make_test_problem,
+    make_test_problem_fourbar,
+    make_test_problem_heterogeneous,
+)
 from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 ###
@@ -874,6 +878,10 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
             ).all()
         )
 
+        # Capacities add 72 contact blocks per world, plus 8 limit blocks in world 0 and 3 in world 5.
+        np.testing.assert_array_equal(jacobians.joint_constraint_nzb_count.numpy(), [44, 12, 14, 7, 0, 15])
+        np.testing.assert_array_equal(jacobians._J_cts.bsm.max_nzb.numpy(), [124, 84, 86, 79, 72, 90])
+
     def test_07_build_compare_single_system_jacobians(self):
         # Construct the test problem
         model, data, *_ = make_test_problem_fourbar(
@@ -1178,6 +1186,83 @@ class TestKinematicsSparseSystemJacobians(unittest.TestCase):
 
         # Check that Jacobians match
         self._compare_row_col_major_jacobians(jacobians, jacobian_col_maj)
+
+    def test_19_build_heterogeneous_bounded_constraint_nzb_offsets(self):
+        """Check sparse block indices for friction and effort rows on unary and binary joints."""
+        builder = make_basics_heterogeneous_builder(dynamic_joints=True, implicit_pd=True)
+        builder.joint_friction = [0.1] * builder.joint_dof_count
+        builder.joint_effort_limit = [2.0] * builder.joint_dof_count
+        model, data, _state, limits, contacts = make_test_problem(
+            model=ModelKamino.from_newton(builder.finalize(device=self.default_device)),
+            max_world_contacts=12,
+            with_limits=True,
+            with_contacts=True,
+            verbose=self.verbose,
+        )
+
+        jacobians_sparse = SparseSystemJacobians(model=model, limits=limits, contacts=contacts)
+        jacobians_dense = DenseSystemJacobians(model=model, limits=limits, contacts=contacts)
+        jacobians_sparse.build(model=model, data=data, limits=limits.data, contacts=contacts.data)
+        jacobians_dense.build(model=model, data=data, limits=limits.data, contacts=contacts.data)
+        self._compare_dense_sparse_jacobians(model, limits, contacts, jacobians_dense, jacobians_sparse)
+
+        joint_wid = model.joints.wid.numpy()
+        joint_bid_F = model.joints.bid_F.numpy()
+        joint_bid_B = model.joints.bid_B.numpy()
+        joint_num_friction_cts = model.joints.num_friction_cts.numpy()
+        joint_num_effort_cts = model.joints.num_effort_cts.numpy()
+        joint_friction_cts_offset = model.joints.friction_cts_offset_total_cts.numpy()
+        joint_effort_cts_offset = model.joints.effort_cts_offset_total_cts.numpy()
+        world_cts_offset = model.info.total_cts_offset.numpy()
+        world_bounded_cts_offset = model.info.joint_bounded_cts_offset.numpy()
+        world_num_bilateral_cts = model.info.num_joint_bilateral_cts.numpy()
+        bodies_offset = model.info.bodies_offset.numpy()
+        bounded_nzb_offsets = jacobians_sparse.bounded_constraint_nzb_offsets.numpy()
+        nzb_coords = jacobians_sparse._J_cts.bsm.nzb_coords.numpy()
+        self.assertTrue(np.any((joint_num_effort_cts > 0) & (joint_bid_B > -1)))
+        self.assertTrue(np.any((joint_num_effort_cts > 0) & (joint_bid_B == -1)))
+
+        # Bounded rows group all friction rows before all effort rows within each world.
+        num_checked_rows = 0
+        for j, w in enumerate(joint_wid):
+            categories = (
+                (joint_num_friction_cts[j], joint_friction_cts_offset[j]),
+                (joint_num_effort_cts[j], joint_effort_cts_offset[j]),
+            )
+            for num_rows, row_offset in categories:
+                for r in range(num_rows):
+                    row = row_offset + r - world_cts_offset[w]
+                    bounded_row = world_bounded_cts_offset[w] + row - world_num_bilateral_cts[w]
+                    offset_F, offset_B = bounded_nzb_offsets[bounded_row]
+                    np.testing.assert_array_equal(nzb_coords[offset_F], [row, 6 * (joint_bid_F[j] - bodies_offset[w])])
+                    if joint_bid_B[j] > -1:
+                        np.testing.assert_array_equal(
+                            nzb_coords[offset_B], [row, 6 * (joint_bid_B[j] - bodies_offset[w])]
+                        )
+                    else:
+                        self.assertEqual(offset_B, -1)
+                    num_checked_rows += 1
+        self.assertEqual(num_checked_rows, model.size.sum_of_num_bounded_joint_cts)
+
+    def test_20_allocate_sparse_system_jacobians_with_mismatched_capacities(self):
+        """Reject limit and contact containers that do not hold one capacity per world."""
+        model, _data, _state, limits, contacts = make_test_problem_heterogeneous(
+            device=self.default_device,
+            with_limits=True,
+            with_contacts=True,
+            verbose=self.verbose,
+        )
+        _, _, _, single_world_limits, _ = make_test_problem_fourbar(
+            device=self.default_device,
+            with_limits=True,
+            verbose=self.verbose,
+        )
+        single_world_contacts = ContactsKamino(capacity=12, device=self.default_device)
+
+        with self.assertRaises(ValueError):
+            SparseSystemJacobians(model=model, limits=limits, contacts=single_world_contacts)
+        with self.assertRaises(ValueError):
+            SparseSystemJacobians(model=model, limits=single_world_limits, contacts=contacts)
 
 
 ###
