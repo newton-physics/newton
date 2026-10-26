@@ -3,6 +3,9 @@ permissions:
   contents: read
 env:
   PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
+  # Codecov only tracks main, so other runs skip coverage collection and the
+  # report artifacts. Keep in sync with the codecov-upload job condition.
+  UPLOAD_TO_CODECOV: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
 
 on:
   workflow_call:
@@ -153,8 +156,7 @@ jobs:
           --shard-count ${{ matrix.shard-count }}
           --shard-index ${{ matrix.shard-index }}
           --junit-report-xml rspec.xml
-          --coverage
-          --coverage-xml coverage.xml
+          ${{ env.UPLOAD_TO_CODECOV == 'true' && '--coverage --coverage-xml coverage.xml' || '' }}
       - name: Run ASV harness unit tests
         run: >
           uv run --no-sync -m newton.tests
@@ -184,7 +186,7 @@ jobs:
           show: "fail"
         if: always()
       - name: Upload test results artifact
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && env.UPLOAD_TO_CODECOV == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: test-results-${{ matrix.os }}-shard${{ matrix.shard-index }}
@@ -194,7 +196,7 @@ jobs:
           retention-days: 1
           overwrite: true
       - name: Upload coverage artifact
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && env.UPLOAD_TO_CODECOV == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-${{ matrix.os }}-shard${{ matrix.shard-index }}
@@ -267,7 +269,14 @@ jobs:
   codecov-upload:
     name: Upload reports to Codecov
     needs: [newton-unittests, newton-unittests-ubuntu, newton-unittests-windows]
-    if: ${{ !cancelled() && (needs.newton-unittests.result != 'skipped' || needs.newton-unittests-ubuntu.result != 'skipped' || needs.newton-unittests-windows.result != 'skipped') }}
+    # Codecov only tracks main: pull request, merge queue, release branch, and
+    # tag runs skip the upload. Mirrors UPLOAD_TO_CODECOV, which a job-level
+    # condition cannot read.
+    if: >-
+      !cancelled() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (needs.newton-unittests.result != 'skipped' || needs.newton-unittests-ubuntu.result != 'skipped' || needs.newton-unittests-windows.result != 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -325,18 +334,21 @@ jobs:
           name: coverage-${{ matrix.os }}-shard${{ matrix.shard-index }}
       - name: Upload test results to Codecov
         if: ${{ steps.download-test-results.outcome == 'success' }}
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           disable_search: true
+          fail_ci_if_error: true
           files: ./rspec.xml,./asv-rspec.xml
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload coverage reports to Codecov
-        if: ${{ steps.download-coverage.outcome == 'success' }}
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        # Run even if the test results upload failed.
+        if: ${{ !cancelled() && steps.download-coverage.outcome == 'success' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           disable_search: true
           env_vars: OS
+          fail_ci_if_error: true
           files: ./coverage.xml
           flags: unittests
           plugins: noop
