@@ -391,6 +391,13 @@ class TestDVISolver(NewtonTestCase):
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
         self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
+        # Any DR Legs regression can be first to populate a cold asset cache.
+        self.allowOutputRegex(
+            r"Cloning https://github\.com/newton-physics/newton-assets\.git "
+            r"\(ref: 261cd1f429619d8ef4f546bd788ab9dea906b5e1\)\.\.\.\n"
+            r"Successfully downloaded folder to: [^\n]+[/\\]disneyresearch\n?",
+            stream="stdout",
+        )
 
     def test_00_sparse_projection_is_allocated_only_for_schur(self):
         """Allocate the large sparse response workspace only for Schur solves."""
@@ -3248,6 +3255,7 @@ class TestDVISolver(NewtonTestCase):
                 self.assertLessEqual(float(np.max(np.diff(speeds))), 1.0e-5)
 
     def test_08b_dr_legs_contact_capacity_scales_with_world_count(self):
+        """Scale DR Legs contact capacity with the replicated world count."""
         if not self.device.is_cuda:
             self.skipTest("Dr Legs multi-world capacity regression uses the CUDA graph path")
 
