@@ -236,6 +236,10 @@ class Model:
         """Guides in flattened tendon routes."""
         TENDON_SEGMENT = 22
         """Straight spans between consecutive tendon guides."""
+        ACTUATOR = 23
+        """Attribute frequency follows the number of actuators (see :attr:`~newton.Model.actuator_count`)."""
+        BATTERY = 24
+        """Attribute frequency follows the number of batteries (see :attr:`~newton.Model.battery_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -585,6 +589,8 @@ class Model:
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
         AttributeFrequency.ATTACHMENT_PARTICLE_BODY: "attachment_particle_body_count",
+        AttributeFrequency.ACTUATOR: "actuator_count",
+        AttributeFrequency.BATTERY: "battery_count",
         AttributeFrequency.CONTACT: "contact_max",
         AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
         AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
@@ -1445,6 +1451,10 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+        self.actuator_count: int = 0
+        """Total number of actuators added with :meth:`ModelBuilder.add_actuator() <newton.ModelBuilder.add_actuator>`."""
+        self.battery_count: int = 0
+        """Total number of batteries added with :meth:`ModelBuilder.add_battery() <newton.ModelBuilder.add_battery>`."""
 
     @property
     def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
@@ -1620,6 +1630,8 @@ class Model:
             "tendon_guide": Model.AttributeFrequency.TENDON_GUIDE,
             "tendon_segment": Model.AttributeFrequency.TENDON_SEGMENT,
             "attachment_particle_body": Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
+            "actuator": Model.AttributeFrequency.ACTUATOR,
+            "battery": Model.AttributeFrequency.BATTERY,
             "world": Model.AttributeFrequency.WORLD,
         }
         frequency = built_in.get(references)
@@ -2000,6 +2012,11 @@ class Model:
         self._add_custom_attributes(
             c, Model.AttributeAssignment.CONTROL, requires_grad=requires_grad, clone_arrays=clone_variables
         )
+        c._attribute_frequency = {
+            name: spec.frequency
+            for name, spec in self._iter_attribute_specs()
+            if spec.assignment == Model.AttributeAssignment.CONTROL or name in vars(c)
+        }
         return c
 
     def set_gravity(

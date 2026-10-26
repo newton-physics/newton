@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from .actuator import ACTUATOR_FREQUENCY, ACTUATOR_NAMESPACE, _get_attribute, _require_array
+from .actuator import ACTUATOR_NAMESPACE, _get_attribute, _require_array
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -17,16 +17,14 @@ if TYPE_CHECKING:
 
 SUPPLY_VOLTAGE_ATTR = "actuator_supply_voltage"
 SUPPLY_CURRENT_GAIN_ATTR = "actuator_supply_current_gain"
-BATTERY_FREQUENCY = f"{ACTUATOR_NAMESPACE}:battery"
 
 
 def register_battery_attributes(builder: ModelBuilder) -> None:
-    """Register the battery frequency and its attributes on *builder*.
+    """Register the battery attributes on *builder*.
 
-    Registers the battery frequency ``actuation:battery`` with the battery
-    parameters, the battery of each actuator ``actuator_battery`` (``-1`` for
-    none) and the per-actuator supply voltage and supply current gain on
-    Control. It also registers ``battery_actuator_start`` (one entry per battery plus
+    Registers the battery parameters, the battery of each actuator
+    ``actuator_battery`` (``-1`` for none) and the per-actuator supply
+    voltage and supply current gain on Control. It also registers ``battery_actuator_start`` (one entry per battery plus
     one) and ``battery_actuators`` (all actuators, sorted by battery), which
     :meth:`~newton.ModelBuilder.finalize` builds from ``actuator_battery`` so
     that battery ``b`` draws from the actuators
@@ -39,28 +37,31 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
     """
     from ..sim.model import Model  # noqa: PLC0415
 
-    builder.add_custom_frequency(builder.CustomFrequency(name="battery", namespace=ACTUATOR_NAMESPACE))
     builder.add_custom_attribute(
         builder.CustomAttribute(
             name="actuator_battery",
             dtype=wp.int32,
-            frequency=ACTUATOR_FREQUENCY,
+            frequency=Model.AttributeFrequency.ACTUATOR,
             default=-1,
-            references=BATTERY_FREQUENCY,
+            references="battery",
             namespace=ACTUATOR_NAMESPACE,
         )
     )
     for name in ("battery_nominal_voltage", "battery_resistance", "battery_min_voltage"):
         builder.add_custom_attribute(
             builder.CustomAttribute(
-                name=name, dtype=wp.float32, frequency=BATTERY_FREQUENCY, default=0.0, namespace=ACTUATOR_NAMESPACE
+                name=name,
+                dtype=wp.float32,
+                frequency=Model.AttributeFrequency.BATTERY,
+                default=0.0,
+                namespace=ACTUATOR_NAMESPACE,
             )
         )
     builder.add_custom_attribute(
         builder.CustomAttribute(
             name="battery_world",
             dtype=wp.int32,
-            frequency=BATTERY_FREQUENCY,
+            frequency=Model.AttributeFrequency.BATTERY,
             default=-1,
             references="world",
             namespace=ACTUATOR_NAMESPACE,
@@ -70,7 +71,7 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
         builder.CustomAttribute(
             name="battery_actuator_start",
             dtype=wp.int32,
-            frequency=BATTERY_FREQUENCY,
+            frequency=Model.AttributeFrequency.BATTERY,
             default=0,
             namespace=ACTUATOR_NAMESPACE,
         )
@@ -82,9 +83,9 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
         builder.CustomAttribute(
             name="battery_actuators",
             dtype=wp.int32,
-            frequency=ACTUATOR_FREQUENCY,
+            frequency=Model.AttributeFrequency.ACTUATOR,
             default=-1,
-            references=ACTUATOR_FREQUENCY,
+            references="actuator",
             namespace=ACTUATOR_NAMESPACE,
         )
     )
@@ -96,7 +97,7 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
             builder.CustomAttribute(
                 name=name,
                 dtype=wp.float32,
-                frequency=ACTUATOR_FREQUENCY,
+                frequency=Model.AttributeFrequency.ACTUATOR,
                 assignment=Model.AttributeAssignment.CONTROL,
                 default=0.0,
             )
@@ -105,14 +106,10 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
 
 def _battery_actuator_order(builder: ModelBuilder, model: Model) -> tuple[np.ndarray, np.ndarray]:
     """Return all actuator rows sorted by battery, unassigned last, and the start of each battery's rows."""
-    battery_count = model.custom_frequency_counts.get(BATTERY_FREQUENCY, 0)
-    actuator_battery = np.array(
-        [
-            -1 if b is None else b
-            for b in builder.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values or ()
-        ],
-        dtype=np.int64,
-    )
+    battery_count = model.battery_count
+    actuator_battery = np.full(model.actuator_count, -1, dtype=np.int64)
+    for actuator, battery in (builder.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values or {}).items():
+        actuator_battery[actuator] = battery
     order = np.argsort(np.where(actuator_battery < 0, battery_count, actuator_battery), kind="stable")
     counts = np.bincount(actuator_battery[actuator_battery >= 0], minlength=battery_count)
     return order, np.concatenate(([0], np.cumsum(counts)))
@@ -310,7 +307,7 @@ def _require_batteries(model: Model) -> Any:
 
 
 def _require_actuator_array(model: Model, array: Any, name: str) -> wp.array[float]:
-    count = model.custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0)
+    count = model.actuator_count
     if array is None or array.shape != (count,):
         shape = None if array is None else array.shape
         raise ValueError(f"{name} shape {shape} must be ({count},), one entry per actuator")

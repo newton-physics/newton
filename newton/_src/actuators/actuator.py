@@ -51,24 +51,24 @@ _CONTROLLER_STATE_DEPRECATION_MSG = (
 
 
 ACTUATOR_NAMESPACE = "actuation"
-ACTUATOR_FREQUENCY = f"{ACTUATOR_NAMESPACE}:actuator"
 
 
-def register_actuator_frequency(builder: ModelBuilder) -> None:
-    """Register the per-actuator frequency and its ``actuator_dof`` attribute.
+def register_actuator_attributes(builder: ModelBuilder) -> None:
+    """Register the per-actuator ``actuator_dof`` attribute.
 
     :meth:`~newton.ModelBuilder.add_actuator` calls this automatically with
     the first actuator.
 
     Args:
-        builder: Newton model builder on which to register the frequency.
+        builder: Newton model builder on which to register the attribute.
     """
-    builder.add_custom_frequency(builder.CustomFrequency(name="actuator", namespace=ACTUATOR_NAMESPACE))
+    from ..sim.model import Model  # noqa: PLC0415
+
     builder.add_custom_attribute(
         builder.CustomAttribute(
             name="actuator_dof",
             dtype=wp.int32,
-            frequency=ACTUATOR_FREQUENCY,
+            frequency=Model.AttributeFrequency.ACTUATOR,
             default=-1,
             references="joint_dof",
             namespace=ACTUATOR_NAMESPACE,
@@ -245,10 +245,10 @@ def _custom_input_frequencies(drive: DriveBase) -> dict[str, Model.AttributeFreq
     frequencies = {}
     for name, declared_frequency in declared.items():
         frequency = Model.AttributeFrequency.JOINT_DOF if declared_frequency == "joint_dof" else declared_frequency
-        if frequency not in (Model.AttributeFrequency.JOINT_DOF, ACTUATOR_FREQUENCY):
+        if frequency not in (Model.AttributeFrequency.JOINT_DOF, Model.AttributeFrequency.ACTUATOR):
             raise ValueError(
                 f"{type(drive).__name__} custom input '{name}' has unsupported frequency {frequency!r}; "
-                f"use Model.AttributeFrequency.JOINT_DOF or '{ACTUATOR_FREQUENCY}'"
+                "use Model.AttributeFrequency.JOINT_DOF or Model.AttributeFrequency.ACTUATOR"
             )
         frequencies[name] = frequency
     return frequencies
@@ -285,10 +285,33 @@ def _collect_custom_inputs(
 
 
 @functools.cache
-def _input_container_class(name: str, fields: tuple[str, ...]) -> type:
-    """Build a slotted dataclass exposing exactly *fields*, each defaulting to ``None``."""
-    cls = make_dataclass(name, [(field, Any, None) for field in fields], slots=True)
-    cls.__doc__ = f"Arrays an actuator reads from ``{name}``: {', '.join(fields)}."
+def _input_container_class(name: str, frequencies: tuple[tuple[str, Model.AttributeFrequency | str], ...]) -> type:
+    """Build a slotted dataclass exposing one field per name in *frequencies*, each defaulting to ``None``."""
+    frequency_of = dict(frequencies)
+
+    def get_attribute_frequency(self, attribute: str) -> Model.AttributeFrequency | str:
+        """Get the frequency of an attribute.
+
+        Args:
+            attribute: Name of the attribute.
+
+        Returns:
+            The frequency of the attribute.
+
+        Raises:
+            KeyError: If the container has no attribute with this name.
+        """
+        if attribute not in frequency_of:
+            raise KeyError(f"Attribute frequency of '{attribute}' is not known")
+        return frequency_of[attribute]
+
+    cls = make_dataclass(
+        name,
+        [(field, Any, None) for field in frequency_of],
+        slots=True,
+        namespace={"get_attribute_frequency": get_attribute_frequency},
+    )
+    cls.__doc__ = f"Arrays an actuator reads from ``{name}``: {', '.join(frequency_of)}."
     return cls
 
 
@@ -570,8 +593,12 @@ class Actuator:
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
         self.control_applied_output_attr = control_applied_output_attr
+        from ..sim.model import Model  # noqa: PLC0415
+
         self._custom_inputs = _custom_input_frequencies(drive)
-        actuator_inputs = [name for name, frequency in self._custom_inputs.items() if frequency == ACTUATOR_FREQUENCY]
+        actuator_inputs = [
+            name for name, frequency in self._custom_inputs.items() if frequency == Model.AttributeFrequency.ACTUATOR
+        ]
         if actuator_inputs and actuator_indices is None:
             raise ValueError(
                 f"{type(drive).__name__} declares per-actuator custom inputs, which require actuator_indices"
@@ -601,6 +628,33 @@ class Actuator:
 
         self._effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
 
+    def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency:
+        """Get the frequency of a parameter array of this actuator.
+
+        The parameter arrays of the drive, clampings and input processors
+        (e.g. ``drive.kp``) have one entry per slot of this actuator. Their
+        frequency is :attr:`Model.AttributeFrequency.ACTUATOR
+        <newton.Model.AttributeFrequency.ACTUATOR>` limited to this actuator:
+        entry ``i`` belongs to the model actuator ``actuator_indices[i]``.
+
+        Args:
+            name: Name of the parameter array, e.g. ``"kp"``.
+
+        Returns:
+            The frequency of the parameter array.
+
+        Raises:
+            KeyError: If no component of this actuator has a parameter array
+                with this name.
+        """
+        from ..sim.model import Model  # noqa: PLC0415
+
+        for component in (self.drive, *self.clamping, *self.input_processors):
+            value = getattr(component, name, None)
+            if isinstance(value, wp.array) and value.shape == (self.num_actuators,):
+                return Model.AttributeFrequency.ACTUATOR
+        raise KeyError(f"Attribute frequency of '{name}' is not known")
+
     def sim_state(self) -> Any:
         """Return an empty container with the fields this actuator reads from ``sim_state``.
 
@@ -613,10 +667,12 @@ class Actuator:
         :attr:`indices`; their lengths are not checked.
 
         Returns:
-            Container whose slots are the required ``sim_state`` attributes.
+            Container whose slots are the required ``sim_state`` attributes,
+            with a ``get_attribute_frequency(name)`` method like
+            :meth:`Model.get_attribute_frequency() <newton.Model.get_attribute_frequency>`.
         """
-        fields = self._required_attributes.get("sim_state", ())
-        return _input_container_class("sim_state", fields)()
+        frequencies = self._required_attributes.get("sim_state", {})
+        return _input_container_class("sim_state", tuple(frequencies.items()))()
 
     def sim_control(self) -> Any:
         """Return an empty container with the fields this actuator reads from ``sim_control``.
@@ -626,14 +682,16 @@ class Actuator:
         lengths are not checked.
 
         Returns:
-            Container whose slots are the required ``sim_control`` attributes.
+            Container whose slots are the required ``sim_control`` attributes,
+            with a ``get_attribute_frequency(name)`` method like
+            :meth:`Control.get_attribute_frequency() <newton.Control.get_attribute_frequency>`.
 
         Note:
             Leaving the feedforward field unassigned means no feedforward term,
             and leaving the computed output field unassigned skips it.
         """
-        fields = self._required_attributes.get("sim_control", ())
-        return _input_container_class("sim_control", fields)()
+        frequencies = self._required_attributes.get("sim_control", {})
+        return _input_container_class("sim_control", tuple(frequencies.items()))()
 
     def register_custom_attributes(self, builder: ModelBuilder) -> None:
         """Register drive inputs and per-actuator outputs as custom Newton Control attributes.
@@ -644,7 +702,7 @@ class Actuator:
         array on :class:`~newton.Control` with its declared frequency.
 
         The following outputs are registered as per-actuator arrays
-        (``actuation:actuator`` frequency):
+        (:attr:`~newton.Model.AttributeFrequency.ACTUATOR` frequency):
 
         * the drive's :attr:`~DriveBase.custom_outputs`;
         * :attr:`control_applied_output_attr`;
@@ -664,11 +722,11 @@ class Actuator:
         from ..sim.model import Model  # noqa: PLC0415
 
         frequencies = dict(self._custom_inputs)
-        frequencies.update(dict.fromkeys(self.drive.custom_outputs, ACTUATOR_FREQUENCY))
+        frequencies.update(dict.fromkeys(self.drive.custom_outputs, Model.AttributeFrequency.ACTUATOR))
         if self.control_applied_output_attr is not None:
-            frequencies[self.control_applied_output_attr] = ACTUATOR_FREQUENCY
+            frequencies[self.control_applied_output_attr] = Model.AttributeFrequency.ACTUATOR
         if self.actuator_indices is not None and self.control_computed_output_attr is not None:
-            frequencies[self.control_computed_output_attr] = ACTUATOR_FREQUENCY
+            frequencies[self.control_computed_output_attr] = Model.AttributeFrequency.ACTUATOR
         for name, frequency in frequencies.items():
             builder.add_custom_attribute(
                 builder.CustomAttribute(
@@ -798,27 +856,28 @@ class Actuator:
         )
 
     @property
-    def _required_attributes(self) -> dict[str, tuple[str, ...]]:
-        """Attributes this actuator reads, keyed by ``sim_state`` or ``sim_control``.
+    def _required_attributes(self) -> dict[str, dict[str, Model.AttributeFrequency | str]]:
+        """Attributes this actuator reads with their frequencies, keyed by ``sim_state`` or ``sim_control``.
 
         Covers the standard arrays and the drive's custom inputs and outputs.
         """
-        state_attrs = [self.state_pos_attr, self.state_vel_attr]
+        from ..sim.model import Model  # noqa: PLC0415
+
+        frequency = Model.AttributeFrequency
+        computed_frequency = frequency.ACTUATOR if self.actuator_indices is not None else frequency.JOINT_DOF
+        state_attrs = [(self.state_pos_attr, frequency.JOINT_COORD), (self.state_vel_attr, frequency.JOINT_DOF)]
         control_attrs = [
-            self.control_target_pos_attr,
-            self.control_target_vel_attr,
-            self.control_feedforward_attr,
-            self.control_output_attr,
-            self.control_computed_output_attr,
-            self.control_applied_output_attr,
+            (self.control_target_pos_attr, frequency.JOINT_COORD),
+            (self.control_target_vel_attr, frequency.JOINT_DOF),
+            (self.control_feedforward_attr, frequency.JOINT_DOF),
+            (self.control_output_attr, frequency.JOINT_DOF),
+            (self.control_computed_output_attr, computed_frequency),
+            (self.control_applied_output_attr, frequency.ACTUATOR),
+            *self._custom_inputs.items(),
+            *((name, frequency.ACTUATOR) for name in self.drive.custom_outputs),
         ]
-        required = {
-            "sim_state": state_attrs,
-            "sim_control": [a for a in control_attrs if a is not None]
-            + list(self._custom_inputs)
-            + list(self.drive.custom_outputs),
-        }
-        return {source: tuple(dict.fromkeys(names)) for source, names in required.items() if names}
+        required = {"sim_state": state_attrs, "sim_control": [(a, f) for a, f in control_attrs if a is not None]}
+        return {source: dict(attrs) for source, attrs in required.items() if attrs}
 
     def step(
         self,

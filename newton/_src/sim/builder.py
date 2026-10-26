@@ -2348,6 +2348,10 @@ class ModelBuilder:
         """Total joint coordinate count propagated to :attr:`Model.joint_coord_count`."""
         self.joint_constraint_count: int = 0
         """Total joint constraint count propagated to :attr:`Model.joint_constraint_count`."""
+        self.actuator_count: int = 0
+        """Total actuator count propagated to :attr:`Model.actuator_count`."""
+        self.battery_count: int = 0
+        """Total battery count propagated to :attr:`Model.battery_count`."""
 
         self._current_world: int = -1
         """Internal world context backing the read-only :attr:`current_world` property."""
@@ -3386,15 +3390,15 @@ class ModelBuilder:
             ),
         )
 
-        from ..actuators.actuator import ACTUATOR_NAMESPACE, register_actuator_frequency  # noqa: PLC0415
+        from ..actuators.actuator import ACTUATOR_NAMESPACE, register_actuator_attributes  # noqa: PLC0415
 
         if not self.has_custom_attribute(f"{ACTUATOR_NAMESPACE}:actuator_dof"):
-            register_actuator_frequency(self)
-        row = {f"{ACTUATOR_NAMESPACE}:actuator_dof": index}
-        # Once add_battery has registered actuator_battery, keep it complete: every actuator row needs a value
-        if self.has_custom_attribute(f"{ACTUATOR_NAMESPACE}:actuator_battery"):
-            row[f"{ACTUATOR_NAMESPACE}:actuator_battery"] = -1
-        actuator = self.add_custom_values(**row)[f"{ACTUATOR_NAMESPACE}:actuator_dof"]
+            register_actuator_attributes(self)
+        actuator = self.actuator_count
+        self.actuator_count += 1
+        self._process_custom_attributes(
+            actuator, {f"{ACTUATOR_NAMESPACE}:actuator_dof": index}, Model.AttributeFrequency.ACTUATOR
+        )
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.drive_args.append(drive_array_params)
@@ -3441,7 +3445,7 @@ class ModelBuilder:
                 does not exist, belongs to another world, does not draw from
                 a battery, or already has a battery.
         """
-        from ..actuators.actuator import ACTUATOR_FREQUENCY, ACTUATOR_NAMESPACE  # noqa: PLC0415
+        from ..actuators.actuator import ACTUATOR_NAMESPACE  # noqa: PLC0415
         from ..actuators.battery import register_battery_attributes  # noqa: PLC0415
 
         if not 0.0 <= min_voltage <= nominal_voltage:
@@ -3453,13 +3457,13 @@ class ModelBuilder:
         actuators = [int(actuator) for actuator in actuators]
         if not actuators:
             raise ValueError("add_battery: at least one actuator is required")
-        actuator_count = self._custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0)
-        actuator_dof = self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_dof"].values if actuator_count else []
+        actuator_dof = (
+            self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_dof"].values if self.actuator_count else {}
+        )
         if not self.has_custom_attribute(f"{ACTUATOR_NAMESPACE}:battery_nominal_voltage"):
             register_battery_attributes(self)
-        self._fill_actuator_battery()
         for actuator in actuators:
-            if not 0 <= actuator < actuator_count:
+            if not 0 <= actuator < self.actuator_count:
                 raise ValueError(f"add_battery: actuator {actuator} does not exist")
             dof = actuator_dof[actuator]
             if not 0 <= dof < self.joint_dof_count:
@@ -3480,36 +3484,27 @@ class ModelBuilder:
                 raise ValueError(
                     f"add_battery: actuator {actuator} does not draw from a battery; add it with supply_from_battery=True"
                 )
-            battery = self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values[actuator]
+            battery = self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values.get(actuator)
             if battery is not None and battery >= 0:
                 raise ValueError(f"add_battery: actuator {actuator} already draws from battery {battery}")
-        battery = self.add_custom_values(
-            **{
+        battery = self.battery_count
+        self.battery_count += 1
+        self._process_custom_attributes(
+            battery,
+            {
                 f"{ACTUATOR_NAMESPACE}:battery_nominal_voltage": nominal_voltage,
                 f"{ACTUATOR_NAMESPACE}:battery_resistance": resistance,
                 f"{ACTUATOR_NAMESPACE}:battery_min_voltage": min_voltage,
-            }
-        )[f"{ACTUATOR_NAMESPACE}:battery_nominal_voltage"]
-        if actuators:
-            self._process_custom_attributes(
-                actuators,
-                {f"{ACTUATOR_NAMESPACE}:actuator_battery": battery, "actuator_supply_voltage": nominal_voltage},
-                ACTUATOR_FREQUENCY,
-            )
-        return battery
-
-    def _fill_actuator_battery(self) -> None:
-        """Set ``actuator_battery`` to -1 for actuator rows without a value, e.g. rows merged from a builder without batteries."""
-        from ..actuators.actuator import ACTUATOR_FREQUENCY, ACTUATOR_NAMESPACE  # noqa: PLC0415
-
-        attribute = self.custom_attributes.get(f"{ACTUATOR_NAMESPACE}:actuator_battery")
-        if attribute is None:
-            return
-        self._process_custom_attributes(
-            list(range(len(attribute.values or ()), self._custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0))),
-            {f"{ACTUATOR_NAMESPACE}:actuator_battery": -1},
-            ACTUATOR_FREQUENCY,
+                f"{ACTUATOR_NAMESPACE}:battery_world": self.current_world,
+            },
+            Model.AttributeFrequency.BATTERY,
         )
+        self._process_custom_attributes(
+            actuators,
+            {f"{ACTUATOR_NAMESPACE}:actuator_battery": battery, "actuator_supply_voltage": nominal_voltage},
+            Model.AttributeFrequency.ACTUATOR,
+        )
+        return battery
 
     def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
         """Resolve a joint index or joint label to a single-DOF joint index.
@@ -4288,18 +4283,17 @@ class ModelBuilder:
         self.joint_coord_count += copy_count * counts["joint_coord"]
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
-        from ..actuators.actuator import ACTUATOR_FREQUENCY  # noqa: PLC0415
-
         for copy_index, world in enumerate(worlds.tolist()):
             entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
-            actuator_offset = self._custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0)
             self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[copy_index])
             self._merge_builder_actuators(
                 builder,
                 int(joint_dof_starts[copy_index]),
                 int(joint_coord_starts[copy_index]),
-                actuator_offset,
+                entity_offsets["actuator"],
             )
+        self.actuator_count += copy_count * counts["actuator"]
+        self.battery_count += copy_count * counts["battery"]
 
     @staticmethod
     @functools.cache
@@ -15664,6 +15658,8 @@ class ModelBuilder:
             m.mujoco.equality_constraint_count = self._equality_constraint_count
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
+            m.actuator_count = self.actuator_count
+            m.battery_count = self.battery_count
 
             m._shape_contact_pair_data = _ShapeContactPairs(
                 self.shape_body,
@@ -15698,7 +15694,6 @@ class ModelBuilder:
             # Create actuators from accumulated entries
             from ..actuators.actuator import ACTUATOR_NAMESPACE, Actuator  # noqa: PLC0415
 
-            self._fill_actuator_battery()
             m.actuators = []
             for entry in self.actuator_entries.values():
                 indices = self._build_index_array(entry.indices, device)
@@ -15754,12 +15749,11 @@ class ModelBuilder:
 
                 if "actuator_supply_voltage" in drive.custom_inputs:
                     actuator_battery = self.custom_attributes.get(f"{ACTUATOR_NAMESPACE}:actuator_battery")
-                    assigned = (actuator_battery.values if actuator_battery is not None else None) or []
+                    assigned = (actuator_battery.values if actuator_battery is not None else None) or {}
                     missing = [
                         row
                         for row, args in zip(entry.actuator_indices, entry.drive_args, strict=True)
-                        if args.get("supply_from_battery")
-                        and (row >= len(assigned) or assigned[row] is None or assigned[row] < 0)
+                        if args.get("supply_from_battery") and assigned.get(row, -1) < 0
                     ]
                     if missing:
                         warnings.warn(

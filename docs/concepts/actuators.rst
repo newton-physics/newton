@@ -278,11 +278,10 @@ velocities and targets the actuator already reads, e.g. an estimated load.  It d
 them in :attr:`DriveBase.custom_inputs`, which maps each array name to its
 frequency, i.e. what the array has one entry for:
 
-* a built-in Newton frequency:
-  :attr:`Model.AttributeFrequency.JOINT_DOF <newton.Model.AttributeFrequency.JOINT_DOF>`,
+* :attr:`Model.AttributeFrequency.JOINT_DOF <newton.Model.AttributeFrequency.JOINT_DOF>`,
   one entry per DOF;
-* a custom frequency: ``"actuation:actuator"``, one entry per actuator.
-  :class:`~newton.ModelBuilder` creates it: :meth:`~newton.ModelBuilder.add_actuator`
+* :attr:`Model.AttributeFrequency.ACTUATOR <newton.Model.AttributeFrequency.ACTUATOR>`,
+  one entry per actuator. :meth:`~newton.ModelBuilder.add_actuator`
   returns the index of each actuator, and the model stores its DOF as
   ``model.actuation.actuator_dof``.
   Every actuator built by the builder also writes its effort before clamping
@@ -661,8 +660,8 @@ resistance, so its voltage drops with the total current of its actuators.
 :class:`DriveBAM` with ``supply_from_battery=True`` reads its supply voltage
 from ``control.actuator_supply_voltage`` and writes
 ``control.actuator_supply_current_gain``.  The drive lists these arrays in its
-:attr:`DriveBase.custom_inputs` with the per-actuator frequency
-``"actuation:actuator"`` and in its :attr:`DriveBase.custom_outputs`.  Only
+:attr:`DriveBase.custom_inputs` with the frequency
+:attr:`Model.AttributeFrequency.ACTUATOR <newton.Model.AttributeFrequency.ACTUATOR>` and in its :attr:`DriveBase.custom_outputs`.  Only
 actuators that draw from a battery this way can be added to a battery.
 
 Below, the hip and knee share one battery and the ankle draws from another:

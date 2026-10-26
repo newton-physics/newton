@@ -7,6 +7,7 @@ from typing import Any
 
 import warp as wp
 
+from ...sim.model import Model
 from .base import DriveBase
 
 
@@ -174,11 +175,8 @@ class DriveBAM(DriveBase):
         )
         """Per actuator, nonzero when the supply voltage is read from the battery's ``actuator_supply_voltage`` input,
         shape (N,)."""
-        from ..actuator import ACTUATOR_FREQUENCY  # noqa: PLC0415
-
-        # ACTUATOR_FREQUENCY is the per-actuator frequency: one entry per actuator of the model, not per DOF.
         uses_battery = bool(self.supply_from_battery.numpy().any())
-        self.custom_inputs = {"actuator_supply_voltage": ACTUATOR_FREQUENCY} if uses_battery else {}
+        self.custom_inputs = {"actuator_supply_voltage": Model.AttributeFrequency.ACTUATOR} if uses_battery else {}
         self.supply_current_gain = wp.zeros(n, dtype=float, device=kp.device) if uses_battery else None
         """Battery current per unit of effort [A/(N·m) or A/N] of the last :meth:`compute`, or ``None`` without a
         battery, shape (N,)."""

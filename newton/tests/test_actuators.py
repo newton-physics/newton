@@ -4997,6 +4997,65 @@ class TestActuatorBuilder(unittest.TestCase):
         with self.assertWarnsRegex(NewtonWarning, r"actuator\(s\) \[0\] have no battery"):
             builder.finalize()
 
+    def test_attribute_frequencies(self):
+        """Model, Actuator and Control report the frequencies of the actuator and battery arrays."""
+        template = newton.ModelBuilder()
+        links = [template.add_link() for _ in range(2)]
+        joints = [
+            template.add_joint_revolute(parent=-1, child=links[0], axis=newton.Axis.Z),
+            template.add_joint_revolute(parent=links[0], child=links[1], axis=newton.Axis.Z),
+        ]
+        template.add_articulation(joints)
+        template.add_actuator(
+            DrivePD,
+            index=template.joint_qd_start[joints[0]],
+            kp=1.0,
+            clamping=[(ClampingMaxEffort, {"max_effort": 1.0})],
+        )
+        servo = template.add_actuator(
+            DriveBAM,
+            index=template.joint_qd_start[joints[1]],
+            kp=1.0,
+            kt=1.0,
+            resistance=1.0,
+            max_pwm=1.0,
+            supply_from_battery=True,
+        )
+        template.add_battery([servo], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 3)
+        model = builder.finalize()
+        control = model.control()
+        actuator = newton.Model.AttributeFrequency.ACTUATOR
+        battery = newton.Model.AttributeFrequency.BATTERY
+
+        self.assertEqual((model.actuator_count, model.battery_count), (6, 3))
+        self.assertEqual(model.get_attribute_frequency("actuation:actuator_dof"), actuator)
+        self.assertEqual(model.get_attribute_frequency("actuation:battery_resistance"), battery)
+        np.testing.assert_array_equal(model.actuation.actuator_battery.numpy(), [-1, 0, -1, 1, -1, 2])
+        np.testing.assert_array_equal(model.actuation.battery_world.numpy(), [0, 1, 2])
+        for name, frequency in {
+            "actuator_applied_effort": actuator,
+            "actuator_supply_voltage": actuator,
+            "joint_target_q": newton.Model.AttributeFrequency.JOINT_COORD,
+        }.items():
+            self.assertEqual(control.get_attribute_frequency(name), frequency)
+        pd, bam = sorted(model.actuators, key=lambda a: isinstance(a.drive, DriveBAM))
+        for act, name in ((pd, "kp"), (pd, "max_effort"), (bam, "kt")):
+            self.assertEqual(act.get_attribute_frequency(name), actuator)
+        sim_state, sim_control = bam.sim_state(), bam.sim_control()
+        for source, name, frequency in (
+            (sim_state, "joint_q", newton.Model.AttributeFrequency.JOINT_COORD),
+            (sim_control, "joint_f", newton.Model.AttributeFrequency.JOINT_DOF),
+            (sim_control, "actuator_applied_effort", actuator),
+            (sim_control, "actuator_supply_voltage", actuator),
+            (sim_control, "actuator_supply_current_gain", actuator),
+        ):
+            self.assertEqual(source.get_attribute_frequency(name), frequency)
+        for source, name in ((pd, "kt"), (pd, "indices"), (control, "kp"), (sim_control, "kp")):
+            with self.subTest(name=name), self.assertRaisesRegex(KeyError, f"'{name}' is not known"):
+                source.get_attribute_frequency(name)
+
     @unittest.skipUnless(HAS_USD, "pxr not installed")
     def test_bam_from_usd(self):
         """BAM servos with a delay, backlash and a battery, loaded from USD and replicated.

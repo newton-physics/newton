@@ -65,7 +65,8 @@ class DriveBase:
     * :attr:`Model.AttributeFrequency.JOINT_DOF <newton.Model.AttributeFrequency.JOINT_DOF>`
       arrays have one entry per DOF and are passed as they are; the drive
       indexes them with ``vel_indices``.
-    * ``"actuation:actuator"`` arrays have one entry per actuator of the model.
+    * :attr:`Model.AttributeFrequency.ACTUATOR <newton.Model.AttributeFrequency.ACTUATOR>`
+      arrays have one entry per actuator of the model.
       The actuator gathers the entries of its slots through
       :attr:`~newton.actuators.Actuator.actuator_indices`, so the drive
       indexes them like its own parameters.
@@ -82,7 +83,7 @@ class DriveBase:
 
     Set in ``__init__``. Each array has one entry per slot. After each step,
     :class:`~newton.actuators.Actuator` writes the entries into the same-named
-    ``"actuation:actuator"`` array on ``sim_control`` at
+    :attr:`~newton.Model.AttributeFrequency.ACTUATOR` array on ``sim_control`` at
     :attr:`~newton.actuators.Actuator.actuator_indices`, skipping a missing or
     ``None`` array.
     """
