@@ -14,6 +14,7 @@ __all__ = [
     "build_rigidity_operator",
     "interpolate_collider_normals",
     "project_outside_collider",
+    "project_swept_collider",
     "rasterize_collider",
 ]
 
@@ -485,6 +486,143 @@ def project_outside_collider(
 
     positions_out[i] = pos_adv
     velocities_out[i] = p_vel
+    velocity_gradients_out[i] = vel_grad
+
+
+@wp.func
+def _swept_collider_contact(
+    start_world: wp.vec3,
+    end_world: wp.vec3,
+    environment: int,
+    collider: Collider,
+    body_q_prev: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    dt: float,
+    sweep_motion: bool,
+):
+    """Find the first entering face, repairing a start point just inside a wall."""
+    begin = int(0)
+    count = collider.collider_mesh.shape[0]
+    if environment != _ALL_COLLIDER_WORLDS:
+        begin = collider.world_collider_offsets[environment]
+        count = collider.world_collider_offsets[environment + 1] - begin
+
+    first_hit = float(1.0)
+    hit_id = int(-1)
+    hit_material = int(0)
+    hit_position = wp.vec3(0.0)
+    hit_normal = wp.vec3(0.0)
+    hit_velocity = wp.vec3(0.0)
+    for offset in range(count):
+        cid = offset
+        if environment != _ALL_COLLIDER_WORLDS:
+            cid = collider.world_collider_ids[begin + offset]
+        body = collider.collider_body_index[cid]
+        start_transform = wp.transform_identity()
+        end_transform = wp.transform_identity()
+        if body >= 0:
+            end_transform = body_q[body]
+            start_transform = end_transform
+            if sweep_motion:
+                start_transform = body_q_prev[body]
+        start = wp.transform_point(wp.transform_inverse(start_transform), start_world)
+        end = wp.transform_point(wp.transform_inverse(end_transform), end_world)
+        direction = end - start
+        if wp.length_sq(direction) > 1.0e-20:
+            mesh = collider.collider_mesh[cid]
+            hit = wp.mesh_query_ray(mesh, start, direction, first_hit)
+            if hit.result and hit.sign < 0.0:
+                query_poses = body_q
+                if sweep_motion:
+                    query_poses = body_q_prev
+                found, sdf, normal, _velocity, _point, material = _query_collider_sdf(
+                    start_world, collider, query_poses, cid
+                )
+                distance = sdf + collider.material_projection_threshold[material]
+                if found and distance < 0.0:
+                    start -= (distance - 1.0e-6) * normal
+                    direction = end - start
+                    hit = wp.mesh_query_ray(mesh, start, direction, first_hit)
+            # Only entry faces constrain a particle that starts in free space.
+            if hit.result and hit.sign > 0.0 and hit.t <= first_hit:
+                first_hit = hit.t
+                hit_id = cid
+                hit_material = collider.face_material_index[collider.collider_face_offset[cid] + hit.face]
+                point = start + hit.t * direction
+                hit_position = wp.transform_point(end_transform, point)
+                hit_normal = wp.transform_vector(end_transform, hit.normal)
+                previous_transform = wp.transform_identity()
+                if body >= 0:
+                    previous_transform = body_q_prev[body]
+                hit_velocity = (hit_position - wp.transform_point(previous_transform, point)) / dt
+                hit_velocity += wp.transform_vector(end_transform, wp.mesh_eval_velocity(mesh, hit.face, hit.u, hit.v))
+
+    return hit_id, hit_material, hit_position, hit_normal, hit_velocity
+
+
+@wp.kernel(enable_backward=False)
+def project_swept_collider(
+    positions_prev: wp.array[wp.vec3],
+    positions: wp.array[wp.vec3],
+    velocities: wp.array[wp.vec3],
+    velocity_gradients: wp.array[wp.mat33],
+    particle_flags: wp.array[wp.int32],
+    particle_mass: wp.array[float],
+    particle_environment: wp.array[int],
+    collider: Collider,
+    body_q_prev: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    dt: float,
+    positions_out: wp.array[wp.vec3],
+    velocities_out: wp.array[wp.vec3],
+    velocity_gradients_out: wp.array[wp.mat33],
+):
+    """Project swept particle centers against rigid collider meshes."""
+    i = wp.tid()
+    pos = positions[i]
+    vel = velocities[i]
+    vel_grad = velocity_gradients[i]
+    if (~particle_flags[i] & newton.ParticleFlags.ACTIVE) or particle_mass[i] == 0.0:
+        positions_out[i] = pos
+        velocities_out[i] = vel
+        velocity_gradients_out[i] = vel_grad
+        return
+
+    environment = int(_ALL_COLLIDER_WORLDS)
+    if particle_environment:
+        environment = particle_environment[i]
+
+    sweep_start = positions_prev[i]
+    for contact_pass in range(4):
+        hit_id, hit_material, hit_position, hit_normal, hit_velocity = _swept_collider_contact(
+            sweep_start, pos, environment, collider, body_q_prev, body_q, dt, contact_pass == 0
+        )
+        if hit_id < 0:
+            break
+        friction = collider.material_friction[hit_material]
+        margin = collider.material_thickness[hit_material] - collider.material_projection_threshold[hit_material]
+        # Carry the contact point with the collider while allowing tangential slip.
+        sweep_start = hit_position + wp.max(1.0e-6, margin) * hit_normal
+        pos = sweep_start + solve_coulomb_isotropic(friction, hit_normal, pos - hit_position)
+        vel = hit_velocity + solve_coulomb_isotropic(friction, hit_normal, vel - hit_velocity)
+        vel_grad = 0.5 * (vel_grad - wp.transpose(vel_grad))
+        if contact_pass == 3:
+            # Exhausting the contact budget discards the remaining displacement.
+            pos = sweep_start
+
+    # Handle initial penetration and the offset surface around the center sweep.
+    sdf, normal, surface_vel, cid, material = collision_sdf(
+        pos, environment, collider, body_q, body_qd, body_q_prev, dt
+    )
+    distance = sdf + collider.material_projection_threshold[material]
+    if cid >= 0 and distance < 0.0:
+        pos -= distance * normal
+        vel = surface_vel + solve_coulomb_isotropic(collider.material_friction[material], normal, vel - surface_vel)
+        vel_grad = 0.5 * (vel_grad - wp.transpose(vel_grad))
+
+    positions_out[i] = pos
+    velocities_out[i] = vel
     velocity_gradients_out[i] = vel_grad
 
 

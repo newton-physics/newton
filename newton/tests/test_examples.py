@@ -1350,6 +1350,22 @@ class TestMPMExamples(unittest.TestCase):
 
 add_example_test(
     TestMPMExamples,
+    name="mpm.example_mpm_bowl",
+    devices=cuda_test_devices,
+    test_options={
+        "num-frames": 60,
+        "iterations": 10,
+        "particle-radius": 0.04,
+        "voxel-size": 0.1,
+        "resize-time": 0.5,
+        "resize-voxel-size": 0.08,
+    },
+    use_viewer=True,
+)
+
+
+add_example_test(
+    TestMPMExamples,
     name="mpm.example_mpm_granular",
     devices=cuda_test_devices,
     test_options={"num-frames": 100},
