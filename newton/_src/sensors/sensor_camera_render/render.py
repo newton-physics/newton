@@ -285,11 +285,14 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                         closest_hit.face_idx,
                     )
                     albedo_color = wp.cw_mul(albedo_color, srgb_to_linear_wp(tex_color))
-            elif wp.static(config.enable_textures) and closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID:
+            elif (
+                wp.static(config.enable_textures and state.has_triangle_mesh_textures)
+                and closest_hit.shape_index == raytrace.TRIANGLE_MESH_SHAPE_ID
+            ):
                 if closest_hit.face_idx >= 0 and closest_hit.face_idx < triangle_mesh_texture_ids.shape[0]:
                     texture_index = triangle_mesh_texture_ids[closest_hit.face_idx]
                     if texture_index >= 0 and texture_index < texture_data.shape[0] and triangle_mesh_uvs.shape[0] > 0:
-                        tex_color = textures.sample_texture_dynamic_triangle_mesh(
+                        tex_color = textures.sample_texture_mesh_uvs(
                             closest_hit.bary_u,
                             closest_hit.bary_v,
                             closest_hit.face_idx,

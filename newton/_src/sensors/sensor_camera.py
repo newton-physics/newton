@@ -135,7 +135,8 @@ class SensorCamera:
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
-                ``RenderConfig()``.
+                ``RenderConfig()``. The experimental ``enable_simulation_triangles``
+                option is applied only when constructing the sensor.
             load_textures: Load mesh textures from file paths or in-memory images. Set ``False`` for
                 checkerboard or custom-texture workflows (see
                 :meth:`assign_checkerboard_material`).
@@ -888,17 +889,18 @@ class SensorCamera:
 
         :meth:`update` calls this by default (pass ``sync_deformables=False`` to
         skip it when you already synced). Call it explicitly only when you opt
-        out of the automatic sync. Rigid-only scenes are a no-op. Skinned
-        Gaussian fields also update their bounds and refit the shape BVH. Other
+        out of the automatic sync. Scenes without simulation triangles or deformable
+        visuals are a no-op. Skinned Gaussian fields also update their bounds and
+        refit the shape BVH. Other
         shape and particle BVHs are refit separately via
         :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
         Supplied visual buffers are consumed as-is. Update or replay them before
         this call; the camera does not track their source State or freshness.
 
         Args:
-            state: Current simulation state with particle positions.
+            state: Current particle positions and body transforms.
             deformable_visuals: Experimental precomputed visual mesh and Gaussian
-                buffers for this state. If omitted, evaluate the sensor's own
+                buffers for this model. If omitted, evaluate the sensor's own
                 reusable buffers. Share this argument with a viewer to avoid
                 evaluating the same visuals twice.
 
@@ -999,11 +1001,11 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
-            sync_deformables: Sync deformable triangle-mesh points from *state*
-                before rendering (a no-op for rigid-only scenes). Set ``False``
-                if you already called :meth:`sync_deformable_meshes` this frame.
+            sync_deformables: Sync simulation surfaces and deformable visual meshes
+                and Gaussians before rendering. Set ``False`` if you already called
+                :meth:`sync_deformable_meshes` this frame.
             deformable_visuals: Experimental precomputed visual mesh and Gaussian
-                buffers for this state. If omitted, evaluate the sensor's own
+                buffers for this model. If omitted, evaluate the sensor's own
                 buffers. Requires ``sync_deformables=True``; otherwise pass the
                 buffers to :meth:`sync_deformable_meshes` explicitly. Update or
                 replay supplied buffers before rendering; their source State

@@ -26,17 +26,6 @@ DEFAULT_AMBIENT_GROUND_COLOR = (0.05, 0.05, 0.06)
 
 
 @wp.kernel
-def _copy_points_to_offset(
-    src: wp.array[wp.vec3],
-    dst: wp.array[wp.vec3f],
-    dst_offset: int,
-):
-    i = wp.tid()
-    p = src[i]
-    dst[dst_offset + i] = wp.vec3f(p[0], p[1], p[2])
-
-
-@wp.kernel
 def _copy_deformable_gaussians(
     src_transforms: wp.array[wp.transformf],
     src_scales: wp.array[wp.vec3f],
@@ -60,6 +49,7 @@ class RenderContext:
         num_gaussians: int = 0
         has_particles: bool = False
         has_world_indices: bool = False
+        has_triangle_mesh_textures: bool = False
         render_color: bool = False
         render_depth: bool = False
         render_forward_depth: bool = False
@@ -105,7 +95,6 @@ class RenderContext:
 
         self._dynamic_triangle_points: wp.array[wp.vec3f] | None = None
         self._dynamic_triangle_particle_count = 0
-        self._deformable_visual_entries: list[tuple[DeformableVisualMesh, int]] = []
         self._deformable_visual_texture_ids: list[int] = []
         self._deformable_gaussian_entries: list[tuple[DeformableVisualGaussian, Gaussian.Data, wp.Bvh]] = []
         self._triangle_world = model.particle_world
@@ -168,9 +157,10 @@ class RenderContext:
                 else:
                     self._set_triangle_points(model.particle_q)
                     self._set_triangle_indices(model.tri_indices.flatten())
-            # Hiding the coarse surface must not expose its particles as spheres.
-            mask_topology_particles(model.tri_indices)
-            mask_topology_particles(model.tet_indices)
+            if model.tri_count:
+                # Hiding the coarse surface must not expose its particles as spheres.
+                mask_topology_particles(model.tri_indices)
+                mask_topology_particles(model.tet_indices)
             self._topology_particle_mask = wp.array(
                 topology_particle_mask, dtype=wp.bool, device=model.particle_q.device
             )
@@ -207,7 +197,7 @@ class RenderContext:
         return Axis.from_any(self.model.up_axis)
 
     def _get_triangle_colors(self) -> wp.array[wp.vec3f]:
-        """Per-triangle display colors (sRGB) of the deformable triangle mesh; empty without ``Model.tri_color``."""
+        """Per-face display colors (sRGB) for simulation and visual triangles."""
         if self._triangle_colors is not None:
             if (
                 self._dynamic_triangle_particle_count
@@ -243,22 +233,17 @@ class RenderContext:
 
         model = self.model
         if self._dynamic_triangle_points is not None:
+            if deformable_visuals is None:
+                raise ValueError("deformable_visuals is required by this render context")
             if self._dynamic_triangle_particle_count:
-                wp.launch(
-                    _copy_points_to_offset,
-                    dim=self._dynamic_triangle_particle_count,
-                    inputs=[state.particle_q, self._dynamic_triangle_points, 0],
-                    device=self.device,
-                )
-            for mesh, vertex_offset in self._deformable_visual_entries:
-                if deformable_visuals is None:
-                    raise ValueError("deformable_visuals is required by this render context")
-                wp.launch(
-                    _copy_points_to_offset,
-                    dim=mesh.vertex_count,
-                    inputs=[deformable_visuals.get_points(mesh), self._dynamic_triangle_points, vertex_offset],
-                    device=self.device,
-                )
+                wp.copy(self._dynamic_triangle_points, state.particle_q, count=self._dynamic_triangle_particle_count)
+            # Both buffers pack visual meshes in model order, after any simulation vertices.
+            wp.copy(
+                self._dynamic_triangle_points,
+                deformable_visuals.points,
+                dest_offset=self._dynamic_triangle_particle_count,
+                count=deformable_visuals.points.shape[0],
+            )
             self._sync_triangle_mesh()
         elif self._has_triangle_mesh:
             self._set_triangle_points(state.particle_q)
@@ -696,8 +681,8 @@ class RenderContext:
     def _sync_triangle_mesh(self):
         if self._triangle_mesh is None:
             triangle_indices_np = self._triangle_indices.reshape((-1, 3)).numpy()
-            particle_world_np = self._triangle_world.numpy()
-            triangle_world_np = particle_world_np[triangle_indices_np[:, 0]]
+            vertex_world_np = self._triangle_world.numpy()
+            triangle_world_np = vertex_world_np[triangle_indices_np[:, 0]]
             triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(np.int32)
             triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
 
@@ -728,8 +713,8 @@ class RenderContext:
 
         Args:
             model: Newton simulation model containing shape sources.
-            load_textures: If ``True``, load image textures from disk;
-                otherwise assign ``-1`` texture IDs to all shapes.
+            load_textures: Load image textures from paths or in-memory images.
+                Otherwise leave shapes and visual meshes untextured.
         """
         self._mesh_data_source = []
         self._texture_data_source = []
@@ -799,6 +784,7 @@ class RenderContext:
             texture_id(mesh.texture, compute_texture_hash(mesh.texture)) if mesh.uvs is not None else -1
             for mesh in model.deformable_visual_meshes
         ]
+        self._render_state.has_triangle_mesh_textures = any(i >= 0 for i in self._deformable_visual_texture_ids)
 
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
         self._shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
@@ -827,7 +813,6 @@ class RenderContext:
             vertex_worlds.append(model.particle_world.numpy().astype(np.int32, copy=False))
             vertex_offset = model.particle_q.shape[0]
 
-        visual_entries = []
         for mesh_index, mesh in enumerate(deformable_visual_meshes):
             visual_indices = mesh.indices.numpy().astype(np.int32, copy=False)
             triangle_indices.append(visual_indices + vertex_offset)
@@ -840,11 +825,9 @@ class RenderContext:
             triangle_texture_ids.append(np.full(visual_indices.size // 3, texture_id, dtype=np.int32))
             vertex_worlds.append(np.full(mesh.vertex_count, mesh.world, dtype=np.int32))
 
-            visual_entries.append((mesh, vertex_offset))
             vertex_offset += mesh.vertex_count
 
         self._dynamic_triangle_points = wp.empty(vertex_offset, dtype=wp.vec3f, device=self.device)
-        self._deformable_visual_entries = visual_entries
         self._set_triangle_points(self._dynamic_triangle_points)
         self._set_triangle_indices(wp.array(np.concatenate(triangle_indices), dtype=wp.int32, device=self.device))
         self._triangle_mesh_uvs = wp.array(np.concatenate(triangle_uvs), dtype=wp.vec2f, device=self.device)
