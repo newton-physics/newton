@@ -1852,6 +1852,7 @@ def parse_usd(
             # Normalize non-mergeable joints to singleton groups for the parsing pass below.
             orphan_joint_groups.extend([[joint_path] for joint_path in joint_group])
 
+    orphan_joint_ids: list[int] = []
     for joint_group in orphan_joint_groups:
         # All members of a merged group share these endpoints, so the first is representative.
         joint_path = joint_group[0]
@@ -1887,12 +1888,44 @@ def parse_usd(
                     world_body_xform_o = child_world_xform_o * child_tf_o * wp.transform_inverse(parent_tf_o)
                     orphan_incoming_xform = incoming_world_xform * world_body_xform_o
             if len(joint_group) > 1:
-                parse_merged_joints(joint_group, incoming_xform=orphan_incoming_xform)
+                joint_id = parse_merged_joints(joint_group, incoming_xform=orphan_incoming_xform)
             else:
-                parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
+                joint_id = parse_joint(joint_desc, incoming_xform=orphan_incoming_xform)
+            if joint_id is not None:
+                orphan_joint_ids.append(joint_id)
         except ValueError as exc:
             if verbose:
                 logger.info("Skipping joint group %s: %s", joint_group, exc)
+
+    # Joints to the world that no authored articulation claims must not stay loose:
+    # model validation rejects them. Wrap each in a single-joint articulation when its
+    # child is not already owned by an articulation, but only when no other loose joint
+    # touches the same child - chains of loose joints (e.g. world->A->B) stay unwrapped
+    # so validation rejects them instead of silently splitting the chain.
+    articulated_bodies = set()
+    for j, a in enumerate(builder.joint_articulation):
+        if a != -1:
+            articulated_bodies.add(int(builder.joint_child[j]))
+            articulated_bodies.add(int(builder.joint_parent[j]))
+    # Count loose-joint endpoints per body once so the chain guard stays linear
+    # instead of rescanning every loose joint for each candidate.
+    loose_touch_count: dict[int, int] = {}
+    for joint_id in orphan_joint_ids:
+        for body in (int(builder.joint_parent[joint_id]), int(builder.joint_child[joint_id])):
+            loose_touch_count[body] = loose_touch_count.get(body, 0) + 1
+    for joint_id in orphan_joint_ids:
+        if int(builder.joint_parent[joint_id]) != -1:
+            continue
+        child = int(builder.joint_child[joint_id])
+        if child in articulated_bodies:
+            # Loop joint to the world on an articulated body; stays a loop closure.
+            # Match _validate_joints, which counts both parents and children of
+            # articulated joints: a floating articulation's root body only shows
+            # up as a parent here because its free joint is added later.
+            continue
+        if loose_touch_count[child] > 1:
+            continue
+        builder.add_articulation([joint_id], label=builder.joint_label[joint_id])
 
     # parse shapes attached to the rigid bodies
     # Canonicalized (sorted) USD path pairs from physics:filteredPairs. Collected from native

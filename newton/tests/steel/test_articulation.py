@@ -2434,7 +2434,8 @@ def test_compact_root_metadata_includes_standalone_joint(test, device, solve_mod
     nested = builder.add_joint_free(child, parent=root_a)
     joint_b = builder.add_joint_free(root_b)
     builder.add_articulation([joint_a, nested])
-    solver = SolverSteel(builder.finalize(device=device), solve_mode=solve_mode)
+    # joint_b is deliberately outside every articulation.
+    solver = SolverSteel(builder.finalize(device=device, skip_validation_joints=True), solve_mode=solve_mode)
     np.testing.assert_array_equal(solver._free_root_joint_indices.numpy(), (joint_a, joint_b))
 
 

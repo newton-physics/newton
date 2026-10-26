@@ -12231,6 +12231,53 @@ class TestOverrideRootXform(unittest.TestCase):
         loop_idx = builder.joint_label.index("/World/env/Robot/LoopJoint")
         self.assertEqual(builder.joint_articulation[loop_idx], -1)
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_world_joint_on_floating_articulation_root_stays_loose(self):
+        """An excludeFromArticulation world joint targeting a floating articulation's
+        root body stays a loose loop closure instead of being wrapped: at wrap time
+        the root is only a parent of articulated joints (its free joint is added
+        later), and wrapping it would connect two articulations at finalize."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+
+        root = UsdGeom.Xform.Define(stage, "/World/Robot")
+        UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+
+        for name, pos in [("Base", (0, 0, 0)), ("Tip", (0, 0, 1))]:
+            body = UsdGeom.Xform.Define(stage, f"/World/Robot/{name}")
+            body.AddTranslateOp().Set(Gf.Vec3d(*pos))
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            UsdPhysics.MassAPI.Apply(body.GetPrim()).GetMassAttr().Set(1.0)
+
+        j = UsdPhysics.RevoluteJoint.Define(stage, "/World/Robot/J1")
+        j.CreateBody0Rel().SetTargets(["/World/Robot/Base"])
+        j.CreateBody1Rel().SetTargets(["/World/Robot/Tip"])
+        j.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0))
+        j.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, -1))
+        j.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        j.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        j.CreateAxisAttr().Set("Z")
+
+        world_joint = UsdPhysics.FixedJoint.Define(stage, "/World/Robot/WorldJoint")
+        world_joint.CreateBody1Rel().SetTargets(["/World/Robot/Base"])
+        world_joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0, 0, 0))
+        world_joint.CreateLocalPos1Attr().Set(Gf.Vec3f(0, 0, 0))
+        world_joint.CreateLocalRot0Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        world_joint.CreateLocalRot1Attr().Set(Gf.Quatf(1, 0, 0, 0))
+        world_joint.GetPrim().CreateAttribute("physics:excludeFromArticulation", Sdf.ValueTypeNames.Bool).Set(True)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        world_joint_idx = builder.joint_label.index("/World/Robot/WorldJoint")
+        self.assertEqual(builder.joint_articulation[world_joint_idx], -1)
+
+        model = builder.finalize()
+        self.assertEqual(model.articulation_count, 1)
+
     @staticmethod
     def _make_stage_with_world_joint():
         """Create a USD stage where a fixed joint connects a non-body prim to the root body.

@@ -371,15 +371,11 @@ def _two_link_builder(armature: float = 0.0, dummy_body: bool = False, gravity: 
 
     Args:
         armature: Rotor inertia added to each joint.
-        dummy_body: Add a hinged body before the chain, outside the articulation.
-            MuJoCo orders articulated bodies first, so ``mjc_dof_to_newton_dof``
-            becomes a permutation rather than the identity.
+        dummy_body: Add a hinged body after the chain, in its own articulation,
+            so the model carries an unactuated DOF outside the chain's block.
         gravity: Pull along -Y, in the plane the hinges turn in. Off by default.
     """
     builder = newton.ModelBuilder(gravity=_IN_PLANE_GRAVITY if gravity else _NO_GRAVITY)
-    if dummy_body:
-        dummy = builder.add_link(inertia=_POINT_MASS_INERTIA, mass=1.0)
-        builder.add_joint_revolute(parent=-1, child=dummy, axis=newton.Axis.Z)
     base = builder.add_link(com=wp.vec3(0.3, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=2.0)
     tip = builder.add_link(com=wp.vec3(0.25, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
     j0 = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Z, armature=armature)
@@ -391,6 +387,13 @@ def _two_link_builder(armature: float = 0.0, dummy_body: bool = False, gravity: 
         armature=armature,
     )
     builder.add_articulation([j0, j1])
+    if dummy_body:
+        # Every joint must belong to an articulation, and articulations must be
+        # added in joint order, so the dummy's single-DOF articulation follows
+        # the chain's.
+        dummy = builder.add_link(inertia=_POINT_MASS_INERTIA, mass=1.0)
+        dummy_joint = builder.add_joint_revolute(parent=-1, child=dummy, axis=newton.Axis.Z, label="dummy_root")
+        builder.add_articulation([dummy_joint])
     return builder
 
 
@@ -459,16 +462,20 @@ def _response_at(model: newton.Model, q: np.ndarray, qd: np.ndarray) -> np.ndarr
 
 
 def _arm_dofs(model: newton.Model) -> np.ndarray:
-    """DOF indices belonging to an articulation, in order.
+    """DOF indices belonging to the actuated chain, in order.
 
     Equal to ``arange(joint_dof_count)`` unless the model was built with
-    ``dummy_body=True``, which prepends a standalone body that is not actuated
-    and cannot be: implicit actuation rejects DOFs outside an articulation.
+    ``dummy_body=True``, whose single-DOF articulation is not actuated.
     """
     art_start = model.articulation_start.numpy()
     art_end = model.articulation_end.numpy()
     qd_start = model.joint_qd_start.numpy()
-    spans = [np.arange(qd_start[art_start[a]], qd_start[art_end[a]]) for a in range(model.articulation_count)]
+    joint_label = model.joint_label
+    spans = [
+        np.arange(qd_start[art_start[a]], qd_start[art_end[a]])
+        for a in range(model.articulation_count)
+        if "dummy_root" not in joint_label[art_start[a]]
+    ]
     return np.concatenate(spans).astype(np.uint32) if spans else np.empty(0, dtype=np.uint32)
 
 
@@ -485,15 +492,7 @@ def _arm_values(model: newton.Model, array: wp.array[float]) -> np.ndarray:
 
 
 def _mujoco_solver(test_case: unittest.TestCase, model: newton.Model) -> newton.solvers.SolverMuJoCo:
-    """Build :class:`SolverMuJoCo`, tolerating the standalone-root advisory.
-
-    Models built with ``dummy_body=True`` carry a joint outside any articulation.
-    That is what makes MuJoCo reorder the DOFs, and the solver says so on
-    conversion.
-    """
-    if model.articulation_count and len(_arm_dofs(model)) != model.joint_dof_count:
-        with test_case.assertWarnsRegex(UserWarning, "standalone world roots"):
-            return newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+    """Build :class:`SolverMuJoCo` for the test model."""
     return newton.solvers.SolverMuJoCo(model, disable_contacts=True)
 
 

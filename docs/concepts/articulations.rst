@@ -1114,13 +1114,13 @@ An **orphan joint** is a joint that is not part of any articulation **and** whos
 * The USD asset does not define a ``PhysicsArticulationRootAPI`` on any prim, so no articulations are discovered during parsing.
 * A joint connects two bodies that are not under any ``PhysicsArticulationRootAPI`` prim, even though other articulations exist in the scene.
 
-A joint that is excluded from every :meth:`~newton.ModelBuilder.add_articulation` call but whose two bodies are already reachable through the articulation tree is **not** an orphan joint; it is a **loop-closing joint** (see :ref:`Loop closure`) and is handled separately. A joint from world to a body is also allowed to remain outside articulation metadata as a **standalone world-root joint**.
+A joint that is excluded from every :meth:`~newton.ModelBuilder.add_articulation` call but whose two bodies are already reachable through the articulation tree is **not** an orphan joint; it is a **loop-closing joint** (see :ref:`Loop closure`) and is handled separately.
 
-USD import preserves joints outside authored articulations without emitting an articulation warning. The model's validation and the selected solver determine whether the resulting topology is supported.
+During USD import, a world-connected joint outside every authored articulation is wrapped in a single-joint articulation (unless its child is already owned by an articulation, or another loose joint touches the same child, in which case the joint stays loose and is rejected by validation). Other orphan joints are preserved without an articulation warning, and the model's validation determines whether the resulting topology is supported.
 
 **Validation and finalization**
 
-By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` for joints that connect separate articulations and for non-root orphan joints. Loop-closing joints and standalone world-root joints pass this check. To proceed with either unsupported topology, set ``skip_validation_joints=True`` explicitly:
+By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` for joints that connect separate articulations and for orphan joints. Only loop-closing joints pass this check. To proceed with either unsupported topology, set ``skip_validation_joints=True`` explicitly:
 
 .. testsetup:: articulation-orphan-joints
 
@@ -1139,7 +1139,7 @@ By default, :meth:`~newton.ModelBuilder.finalize` raises a :class:`ValueError` f
 
 Maximal-coordinate solvers (:class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverSemiImplicit`) consume joints independently of articulation membership. Semi-implicit joint constraints are penalty forces, so their accuracy and stability depend on the configured stiffness, damping, and time step.
 
-:class:`~newton.solvers.SolverMuJoCo` converts standalone world-root joints through a solver-specific fallback and emits a warning. It rejects general rootless mechanisms whose remaining bodies cannot be instantiated from articulations or standalone world roots. :class:`~newton.solvers.SolverFeatherstone` requires reduced-coordinate articulation metadata.
+:class:`~newton.solvers.SolverMuJoCo` requires every body to be reachable through an articulation and rejects models whose bodies cannot be instantiated from articulations. :class:`~newton.solvers.SolverFeatherstone` requires reduced-coordinate articulation metadata.
 
 Loop-closing joints are handled separately; see :ref:`Loop closure`.
 

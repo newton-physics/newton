@@ -2580,7 +2580,7 @@ class TestSteelSparseSelectionGuard(unittest.TestCase):
         builder.add_articulation([builder.add_joint_revolute(-1, link)])
         standalone = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         builder.add_joint_revolute(-1, standalone)
-        self.assertFalse(_model_has_bilateral_constraints(builder.finalize(device="cpu")))
+        self.assertFalse(_model_has_bilateral_constraints(builder.finalize(device="cpu", skip_validation_joints=True)))
 
     @unittest.skipUnless(wp.is_cuda_available(), "Sparse integrated solve requires CUDA")
     def test_y_tree_selects_sparse_factors(self):
