@@ -41,19 +41,22 @@ method details. For symptom-driven diagnosis and parameter tuning, start with
 Choosing a Solver
 -----------------
 
-MuJoCo and Kamino currently have dedicated backend guides:
+MuJoCo, Kamino, and VBD currently have dedicated backend guides:
 
 - :doc:`MuJoCo <mujoco>` — generalized-coordinate rigid-body simulation and
   MuJoCo or MJCF workflows.
 - :doc:`Kamino <kamino>` — constrained rigid mechanisms with kinematic loops
   and hard frictional contacts; experimental.
+- :doc:`VBD <vbd>` — unified simulation of cloth, soft bodies, and rigid
+  bodies in a single VBD-based solver; experimental.
 
 The other solver backends are documented through their linked API references
 and the comparison tables below.
 
 For a rigid articulated robot, first decide which coordinate representation
-fits the application. :class:`~newton.solvers.SolverMuJoCo` and
-:class:`~newton.solvers.SolverFeatherstone` use generalized coordinates, while
+fits the application. :class:`~newton.solvers.SolverMuJoCo`,
+:class:`~newton.solvers.SolverFeatherstone`, and
+:class:`~newton.solvers.SolverSteel` use generalized coordinates, while
 :class:`~newton.solvers.SolverXPBD`,
 :class:`~newton.solvers.SolverSemiImplicit`, and
 :class:`~newton.solvers.SolverKamino` use maximal coordinates. For deformable
@@ -118,6 +121,14 @@ Supported Features
      - 🟨 no self-collision
      - ✅
      - 🟨 basic :sup:`2`
+   * - :class:`~newton.solvers.SolverSteel`
+     - Semi-implicit, implicit drives
+     - ✅
+     - ✅ generalized coordinates
+     - ❌
+     - ❌
+     - ❌
+     - ❌
    * - :class:`~newton.solvers.SolverStyle3D`
      - Implicit
      - ❌
@@ -149,6 +160,10 @@ Supported Features
   see :ref:`Differentiability` for further details.
 
 .. experimental::
+    :class:`~newton.solvers.SolverSteel`'s public API and behavior may change without prior notice.
+    Its default ``solve_mode="matrix_free"`` requires a CUDA device; ``solve_mode="split"`` runs on CPU and CUDA with the base feature set.
+
+.. experimental::
     :class:`~newton.solvers.SolverKamino`'s public API and behavior may change without prior notice.
 
 .. experimental::
@@ -165,7 +180,8 @@ which fields are currently used by Newton's built-in solvers. External solvers
 may use different subsets or interpret these fields according to their own
 formulation.
 
-- ``mu``: :class:`~newton.solvers.SolverFeatherstone`,
+- ``mu``: :class:`~newton.solvers.SolverSteel` (arithmetic mean of the two
+  shapes, scaled by ``contact_friction_scale``), :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
   :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverKamino`,
@@ -179,8 +195,11 @@ formulation.
   :class:`~newton.solvers.SolverSemiImplicit`; ``kf`` is also used by
   :class:`~newton.solvers.SolverMuJoCo`
   (see :ref:`mujoco-contact-friction-solreffriction`).
-- ``restitution``: :class:`~newton.solvers.SolverXPBD` when
-  ``enable_restitution=True``, and :class:`~newton.solvers.SolverKamino`.
+- ``restitution``: :class:`~newton.solvers.SolverSteel` (arithmetic mean of
+  the two shapes, for impacts faster than ``restitution_velocity_threshold``, unless
+  ``enable_restitution=False``),
+  :class:`~newton.solvers.SolverXPBD` when ``enable_restitution=True``, and
+  :class:`~newton.solvers.SolverKamino`.
 - ``mu_torsional`` / ``mu_rolling``: :class:`~newton.solvers.SolverXPBD` and
   :class:`~newton.solvers.SolverMuJoCo`.
 - ``kh``: consumed by hydroelastic contact generation for Newton-generated
@@ -197,13 +216,13 @@ Joint Feature Support
 Not every solver supports every joint type or joint property.
 The tables below document which joint features each solver handles.
 
-Only :class:`~newton.solvers.SolverFeatherstone` and :class:`~newton.solvers.SolverMuJoCo`
-operate on :ref:`articulations <Articulations>` (generalized/reduced coordinates).
+:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverSteel`, and
+:class:`~newton.solvers.SolverMuJoCo` operate on :ref:`articulations <Articulations>` (generalized/reduced coordinates).
 The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
 enforce joints as pairwise body constraints but do not use the articulation kinematic-tree structure.
 :class:`~newton.solvers.SolverVBD` supports a subset of joint types through maximal-coordinate
-constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path.
+constraints, with unified compliant ALM by default and a deprecated legacy AVBD path.
 :class:`~newton.solvers.SolverStyle3D` and :class:`~newton.solvers.SolverImplicitMPM` do not support joints.
 
 **Joint types**
@@ -215,12 +234,14 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
    * - Joint type
      - :class:`~newton.solvers.SolverFeatherstone`
+     - :class:`~newton.solvers.SolverSteel`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
      - :class:`~newton.solvers.SolverVBD`
      - :class:`~newton.solvers.SolverKamino`
    * - PRISMATIC
+     - |yes|
      - |yes|
      - |yes|
      - |yes|
@@ -234,7 +255,9 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |yes|
+     - |yes|
    * - BALL
+     - |yes|
      - |yes|
      - |yes|
      - |yes|
@@ -248,6 +271,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |yes|
+     - |yes|
    * - FREE
      - |yes|
      - |yes|
@@ -255,7 +279,9 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |yes|
+     - |yes|
    * - DISTANCE
+     - 🟨 :sup:`1`
      - 🟨 :sup:`1`
      - 🟨 :sup:`1`
      - |yes|
@@ -268,8 +294,10 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
      - |yes|
      - |yes|
+     - |yes|
      - |no|
    * - ROD
+     - |no|
      - |no|
      - |no|
      - |no|
@@ -288,6 +316,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
    * - Property
      - :class:`~newton.solvers.SolverFeatherstone`
+     - :class:`~newton.solvers.SolverSteel`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
@@ -295,12 +324,14 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - :class:`~newton.solvers.SolverKamino`
    * - :attr:`~newton.Model.joint_enabled`
      - |no|
+     - |no| :sup:`8`
      - |yes|
      - |yes|
      - |no|
      - |yes|
      - |no|
    * - :attr:`~newton.Model.joint_armature`
+     - |yes|
      - |yes|
      - |no|
      - |no|
@@ -309,6 +340,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
    * - :attr:`~newton.Model.joint_friction`
      - |no|
+     - |yes| :sup:`9`
      - |no|
      - |no|
      - |yes|
@@ -316,6 +348,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
    * - :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper`
      - |yes|
+     - |yes| :sup:`10`
      - |yes| :sup:`2`
      - |yes|
      - |yes|
@@ -323,6 +356,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
    * - :attr:`~newton.Model.joint_limit_ke` / :attr:`~newton.Model.joint_limit_kd`
      - |yes|
+     - |no|
      - |yes| :sup:`2`
      - |no|
      - |yes|
@@ -330,6 +364,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
    * - :attr:`~newton.Model.joint_effort_limit`
      - |no|
+     - |yes| :sup:`11`
      - |no|
      - |no|
      - |yes|
@@ -337,6 +372,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |yes|
    * - :attr:`~newton.Model.joint_velocity_limit`
      - |no|
+     - |yes| :sup:`12`
      - |no|
      - |no|
      - |no|
@@ -354,12 +390,14 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
    * - Feature
      - :class:`~newton.solvers.SolverFeatherstone`
+     - :class:`~newton.solvers.SolverSteel`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
      - :class:`~newton.solvers.SolverVBD`
      - :class:`~newton.solvers.SolverKamino`
    * - :attr:`~newton.Model.joint_target_ke` / :attr:`~newton.Model.joint_target_kd`
+     - |yes|
      - |yes|
      - |yes| :sup:`2`
      - |yes|
@@ -370,10 +408,12 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
      - |no|
+     - |no|
      - |yes|
      - |no|
      - |yes|
    * - :attr:`~newton.Control.joint_f` (feedforward forces)
+     - |yes|
      - |yes|
      - |yes|
      - |yes|
@@ -390,6 +430,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
    * - Feature
      - :class:`~newton.solvers.SolverFeatherstone`
+     - :class:`~newton.solvers.SolverSteel`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
@@ -399,15 +440,25 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
      - |no|
      - |no|
      - |no|
+     - |no|
      - |yes|
      - |no|
      - |no|
    * - Mimic joints
      - |yes| :sup:`3`
+     - |yes| :sup:`13`
      - |yes| :sup:`4`
      - |yes| :sup:`5`
      - |yes| :sup:`6`
      - |yes| :sup:`5`
+     - |no|
+   * - Particle-body attachments
+     - |no|
+     - |no|
+     - |no|
+     - |no|
+     - |no|
+     - |yes| :sup:`14`
      - |no|
 
 | :sup:`3` Featherstone eliminates follower degrees of freedom from its reduced dynamics and transfers follower forces and inertia to the reference joint.
@@ -415,8 +466,45 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 | :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
+| :sup:`8` Steel rejects models with disabled articulation joints instead of ignoring them; a disabled loop-closing joint starts as a released closure.
+| :sup:`9` Steel enforces dry joint friction of PRISMATIC, REVOLUTE, BALL, and D6 DOFs as one bounded constraint row per DOF when constructed with ``enable_joint_friction=True`` and ``solve_mode="matrix_free"`` (off by default, experimental).
+| :sup:`10` Steel enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
+| :sup:`11` Steel clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="rows"`` bound the complete reaction.
+| :sup:`12` Steel enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` and ``solve_mode="matrix_free"``. With ``drive_mode="rows"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
+| :sup:`13` With ``solve_mode="matrix_free"``, Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. ``solve_mode="split"`` rejects mimic relationships and loop-closing joints; the propagation contact responses (``articulated_contact_response``) reject loop-closing joints and solve mimic rows iteratively.
+| :sup:`14` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
+  solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
 
+.. _Particle-body attachments:
 
+Particle-Body Attachments
+-------------------------
+
+A particle-body attachment ties one cloth or solid particle to a point in a
+rigid body's local frame. Author attachments with
+:meth:`newton.ModelBuilder.add_attachment_particle_body`. They are stored on the
+:class:`~newton.Model` and do not require a coupled solver.
+
+:class:`~newton.solvers.SolverVBD` applies an attachment whenever it integrates
+both endpoints. The attachment is compliant rather than rigid: it contributes a
+quadratic penalty with ``stiffness`` [N/m] and ``damping`` [N·s/m], so a heavily
+loaded attachment keeps a small offset instead of holding the particle exactly.
+The constraint is translational, similar to the positional part of a ball joint;
+a single particle has no orientation, so there is no angular counterpart. Forces
+are equal and opposite, including the torque about the body's center of mass, and
+the path is independent of contact, so it stays active without penetration.
+
+Both endpoints must be integrated by the same solver, so
+:class:`~newton.solvers.SolverVBD` rejects attachments when it is constructed
+with ``integrate_with_external_rigid_solver=True``.
+
+When the endpoints belong to two different solvers in a coupled simulation,
+:class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` turns the same
+model rows into cross-solver interface constraints; see :ref:`ADMM coupling`.
+The two cases are mutually exclusive, so no attachment is applied twice, and a
+row whose body or particle is owned by no solver applies no force at all. The
+coupler also warns when both endpoints belong to one entry whose solver does not
+support attachments.
 
 .. _Differentiability:
 

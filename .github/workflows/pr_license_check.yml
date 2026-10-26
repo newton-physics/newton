@@ -10,10 +10,10 @@ on:
       - main
       - "release-*"
 
-# Cancels in-progress runs of this workflow for the same pull request,
-# but allows parallel runs for pushes to the main branch.
+# Cancel superseded runs for the same pull request or merge queue ref,
+# while keeping distinct queue entries in separate groups.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
         with:
           egress-policy: block
           allowed-endpoints: >

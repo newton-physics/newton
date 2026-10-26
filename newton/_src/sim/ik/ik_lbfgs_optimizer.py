@@ -125,6 +125,10 @@ class IKOptimizerLBFGS:
         wolfe_c2: Strong-Wolfe curvature constant.
         problem_idx: Optional mapping from batch rows to base problem indices
             for per-problem objective data.
+
+    Raises:
+        ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
+            joint, which is not supported by this optimizer.
     """
 
     TILE_N_DOFS = None
@@ -141,6 +145,9 @@ class IKOptimizerLBFGS:
         *a: Any,
         **kw: Any,
     ) -> IKOptimizerLBFGS:
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("IKOptimizerLBFGS does not support JointType.ROD joints.")
+
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
         history_len = kw.get("history_len", 10)
@@ -268,14 +275,21 @@ class IKOptimizerLBFGS:
             self.joint_S_s = None
 
     def _alloc_line_search_buffers(self, grad: bool, line_search_alphas: Sequence[float]) -> None:
+        """Allocate candidate evaluation buffers with independent adjoints when needed.
+
+        Args:
+            grad: Whether candidate evaluation requires autodiff gradient storage.
+            line_search_alphas: Step-length multipliers for the candidate configurations.
+        """
         device = self.device
         model = self.model
 
         self.line_search_alphas = wp.array(line_search_alphas, dtype=wp.float32, device=device)
 
         self.candidate_q = wp.zeros((self.n_batch, self.n_line_search, self.n_coords), dtype=wp.float32, device=device)
+        # Keep adjoints separate so tape.zero() cannot erase line-search residuals.
         self.candidate_residuals = wp.zeros(
-            (self.n_batch, self.n_line_search, self.n_residuals), dtype=wp.float32, device=device
+            (self.n_batch, self.n_line_search, self.n_residuals), dtype=wp.float32, requires_grad=grad, device=device
         )
         if self.n_line_search > 0:
             self.candidate_problem_idx = wp.zeros((self.n_batch, self.n_line_search), dtype=wp.int32, device=device)
@@ -1355,7 +1369,7 @@ class IKOptimizerLBFGS:
             jcalc_transform,
         )
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def _integrate_dq_dof(
             # model-wide
             joint_type: wp.array[wp.int32],  # (n_joints)

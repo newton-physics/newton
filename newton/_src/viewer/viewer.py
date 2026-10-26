@@ -19,7 +19,9 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
+from ..core.host_transform import transform_add_translation, transform_from_array, transform_multiply
 from ..core.types import MAXVAL, Axis
+from ..exceptions import NewtonWarning
 from .kernels import (
     build_active_particle_mask,
     compact,
@@ -128,6 +130,7 @@ class ViewerBase(ABC):
         self.device = wp.get_device()
         self.picking_enabled = True
         self._camera_speed = 4.0
+        self._rendering_paused = False
 
         # Layer registry. The default layer is always present and has an
         # empty name prefix to keep backward compatibility for code that
@@ -481,6 +484,37 @@ class ViewerBase(ABC):
         """
         return not self.is_paused()
 
+    def is_rendering_paused(self) -> bool:
+        """Report whether updates to the displayed image are paused.
+
+        This is independent of simulation pause (:meth:`is_paused`). Backends
+        without rendering-pause support always return ``False``.
+
+        Returns:
+            bool: True when updates to the displayed image are paused.
+        """
+        return self._rendering_paused
+
+    def set_rendering_paused(self, paused: bool) -> None:
+        """Freeze or resume the displayed image without changing simulation pause.
+
+        Supported by :class:`~newton.viewer.ViewerGL` and
+        :class:`~newton.viewer.ViewerRTX`, including headless mode.
+        Continue calling :meth:`begin_frame`, logging state,
+        and :meth:`end_frame` while paused to process events and UI. Resume
+        displays the latest state, without replaying intermediate updates.
+
+        Paused capture returns the frozen image; before an image exists it
+        raises ``RuntimeError``. Frame budgets still count viewer-loop frames.
+        Clearing the model invalidates the image but preserves rendering pause.
+
+        Backends without rendering-pause support ignore this method.
+
+        Args:
+            paused: Whether to pause rendering.
+        """
+        return None
+
     def is_key_down(self, key: str | int) -> bool:
         """Default key query API. Concrete viewers can override.
 
@@ -601,8 +635,8 @@ class ViewerBase(ABC):
         layer.show_particles = False
         layer.show_contacts = False
         layer.show_contact_normals = True
-        layer.show_contact_disks = True  # Note: requires the ``"force"`` extended contact attribute.
-        layer.show_contact_forces = True  # Note: requires the ``"force"`` extended contact attribute.
+        layer.show_contact_disks = True  # Contact modes use CONTACT_F solver observable when available.
+        layer.show_contact_forces = True  # Force arrows require CONTACT_F solver observable.
         layer.show_springs = False
         layer.show_triangles = True
         layer.show_gaussians = False
@@ -994,17 +1028,19 @@ class ViewerBase(ABC):
         """Adapt contact-visualization scales to the current model.
 
         Sets the relative ``contact_viz_scale`` default and adapts
-        ``contact_force_scale`` to the aggregate model weight.
+        ``contact_force_scale`` to the mean dynamic mass of populated local
+        worlds plus shared global dynamic mass, multiplied by the first
+        gravity vector's magnitude.
 
-        Falls back to the literal defaults if the relevant model data is
-        unavailable (e.g. no shapes / no dynamic bodies / zero gravity).
+        Uses nominal gravity when gravity is zero or unavailable, and a unit
+        characteristic force when no dynamic mass is available.
         """
         # Save the previous defaults so we can detect user overrides set
         # before the model was attached (rare but possible).
         prev_default_scale = self._contact_viz_scale_default
         prev_default_force_scale = self._contact_force_scale_default
 
-        # Characteristic force F_char = sum(dynamic body mass) * |gravity|.
+        # Replicating identical worlds must not change force-arrow lengths.
         F_char = 0.0
         if (
             self.model is not None
@@ -1015,7 +1051,14 @@ class ViewerBase(ABC):
             mass_np = self.model.body_mass.numpy()
             inv_mass_np = self.model.body_inv_mass.numpy()
             dyn_mask = np.isfinite(mass_np) & (inv_mass_np > 0.0)
-            total_mass = float(mass_np[dyn_mask].sum()) if dyn_mask.any() else 0.0
+            dynamic_mass = mass_np[dyn_mask]
+            mean_mass = float(dynamic_mass.sum())
+            if self.model.body_world is not None:
+                worlds = self.model.body_world.numpy()[dyn_mask]
+                local_mask = worlds >= 0
+                # Global bodies are shared by local worlds, not another replica.
+                mean_mass = float(dynamic_mass[~local_mask].sum())
+                mean_mass += float(dynamic_mass[local_mask].sum()) / max(1, len(np.unique(worlds[local_mask])))
             g_mag = 9.81
             if self.model.gravity is not None:
                 g_np = self.model.gravity.numpy()
@@ -1024,7 +1067,7 @@ class ViewerBase(ABC):
                     g_mag = float(np.linalg.norm(g0))
                     if not np.isfinite(g_mag) or g_mag <= 0.0:
                         g_mag = 9.81
-            F_char = total_mass * g_mag
+            F_char = mean_mass * g_mag
         if not np.isfinite(F_char) or F_char <= 0.0:
             F_char = 1.0
 
@@ -1054,6 +1097,31 @@ class ViewerBase(ABC):
         """
         pass
 
+    def get_frame(self, *, output: wp.array3d[wp.uint8] | None = None, render_ui: bool = False) -> wp.array3d[wp.uint8]:
+        """Retrieve the last rendered frame as RGB image data.
+
+        Call after :meth:`end_frame`. Supported by :class:`ViewerGL` and
+        :class:`ViewerRTX` in both headless and windowed modes. Call
+        ``.numpy()`` on the result to obtain a NumPy array.
+
+        Args:
+            output: Optional pre-allocated Warp array on the viewer
+                device with shape ``(height, width, 3)`` and dtype ``wp.uint8``.
+                If ``None``, a new array is created.
+            render_ui: Whether to include UI overlays. Support depends on
+                the viewer backend.
+
+        Returns:
+            RGB image data on the viewer device with shape
+            ``(height, width, 3)``, dtype ``wp.uint8``, and a top-left origin.
+            If supplied, returns ``output``.
+
+        Raises:
+            NotImplementedError: The viewer backend does not support frame
+                capture or the requested UI capture option.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support frame capture")
+
     def log_state(self, state: newton.State):
         """Update the viewer with the given state of the simulation.
 
@@ -1081,7 +1149,7 @@ class ViewerBase(ABC):
             materials = shapes.materials if self.model_changed else None
 
             # Capsules may be rendered via a specialized path by the concrete viewer/backend
-            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # (e.g., deforming a shared capsule prototype to batch different dimensions).
             # The base implementation of log_capsules() falls back to log_instances().
             if shapes.geo_type == newton.GeoType.CAPSULE:
                 self.log_capsules(
@@ -1180,8 +1248,8 @@ class ViewerBase(ABC):
                 if body_q_np is None:
                     body_q_np = state.body_q.numpy()
 
-                body_xform = wp.transform_expand(body_q_np[parent])
-                world_xform = wp.transform_multiply(body_xform, shape_xform)
+                body_xform = transform_from_array(body_q_np[parent])
+                world_xform = transform_multiply(body_xform, shape_xform)
             else:
                 world_xform = shape_xform
 
@@ -1189,11 +1257,8 @@ class ViewerBase(ABC):
                 if offsets_np is None:
                     offsets_np = self.world_offsets.numpy()
                 offset = offsets_np[world_idx]
-                world_xform = wp.transformf(
-                    wp.vec3(world_xform.p[0] + offset[0], world_xform.p[1] + offset[1], world_xform.p[2] + offset[2]),
-                    world_xform.q,
-                )
-            world_xform = wp.transform_multiply(self.layer.xform, world_xform)
+                world_xform = transform_add_translation(world_xform, offset)
+            world_xform = transform_multiply(self.layer.xform, world_xform)
             self.log_gaussian(gname, gaussian, xform=world_xform, hidden=False)
 
     def _log_non_shape_state(self, state: newton.State):
@@ -1231,7 +1296,13 @@ class ViewerBase(ABC):
         self._log_joints(state)
         self._log_com(state)
 
-    def log_contacts(self, contacts: newton.Contacts, state: newton.State):
+    def log_contacts(
+        self,
+        contacts: newton.Contacts,
+        state: newton.State,
+        *,
+        observables: newton.solvers.SolverBase.Observables | None = None,
+    ):
         """Render contact visualizations.
 
         The visualization is split into three layers, each of which can be
@@ -1240,12 +1311,12 @@ class ViewerBase(ABC):
         * ``"/contacts/normals"`` — arrows along ``rigid_contact_normal``
           (gated on :attr:`show_contact_normals`).
         * ``"/contacts/modes"`` — thin oriented disks at each contact, color
-          coded by inferred contact mode (open / stick / slip) when
-          ``contacts.force`` is allocated, else by a uniform default color
+          coded by inferred contact mode (open / stick / slip) when contact
+          force output is available, else amber to indicate an unknown mode
           (gated on :attr:`show_contact_disks`).
         * ``"/contacts/forces"`` — arrows along the linear part of
-          ``contacts.force`` (gated on :attr:`show_contact_forces`; hidden if
-          ``contacts.force is None``).
+          the contact-force output (gated on :attr:`show_contact_forces`;
+          hidden if no output is available).
 
         Sub-toggles are themselves gated by the master :attr:`show_contacts`
         flag; setting it to ``False`` hides everything.  When sub-toggles are
@@ -1254,9 +1325,19 @@ class ViewerBase(ABC):
 
         Args:
             contacts: The contacts to render.
-            state: The current state of the simulation.  Required to compute
+            state: The state in whose body frames the contact points are expressed.
+                For contacts detected before a solver step, pass its input state.
+                Required to compute
                 world-space contact positions and (for mode coloring) body
                 velocities at the contact points.
+            observables: Optional solver observables containing ``contact_f``. If
+                omitted, the deprecated ``contacts.force`` array is used.
+                ``contacts`` must be the buffer that produced ``contact_f``
+                (``observables.contacts``); newly allocated forces are zero until the
+                solver updates them. See :ref:`solver_observables`.
+
+                .. experimental::
+                    The solver observable API may change without prior notice.
         """
 
         if not self.show_contacts or self._layer_force_hidden():
@@ -1267,6 +1348,16 @@ class ViewerBase(ABC):
                 )
             self.log_arrows(self._qualify("/contacts/forces"), None, None, None)
             return
+
+        contact_f = observables.contact_f if observables is not None else contacts.force
+        if observables is not None:
+            if observables.model is not self.model:
+                raise ValueError("Solver observables must belong to the viewer's model.")
+            if contact_f is not None and observables.contacts is not contacts:
+                raise ValueError(
+                    "Contact solver observables were produced with a different Contacts instance; "
+                    "pass the Contacts used by the step that produced them."
+                )
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max
@@ -1358,6 +1449,7 @@ class ViewerBase(ABC):
                     self.model.shape_world,
                     self.model.shape_collision_radius,
                     self.world_offsets,
+                    self.layer.xform,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
@@ -1365,8 +1457,9 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
                     contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
-                    contacts.force,  # may be None — kernel falls back to default color
+                    contact_f,  # may be None — kernel uses the unknown-mode color
                     contact_scale * 0.2,
                     contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
@@ -1374,6 +1467,7 @@ class ViewerBase(ABC):
                     wp.vec3(0.1, 0.1, 0.1),  # open: black
                     wp.vec3(0.6, 0.6, 0.6),  # stick: light gray
                     wp.vec3(0.2, 0.2, 0.9),  # slip: blue
+                    wp.vec3(0.95, 0.7, 0.3),  # unknown: amber
                 ],
                 outputs=[self._contact_disk_xforms, self._contact_disk_scales, self._contact_disk_colors],
                 device=self.device,
@@ -1394,7 +1488,7 @@ class ViewerBase(ABC):
             )
 
         # ---- Layer C: contact force arrows --------------------------------
-        if self.show_contact_forces and contacts.force is not None:
+        if self.show_contact_forces and contact_f is not None:
             if self._contact_force_starts is None or len(self._contact_force_starts) < max_contacts:
                 self._contact_force_starts = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
                 self._contact_force_ends = wp.zeros(max_contacts, dtype=wp.vec3, device=self.device)
@@ -1410,13 +1504,14 @@ class ViewerBase(ABC):
                     self.model.shape_world,
                     self.model.shape_collision_radius,
                     self.world_offsets,
+                    self.layer.xform,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_offset0,
-                    contacts.force,
+                    contact_f,
                     contact_scale * float(self.contact_force_scale),
                 ],
                 outputs=[self._contact_force_starts, self._contact_force_ends],
@@ -1785,14 +1880,16 @@ class ViewerBase(ABC):
 
         Args:
             name: The name of the gizmo.
-            transform: The transform of the gizmo.
+            transform: Gizmo transform with translation [m] and a unitless
+                rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
                 released by the user.
         """
         return
@@ -2044,7 +2141,8 @@ class ViewerBase(ABC):
 
         Args:
             name: Stable identifier. Subsequent calls with the same *name*
-                update in place. In :class:`ViewerGL`, each name gets one
+                update in place. In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, each name gets one
                 dockable window.
             image: Image array. Accepted shapes:
 
@@ -2056,12 +2154,14 @@ class ViewerBase(ABC):
                 Accepted dtypes: ``uint8`` (values in ``[0, 255]``) or
                 ``float32`` (values in ``[0, 1]``). Values outside the range
                 are clipped.
-            fullscreen: In :class:`~newton.viewer.ViewerGL`, display the image
-                as the main viewer surface for the current frame instead of
+            fullscreen: In :class:`~newton.viewer.ViewerGL` and
+                :class:`~newton.viewer.ViewerRTX`, display the image as the
+                main viewer surface for the current frame instead of
                 rendering the 3D scene. Other backends ignore this option.
 
-        The base implementation is a no-op. Backends that render images
-        (currently only :class:`~newton.viewer.ViewerGL`) override this method.
+        The base implementation is a no-op. Backends that render images,
+        including :class:`~newton.viewer.ViewerGL`, :class:`~newton.viewer.ViewerRTX`,
+        and :class:`~newton.viewer.ViewerViser`, override this method.
         """
         return
 
@@ -2458,7 +2558,7 @@ class ViewerBase(ABC):
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
-                    xform = wp.transform_expand(shape_transform[s])
+                    xform = transform_from_array(shape_transform[s])
                     gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
                     self._gaussian_instances.append(
                         (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
@@ -2538,7 +2638,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._shape_instances[shape_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
 
             if shape_display_color is not None:
@@ -2708,7 +2808,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._sdf_isomesh_instances[geo_hash]
 
-            xform = wp.transform_expand(shape_transform[s])
+            xform = transform_from_array(shape_transform[s])
             # Apply shape scale if not baked into SDF, otherwise use (1,1,1)
             if scale_baked:
                 scale = np.array([1.0, 1.0, 1.0])
@@ -2882,7 +2982,7 @@ class ViewerBase(ABC):
     ):
         """Compute offset meshes and extract wireframe edge data for every collision shape.
 
-        Results are written into *target* (keyed by shape index).
+        Wireframe edge data are written into *target* (keyed by shape index).
         """
         if self.model is None:
             return
@@ -3176,12 +3276,14 @@ class ViewerBase(ABC):
                 warnings.warn(
                     f"Model.tri_color has {len(colors)} values for {tri_count} triangles; "
                     "rendering all triangles with the default color.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 colors = np.broadcast_to(default_color, (tri_count, 3)).copy()
             elif not np.all(np.isfinite(colors)):
                 warnings.warn(
                     "Model.tri_color contains non-finite values; replacing them with display-safe values.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 colors = np.nan_to_num(colors, nan=0.0, posinf=1.0, neginf=0.0)
@@ -3197,12 +3299,14 @@ class ViewerBase(ABC):
                 warnings.warn(
                     f"Model.tri_opacity has {len(opacities)} values for {tri_count} triangles; "
                     "rendering all triangles as opaque.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 opacities = np.ones(tri_count, dtype=np.float32)
             elif not np.all(np.isfinite(opacities)):
                 warnings.warn(
                     "Model.tri_opacity contains non-finite values; replacing them with display-safe values.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 opacities = np.nan_to_num(opacities, nan=1.0, posinf=1.0, neginf=0.0)
@@ -3212,6 +3316,7 @@ class ViewerBase(ABC):
             warnings.warn(
                 f"Model.tri_opacity contains {len(unique_opacities)} unique values; quantizing to at most "
                 f"{MAX_TRIANGLE_OPACITY_GROUPS} display-opacity groups.",
+                NewtonWarning,
                 stacklevel=2,
             )
             opacities = (
@@ -3224,6 +3329,7 @@ class ViewerBase(ABC):
             warnings.warn(
                 f"Model triangle appearance contains {unique_appearance_count} unique values; quantizing to at most "
                 f"{MAX_TRIANGLE_APPEARANCE_GROUPS} display groups.",
+                NewtonWarning,
                 stacklevel=2,
             )
             active_channels = np.flatnonzero(np.ptp(appearances, axis=0) > 0.0)

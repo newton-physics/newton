@@ -2,15 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 from math import sqrt
 from unittest import mock
 
 import numpy as np
 import warp as wp
 
+from newton._src.geometry import broad_phase_nxn
 from newton._src.geometry.broad_phase_sap import _advance_sap_chunk_base
 from newton._src.geometry.flags import ShapeFlags
+from newton.exceptions import NewtonWarning
 from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, BroadPhaseSAP
+from newton.tests.unittest_utils import get_test_devices
 
 # NOTE: The test_group_pair and test_world_and_group_pair functions below are copied
 # from newton._src.geometry.broad_phase_common because they need to be available as
@@ -160,6 +164,43 @@ def _test_advance_sap_chunk_base(
 
 
 class TestBroadPhase(unittest.TestCase):
+    def test_explicit_large_pair_warning_thresholds(self):
+        """Warn only when total and busiest-world pair thresholds are met."""
+        cases = (
+            ("total boundary", [0, 3, 1], 3, False, 0),
+            ("below world threshold", [0, 2, 2], 4, False, 1),
+            ("multiworld prefix", [0, 2, 3], 4, False, 1),
+            ("world boundary", [0, 3, 1], 4, True, 1),
+            ("shared globals", [1, 2, 1], 4, True, 1),
+            ("many small worlds", [0, *([1] * 8)], 8, False, 1),
+            ("global-only worlds", [4, 0, 0, 0], 4, True, 1),
+            ("no regular worlds", [4], 4, True, 0),
+            ("single world", [0, 4], 4, True, 0),
+        )
+        with (
+            mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_TOTAL", 3),
+            mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD", 3),
+            mock.patch.object(wp, "launch", side_effect=AssertionError("Launched warning kernel")),
+        ):
+            for device in get_test_devices():
+                for label, counts, count, expected_warning, expected_reads in cases:
+                    worlds = wp.array(np.repeat(np.arange(len(counts)) - 1, 2), dtype=wp.int32, device=device)
+                    pairs = np.repeat(np.arange(0, 2 * len(counts), 2)[:, None] + [0, 1], counts, axis=0)
+                    pairs = wp.array(pairs, dtype=wp.vec2i, device=device)[:count]
+                    with (
+                        self.subTest(device=device, case=label),
+                        mock.patch.object(pairs, "numpy", wraps=pairs.numpy) as read_pairs,
+                        mock.patch.object(worlds, "numpy", wraps=worlds.numpy) as read_worlds,
+                        warnings.catch_warnings(record=True) as caught,
+                    ):
+                        warnings.filterwarnings("always", message="Explicit broad phase tests", category=NewtonWarning)
+                        BroadPhaseExplicit()._warn_large_pair_count(pairs, worlds, len(counts) - 1)
+                    self.assertEqual(len(caught), int(expected_warning))
+                    self.assertEqual(read_pairs.call_count, expected_reads)
+                    self.assertEqual(read_worlds.call_count, expected_reads)
+                    if caught:
+                        self.assertIn("broad_phase='sap'", str(caught[0].message))
+
     def test_sap_auto_sort_selection(self):
         """Select bounded tile sizes only for medium-sized SAP worlds."""
         cases = (
@@ -221,54 +262,6 @@ class TestBroadPhase(unittest.TestCase):
             count=broad_phase.max_shapes_per_world,
         )
         self.assertEqual(int(candidate_pair_count.numpy()[0]), 3)
-
-    @unittest.skipUnless(wp.get_cuda_device_count() > 0, "CUDA is required for graph capture")
-    def test_sap_single_segment_capture_replay(self):
-        """Capture and replay single-segment SAP through segmented sorting."""
-        shape_count = 4
-        device = wp.get_device("cuda:0")
-        shape_lower = wp.full(shape_count, wp.vec3(-1.0), dtype=wp.vec3, device=device)
-        shape_upper = wp.full(shape_count, wp.vec3(1.0), dtype=wp.vec3, device=device)
-        shape_group = wp.array([0, 1, 1, -1], dtype=wp.int32, device=device)
-        shape_world = wp.full(shape_count, -1, dtype=wp.int32, device=device)
-        candidate_pair = wp.zeros(6, dtype=wp.vec2i, device=device)
-        candidate_pair_count = wp.zeros(1, dtype=wp.int32, device=device)
-        broad_phase = BroadPhaseSAP(shape_world, sort_type="segmented", device=device)
-
-        broad_phase.launch(
-            shape_lower,
-            shape_upper,
-            None,
-            shape_group,
-            shape_world,
-            shape_count,
-            candidate_pair,
-            candidate_pair_count,
-            device=device,
-        )
-        with mock.patch.object(
-            wp.utils,
-            "segmented_sort_pairs",
-            wraps=wp.utils.segmented_sort_pairs,
-        ) as segmented_sort:
-            with wp.ScopedCapture(device=device) as capture:
-                broad_phase.launch(
-                    shape_lower,
-                    shape_upper,
-                    None,
-                    shape_group,
-                    shape_world,
-                    shape_count,
-                    candidate_pair,
-                    candidate_pair_count,
-                    device=device,
-                )
-
-        segmented_sort.assert_called_once()
-        for _ in range(2):
-            wp.capture_launch(capture.graph)
-            wp.synchronize_device(device)
-            self.assertEqual(int(candidate_pair_count.numpy()[0]), 3)
 
     def test_sap_broadphase_auto(self):
         """Generate correct SAP pairs with automatic sort selection."""

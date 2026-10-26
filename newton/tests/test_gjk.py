@@ -11,6 +11,7 @@ import warp as wp
 from newton import GeoType
 from newton._src.geometry.simplex_solver import create_solve_closest_distance
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
+from newton.tests.unittest_utils import get_test_devices
 
 MAX_ITERATIONS = 30
 
@@ -126,7 +127,7 @@ class TestGJK(unittest.TestCase):
     """Tests for GJK distance computation using the new simplex solver."""
 
     def test_cylinder_barrel_support(self):
-        """Verify cylinder support follows the symmetric circular barrel profile."""
+        """Verify cylinder profiles and regular-cylinder support across direction scales."""
         radius = 0.5
         half_height = 1.0
         barrel_radius = 2.0
@@ -156,6 +157,34 @@ class TestGJK(unittest.TestCase):
             (support_radius, 0.0, support_z),
             atol=1.0e-6,
         )
+
+        # GJK directions shrink with separation. Their magnitude must not
+        # change the supporting plane of a regular cylinder.
+        directions = (
+            (0.00160768, -0.00683263, 0.999975),
+            (-1.0, 2.0, 3.0),
+            (0.0, -1.0, 0.0),
+            (-1.0e-7, 0.0, 1.0),
+            (0.0, 0.0, 1.0),
+            (0.0, 0.0, -1.0),
+            (0.0, 0.0, 0.0),
+        )
+        for device in get_test_devices():
+            with wp.ScopedDevice(device):
+                for direction in directions:
+                    for magnitude in (1.0e-10, 1.0e-7, 1.0e-5, 1.0, 1.0e5):
+                        with self.subTest(device=device, direction=direction, magnitude=magnitude):
+                            query = (np.asarray(direction) * magnitude).astype(np.float32)
+                            point = _cylinder_support((0.02, 0.0625, 0.0), query).astype(np.float64)
+                            unit = query.astype(np.float64)
+                            length = np.linalg.norm(unit)
+                            if length > 0.0:
+                                unit /= length
+                            expected = 0.02 * np.linalg.norm(unit[:2]) + 0.0625 * abs(unit[2])
+                            self.assertTrue(np.all(np.isfinite(point)))
+                            self.assertAlmostEqual(float(np.dot(unit, point)), expected, delta=1.0e-8)
+                            self.assertLessEqual(np.linalg.norm(point[:2]), 0.02 + 1.0e-8)
+                            self.assertLessEqual(abs(point[2]), 0.0625 + 1.0e-8)
 
     def test_spheres_distance(self):
         """Test distance between two separated spheres."""

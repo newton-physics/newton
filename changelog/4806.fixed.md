@@ -1,0 +1,1 @@
+Fix `SolverImplicitMPM` zeroing `particle_stress` of inactive particles every step, and their `particle_Jp` and `particle_elastic_strain` when they lie outside the active cells of a rebuildable sparse grid.
