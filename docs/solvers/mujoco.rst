@@ -98,7 +98,7 @@ The converter supports the following rigid-body features:
        meshes, heightfields, materials, textures, sites, fluid coefficients,
        surface velocity, and adhesion.
    * - Joints
-     - Free, ball, scalar, and co-located compound joints; references, limits,
+     - Free, ball, scalar, and compound joints; references, limits,
        asymmetric effort bounds, friction, armature, polynomial passive forces,
        and ``springdamper``.
    * - Tendons and equalities
@@ -249,7 +249,9 @@ Native import maps compound joints to Newton's convention: slides precede
 hinges, preserving declaration order within each group. Joint properties and
 actuator targets follow their corresponding DOFs. Translations act along axes
 fixed in the parent joint frame, so a slide authored after a hinge can move
-differently than in MuJoCo. This is an intentional conversion convention.
+differently than in MuJoCo. All axes use the first authored joint's anchor,
+matching the legacy importer, even when subsequent joints specify different
+positions. This can also change kinematics relative to MuJoCo.
 
 Native mesh import retains triangle surfaces, including concavities, using
 MuJoCo's compiled mesh coordinates and compensating geom transforms.
@@ -265,8 +267,8 @@ MJCF meshes. These are Newton collision settings, separate from MuJoCo's
 unsupported SDF geom type.
 
 The importer is not a complete replacement for every MuJoCo feature.
-It rejects compound joints with different anchors
-or a ball joint combined with other joints on the same body; flexes, plugins, SDF geometry, actuator callbacks, PID dynamics, actuator
+It rejects a ball joint combined with other joints on the same body;
+flexes, plugins, SDF geometry, actuator callbacks, PID dynamics, actuator
 armature/damping, and actuators requiring multiple control values. These need
 additional Newton representations or solver support. Sensors, cameras, lights,
 keyframes, skins, custom elements, and MuJoCo user data are omitted with a

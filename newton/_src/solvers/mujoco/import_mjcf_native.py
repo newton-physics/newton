@@ -133,6 +133,7 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
         sanitize_name(model.joint(j).name or (f"{label.rsplit('/', 1)[-1]}_freejoint" if kind == 0 else f"joint_{j}"))
         for j in selected
     )
+    # Match legacy's shared anchor before reordering scalar DOFs.
     anchor = wp.transform(model.jnt_pos[first], wp.quat_identity())
     if kind == int(mujoco.mjtJoint.mjJNT_FREE):
         joint = builder.add_joint_free(body, parent=parent, label=f"{label}/{name}")
@@ -153,8 +154,6 @@ def _add_joints(builder, model, selected, parent, body, local, label, attributes
         )
         return joint, {first: builder.joint_qd_start[joint]}
     ordered = sorted(selected, key=lambda j: model.jnt_type[j] != int(mujoco.mjtJoint.mjJNT_SLIDE))
-    if any(not np.allclose(model.jnt_pos[j], model.jnt_pos[first]) for j in selected):
-        raise NotImplementedError("Compound joints with different anchors cannot be represented by a Newton D6 joint.")
     linear, angular, custom = [], [], {}
     for offset, j in enumerate(ordered):
         d = int(model.jnt_dofadr[j])
@@ -806,10 +805,6 @@ def parse_mjcf(
             raise NotImplementedError(
                 "Native MJCF import does not support a ball joint combined with other joints "
                 f"in body {model.body(i).name!r}."
-            )
-        if count > 1 and not np.allclose(model.jnt_pos[start : start + count], model.jnt_pos[start]):
-            raise NotImplementedError(
-                "Compound joints with different anchors cannot be represented by a Newton D6 joint."
             )
     if parent_body < -1 or parent_body >= builder.body_count:
         raise ValueError("parent_body must identify an existing body or be -1")

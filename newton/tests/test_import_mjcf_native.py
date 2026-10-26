@@ -246,6 +246,33 @@ class TestImportMjcfNative(unittest.TestCase):
                 xml = f'<mujoco><worldbody><body pos=".1 .2 .3">{joints}<geom type="box" size=".1 .2 .3" mass="1"/></body></worldbody></mujoco>'
                 self.assert_roundtrip(xml, ("jnt_type", "dof_armature", "dof_damping", "body_mass", "qpos0"))
 
+    def test_compound_joints_share_first_anchor(self):
+        """Match legacy anchors and kinematics even when scalar joints have different positions."""
+        for second_type in ("hinge", "slide"):
+            with self.subTest(second_type=second_type):
+                xml = f'''<mujoco><worldbody><body name="compound" pos=".1 .2 .3" euler="20 30 40">
+                    <joint name="first" axis="1 0 0" pos=".2 .3 .4"/>
+                    <joint name="second" type="{second_type}" axis="0 1 0" pos="-.3 .1 .2"/>
+                    <geom type="box" size=".1 .2 .3" mass="1"/>
+                    </body></worldbody></mujoco>'''
+                builders = []
+                poses = []
+                for importer in ("add_mjcf", "add_mjcf_native"):
+                    builder = newton.ModelBuilder()
+                    getattr(builder, importer)(xml)
+                    self.assertEqual(builder.joint_count, 1)
+                    self.assertEqual(builder.joint_type[0], newton.JointType.D6)
+                    np.testing.assert_allclose(builder.joint_X_c[0].p, [0.2, 0.3, 0.4], atol=1e-6)
+                    builders.append(builder)
+                    model = builder.finalize()
+                    state = model.state()
+                    state.joint_q.assign([0.25, -0.4])
+                    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                    poses.append(state.body_q.numpy())
+                for field in ("joint_X_p", "joint_X_c", "joint_axis"):
+                    np.testing.assert_allclose(getattr(builders[0], field), getattr(builders[1], field), atol=1e-6)
+                np.testing.assert_allclose(poses[0], poses[1], atol=1e-6)
+
     def test_reject_mixed_ball_joints_before_mutation(self):
         """Reject mixed ball/scalar joints without changing an existing builder."""
         import mujoco
