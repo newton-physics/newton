@@ -2625,6 +2625,99 @@ def Xform "Root" (
         self.assertEqual(builder.joint_count, 1)
         self.assertEqual(builder.joint_label[joint_id], "my_custom_joint")
 
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_cameras_import_with_render_product_resolution(self):
+        """Import UsdGeom.Camera prims and resolve render-product resolutions through RenderSettings."""
+        from pxr import Usd
+
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+(
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Body" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        float physics:mass = 1
+
+        def Xform "Mount"
+        {
+            double3 xformOp:translate = (0.5, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Camera "Inherited"
+            {
+                float focalLength = 24
+                float horizontalAperture = 36
+                float verticalAperture = 24
+                float2 clippingRange = (0.05, 20)
+            }
+        }
+    }
+
+    def Camera "Overridden" {}
+    def Camera "Standalone" {}
+    def Camera "Unauthored" {}
+}
+
+def Scope "Render"
+{
+    def RenderSettings "Settings"
+    {
+        rel camera = </World/Inherited>
+        int2 resolution = (320, 240)
+        rel products = [</Render/Inherits>, </Render/Overrides>]
+    }
+
+    def RenderProduct "Inherits"
+    {
+        rel camera = </World/Body/Mount/Inherited>
+    }
+
+    def RenderProduct "Overrides"
+    {
+        rel camera = </World/Overridden>
+        int2 resolution = (64, 48)
+    }
+
+    def RenderProduct "Alone"
+    {
+        rel camera = </World/Standalone>
+        int2 resolution = (200, 100)
+    }
+
+    def RenderProduct "NoResolution"
+    {
+        rel camera = </World/Unauthored>
+    }
+}
+"""
+        )
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        cameras = {label: index for index, label in enumerate(builder.camera_label)}
+
+        mounted = cameras["/World/Body/Mount/Inherited"]
+        self.assertEqual(builder.camera_body[mounted], 0)
+        np.testing.assert_allclose(np.asarray(builder.camera_transform[mounted])[:3], [0.5, 0.0, 0.0], atol=1e-6)
+        # Lens lengths are tenths of a scene unit; the clip range is in scene units.
+        self.assertAlmostEqual(builder.camera_focal_length[mounted], 2.4, places=5)
+        np.testing.assert_allclose(builder.camera_aperture[mounted], (3.6, 2.4), atol=1e-6)
+        np.testing.assert_allclose(builder.camera_clipping_range[mounted], (0.05, 20.0), atol=1e-6)
+
+        # A product inherits an unauthored resolution from its settings, authored product values take
+        # precedence, standalone products use their own values, and schema fallbacks are ignored.
+        self.assertEqual(builder.camera_resolution[mounted], (320, 240))
+        self.assertEqual(builder.camera_resolution[cameras["/World/Overridden"]], (64, 48))
+        self.assertEqual(builder.camera_resolution[cameras["/World/Standalone"]], (200, 100))
+        self.assertEqual(builder.camera_resolution[cameras["/World/Unauthored"]], (0, 0))
+
 
 def verify_usdphysics_parser(test, file, model, compare_min_max_coords, floating):
     """Verify model based on the UsdPhysics Parsing Utils"""

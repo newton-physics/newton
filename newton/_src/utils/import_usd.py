@@ -134,7 +134,10 @@ class _CableAttachmentCandidate:
 def _usd_render_product_resolutions(stage) -> dict[str, tuple[int, int]]:
     """Map camera prim paths to the resolution of the first ``UsdRender.Product`` that renders them.
 
-    ``UsdRender`` prims live under the ``/Render`` scope by convention, so only that scope is scanned.
+    A product inherits an unauthored ``camera`` or ``resolution`` from the ``UsdRender.Settings``
+    that lists it in ``products``; values authored on the product take precedence. Schema fallback
+    values are never used. ``UsdRender`` prims live under the ``/Render`` scope by convention, so
+    only that scope is scanned.
     """
     resolutions: dict[str, tuple[int, int]] = {}
     render_scope = stage.GetPrimAtPath("/Render")
@@ -142,15 +145,40 @@ def _usd_render_product_resolutions(stage) -> dict[str, tuple[int, int]]:
         return resolutions
     from pxr import Usd, UsdRender
 
-    for prim in Usd.PrimRange(render_scope):
-        if not prim.IsA(UsdRender.Product):
-            continue
-        product = UsdRender.Product(prim)
-        resolution = product.GetResolutionAttr().Get()
+    def authored_resolution(settings_base):
+        attr = settings_base.GetResolutionAttr()
+        return attr.Get() if attr and attr.HasAuthoredValue() else None
+
+    def authored_cameras(settings_base):
+        rel = settings_base.GetCameraRel()
+        return rel.GetForwardedTargets() if rel and rel.HasAuthoredTargets() else []
+
+    def add(cameras, resolution):
         if resolution is None or resolution[0] <= 0 or resolution[1] <= 0:
-            continue
-        for target in product.GetCameraRel().GetForwardedTargets():
+            return
+        for target in cameras:
             resolutions.setdefault(str(target), (int(resolution[0]), int(resolution[1])))
+
+    listed_products = set()
+    for prim in Usd.PrimRange(render_scope):
+        if not prim.IsA(UsdRender.Settings):
+            continue
+        settings = UsdRender.Settings(prim)
+        for product_path in settings.GetProductsRel().GetForwardedTargets():
+            product_prim = stage.GetPrimAtPath(product_path)
+            if not (product_prim and product_prim.IsA(UsdRender.Product)):
+                continue
+            listed_products.add(product_prim.GetPath())
+            product = UsdRender.Product(product_prim)
+            add(
+                authored_cameras(product) or authored_cameras(settings),
+                authored_resolution(product) or authored_resolution(settings),
+            )
+
+    for prim in Usd.PrimRange(render_scope):
+        if prim.IsA(UsdRender.Product) and prim.GetPath() not in listed_products:
+            product = UsdRender.Product(prim)
+            add(authored_cameras(product), authored_resolution(product))
     return resolutions
 
 
