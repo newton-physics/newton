@@ -339,7 +339,9 @@ def register_actuator_component(
 
 
 def parse_battery_prim(prim) -> dict[str, float] | None:
-    """Parse a USD ``NewtonBattery`` prim into keyword arguments for :meth:`~newton.ModelBuilder.add_battery`.
+    """Parse a USD ``NewtonBattery`` prim into :meth:`~newton.ModelBuilder.add_battery` keyword arguments.
+
+    The arguments are for a :class:`~newton.actuators.BatteryInternalResistance`.
 
     ``newton:resistance`` and ``newton:minVoltage`` fall back to 0. The
     actuators that draw from the battery name it in their ``newton:battery``

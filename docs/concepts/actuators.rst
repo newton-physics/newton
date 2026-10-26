@@ -672,7 +672,7 @@ Below, the hip and knee share one battery and the ankle draws from another:
 .. testcode:: actuator-battery
 
    import newton
-   from newton.actuators import DriveBAM
+   from newton.actuators import BatteryInternalResistance, DriveBAM
 
    builder = newton.ModelBuilder()
    actuators = []
@@ -691,8 +691,8 @@ Below, the hip and knee share one battery and the ankle draws from another:
            supply_from_battery=True,
        )
        actuators.append(actuator)
-   builder.add_battery(actuators[:2], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
-   builder.add_battery(actuators[2:], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
+   builder.add_battery(BatteryInternalResistance, actuators[:2], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
+   builder.add_battery(BatteryInternalResistance, actuators[2:], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
    model = builder.finalize()
 
    solver = newton.solvers.SolverFeatherstone(model)

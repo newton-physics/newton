@@ -29,6 +29,7 @@ from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
     ActuatorParsed,
+    BatteryInternalResistance,
     ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -2770,7 +2771,13 @@ class TestDriveBAM(unittest.TestCase):
         for servos, nominal, minimum in zip(
             ([knee_servo, ankle_servos[0]], [ankle_servos[1]]), nominal_voltage, min_voltage, strict=True
         ):
-            template.add_battery(servos, nominal_voltage=nominal, resistance=battery_resistance, min_voltage=minimum)
+            template.add_battery(
+                BatteryInternalResistance,
+                servos,
+                nominal_voltage=nominal,
+                resistance=battery_resistance,
+                min_voltage=minimum,
+            )
         builder = newton.ModelBuilder()
         builder.replicate(template, 2)
         model = builder.finalize()
@@ -4977,7 +4984,7 @@ class TestActuatorBuilder(unittest.TestCase):
         builder.begin_world()
         builder.add_builder(template)
         builder.add_actuator(DrivePD, index=builder.joint_qd_start[-1], kp=1.0)
-        builder.add_battery([1], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
+        builder.add_battery(BatteryInternalResistance, [1], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
 
         cases = {
             "at least one": ([], 12.0, 0.5, 9.0),
@@ -4991,7 +4998,11 @@ class TestActuatorBuilder(unittest.TestCase):
         for message, (actuators, nominal_voltage, resistance, min_voltage) in cases.items():
             with self.subTest(message), self.assertRaisesRegex(ValueError, message):
                 builder.add_battery(
-                    actuators, nominal_voltage=nominal_voltage, resistance=resistance, min_voltage=min_voltage
+                    BatteryInternalResistance,
+                    actuators,
+                    nominal_voltage=nominal_voltage,
+                    resistance=resistance,
+                    min_voltage=min_voltage,
                 )
         builder.end_world()
         with self.assertWarnsRegex(NewtonWarning, r"actuator\(s\) \[0\] have no battery"):
@@ -5021,7 +5032,7 @@ class TestActuatorBuilder(unittest.TestCase):
             max_pwm=1.0,
             supply_from_battery=True,
         )
-        template.add_battery([servo], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
+        template.add_battery(BatteryInternalResistance, [servo], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
         builder = newton.ModelBuilder()
         builder.replicate(template, 3)
         model = builder.finalize()

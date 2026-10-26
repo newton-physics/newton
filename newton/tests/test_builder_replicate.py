@@ -11,7 +11,7 @@ import warp as wp
 
 from newton import Axis, Mesh, Model, ModelBuilder, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
-from newton.actuators import DriveBAM, DrivePD
+from newton.actuators import BatteryInternalResistance, DriveBAM, DrivePD
 from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import HOST_TRANSFORMS_BIT_EXACT, add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
@@ -1038,7 +1038,9 @@ class TestModelBuilderReplicate(unittest.TestCase):
             dof = builder.joint_qd_start[joint]
             if with_battery:
                 actuator = builder.add_actuator(DriveBAM, index=dof, kt=1.0, resistance=1.0, supply_from_battery=True)
-                builder.add_battery([actuator], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
+                builder.add_battery(
+                    BatteryInternalResistance, [actuator], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0
+                )
             else:
                 builder.add_actuator(DrivePD, index=dof, kp=1.0)
             return builder

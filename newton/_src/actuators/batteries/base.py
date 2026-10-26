@@ -51,7 +51,8 @@ class BatteryBase:
     :attr:`Actuator.actuator_indices <newton.actuators.Actuator.actuator_indices>`.
     They write ``actuator_supply_voltage`` for the actuators of the batteries.
 
-    Subclasses must override :meth:`step` and :meth:`reset`.
+    Subclasses must override :meth:`resolve_arguments`,
+    :meth:`initial_supply_voltage`, :meth:`step` and :meth:`reset`.
 
     Args:
         actuator_start: Start of each battery's actuators in *actuators*.
@@ -65,6 +66,28 @@ class BatteryBase:
     Raises:
         ValueError: *world* does not have one entry per battery.
     """
+
+    @classmethod
+    def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
+        """Resolve user-provided arguments of one battery with defaults.
+
+        Args:
+            args: User-provided arguments, as passed to
+                :meth:`~newton.ModelBuilder.add_battery`.
+
+        Returns:
+            Complete arguments with defaults filled in.
+        """
+        raise NotImplementedError(f"{cls.__name__} must implement resolve_arguments")
+
+    @classmethod
+    def initial_supply_voltage(cls, args: dict[str, Any]) -> float:
+        """Return the supply voltage [V] of a full battery, at which ``actuator_supply_voltage`` starts.
+
+        Args:
+            args: Arguments of one battery, as returned by :meth:`resolve_arguments`.
+        """
+        raise NotImplementedError(f"{cls.__name__} must implement initial_supply_voltage")
 
     def __init__(
         self,

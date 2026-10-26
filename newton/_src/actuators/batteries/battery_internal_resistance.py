@@ -89,6 +89,41 @@ class BatteryInternalResistance(BatteryBase):
         ValueError: An array does not have one entry per battery.
     """
 
+    @classmethod
+    def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
+        """Resolve user-provided arguments of one battery with defaults.
+
+        Args:
+            args: ``nominal_voltage`` [V] and ``resistance`` [Ω] are required;
+                ``min_voltage`` [V] defaults to 0, with which the voltage only
+                stays non-negative.
+
+        Returns:
+            Complete arguments with defaults filled in.
+
+        Raises:
+            ValueError: *nominal_voltage* or *resistance* is missing,
+                *min_voltage* is negative or exceeds *nominal_voltage*, or
+                *resistance* is negative.
+        """
+        for name in ("nominal_voltage", "resistance"):
+            if name not in args:
+                raise ValueError(f"BatteryInternalResistance requires '{name}' argument")
+        nominal_voltage, resistance = args["nominal_voltage"], args["resistance"]
+        min_voltage = args.get("min_voltage", 0.0)
+        if not 0.0 <= min_voltage <= nominal_voltage:
+            raise ValueError(
+                f"min_voltage must be non-negative and at most nominal_voltage, got {min_voltage} and {nominal_voltage}"
+            )
+        if resistance < 0.0:
+            raise ValueError(f"resistance must be non-negative, got {resistance}")
+        return {"nominal_voltage": nominal_voltage, "resistance": resistance, "min_voltage": min_voltage}
+
+    @classmethod
+    def initial_supply_voltage(cls, args: dict[str, Any]) -> float:
+        """Return the nominal voltage [V]."""
+        return args["nominal_voltage"]
+
     def __init__(
         self,
         nominal_voltage: wp.array[float],
