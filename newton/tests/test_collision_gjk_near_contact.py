@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Test convex contact normals near the GJK convergence tolerance."""
+"""Test convex contact normals near the GJK near-contact threshold."""
 
 import itertools
 import unittest

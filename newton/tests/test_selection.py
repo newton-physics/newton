@@ -307,7 +307,7 @@ class TestSelection(unittest.TestCase):
 
         # scene with one ant per world
         single_ant_per_world_scene = newton.ModelBuilder()
-        single_ant_per_world_scene.replicate(ant, world_count=W)
+        single_ant_per_world_scene.replicate(ant, copy_count=W)
         single_ant_per_world_model = single_ant_per_world_scene.finalize()
 
         single_ant_per_world_view = ArticulationView(single_ant_per_world_model, "ant")
@@ -346,7 +346,7 @@ class TestSelection(unittest.TestCase):
         for i in range(A):
             multi_ant_world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
         multi_ant_per_world_scene = newton.ModelBuilder()
-        multi_ant_per_world_scene.replicate(multi_ant_world, world_count=W)
+        multi_ant_per_world_scene.replicate(multi_ant_world, copy_count=W)
         multi_ant_per_world_model = multi_ant_per_world_scene.finalize()
 
         multi_ant_per_world_view = ArticulationView(multi_ant_per_world_model, "ant")
@@ -428,7 +428,7 @@ class TestSelection(unittest.TestCase):
         scene = newton.ModelBuilder()
         # add a ground plane first so shape indices are offset
         scene.add_shape_plane()
-        scene.replicate(robot, world_count=W)
+        scene.replicate(robot, copy_count=W)
         model = scene.finalize()
 
         # exclude the middle link to make shape indices non-contiguous: [0, 2]
@@ -558,7 +558,7 @@ class TestSelection(unittest.TestCase):
         for i in range(num_per_world):
             world.add_builder(ant, xform=wp.transform((0.0, 0.0, 1.0 + i), wp.quat_identity()))
         scene = newton.ModelBuilder()
-        scene.replicate(world, world_count=world_count)
+        scene.replicate(world, copy_count=world_count)
         model = scene.finalize()
 
         view = ArticulationView(model, "ant")
@@ -1549,7 +1549,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         W = 4  # num worlds
         scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        scene.replicate(individual_builder, world_count=W)
+        scene.replicate(individual_builder, copy_count=W)
         model = scene.finalize()
 
         view = ArticulationView(model, "two_prismatic_links")
@@ -1573,7 +1573,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
 
         W = 2  # num worlds
         scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        scene.replicate(individual_builder, world_count=W)
+        scene.replicate(individual_builder, copy_count=W)
         model = scene.finalize()
 
         view = ArticulationView(model, "two_prismatic_links")
@@ -1667,7 +1667,7 @@ class TestSelectionFixedTendons(unittest.TestCase):
         # Replicate to multiple worlds
         W = 2  # num worlds
         scene = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        scene.replicate(multi_robot_world, world_count=W)
+        scene.replicate(multi_robot_world, copy_count=W)
         model = scene.finalize()
 
         # Select all articulations
@@ -1733,7 +1733,7 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         robot = newton.ModelBuilder()
         robot.add_mjcf(self.ACTUATOR_MJCF)
         scene = newton.ModelBuilder()
-        scene.replicate(robot, world_count=2)
+        scene.replicate(robot, copy_count=2)
         model = scene.finalize()
         control = model.control()
 
@@ -1757,7 +1757,7 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         world.add_mjcf(self.ACTUATOR_MJCF)
 
         scene = newton.ModelBuilder()
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model = scene.finalize()
 
         assert_np_equal(model.custom_frequency_articulation["mujoco:actuator"].numpy(), np.arange(6))

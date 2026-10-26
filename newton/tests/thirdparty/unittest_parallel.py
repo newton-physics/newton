@@ -456,6 +456,9 @@ def main(argv=None):
             if args.verbose > 1:
                 print(file=sys.stderr)
 
+            # Initialize here so the init banner never lands in a test's captured output.
+            wp.init()
+
             # Run the tests in serial
             start_time = time.perf_counter()
 
@@ -861,6 +864,9 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
         elif "WARP_CACHE_ROOT" in os.environ:
             # Using a shared cache for all test processes
             wp.config.kernel_cache_dir = os.getenv("WARP_CACHE_ROOT")
+
+        # Initialize here so the init banner never lands in a test's captured output.
+        wp.init()
 
 
 if __name__ == "__main__":  # pragma: no cover

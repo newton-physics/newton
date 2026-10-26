@@ -242,6 +242,19 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         self.assertEqual(warning.call_count, 2)
         _assert_model_arrays_unchanged(model, snapshot)
 
+    def test_lox_negative_joint_effort_limit_raises(self):
+        """Reject negative effort limits when LOX validates model updates."""
+        model = _build_revolute(
+            dynamic=True,
+            effort_limit=5.0,
+            actuator_mode=newton.JointTargetMode.POSITION,
+        )
+        solver = SolverKamino(model, config=SolverKamino.Config(dynamics_solver="lox"))
+
+        model.joint_effort_limit.fill_(-1.0)
+        with self.assertRaisesRegex(ValueError, "Joint effort limits"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
     def test_aliased_properties_reference_newton(self):
         """Every aliased Newton array shares storage with Kamino, so in-place edits need no notify."""
         model = _build_revolute(limited=True)
@@ -1127,6 +1140,18 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
             solver.notify_model_changed(newton.ModelFlags.ACTUATOR_PROPERTIES)
 
         np.testing.assert_array_equal(solver._model_kamino.joints.act_type.numpy(), before)
+
+    def test_missing_implicit_pd_gain_raises(self):
+        """Reject implicit-PD target modes without an effective gain at construction."""
+        cases = (
+            (newton.JointTargetMode.POSITION, 0.0, 0.0),
+            (newton.JointTargetMode.VELOCITY, 1.0, 0.0),
+        )
+        for mode, ke, kd in cases:
+            with self.subTest(mode=mode.name):
+                model = _build_revolute(actuator_mode=mode, target_ke=ke, target_kd=kd)
+                with self.assertRaisesRegex(ValueError, rf"{mode.name} requires a non-zero gain \(DoF=0\)"):
+                    SolverKamino(model)
 
 
 if __name__ == "__main__":
