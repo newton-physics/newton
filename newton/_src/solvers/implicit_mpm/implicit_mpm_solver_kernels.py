@@ -504,16 +504,22 @@ def update_particle_frames(
     dt: float,
     min_stretch: float,
     max_stretch: float,
+    particle_flags: wp.array[wp.int32],
     vel_grad: wp.array[wp.mat33],
     transform_prev: wp.array[wp.mat33],
     transform: wp.array[wp.mat33],
 ):
     i = wp.tid()
 
-    p_vel_grad = vel_grad[i]
-
     # transform, for grain-level rendering
     F_prev = transform_prev[i]
+
+    # Inactive particles keep their frame while frozen
+    if ~particle_flags[i] & newton.ParticleFlags.ACTIVE:
+        transform[i] = F_prev
+        return
+
+    p_vel_grad = vel_grad[i]
     # dX1/dx = dX1/dX0 dX0/dx
     F = F_prev + dt * p_vel_grad @ F_prev
 

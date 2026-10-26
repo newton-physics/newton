@@ -1435,6 +1435,47 @@ def test_unbinned_particles_keep_state(test, device):
             test.assertGreater(np.linalg.det(state.mpm.particle_elastic_strain.numpy()).min(), 0.5)
 
 
+def test_inactive_particles_keep_frames(test, device):
+    """Keep the rendering frames of inactive particles, whose saved velocity gradient persists for reactivation."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_particle_grid(
+        pos=wp.vec3(0.0, 0.0, 0.1),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=4,
+        dim_y=4,
+        dim_z=4,
+        cell_x=0.025,
+        cell_y=0.025,
+        cell_z=0.025,
+        mass=0.025**3 * 1000.0,
+        jitter=0.0,
+        radius_mean=0.0125,
+    )
+    model = builder.finalize(device=device)
+    flags = model.particle_flags.numpy()
+    flags[::2] &= ~int(newton.ParticleFlags.ACTIVE)
+    model.particle_flags.assign(flags)
+
+    solver = SolverImplicitMPM(model, SolverImplicitMPM.Config(voxel_size=0.05, grid_type="dense"))
+    state_0 = model.state()
+    state_1 = model.state()
+    vel_grad = np.zeros((model.particle_count, 3, 3), dtype=np.float32)
+    vel_grad[:, 0, 0] = 1.0
+    state_0.mpm.particle_qd_grad.assign(vel_grad)
+    solver.step(state_0, state_1, None, None, 0.1)
+    solver.update_particle_frames(state_0, state_1, 0.1)
+
+    np.testing.assert_array_equal(state_1.mpm.particle_qd_grad.numpy()[::2], vel_grad[::2])
+    np.testing.assert_array_equal(
+        state_1.mpm.particle_transform.numpy()[::2], state_0.mpm.particle_transform.numpy()[::2]
+    )
+    np.testing.assert_array_equal(
+        state_1.mpm.particle_transform.numpy()[::2], np.broadcast_to(np.eye(3), (model.particle_count // 2, 3, 3))
+    )
+
+
 def test_capped_pic_strain_grid_types(test, device):
     """Run capped particle strain on dense and fixed grids, whose partitions omit capped nodes."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -3023,6 +3064,10 @@ add_function_test(
     "test_unbinned_particles_keep_state",
     test_unbinned_particles_keep_state,
     devices=basic_cuda_devices,
+)
+
+add_function_test(
+    TestImplicitMPM, "test_inactive_particles_keep_frames", test_inactive_particles_keep_frames, devices=devices
 )
 
 add_function_test(

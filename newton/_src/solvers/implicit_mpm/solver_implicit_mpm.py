@@ -2480,7 +2480,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         Integrates the particle deformation gradient using the velocity gradient
         and clamps its principal stretches to the provided bounds for
-        robustness.
+        robustness. Inactive particles keep their previous frame.
         """
 
         wp.launch(
@@ -2490,6 +2490,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 dt,
                 min_stretch,
                 max_stretch,
+                self._mpm_model.particle_flags,
                 state.mpm.particle_qd_grad,
                 state_prev.mpm.particle_transform,
                 state.mpm.particle_transform,
