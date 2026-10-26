@@ -57,19 +57,31 @@ class DriveBAM(DriveBase):
 
     .. math::
 
-        d &= \\operatorname{clamp}\\big((q_{\\text{target}} - q)\\, k_p,\\;
-             -d_{\\max},\\; d_{\\max}\\big) \\\\
+        d_0 &= k_p\\, (q_{\\text{target}} - q) \\\\
+        d_1 &= \\operatorname{clamp}\\Big(d_0,\\;
+               \\frac{k_t\\, \\dot q - R\\, I_{\\max}}{V},\\;
+               \\frac{k_t\\, \\dot q + R\\, I_{\\max}}{V}\\Big) \\\\
+        d &= \\operatorname{clamp}(d_1,\\; -d_{\\max},\\; d_{\\max}) \\\\
         I &= \\frac{V\\, d - k_t\\, \\dot q}{R} \\\\
         \\tau &= k_t\\, I
 
-    where :math:`d` is the PWM duty cycle and :math:`V` the supply voltage.
-    For a BAM fit, :math:`k_p` is the firmware gain times the fit's error
-    gain. When ``max_current`` is positive, the firmware narrows the duty cycle
-    towards the current limit before the ``max_pwm`` clamp. The ``max_pwm``
-    clamp is applied last, so at high velocity the back-EMF term can still
-    drive :math:`|I|` above ``max_current``; this matches the BAM reference
-    firmware. Target velocity and
-    feedforward are ignored: the modelled firmware has no torque input.
+    where :math:`d` is the PWM duty cycle, :math:`I` the motor current
+    [A] and :math:`\\tau` the effort [N·m or N]. The symbols map to the
+    parameters as follows:
+
+    * :math:`k_p`: ``kp``, the firmware gain times the error gain of a BAM fit;
+    * :math:`k_t`: ``kt``;
+    * :math:`R`: ``resistance``;
+    * :math:`V`: ``vin``, or ``actuator_supply_voltage`` with
+      ``supply_from_battery``;
+    * :math:`I_{\\max}`: ``max_current``; :math:`d_1 = d_0` when it is 0;
+    * :math:`d_{\\max}`: ``max_pwm``.
+
+    The current limit narrows the duty cycle so that :math:`|I| \\le
+    I_{\\max}`. The ``max_pwm`` clamp is applied last, so at high velocity
+    the back-EMF term can still drive :math:`|I|` above ``max_current``; this
+    matches the BAM reference firmware. Target velocity and feedforward are
+    ignored: the modelled firmware has no torque input.
 
     The supply voltage is either fixed or varying. A fixed supply, e.g. a
     bench or regulated power supply as used to identify a BAM fit, is set by
@@ -142,9 +154,7 @@ class DriveBAM(DriveBase):
             kt: Torque constant [N·m/A]. Shape ``(N,)``.
             resistance: Motor resistance [Ω]. Shape ``(N,)``.
             vin: Supply voltage [V]. Ignored when *supply_from_battery* is
-                set; :meth:`~newton.ModelBuilder.add_actuator` then does not
-                require it.
-                Shape ``(N,)``.
+                set. Shape ``(N,)``.
             max_pwm: Largest duty cycle magnitude. Shape ``(N,)``.
             max_current: Firmware current limit [A]; 0 disables it. Shape
                 ``(N,)``. ``None`` disables it.

@@ -38,7 +38,7 @@ An actuator is composed of three building blocks, applied in this order:
    │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
    │   └── InputProcessorBacklash   (reads position on the link side of a backlash joint)
    ├── Drive      (control law that computes raw effort)
-   └── Clamping[]  (clamps raw effort based on motor-limit modeling)
+   └── Clamping[]  (clamps raw effort to model actuator limits)
        ├── ClampingMaxEffort        (±max_effort symmetric clamp)
        ├── ClampingDCMotor         (velocity-dependent saturation)
        └── ClampingPositionBased   (position-dependent lookup table)
@@ -58,10 +58,14 @@ An actuator is composed of three building blocks, applied in this order:
    documentation for the control-law equations.
 
 **Clamping**
-   Clamps raw effort to model motor limits.  Examples include saturation,
+   Clamps raw effort to model actuator limits.  Examples include saturation,
    back-EMF losses, performance envelopes and position-dependent effort
    limits.  Multiple clamping stages can be combined
    on a single actuator.
+
+   A clamp limits the effort the actuator outputs.  Limits that act on a quantity inside the
+   control law, e.g. the PWM duty cycle of a voltage-controlled servo, belong
+   in the drive instead, as in :class:`DriveBAM`.
 
 The per-step pipeline is:
 
