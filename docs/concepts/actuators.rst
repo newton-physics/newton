@@ -635,25 +635,28 @@ Battery
 A battery powers one or more actuators.  As in `BAM
 <https://github.com/Rhoban/bam>`_, it is an ideal voltage source behind a
 resistance, so its voltage drops with the total current of its actuators.
+:class:`BatteryInternalResistance` implements this model; other battery
+models subclass :class:`BatteryBase`.
 
 * :meth:`~newton.ModelBuilder.add_actuator` returns the index of the actuator
   in per-actuator arrays.  :meth:`~newton.ModelBuilder.add_battery` takes these
-  indices and adds a battery for those actuators in the current world.  The
-  battery parameters live on the :class:`~newton.Model` as
-  ``model.actuation.battery_*``, so :meth:`~newton.ModelBuilder.replicate`
-  copies them into every world, and ``model.actuation.battery_world`` maps
-  each battery to its world, e.g. to randomize the parameters per world.
-  ``model.actuation.actuator_battery`` and ``actuator_dof`` give the battery
-  and DOF of each actuator.
+  indices and adds a battery for those actuators in the current world.
+  :meth:`~newton.ModelBuilder.replicate` copies the batteries into every
+  world.  :meth:`~newton.ModelBuilder.finalize` creates one :class:`BatteryInternalResistance`
+  holding all batteries in ``model.batteries``.  Its parameter arrays have one
+  entry per battery, and :attr:`BatteryBase.world` maps each battery to its world,
+  e.g. to randomize the parameters per world.  :attr:`BatteryBase.actuators` and
+  :attr:`BatteryBase.actuator_start` give the actuators of each battery, and
+  ``model.actuation.actuator_dof`` the DOF of each actuator.
 * Each actuator built by :class:`~newton.ModelBuilder` writes the effort it
   applies to the simulation to ``control.actuator_applied_effort``, one entry per
   actuator, and a drive that draws from a battery writes its battery current
   per unit of effort to ``control.actuator_supply_current_gain``.
-  :func:`update_battery_supply` multiplies the two, sums the current per
+  :meth:`BatteryInternalResistance.step` multiplies the two, sums the current per
   battery, drops the voltage, down to a minimum, and writes it into
   ``control.actuator_supply_voltage``.  Call it once per step after the
   actuators; the drives read the voltage on the next step.
-* :func:`reset_battery_supply` restores the nominal voltage, of all
+* :meth:`BatteryInternalResistance.reset` restores the nominal voltage, of all
   batteries or of the batteries in the worlds of a mask.  Batteries added
   outside any world are reset only without a mask.
 
@@ -669,7 +672,7 @@ Below, the hip and knee share one battery and the ankle draws from another:
 .. testcode:: actuator-battery
 
    import newton
-   from newton.actuators import DriveBAM, update_battery_supply
+   from newton.actuators import DriveBAM
 
    builder = newton.ModelBuilder()
    actuators = []
@@ -702,7 +705,8 @@ Below, the hip and knee share one battery and the ankle draws from another:
        control.joint_f.zero_()
        for actuator in model.actuators:
            actuator.step(state_0, control, dt=dt)
-       update_battery_supply(model, control)
+       for battery in model.batteries:
+           battery.step(control)
        solver.step(state_0, state_1, control, None, dt)
        state_0, state_1 = state_1, state_0
 

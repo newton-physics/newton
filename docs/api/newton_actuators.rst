@@ -28,6 +28,8 @@ construction.
 
    Actuator
    ActuatorParsed
+   BatteryBase
+   BatteryInternalResistance
    ClampingBase
    ClampingDCMotor
    ClampingMaxEffort
@@ -55,8 +57,6 @@ construction.
    parse_actuator_prim
    parse_battery_prim
    register_actuator_component
-   reset_battery_supply
-   update_battery_supply
 
 .. rubric:: Deprecated
 

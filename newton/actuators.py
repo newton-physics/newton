@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 from ._src.actuators import (
     Actuator,
     ActuatorParsed,
+    BatteryBase,
+    BatteryInternalResistance,
     ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -41,14 +43,14 @@ from ._src.actuators import (
     parse_actuator_prim,
     parse_battery_prim,
     register_actuator_component,
-    reset_battery_supply,
-    update_battery_supply,
 )
 from ._src.exceptions import NewtonDeprecationWarning
 
 __all__ = [
     "Actuator",
     "ActuatorParsed",
+    "BatteryBase",
+    "BatteryInternalResistance",
     "ClampingBase",
     "ClampingDCMotor",
     "ClampingMaxEffort",
@@ -69,8 +71,6 @@ __all__ = [
     "parse_actuator_prim",
     "parse_battery_prim",
     "register_actuator_component",
-    "reset_battery_supply",
-    "update_battery_supply",
 ]
 
 if TYPE_CHECKING:

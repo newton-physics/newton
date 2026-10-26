@@ -77,8 +77,8 @@ class DriveBAM(DriveBase):
     is enabled with ``supply_from_battery=True``: the drive then reads the
     voltage of each actuator from the ``actuator_supply_voltage`` input on
     ``sim_control`` (see :attr:`DriveBase.custom_inputs
-    <newton.actuators.DriveBase.custom_inputs>`), which
-    :func:`~newton.actuators.update_battery_supply` writes every step, and
+    <newton.actuators.DriveBase.custom_inputs>`), which the battery's
+    :meth:`~newton.actuators.BatteryBase.step` writes every step, and
     ignores ``vin``. It then also writes :math:`d / k_t` into the
     ``actuator_supply_current_gain`` output (see :attr:`DriveBase.custom_outputs
     <newton.actuators.DriveBase.custom_outputs>`): times the effort, it gives
@@ -150,8 +150,8 @@ class DriveBAM(DriveBase):
                 ``(N,)``. ``None`` disables it.
             supply_from_battery: Per actuator, nonzero to read the supply
                 voltage from the ``actuator_supply_voltage`` input, as written
-                by :func:`~newton.actuators.update_battery_supply`, instead of
-                *vin*. Shape ``(N,)``. ``None`` uses *vin* everywhere.
+                by the battery's :meth:`~newton.actuators.BatteryBase.step`,
+                instead of *vin*. Shape ``(N,)``. ``None`` uses *vin* everywhere.
 
         Raises:
             ValueError: An array shape does not match *kp*, or *kt* or

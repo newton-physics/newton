@@ -46,8 +46,6 @@ from newton.actuators import (
     JointSpaceResponse,
     parse_actuator_prim,
     parse_battery_prim,
-    reset_battery_supply,
-    update_battery_supply,
 )
 from newton.exceptions import NewtonWarning
 from newton.selection import ArticulationView
@@ -2778,7 +2776,9 @@ class TestDriveBAM(unittest.TestCase):
         model = builder.finalize()
         self.assertEqual(len(model.actuators), 2)
         battery = np.array([0, 0, 1, 2, 2, 3])
-        np.testing.assert_array_equal(model.actuation.actuator_battery.numpy(), battery)
+        (batteries,) = model.batteries
+        np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 2, 3, 5, 6])
+        np.testing.assert_array_equal(batteries.actuators.numpy(), np.arange(6))
 
         q = np.array([0.3, 0.015, -0.1, -0.2, -0.017, 0.4], dtype=np.float32)
         qd = np.array([0.0, 0.0, 6.0, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -2810,13 +2810,13 @@ class TestDriveBAM(unittest.TestCase):
             applied = np.zeros(model.joint_dof_count)
             np.add.at(applied, dof, clamped)
             np.testing.assert_allclose(control.joint_f.numpy(), applied, rtol=1e-5)
-            update_battery_supply(model, control)
+            batteries.step(control)
             drawn = np.bincount(battery, duty * clamped / kt, minlength=4)
             if step == 0:
                 self.assertTrue(0.0 < drawn[0] < duty[0] * clamped[0] / kt and drawn[1] < 0.0)
         self.assertAlmostEqual(control.actuator_supply_voltage.numpy()[3], min_voltage[0], places=5)
 
-        reset_battery_supply(model, control, world_mask=wp.array([True, False], dtype=wp.bool))
+        batteries.reset(control, world_mask=wp.array([True, False], dtype=wp.bool))
         dropped = np.maximum(nominal - battery_resistance * np.maximum(drawn, 0.0), minimum)
         np.testing.assert_allclose(
             control.actuator_supply_voltage.numpy(), np.where(np.arange(4) < 2, nominal, dropped)[battery], rtol=1e-5
@@ -5031,9 +5031,11 @@ class TestActuatorBuilder(unittest.TestCase):
 
         self.assertEqual((model.actuator_count, model.battery_count), (6, 3))
         self.assertEqual(model.get_attribute_frequency("actuation:actuator_dof"), actuator)
-        self.assertEqual(model.get_attribute_frequency("actuation:battery_resistance"), battery)
-        np.testing.assert_array_equal(model.actuation.actuator_battery.numpy(), [-1, 0, -1, 1, -1, 2])
-        np.testing.assert_array_equal(model.actuation.battery_world.numpy(), [0, 1, 2])
+        (batteries,) = model.batteries
+        self.assertEqual(batteries.get_attribute_frequency("resistance"), battery)
+        np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 1, 2, 3])
+        np.testing.assert_array_equal(batteries.actuators.numpy(), [1, 3, 5])
+        np.testing.assert_array_equal(batteries.world.numpy(), [0, 1, 2])
         for name, frequency in {
             "actuator_applied_effort": actuator,
             "actuator_supply_voltage": actuator,
@@ -5052,7 +5054,13 @@ class TestActuatorBuilder(unittest.TestCase):
             (sim_control, "actuator_supply_current_gain", actuator),
         ):
             self.assertEqual(source.get_attribute_frequency(name), frequency)
-        for source, name in ((pd, "kt"), (pd, "indices"), (control, "kp"), (sim_control, "kp")):
+        for source, name in (
+            (pd, "kt"),
+            (pd, "indices"),
+            (control, "kp"),
+            (sim_control, "kp"),
+            (batteries, "actuator_start"),
+        ):
             with self.subTest(name=name), self.assertRaisesRegex(KeyError, f"'{name}' is not known"):
                 source.get_attribute_frequency(name)
 
@@ -5083,8 +5091,10 @@ class TestActuatorBuilder(unittest.TestCase):
         model = builder.finalize()
 
         self.assertEqual(len(model.actuators), 2)
-        np.testing.assert_array_equal(model.actuation.actuator_battery.numpy(), [0, 0, -1, 1, 1, -1])
-        np.testing.assert_array_equal(model.actuation.battery_world.numpy(), [0, 1])
+        (batteries,) = model.batteries
+        np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 2, 4])
+        np.testing.assert_array_equal(batteries.actuators.numpy(), [0, 1, 3, 4])
+        np.testing.assert_array_equal(batteries.world.numpy(), [0, 1])
 
         knee, backlash, ankle, toe = (
             template.joint_q_start[template.joint_label.index(f"/World/Robot/{name}")]

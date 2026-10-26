@@ -1028,12 +1028,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 self.assertIsNotNone(wp.dtype_to_numpy(scalar_dtype))
 
     def test_battery_after_builder_without_batteries(self):
-        """Batteries work after merging a builder whose actuators predate any battery.
-
-        The first world's actuator is merged before ``actuator_battery``
-        exists, so the merge leaves its value unset. Finalize and a later
-        ``add_battery`` treat it as having no battery.
-        """
+        """Batteries work after merging a builder whose actuators predate any battery."""
 
         def robot(with_battery: bool) -> ModelBuilder:
             builder = ModelBuilder()
@@ -1054,9 +1049,10 @@ class TestModelBuilderReplicate(unittest.TestCase):
         builder.add_world(robot(True))
         model = builder.finalize()
 
-        np.testing.assert_array_equal(model.actuation.actuator_battery.numpy(), [-1, 0, 1])
-        np.testing.assert_array_equal(model.actuation.battery_actuators.numpy(), [1, 2, 0])
-        np.testing.assert_array_equal(model.actuation.battery_actuator_start.numpy(), [0, 1, 2])
+        (batteries,) = model.batteries
+        np.testing.assert_array_equal(batteries.actuators.numpy(), [1, 2])
+        np.testing.assert_array_equal(batteries.actuator_start.numpy(), [0, 1, 2])
+        np.testing.assert_array_equal(batteries.world.numpy(), [1, 2])
 
 
 @wp.kernel

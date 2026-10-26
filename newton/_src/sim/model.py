@@ -37,6 +37,7 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+    from ..actuators.batteries import BatteryBase
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
 
@@ -1455,6 +1456,10 @@ class Model:
         """Total number of actuators added with :meth:`ModelBuilder.add_actuator() <newton.ModelBuilder.add_actuator>`."""
         self.battery_count: int = 0
         """Total number of batteries added with :meth:`ModelBuilder.add_battery() <newton.ModelBuilder.add_battery>`."""
+        self.batteries: list[BatteryBase] = []
+        """Battery objects for this model, one per battery type; :meth:`ModelBuilder.finalize()
+        <newton.ModelBuilder.finalize>` creates one :class:`~newton.actuators.BatteryInternalResistance`
+        holding all batteries added with :meth:`ModelBuilder.add_battery() <newton.ModelBuilder.add_battery>`."""
 
     @property
     def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
