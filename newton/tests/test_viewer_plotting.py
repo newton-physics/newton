@@ -180,7 +180,7 @@ class _ViewerPlottingTests:
 class TestViewerRTXPlotting(_ViewerPlottingTests, unittest.TestCase):
     def _make_viewer(self):
         # OVRTX is not instantiated until the first rendered frame.
-        with patch_sys_module("ovrtx", SimpleNamespace(__version__="0.3.0")):
+        with patch_sys_module("ovrtx", SimpleNamespace()), patch_sys_module("ovstage", SimpleNamespace()):
             return ViewerRTX(headless=True, plot_history_size=3)
 
 

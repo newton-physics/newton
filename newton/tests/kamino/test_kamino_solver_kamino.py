@@ -124,6 +124,7 @@ def assert_solver_config(testcase: unittest.TestCase, config: SolverKaminoImpl.C
     testcase.assertIsInstance(config.constraints, kamino_config.ConstraintStabilizationConfig)
     testcase.assertIsInstance(config.dynamics, kamino_config.ConstrainedDynamicsConfig)
     testcase.assertIsInstance(config.padmm, kamino_config.PADMMSolverConfig)
+    testcase.assertIsInstance(config.lox, kamino_config.LOXSolverConfig)
     testcase.assertIsInstance(config.rotation_correction, str)
 
 
@@ -390,6 +391,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
             msg.reset_log_level()
 
     def test_00_make_default(self):
+        """Construct the default solver configuration."""
         config = SolverKaminoImpl.Config()
         assert_solver_config(self, config)
         self.assertEqual(config.rotation_correction, "twopi")
@@ -424,6 +426,43 @@ class TestSolverKaminoConfig(unittest.TestCase):
                 padmm=kamino_config.PADMMSolverConfig(penalty_update_method="balanced"),
             )
 
+    def test_02_lox_config_validation(self):
+        """Accept supported LOX settings and reject one invalid value of each validated kind."""
+        with self.assertRaises(TypeError):
+            kamino_config.LOXSolverConfig(10)
+
+        config = SolverKaminoImpl.Config(dynamics_solver="lox")
+        self.assertEqual(config.dynamics_solver, "lox")
+        # Only LOX defaults to sparse Jacobians, which it requires
+        self.assertTrue(config.sparse_jacobian)
+        self.assertFalse(SolverKaminoImpl.Config().sparse_jacobian)
+        with self.assertRaisesRegex(ValueError, "requires `sparse_jacobian=True`"):
+            SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=False)
+        SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True, sparse_dynamics=True)
+        self.assertEqual(SolverKaminoImpl.Config(dynamics_solver="lox", integrator="moreau").integrator, "moreau")
+        kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="anderson")
+        kamino_config.LOXSolverConfig(
+            contact_compliance=True, contact_implicit_restitution=True, contact_spatial_friction=True
+        )
+
+        invalid_values = (
+            ({"contact_warmstart_method": "geom_pair_net_wrench"}, "contact warmstart method is not implemented"),
+            ({"projection_acceleration": "invalid"}, "projection_acceleration"),
+            ({"gauss_seidel_max_colors": 4, "projection_acceleration": "apgd"}, "requires gauss_seidel_max_colors=1"),
+            ({"gauss_seidel_max_colors": True}, "gauss_seidel_max_colors"),
+            ({"max_iterations": 0}, "max_iterations"),
+            ({"use_graph_conditionals": 1}, "use_graph_conditionals"),
+            ({"contact_compliance": 1.0e-3}, "contact_compliance"),
+            ({"position_tolerance": 0.0}, "position_tolerance"),
+            ({"consensus_fraction": 1.1}, "consensus_fraction"),
+            ({"projected_twist_fraction": float("nan")}, "projected_twist_fraction"),
+            ({"weight_beta": 0.5}, "weight_beta"),
+            ({"max_joint_penalty_ratio": 50.0}, "max_joint_penalty_ratio"),
+        )
+        for kwargs, message in invalid_values:
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, message):
+                kamino_config.LOXSolverConfig(**kwargs)
+
 
 class TestCollisionCapacityInitialization(unittest.TestCase):
     def setUp(self):
@@ -438,7 +477,7 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
-        builder.replicate(source_builder, world_count=3)
+        builder.replicate(source_builder, copy_count=3)
         return builder.finalize(device=self.default_device, skip_validation_joints=True)
 
     def test_pair_tables_match_collision_mode(self):
@@ -767,7 +806,7 @@ class TestSolverKaminoStatus(unittest.TestCase):
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(builder)
-        builder.replicate(source_builder, world_count=3)
+        builder.replicate(source_builder, copy_count=3)
         return builder.finalize(device=self.default_device, skip_validation_joints=True)
 
     def _step_and_assert_status_contract(
@@ -824,6 +863,23 @@ class TestSolverKaminoStatus(unittest.TestCase):
                     ),
                 )
                 self._step_and_assert_status_contract(solver, model)
+
+    def test_lox_status_is_always_available(self):
+        """Verify LOX terminal status is available with or without solution metrics."""
+        model = self._make_three_world_model()
+
+        for compute_solution_metrics in (False, True):
+            with self.subTest(compute_solution_metrics=compute_solution_metrics):
+                config = newton.solvers.SolverKamino.Config(
+                    dynamics_solver="lox",
+                    compute_solution_metrics=compute_solution_metrics,
+                )
+                solver = newton.solvers.SolverKamino(model, config=config)
+                self._step_and_assert_status_contract(solver, model)
+
+                status_host = solver.status.numpy()
+                np.testing.assert_array_equal(status_host["failed"], 0)
+                self.assertTrue(np.all(status_host["iterations"] <= config.lox.max_iterations))
 
 
 class TestSolverKaminoScratchStateReset(unittest.TestCase):
@@ -967,7 +1023,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers to default state defined in the model.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
 
@@ -1025,7 +1081,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers while preserving the state.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
 
@@ -1092,7 +1148,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers to specified floating base states.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
 
@@ -1221,7 +1277,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers to specified joint states.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         config = SolverKaminoImpl.Config(use_fk_solver=True)
         solver = SolverKaminoImpl(model=model, config=config)
@@ -1356,7 +1412,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers to specified actuator states.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         config = SolverKaminoImpl.Config(use_fk_solver=True)
         solver = SolverKaminoImpl(model=model, config=config)
@@ -1677,7 +1733,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Create a multi-instance system by replicating the single-instance builder
         multi_builder = newton.ModelBuilder()
-        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), world_count=num_worlds)
+        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), copy_count=num_worlds)
         for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
             msg.info(f"[multi]: [builder]: body {i}: bid: {i}")
             msg.info(f"[multi]: [builder]: body {i}: q_i: {q_i_0}")
@@ -1872,7 +1928,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Create a multi-instance system by replicating the single-instance builder
         multi_builder = newton.ModelBuilder()
-        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), world_count=num_worlds)
+        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), copy_count=num_worlds)
         for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
             msg.info(f"[multi]: [builder]: body {i}: bid: {i}")
             msg.info(f"[multi]: [builder]: body {i}: q_i: {q_i_0}")
@@ -1949,7 +2005,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
 
 class TestSolverKaminoMasslessBodies(unittest.TestCase):
-    """Massless bodies are supported when welded to the world and rejected otherwise."""
+    """Massless bodies are supported when fixed or prescribed and rejected otherwise."""
 
     def test_massless_body_welded_to_world_stays_at_rest(self):
         """Verify a massless body welded to the world stays at rest, along with its welded child.

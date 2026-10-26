@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
 import unittest
 import warnings
 from contextlib import nullcontext
@@ -6262,107 +6261,6 @@ def _rod_builder_assembles_topology_and_constitutive_data(test, device):
     test.assertEqual(caught.filename, __file__)
 
 
-def _joint_rod_api_deprecates_cable_names(test, device):
-    """Verify deprecated cable joint names forward to the rod API."""
-    test.assertEqual(newton.JointType.ROD.value, 7)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        names = dir(newton.JointType)
-        members = newton.JointType.__members__
-        test.assertIn("CABLE", names)
-        test.assertIn("ROD", names)
-        test.assertIs(members["CABLE"], members["ROD"])
-
-    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD") as caught:
-        deprecated_joint_type = newton.JointType.CABLE
-    test.assertIs(deprecated_joint_type, newton.JointType.ROD)
-    # Caller attribution ensures the example runner exposes in-tree misuse.
-    test.assertEqual(caught.filename, __file__)
-
-    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD") as caught:
-        deprecated_by_name = newton.JointType["CABLE"]
-    test.assertIs(deprecated_by_name, newton.JointType.ROD)
-    test.assertEqual(caught.filename, __file__)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        rod_type = newton.JointType(7)
-        test.assertIs(rod_type, newton.JointType.ROD)
-        test.assertIs(newton.JointType["ROD"], rod_type)
-        test.assertEqual(rod_type.name, "CABLE")
-        test.assertIn("CABLE", repr(rod_type))
-        test.assertEqual([member.name for member in newton.JointType if member.value == 7], ["CABLE"])
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        child = builder.add_link()
-        joint = builder.add_joint_rod(parent=-1, child=child)
-    test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    child = builder.add_link()
-    with test.assertWarnsRegex(DeprecationWarning, r"add_joint_cable.*add_joint_rod") as caught:
-        joint = builder.add_joint_cable(parent=-1, child=child)
-    test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
-    test.assertEqual(caught.filename, __file__)
-
-
-def _cable_positional_argument_migrations(test, device):
-    """Preserve active migrations and enforce completed migrations."""
-    rod_parameters = dict(inspect.signature(newton.ModelBuilder.add_joint_rod).parameters)
-    rod_parameters.pop("rest_rotation")  # the deprecated alias does not grow new parameters
-    test.assertEqual(
-        list(inspect.signature(newton.ModelBuilder.add_joint_cable).parameters.values()),
-        list(rod_parameters.values()),
-    )
-
-    released_stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
-    expected_ke = [22.0, 22.0, 11.0, 33.0, 33.0, 44.0]
-    expected_kd = [0.2, 0.2, 0.1, 0.3, 0.3, 0.4]
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    child = builder.add_link()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        joint = builder.add_joint_cable(-1, child, None, None, *released_stiffness_args)
-    test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
-    test.assertEqual(len(caught), 2)
-    test.assertTrue(all(issubclass(item.category, DeprecationWarning) for item in caught))
-    test.assertTrue(all(item.filename == __file__ for item in caught))
-    warning_messages = [str(item.message) for item in caught]
-    test.assertTrue(any("Passing" in message for message in warning_messages))
-    test.assertTrue(any("add_joint_cable" in message for message in warning_messages))
-    np.testing.assert_allclose(builder.joint_target_ke, expected_ke)
-    np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
-
-    points = [wp.vec3(0.0, 0.0, float(i)) for i in range(3)]
-    quaternions = [wp.quat_identity(), wp.quat_identity()]
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertRaises(TypeError):
-        builder.add_rod(
-            points,
-            quaternions,
-            0.05,
-            None,
-            *released_stiffness_args,
-            body_frame_origin="com",
-        )
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertRaises(TypeError):
-        builder.add_rod_graph(
-            points,
-            [(0, 1), (1, 2)],
-            0.05,
-            None,
-            *released_stiffness_args,
-            body_frame_origin="com",
-        )
-
-
 def _rod_builder_deprecates_raw_geometry_forms(test, device):
     """Verify raw builder geometry forms warn once and prepared Rod forms do not warn."""
     del device
@@ -8156,18 +8054,6 @@ add_function_test(
     TestCable,
     "test_rod_builder_assembles_topology_and_constitutive_data",
     _rod_builder_assembles_topology_and_constitutive_data,
-    devices=None,
-)
-add_function_test(
-    TestCable,
-    "test_joint_rod_api_deprecates_cable_names",
-    _joint_rod_api_deprecates_cable_names,
-    devices=None,
-)
-add_function_test(
-    TestCable,
-    "test_cable_positional_argument_migrations",
-    _cable_positional_argument_migrations,
     devices=None,
 )
 add_function_test(

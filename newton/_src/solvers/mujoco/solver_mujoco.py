@@ -4213,34 +4213,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if hasattr(mujoco_attrs, "actuator_biastype"):
                 biastype = int(mujoco_attrs.actuator_biastype.numpy()[mujoco_act_idx])
                 general_args["biastype"] = biastype
-            # Detect position/velocity actuator shortcuts. Use set_to_position/
-            # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
-            # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
-            shortcut = None  # "position" or "velocity" if detected
-            shortcut_args: dict[str, float] = {}
-            if general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0:
-                kp = general_args["gainprm"][0]
-                bp = general_args.get("biasprm", [0, 0, 0])
-                # Position shortcut: biasprm = [0, -kp, -kv]
-                # A positive biasprm[2] indicates a dampratio placeholder
-                if bp[0] == 0 and abs(bp[1] + kp) < 1e-8:
-                    shortcut = "position"
-                    shortcut_args["kp"] = kp
-                    if bp[2] < 0.0:
-                        shortcut_args["kv"] = -bp[2]
-                    elif bp[2] > 0.0:
-                        shortcut_args["dampratio"] = bp[2]
-                    for key in ("biasprm", "biastype", "gainprm", "gaintype"):
-                        general_args.pop(key, None)
-                # Velocity shortcut: biasprm = [0, 0, -kv] where kv = gainprm[0]
-                elif bp[0] == 0 and bp[1] == 0 and bp[2] != 0:
-                    kv = general_args["gainprm"][0]
-                    if abs(bp[2] + kv) < 1e-8:
-                        shortcut = "velocity"
-                        shortcut_args["kv"] = kv
-                        for key in ("biasprm", "biastype", "gainprm", "gaintype"):
-                            general_args.pop(key, None)
-
             # Map trntype integer to MuJoCo enum and override default in general_args
             trntype_enum = {
                 int(SolverMuJoCo.TrnType.JOINT): mujoco.mjtTrn.mjTRN_JOINT,
@@ -4253,11 +4225,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             general_args["trntype"] = trntype_enum
             if refsite_name is not None:
                 general_args["refsite"] = refsite_name
-            act = spec.add_actuator(target=target_name, **general_args)
-            if shortcut == "position":
-                act.set_to_position(**shortcut_args)
-            elif shortcut == "velocity":
-                act.set_to_velocity(**shortcut_args)
+            # mj_setConst resolves a positive biasprm[2] as dampratio on position-like general actuators.
+            spec.add_actuator(target=target_name, **general_args)
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
@@ -4639,6 +4608,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if enable_sleeping:
             enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
         self.use_mujoco_cpu = use_mujoco_cpu
+        # Compiled midphase boxes and inertial frames; every BVH refit starts from these.
+        self._canonical_bvh_aabb: np.ndarray | None = None
+        self._canonical_body_ipos: np.ndarray | None = None
+        self._canonical_body_iquat: np.ndarray | None = None
         if use_mujoco_contacts or use_mujoco_cpu:
             mujoco_attrs_for_warn = getattr(model, "mujoco", None)
             solref_mode_attr = (
@@ -5577,6 +5550,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=model.device,
         )
 
+    def _refit_body_bvh_to_inertial_frame(self) -> None:
+        """Re-express the compiled midphase boxes in the current inertial frames, which ``mj_collideTree`` assumes."""
+        if self._canonical_bvh_aabb is None:
+            return
+        mujoco, m = self._mujoco, self.mj_model
+        inv_iquat, dquat, rot, offset = np.empty(4), np.empty(4), np.empty(9), np.empty(3)
+        for body in np.flatnonzero(m.body_bvhnum):
+            mujoco.mju_negQuat(inv_iquat, m.body_iquat[body])
+            mujoco.mju_mulQuat(dquat, inv_iquat, self._canonical_body_iquat[body])
+            mujoco.mju_quat2Mat(rot, dquat)
+            mujoco.mju_rotVecQuat(offset, self._canonical_body_ipos[body] - m.body_ipos[body], inv_iquat)
+            r = rot.reshape(3, 3)
+            adr, num = m.body_bvhadr[body], m.body_bvhnum[body]
+            aabb = self._canonical_bvh_aabb[adr : adr + num]
+            # Rotated boxes grow into their enclosing AABB, so always start from the compiled ones.
+            m.bvh_aabb[adr : adr + num] = np.hstack((aabb[:, :3] @ r.T + offset, aabb[:, 3:] @ np.abs(r).T))
+
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if self.use_mujoco_cpu:
@@ -5664,6 +5654,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # MJWarp re-diagonalizes the inertia, so its moments only hold in its own frame.
                 self.mj_model.body_inertia[:] = self.mjw_model.body_inertia.numpy()[0]
                 self.mj_model.body_iquat[:] = self.mjw_model.body_iquat.numpy()[0]
+                self._refit_body_bvh_to_inertial_frame()
             if flags & ModelFlags.BODY_PROPERTIES or update_inertia:
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
             if update_force and self.mjc_actuator_ctrl_source is not None:
@@ -8602,6 +8593,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_actuator_idx = None
 
         self.mj_model = spec.compile()
+        self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
+        self._canonical_body_ipos = self.mj_model.body_ipos.copy()
+        self._canonical_body_iquat = self.mj_model.body_iquat.copy()
         self.mj_data = mujoco.MjData(self.mj_model)
 
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.

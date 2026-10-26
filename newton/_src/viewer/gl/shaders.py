@@ -5,8 +5,37 @@ import ctypes
 
 import numpy as np
 
-shadow_vertex_shader = """
+capsule_vertex_transform = """
+// Constant per draw. Capsule instances encode (radius, radius, radius + half-height)
+// in their transform scale; ordinary meshes retain the usual affine transform.
+// The capsule prototype has unit radius and unit half-height along Z.
+layout (location = 10) in float aCapsule;
+
+vec3 mesh_position(vec3 position, mat4 transform)
+{
+    if (aCapsule > 0.5) {
+        float ratio = length(transform[0].xyz) / max(length(transform[2].xyz), 1e-20);
+        float end = sign(position.z);
+        position.z = ratio * (position.z - end) + (1.0 - ratio) * end;
+    }
+    return position;
+}
+
+vec3 mesh_normal(vec3 normal, mat4 transform)
+{
+    if (aCapsule > 0.5)
+        // Cancel axial inverse scaling: the caps scale uniformly with the radius.
+        normal.z *= length(transform[2].xyz) / max(length(transform[0].xyz), 1e-20);
+    return normal;
+}
+"""
+
+shadow_vertex_shader = (
+    """
 #version 330 core
+"""
+    + capsule_vertex_transform
+    + """
 layout (location = 0) in vec3 aPos;
 
 // column vectors of the instance transform matrix
@@ -21,10 +50,11 @@ uniform vec3 render_origin;
 void main()
 {
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
-    vec3 render_position = mat3(transform) * aPos + transform[3].xyz - render_origin;
+    vec3 render_position = mat3(transform) * mesh_position(aPos, transform) + transform[3].xyz - render_origin;
     gl_Position = light_space_matrix * vec4(render_position, 1.0);
 }
 """
+)
 
 shadow_fragment_shader = """
 #version 330 core
@@ -33,8 +63,12 @@ void main() { }
 """
 
 
-shape_vertex_shader = """
+shape_vertex_shader = (
+    """
 #version 330 core
+"""
+    + capsule_vertex_transform
+    + """
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
@@ -74,7 +108,7 @@ void main()
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
 
     // Subtract before rotating to avoid cancellation in a translated view matrix for large coordinates.
-    vec3 camera_relative_position = mat3(transform) * aPos + transform[3].xyz - view_pos;
+    vec3 camera_relative_position = mat3(transform) * mesh_position(aPos, transform) + transform[3].xyz - view_pos;
     vec3 view_position = mat3(view) * camera_relative_position;
     gl_Position = projection * vec4(view_position, 1.0);
     LocalPos = aPos;
@@ -87,7 +121,7 @@ void main()
     // negating here restores the outward-pointing normal in world space.
     mat3 normalMatrix = transpose(inverse(rotation));
     if (determinant(rotation) < 0.0) normalMatrix = -normalMatrix;
-    Normal = normalMatrix * aNormal;
+    Normal = normalMatrix * mesh_normal(aNormal, transform);
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
     Material = aMaterial;
@@ -97,6 +131,7 @@ void main()
 #endif
 }
 """
+)
 
 shape_fragment_shader = """
 #version 330 core

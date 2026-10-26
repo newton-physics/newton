@@ -447,6 +447,10 @@ Implementation details differ by coordinate formulation:
   :class:`~newton.solvers.SolverSemiImplicit` currently preserves prescribed state but
   does not zero inverse mass/inertia inside its contact solver. Contacts against
   kinematic bodies can therefore be softer under SemiImplicit.
+- :class:`~newton.solvers.SolverKamino` with ``dynamics_solver="lox"`` advances the pose of
+  kinematic bodies with their prescribed :attr:`newton.State.body_qd` over the step, while its
+  PADMM and DVI backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
+  that reaches the target pose within the step.
 
 In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
 large internal armature value; see :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
@@ -792,7 +796,7 @@ through explicit model indices.
     robot = newton.ModelBuilder()
     robot.add_usd("robot.usd")
     scene = newton.ModelBuilder()
-    scene.replicate(robot, world_count=1024)
+    scene.replicate(robot, copy_count=1024)
     model = scene.finalize()
 
     view = newton.selection.ArticulationView(model, pattern="robot*")  # homogeneous=True
