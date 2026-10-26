@@ -1660,6 +1660,8 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
                 <intvelocity name="kv" joint="slide" kp="20" kv="3"/>
                 <intvelocity name="ratio" joint="slide" kp="20" dampratio="0.5"/>
                 <intvelocity name="default" joint="slide" kp="20"/>
+                <general name="vel_filter" joint="slide" gainprm="5" biastype="affine" biasprm="0 0 -5"
+                         dyntype="filter" dynprm="0.1"/>
             </actuator>
         </mujoco>
         """
@@ -1671,9 +1673,9 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         model = builder.finalize(device="cpu")
 
         np.testing.assert_allclose(
-            model.mujoco.actuator_biasprm.numpy()[:, :3], [[0, -20, -3], [0, -20, 0.5], [0, -20, 0]]
+            model.mujoco.actuator_biasprm.numpy()[:, :3], [[0, -20, -3], [0, -20, 0.5], [0, -20, 0], [0, 0, -5]]
         )
-        np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [1, 1, 1])
+        np.testing.assert_array_equal(model.mujoco.actuator_dyntype.numpy(), [1, 1, 1, 2])
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         np.testing.assert_allclose(solver.mj_model.actuator_biasprm, native_model.actuator_biasprm)
         np.testing.assert_allclose(solver.mj_model.actuator_dynprm, native_model.actuator_dynprm)
@@ -1721,6 +1723,59 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         builder.add_mjcf(mjcf, scale=2.0)
         self.assertAlmostEqual(builder.custom_attributes["mujoco:dof_ref"].values[0], 0.2)
         self.assertAlmostEqual(builder.custom_attributes["mujoco:dof_springref"].values[0], 0.3)
+
+
+class TestImportMjcfMeshFileCache(unittest.TestCase):
+    """A mesh file referenced by several geoms is parsed once per import."""
+
+    _OBJ_TRIANGLE = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+
+    _MJCF = """\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+    <mesh name="m_big" file="mesh.obj" scale="2 2 2"/>
+  </asset>
+  <worldbody>
+    <body name="a"><freejoint/><geom type="mesh" mesh="m"/><geom type="mesh" mesh="m_big"/></body>
+    <body name="b" pos="1 0 0"><freejoint/><geom type="mesh" mesh="m"/></body>
+    <body name="c" pos="2 0 0"><freejoint/><geom type="mesh" mesh="m"/></body>
+  </worldbody>
+</mujoco>"""
+
+    def test_mesh_file_loaded_once_per_load_args(self):
+        """Verify that each mesh file loads once per distinct set of load arguments."""
+        import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
+
+        calls = []
+        original = import_mjcf.load_meshes_from_file
+
+        def counting_load(filename, **kwargs):
+            calls.append((os.path.basename(os.fspath(filename)), tuple(np.asarray(kwargs["scale"]).tolist())))
+            return original(filename, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "mesh.obj"), "w") as f:
+                f.write(self._OBJ_TRIANGLE)
+            mjcf_path = os.path.join(tmpdir, "test.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(self._MJCF)
+            import_mjcf.load_meshes_from_file = counting_load
+            try:
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf_path, parse_meshes=True)
+            finally:
+                import_mjcf.load_meshes_from_file = original
+
+        # three geoms share the unscaled asset, one uses the scaled asset
+        self.assertEqual(sorted(calls), [("mesh.obj", (1.0, 1.0, 1.0)), ("mesh.obj", (2.0, 2.0, 2.0))])
+
+        meshes = [src for src in builder.shape_source if src is not None]
+        self.assertEqual(len(meshes), 4)
+        # every shape owns its mesh, so edits on one shape do not reach the others
+        self.assertEqual(len({id(m) for m in meshes}), 4)
+        extents = sorted(float(np.ptp(np.asarray(m.vertices))) for m in meshes)
+        np.testing.assert_allclose(extents, [1.0, 1.0, 1.0, 2.0], atol=1e-6)
 
 
 class TestImportMjcfMeshScale(unittest.TestCase):
@@ -2025,33 +2080,51 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
         <mesh name="tetra"
               vertex="1 0 0  2 0 0  1 1 0  1 0 1"
               face="0 2 1  0 1 3  0 3 2  1 2 3"
-              normal="1 1 0  1 1 0  1 1 0  1 1 0"
+              normal="1 1 0  0 0 1  1 0 0  0 1 0"
+              refpos="1 0 0"
+              refquat="0.7071067811865476 0 0 0.7071067811865476"
+              scale="2 3 4"/>
+        <mesh name="tetra_hull"
+              vertex="1 0 0  2 0 0  1 1 0  1 0 1"
+              normal="1 1 0  0 0 1  1 0 0  0 1 0"
+              refpos="1 0 0"
+              refquat="0.7071067811865476 0 0 0.7071067811865476"
+              scale="2 3 4"/>
+        <mesh name="tetra_shared"
+              vertex="1 0 0  2 0 0  1 1 0  1 0 1"
+              normal="1 1 0"
               refpos="1 0 0"
               refquat="0.7071067811865476 0 0 0.7071067811865476"
               scale="2 3 4"/>
     </asset>
     <worldbody>
         <geom type="mesh" mesh="tetra" mass="1"/>
+        <geom type="mesh" mesh="tetra_hull" mass="1"/>
+        <geom type="mesh" mesh="tetra_shared" mass="1"/>
     </worldbody>
 </mujoco>
 """
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf)
 
-        mesh = builder.shape_source[0]
-        np.testing.assert_allclose(
-            mesh.vertices,
-            [[0.0, 0.0, 0.0], [0.0, -3.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
-            atol=1e-5,
-        )
-        expected_normal = np.array([0.5, -1.0 / 3.0, 0.0])
-        expected_normal /= np.linalg.norm(expected_normal)
-        np.testing.assert_allclose(mesh.normals, np.tile(expected_normal, (4, 1)), atol=1e-5)
+        shared_normal = np.array([0.5, -1.0 / 3.0, 0.0])
+        shared_normal /= np.linalg.norm(shared_normal)
+        per_vertex_normals = [shared_normal, [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [1.0, 0.0, 0.0]]
+        expected_normals = (per_vertex_normals, per_vertex_normals, np.tile(shared_normal, (4, 1)))
+        self.assertEqual(builder.shape_count, 3)
+        for i, (mesh, normals) in enumerate(zip(builder.shape_source, expected_normals, strict=True)):
+            with self.subTest(mesh=i):
+                np.testing.assert_allclose(
+                    mesh.vertices,
+                    [[0.0, 0.0, 0.0], [0.0, -3.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+                    atol=1e-5,
+                )
+                np.testing.assert_allclose(mesh.normals, normals, atol=1e-5)
 
     def test_inline_mesh_rejects_malformed_vertex_attributes(self):
         """Reject normals and texture coordinates with the wrong vertex count."""
         for attribute, message in (
-            ('normal="0 0 1"', "normal.*3 values per vertex"),
+            ('normal="0 1"', "normal.*3 values per vertex"),
             ('texcoord="0 0"', "texcoord.*2 values per vertex"),
             ('refpos="invalid 0 0"', "Inline MJCF mesh 'bad'.*invalid refpos data"),
             ('refquat="invalid 0 0 1"', "Inline MJCF mesh 'bad'.*invalid refquat data"),
@@ -4232,25 +4305,37 @@ f 4 5 8
             # Ellipsoid uses AABB half-extents directly: (1.0, 0.5, 2.0)
             np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
 
-    def test_mesh_without_explicit_type_stays_mesh(self):
-        """A geom with mesh= but no type= should still be treated as a mesh shape."""
+    def test_mesh_geom_type_defaults(self):
+        """Fit MuJoCo's default sphere to a mesh geom unless a mesh type is set or inherited."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+
+        cases = (
+            ("", "", GeoType.SPHERE),
+            ("", 'type="mesh"', GeoType.MESH),
+            ('<geom type="mesh"/>', "", GeoType.MESH),
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
-            stl_path = os.path.join(tmpdir, "box.stl")
-            self._write_box_stl(stl_path, hx=1.0, hy=1.0, hz=1.0)
-            mjcf = f"""\
-<mujoco>
-    <compiler meshdir="{tmpdir}"/>
-    <asset><mesh name="box" file="box.stl"/></asset>
-    <worldbody>
-        <body name="b">
-            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
-            <geom name="g" mesh="box"/>
-        </body>
-    </worldbody>
-</mujoco>"""
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf)
-            self.assertEqual(builder.shape_type[0], GeoType.MESH)
+            self._write_box_stl(os.path.join(tmpdir, "box.stl"), cx=0.3, cy=-0.2, cz=0.4)
+            for defaults, attributes, expected_type in cases:
+                with self.subTest(defaults=defaults, attributes=attributes):
+                    mjcf = f"""<mujoco>
+                        <compiler meshdir="{tmpdir}"/>
+                        <default>{defaults}</default>
+                        <asset><mesh name="box" file="box.stl"/></asset>
+                        <worldbody><body>
+                            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                            <geom mesh="box" {attributes}/>
+                        </body></worldbody>
+                    </mujoco>"""
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf)
+                    self.assertEqual(builder.shape_count, 1)
+                    self.assertEqual(builder.shape_type[0], expected_type)
+                    if expected_type == GeoType.SPHERE:
+                        reference = mujoco.MjModel.from_xml_string(mjcf)
+                        self.assertEqual(reference.geom_type[0], mujoco.mjtGeom.mjGEOM_SPHERE)
+                        self.assertAlmostEqual(builder.shape_scale[0][0], reference.geom_size[0, 0], places=5)
+                        np.testing.assert_allclose(builder.shape_transform[0].p, reference.geom_pos[0], atol=1e-6)
 
 
 class TestImportMjcfSolverParams(unittest.TestCase):
@@ -5594,6 +5679,46 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         model = builder.finalize()
 
         self.assertEqual(model.mujoco.equality_constraint_count, 2)
+
+    def test_tendon_equality_matches_native_mujoco(self):
+        """Import tendon equalities and compile them like native MuJoCo."""
+        missing = '<tendon name="missing" tendon1="t0" tendon2="unknown"/>'
+        mjcf = f"""
+<mujoco model="tendon_equality">
+    <worldbody>
+        <body name="b0"><joint name="j0" type="slide"/><geom type="sphere" size="0.1" mass="1"/></body>
+        <body name="b1"><joint name="j1" type="slide"/><geom type="sphere" size="0.1" mass="1"/></body>
+        <body name="b2"><joint name="j2" type="slide"/><geom type="sphere" size="0.1" mass="1"/></body>
+    </worldbody>
+    <equality>
+        <tendon name="couple" tendon1="t0" tendon2="t1" polycoef="0.1 2 0 0 0" solref="0.03 0.8"/>
+        <tendon name="hold" tendon1="t1" polycoef="0.2 0 0 0 0" active="false"/>
+        {missing}
+    </equality>
+    <tendon>
+        <fixed name="t0"><joint joint="j0" coef="1"/><joint joint="j1" coef="1"/></fixed>
+        <fixed name="t1"><joint joint="j2" coef="1"/></fixed>
+    </tendon>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(
+            model.mujoco.equality_constraint_type.numpy(), [int(SolverMuJoCo.EqType.TENDON)] * 2
+        )
+        np.testing.assert_array_equal(model.mujoco.equality_constraint_tendon1.numpy(), [0, 1])
+        np.testing.assert_array_equal(model.mujoco.equality_constraint_tendon2.numpy(), [1, -1])
+
+        native = SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(mjcf.replace(missing, ""))
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        for attr in ("eq_type", "eq_obj1id", "eq_obj2id", "eq_active0", "eq_data", "eq_solref"):
+            np.testing.assert_allclose(getattr(solver.mj_model, attr), getattr(native, attr), atol=1e-6, err_msg=attr)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, skip_equality_constraints=True)
+        self.assertEqual(builder.finalize().mujoco.equality_constraint_count, 0)
 
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
@@ -10104,6 +10229,22 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder.add_mjcf(model_path, parse_visuals=True)
             self.assertEqual(builder.shape_count, 2)
 
+            models_dir = os.path.join(tmpdir, "models")
+            os.makedirs(models_dir)
+            os.rename(model_path, os.path.join(models_dir, "assets.xml"))
+            with open(os.path.join(models_dir, "robot.xml"), "w") as f:
+                f.write('<mujoco><include file="assets.xml"/></mujoco>')
+            for included_file in ("models/assets.xml", "models/robot.xml"):
+                with self.subTest(included_file=included_file):
+                    with open(model_path, "w") as f:
+                        f.write(f'<mujoco><include file="{included_file}"/></mujoco>')
+                    root, _ = _load_and_expand_mjcf(model_path)
+                    for tag, filename in (("mesh", "cube.stl"), ("texture", "checker.png"), ("hfield", "terrain.bin")):
+                        self.assertEqual(root.find(f".//{tag}").get("file"), os.path.join(assets_dir, filename))
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(model_path, parse_visuals=True)
+                    self.assertEqual(builder.shape_count, 2)
+
     def test_assetdir_uses_custom_resolver_for_xml_string(self):
         """Resolve a relative assetdir through a custom resolver without a base path."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -10274,22 +10415,28 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                     )
 
     def test_include_with_assetdir(self):
-        """Resolve an included file's assets relative to its own assetdir."""
+        """Fall back to the included file's directory without prepending assetdir."""
         with tempfile.TemporaryDirectory() as tmpdir:
             models_dir = os.path.join(tmpdir, "models")
-            assets_dir = os.path.join(models_dir, "assets")
-            os.makedirs(assets_dir)
-            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            os.makedirs(models_dir)
+            self._create_cube_stl(os.path.join(models_dir, "cube.stl"))
+            self._create_png(os.path.join(models_dir, "checker.png"))
+            with open(os.path.join(models_dir, "terrain.bin"), "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
 
             included_content = """\
 <mujoco>
     <compiler assetdir="assets"/>
     <asset>
         <mesh name="cube" file="cube.stl"/>
+        <texture name="checker" type="2d" file="checker.png"/>
+        <material name="checker" texture="checker"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
     </asset>
     <worldbody>
         <body name="robot">
-            <geom type="mesh" mesh="cube"/>
+            <geom type="mesh" mesh="cube" material="checker"/>
+            <geom type="hfield" hfield="terrain"/>
         </body>
     </worldbody>
 </mujoco>"""
@@ -10306,12 +10453,13 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                 f.write(main_content)
 
             root, _ = _load_and_expand_mjcf(main_path)
-            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(assets_dir, "cube.stl"))
+            for tag, filename in (("mesh", "cube.stl"), ("texture", "checker.png"), ("hfield", "terrain.bin")):
+                self.assertEqual(root.find(f".//{tag}").get("file"), os.path.join(models_dir, filename))
 
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 1)
-            self.assertEqual(builder.shape_count, 1)
+            self.assertEqual(builder.shape_count, 2)
 
     def test_include_with_meshdir(self):
         """Test that meshdir in included file is used to resolve mesh paths."""
@@ -10354,7 +10502,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             self.assertGreater(builder.shape_count, 0)
 
     def test_include_with_meshdir_nested_subdir(self):
-        """Test meshdir with included file in a subdirectory."""
+        """Search main-file, included-file, then included-asset-dir paths; custom resolvers are unchanged."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Structure: tmpdir/models/robot.xml with meshdir="meshes"
             #            tmpdir/models/meshes/cube.stl
@@ -10387,9 +10535,137 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             with open(main_path, "w") as f:
                 f.write(main_content)
 
+            legacy_mesh = os.path.join(meshes_dir, "cube.stl")
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), legacy_mesh)
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.shape_count, 1)
+
+            included_mesh = os.path.join(models_dir, "cube.stl")
+            self._create_cube_stl(included_mesh)
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), included_mesh)
+
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 1)
+
+            main_meshes = os.path.join(tmpdir, "meshes")
+            os.makedirs(main_meshes)
+            main_mesh = os.path.join(main_meshes, "cube.stl")
+            self._create_cube_stl(main_mesh)
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), main_mesh)
+
+            def resolve(base_dir, file_path):
+                return os.path.abspath(os.path.join(base_dir, file_path))
+
+            root, _ = _load_and_expand_mjcf(main_path, resolve)
+            self.assertEqual(root.find(".//mesh").get("file"), legacy_mesh)
+
+    def test_include_inherits_main_meshdir(self):
+        """Search the main model's meshdir for included files without their own compiler."""
+        robot_content = """\
+<mujoco>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube"/>
+    </worldbody>
+</mujoco>"""
+        cases = (
+            ("direct", {"models/robot.xml": robot_content}, "models"),
+            (
+                "nested",
+                {
+                    "models/robot.xml": '<mujoco><include file="sub/part.xml"/></mujoco>',
+                    "models/sub/part.xml": robot_content,
+                },
+                os.path.join("models", "sub"),
+            ),
+        )
+        for name, files, included_dir in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmpdir:
+                for rel_path, content in files.items():
+                    os.makedirs(os.path.dirname(os.path.join(tmpdir, rel_path)), exist_ok=True)
+                    with open(os.path.join(tmpdir, rel_path), "w") as f:
+                        f.write(content)
+                main_path = os.path.join(tmpdir, "scene.xml")
+                with open(main_path, "w") as f:
+                    f.write('<mujoco><compiler meshdir="assets"/><include file="models/robot.xml"/></mujoco>')
+
+                # An unrelated mesh beside the main file must not shadow the included file's mesh.
+                self._create_cube_stl(os.path.join(tmpdir, "cube.stl"))
+                included_mesh = os.path.join(tmpdir, included_dir, "cube.stl")
+                self._create_cube_stl(included_mesh)
+                root, _ = _load_and_expand_mjcf(main_path)
+                self.assertEqual(root.find(".//mesh").get("file"), included_mesh)
+
+                os.makedirs(os.path.join(tmpdir, "assets"))
+                main_mesh = os.path.join(tmpdir, "assets", "cube.stl")
+                self._create_cube_stl(main_mesh)
+                root, _ = _load_and_expand_mjcf(main_path)
+                self.assertEqual(root.find(".//mesh").get("file"), main_mesh)
+
+    def test_xml_string_include_keeps_lookup_order(self):
+        """Prefer the included file's directory over its meshdir when the root is an XML string."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            models_dir = os.path.join(tmpdir, "models")
+            os.makedirs(os.path.join(models_dir, "meshes"))
+            self._create_cube_stl(os.path.join(models_dir, "meshes", "cube.stl"))
+            included_mesh = os.path.join(models_dir, "cube.stl")
+            self._create_cube_stl(included_mesh)
+            robot_path = os.path.join(models_dir, "robot.xml")
+            with open(robot_path, "w") as f:
+                f.write(
+                    '<mujoco><compiler meshdir="meshes"/><asset><mesh name="cube" file="cube.stl"/></asset></mujoco>'
+                )
+
+            root, _ = _load_and_expand_mjcf(f'<mujoco><include file="{robot_path}"/></mujoco>')
+            self.assertEqual(root.find(".//mesh").get("file"), included_mesh)
+
+    def test_xml_string_include_absolute_asset_dir(self):
+        """Prefer an absolute asset directory over the included file's directory with an XML-string root."""
+        for attr in ("meshdir", "assetdir"):
+            with self.subTest(attr), tempfile.TemporaryDirectory() as tmpdir:
+                assets_dir = os.path.join(tmpdir, "assets")
+                models_dir = os.path.join(tmpdir, "models")
+                os.makedirs(assets_dir)
+                os.makedirs(models_dir)
+                asset_mesh = os.path.join(assets_dir, "cube.stl")
+                self._create_cube_stl(asset_mesh)
+                self._create_cube_stl(os.path.join(models_dir, "cube.stl"))
+                robot_path = os.path.join(models_dir, "robot.xml")
+                with open(robot_path, "w") as f:
+                    f.write(
+                        f'<mujoco><compiler {attr}="{assets_dir}"/>'
+                        '<asset><mesh name="cube" file="cube.stl"/></asset></mujoco>'
+                    )
+
+                root, _ = _load_and_expand_mjcf(f'<mujoco><include file="{robot_path}"/></mujoco>')
+                self.assertEqual(root.find(".//mesh").get("file"), asset_mesh)
+
+    def test_include_inherits_main_strippath(self):
+        """Apply the main model's strippath when searching its meshdir for included assets."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for subdir in ("assets/sub", "models/sub"):
+                os.makedirs(os.path.join(tmpdir, subdir))
+            main_mesh = os.path.join(tmpdir, "assets", "cube.stl")
+            self._create_cube_stl(main_mesh)
+            self._create_cube_stl(os.path.join(tmpdir, "assets", "sub", "cube.stl"))
+            self._create_cube_stl(os.path.join(tmpdir, "models", "sub", "cube.stl"))
+            with open(os.path.join(tmpdir, "models", "robot.xml"), "w") as f:
+                f.write('<mujoco><asset><mesh name="cube" file="sub/cube.stl"/></asset></mujoco>')
+            main_path = os.path.join(tmpdir, "scene.xml")
+            with open(main_path, "w") as f:
+                f.write(
+                    '<mujoco><compiler meshdir="assets" strippath="true"/><include file="models/robot.xml"/></mujoco>'
+                )
+
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), main_mesh)
 
     def test_include_without_meshdir_still_works(self):
         """Test that includes without meshdir resolve relative to included file."""

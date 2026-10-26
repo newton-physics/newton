@@ -178,6 +178,8 @@ def parse_usd(
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The file path to the USD file, or an existing USD stage instance.
         xform: The transform to apply to the entire scene.
+            If ``parent_body`` is set, imported bodies are placed relative to that
+            body's frame; static shapes still use ``xform`` in the world frame.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
@@ -256,7 +258,7 @@ def parse_usd(
         verbose: If True, log additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matching prim paths to ignore.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path: The USD path to import, defaults to "/". Bound physics materials
             outside this subtree are resolved without importing unrelated bodies
@@ -1674,6 +1676,8 @@ def parse_usd(
                     break
                 current_prim = current_prim.GetParent()
 
+    articulation_has_self_collision = {}
+
     _deformable_ctx = _DeformableImportContext(
         builder=builder,
         stage=stage,
@@ -1702,6 +1706,7 @@ def parse_usd(
         path_soft_attrs=path_soft_attrs,
         path_attachment_map=path_attachment_map,
         path_attachment_attrs=path_attachment_attrs,
+        articulation_has_self_collision=articulation_has_self_collision,
         prims=_deformable_prims,
     )
 
@@ -1746,9 +1751,6 @@ def parse_usd(
         if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
     ]
     authored_articulation_root_paths.sort(key=len, reverse=True)
-
-    # maps from articulation_id to bool indicating if self-collisions are enabled
-    articulation_has_self_collision = {}
 
     if UsdPhysics.ObjectType.Articulation in ret_dict:
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]

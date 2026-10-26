@@ -23,7 +23,18 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 import warp as wp
 
+from ... import config
 from ..core._warnings import _external_warning_stacklevel
+from ..core.host_transform import (
+    pack_transforms,
+    pack_warp_values,
+    store_transform_rows,
+    transform_inverse,
+    transform_inverse_rows,
+    transform_multiply,
+    transform_multiply_rows,
+    warp_array_from_values,
+)
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -47,12 +58,14 @@ from ..geometry import (
     Mesh,
     ParticleFlags,
     ShapeFlags,
+    _convex_cache,
     compute_inertia_shape,
     compute_shape_radius,
     transform_inertia,
 )
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
 from ..geometry.types import Heightfield
@@ -60,7 +73,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
+from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .enums import (
     BodyFlags,
@@ -92,6 +105,25 @@ else:
     UsdStage = Any
 
 logger = logging.getLogger(__name__)
+
+
+def _convex_hull_interior_point(vertices: np.ndarray, indices: np.ndarray | None) -> np.ndarray:
+    """Return the volume centroid of a convex hull mesh [m], in its unscaled local frame.
+
+    The faces are fanned into tetrahedra from the vertex mean, which is interior, so
+    the result lies inside the hull and does not depend on how densely each region
+    is tessellated. Degenerate hulls fall back to the vertex mean.
+    """
+    vertices = np.asarray(vertices, dtype=np.float64)
+    mean = vertices.mean(axis=0)
+    if indices is None or len(indices) < 3:
+        return mean
+    tris = vertices[np.asarray(indices, dtype=np.int64).reshape(-1, 3)] - mean
+    volumes = np.abs(np.einsum("ij,ij->i", tris[:, 0], np.cross(tris[:, 1], tris[:, 2])))
+    total = volumes.sum()
+    if not np.isfinite(total) or total <= 0.0:
+        return mean
+    return mean + (volumes[:, None] * tris.sum(axis=1)).sum(axis=0) / (4.0 * total)
 
 
 def _validate_opacity(value: Any, value_name: str) -> float:
@@ -154,13 +186,8 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
     "limits of ModelBuilder.JointDofConfig instead."
 )
-_ADD_ROD_POSITIONS_DEPRECATION_MSG = (
-    "ModelBuilder.add_rod(positions=...) is deprecated in Newton 1.6; "
-    "construct newton.Rod(...) and pass it with add_rod(rod=...) instead."
-)
-_ADD_ROD_GRAPH_DEPRECATION_MSG = (
-    "ModelBuilder.add_rod_graph() is deprecated in Newton 1.6; "
-    "construct newton.Rod(..., edges=...) and pass it with add_rod(rod=...) instead."
+_REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
+    "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
 )
 
 # Plain constructors, not wp.transform_identity()/wp.quat_identity(): builtins
@@ -217,8 +244,13 @@ _CONVEX_SUPPORT_MIN_VERTICES = 256
 _CONVEX_SUPPORT_LUT_RESOLUTION = 32
 
 
-def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[int]] | None:
-    """Validate hull adjacency, using strict geometry checks for depth certification."""
+def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> tuple[list[set[int]], np.ndarray] | None:
+    """Validate hull adjacency, using strict geometry checks for depth certification.
+
+    Returns the vertex adjacency and one ``(a, b, c1, c2)`` row per hull edge.
+    ``c1`` and ``c2`` complete the edge's two faces such that
+    ``cross(b - a, c1 - a)`` and ``cross(c2 - a, b - a)`` point outward.
+    """
     vertices = np.asarray(source.vertices, dtype=np.float32).reshape(-1, 3)
     vertex_count = len(vertices)
     if vertex_count < 4:
@@ -275,7 +307,10 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
         group.append(vertex)
 
     edge_incidence: Counter[tuple[int, int]] = Counter()
+    edge_faces: dict[tuple[int, int], list[int]] = {}
     faces = set()
+    # Face windings vary; orient each face away from the interior vertex mean.
+    center = vertices64.mean(axis=0)
     for triangle in triangles[nondegenerate]:
         welded = tuple(int(welded_vertex[int(vertex)]) for vertex in triangle)
         if len(set(welded)) < 3:
@@ -284,8 +319,16 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
         if certify and face in faces:
             return None
         faces.add(face)
-        for first, second in ((welded[0], welded[1]), (welded[1], welded[2]), (welded[2], welded[0])):
-            edge_incidence[min(first, second), max(first, second)] += 1
+        a, b, c = (int(vertex) for vertex in triangle)
+        if np.dot(np.cross(vertices64[b] - vertices64[a], vertices64[c] - vertices64[a]), vertices64[a] - center) < 0.0:
+            b, c = c, b
+        for first, second, third in ((a, b, c), (b, c, a), (c, a, b)):
+            key = (int(welded_vertex[first]), int(welded_vertex[second]))
+            edge = (min(key), max(key))
+            edge_incidence[edge] += 1
+            record = edge_faces.setdefault(edge, [first, second, third, -1])
+            if record[2] != third:
+                record[3] = third
     if not edge_incidence or any(count != 2 for count in edge_incidence.values()):
         if not certify and vertex_count >= _CONVEX_SUPPORT_MIN_VERTICES:
             logger.warning(
@@ -333,7 +376,7 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
                 stack.append(neighbor)
     if visited != surface:
         return None
-    return adjacent
+    return adjacent, np.asarray(list(edge_faces.values()), dtype=np.int32).reshape(-1, 4)
 
 
 def _build_convex_support_acceleration(
@@ -344,7 +387,10 @@ def _build_convex_support_acceleration(
     vertex_count = len(vertices)
     if vertex_count < _CONVEX_SUPPORT_MIN_VERTICES:
         return None
-    adjacent = _convex_hull_adjacency(source, certify=False) if adjacency is None else adjacency
+    adjacent = adjacency
+    if adjacent is None:
+        topology = _convex_hull_adjacency(source, certify=False)
+        adjacent = topology[0] if topology is not None else None
     if adjacent is None or any(not neighbors for neighbors in adjacent):
         return None
 
@@ -641,7 +687,11 @@ class ModelBuilder:
 
            main = ModelBuilder()
            main.add_world(robot)  # All robot entities -> world 0
-           main.replicate(robot, world_count=2)  # Add more worlds from the same source
+           main.replicate(robot, copy_count=2)  # Add more worlds from the same source
+
+       With ``separate_worlds=False``, :meth:`replicate` instead adds all copies to the
+       current world context in one batched pass, as repeated :meth:`add_builder` calls
+       would.
 
     :attr:`current_world` is builder-managed, read-only state. Use
     :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
@@ -898,9 +948,20 @@ class ModelBuilder:
         kd: float = 100.0
         """The normal contact damping coefficient [N·s/m]."""
         kf: float = 1000.0
-        """The contact friction gain [N·s/m]."""
+        """The contact friction gain [N·s/m].
+
+        Slope of the viscous friction regularization in
+        :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone`; also used by
+        :class:`~newton.solvers.SolverMuJoCo`. See
+        :ref:`Contact friction gain and adhesion`."""
         ka: float = 0.0
-        """The contact adhesion distance [m]."""
+        """The contact adhesion distance [m].
+
+        Distance within which the normal force attracts the shapes, used by
+        :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone`. ``0`` disables adhesion. See
+        :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
         """The coefficient of friction."""
         restitution: float = 0.0
@@ -2076,7 +2137,7 @@ class ModelBuilder:
         self.curve_label: list[str] = []
         """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
 
-        Native :meth:`add_rod` and :meth:`add_rod_graph` calls each append one entry.
+        Native :meth:`add_rod` calls each append one entry.
         USD cable imports record one entry per simulation prim, except that curves
         welded into a graph share one entry for the complete graph. A prim containing
         several disconnected curves also has one entry. See :ref:`deformable-objects`
@@ -3445,28 +3506,38 @@ class ModelBuilder:
     def replicate(
         self,
         builder: ModelBuilder,
-        world_count: int,
+        copy_count: int | None = None,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
         *,
+        separate_worlds: bool = True,
         xforms: Sequence[Transform] | None = None,
         label_prefixes: Sequence[str | None] | None = None,
+        world_count: int | None = None,
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
 
         This method is useful for creating multiple instances of a sub-model (e.g., robots, scenes)
         arranged in a regular grid or along a line. Each copy is offset in space by a multiple of the
-        specified spacing vector, and all entities from each copy are assigned to a new world.
+        specified spacing vector. By default, all entities from each copy are assigned to a new world,
+        so copies do not collide with each other. With ``separate_worlds=False``, all copies are added
+        to the current world context instead, as repeated :meth:`add_builder` calls would add them, and
+        copies collide with each other.
 
-        All copies are merged in a single batched pass; subclass overrides of
-        :meth:`add_world` or :meth:`add_builder` are not invoked during replication.
-        Merged entries may share objects with ``builder`` and across the replicated
-        worlds; see :meth:`add_builder` for the supported life-cycle.
+        All copies are merged in a single batched pass, which is much faster than calling
+        :meth:`add_world` or :meth:`add_builder` once per copy; subclass overrides of those methods are
+        not invoked during replication. Merged entries may share objects with ``builder`` and across
+        the copies; see :meth:`add_builder` for the supported life-cycle.
+
+        .. deprecated:: 1.8
+            ``world_count`` is deprecated. Use ``copy_count`` instead.
 
         Note:
             For visual separation of worlds, it is recommended to use the viewer's
             `set_world_offsets()` method instead of physical spacing. This improves numerical
-            stability by keeping all worlds at the origin in the physics simulation.
+            stability by keeping all worlds at the origin in the physics simulation. With
+            ``separate_worlds=False``, this does not apply: copies share one world, so place them
+            apart with ``spacing`` or ``xforms`` to keep them from starting in contact.
 
             Python's cyclic garbage collector is temporarily disabled during this operation.
             Its previous state is restored before returning or propagating an exception.
@@ -3482,54 +3553,83 @@ class ModelBuilder:
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
             passing it here. Replication copies mesh references, so approximating
-            first yields a single simplified copy shared across all worlds;
+            first yields a single simplified copy shared across all copies;
             approximating afterwards allocates one copy per replicated shape.
 
         Args:
             builder: The builder to replicate. All entities from this builder will be copied.
-            world_count: The number of worlds to create.
+            copy_count: The number of copies to add.
             spacing: The spacing between each copy along each axis. Ignored when
                 ``xforms`` is provided.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
-            xforms: Optional sequence of transforms, one per replicated world.
-                When provided, its length must equal ``world_count``.
+            separate_worlds: Whether to assign each copy to a new world. If ``False``, add all
+                copies to the current world context (see :attr:`current_world`) instead. Like
+                :meth:`add_builder`, this then also replaces the current world's gravity, or this
+                builder's gravity outside a world context, with the gravity of ``builder``.
+            xforms: Optional sequence of transforms, one per copy.
+                When provided, its length must equal ``copy_count``.
             label_prefixes: Optional prefix prepended to all labels from the source builder,
-                one per replicated world, applied as :meth:`add_builder` applies its
+                one per copy, applied as :meth:`add_builder` applies its
                 ``label_prefix``. Labels are joined with ``/``. A ``None`` entry leaves that
-                world's labels as they are in ``builder``; an empty source label remains
+                copy's labels as they are in ``builder``; an empty source label remains
                 unlabeled.
+            world_count: Deprecated alias for ``copy_count``.
+
+        Raises:
+            TypeError: Neither or both of ``copy_count`` and ``world_count`` are supplied.
+            RuntimeError: ``separate_worlds`` is ``True`` inside a world context.
+            ValueError: ``xforms`` or ``label_prefixes`` does not have ``copy_count`` entries.
         """
+        if world_count is not None:
+            if copy_count is not None:
+                raise TypeError("Specify only one of `copy_count` and `world_count`")
+            warnings.warn(
+                _REPLICATE_WORLD_COUNT_DEPRECATION_MSG,
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+            copy_count = world_count
+        elif copy_count is None:
+            raise TypeError("ModelBuilder.replicate() missing required argument: 'copy_count'")
+
         gc_was_enabled = gc.isenabled()
         gc.disable()
         try:
-            if world_count <= 0:
+            if copy_count < 0:
                 return
-            if self.current_world != -1:
+            if xforms is not None and len(xforms) != copy_count:
+                raise ValueError(f"xforms must contain {copy_count} entries, got {len(xforms)}")
+            if label_prefixes is not None and len(label_prefixes) != copy_count:
+                raise ValueError(f"label_prefixes must contain {copy_count} entries, got {len(label_prefixes)}")
+            if copy_count == 0:
+                return
+            if separate_worlds and self.current_world != -1:
                 raise RuntimeError(
                     f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
-                    "Call end_world() first to close the current world context."
+                    "Call end_world() first, or pass separate_worlds=False to add the copies to the current world."
                 )
             if xforms is None:
                 if tuple(spacing) == (0, 0, 0):
-                    xforms = [None] * world_count
+                    xforms = [None] * copy_count
                 else:
-                    offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+                    offsets = compute_world_offsets(copy_count, spacing, self.up_axis)
                     xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
-            elif len(xforms) != world_count:
-                raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
             if label_prefixes is None:
-                label_prefixes = [None] * world_count
-            elif len(label_prefixes) != world_count:
-                raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
+                label_prefixes = [None] * copy_count
 
-            base_world = self.world_count
-            worlds = list(range(base_world, base_world + world_count))
+            if separate_worlds:
+                worlds = list(range(self.world_count, self.world_count + copy_count))
+            else:
+                worlds = [self.current_world] * copy_count
             with self._raw_array_access():
                 self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
 
-            self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
-            self.world_count += world_count
+            if separate_worlds:
+                self.world_gravity.extend(builder._gravity_as_vector() for _ in range(copy_count))
+                self.world_count += copy_count
+            else:
+                self._adopt_builder_gravity(builder)
         finally:
             if gc_was_enabled:
                 gc.enable()
@@ -3545,8 +3645,8 @@ class ModelBuilder:
         if builder.up_axis != self.up_axis:
             raise ValueError("Cannot add a builder with a different up axis.")
 
-        world_count = len(worlds)
-        if len(xforms) != world_count or len(label_prefixes) != world_count:
+        copy_count = len(worlds)
+        if len(xforms) != copy_count or len(label_prefixes) != copy_count:
             raise ValueError("worlds, xforms, and label_prefixes must have the same length")
 
         worlds = np.asarray(worlds, dtype=np.int64)
@@ -3555,16 +3655,19 @@ class ModelBuilder:
             if xform is None:
                 return None
             xform = wp.transform(*xform)
-            # Identity behaves as None: skips the per-world transform loops and keeps copies
+            # Identity behaves as None: it is excluded from moved_copies, which keeps copies
             # bit-exact (identity transform_mul round-trips are not exact for free-root joint_q).
             return None if np.array_equal(np.asarray(xform), _IDENTITY_TRANSFORM) else xform
 
         xforms = [normalize_xform(xform) for xform in xforms]
+        # Copies with a non-identity transform, as copy indices and (N, 7) float32 rows.
+        moved_copies = np.asarray([i for i, xform in enumerate(xforms) if xform is not None], dtype=np.int64)
+        moved_xforms = pack_transforms([xform for xform in xforms if xform is not None])
+        # Moved copies whose rotation is not the identity; only these rotate velocities.
+        rotated = ~np.all(moved_xforms[:, 3:] == _IDENTITY_ROTATION, axis=1)
+        translations_only = not np.any(rotated)
         offsets = np.asarray(
             [np.zeros(3, dtype=np.float32) if xform is None else xform.p for xform in xforms], dtype=np.float32
-        )
-        translations_only = all(
-            xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION) for xform in xforms
         )
 
         def source_list(attr: str) -> list:
@@ -3573,19 +3676,15 @@ class ModelBuilder:
             # extend would silently misbehave on ndarrays).
             return values if isinstance(values, list) else list(values)
 
-        transform_mul_cfunc = wp._src.context.runtime.core.wp_builtin_mul_transformf_transformf
-
-        def transform_mul(a: wp.transform, b: wp.transform) -> wp.transform:
-            out = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-            transform_mul_cfunc(a, b, ctypes.byref(out))
-            return out
-
-        def rotate_vectors(rotation: wp.quat, vectors: np.ndarray) -> None:
-            # In-place SO(3) on (N, 3). Translation is not applied: a pure offset
-            # must leave linear and angular velocity unchanged.
+        def rotate_vectors(rotation: np.ndarray, vectors: np.ndarray) -> None:
+            # In-place SO(3) on (..., 3), with rotations (..., 4) broadcast against the
+            # vectors. Translation is not applied: a pure offset must leave linear and
+            # angular velocity unchanged. This keeps the cross-product form that velocity
+            # copies have always used, so they stay bit-identical; poses go through
+            # transform_multiply_rows(), which mirrors Warp's quat_rotate instead.
             q = np.asarray(rotation, dtype=np.float32)
-            xyz = q[:3]
-            w = float(q[3])
+            xyz = q[..., :3]
+            w = q[..., 3:]
             t = 2.0 * np.cross(xyz, vectors)
             vectors += np.cross(xyz, t) + w * t
 
@@ -3624,16 +3723,16 @@ class ModelBuilder:
                 source = np.asarray(source, dtype=numpy_dtype)
                 prefix = prefix.reshape((-1, *element_shape))
                 source = source.reshape((-1, *element_shape))
-                values = np.empty((len(prefix) + world_count * len(source), *element_shape), dtype=numpy_dtype)
+                values = np.empty((len(prefix) + copy_count * len(source), *element_shape), dtype=numpy_dtype)
                 values[: len(prefix)] = prefix
-                values[len(prefix) :].reshape((world_count, len(source), *element_shape))[:] = source
+                values[len(prefix) :].reshape((copy_count, len(source), *element_shape))[:] = source
                 self._set_array_backed_attribute(attr, values, descriptor)
                 array_starts[attr] = len(prefix)
 
-        world_range = np.arange(world_count, dtype=np.int64)
-        start_arrays = {kind: base + world_range * counts[kind] for kind, base in bases.items()}
+        copy_range = np.arange(copy_count, dtype=np.int64)
+        start_arrays = {kind: base + copy_range * counts[kind] for kind, base in bases.items()}
         muscle_point_base = array_starts.get("muscle_bodies", len(self.muscle_bodies))
-        start_arrays["muscle_point"] = muscle_point_base + world_range * len(builder.muscle_bodies)
+        start_arrays["muscle_point"] = muscle_point_base + copy_range * len(builder.muscle_bodies)
 
         def starts(kind: str) -> np.ndarray:
             return start_arrays[kind]
@@ -3643,19 +3742,17 @@ class ModelBuilder:
                 return
             source = np.asarray(values, dtype=np.int64)
             if isinstance(dst, np.ndarray):
-                target = dst[array_starts[attr] :].reshape((world_count, *source.shape))
+                target = dst[array_starts[attr] :].reshape((copy_count, *source.shape))
                 target[:] = source
-                reference_starts = np.asarray(starts(kind), dtype=dst.dtype).reshape(
-                    (world_count,) + (1,) * source.ndim
-                )
+                reference_starts = np.asarray(starts(kind), dtype=dst.dtype).reshape((copy_count,) + (1,) * source.ndim)
                 np.add(target, reference_starts, out=target, where=target >= 0)
                 return
-            if world_count == 1:
+            if copy_count == 1:
                 start = int(start_arrays[kind][0])
                 dst.extend(np.where(source >= 0, source + start, source).tolist())
                 return
-            tiled = np.tile(source, (world_count,) + (1,) * (source.ndim - 1))
-            offset_shape = (world_count * len(source),) + (1,) * (source.ndim - 1)
+            tiled = np.tile(source, (copy_count,) + (1,) * (source.ndim - 1))
+            offset_shape = (copy_count * len(source),) + (1,) * (source.ndim - 1)
             offsets = np.repeat(starts(kind), len(source)).reshape(offset_shape)
             translated = np.where(tiled >= 0, tiled + offsets, tiled)
             dst.extend(translated.tolist())
@@ -3666,7 +3763,7 @@ class ModelBuilder:
         attribute_specs.pop("particle_q")
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
-            particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (world_count, 1))
+            particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (copy_count, 1))
             particle_q += np.repeat(offsets, counts["particle"], axis=0)
             if "particle_q" in array_starts:
                 self.particle_q[array_starts["particle_q"] :] = particle_q
@@ -3679,17 +3776,14 @@ class ModelBuilder:
         attribute_specs.pop("shape_transform")
         shape_transform_start = array_starts.get("shape_transform", int(bases["shape"]))
         if "shape_transform" not in array_starts:
-            self.shape_transform.extend(source_list("shape_transform") * world_count)
-        if counts["shape"]:
+            self.shape_transform.extend(source_list("shape_transform") * copy_count)
+        if counts["shape"] and len(moved_copies):
             static_shapes = np.flatnonzero(np.asarray(builder.shape_body, dtype=np.int64) == -1)
-            for world_index, xform in enumerate(xforms):
-                if xform is None:
-                    continue
-                for shape in static_shapes.tolist():
-                    source = wp.transform(*builder.shape_transform[shape])
-                    target = shape_transform_start + world_index * counts["shape"] + shape
-                    transformed = transform_mul(xform, source)
-                    self.shape_transform[target] = transformed
+            if len(static_shapes):
+                source = pack_transforms([builder.shape_transform[shape] for shape in static_shapes.tolist()])
+                transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
+                targets = shape_transform_start + moved_copies[:, None] * counts["shape"] + static_shapes[None]
+                store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
 
         # World guides carry their own frame; body-local guides follow the placed body.
         world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
@@ -3697,7 +3791,7 @@ class ModelBuilder:
             attribute_specs.pop(name)
             start = int(bases["tendon_guide"])
             values = getattr(self, name)
-            values.extend(source_list(name) * world_count)
+            values.extend(source_list(name) * copy_count)
             is_offset = name == "tendon_guide_offset"
             if world_guides.size == 0 or (not is_offset and translations_only):
                 continue
@@ -3731,49 +3825,41 @@ class ModelBuilder:
         attribute_specs.pop("joint_qd")
         joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
         if "joint_X_p" not in array_starts:
-            self.joint_X_p.extend(source_list("joint_X_p") * world_count)
-        joint_q = np.tile(np.asarray(builder.joint_q, dtype=np.float32), world_count)
+            self.joint_X_p.extend(source_list("joint_X_p") * copy_count)
+        joint_q_source = np.asarray(builder.joint_q, dtype=np.float32)
+        joint_q = np.tile(joint_q_source, copy_count)
         # joint_qd is parent-frame. Free-root twists use the same rotation as joint_q
         # (xform conjugated by joint_X_p). Other joint velocities are unchanged.
         joint_qd_source = np.asarray(builder.joint_qd, dtype=np.float32)
-        joint_qd = np.tile(joint_qd_source, world_count)
-        if counts["joint"]:
+        joint_qd = np.tile(joint_qd_source, copy_count)
+        if counts["joint"] and len(moved_copies):
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
             nonfree_roots = np.flatnonzero((joint_parents == -1) & (joint_types != int(JointType.FREE)))
-            for world_index, xform in enumerate(xforms):
-                if xform is None:
-                    continue
-                for joint in nonfree_roots.tolist():
-                    source = wp.transform(*builder.joint_X_p[joint])
-                    target = joint_X_p_start + world_index * counts["joint"] + joint
-                    transformed = transform_mul(xform, source)
-                    self.joint_X_p[target] = transformed
+            if len(nonfree_roots):
+                source = pack_transforms([builder.joint_X_p[joint] for joint in nonfree_roots.tolist()])
+                transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
+                targets = joint_X_p_start + moved_copies[:, None] * counts["joint"] + nonfree_roots[None]
+                store_transform_rows(self.joint_X_p, targets.ravel(), transformed.reshape(-1, 7))
 
             free_roots = np.flatnonzero((joint_parents == -1) & (joint_types == int(JointType.FREE)))
-            if len(free_roots) and any(xform is not None for xform in xforms):
-                # Per-joint frames are invariant across worlds; compute them once.
-                free_root_frames = []
-                for joint in free_roots.tolist():
-                    source_q = builder.joint_q_start[joint]
-                    source_qd = builder.joint_qd_start[joint]
-                    xform_prev = wp.transform(*builder.joint_q[source_q : source_q + 7])
-                    X_pj = wp.transform(*builder.joint_X_p[joint])
-                    free_root_frames.append((source_q, source_qd, X_pj, wp.transform_inverse(X_pj), xform_prev))
-                for world_index, xform in enumerate(xforms):
-                    if xform is None:
-                        continue
-                    coord_base = world_index * counts["joint_coord"]
-                    dof_base = world_index * len(joint_qd_source)
-                    rotate_qd = not np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION)
-                    for source_q, source_qd, X_pj, X_pj_inv, xform_prev in free_root_frames:
-                        xform_local = transform_mul(transform_mul(X_pj_inv, xform), X_pj)
-                        transformed = transform_mul(xform_local, xform_prev)
-                        target_q = coord_base + source_q
-                        joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
-                        if rotate_qd:
-                            twist = joint_qd[dof_base + source_qd : dof_base + source_qd + 6].reshape(2, 3)
-                            rotate_vectors(wp.transform_get_rotation(xform_local), twist)
+            if len(free_roots):
+                # Arrays below are shaped (moved copy, free root, ...).
+                q_index = np.asarray(builder.joint_q_start, dtype=np.int64)[free_roots, None] + np.arange(7)
+                qd_index = np.asarray(builder.joint_qd_start, dtype=np.int64)[free_roots, None] + np.arange(6)
+                xform_prev = joint_q_source[q_index]
+                X_pj = pack_transforms([builder.joint_X_p[joint] for joint in free_roots.tolist()])
+                X_pj_inv = transform_inverse_rows(X_pj)
+                xform_local = transform_multiply_rows(
+                    transform_multiply_rows(X_pj_inv[None], moved_xforms[:, None]), X_pj[None]
+                )
+                coord_base = moved_copies[:, None, None] * counts["joint_coord"]
+                joint_q[coord_base + q_index[None]] = transform_multiply_rows(xform_local, xform_prev[None])
+                if np.any(rotated):
+                    qd_targets = moved_copies[rotated, None, None] * len(joint_qd_source) + qd_index[None]
+                    twist = joint_qd[qd_targets].reshape((*qd_targets.shape[:2], 2, 3))
+                    rotate_vectors(xform_local[rotated, :, None, 3:], twist)
+                    joint_qd[qd_targets] = twist.reshape(qd_targets.shape)
 
         if "joint_q" in array_starts:
             self.joint_q[array_starts["joint_q"] :] = joint_q
@@ -3784,8 +3870,8 @@ class ModelBuilder:
         elif len(joint_qd):
             self.joint_qd.extend(joint_qd.tolist())
 
-        for world_index, joint_start in enumerate(joint_starts.tolist()):
-            body_start = int(body_starts[world_index])
+        for copy_index, joint_start in enumerate(joint_starts.tolist()):
+            body_start = int(body_starts[copy_index])
             for joint, (parent, child) in enumerate(
                 zip(builder.joint_parent, builder.joint_child, strict=True), start=int(joint_start)
             ):
@@ -3796,46 +3882,33 @@ class ModelBuilder:
 
         attribute_specs.pop("body_q")
         if counts["body"]:
+            body_q_source = pack_transforms(builder.body_q)
+            body_q = np.tile(body_q_source, (copy_count, 1))
             if translations_only:
-                body_q = np.tile(np.asarray(builder.body_q, dtype=np.float32).reshape((-1, 7)), (world_count, 1))
                 if np.any(offsets):
                     body_q[:, :3] += np.repeat(offsets, counts["body"], axis=0)
-                if "body_q" in array_starts:
-                    self.body_q[array_starts["body_q"] :] = body_q
-                else:
-                    # Own each transform without retaining per-row views into the tiled array.
-                    self.body_q.extend(wp.transform.from_buffer_copy(row) for row in body_q)
+            elif len(moved_copies):
+                body_q.reshape((copy_count, -1, 7))[moved_copies] = transform_multiply_rows(
+                    moved_xforms[:, None], body_q_source[None]
+                )
+            if "body_q" in array_starts:
+                self.body_q[array_starts["body_q"] :] = body_q
             else:
-                body_q_target = array_starts.get("body_q", int(bases["body"]))
-                for xform in xforms:
-                    if xform is None:
-                        if "body_q" not in array_starts:
-                            self.body_q.extend(wp.transform(*source_body_q) for source_body_q in builder.body_q)
-                        body_q_target += counts["body"]
-                        continue
-                    if "body_q" in array_starts:
-                        for body, source_body_q in enumerate(builder.body_q):
-                            transformed = transform_mul(xform, wp.transform(*source_body_q))
-                            self.body_q[body_q_target + body] = transformed
-                    else:
-                        self.body_q.extend(
-                            transform_mul(xform, wp.transform(*source_body_q)) for source_body_q in builder.body_q
-                        )
-                    body_q_target += counts["body"]
+                # Own each transform without retaining per-row views into the tiled array.
+                self.body_q.extend(wp.transform.from_buffer_copy(row) for row in body_q)
 
         # body_qd is a world-frame twist (linear, angular). Rotate both parts by the
         # copy rotation. An identity rotation, including translation-only copies, is
         # left bit-exact.
         attribute_specs.pop("body_qd")
         if counts["body"]:
-            body_qd = np.tile(np.asarray(builder.body_qd, dtype=np.float32).reshape((-1, 6)), (world_count, 1))
-            if not translations_only:
-                for world_index, xform in enumerate(xforms):
-                    if xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION):
-                        continue
-                    sl = slice(world_index * counts["body"], (world_index + 1) * counts["body"])
-                    rotate_vectors(xform.q, body_qd[sl, :3])
-                    rotate_vectors(xform.q, body_qd[sl, 3:])
+            body_qd = np.tile(pack_warp_values(builder.body_qd, wp.spatial_vectorf), (copy_count, 1))
+            if np.any(rotated):
+                # Shaped (copy, body, linear/angular, 3); fancy indexing copies, so write back.
+                twists = body_qd.reshape((copy_count, -1, 2, 3))
+                rotated_twists = twists[moved_copies[rotated]]
+                rotate_vectors(moved_xforms[rotated, None, None, 3:], rotated_twists)
+                twists[moved_copies[rotated]] = rotated_twists
             if "body_qd" in array_starts:
                 self.body_qd[array_starts["body_qd"] :] = body_qd
             else:
@@ -3907,19 +3980,19 @@ class ModelBuilder:
             elif spec.references is not None:
                 extend_referenced(attr, destination, source, self._builder_frequency_key(spec.references))
             else:
-                destination.extend(source * world_count)
+                destination.extend(source * copy_count)
 
-        self.joint_dof_count += world_count * counts["joint_dof"]
-        self.joint_coord_count += world_count * counts["joint_coord"]
-        self.joint_constraint_count += world_count * counts["joint_constraint"]
+        self.joint_dof_count += copy_count * counts["joint_dof"]
+        self.joint_coord_count += copy_count * counts["joint_coord"]
+        self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
-        for world_index, world in enumerate(worlds.tolist()):
-            entity_offsets = {kind: int(starts(kind)[world_index]) for kind in counts}
-            self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[world_index])
+        for copy_index, world in enumerate(worlds.tolist()):
+            entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
+            self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[copy_index])
             self._merge_builder_actuators(
                 builder,
-                int(joint_dof_starts[world_index]),
-                int(joint_coord_starts[world_index]),
+                int(joint_dof_starts[copy_index]),
+                int(joint_coord_starts[copy_index]),
             )
 
     @staticmethod
@@ -4279,7 +4352,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
-        joint_damping_mode: Literal["passive", "drive"] | None = None,
+        joint_damping_mode: Literal["passive", "drive"] = "passive",
         package_dirs: list[str] | None = None,
     ):
         """
@@ -4292,6 +4365,8 @@ class ModelBuilder:
                 Roots supplement environment paths without guaranteed precedence or restricting access.
                 Plain relative paths use the URDF directory; file URIs require an absolute local path.
             xform: The transform to apply to the root body. If None, the transform is set to identity.
+                If ``parent_body`` is set, ``xform`` is expressed in that body's frame
+                instead of the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -4384,18 +4459,12 @@ class ModelBuilder:
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
             joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
-                ``"passive"`` imports it into ``joint_damping`` and keeps drive
+                ``"passive"`` (default) imports it into ``joint_damping`` and keeps drive
                 damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
                 into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
                 In drive mode, passive damping uses ``default_joint_cfg.damping``
                 for revolute, prismatic, and planar joints.
                 XPBD/VBD do not consume passive joint damping.
-
-                .. deprecated:: 1.7
-                    The implicit None default retains the drive mapping and warns
-                    when the URDF authors damping. The default will become
-                    ``"passive"`` in Newton 1.8. Pass either mode explicitly to
-                    silence the warning; both explicit modes remain supported.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
@@ -4470,6 +4539,8 @@ class ModelBuilder:
         Args:
             source: The file path to the USD file, or an existing USD stage instance.
             xform: The transform to apply to the entire scene.
+                If ``parent_body`` is set, imported bodies are placed relative to that
+                body's frame; static shapes still use ``xform`` in the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -4548,7 +4619,7 @@ class ModelBuilder:
             verbose: If True, log additional information about the parsed USD file. Default is False.
             ignore_paths: A list of regular expressions matching prim paths to ignore.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-            enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+            enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path: The USD path to import, defaults to "/". Bound physics materials
                 outside this subtree are resolved without importing unrelated bodies
@@ -4830,6 +4901,8 @@ class ModelBuilder:
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.
+                If ``parent_body`` is set, imported bodies are placed relative to that
+                body's frame; static shapes still use ``xform`` in the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -4935,7 +5008,11 @@ class ModelBuilder:
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
                 from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
-            path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+                For position-only drives using ``dampratio``, constructing
+                :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
+                :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
+                Subsequent damping edits use ``joint_target_kd`` as usual.
+            path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model with the compiler asset directory, then relative to the included file without that directory prefix, and finally relative to the included file with it. Custom resolvers receive the authoring file's directory and the file path with that file's compiler asset directory prefix.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
                 Use for MJCF files authored against MuJoCo <= 3.8. Defaults
@@ -5442,6 +5519,13 @@ class ModelBuilder:
         :meth:`replicate` to manage world assignment. :attr:`current_world`
         is read-only and should not be set directly.
 
+        The gravity of ``builder`` replaces the gravity of the current world, or this
+        builder's gravity outside a world context.
+
+        To add many copies of the same builder to the current world, call
+        :meth:`replicate` with ``separate_worlds=False`` instead of calling this method in
+        a loop; it merges all copies in one batched pass.
+
         The source builder acts as a template: merged entries may share objects
         with it (and across copies when replicating). Mutating such entries in
         place afterwards (e.g. ``xform.p = ...``) writes through to every
@@ -5471,7 +5555,10 @@ class ModelBuilder:
         """
 
         self._merge_builder_copies(builder, [self.current_world], [xform], [label_prefix])
+        self._adopt_builder_gravity(builder)
 
+    def _adopt_builder_gravity(self, builder: ModelBuilder) -> None:
+        """Take over ``builder``'s gravity for the current world context after merging it."""
         if self.current_world >= 0 and self.current_world < len(self.world_gravity):
             # We're in a world context, update this world's gravity vector
             self.world_gravity[self.current_world] = builder._gravity_as_vector()
@@ -6271,16 +6358,10 @@ class ModelBuilder:
         q_start = self.joint_q_start[joint_id]
         parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
         # Compute inverse(parent_body * parent_anchor) * child_body * child_anchor.
-        # Use native calls to bypass Warp overload resolution, as in add_builder().
-        core = wp._src.context.runtime.core
-        transform_mul = core.wp_builtin_mul_transformf_transformf
-        transform_inverse = core.wp_builtin_transform_inverse_transformf
-        anchor = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-        joint_q = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-        transform_mul(parent_body_xform, self.joint_X_p[joint_id], ctypes.byref(anchor))
-        transform_inverse(anchor, ctypes.byref(joint_q))
-        transform_mul(joint_q, self.body_q[child], ctypes.byref(anchor))
-        transform_mul(anchor, self.joint_X_c[joint_id], ctypes.byref(joint_q))
+        anchor = transform_multiply(parent_body_xform, self.joint_X_p[joint_id])
+        joint_q = transform_multiply(
+            transform_multiply(transform_inverse(anchor), self.body_q[child]), self.joint_X_c[joint_id]
+        )
         self.joint_q[q_start : q_start + 7] = list(joint_q)
 
     def add_joint_free(
@@ -6502,8 +6583,8 @@ class ModelBuilder:
             Rod joints use each anchor frame's local ``+Z`` as the corresponding
             segment's material tangent axis for separating axial stretch from
             shear and twist from bend. At structural rest, the transformed
-            parent and child anchor points coincide. :meth:`add_rod` and
-            :meth:`add_rod_graph` satisfy both conventions automatically.
+            parent and child anchor points coincide. :meth:`add_rod` satisfies
+            both conventions automatically.
 
         Args:
             parent: The index of the parent body.
@@ -6614,58 +6695,6 @@ class ModelBuilder:
         self.joint_target_q[q_start : q_start + 3] = [0.0, 0.0, 0.0]
         self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
         return joint_id
-
-    @deprecate_nonkeyword_arguments
-    def add_joint_cable(
-        self,
-        parent: int,
-        child: int,
-        *,
-        parent_xform: Transform | None = None,
-        child_xform: Transform | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        label: str | None = None,
-        collision_filter_parent: bool | None = None,
-        enabled: bool = True,
-        custom_attributes: dict[str, Any] | None = None,
-        **kwargs,
-    ) -> int:
-        """Deprecated alias for :meth:`add_joint_rod`.
-
-        .. deprecated:: 1.6
-            Use :meth:`add_joint_rod` instead.
-        """
-        warnings.warn(
-            "ModelBuilder.add_joint_cable() is deprecated in Newton 1.6; use add_joint_rod() instead.",
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        return self.add_joint_rod(
-            parent=parent,
-            child=child,
-            parent_xform=parent_xform,
-            child_xform=child_xform,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
-            shear_stiffness=shear_stiffness,
-            shear_damping=shear_damping,
-            bend_stiffness=bend_stiffness,
-            bend_damping=bend_damping,
-            twist_stiffness=twist_stiffness,
-            twist_damping=twist_damping,
-            label=label,
-            collision_filter_parent=collision_filter_parent,
-            enabled=enabled,
-            custom_attributes=custom_attributes,
-            **kwargs,
-        )
 
     def add_tendon(
         self, route: Sequence[TendonGuide], *, label: str | None = None, custom_attributes: dict[str, Any] | None = None
@@ -9215,6 +9244,8 @@ class ModelBuilder:
         shape_indices: list[int] | None = None,
         raise_on_failure: bool = False,
         keep_visual_shapes: bool = False,
+        *,
+        cache_dir: str | os.PathLike[str] | None = None,
         **remeshing_kwargs: dict[str, Any],
     ) -> set[int]:
         """Approximates the mesh shapes of the model.
@@ -9244,6 +9275,7 @@ class ModelBuilder:
             For ``coacd`` and ``vhacd``, each geometrically connected component
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
+            CoACD decompositions repeat across runs; pass CoACD's ``seed`` through ``remeshing_kwargs`` to change it.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -9271,12 +9303,23 @@ class ModelBuilder:
                 arm.approximate_meshes(method="convex_hull")
 
                 scene = newton.ModelBuilder()
-                scene.replicate(arm, world_count=N)
+                scene.replicate(arm, copy_count=N)
 
         Args:
             method: The method to use for approximating the mesh shapes.
             shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` or ``CONVEX_MESH`` shapes are ignored. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
             raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
+            keep_visual_shapes: If `True`, retain the original geometry as visual-only shapes.
+            cache_dir: Directory for persistent ``coacd`` and ``vhacd``
+                decomposition caching. Created if missing; ``None`` uses
+                :attr:`newton.config.cache_dir_meshes`, which defaults to ``None``
+                (no disk caching). Set that global setting to a directory to
+                enable caching for subsequent calls, including USD imports.
+                An explicit directory overrides the global setting. Entries are
+                keyed by mesh geometry, effective backend
+                settings, backend versions, and cache format version. Corrupt or
+                incompatible entries are recomputed; cache I/O failures are logged
+                and do not prevent approximation. Other methods ignore this option.
             **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
         Returns:
@@ -9366,6 +9409,8 @@ class ModelBuilder:
         remeshed_shapes = set()
 
         if method == "coacd" or method == "vhacd":
+            if cache_dir is None:
+                cache_dir = config.cache_dir_meshes
             empty_decomposition_shape = None
             decomposition_failed = False
             try:
@@ -9390,41 +9435,47 @@ class ModelBuilder:
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
                     scale = self.shape_scale[shape]
-                    cache_key = (hash(mesh), mesh.maxhullvert)
-                    if cache_key in decompositions:
-                        decomposition = decompositions[cache_key]
+                    cache_write_key = None
+                    # Mesh.__hash__ does not include the hull-vertex limit.
+                    hash_m = (hash(mesh), mesh.maxhullvert)
+                    if hash_m in decompositions:
+                        decomposition = decompositions[hash_m]
                     else:
-                        decomposition = []
-                        # Decomposition backends may merge disconnected convex parts into one hull.
-                        for component_vertices, component_faces in split_mesh_components(mesh):
-                            if method == "coacd":
-                                cmesh = coacd.Mesh(component_vertices, component_faces)
-                                coacd_settings = {
-                                    "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
-                                    "mcts_nodes": 20,
-                                    "mcts_iterations": 5,
-                                    "mcts_max_depth": 1,
-                                    "merge": False,
-                                }
-                                coacd_settings.update(remeshing_kwargs)
-                                # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
-                                decomposition.extend(
-                                    remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
-                                    if 0 < mesh.maxhullvert < len(v)
-                                    else (v, f)
-                                    for v, f in coacd.run_coacd(cmesh, **coacd_settings)
-                                )
-                            else:
-                                tmesh = trimesh.Trimesh(component_vertices, component_faces)
-                                vhacd_settings = {
-                                    "maxNumVerticesPerCH": mesh.maxhullvert,
-                                }
-                                vhacd_settings.update(remeshing_kwargs)
-                                component_decomposition = trimesh.decomposition.convex_decomposition(
-                                    tmesh, **vhacd_settings
-                                )
-                                decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
-                        decompositions[cache_key] = decomposition
+                        settings = (
+                            {
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                "mcts_nodes": 20,
+                                "mcts_iterations": 5,
+                                "mcts_max_depth": 1,
+                                "merge": False,
+                            }
+                            if method == "coacd"
+                            else {"maxNumVerticesPerCH": mesh.maxhullvert}
+                        )
+                        settings.update(remeshing_kwargs)
+                        cache_key = _convex_cache.hash_inputs(mesh, method, settings) if cache_dir is not None else None
+                        decomposition = _convex_cache.try_load(cache_dir, cache_key) if cache_key is not None else None
+                        if decomposition is None:
+                            decomposition = []
+                            # Decomposition backends may merge disconnected convex parts into one hull.
+                            for component_vertices, component_faces in split_mesh_components(mesh):
+                                if method == "coacd":
+                                    cmesh = coacd.Mesh(component_vertices, component_faces)
+                                    # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
+                                    decomposition.extend(
+                                        remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
+                                        if 0 < mesh.maxhullvert < len(v)
+                                        else (v, f)
+                                        for v, f in coacd.run_coacd(cmesh, **settings)
+                                    )
+                                else:
+                                    tmesh = trimesh.Trimesh(component_vertices, component_faces)
+                                    component_decomposition = trimesh.decomposition.convex_decomposition(
+                                        tmesh, **settings
+                                    )
+                                    decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
+                            cache_write_key = cache_key
+                        decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         if raise_on_failure:
                             empty_decomposition_shape = shape
@@ -9496,6 +9547,8 @@ class ModelBuilder:
                                     self.add_shape_collision_filter_pair(filtered_part, extra_shape)
                             convex_parts_by_shape.setdefault(shape, []).append(extra_shape)
                     remeshed_shapes.add(shape)
+                    if cache_write_key is not None:
+                        _convex_cache.write(cache_dir, cache_write_key, decomposition)
             except Exception as e:
                 if raise_on_failure:
                     raise RuntimeError(f"Remeshing with method '{method}' failed.") from e
@@ -9741,11 +9794,11 @@ class ModelBuilder:
         self,
         positions: list[Vec3],
         *,
-        quaternions: list[Quat] | None,
+        quaternions: list[Quat],
         rest_positions: list[Vec3] | np.ndarray | None = None,
         rest_quaternions: list[Quat] | np.ndarray | None = None,
         rest_straight: bool = False,
-        radius: float | None,
+        radius: float,
         cfg: ShapeConfig | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
@@ -9755,30 +9808,15 @@ class ModelBuilder:
         bend_damping: float | None,
         twist_stiffness: float | None,
         twist_damping: float | None,
-        closed: bool | None,
+        closed: bool,
         label: str | None,
         wrap_in_articulation: bool,
         color: Vec3 | None,
         body_frame_origin: Literal["start", "com"],
     ) -> tuple[list[int], list[int]]:
         """Add an ordered point chain through the established graph path."""
-        self._validate_rod_stiffness_inputs(
-            "add_rod",
-            stretch_stiffness=stretch_stiffness,
-            shear_stiffness=shear_stiffness,
-            bend_stiffness=bend_stiffness,
-            twist_stiffness=twist_stiffness,
-        )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
-        closed = False if closed is None else closed
-
-        radius = 0.1 if radius is None else radius
         if cfg is None:
             cfg = self.default_shape_cfg
-        if rest_straight and (rest_positions is not None or rest_quaternions is not None):
-            raise ValueError(
-                "add_rod: rest_straight=True cannot be combined with explicit rest_positions or rest_quaternions"
-            )
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -9789,51 +9827,12 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         num_segments = len(positions) - 1
-        if num_segments < 1:
-            raise ValueError("add_rod: positions must contain at least 2 points")
 
-        # Coerce all input positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
-        # always operate on Warp vector types even if the caller passed tuples/lists.
-        positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in positions]
         rest_positions_wp = (
-            positions_wp if rest_positions is None else [axis_to_vec3(position) for position in rest_positions]
+            positions if rest_positions is None else [axis_to_vec3(position) for position in rest_positions]
         )
-        if len(rest_positions_wp) != len(positions_wp):
-            raise ValueError(
-                f"add_rod: rest_positions must have {len(positions_wp)} elements to match positions, "
-                f"got {len(rest_positions_wp)}"
-            )
 
-        if quaternions is not None and len(quaternions) != num_segments:
-            raise ValueError(
-                f"add_rod: quaternions must have {num_segments} elements for {num_segments} segments, "
-                f"got {len(quaternions)} quaternions"
-            )
-        if rest_quaternions is not None and len(rest_quaternions) != num_segments:
-            raise ValueError(
-                f"add_rod: rest_quaternions must have {num_segments} elements for {num_segments} segments, "
-                f"got {len(rest_quaternions)} quaternions"
-            )
-
-        if num_segments < 2:
-            # A "rod" in this API is defined as multiple capsules coupled by rod joints.
-            # If you want a single capsule, create a body + capsule shape directly.
-            raise ValueError(
-                f"add_rod: requires at least 2 segments (got {num_segments}); "
-                "for a single capsule, create a body and add a capsule shape instead."
-            )
         if closed:
-            closure_gap = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[0]))
-            first_length = float(wp.length(rest_positions_wp[1] - rest_positions_wp[0]))
-            last_length = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[-2]))
-            if not all(math.isfinite(value) for value in (closure_gap, first_length, last_length)):
-                raise ValueError("add_rod: closed structural-rest centerline must have finite endpoint segments")
-            closure_tolerance = max(1.0e-9, 1.0e-3 * min(first_length, last_length))
-            if closure_gap > closure_tolerance:
-                raise ValueError(
-                    "add_rod: closed structural-rest centerline must have coincident first and last points "
-                    f"(gap={closure_gap:.3e}, tolerance={closure_tolerance:.3e})"
-                )
             rest_positions_wp[-1] = rest_positions_wp[0]
 
         # Build linear graph edges: (0, 1), (1, 2), ..., (N-1, N)
@@ -9842,7 +9841,7 @@ class ModelBuilder:
 
         # The graph builder creates the bodies, internal joints, and optional articulation.
         link_bodies, link_joints = self._add_rod_graph(
-            node_positions=positions_wp,
+            node_positions=positions,
             edges=edges,
             rest_node_positions=rest_positions_wp if rest_positions is not None else None,
             radius=radius,
@@ -9909,16 +9908,11 @@ class ModelBuilder:
                             rest_dir,
                         )
 
-                    initial_dir, _ = self._rod_segment_direction(positions_wp[segment], positions_wp[segment + 1])
-                    initial_argument = (
-                        f"quaternions[{segment}]"
-                        if quaternions is not None
-                        else f"derived quaternion at segment {segment}"
-                    )
+                    initial_dir, _ = self._rod_segment_direction(positions[segment], positions[segment + 1])
                     initial_q = self._rod_frame_for_direction(
                         "add_rod",
-                        initial_argument,
-                        None if quaternions is None else quaternions[segment],
+                        f"quaternions[{segment}]",
+                        quaternions[segment],
                         initial_dir,
                     )
                     return self._transport_rod_frame(
@@ -9964,10 +9958,8 @@ class ModelBuilder:
 
     def add_rod(
         self,
-        positions: list[Vec3] | None = None,
         *,
-        quaternions: list[Quat] | None = None,
-        radius: float | None = None,
+        rod: Rod,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
@@ -9977,24 +9969,17 @@ class ModelBuilder:
         bend_damping: float | None = None,
         twist_stiffness: float | None = None,
         twist_damping: float | None = None,
-        closed: bool | None = None,
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] = "com",
-        rod: Rod | None = None,
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
 
-        Exactly one input form is required:
-
-        - ``positions=...`` constructs an ordered chain. The separate
-          ``quaternions`` and ``closed`` arguments belong only to this
-          compatibility form.
-        - ``rod=...`` uses the geometry, frames, topology, and optional
-          constitutive data stored on a :class:`newton.Rod`, which may represent
-          an ordered chain or an explicit graph.
+        Uses the geometry, frames, topology, and optional constitutive data
+        stored on a :class:`newton.Rod`, which may represent an ordered chain
+        or an explicit graph.
 
         The remaining arguments configure assembly. Each segment becomes a
         capsule body, and incident segments are connected by rod joints with
@@ -10005,22 +9990,7 @@ class ModelBuilder:
         normalized and minimally rotated to align while preserving roll.
 
         Args:
-            positions: Geometry source for the ordered-chain form: centerline
-                node positions (segment endpoints) in world space [m].
-                Mutually exclusive with ``rod``.
-
-                .. deprecated:: 1.6
-                    Construct a :class:`newton.Rod` and pass it with
-                    ``rod=...`` instead.
-            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
-                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
-                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
-                orientations are computed automatically to align +Z with each segment direction.
-                Valid only with ``positions``; must be None when ``rod`` is
-                supplied.
-            radius: Capsule radius [m] for the ``positions`` form. If None,
-                defaults to 0.1 m. Must be None with ``rod``; the Rod's radius
-                is used, with the same default when it is unset.
+            rod: Initial/rest geometry, frame, topology, and constitutive-data source.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, it is derived locally from Rod material or section rigidity;
@@ -10042,10 +10012,6 @@ class ModelBuilder:
                 ``bend_stiffness`` otherwise.
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            closed: For the ``positions`` form, whether to connect the last
-                segment back to the first. Repeat the first position at the end
-                to include the closing segment. When using ``rod``, pass
-                ``closed=True`` to the :class:`newton.Rod` constructor instead.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
                 The same name is appended to :attr:`curve_label` for this rod; if None,
                 a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
@@ -10063,8 +10029,6 @@ class ModelBuilder:
                 the body origin at the initial segment midpoint so the
                 body origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
                 a supported option.
-            rod: Initial/rest geometry, frame, topology, and constitutive-data source for
-                the prepared-object form. Mutually exclusive with ``positions``.
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10090,17 +10054,11 @@ class ModelBuilder:
             articulations may remain outside them.
 
         Raises:
-            ValueError: If both or neither of ``positions`` and ``rod`` are supplied.
-            TypeError: If ``rod`` is not a :class:`newton.Rod`, or a Rod is
-                passed as ``positions``.
-            ValueError: If ``quaternions``, ``radius``, or ``closed`` is non-None
-                with ``rod``.
-            ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
+            TypeError: If ``rod`` is not a :class:`newton.Rod`.
             ValueError: If initial/rest positions or frames have incompatible lengths,
                 non-finite or too-short edges, or invalid frame alignment.
             ValueError: If the structural-rest centerline of a closed chain does not close.
             ValueError: If the Rod uses ``rest_straight`` with explicit rest inputs or a graph.
-            ValueError: If the ordered point-list form has fewer than 2 segments.
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
             ValueError: If automatic section-rigidity discretization is requested
                 for branching topology or for a wrapped explicit cycle.
@@ -10124,182 +10082,13 @@ class ModelBuilder:
               midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
               ``(0, 0, half_height)``.
         """
-        if (positions is None) == (rod is None):
-            raise ValueError("add_rod: exactly one of positions and rod must be supplied")
-
-        if isinstance(positions, Rod):
-            raise TypeError("add_rod: pass a Rod with the rod keyword, not as positions")
-
-        if rod is not None and not isinstance(rod, Rod):
+        if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
 
         start_body = self.body_count
         start_joint = self.joint_count
-        if rod is not None:
-            if quaternions is not None:
-                raise ValueError("add_rod: quaternions must be None when rod is supplied")
-            if radius is not None:
-                raise ValueError("add_rod: radius must be None when rod is supplied; set rod.radius instead")
-            if closed is not None:
-                raise ValueError("add_rod: closed must be None when rod is supplied")
-            result = self._add_rod_object(
-                rod,
-                cfg=cfg,
-                stretch_stiffness=stretch_stiffness,
-                stretch_damping=stretch_damping,
-                shear_stiffness=shear_stiffness,
-                shear_damping=shear_damping,
-                bend_stiffness=bend_stiffness,
-                bend_damping=bend_damping,
-                twist_stiffness=twist_stiffness,
-                twist_damping=twist_damping,
-                label=label,
-                wrap_in_articulation=wrap_in_articulation,
-                junction_collision_filter=junction_collision_filter,
-                color=color,
-                body_frame_origin=body_frame_origin,
-            )
-            self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
-            return result
-
-        assert positions is not None
-        warnings.warn(
-            _ADD_ROD_POSITIONS_DEPRECATION_MSG,
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        result = self._add_rod_chain(
-            positions,
-            quaternions=quaternions,
-            radius=radius,
-            cfg=cfg,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
-            shear_stiffness=shear_stiffness,
-            shear_damping=shear_damping,
-            bend_stiffness=bend_stiffness,
-            bend_damping=bend_damping,
-            twist_stiffness=twist_stiffness,
-            twist_damping=twist_damping,
-            closed=closed,
-            label=label,
-            wrap_in_articulation=wrap_in_articulation,
-            color=color,
-            body_frame_origin=body_frame_origin,
-        )
-        self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
-        return result
-
-    def add_rod_graph(
-        self,
-        node_positions: list[Vec3],
-        edges: list[tuple[int, int]],
-        *,
-        radius: float = 0.1,
-        cfg: ShapeConfig | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        label: str | None = None,
-        wrap_in_articulation: bool = True,
-        quaternions: list[Quat] | None = None,
-        junction_collision_filter: bool = True,
-        color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "com",
-    ) -> tuple[list[int], list[int]]:
-        """Adds a rod *graph* (supports junctions) from nodes + edges.
-
-        .. deprecated:: 1.6
-            Construct a :class:`newton.Rod` with ``edges=...`` and pass it to
-            :meth:`add_rod` with ``rod=...`` instead.
-
-        Representation:
-
-        - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (local +Z points toward ``v``).
-        - Rod joints are created between edge-bodies that share a node, using a spanning-tree
-          traversal so that each body has a single parent in an articulation.
-
-        Notes:
-
-        - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
-          free-rooted articulation per connected component). This keeps the joint graph
-          articulation-safe (tree/forest), avoiding cycles at junctions.
-        - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
-          ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
-          you need closed loops, build them explicitly without placing the joints in an articulation.
-        - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
-          all incident edges. This can preserve rings/loops, but does not produce an articulation
-          tree (edges may effectively have multiple "parents" in the joint graph).
-
-        Args:
-            node_positions: Junction node positions in world space.
-            edges: List of (u, v) node index pairs defining rod segments. Each edge creates one
-                capsule body oriented so its local +Z points from node ``u`` to node ``v``.
-            radius: Capsule radius.
-            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
-                Defaults to 1.0e5.
-            stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
-            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
-                ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
-                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
-                Defaults to 0.0.
-            bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
-                ``bend_stiffness``.
-            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
-                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations.
-                The same name is appended to :attr:`curve_label` for this rod; if None,
-                a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
-                Generated joint labels retain
-                the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, places each connected component's generated joints and a
-                free joint to the world in one articulation.
-            quaternions: Optional per-edge orientations in world space. If provided, must have
-                ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
-                the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
-                None, orientations are computed automatically to align +Z with each edge direction.
-            junction_collision_filter: If True, adds collision filters between *non-jointed* segment
-                bodies that are incident to a junction node (degree >= 3). This prevents immediate
-                self-collision impulses at welded junctions, even though the joint set is a spanning
-                tree (so not all incident body pairs are directly jointed).
-            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
-                capsule shapes. If None, the graph uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the convention where the body origin is at the edge start node
-                (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
-                the edge length. ``"com"`` places the body origin at the edge midpoint so the body
-                origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
-                a supported option.
-
-        Returns:
-            A pair ``(body_indices, joint_indices)`` where bodies correspond to
-            edges in the same order as ``edges``. ``joint_indices`` contains only rod joints,
-            not the automatically-created free root joints.
-
-        Raises:
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
-        """
-        start_body = self.body_count
-        start_joint = self.joint_count
-        warnings.warn(
-            _ADD_ROD_GRAPH_DEPRECATION_MSG,
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        result = self._add_rod_graph(
-            node_positions,
-            edges,
-            radius=radius,
+        result = self._add_rod_object(
+            rod,
             cfg=cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
@@ -10311,7 +10100,6 @@ class ModelBuilder:
             twist_damping=twist_damping,
             label=label,
             wrap_in_articulation=wrap_in_articulation,
-            quaternions=quaternions,
             junction_collision_filter=junction_collision_filter,
             color=color,
             body_frame_origin=body_frame_origin,
@@ -10358,35 +10146,35 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         self._validate_rod_stiffness_inputs(
-            "add_rod_graph",
+            "add_rod",
             stretch_stiffness=stretch_stiffness,
             shear_stiffness=shear_stiffness,
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod_graph", body_frame_origin)
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
         if len(node_positions) < 2:
-            raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
+            raise ValueError("add_rod: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
-            raise ValueError("add_rod_graph: edges must contain at least 1 edge")
+            raise ValueError("add_rod: edges must contain at least 1 edge")
 
         num_nodes = len(node_positions)
         num_edges = len(edges)
         if articulation_root_node is not None:
             if articulation_root_joint_factory is None:
-                raise ValueError("add_rod_graph: articulation_root_node requires an articulation root joint factory")
+                raise ValueError("add_rod: articulation_root_node requires an articulation root joint factory")
             if articulation_root_node < 0 or articulation_root_node >= num_nodes:
                 raise ValueError(
-                    f"add_rod_graph: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
+                    f"add_rod: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
                 )
         if quaternions is not None and len(quaternions) != num_edges:
             raise ValueError(
-                f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"add_rod: quaternions must have {num_edges} elements for {num_edges} edges, "
                 f"got {len(quaternions)} quaternions"
             )
         if rest_quaternions is not None and len(rest_quaternions) != num_edges:
             raise ValueError(
-                f"add_rod_graph: rest_quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"add_rod: rest_quaternions must have {num_edges} elements for {num_edges} edges, "
                 f"got {len(rest_quaternions)} quaternions"
             )
 
@@ -10404,7 +10192,7 @@ class ModelBuilder:
         )
         if len(rest_node_positions_wp) != num_nodes:
             raise ValueError(
-                f"add_rod_graph: rest_node_positions must have {num_nodes} elements to match node_positions, "
+                f"add_rod: rest_node_positions must have {num_nodes} elements to match node_positions, "
                 f"got {len(rest_node_positions_wp)}"
             )
 
@@ -10424,18 +10212,16 @@ class ModelBuilder:
         # Validate all edge geometry and frames before adding bodies.
         for e_idx, (u, v) in enumerate(edges):
             if u < 0 or u >= num_nodes or v < 0 or v >= num_nodes:
-                raise ValueError(
-                    f"add_rod_graph: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes"
-                )
+                raise ValueError(f"add_rod: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes")
             if u == v:
-                raise ValueError(f"add_rod_graph: edge {e_idx} connects a node to itself ({u} -> {v})")
+                raise ValueError(f"add_rod: edge {e_idx} connects a node to itself ({u} -> {v})")
 
             p0 = node_positions_wp[u]
             p1 = node_positions_wp[v]
             seg_dir, seg_length = self._rod_segment_direction(p0, p1)
             if not math.isfinite(seg_length) or seg_length <= min_segment_length:
                 raise ValueError(
-                    f"add_rod_graph: edge {e_idx} has a too-small or non-finite length "
+                    f"add_rod: edge {e_idx} has a too-small or non-finite length "
                     f"(length={seg_length:.3e}); segment length must be finite and > {min_segment_length:.1e}"
                 )
 
@@ -10443,7 +10229,7 @@ class ModelBuilder:
                 f"quaternions[{e_idx}]" if quaternions is not None else f"derived quaternion at edge {e_idx}"
             )
             q = self._rod_frame_for_direction(
-                "add_rod_graph",
+                "add_rod",
                 initial_argument,
                 None if quaternions is None else quaternions[e_idx],
                 seg_dir,
@@ -10455,7 +10241,7 @@ class ModelBuilder:
                 )
                 if not math.isfinite(rest_seg_length) or rest_seg_length <= min_segment_length:
                     raise ValueError(
-                        f"add_rod_graph: rest edge {e_idx} has a too-small or non-finite length "
+                        f"add_rod: rest edge {e_idx} has a too-small or non-finite length "
                         f"(length={rest_seg_length:.3e}); rest segment length must be finite and "
                         f"> {min_segment_length:.1e}"
                     )
@@ -10465,14 +10251,14 @@ class ModelBuilder:
 
             if rest_quaternions is not None:
                 q_rest = self._rod_frame_for_direction(
-                    "add_rod_graph",
+                    "add_rod",
                     f"rest_quaternions[{e_idx}]",
                     rest_quaternions[e_idx],
                     rest_seg_dir,
                 )
             elif has_separate_rest_positions:
                 q_rest = self._transport_rod_frame(
-                    "add_rod_graph",
+                    "add_rod",
                     f"derived rest quaternion at edge {e_idx}",
                     q,
                     seg_dir,
@@ -10532,7 +10318,7 @@ class ModelBuilder:
             elif node_idx == edge_v[e_idx]:
                 z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
-                raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
+                raise RuntimeError("add_rod: internal error (node not incident to edge)")
             rotation = _reverse_tangent_rotation if reverse_tangent else _identity_rotation
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), rotation)
 
@@ -10584,7 +10370,7 @@ class ModelBuilder:
                 for child_edge in inc[1:]:
                     child_body = edge_bodies[child_edge]
                     if parent_body == child_body:
-                        raise RuntimeError("add_rod_graph: internal error (self-connection)")
+                        raise RuntimeError("add_rod: internal error (self-connection)")
 
                     child_xform = _edge_anchor_xform(child_edge, node_idx)
 
@@ -10624,9 +10410,7 @@ class ModelBuilder:
             if articulation_root_node is not None:
                 root_edges = node_incidence[articulation_root_node]
                 if not root_edges:
-                    raise ValueError(
-                        f"add_rod_graph: articulation_root_node {articulation_root_node} has no incident edge"
-                    )
+                    raise ValueError(f"add_rod: articulation_root_node {articulation_root_node} has no incident edge")
                 start_edges.remove(root_edges[0])
                 start_edges.insert(0, root_edges[0])
 
@@ -10671,7 +10455,7 @@ class ModelBuilder:
 
                             child_body = edge_bodies[child_edge]
                             if parent_body == child_body:
-                                raise RuntimeError("add_rod_graph: internal error (self-connection)")
+                                raise RuntimeError("add_rod: internal error (self-connection)")
 
                             # Anchors at the shared node on each edge body
                             parent_reversed = shared_node == edge_u[parent_edge]
@@ -11174,30 +10958,11 @@ class ModelBuilder:
             between the particles in their initial configuration.
 
         """
-        # compute basis for 2D rest pose
         q_ = np.asarray(self.particle_q)
         p = q_[i]
-        q = q_[j]
-        r = q_[k]
-
-        qp = q - p
-        rp = r - p
-
-        def normalized(a):
-            l = np.linalg.norm(a, axis=-1, keepdims=True)
-            l[l == 0] = 1.0
-            return a / l
-
-        n = normalized(np.cross(qp, rp))
-        e1 = normalized(qp)
-        e2 = normalized(np.cross(n, e1))
-
-        R = np.concatenate((e1[..., None], e2[..., None]), axis=-1)
-        M = np.concatenate((qp[..., None], rp[..., None]), axis=-1)
-
-        D = np.matmul(R.transpose(0, 2, 1), M)
-
-        areas = np.linalg.det(D) / 2.0
+        qp = q_[j] - p
+        rp = q_[k] - p
+        D, areas = _triangle_rest_geometry(qp, rp)
         areas[areas < 0.0] = 0.0
         valid_inds = (areas > 0.0).nonzero()[0]
         if len(valid_inds) < len(areas):
@@ -11301,7 +11066,6 @@ class ModelBuilder:
             The tetrahedron is created with a rest-pose based on the particle's initial configuration
 
         """
-        # compute basis for 2D rest pose
         p = np.array(self.particle_q[i])
         q = np.array(self.particle_q[j])
         r = np.array(self.particle_q[k])
@@ -11311,8 +11075,7 @@ class ModelBuilder:
         rp = r - p
         sp = s - p
 
-        Dm = np.array((qp, rp, sp)).T
-        volume = np.linalg.det(Dm) / 6.0
+        Dm, volume = _tet_rest_geometry(qp, rp, sp)
 
         if volume <= 0.0:
             logger.warning("inverted tetrahedral element")
@@ -11456,27 +11219,11 @@ class ModelBuilder:
             rest = np.zeros_like(i_, dtype=float)
             valid_mask = (i_ != -1) & (j_ != -1)
 
-            # compute rest angle
             x1_valid = particle_q_[i_[valid_mask]]
             x2_valid = particle_q_[j_[valid_mask]]
             x3_valid = particle_q_[k_[valid_mask]]
             x4_valid = particle_q_[l_[valid_mask]]
-
-            def normalized(a):
-                l = np.linalg.norm(a, axis=-1, keepdims=True)
-                l[l == 0] = 1.0
-                return a / l
-
-            n1 = normalized(np.cross(x3_valid - x1_valid, x4_valid - x1_valid))
-            n2 = normalized(np.cross(x4_valid - x2_valid, x3_valid - x2_valid))
-            e = normalized(x4_valid - x3_valid)
-
-            def dot(a, b):
-                return (a * b).sum(axis=-1)
-
-            cos_theta = np.clip(dot(n1, n2), -1.0, 1.0)
-            sin_theta = dot(np.cross(n1, n2), e)
-            rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
+            rest[valid_mask] = _dihedral_angles(x1_valid, x2_valid, x3_valid, x4_valid, x3_valid, x4_valid)
             rest = rest.tolist()
 
         inds = np.concatenate((i_[:, None], j_[:, None], k_[:, None], l_[:, None]), axis=-1)
@@ -14018,8 +13765,8 @@ class ModelBuilder:
             # particles
 
             # state (initial)
-            m.particle_q = wp.array(self.particle_q, dtype=wp.vec3, requires_grad=requires_grad)
-            m.particle_qd = wp.array(self.particle_qd, dtype=wp.vec3, requires_grad=requires_grad)
+            m.particle_q = warp_array_from_values(self.particle_q, dtype=wp.vec3, requires_grad=requires_grad)
+            m.particle_qd = warp_array_from_values(self.particle_qd, dtype=wp.vec3, requires_grad=requires_grad)
             m.particle_mass = wp.array(self.particle_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_inv_mass = wp.array(particle_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_radius = wp.array(self.particle_radius, dtype=wp.float32, requires_grad=requires_grad)
@@ -14049,7 +13796,9 @@ class ModelBuilder:
             # collision geometry
 
             m.shape_label = self.shape_label
-            m.shape_transform = wp.array(self.shape_transform, dtype=wp.transform, requires_grad=requires_grad)
+            m.shape_transform = warp_array_from_values(
+                self.shape_transform, dtype=wp.transform, requires_grad=requires_grad
+            )
             m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
@@ -14259,10 +14008,19 @@ class ModelBuilder:
                 ):
                     source_key = hash(source)
                     if source_key not in support_cache:
-                        adjacent = _convex_hull_adjacency(source)
-                        hull_flag = _CONVEX_HULL_VALID if adjacent is not None else 0
-                        cached = (-1, -1, -1, hull_flag)
+                        topology = _convex_hull_adjacency(source)
+                        adjacent = None
+                        hull_flag = 0
+                        # Verified hulls lead their neighbor block with their edge
+                        # count and faces for exact separating-axis certificates.
+                        edge_block = np.zeros(0, dtype=np.int32)
+                        if topology is not None:
+                            adjacent, edges = topology
+                            hull_flag = _CONVEX_HULL_VALID
+                            edge_block = np.concatenate(([len(edges)], edges.ravel())).astype(np.int32)
+                        cached = (-1, -1, neighbor_offset if len(edge_block) else -1, hull_flag)
                         acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
+                        neighbors = np.zeros(0, dtype=np.int32)
                         if acceleration is not None:
                             lut, offsets, neighbors = acceleration
                             cached = (
@@ -14271,12 +14029,15 @@ class ModelBuilder:
                                 neighbor_offset,
                                 _CONVEX_SUPPORT_LUT_RESOLUTION | hull_flag,
                             )
+                            # Neighbor offsets are relative to the block start.
+                            offsets = offsets + len(edge_block)
                             support_lut_chunks.append(lut)
                             support_offset_chunks.append(offsets)
-                            support_neighbor_chunks.append(neighbors)
                             lut_offset += len(lut)
                             vertex_offset += len(offsets)
-                            neighbor_offset += len(neighbors)
+                        if len(edge_block) or len(neighbors):
+                            support_neighbor_chunks.append(np.concatenate((edge_block, neighbors)).astype(np.int32))
+                            neighbor_offset += len(support_neighbor_chunks[-1])
                         support_cache[source_key] = cached
                     metadata = support_cache[source_key]
                 shape_support_data.append(metadata)
@@ -14300,7 +14061,7 @@ class ModelBuilder:
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
-            m.shape_scale = wp.array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
+            m.shape_scale = warp_array_from_values(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
             m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
             m.shape_margin = wp.array(self.shape_margin, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_collision_radius = wp.array(
@@ -14309,7 +14070,7 @@ class ModelBuilder:
             m.shape_world = wp.array(self.shape_world, dtype=wp.int32)
 
             m.shape_source = self.shape_source  # used for rendering
-            m.shape_color = wp.array(self.shape_color, dtype=wp.vec3)
+            m.shape_color = warp_array_from_values(self.shape_color, dtype=wp.vec3)
             m.shape_opacity = wp.array(self.shape_opacity, dtype=wp.float32)
 
             m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
@@ -14396,7 +14157,8 @@ class ModelBuilder:
                     aabb_lower, aabb_upper, interior_point, nx, ny, nz = shape_aabb_cache[cache_key]
                 else:
                     # Primitive origins are interior. A hull's AABB center can lie
-                    # outside it, but its vertex mean cannot.
+                    # outside it, and its vertex mean follows the tessellation, so
+                    # hulls use their volume centroid.
                     interior_point = np.zeros(3)
                     # Compute AABB based on shape type
                     if shape_type == GeoType.MESH and shape_src is not None:
@@ -14412,7 +14174,8 @@ class ModelBuilder:
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
                         lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
                         hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
-                        interior_point = shape_src.vertices.mean(axis=0) * np.array(shape_scale)
+                        centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
+                        interior_point = centroid * np.array(shape_scale)
                         aabb_lower = np.minimum(lo, hi)
                         aabb_upper = np.maximum(lo, hi)
 
@@ -14926,22 +14689,22 @@ class ModelBuilder:
                 else:
                     shape_edge_ranges.append((-1, 0))
 
-            m.shape_edge_range = wp.array(
+            m._shape_edge_range = wp.array(
                 shape_edge_ranges if shape_edge_ranges else [(-1, 0)],
                 dtype=wp.vec2i,
                 device=device,
             )
-            m.mesh_edge_indices = (
+            m._mesh_edge_indices = (
                 wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec2i, device=device)
             )
-            m.mesh_edge_centers = (
+            m._mesh_edge_centers = (
                 wp.array(np.concatenate(edge_center_chunks), dtype=wp.vec4, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec4, device=device)
             )
-            m.mesh_edge_halves = (
+            m._mesh_edge_halves = (
                 wp.array(np.concatenate(edge_half_chunks), dtype=wp.vec4, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec4, device=device)
@@ -15125,8 +14888,8 @@ class ModelBuilder:
 
             m.body_mass = wp.array(body_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_inv_mass = wp.array(body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-            m.body_inertia = wp.array(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            m.body_inv_inertia = wp.array(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inertia = warp_array_from_values(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inv_inertia = warp_array_from_values(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
 
             if len(self.body_mass) > 0 and not self.validate_inertia_detailed:
                 # Use fast Warp kernel validation, correcting the Model arrays in place on device.
@@ -15156,9 +14919,9 @@ class ModelBuilder:
                         stacklevel=3,
                     )
 
-            m.body_q = wp.array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
-            m.body_qd = wp.array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
-            m.body_com = wp.array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
+            m.body_q = warp_array_from_values(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
+            m.body_qd = warp_array_from_values(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
+            m.body_com = warp_array_from_values(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_label = self.body_label
             m.body_flags = wp.array(self.body_flags, dtype=wp.int32)
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
@@ -15180,10 +14943,10 @@ class ModelBuilder:
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(joint_parent_np, dtype=wp.int32)
             m.joint_child = wp.array(joint_child_np, dtype=wp.int32)
-            m.joint_X_p = wp.array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
-            m.joint_X_c = wp.array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
+            m.joint_X_p = warp_array_from_values(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
+            m.joint_X_c = warp_array_from_values(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
-            m.joint_axis = wp.array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
+            m.joint_axis = warp_array_from_values(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_label = self.joint_label

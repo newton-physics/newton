@@ -1635,6 +1635,7 @@ def _run_mujoco_switch_example(num_frames=220):
     example = MujocoSwitchExample(None, None)
     for _ in range(num_frames):
         example.step()
+        example.test_post_step()
     return example
 
 
@@ -2071,7 +2072,7 @@ def test_dynamic_route_cuda_graph_capture(test, device):
 
 
 def test_mujoco_switch_optional_middle_capstan_activates(test, device):
-    """A rotating endpoint should switch one middle rolling guide in and out."""
+    """Replay the animated endpoint and switch a middle rolling guide in and out."""
     with wp.ScopedDevice(device):
         example = _run_mujoco_switch_example()
         example.test_final()
@@ -2088,6 +2089,11 @@ def test_mujoco_switch_optional_middle_capstan_activates(test, device):
         test.assertEqual(int(np.max(active_history)), 1, f"Middle capstan should activate: {active_history}")
         test.assertGreaterEqual(example._transition_count, 2)
         test.assertEqual(example._activation_mismatch_count, 0)
+
+        if wp.get_device(device).is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedTimer("switch frame", cuda_filter=wp.TIMING_GRAPH, print=False) as timer:
+                example.step()
+            test.assertEqual(len(timer.timing_results), 1, "The example should replay one simulation graph per frame")
 
 
 def test_mujoco_switch_preserves_active_route_segments(test, device):

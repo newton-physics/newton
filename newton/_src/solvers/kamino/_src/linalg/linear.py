@@ -13,6 +13,7 @@ intra-system parallelism may be exploited.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from typing import Any, Generic
 
@@ -588,6 +589,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
         atol: float | None = None,
         rtol: float | None = None,
         ftol: float | None = None,
+        failed_pivot_shift: float = 0.0,
         dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
@@ -614,6 +616,11 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             atol: Absolute solve tolerance.
             rtol: Relative solve tolerance.
             ftol: Factorization tolerance.
+            failed_pivot_shift: Diagonal shift added to blocks whose
+                factorization produced a non-finite pivot before they are
+                refactorized once. The shift is removed from the matrix again
+                afterwards, up to round-off. Zero disables the retry. Must be
+                non-negative. Defaults to ``0.0``.
             dtype: Scalar data type.
             device: Device on which to allocate and run the solver.
             **kwargs: Additional arguments forwarded to :class:`DirectSolver`.
@@ -623,6 +630,11 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
         """A flat array containing the Cholesky factorization of each matrix block."""
         self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
+        self._retry_dim: wp.array[wp.int32] | None = None
+        """The dimension of each block to refactorize after a failed pivot, zero for the others."""
+        if failed_pivot_shift < 0.0 or not math.isfinite(failed_pivot_shift):
+            raise ValueError(f"failed_pivot_shift must be non-negative and finite, got {failed_pivot_shift}.")
+        self._failed_pivot_shift: float = failed_pivot_shift
 
         self._factorize_block_size: int = factorize_block_size
         self._solve_block_size: int = solve_block_size
@@ -680,6 +692,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
         with wp.ScopedDevice(self._device):
             self._L = wp.zeros(shape=(self._operator.info.total_mat_size,), dtype=self._dtype)
             self._y = wp.zeros(shape=(self._operator.info.total_vec_size,), dtype=self._dtype)
+            self._retry_dim = wp.zeros(shape=(self._operator.info.num_blocks,), dtype=wp.int32)
 
     @override
     def _reset_impl(self) -> None:
@@ -698,6 +711,40 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             A=A,
             L=self._L,
         )
+        if self._failed_pivot_shift > 0.0:
+            # Round-off can break near-singular blocks; refactorize only those,
+            # since the per-block kernel exits immediately for zero dimensions.
+            info = self._operator.info
+            self._retry_dim.zero_()
+            retry_shape = (info.num_blocks, int(info.max_dimension))
+            wp.launch(
+                factorize.flag_failed_llt_factors,
+                dim=retry_shape,
+                inputs=[info.dim, info.dim, info.mio, self._L, self._retry_dim],
+                device=self._device,
+            )
+            wp.launch(
+                factorize.shift_failed_llt_factors,
+                dim=retry_shape,
+                inputs=[info.dim, info.mio, self._retry_dim, self._failed_pivot_shift, A],
+                device=self._device,
+            )
+            factorize.llt_blocked_factorize(
+                kernel=self._factorize_kernel,
+                num_blocks=info.num_blocks,
+                block_dim=self._factorize_block_dim,
+                dim=self._retry_dim,
+                mio=info.mio,
+                A=A,
+                L=self._L,
+            )
+            # Unlike the permuted copy that LLTBRCM factorizes, A belongs to the caller.
+            wp.launch(
+                factorize.shift_failed_llt_factors,
+                dim=retry_shape,
+                inputs=[info.dim, info.mio, self._retry_dim, -self._failed_pivot_shift, A],
+                device=self._device,
+            )
 
     @override
     def _reconstruct_impl(self, A: wp.array[ScalarType]) -> None:
