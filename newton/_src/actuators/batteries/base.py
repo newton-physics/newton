@@ -3,67 +3,41 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import warp as wp
 
-if TYPE_CHECKING:
-    pass
-
 
 class BatteryBase:
-    """Base class for batteries shared by several actuators.
+    """Base class for actuator batteries.
 
-    A battery sets the supply voltage of its actuators from the current they
-    draw. One object holds several batteries of the same type: its parameter
-    arrays have one entry per battery. :meth:`~newton.ModelBuilder.add_battery`
-    adds batteries, and :meth:`~newton.ModelBuilder.finalize` creates the
-    objects in :attr:`Model.batteries <newton.Model.batteries>`.
-
-    :meth:`step` and :meth:`reset` read and write arrays on ``sim_control``
-    with one entry per actuator of the scene, indexed like
+    A battery powers one or more actuators.  One object holds several
+    batteries of the same type: its parameter arrays have one entry per
+    battery.  :meth:`step` and :meth:`reset` read and write arrays on
+    ``sim_control`` with one entry per actuator, indexed like
     :attr:`Actuator.actuator_indices <newton.actuators.Actuator.actuator_indices>`.
-    They write ``actuator_supply_voltage`` for the actuators of the batteries.
 
-    Subclasses must override :meth:`resolve_arguments`,
-    :meth:`initial_supply_voltage`, :meth:`step` and :meth:`reset`.
+    Subclasses must override :meth:`resolve_arguments`, :meth:`step` and
+    :meth:`reset`.
 
-    Args:
-        actuator_start: Start of each battery's actuators in *actuators*.
-            Shape ``(B + 1,)``.
-        actuators: Actuators of all batteries, sorted by battery, so that
-            battery ``b`` draws from
-            ``actuators[actuator_start[b]:actuator_start[b + 1]]``.
-        world: World of each battery, ``-1`` for none. Shape ``(B,)``.
-            ``None`` places every battery outside any world.
-        world_count: Number of worlds, which sets the shape of the mask in
-            :meth:`reset`.
-
-    Raises:
-        ValueError: *world* does not have one entry per battery.
+    **Validation contract:**  :meth:`resolve_arguments` validates scalar
+    parameter values before they are batched into Warp arrays.
+    ``__init__`` receives pre-built arrays and validates shapes only —
+    reading back array contents would force a synchronous device-to-host
+    copy on every construction.
     """
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        """Resolve user-provided arguments of one battery with defaults.
+        """Resolve user-provided arguments with defaults.
 
         Args:
-            args: User-provided arguments, as passed to
-                :meth:`~newton.ModelBuilder.add_battery`.
+            args: User-provided arguments.
 
         Returns:
             Complete arguments with defaults filled in.
         """
         raise NotImplementedError(f"{cls.__name__} must implement resolve_arguments")
-
-    @classmethod
-    def initial_supply_voltage(cls, args: dict[str, Any]) -> float:
-        """Return the supply voltage [V] of a full battery, at which ``actuator_supply_voltage`` starts.
-
-        Args:
-            args: Arguments of one battery, as returned by :meth:`resolve_arguments`.
-        """
-        raise NotImplementedError(f"{cls.__name__} must implement initial_supply_voltage")
 
     def __init__(
         self,
@@ -72,6 +46,22 @@ class BatteryBase:
         world: wp.array[wp.int32] | None = None,
         world_count: int = 0,
     ):
+        """Initialize the batteries.
+
+        Args:
+            actuator_start: Start of each battery's actuators in *actuators*.
+                Shape ``(B + 1,)``.
+            actuators: Actuators of all batteries, sorted by battery, so that
+                battery ``b`` powers
+                ``actuators[actuator_start[b]:actuator_start[b + 1]]``.
+            world: World of each battery, ``-1`` for none. Shape ``(B,)``.
+                ``None`` places every battery outside any world.
+            world_count: Number of worlds, which sets the shape of the mask in
+                :meth:`reset`.
+
+        Raises:
+            ValueError: *world* does not have one entry per battery.
+        """
         self.num_batteries = len(actuator_start) - 1
         """Number of batteries B."""
         self.device = actuator_start.device
@@ -87,7 +77,7 @@ class BatteryBase:
             raise ValueError(f"world shape {self.world.shape} must be ({self.num_batteries},)")
 
     def step(self, sim_control: Any) -> None:
-        """Update the supply voltage of the actuators from the current they draw.
+        """Advance the batteries by one step.
 
         Call once per step, after the actuators have stepped.
 
@@ -98,12 +88,12 @@ class BatteryBase:
         raise NotImplementedError(f"{type(self).__name__} must implement step")
 
     def reset(self, sim_control: Any, *, world_mask: wp.array[wp.bool] | None = None) -> None:
-        """Restore the supply voltage of a full battery.
+        """Reset the batteries.
 
-        Call after resetting worlds, so their drives start from a full battery.
+        Call after resetting worlds.
 
         Args:
-            sim_control: Object carrying ``actuator_supply_voltage``, e.g.
+            sim_control: Object carrying the arrays the battery writes, e.g.
                 :class:`~newton.Control`.
             world_mask: Optional boolean mask of shape ``(world_count + 1,)``
                 specifying which worlds to reset. Entries before the last select

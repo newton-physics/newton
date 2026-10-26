@@ -57,7 +57,7 @@ def _battery_reset_kernel(
 
 
 class BatteryInternalResistance(BatteryBase):
-    """Batteries modeled as an ideal voltage source behind an internal resistance.
+    """Battery from BAM (Better Actuator Models): an ideal voltage source behind an internal resistance.
 
     As in `BAM <https://github.com/Rhoban/bam>`_, the voltage of a battery is
 
@@ -80,26 +80,14 @@ class BatteryInternalResistance(BatteryBase):
     ``resistance * sum(max_pwm**2 / drive resistance) < 1`` over the
     actuators sharing a battery; above that the voltage oscillates instead
     of converging.
-
-    Args:
-        nominal_voltage: Voltage without load [V]. Shape ``(B,)``.
-        resistance: Internal resistance [Ω]. Shape ``(B,)``.
-        min_voltage: Lowest voltage under load [V]. Shape ``(B,)``.
-        actuator_start: See :class:`BatteryBase`.
-        actuators: See :class:`BatteryBase`.
-        world: See :class:`BatteryBase`.
-        world_count: See :class:`BatteryBase`.
-
-    Raises:
-        ValueError: An array does not have one entry per battery.
     """
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        """Resolve user-provided arguments of one battery with defaults.
+        """Resolve user-provided arguments with defaults.
 
         Args:
-            args: ``nominal_voltage`` [V] is required; ``resistance`` [Ω]
+            args: User-provided arguments.  ``nominal_voltage`` [V] is required; ``resistance`` [Ω]
                 defaults to 0, and ``min_voltage`` [V] defaults to 0, with
                 which the voltage only stays non-negative.
 
@@ -123,11 +111,6 @@ class BatteryInternalResistance(BatteryBase):
             raise ValueError(f"resistance must be non-negative, got {resistance}")
         return {"nominal_voltage": nominal_voltage, "resistance": resistance, "min_voltage": min_voltage}
 
-    @classmethod
-    def initial_supply_voltage(cls, args: dict[str, Any]) -> float:
-        """Return the nominal voltage [V]."""
-        return args["nominal_voltage"]
-
     def __init__(
         self,
         nominal_voltage: wp.array[float],
@@ -138,6 +121,20 @@ class BatteryInternalResistance(BatteryBase):
         world: wp.array[wp.int32] | None = None,
         world_count: int = 0,
     ):
+        """Initialize the batteries.
+
+        Args:
+            nominal_voltage: Voltage without load [V]. Shape ``(B,)``.
+            resistance: Internal resistance [Ω]. Shape ``(B,)``.
+            min_voltage: Lowest voltage under load [V]. Shape ``(B,)``.
+            actuator_start: See :meth:`BatteryBase.__init__`.
+            actuators: See :meth:`BatteryBase.__init__`.
+            world: See :meth:`BatteryBase.__init__`.
+            world_count: See :meth:`BatteryBase.__init__`.
+
+        Raises:
+            ValueError: An array does not have one entry per battery.
+        """
         super().__init__(actuator_start, actuators, world, world_count)
         self.nominal_voltage = nominal_voltage
         """Voltage without load [V], shape (B,)."""

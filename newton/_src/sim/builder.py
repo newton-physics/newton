@@ -15740,12 +15740,6 @@ class ModelBuilder:
 
             m.batteries = []
             for entry in self.battery_entries.values():
-                for args, actuators in zip(entry.args, entry.actuators, strict=True):
-                    self._process_custom_attributes(
-                        actuators,
-                        {"actuator_supply_voltage": entry.battery_class.initial_supply_voltage(args)},
-                        Model.AttributeFrequency.ACTUATOR,
-                    )
                 actuator_counts = [len(actuators) for actuators in entry.actuators]
                 m.batteries.append(
                     entry.battery_class(
@@ -15831,6 +15825,9 @@ class ModelBuilder:
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
+
+            for battery in m.batteries:
+                battery.reset(m)
 
             m.bvh_build_shapes(
                 m,
