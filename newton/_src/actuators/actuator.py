@@ -641,11 +641,15 @@ class Actuator:
         :class:`~newton.ModelBuilder` calls this method automatically while
         finalizing its actuators. Every input declared by the drive in
         :attr:`~DriveBase.custom_inputs` is registered as a ``wp.float32``
-        array on :class:`~newton.Control` with its declared frequency. The
-        drive's :attr:`~DriveBase.custom_outputs` are registered as
-        per-actuator arrays (``actuation:actuator`` frequency), and
-        :attr:`control_computed_output_attr` too when :attr:`actuator_indices`
-        is set, as is :attr:`control_applied_output_attr`.
+        array on :class:`~newton.Control` with its declared frequency.
+
+        The following outputs are registered as per-actuator arrays
+        (``actuation:actuator`` frequency):
+
+        * the drive's :attr:`~DriveBase.custom_outputs`;
+        * :attr:`control_applied_output_attr`;
+        * :attr:`control_computed_output_attr`.
+
         Registration allocates the arrays but does not populate or clear
         them; the caller must update the declared inputs before each actuator
         evaluation.
