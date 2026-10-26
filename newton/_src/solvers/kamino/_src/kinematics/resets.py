@@ -144,7 +144,7 @@ def _compute_and_write_joint_coords_and_vel(
     elif dof_type == JointDoFType.FIXED:
         pass  # 0 coords and dofs
 
-    elif dof_type == JointDoFType.FREE:
+    elif dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
         wp.static(make_compute_and_write_joint_coords(JointDoFType.FREE))(r_j, q_j, coords_offset, joint_q_ref, joint_q)
         wp.static(make_compute_and_write_joint_vel(JointDoFType.FREE))(q_j, u_j, dofs_offset, joint_u)
 

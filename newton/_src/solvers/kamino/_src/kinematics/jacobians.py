@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ....vbd.rigid_vbd_kernels import _measure_rod_bend_twist_z, _rod_bend_twist_jacobian_z_from_measure
 from ..core.data import DataKamino
 from ..core.joints import JointDoFType
 from ..core.math import (
@@ -130,6 +131,20 @@ def build_full_joint_jacobian(
         # Compute the extended jacobians, i.e. without the selection-matrix multiplication
         JT_B_j = -W_j_B @ R_X_bar_j  # Reaction is on the Base body body ; (6 x 6)
         JT_F_j = W_j_F @ R_X_bar_j  # Action is on the Follower body    ; (6 x 6)
+
+        # Rod joint: replace the angular axes with the bend and twist strain rates of the discrete rod measure
+        if dof_type == JointDoFType.ROD:
+            q_B_j = wp.transform_get_rotation(T_B_j) * wp.quat_from_matrix(model_joints_X_Bj[joint_id])
+            q_F_j = wp.transform_get_rotation(T_F_j) * wp.quat_from_matrix(model_joints_X_Fj[joint_id])
+            measure = _measure_rod_bend_twist_z(q_B_j, q_F_j)
+            J_B_bend_twist = _rod_bend_twist_jacobian_z_from_measure(measure, True)
+            J_F_bend_twist = _rod_bend_twist_jacobian_z_from_measure(measure, False)
+            for k in range(3):
+                for i in range(3):
+                    JT_B_j[i, 3 + k] = 0.0
+                    JT_F_j[i, 3 + k] = 0.0
+                    JT_B_j[3 + i, 3 + k] = J_B_bend_twist[k, i]
+                    JT_F_j[3 + i, 3 + k] = J_F_bend_twist[k, i]
 
     return JT_B_j, JT_F_j
 
@@ -356,7 +371,7 @@ def store_joint_dofs_jacobian_dense(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
 
-    elif dof_type == JointDoFType.FREE:
+    elif dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
         wp.static(make_store_joint_jacobian_dense_func(JointDoFType.FREE.dofs_axes))(
             J_row_offset, num_body_dofs, bid_offset, bid_B, bid_F, JT_B, JT_F, J_data
         )
@@ -494,7 +509,7 @@ def store_joint_dofs_jacobian_sparse(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )
 
-    elif dof_type == JointDoFType.FREE:
+    elif dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
         wp.static(make_store_joint_jacobian_sparse_func(JointDoFType.FREE.dofs_axes))(
             is_binary, JT_B_j, JT_F_j, J_nzb_offset, J_nzb_values
         )

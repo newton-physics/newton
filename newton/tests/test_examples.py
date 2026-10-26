@@ -695,10 +695,34 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_twist",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_y_junction",
     devices=test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_y_junction",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_y_junction",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino", "kamino-backend": "dvi"},
+    test_suffix="kamino_dvi",
 )
 add_example_batch(
     TestCableExamples,
@@ -733,8 +757,39 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_initial_rest_pose",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_initial_rest_pose",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120, "solver": "kamino", "kamino-backend": "dvi"},
+    test_suffix="kamino_dvi",
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_pile",
     devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_pile",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 20, "solver": "kamino"},
+    test_suffix="kamino",
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_plectoneme",
+    devices=cuda_test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
 )
@@ -743,7 +798,8 @@ add_example_test(
     name="cable.example_cable_plectoneme",
     devices=cuda_test_devices,
     use_viewer=True,
-    test_options={"num-frames": 20},
+    test_options={"num-frames": 20, "solver": "kamino"},
+    test_suffix="kamino",
 )
 
 

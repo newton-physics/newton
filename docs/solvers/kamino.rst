@@ -181,6 +181,19 @@ Enable these features through ``config.lox`` after selecting
   retain the classical 3D contact solve. Kamino's primitive collision pipeline
   provides no angular coefficients.
 
+Rod joints
+----------
+
+The LOX and DVI backends support ``JointType.ROD`` joints between rigid bodies,
+as built by :meth:`newton.ModelBuilder.add_joint_rod`; PADMM rejects them. Each
+rod DOF with nonzero stiffness or damping adds an implicit dynamic constraint on
+one rod strain: shear and stretch along the axes of the joint frame on the
+parent body, then bend and twist, measured as in ``SolverVBD``. The rest pose
+of each rod is its joint target, ``Control.joint_target_q``, whose angular part
+sets the rest bend and twist. The constraints are linearized at the beginning
+of each time step. Rod joints require zero armature, joint damping, and joint
+friction, unbounded joint limits, no target mode, and ``use_fk_solver=False``.
+
 Inspecting terminal status
 --------------------------
 
