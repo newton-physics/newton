@@ -1084,12 +1084,6 @@ Caveats
   Newton's :attr:`~newton.Model.joint_velocity_limit` has no MuJoCo equivalent and is
   ignored.
 
-**Kinematic roots are welded, not infinitely massive.**
-  MuJoCo has no prescribed degrees of freedom, so kinematic roots keep
-  their authored mass and are held by a stiff weld to a mocap target.
-  Contacts on a light kinematic body carrying a heavy load are softer
-  than an infinite-mass collider's. See `Kinematic welds`_.
-
 **Collision filtering has a 32-bit capacity.**
   The solver creates MuJoCo masks that reproduce Newton's allowed collision
   pairs when they fit in 32 bits. See `Collision filtering`_ for the behavior
@@ -1124,7 +1118,7 @@ by joint type:
 
 - **Kinematic roots with non-fixed joints** become ordinary MuJoCo
   joints with the same Newton joint type, DOFs, mass, and armature, held
-  by a weld to a mocap target; see `Kinematic welds`_.
+  by a weld; see `Kinematic welds`_.
 - **Roots attached to world with a fixed joint** become MuJoCo mocap
   bodies (whether kinematic or not). MuJoCo has no joint coordinates
   for a fixed root, so Newton drives the pose through
@@ -1155,37 +1149,30 @@ synchronize the updated fixed-root poses into MuJoCo.
 Kinematic welds
 ~~~~~~~~~~~~~~~
 
-MuJoCo has no prescribed degrees of freedom. Following its idiom for
-scripted bodies, each kinematic root gets a mocap target body and a weld
-equality that is active exactly while the root is kinematic:
+MuJoCo has no prescribed degrees of freedom. Each kinematic root is held by a
+weld equality to the world that is active exactly while the root is kinematic:
 
-- Whenever the joint state is pushed into MuJoCo, the target is moved to
-  the pose prescribed by :attr:`~newton.State.joint_q` and
-  :attr:`~newton.State.joint_qd`. The weld has no damping, so it does not
-  brake the body against the mocap's zero velocity. Under RK4, which
-  averages forces over the step, the target leads by half a step.
-- The weld stiffness corresponds to a time constant of two timesteps
-  (eight under RK4, whose intermediate stages track a softer weld more
-  closely), set from the step size independently of MuJoCo's REFSAFE flag.
+- The weld has neither stiffness nor damping, so rather than pulling the root
+  toward a pose it locks the root's acceleration: through each step the root
+  keeps the pose and velocity pushed from :attr:`~newton.State.joint_q` and
+  :attr:`~newton.State.joint_qd`, under every integrator.
+- MuJoCo's ``body_invweight0`` of kinematic bodies is scaled down by a factor
+  of ``1e-4``, so the weld and contacts treat them as nearly infinitely
+  massive: neither dynamic descendants nor contacting bodies move a kinematic
+  root.
 
-Kinematic roots keep their real mass, so the weld is not an
-infinite-mass constraint:
-
-- Contacts on a kinematic body use its mass for their softness, so a
-  light kinematic body under a heavy load penetrates more than an
-  infinite-mass collider would.
-- The body's own weight and loads from contacts and dynamic descendants
-  act through the weld, which yields slightly within each step. Newton's
-  output state always reports the prescribed motion.
+Unlike a large armature, the weld leaves the mass matrix, and with it the
+solver's convergence tolerance, physical. Kinematic roots keep their authored
+:attr:`~newton.Model.joint_armature`.
 
 .. _mujoco-kinematic-switching:
 
 Switching kinematic roots at runtime
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-MuJoCo cannot add bodies or constraints to a compiled model, and all MuJoCo
-Warp worlds share one model, so :class:`~newton.solvers.SolverMuJoCo` prepares
-a mocap target and an inactive weld for every movable root when it is created.
+MuJoCo cannot add constraints to a compiled model, and all MuJoCo Warp worlds
+share one model, so :class:`~newton.solvers.SolverMuJoCo` prepares an inactive
+weld for every movable root when it is created.
 :attr:`~newton.Model.body_flags` can then switch roots between kinematic and
 dynamic in either direction, per world, followed by
 ``notify_model_changed(ModelFlags.BODY_PROPERTIES)``.
@@ -1193,8 +1180,8 @@ dynamic in either direction, per world, followed by
 Making a root kinematic that was dynamic in every world when the solver was
 created is deprecated. Pass ``kinematic_switchable_roots=False`` to adopt the
 future behavior now: only roots that are kinematic in some world at creation
-get a target, which keeps the exported MuJoCo model free of targets for
-roots that never turn kinematic. To start a root dynamic and make it kinematic
+get a weld, which keeps the exported MuJoCo model free of welds for roots that
+never turn kinematic. To start a root dynamic and make it kinematic
 later, mark it kinematic before creating the solver and switch it to dynamic
 right after:
 
@@ -1219,8 +1206,8 @@ right after:
    model.body_flags.assign(body_flags)
    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
-Each prepared root adds a mocap body and a weld to the exported MuJoCo model.
-An inactive weld adds no constraint rows. The default ``njmax`` reserves the
+Each prepared root adds a weld to the exported MuJoCo model. An inactive weld
+adds no constraint rows. The default ``njmax`` reserves the
 six rows of each weld whose root is kinematic in some world but not in the
 first; roots made kinematic later share ``njmax`` with contacts.
 

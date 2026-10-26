@@ -22,6 +22,7 @@ from newton import BodyFlags, JointType, Mesh, ModelFlags
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
+    KINEMATIC_INVWEIGHT_SCALE,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
@@ -1342,7 +1343,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 model.mujoco.actuator_gainprm.assign(gainprm)
                 wp.capture_launch(capture.graph)
 
-                kinematic_eq = solver._kinematic_target_eq.numpy()
+                kinematic_eq = solver._kinematic_weld_eq.numpy()
                 np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.25)
                 np.testing.assert_array_equal(
                     solver.mjw_data.eq_active.numpy()[:, kinematic_eq], [[True, True], [False, False]]
@@ -2304,7 +2305,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         return float(solver.mjw_data.M.numpy()[0, diagonal].sum())
 
     def _assert_kinematic_state_matches_flags(self, model: newton.Model, solver: SolverMuJoCo):
-        """Kinematic roots keep authored armature and enable their mocap-target weld."""
+        """Kinematic roots keep authored armature, enable their weld, and scale down their inverse weight."""
         mjc_dof_to_newton_dof = solver.mjc_dof_to_newton_dof.numpy()
         mapped = mjc_dof_to_newton_dof >= 0
         np.testing.assert_allclose(
@@ -2312,16 +2313,27 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             model.joint_armature.numpy()[mjc_dof_to_newton_dof[mapped]],
         )
 
-        self.assertIsNotNone(solver._kinematic_target_jnt)
-        target_body = model.joint_child.numpy()[solver._kinematic_target_jnt.numpy()]
+        self.assertIsNotNone(solver._kinematic_weld_jnt)
+        target_body = model.joint_child.numpy()[solver._kinematic_weld_jnt.numpy()]
         expected = (model.body_flags.numpy()[target_body] & int(BodyFlags.KINEMATIC)) != 0
-        eq_active = solver.mjw_data.eq_active.numpy()[:, solver._kinematic_target_eq.numpy()]
+        eq_active = solver.mjw_data.eq_active.numpy()[:, solver._kinematic_weld_eq.numpy()]
         np.testing.assert_array_equal(eq_active, expected)
         if solver.use_mujoco_cpu:
-            np.testing.assert_array_equal(solver.mj_data.eq_active[solver._kinematic_target_eq.numpy()], expected[0])
+            np.testing.assert_array_equal(solver.mj_data.eq_active[solver._kinematic_weld_eq.numpy()], expected[0])
 
-    def test_floating_kinematic_body_exports_mocap_weld(self):
-        """Export a kinematic free body with a mocap-target weld, keeping its armature and a unique target name."""
+        mjc_body = solver.mjc_body_to_newton.numpy()
+        kinematic = np.zeros(mjc_body.shape, dtype=bool)
+        kinematic[mjc_body >= 0] = (model.body_flags.numpy()[mjc_body[mjc_body >= 0]] & int(BodyFlags.KINEMATIC)) != 0
+        invweight = (
+            solver.mj_model.body_invweight0[None] if solver.use_mujoco_cpu else solver.mjw_model.body_invweight0.numpy()
+        )
+        physical = solver._physical_body_invweight0
+        physical = physical[None] if solver.use_mujoco_cpu else physical.numpy()
+        scale = np.where(kinematic[: invweight.shape[0]], KINEMATIC_INVWEIGHT_SCALE, 1.0)[..., None]
+        np.testing.assert_allclose(invweight, scale * physical, rtol=1.0e-6)
+
+    def test_floating_kinematic_body_exports_weld(self):
+        """Export a kinematic free body with a weld to the world, keeping its armature."""
         builder = newton.ModelBuilder()
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
         body = builder.add_body(
@@ -2332,20 +2344,20 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             label="floating_kinematic",
         )
         builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05, cfg=shape_cfg)
-        # A user body whose name the weld target would otherwise reuse.
-        clash = builder.add_body(label="floating_kinematic_kinematic_target")
-        builder.add_shape_box(clash, hx=0.05, hy=0.05, hz=0.05, cfg=shape_cfg)
         model = builder.finalize(requires_grad=False)
 
         initial_armature = np.linspace(0.1, 0.1 * model.joint_dof_count, model.joint_dof_count, dtype=np.float32)
         model.joint_armature.assign(initial_armature)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        self.assertEqual(solver.mj_model.nmocap, 2)
+        self.assertEqual(solver.mj_model.nmocap, 0)
+        eq = int(solver._kinematic_weld_eq.numpy()[0])
+        self.assertEqual(int(solver.mj_model.eq_type[eq]), int(solver._mujoco.mjtEq.mjEQ_WELD))
+        self.assertEqual(int(solver.mj_model.eq_obj2id[eq]), 0)
         self._assert_kinematic_state_matches_flags(model, solver)
 
-    def test_kinematic_root_exports_mocap_weld(self):
-        """Export a kinematic articulation root with a mocap-target weld and its authored armature."""
+    def test_kinematic_root_exports_weld(self):
+        """Export a kinematic articulation root with a weld and its authored armature."""
         model, _ = self._build_model(root_kinematic=True)
         initial_armature = np.linspace(0.1, 0.1 * model.joint_dof_count, model.joint_dof_count, dtype=np.float32)
         model.joint_armature.assign(initial_armature)
@@ -2358,7 +2370,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         """Give a dynamic root an inactive weld that leaves its motion free."""
         model, root_body = self._build_model(root_kinematic=False)
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        self.assertEqual(solver.mj_model.nmocap, 1)
+        self.assertEqual(solver.mj_model.neq, 1)
         self._assert_kinematic_state_matches_flags(model, solver)
         state_0, state_1, control = model.state(), model.state(), model.control()
         for _ in range(50):
@@ -2583,28 +2595,6 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                         positions.append(solver.mjw_data.xpos.numpy()[0, 1])
                 np.testing.assert_allclose(positions[1], positions[0], atol=1.0e-6)
 
-    def test_kinematic_targets_update_in_captured_step(self):
-        """Replaying a captured step moves the mocap target with the prescribed state."""
-        if wp.get_cuda_device_count() == 0:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        device = wp.get_cuda_device(0)
-        if not wp.is_mempool_enabled(device):
-            self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
-        with wp.ScopedDevice(device):
-            model, _ = self._build_kinematic_root("prismatic")
-            solver = SolverMuJoCo(model, disable_contacts=True)
-            state_0, state_1, control = model.state(), model.state(), model.control()
-            dt = 0.002
-            solver.step(state_0, state_1, control, None, dt)
-            with wp.ScopedCapture() as capture:
-                solver.step(state_0, state_1, control, None, dt)
-            mocap = int(solver._kinematic_target_mocap.numpy()[0])
-            for x in (0.1, 0.25):
-                state_0.joint_q.fill_(x)
-                state_0.joint_qd.fill_(0.5)
-                wp.capture_launch(capture.graph)
-                np.testing.assert_allclose(solver.mjw_data.mocap_pos.numpy()[0, mocap], (x, 0.0, 1.0), atol=1.0e-6)
-
     @staticmethod
     def _mocap_pose(solver: SolverMuJoCo, mocap: int) -> tuple[np.ndarray, np.ndarray]:
         if solver.use_mujoco_cpu:
@@ -2655,6 +2645,71 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 model.body_flags.fill_(int(BodyFlags.DYNAMIC))
                 with self.assertRaisesRegex(ValueError, "cannot be dynamic"):
                     solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+
+    def test_dynamic_child_of_light_kinematic_root_moves_like_on_fixed_base(self):
+        """A light kinematic root does not yield to a heavy dynamic child, unlike a soft weld."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                angles = []
+                for fixed in (True, False):
+                    builder = newton.ModelBuilder()
+                    base = builder.add_link(is_kinematic=not fixed)
+                    builder.add_shape_box(
+                        base, hx=0.05, hy=0.05, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=100.0)
+                    )
+                    arm = builder.add_link()
+                    builder.add_shape_capsule(
+                        arm,
+                        radius=0.04,
+                        half_height=0.25,
+                        xform=wp.transform(
+                            (0.3, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5 * np.pi)
+                        ),
+                        cfg=newton.ModelBuilder.ShapeConfig(density=2000.0),
+                    )
+                    root_xform = wp.transform((0.0, 0.0, 1.0), wp.quat_identity())
+                    root = (
+                        builder.add_joint_fixed(-1, base, parent_xform=root_xform)
+                        if fixed
+                        else builder.add_joint_free(base)
+                    )
+                    hinge = builder.add_joint_revolute(base, arm, axis=newton.Axis.Y)
+                    builder.add_articulation([root, hinge])
+                    model = builder.finalize()
+                    if not fixed:
+                        q = model.joint_q.numpy()
+                        q[2] = 1.0
+                        model.joint_q.assign(q)
+                    solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                    state_0, state_1, control = model.state(), model.state(), model.control()
+                    for _ in range(100):
+                        solver.step(state_0, state_1, control, None, 0.002)
+                        state_0, state_1 = state_1, state_0
+                    angles.append(float(state_0.joint_q.numpy()[-1]))
+                self.assertGreater(abs(angles[0]), 0.5)
+                self.assertAlmostEqual(angles[1], angles[0], delta=1.0e-3)
+
+    def test_contacts_on_kinematic_body_ignore_its_mass(self):
+        """A box rests on a light kinematic platform as on a heavy one, as on an infinite-mass collider."""
+        gaps = []
+        for platform_density in (1.0, 1.0e4):
+            builder = newton.ModelBuilder()
+            platform = builder.add_body(xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()), is_kinematic=True)
+            builder.add_shape_box(
+                platform, hx=0.5, hy=0.5, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=platform_density)
+            )
+            box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.65), wp.quat_identity()))
+            builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=1.0e4))
+            model = builder.finalize()
+            solver = SolverMuJoCo(model, njmax=100, nconmax=20)
+            state_0, state_1, control = model.state(), model.state(), model.control()
+            for _ in range(300):
+                solver.step(state_0, state_1, control, None, 0.002)
+                state_0, state_1 = state_1, state_0
+            body_q = state_0.body_q.numpy()
+            gaps.append(float(body_q[box, 2] - body_q[platform, 2]) - 0.15)
+        # The 0.1 kg platform carries an 80 kg box.
+        self.assertAlmostEqual(gaps[0], gaps[1], delta=1.0e-4)
 
     def test_kinematic_roots_reserve_weld_rows(self):
         """njmax leaves room for welds inactive in the first world, or warns when it cannot."""
@@ -2710,8 +2765,8 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     xpos = solver.mjw_data.xpos.numpy()[0, mjc_body]
                 np.testing.assert_allclose(xpos, 0.0, atol=1.0e-4)
 
-    def test_non_switchable_roots_export_no_targets(self):
-        """Without switchable roots, dynamic roots get no weld target and cannot turn kinematic."""
+    def test_non_switchable_roots_export_no_welds(self):
+        """Without switchable roots, dynamic roots get no weld and cannot turn kinematic."""
         model, root_body = self._build_model(root_kinematic=False)
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
         self.assertEqual(solver.mj_model.nmocap, 0)
@@ -11311,7 +11366,7 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
                 np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)
                 # Kinematic roots keep their authored armature and are held by a weld instead.
                 np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.3)
-                self.assertTrue(np.all(solver.mjw_data.eq_active.numpy()[:, solver._kinematic_target_eq.numpy()]))
+                self.assertTrue(np.all(solver.mjw_data.eq_active.numpy()[:, solver._kinematic_weld_eq.numpy()]))
 
                 model.body_flags.fill_(int(BodyFlags.DYNAMIC))
                 solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)

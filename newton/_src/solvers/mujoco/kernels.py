@@ -11,7 +11,7 @@ import warp as wp
 
 from ...core.types import vec5
 from ...sim import BodyFlags, JointTargetMode, JointType
-from ...sim.articulation import com_twist_to_origin_twist, eval_joint_child_state, eval_joint_motion
+from ...sim.articulation import eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
@@ -925,27 +925,6 @@ def convert_mj_coords_to_warp_kernel(
             joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
 
 
-@wp.func
-def kinematic_root_target(
-    jtype: int,
-    child: int,
-    X_pj: wp.transform,
-    X_cj: wp.transform,
-    X_j: wp.transform,
-    v_j: wp.spatial_vector,
-    body_qd: wp.array[wp.spatial_vector],
-    body_com: wp.array[wp.vec3],
-    lookahead: float,
-):
-    """World pose of a root body under prescribed joint motion, advanced by ``lookahead`` seconds."""
-    X_wc, v_com = eval_joint_child_state(
-        jtype, -1, child, wp.transform_identity(), X_pj, X_cj, X_j, v_j, body_qd, body_com
-    )
-    v = com_twist_to_origin_twist(v_com, X_wc, body_com[child])
-    q = X_wc.q + wp.quat(wp.spatial_bottom(v) * (0.5 * lookahead), 0.0) * X_wc.q
-    return wp.transform(X_wc.p + wp.spatial_top(v) * lookahead, wp.normalize(q))
-
-
 @wp.kernel
 def convert_warp_coords_to_mj_kernel(
     joint_q: wp.array[wp.float32],
@@ -965,10 +944,7 @@ def convert_warp_coords_to_mj_kernel(
     mj_q_start: wp.array[wp.int32],
     mj_qd_start: wp.array[wp.int32],
     jnt_mocap: wp.array[wp.int32],
-    jnt_mocap_lead: wp.array[wp.bool],
-    kinematic_lookahead: float,
     write_state: bool,
-    root_parent_qd: wp.array[wp.spatial_vector],
     # outputs
     qpos: wp.array2d[wp.float32],
     qvel: wp.array2d[wp.float32],
@@ -976,15 +952,13 @@ def convert_warp_coords_to_mj_kernel(
     mocap_quat: wp.array2d[wp.quat],
     mocap_root_moved: wp.array[wp.bool],
 ):
-    """Push Newton joint coordinates to MuJoCo and pose the mocap bodies driven by Newton joints.
+    """Push Newton joint coordinates to MuJoCo and pose the mocap roots driven by Newton joints.
 
-    ``jnt_mocap`` maps template joints to the mocap body posed from their child:
-    the child itself for fixed and massless kinematic roots, or the weld target
-    of a kinematic root (``-1`` if none). Weld targets (``jnt_mocap_lead``) lead
-    the prescribed pose by ``kinematic_lookahead``. With ``write_state`` False,
-    as after a joint-frame notification without a state, only fixed-root poses
-    are written. ``mocap_root_moved`` flags worlds whose mocap roots moved, since
-    MuJoCo does not wake trees resting on a moving mocap body.
+    ``jnt_mocap`` maps template joints to the mocap body of their child (``-1``
+    if none): fixed roots and massless kinematic roots. With ``write_state``
+    False, as after a joint-frame notification without a state, only fixed-root
+    poses are written. ``mocap_root_moved`` flags worlds whose mocap roots moved,
+    since MuJoCo does not wake trees resting on a moving mocap body.
     """
     worldid, jntid = wp.tid()
 
@@ -997,11 +971,7 @@ def convert_warp_coords_to_mj_kernel(
         mocap = jnt_mocap[jntid]
         # Without a state only fixed roots, whose pose does not depend on joint coordinates, are current.
         if mocap >= 0 and (write_state or joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1] == 0):
-            lead = jnt_mocap_lead[jntid]
-            lookahead = float(0.0)
-            if lead:
-                lookahead = kinematic_lookahead
-            X_j, v_j = eval_joint_motion(
+            X_j, _v_j = eval_joint_motion(
                 joint_type[joint_id],
                 joint_q_start[joint_id],
                 joint_qd_start[joint_id],
@@ -1011,26 +981,16 @@ def convert_warp_coords_to_mj_kernel(
                 joint_qd,
                 joint_axis,
             )
-            target = kinematic_root_target(
-                joint_type[joint_id],
-                joint_child[joint_id],
-                joint_X_p[joint_id],
-                joint_X_c[joint_id],
-                X_j,
-                v_j,
-                root_parent_qd,
-                body_com,
-                lookahead,
-            )
-            quat = quat_xyzw_to_wxyz(target.q)
-            if mocap_root_moved and not lead:
+            pose = joint_X_p[joint_id] * X_j * wp.transform_inverse(joint_X_c[joint_id])
+            quat = quat_xyzw_to_wxyz(pose.q)
+            if mocap_root_moved:
                 old_quat = mocap_quat[worldid, mocap]
-                delta = wp.length(target.p - mocap_pos[worldid, mocap]) + wp.length(
+                delta = wp.length(pose.p - mocap_pos[worldid, mocap]) + wp.length(
                     wp.vec4(quat[0] - old_quat[0], quat[1] - old_quat[1], quat[2] - old_quat[2], quat[3] - old_quat[3])
                 )
                 if delta > 1.0e-6:
                     mocap_root_moved[worldid] = True
-            mocap_pos[worldid, mocap] = target.p
+            mocap_pos[worldid, mocap] = pose.p
             mocap_quat[worldid, mocap] = quat
 
     if not write_state:
@@ -2343,32 +2303,35 @@ def update_dof_armature_kernel(
 
 
 @wp.kernel
-def update_kinematic_weld_solref_kernel(
-    target_eq: wp.array[wp.int32],
-    solref: wp.vec2,
+def update_kinematic_body_invweight_kernel(
+    mjc_body_to_newton: wp.array2d[wp.int32],
+    body_flags: wp.array[wp.int32],
+    physical_invweight0: wp.array2d[wp.vec2],
+    kinematic_scale: float,
     # outputs
-    eq_solref: wp.array2d[wp.vec2],
+    body_invweight0: wp.array2d[wp.vec2],
 ):
-    """Set the solref of every kinematic-target weld."""
-    world, target = wp.tid()
-    eq_solref[world, target_eq[target]] = solref
+    """Scale down the inverse weights of kinematic bodies so MuJoCo regularizes their constraints as near-infinite mass."""
+    world, mjc_body = wp.tid()
+    invweight = physical_invweight0[world, mjc_body]
+    newton_body = mjc_body_to_newton[world, mjc_body]
+    if newton_body >= 0 and (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
+        invweight = invweight * kinematic_scale
+    body_invweight0[world, mjc_body] = invweight
 
 
 @wp.kernel
 def update_kinematic_weld_active_kernel(
-    target_jnt: wp.array2d[wp.int32],
-    target_eq: wp.array[wp.int32],
+    weld_jnt: wp.array2d[wp.int32],
+    weld_eq: wp.array[wp.int32],
     joint_child: wp.array[wp.int32],
     body_flags: wp.array[wp.int32],
     # outputs
     eq_active: wp.array2d[wp.bool],
 ):
-    """Activate each kinematic-target weld exactly when its root body is kinematic."""
-    world, target = wp.tid()
-    j = target_jnt[world, target]
-    if j < 0:
-        return
-    eq_active[world, target_eq[target]] = (body_flags[joint_child[j]] & BodyFlags.KINEMATIC) != 0
+    """Activate each kinematic weld exactly when its root body is kinematic."""
+    world, weld = wp.tid()
+    eq_active[world, weld_eq[weld]] = (body_flags[joint_child[weld_jnt[world, weld]]] & BodyFlags.KINEMATIC) != 0
 
 
 @wp.kernel

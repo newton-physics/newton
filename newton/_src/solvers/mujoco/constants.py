@@ -17,14 +17,11 @@ DEFAULT_LIMIT_SOLREF_TIMECONST = DEFAULT_LIMIT_SOLREF[0]
 HINGE_CONNECT_HALF_SPAN = 0.05
 """Distance [m] along the hinge axis from a revolute loop joint's anchor to each of its two CONNECT points."""
 
-KINEMATIC_WELD_TIMECONST_STEPS = 2.0
-"""Kinematic weld stiffness as a time constant in timesteps."""
+KINEMATIC_INVWEIGHT_SCALE = 1.0e-4
+"""Factor on MuJoCo ``body_invweight0`` of kinematic bodies.
 
-KINEMATIC_WELD_TIMECONST_STEPS_RK4 = 8.0
-"""Kinematic weld stiffness time constant in timesteps under RK4, whose intermediate stages track a softer weld more closely."""
-
-KINEMATIC_WELD_SOLIMP = (0.99, 0.99, 0.001, 0.5, 2.0)
-"""Constant kinematic weld impedance, independent of the pose error."""
+Regularizes their welds and contacts as nearly infinite mass; exactly zero makes
+those rows too stiff for MuJoCo Warp's float32 CG solver."""
 
 MJ_MINMU = 1.0e-5
 """MuJoCo's minimum friction coefficient clamp."""
