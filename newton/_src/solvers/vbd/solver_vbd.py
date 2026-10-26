@@ -1669,7 +1669,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Both pose histories span the whole coupled entry step, matching the coupled ``dt``;
         # ``particle_q_prev`` and ``body_q_prev`` cover only the last substep of a sub-stepped entry.
         body_q_prev = self._coupling_body_q_prev_snapshot
-        particle_q_prev = self._coupling_particle_q_prev_snapshot
 
         if contacts.rigid_contact_max > 0:
             body0, body1, point0, point1, force_on_body1, rigid_contact_count = self.collect_rigid_contact_forces(
@@ -1709,7 +1708,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     float(dt),
                     body_local_to_proxy_global,
                     state_out.particle_q,
-                    particle_q_prev,
+                    self._coupling_particle_q_prev_snapshot,
                     self.model.particle_radius,
                     state_out.body_q,
                     body_q_prev,
