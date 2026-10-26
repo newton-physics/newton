@@ -88,17 +88,12 @@ fixed-joint collapse transforms them into the retained body's frame, or world
 space when the body is merged into the world. Placement transforms apply directly
 to world-attached guides when composing or replicating builders.
 
-Fixed-joint collapse may merge a guide's body into world, which removes that body
-and changes later body indices. Pass its fixed joint in
-`collapse_fixed_joints(joints_to_keep=...)` if the body frame must remain, and do
-not reuse pre-collapse body indices.
-
 ## Guide types
 
 | Type | Behavior |
 | --- | --- |
-| `ANCHOR` | Fixes the cable to a point on a body or in world space. |
-| `PINHOLE` | Routes the cable through a point on a body or in world space. Material can transfer between the adjacent spans according to the local bend angle and friction coefficient. |
+| `ANCHOR` | Fixes the cable to a body-local point. |
+| `PINHOLE` | Routes the cable through a body-local point. Material can transfer between the adjacent spans according to the local bend angle and friction coefficient. |
 | `ROLLER` | Routes the cable around a circular roller. Tangent points and wrap length are updated from the current body poses. |
 
 For a roller guide, `offset` is the roller center, `axis` is the roller axis,

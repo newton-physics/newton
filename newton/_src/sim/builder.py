@@ -1875,7 +1875,7 @@ class ModelBuilder:
         self.tendon_start: list[int] = []
         """Start index into guide arrays for each tendon."""
         self.tendon_guide_body: list[int] = []
-        """Body index for each tendon guide, or -1 for world."""
+        """Body index for each tendon guide."""
         self.tendon_guide_type: list[int] = []
         """Guide type (TendonGuideType enum) for each tendon guide."""
         self.tendon_guide_radius: list[float] = []
@@ -1887,9 +1887,9 @@ class ModelBuilder:
         self.tendon_guide_flags: list[int] = []
         """Routing flags for each tendon guide."""
         self.tendon_guide_offset: list[tuple[float, float, float]] = []
-        """Cable plane center in body-local coordinates, or world space for body -1 [m]."""
+        """Local-frame offset of the cable plane center on each body [m]."""
         self.tendon_guide_axis: list[tuple[float, float, float]] = []
-        """Cable plane normal in body-local coordinates, or world space for body -1."""
+        """Local-frame normal of the cable plane on each body."""
         self.tendon_segment_compliance: list[float] = []
         """Compliance [m/N] for each tendon segment."""
         self.tendon_segment_damping: list[float] = []
@@ -7318,12 +7318,6 @@ class ModelBuilder:
                 the collapse process.
 
         Note:
-            Tendon guides do not prevent their attached bodies from being merged
-            into world. Their offsets and axes are transformed to world space, and
-            their body indices become ``-1``. To retain an anchor body and its
-            fixed joint, include that joint in ``joints_to_keep``. Do not reuse
-            pre-collapse body indices after collapsing joints.
-
             Deformable labels do not change which fixed joints are collapsed. A curve's
             record is retained only if all of its segment bodies and joints survive.
             Otherwise the incomplete record is omitted with a warning. Pass the relevant
