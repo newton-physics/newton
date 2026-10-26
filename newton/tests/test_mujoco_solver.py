@@ -37,7 +37,7 @@ from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layo
 from newton._src.solvers.mujoco.kernels import convert_solref
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
-from newton.exceptions import NewtonWarning
+from newton.exceptions import NewtonDeprecationWarning, NewtonWarning
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, patch_sys_module
 
@@ -1080,7 +1080,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
             solver = SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True, iterations=1)
             eager_solver = SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True, iterations=1)
             self.assertTrue(solver.has_jnt_connect_constraints)
-            self.assertEqual(solver.mj_model.neq, 2)
+            self.assertEqual(int(np.sum(solver.mj_model.eq_type == solver._mujoco.mjtEq.mjEQ_CONNECT)), 2)
             initial_eq_data = solver.mjw_model.eq_data.numpy().copy()
             flags = ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES
             with wp.ScopedCapture(device=device) as capture:
@@ -1286,10 +1286,8 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 model.mujoco.tendon_armature.assign(
                     np.repeat(tendon_armature, model.mujoco.tendon_armature.shape[0] // world_count)
                 )
-                # Both roots must be kinematic in some world to receive a mocap-target weld.
                 kinematic = int(BodyFlags.KINEMATIC)
                 dynamic = int(BodyFlags.DYNAMIC)
-                model.body_flags.assign(np.array([kinematic, dynamic, dynamic, kinematic], dtype=np.int32))
                 solver = SolverMuJoCo(
                     model,
                     use_mujoco_cpu=False,
@@ -2343,7 +2341,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         model.joint_armature.assign(initial_armature)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        self.assertEqual(solver.mj_model.nmocap, 1)
+        self.assertEqual(solver.mj_model.nmocap, 2)
         self._assert_kinematic_state_matches_flags(model, solver)
 
     def test_kinematic_root_exports_mocap_weld(self):
@@ -2356,13 +2354,17 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
         self._assert_kinematic_state_matches_flags(model, solver)
 
-    def test_dynamic_model_exports_no_kinematic_targets(self):
-        """Leave models without kinematic roots free of mocap targets and welds."""
-        model, _ = self._build_model(root_kinematic=False)
+    def test_dynamic_root_exports_inactive_weld(self):
+        """Give a dynamic root an inactive weld that leaves its motion free."""
+        model, root_body = self._build_model(root_kinematic=False)
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        self.assertEqual(solver.mj_model.nmocap, 0)
-        self.assertEqual(solver.mj_model.neq, 0)
-        self.assertIsNone(solver._kinematic_target_eq)
+        self.assertEqual(solver.mj_model.nmocap, 1)
+        self._assert_kinematic_state_matches_flags(model, solver)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        for _ in range(50):
+            solver.step(state_0, state_1, control, None, 0.002)
+            state_0, state_1 = state_1, state_0
+        self.assertAlmostEqual(float(state_0.body_q.numpy()[root_body, 2]), -0.5 * 9.81 * 0.1**2, delta=2.0e-3)
 
     def test_kinematic_root_does_not_change_mass_matrix_trace(self):
         """Keep the solver's inertia scale physical: a kinematic root leaves trace(M) unchanged."""
@@ -2681,14 +2683,55 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         with self.assertWarnsRegex(NewtonWarning, "weld rows"):
             SolverMuJoCo(model, njmax=16)
 
-    def test_making_unconverted_root_kinematic_raises(self):
-        """Reject making a root kinematic that had no weld target at solver creation."""
+    def test_root_made_kinematic_after_creation_holds_pose(self):
+        """Hold a root that was dynamic at solver creation once it turns kinematic."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model, root_body = self._build_model(root_kinematic=False)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                body_flags = model.body_flags.numpy().copy()
+                body_flags[root_body] = int(BodyFlags.KINEMATIC)
+                model.body_flags.assign(body_flags)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, "dynamic at solver creation is deprecated"):
+                    solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                self._assert_kinematic_state_matches_flags(model, solver)
+
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                for _ in range(50):
+                    solver.step(state_0, state_1, control, None, 0.002)
+                    state_0, state_1 = state_1, state_0
+                # Gravity would have dropped a free root by 49 mm.
+                mjc_body = int(np.flatnonzero(solver.mjc_body_to_newton.numpy()[0] == root_body)[0])
+                if use_mujoco_cpu:
+                    solver._mujoco.mj_kinematics(solver.mj_model, solver.mj_data)
+                    xpos = solver.mj_data.xpos[mjc_body]
+                else:
+                    solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
+                    xpos = solver.mjw_data.xpos.numpy()[0, mjc_body]
+                np.testing.assert_allclose(xpos, 0.0, atol=1.0e-4)
+
+    def test_non_switchable_roots_export_no_targets(self):
+        """Without switchable roots, dynamic roots get no weld target and cannot turn kinematic."""
         model, root_body = self._build_model(root_kinematic=False)
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        body_flags = model.body_flags.numpy()
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
+        self.assertEqual(solver.mj_model.nmocap, 0)
+        self.assertEqual(solver.mj_model.neq, 0)
+        body_flags = model.body_flags.numpy().copy()
         body_flags[root_body] = int(BodyFlags.KINEMATIC)
         model.body_flags.assign(body_flags)
         with self.assertRaisesRegex(ValueError, "Mark the body kinematic before creating the solver"):
+            solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+
+    def test_kinematic_roots_beyond_njmax_headroom_warn(self):
+        """Warn when roots made kinematic after creation need more weld rows than njmax has room for."""
+        builder = newton.ModelBuilder()
+        for i in range(20):
+            body = builder.add_body(xform=wp.transform((0.5 * i, 0.0, 1.0), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, njmax=64)
+        model.body_flags.fill_(int(BodyFlags.KINEMATIC))
+        with self.assertWarnsRegex(NewtonWarning, "120 weld constraint rows"):
             solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
 
 
@@ -8145,7 +8188,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 self.assertEqual(builder.joint_articulation[joint], -1)
                 model = builder.finalize()
                 with self.assertWarnsRegex(UserWarning, "standalone world roots"):
-                    solver = SolverMuJoCo(model, disable_contacts=True)
+                    solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
 
                 self.assertEqual(model.articulation_count, 0)
                 self.assertEqual(solver.mj_model.nbody, 2)
@@ -8167,7 +8210,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         builder.replicate(template, world_count)
         model = builder.finalize()
         with self.assertWarnsRegex(UserWarning, "standalone world roots"):
-            solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+            solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(model.world_count, world_count)
         self.assertEqual(solver.mj_model.nbody, 3)
@@ -8190,7 +8233,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
         model = builder.finalize()
         with self.assertWarnsRegex(UserWarning, "standalone world roots"):
-            solver = SolverMuJoCo(model, disable_contacts=True)
+            solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(solver.mj_model.nbody, 3)
         self.assertEqual(solver.mj_model.njnt, 1)
@@ -8210,7 +8253,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(builder.joint_articulation[loop_joint], -1)
 
         model = builder.finalize()
-        solver = SolverMuJoCo(model, disable_contacts=True)
+        solver = SolverMuJoCo(model, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(solver.mj_model.nbody, 2)
         self.assertEqual(solver.mj_model.njnt, 1)
@@ -8241,7 +8284,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.bound_mass = 0.01
         world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True)
+        solver = SolverMuJoCo(model, separate_worlds=True, kinematic_switchable_roots=False)
         self.assertEqual(solver.mj_model.nv, 3)
         # Fixed loop joint → 1 weld constraint
         self.assertEqual(solver.mj_model.neq, 1)
@@ -8303,7 +8346,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.bound_mass = 0.01
         world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True)
+        solver = SolverMuJoCo(model, separate_worlds=True, kinematic_switchable_roots=False)
         self.assertEqual(model.joint_count, 4 * world_count)
         self.assertEqual(model.mujoco.equality_constraint_count, 2 * world_count)
         self.assertEqual(solver.mj_model.nv, 3)
@@ -8339,7 +8382,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder = newton.ModelBuilder()
         world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
-        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+        solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(solver.mj_model.neq, 2)
         expected = np.array([[3, 3], [7, 7], [11, 11]], dtype=np.int32)
@@ -8519,7 +8562,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
             builder.end_world()
 
         model = builder.finalize()
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(solver.mj_model.neq, 2)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
@@ -8603,7 +8646,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.replicate(builder, copy_count=1)
         model = world_builder.finalize()
 
-        solver = SolverMuJoCo(model)
+        solver = SolverMuJoCo(model, kinematic_switchable_roots=False)
 
         # Revolute loop joint → 2x connect constraints centered on the anchor along the axis
         self.assertEqual(solver.mj_model.neq, 2)
@@ -8709,7 +8752,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_builder.replicate(builder, copy_count=1)
         model = world_builder.finalize()
 
-        solver = SolverMuJoCo(model)
+        solver = SolverMuJoCo(model, kinematic_switchable_roots=False)
 
         # Ball loop joint → single connect constraint
         self.assertEqual(solver.mj_model.neq, 1)
@@ -9408,7 +9451,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
     def test_mimic_constraint_conversion(self):
         """Test that mimic constraints are converted to MuJoCo mjEQ_JOINT constraints."""
         model = self._make_two_revolute_model(coef0=0.5, coef1=2.0)
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
 
         # Verify MuJoCo has 1 equality constraint of type JOINT
         self.assertEqual(solver.mj_model.neq, 1)
@@ -9436,7 +9479,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
         model = builder.finalize()
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(solver.mj_model.neq, 1)
@@ -9466,7 +9509,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
         model = builder.finalize()
 
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(solver.mj_model.neq, 2)
         np.testing.assert_allclose(
@@ -9578,7 +9621,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
             builder.end_world()
 
         model = builder.finalize()
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
 
         self.assertEqual(solver.mj_model.neq, 1)
         np.testing.assert_array_equal(solver.mjc_eq_to_newton_eq.numpy()[:, 0], [0, 1])
@@ -9637,7 +9680,9 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         )
 
         model = builder.finalize()
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=True)
+        solver = SolverMuJoCo(
+            model, iterations=1, disable_contacts=True, use_mujoco_cpu=True, kinematic_switchable_roots=False
+        )
 
         updated_polycoef = np.array([[0.3, 1.7, -0.4, 0.08, 0.02]], dtype=np.float32)
         updated_solref = np.array([[0.08, 0.9]], dtype=np.float32)
@@ -9694,7 +9739,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         _add_deprecated_mimic_constraint(builder, joint0=j2, joint1=j1, coef0=0.0, coef1=1.0)
 
         model = builder.finalize()
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
 
         # 1 regular eq + 1 mimic = 2 MuJoCo eq constraints
         self.assertEqual(solver.mj_model.neq, 2)
@@ -9756,7 +9801,7 @@ class TestMuJoCoSolverMimicConstraints(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.replicate(template_builder, world_count)
         model = builder.finalize()
-        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=False)
 
         # Verify initial state
         self.assertEqual(model.constraint_mimic_count, world_count)
@@ -11715,7 +11760,9 @@ class TestEqualityWeldConstraintDefaults(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".xml", delete=False) as f:
             xml_path = f.name
         try:
-            solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path)
+            solver = SolverMuJoCo(
+                model, iterations=1, disable_contacts=True, save_to_mjcf=xml_path, kinematic_switchable_roots=False
+            )
 
             # Verify the compiled mj_model has the quaternion in wxyz format
             mj_eq_data = solver.mj_model.eq_data[0]
@@ -11778,7 +11825,7 @@ class TestEqualityJointObjType(unittest.TestCase):
         )
         model = builder.finalize()
 
-        solver = SolverMuJoCo(model)
+        solver = SolverMuJoCo(model, kinematic_switchable_roots=False)
 
         # Native: load equivalent MJCF
         import mujoco

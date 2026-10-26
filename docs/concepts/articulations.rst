@@ -400,7 +400,8 @@ The following patterns are valid and commonly used:
      - Fully used by dynamics
    * - Mass matrix / constraint role
      - No active DOFs when fixed to world
-     - Solver-dependent infinite-mass approximation along kinematic DOFs
+     - Solver-dependent infinite-mass approximation along kinematic DOFs; :class:`~newton.solvers.SolverMuJoCo`
+       holds them with a weld instead
      - Standard articulated mass matrix
    * - Typical applications
      - Environment geometry, fixtures
@@ -452,9 +453,9 @@ Implementation details differ by coordinate formulation:
 :class:`~newton.solvers.SolverMuJoCo` follows MuJoCo, which has no prescribed degrees of freedom: it holds
 kinematic roots with a weld to a target that tracks the prescribed motion. This has user-visible consequences:
 
-- Only roots that are kinematic in some world when the solver is created can be switched between kinematic and
-  dynamic at runtime. To start such a root dynamic, mark it kinematic before creating the solver and switch it to
-  dynamic afterwards (see :ref:`Switching kinematic roots at runtime <mujoco-kinematic-switching>`).
+- Making a root kinematic that was dynamic when the solver was created is deprecated. To start a root dynamic,
+  mark it kinematic before creating the solver and switch it to dynamic afterwards (see
+  :ref:`Switching kinematic roots at runtime <mujoco-kinematic-switching>`).
 - Kinematic roots keep their real mass, so contacts on a light kinematic body under a heavy load are softer than an
   infinite-mass collider's.
 - A kinematic root without mass or inertia is driven as a MuJoCo mocap body. It cannot be switched to dynamic, and

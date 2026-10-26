@@ -4312,6 +4312,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
         strict_capacity: bool = False,
+        kinematic_switchable_roots: bool = True,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -4395,8 +4396,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 via a ``wp.printf`` message; to detect it in Python without a
                 GPU sync, request ``ObservableKind.OVERFLOW`` via
                 :meth:`observables` and check the bitmask after each step.
+            kinematic_switchable_roots: If ``True``, every movable root body can be
+                made kinematic at runtime through :attr:`~newton.Model.body_flags`,
+                at the cost of a mocap body and an inactive weld per root in the
+                MuJoCo model. Making a root kinematic that was dynamic in every
+                world at construction is deprecated. If ``False``, only roots that
+                are kinematic in some world at construction can switch, which is
+                the future default.
         """
         super().__init__(model)
+        self._kinematic_switchable_roots = kinematic_switchable_roots
         if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
         self._use_speculative_contacts = use_speculative_contacts
@@ -4485,11 +4494,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from Newton DOF index to child body index. Shape [joint_dof_count], dtype int32."""
         self.mjc_mocap_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""
-        # Per kinematic weld target: Newton root joint [nworld, ntarget], MuJoCo mocap and weld equality [ntarget].
+        # Per kinematic weld target: Newton root joint and body [nworld, ntarget], MuJoCo mocap and weld equality [ntarget].
         self._kinematic_target_jnt: wp.array2d[wp.int32] | None = None
+        self._kinematic_target_body: np.ndarray | None = None
         self._kinematic_target_mocap: wp.array[wp.int32] | None = None
         self._kinematic_target_eq: wp.array[wp.int32] | None = None
-        self._kinematic_needs_target: np.ndarray | None = None
+        self._kinematic_unsupported_bodies: np.ndarray | None = None
+        # Welded roots that were dynamic in every world at construction.
+        self._kinematic_late_roots: np.ndarray | None = None
+        self._root_bodies: np.ndarray | None = None
+        # Active welds per world that njmax has rows for, or None if unbounded.
+        self._kinematic_weld_capacity: int | None = None
         self._jnt_mocap: wp.array[wp.int32] | None = None
         self._jnt_mocap_lead: wp.array[wp.bool] | None = None
         self._kinematic_mocap_root_bodies: np.ndarray | None = None
@@ -7880,8 +7895,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # Add articulation joints and standalone dynamic roots.
         joints_with_bodies = np.concatenate((joint_order, joints_dynamic_roots))
+        # MuJoCo cannot add constraints to a compiled model, so roots that may turn
+        # kinematic later need their (inactive) weld target now.
         kinematic_target_roots = []
-        # MJWarp worlds share one topology, so a root kinematic in any world needs a target.
         template_bodies = model.body_count // model.world_count
 
         def any_world(mask: np.ndarray) -> np.ndarray:
@@ -7893,7 +7909,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         massless = (body_mass <= MJ_MINVAL) | (np.linalg.eigvalsh(body_inertia).min(axis=1) <= MJ_MINVAL)
         body_massless = any_world(massless)
         body_kinematic = any_world((body_flags & int(BodyFlags.KINEMATIC)) != 0)
-        body_needs_target = body_kinematic & ~body_massless
         kinematic_mocap_root_joints = []
         for j in joints_with_bodies:
             parent = int(joint_parent[j])
@@ -7920,8 +7935,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._total_unmapped_joint_dofs += worlds * int(joint_qd_start_np[j + 1] - joint_qd_start_np[j])
                 add_geoms(child)
                 continue
-            if parent == -1 and not is_fixed_root and body_needs_target[child % template_bodies]:
-                kinematic_target_roots.append((int(j), body, child_is_kinematic))
+            if (
+                parent == -1
+                and not is_fixed_root
+                and (self._kinematic_switchable_roots or body_kinematic[template_child])
+            ):
+                kinematic_target_roots.append((int(j), body, child_is_kinematic, bool(body_kinematic[template_child])))
             joint_pos = child_xform.p
             joint_rot = child_xform.q
 
@@ -8707,11 +8726,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_actuator_idx = None
 
         # MuJoCo has no prescribed DOFs; its idiom is a weld to a mocap target.
-        # Only roots kinematic at conversion get one.
         kinematic_target_names = []
         kinematic_target_eq_ids = []
         body_names = {body.name for body in spec.bodies}
-        for _, root_body, is_kinematic in kinematic_target_roots:
+        for _, root_body, is_kinematic, _ in kinematic_target_roots:
             name = f"{root_body.name}_kinematic_target"
             suffix = 1
             while name in body_names:
@@ -8950,22 +8968,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             else:
                 self.mjc_mocap_to_newton_jnt = None
 
-            # Bodies that may only be kinematic if they already have a weld target: every
-            # body except fixed roots and massless kinematic roots, which are mocap bodies.
+            # Bodies that cannot be kinematic: all but fixed roots, mocap roots, and welded roots.
+            self._root_bodies = np.zeros(model.body_count, dtype=bool)
+            self._root_bodies[joint_child[joint_parent == -1]] = True
             fixed_roots = (joint_parent == -1) & (joint_dof_dim[:, 0] + joint_dof_dim[:, 1] == 0)
-            self._kinematic_needs_target = np.ones(model.body_count, dtype=bool)
-            self._kinematic_needs_target[joint_child[fixed_roots]] = False
+            self._kinematic_unsupported_bodies = np.ones(model.body_count, dtype=bool)
+            self._kinematic_unsupported_bodies[joint_child[fixed_roots]] = False
             self._kinematic_mocap_root_bodies = np.zeros(model.body_count, dtype=bool)
             if kinematic_mocap_root_joints:
                 template_root = joint_child[kinematic_mocap_root_joints] % bodies_per_world
                 roots = (np.arange(nworld)[:, None] * bodies_per_world + template_root[None, :]).ravel()
                 self._kinematic_mocap_root_bodies[roots] = True
-                self._kinematic_needs_target[roots] = False
+                self._kinematic_unsupported_bodies[roots] = False
             if kinematic_target_roots:
-                template_jnt = np.array([j for j, _, _ in kinematic_target_roots], dtype=np.int32) % joints_per_world
-                self._kinematic_target_jnt = wp.array(
-                    self._tile_world_mapping(template_jnt, nworld, joints_per_world), dtype=wp.int32
-                )
+                template_jnt = np.array([t[0] for t in kinematic_target_roots], dtype=np.int32) % joints_per_world
+                target_jnt = self._tile_world_mapping(template_jnt, nworld, joints_per_world)
+                self._kinematic_target_jnt = wp.array(target_jnt, dtype=wp.int32)
+                self._kinematic_target_body = joint_child[target_jnt]
+                self._kinematic_unsupported_bodies[self._kinematic_target_body.ravel()] = False
+                late = ~np.array([t[3] for t in kinematic_target_roots], dtype=bool)
+                self._kinematic_late_roots = np.zeros(model.body_count, dtype=bool)
+                self._kinematic_late_roots[self._kinematic_target_body[:, late].ravel()] = True
                 self._kinematic_target_mocap = wp.array(
                     [int(self.mj_model.body(name).mocapid[0]) for name in kinematic_target_names], dtype=wp.int32
                 )
@@ -9146,11 +9169,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
                 njmax = self.mj_data.nefc
 
-            # Welds inactive in the template world add 6 rows each once their root turns kinematic.
-            reserved_weld_rows = 6 * sum(not is_kinematic for _, _, is_kinematic in kinematic_target_roots)
-            if reserved_weld_rows and njmax_requested is None:
-                from mujoco_warp._src.io import _default_njmax
+            # Each weld adds 6 rows while active. Reserve rows for roots kinematic in some world but
+            # not in the template; roots made kinematic later share njmax's headroom with contacts.
+            from mujoco_warp._src.io import _default_njmax
 
+            active_welds = sum(t[2] for t in kinematic_target_roots)
+            reserved_weld_rows = 6 * sum(t[3] and not t[2] for t in kinematic_target_roots)
+            if reserved_weld_rows and njmax_requested is None:
                 njmax = (njmax or _default_njmax(self.mj_model, self.mj_data)) + reserved_weld_rows
             elif reserved_weld_rows and njmax < self.mj_data.nefc + reserved_weld_rows:
                 warnings.warn(
@@ -9159,6 +9184,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     NewtonWarning,
                     stacklevel=_external_warning_stacklevel(),
                 )
+            # Native MuJoCo grows its constraint storage on demand.
+            if kinematic_target_roots and not self.use_mujoco_cpu:
+                headroom = (njmax or _default_njmax(self.mj_model, self.mj_data)) - self.mj_data.nefc
+                self._kinematic_weld_capacity = active_welds + max(0, headroom) // 6
 
             from mujoco_warp._src.io import is_sparse as is_mujoco_warp_sparse
 
@@ -9220,7 +9249,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     dtype=wp.int32,
                     device=self.model.device,
                 )
-                if self._jnt_mocap is not None:
+                # Welded roots move through qpos, which wakes MuJoCo trees; bare mocap roots do not.
+                if self._jnt_mocap is not None and not np.all(
+                    self._jnt_mocap_lead.numpy()[self._jnt_mocap.numpy() >= 0]
+                ):
                     self._mocap_root_moved = wp.zeros(nworld, dtype=wp.bool, device=self.model.device)
 
             if not self.use_mujoco_cpu:
@@ -9602,9 +9634,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Weld kinematic roots to their mocap targets and release the others."""
         if not self.model.device.is_capturing:
             kinematic = (self._notify_body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
-            if self._kinematic_target_jnt is not None:
-                targeted = self.model.joint_child.numpy()[self._kinematic_target_jnt.numpy().ravel()]
-                kinematic[targeted] = False
             mocap_roots = self._kinematic_mocap_root_bodies
             dynamic_mocap_root = np.flatnonzero(~kinematic & mocap_roots) if mocap_roots is not None else []
             if len(dynamic_mocap_root):
@@ -9612,20 +9641,40 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"Body {self.model.body_label[dynamic_mocap_root[0]]!r} cannot be dynamic: it has no mass or "
                     "inertia, which MuJoCo requires of movable bodies."
                 )
-            invalid = np.flatnonzero(kinematic & self._kinematic_needs_target)
+            invalid = np.flatnonzero(kinematic & self._kinematic_unsupported_bodies)
             if invalid.size:
                 body = int(invalid[0])
-                joint = np.flatnonzero(self.model.joint_child.numpy() == body)
-                if joint.size and self.model.joint_parent.numpy()[joint[0]] >= 0:
+                if not self._root_bodies[body]:
                     raise ValueError(
                         f"Body {self.model.body_label[body]!r} cannot be kinematic: only root bodies, whose joint "
                         "parent is the world, can be kinematic."
                     )
                 raise ValueError(
-                    f"Body {self.model.body_label[body]!r} cannot be switched to kinematic: SolverMuJoCo prepares "
-                    "kinematic roots when it is created. Mark the body kinematic before creating the solver; it "
-                    "can then be switched to dynamic and back."
+                    f"Body {self.model.body_label[body]!r} cannot be switched to kinematic: with "
+                    "kinematic_switchable_roots=False, only roots kinematic when SolverMuJoCo is created can. Mark "
+                    "the body kinematic before creating the solver; it can then be switched to dynamic and back."
                 )
+            late = (
+                np.flatnonzero(kinematic & self._kinematic_late_roots) if self._kinematic_late_roots is not None else []
+            )
+            if len(late):
+                warnings.warn(
+                    f"Making body {self.model.body_label[int(late[0])]!r} kinematic in SolverMuJoCo when it was "
+                    "dynamic at solver creation is deprecated. Mark the body kinematic before creating the solver; "
+                    "it can then be switched to dynamic and back.",
+                    NewtonDeprecationWarning,
+                    stacklevel=_external_warning_stacklevel(),
+                )
+            if self._kinematic_weld_capacity is not None and self._kinematic_target_body is not None:
+                active = int(kinematic[self._kinematic_target_body].sum(axis=1).max())
+                if active > self._kinematic_weld_capacity:
+                    warnings.warn(
+                        f"{active} kinematic roots in one world need {6 * active} weld constraint rows, but njmax only "
+                        f"has room for {6 * self._kinematic_weld_capacity}; constraints may overflow. Mark these roots "
+                        "kinematic before creating the solver or raise njmax.",
+                        NewtonWarning,
+                        stacklevel=_external_warning_stacklevel(),
+                    )
         if self._kinematic_target_eq is None:
             return
         wp.launch(

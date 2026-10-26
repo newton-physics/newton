@@ -5710,7 +5710,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
         np.testing.assert_array_equal(model.mujoco.equality_constraint_tendon2.numpy(), [1, -1])
 
         native = SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(mjcf.replace(missing, ""))
-        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True, kinematic_switchable_roots=False)
         for attr in ("eq_type", "eq_obj1id", "eq_obj2id", "eq_active0", "eq_data", "eq_solref"):
             np.testing.assert_allclose(getattr(solver.mj_model, attr), getattr(native, attr), atol=1e-6, err_msg=attr)
 

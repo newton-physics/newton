@@ -1,1 +1,1 @@
-Fix `SolverMuJoCo` with sleeping enabled leaving bodies asleep when a fixed root moved through `joint_X_p` moves away from under them.
+Fix `SolverMuJoCo` with sleeping enabled leaving bodies asleep after the fixed root beneath them moved through `joint_X_p` or `joint_X_c`.

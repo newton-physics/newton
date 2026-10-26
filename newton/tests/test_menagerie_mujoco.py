@@ -1679,6 +1679,8 @@ class TestMenagerieBase(unittest.TestCase):
             "skip_visual_only_geoms": not self.parse_visuals,
             "njmax": self.njmax,
             "nconmax": self.nconmax,
+            # Native models have no kinematic weld targets.
+            "kinematic_switchable_roots": False,
         }
         if self.solver_integrator is not None:
             solver_kwargs["integrator"] = self.solver_integrator
