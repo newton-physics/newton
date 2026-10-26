@@ -144,9 +144,19 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         bc[i1] = lambda1
 
         closest = lambda0 * a + lambda1 * b
-        if lambda0 > 0.0 and lambda1 > 0.0 and wp.length_sq(closest) <= EPSILON * EPSILON:
-            # Project directly to avoid cancellation along a nearly touching edge.
-            closest = wp.cross(edge, wp.cross(a, edge)) * (1.0 / vsq)
+        if lambda0 > 0.0 and lambda1 > 0.0:
+            # The weighted endpoint sum keeps roundoff at the endpoints' scale. When the
+            # closest point is far shorter than the endpoints (a nearly touching edge, or a
+            # small gap beside a long edge), that roundoff tilts its direction. Projecting
+            # onto the edge line removes the part along the edge, which comes from t. About
+            # eps * |a| remains across the edge (cross(a, edge) cancels too), so a long edge
+            # that is not axis-aligned in this frame can still tilt a millimeter gap by
+            # degrees. Project only below 1% of the endpoint length, where the along-edge
+            # tilt exceeds ~1e-5 rad. Above it, keep the sum so well-conditioned queries
+            # round as before; projecting them too shifted exact-boundary distances on CUDA.
+            scale_sq = wp.max(wp.length_sq(a), wp.length_sq(b))
+            if wp.length_sq(closest) <= wp.max(EPSILON * EPSILON, 1.0e-4 * scale_sq):
+                closest = wp.cross(edge, wp.cross(a, edge)) * (1.0 / vsq)
         return closest, bc, mask
 
     @wp.func
@@ -386,10 +396,8 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 distance: Minimum distance between shapes (0 if overlapping)
         """
         # Initialize variables
-        distance = float(0.0)
         point_a = wp.vec3(0.0, 0.0, 0.0)
         point_b = wp.vec3(0.0, 0.0, 0.0)
-        normal = wp.vec3(0.0, 0.0, 0.0)
 
         # Initialize simplex state
         simplex_v = Mat83f()
@@ -406,7 +414,6 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         dist_sq = wp.length_sq(v)
 
         last_search_dir = wp.vec3(1.0, 0.0, 0.0)
-        certified_near = bool(False)
         # Largest support-point coordinate scale seen, for rounding-relative tolerances.
         support_scale = float(0.0)
 
@@ -428,8 +435,6 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                             geom_a, geom_b, near_normal, orientation_b, position_b, extend, data_provider
                         )
                         support_plane = wp.dot(near_normal, support.BtoA)
-                        if support_plane < 0.0 and dist_sq > EPSILON * EPSILON:
-                            certified_near = True
                         if support_plane <= 0.0 and dist_sq <= EPSILON * EPSILON:
                             point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
                             if support_plane < 0.0:
@@ -445,7 +450,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 duplicate_epsilon = EPSILON
 
             search_dir = -v
-            # Track last search direction for robust normal fallback
+            # Seeds the near-contact check when the simplex reaches the origin.
             last_search_dir = search_dir
 
             # Get support point in search direction
@@ -541,10 +546,8 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
 
             if not success:
                 # Shapes are overlapping
-                distance = 0.0
-                normal = wp.vec3(0.0, 0.0, 0.0)
                 point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
-                return False, point_a, point_b, normal, distance
+                return False, point_a, point_b, wp.vec3(0.0), 0.0
 
             v = new_v
             dist_sq = wp.length_sq(v)
@@ -557,35 +560,14 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             support = minkowski_support(geom_a, geom_b, near_normal, orientation_b, position_b, extend, data_provider)
             if wp.dot(near_normal, support.BtoA) >= 0.0:
                 return False, point_a, point_b, wp.vec3(0.0), 0.0
-            certified_near = True
 
-        if certified_near:
-            # Preserve the certified direction rather than subtracting two
-            # large witness coordinates to reconstruct a tiny separation.
-            normal = wp.normalize(-v)
-            return True, point_a, point_b, normal, wp.dot(point_b - point_a, normal)
-
-        # Prefer A->B vector if reliable; otherwise fall back to -v or last search dir
-        delta = point_b - point_a
-        delta_len_sq = wp.length_sq(delta)
-        if delta_len_sq > EPSILON * EPSILON:
-            # Use the witness length for both outputs so distance agrees with
-            # the returned points without a second square root.
-            distance = wp.sqrt(delta_len_sq)
-            normal = delta * (1.0 / distance)
-        else:
-            distance = wp.sqrt(dist_sq)
-            if distance > COLLIDE_EPSILON:
-                # Separated but delta is tiny: use -v
-                normal = v * (-1.0 / distance)
-            else:
-                # Overlap/near-contact: use last search direction, then a stable axis.
-                nsq = wp.length_sq(last_search_dir)
-                if nsq > 0.0:
-                    normal = last_search_dir * (1.0 / wp.sqrt(nsq))
-                else:
-                    normal = wp.vec3(1.0, 0.0, 0.0)
-        return True, point_a, point_b, normal, distance
+        # Take the normal from the closest point. closest_triangle and closest_segment
+        # project it onto the simplex face or edge where a vertex sum would cancel.
+        # Rebuilding it from the witnesses sums large support coordinates, and that
+        # tangential roundoff tilts the normal of a small gap toward a distant hull
+        # corner (e.g. a millimeter gap above a 1000 m ground box).
+        normal = wp.normalize(-v)
+        return True, point_a, point_b, normal, wp.dot(point_b - point_a, normal)
 
     @wp.func
     def solve_closest_distance(
