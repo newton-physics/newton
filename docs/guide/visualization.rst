@@ -969,8 +969,8 @@ depending on a viewer backend.
 
 .. experimental::
 
-    Deformable visual bindings, model output, and viewer integration may change
-    without a formal deprecation cycle.
+    Deformable visual bindings, model output, viewer integration, and camera
+    integration may change without a formal deprecation cycle.
 
 Create the simulation geometry first. Then attach a visual mesh with
 :meth:`ModelBuilder.add_deformable_visual_mesh`. For example, this small mesh
@@ -1142,10 +1142,72 @@ for skinned meshes. To inspect the simulation geometry in Viser, set
 Ordinary Viser meshes, particles, and simulation triangles are unchanged.
 
 Untextured skins use the viewer's default appearance; per-mesh color and opacity
-are not exposed here. USD visual import, camera consumption, and Gaussian
+are not exposed here. USD visual import and Gaussian
 skinning are not supported by this API yet. Remaining work is tracked in
 `issue #3223 <https://github.com/newton-physics/newton/issues/3223>`__.
 USD export through the viewer is supported.
+
+Camera output
+~~~~~~~~~~~~~
+
+:class:`~newton.sensors.SensorCamera` evaluates visual meshes automatically during
+``update()``. It uses the current mesh for RGB, depth, normals, and albedo output.
+All native binding types are supported: particles, triangles, tetrahedra, and
+rigid segments. Physics and collision geometry remain unchanged.
+
+Hide the coarse simulation surface when it obscures the visual mesh. Set
+``enable_simulation_triangles=False`` in the default configuration when creating
+the camera. This option is construction-time only; changing it later does not
+rebuild the camera's geometry. It hides simulation triangles, not rigid shapes
+or standalone particles. Particles belonging to the hidden surface do not
+reappear as spheres. ``enable_particles=False`` hides standalone particles too.
+
+To share an evaluation with a viewer, pass the same output to the camera:
+
+.. testcode:: deformable-visual-mesh
+
+    from newton.sensors import SensorCamera
+
+    camera = SensorCamera(
+        model,
+        default_render_config=SensorCamera.RenderConfig(
+            enable_simulation_triangles=False,
+            enable_textures=True,
+        ),
+    )
+    rays = camera.compute_camera_rays_pinhole(32, 32, camera_fov=np.deg2rad(45), device=model.device)
+    poses = wp.array(
+        [wp.transform(wp.vec3(0.5, 0.5, 3.0), wp.quat_identity())],
+        dtype=wp.transform,
+        device=model.device,
+    )
+    color = camera.allocate_image_color(1, 32, 32)
+    depth = camera.allocate_image_depth(1, 32, 32)
+    visuals = model.deformable_visuals()
+    model.update_deformable_visuals(state, visuals)
+    camera.update(
+        state, poses, rays,
+        color_image=color, depth_image=depth,
+        deformable_visuals=visuals,
+    )
+
+Supplied buffers are read as-is. The camera waits for their submitted update,
+but does not check which State produced them. Update or replay the buffers
+before rendering. Alternatively, call ``sync_deformable_meshes()`` with the
+buffers, then ``update(sync_deformables=False)``. Do not supply buffers to
+``update()`` when automatic synchronization is disabled.
+
+The camera uploads topology, UVs, and textures during setup. After that it copies
+current vertices into its own buffer on the model device and refits the triangle
+BVH. CUDA models do not copy those vertices through the CPU. Warm up evaluation
+and rendering before capturing them in a CUDA graph. Each mesh keeps its model
+world; viewer-only world offsets do not affect camera images.
+
+UV textures can come from a file or an in-memory image. Configure them before
+creating the sensor; later texture changes require a new sensor. Texture alpha
+does not make the surface transparent. Untextured skins are white before
+lighting. The camera uses triangle normals, not the smooth normals used by some
+viewers. Cubic and triplanar texture projection are not supported for skinned meshes.
 
 .. _viewer-custom-visualization:
 
