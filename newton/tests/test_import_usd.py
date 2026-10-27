@@ -3216,6 +3216,15 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
                 prim = self._define_gaussian_prim(stage, f"/World/PrimTagged{prim_type}", prim_type=prim_type)
                 Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set("lin_rec709_scene")
                 self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, color_space.SRGB)
+                # The coefficient attribute's own color space still wins over the prim's.
+                prim = self._define_gaussian_prim(
+                    stage,
+                    f"/World/AttributeTagged{prim_type}",
+                    prim_type=prim_type,
+                    attribute_color_space="lin_rec709_scene",
+                )
+                Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set("srgb_rec709_display")
+                self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, color_space.LINEAR)
 
         prim = self._define_gaussian_prim(stage, "/World/AP1", attribute_color_space="lin_ap1_scene")
         with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
@@ -3255,23 +3264,6 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
                 gaussian = newton.Gaussian.create_from_usd(prim)
                 self.assertEqual(gaussian.sh_color_space, expected)
                 np.testing.assert_allclose(gaussian.sh_coeffs, [single_radiance])
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_gaussian_sh_attribute_color_space_overrides_inheritance(self):
-        """A color space on the coefficient attribute wins over the prim's and parents' color space."""
-        from pxr import Usd
-
-        color_space = newton.utils.ColorSpace
-        stage = Usd.Stage.CreateInMemory()
-        parent = stage.DefinePrim("/Scene", "Xform")
-        Usd.ColorSpaceAPI.Apply(parent).CreateColorSpaceNameAttr().Set("lin_rec709_scene")
-        prim = self._define_gaussian_prim(stage, "/Scene/Srgb", attribute_color_space="srgb_rec709_display")
-        Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set("lin_rec709_scene")
-        self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, color_space.SRGB)
-
-        prim = self._define_gaussian_prim(stage, "/Scene/Linear", attribute_color_space="lin_rec709_scene")
-        Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set("srgb_rec709_display")
-        self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, color_space.LINEAR)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_gaussian_sh_color_space_allowlist(self):
