@@ -1618,6 +1618,97 @@ def test_particle_force_input(test, device):
     np.testing.assert_allclose(state_1.particle_qd.numpy()[:, 1:], 0.0, atol=1.0e-5)
 
 
+def test_shape_adhesion_attribute(test, device):
+    """Verify per-shape ``mpm:adhesion`` reaches the collider material table."""
+    builder = _make_mpm_particle_builder()
+    for x, adhesion in ((-1.0, 0.0), (1.0, 250.0)):
+        builder.add_shape_box(
+            -1,
+            xform=wp.transform(wp.vec3(x, -1.0, 0.0), wp.quat_identity()),
+            hx=0.5,
+            hy=0.5,
+            hz=0.5,
+            custom_attributes={"mpm:adhesion": adhesion},
+        )
+    model = builder.finalize(device=device)
+    solver = SolverImplicitMPM(model, _make_mpm_config())
+
+    first, count = solver.collider_material_range(0)
+    test.assertEqual(count, 2)
+    np.testing.assert_allclose(solver.collider_materials(0)["adhesion"].numpy(), [0.0, 250.0])
+    test.assertEqual(first, 1)
+
+    # explicit per-collider values override the shape attribute
+    solver.setup_collider(collider_adhesion=[10.0], collider_body_ids=[-1])
+    np.testing.assert_allclose(solver.collider_materials(0)["adhesion"].numpy(), [10.0, 10.0])
+
+
+def test_collider_face_materials(test, device):
+    """Verify per-face material views of a mesh collider are writable and queried by the SDF."""
+    model = _make_mpm_particle_builder().finalize(device=device)
+    solver = SolverImplicitMPM(model, _make_mpm_config())
+    mesh = _make_box_collider_mesh(device)
+    solver.setup_collider(
+        collider_meshes=[mesh],
+        collider_friction=[0.3],
+        collider_adhesion=[5.0],
+        collider_material_counts=[2],
+    )
+
+    first, count = solver.collider_material_range(0)
+    test.assertEqual(count, 2)
+    faces = solver.collider_face_materials(0)
+    test.assertEqual(faces.shape[0], mesh.indices.shape[0] // 3)
+    np.testing.assert_array_equal(faces.numpy(), first)
+
+    materials = solver.collider_materials(0)
+    np.testing.assert_allclose(materials["friction"].numpy(), [0.3, 0.3])
+    test.assertEqual(materials["thickness"].shape[0], 2)
+    materials["adhesion"].assign(np.array([5.0, 90.0], dtype=np.float32))
+
+    # move every face onto the second material, then query a point above the box
+    faces.fill_(first + 1)
+    solver._mpm_model.collider.query_max_dist = 1.0
+    positions = wp.array([wp.vec3(0.0, 0.55, 0.0)], dtype=wp.vec3, device=device)
+    outputs = [wp.zeros(1, dtype=dtype, device=device) for dtype in (int, int, float, float, float)]
+    wp.launch(
+        _query_collision_sdf,
+        dim=1,
+        inputs=[
+            positions,
+            wp.array([_ALL_COLLIDER_WORLDS], dtype=int, device=device),
+            solver._mpm_model.collider,
+            None,
+            None,
+            None,
+            *outputs,
+        ],
+        device=device,
+    )
+    test.assertEqual(outputs[1].numpy()[0], first + 1)
+    test.assertAlmostEqual(outputs[3].numpy()[0], 90.0, places=4)
+
+    with test.assertRaises(ValueError):
+        solver.setup_collider(collider_meshes=[mesh], collider_material_counts=[0])
+
+    # shape-based collider: max(shape count, requested count) materials
+    shape_model = _make_mpm_particle_builder()
+    for x in (-1.0, 1.0):
+        shape_model.add_shape_box(
+            -1, xform=wp.transform(wp.vec3(x, -1.0, 0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5
+        )
+    shape_solver = SolverImplicitMPM(shape_model.finalize(device=device), _make_mpm_config())
+    test.assertEqual(shape_solver.collider_material_range(0)[1], 2)
+    shape_solver.setup_collider(collider_body_ids=[-1], collider_adhesion=[7.0], collider_material_counts=[1])
+    test.assertEqual(shape_solver.collider_material_range(0)[1], 2)
+    shape_solver.setup_collider(collider_body_ids=[-1], collider_adhesion=[7.0], collider_material_counts=[4])
+    first, count = shape_solver.collider_material_range(0)
+    test.assertEqual(count, 4)
+    face_ids = np.unique(shape_solver.collider_face_materials(0).numpy())
+    np.testing.assert_array_equal(face_ids, [first, first + 1])
+    np.testing.assert_allclose(shape_solver.collider_materials(0)["adhesion"].numpy(), 7.0)
+
+
 def test_single_world_global_particles_supported(test, device):
     """Verify single world global particles supported."""
     initial_plastic_volume_strain = 0.975
@@ -3136,6 +3227,20 @@ add_function_test(
     TestImplicitMPM,
     "test_particle_force_input",
     test_particle_force_input,
+    devices=basic_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_shape_adhesion_attribute",
+    test_shape_adhesion_attribute,
+    devices=basic_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_collider_face_materials",
+    test_collider_face_materials,
     devices=basic_devices,
 )
 
