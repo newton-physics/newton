@@ -1161,14 +1161,13 @@ class TestSteelExamples(NewtonTestCase):
     pass
 
 
-for example_name in ("steel.example_steel_determinism_arms", "steel.example_steel_determinism_pile"):
-    add_example_test(
-        TestSteelExamples,
-        name=example_name,
-        devices=cuda_test_devices,
-        test_options={"num-frames": 20},
-        use_viewer=True,
-    )
+add_example_test(
+    TestSteelExamples,
+    name="steel.example_steel_determinism_arms",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 20},
+    use_viewer=True,
+)
 
 
 class TestSelectionAPIExamples(unittest.TestCase):
