@@ -2,7 +2,7 @@
 .. SPDX-License-Identifier: CC-BY-4.0
 
 Implicit MPM Runtime Controls
-============================
+=============================
 
 :class:`~newton.solvers.SolverImplicitMPM` can change grid resolution during a
 rollout without restarting particle motion. This supports coarse-to-fine

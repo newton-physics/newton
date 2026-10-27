@@ -114,8 +114,8 @@ def test_swept_projection_corner(test, device):
     current.particle_qd.fill_(wp.vec3(-10.0, -13.0, 0.0))
     solver.project_outside(current, current, 0.1, state_prev=previous)
     position = current.particle_q.numpy()[0]
-    test.assertGreaterEqual(position[0], 0.009)
-    test.assertGreaterEqual(position[1], 0.009)
+    np.testing.assert_allclose(position, (0.010001, 0.010001, 0.0), atol=2.0e-6)
+    np.testing.assert_allclose(current.particle_qd.numpy()[0], 0.0, atol=1.0e-6)
 
 
 def test_swept_projection_moving_wall(test, device):
@@ -160,21 +160,19 @@ def test_resize_preserves_particle_state(test, device):
             current.particle_qd.fill_(wp.vec3(0.1, 0.2, 0.3))
             current.mpm.particle_stress.fill_(wp.mat33(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1))
             current.mpm.particle_Jp.fill_(0.9)
-            arrays = [current.particle_q, current.particle_qd]
-            arrays.extend(value for value in vars(current.mpm).values() if isinstance(value, wp.array))
-            snapshots = [array.numpy().copy() for array in arrays]
-            old_grid = solver._scratchpad.grid
-
-            solver.set_voxel_size(0.05, state=current)
-
-            test.assertEqual(solver.voxel_size, 0.05)
-            test.assertIsNot(solver._scratchpad.grid, old_grid)
-            for array, snapshot in zip(arrays, snapshots, strict=True):
-                np.testing.assert_array_equal(array.numpy(), snapshot)
-            solver.step(current, next_state, None, None, 0.001)
-            solver.check_sparse_grid_rebuild_status()
-            test.assertTrue(np.isfinite(next_state.particle_q.numpy()).all())
-            test.assertGreater(next_state.particle_q.numpy()[0, 0], 0.5)
+            for voxel_size in (0.05, 0.15, 0.1):
+                with test.subTest(voxel_size=voxel_size):
+                    before = _particle_snapshot(model, current)
+                    old_grid = solver._scratchpad.grid
+                    solver.set_voxel_size(voxel_size, state=current)
+                    test.assertEqual(solver.voxel_size, voxel_size)
+                    test.assertIsNot(solver._scratchpad.grid, old_grid)
+                    _assert_particle_snapshot(model, current, before)
+                    solver.step(current, next_state, None, None, 0.001)
+                    solver.check_sparse_grid_rebuild_status()
+                    test.assertTrue(np.isfinite(next_state.particle_q.numpy()).all())
+                    test.assertGreater(next_state.particle_q.numpy()[0, 0], 0.5)
+                    current, next_state = next_state, current
 
 
 def test_resize_validation(test, device):
@@ -209,17 +207,22 @@ def test_radius_preserves_particle_state(test, device):
         test.assertIs(solver._scratchpad.grid, grid)
         _assert_particle_snapshot(model, current, before)
 
-    solver.set_particle_radius(0.02)
-
-    _assert_particle_snapshot(model, current, before)
-    np.testing.assert_allclose(model.particle_radius.numpy(), 0.02)
-    test.assertAlmostEqual(model.particle_max_radius, 0.02)
-    np.testing.assert_allclose(solver._mpm_model.particle_volume.numpy(), 8.0 * 0.02**3)
-    np.testing.assert_allclose(solver._mpm_model.particle_density.numpy(), before["particle_mass"] / (8.0 * 0.02**3))
-    solver.step(current, next_state, None, None, 0.001)
-    solver.check_sparse_grid_rebuild_status()
-    test.assertTrue(np.isfinite(next_state.particle_q.numpy()).all())
-    test.assertTrue(np.isfinite(next_state.particle_qd.numpy()).all())
+    for radius in (0.02, 0.03, 0.025):
+        with test.subTest(radius=radius):
+            before = _particle_snapshot(model, current)
+            solver.set_particle_radius(radius)
+            _assert_particle_snapshot(model, current, before)
+            np.testing.assert_allclose(model.particle_radius.numpy(), radius)
+            test.assertAlmostEqual(model.particle_max_radius, radius)
+            np.testing.assert_allclose(solver._mpm_model.particle_volume.numpy(), 8.0 * radius**3)
+            np.testing.assert_allclose(
+                solver._mpm_model.particle_density.numpy(), before["particle_mass"] / (8.0 * radius**3)
+            )
+            solver.step(current, next_state, None, None, 0.001)
+            solver.check_sparse_grid_rebuild_status()
+            test.assertTrue(np.isfinite(next_state.particle_q.numpy()).all())
+            test.assertTrue(np.isfinite(next_state.particle_qd.numpy()).all())
+            current, next_state = next_state, current
 
 
 def test_resize_fixed_grid(test, device):
@@ -272,14 +275,17 @@ def test_resize_capacity_rollback(test, device):
         SolverImplicitMPM.Config(voxel_size=1.0, max_active_cell_count=4, collider_basis="Q1", max_iterations=1),
     )
     state = model.state()
-    positions = state.particle_q.numpy().copy()
+    state.particle_qd.fill_(wp.vec3(0.1, 0.2, 0.3))
+    state.mpm.particle_stress.fill_(wp.mat33(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1))
+    state.mpm.particle_Jp.fill_(0.9)
+    before = _particle_snapshot(model, state)
     grid = solver._scratchpad.grid
     with test.assertRaisesRegex(RuntimeError, "capacity"):
         solver.set_voxel_size(0.01, state=state)
     test.assertEqual(solver.voxel_size, 1.0)
     test.assertIs(solver._scratchpad.grid, grid)
     solver.check_sparse_grid_rebuild_status()
-    np.testing.assert_array_equal(state.particle_q.numpy(), positions)
+    _assert_particle_snapshot(model, state, before)
     solver.step(state, state, None, None, 0.001)
     test.assertTrue(np.isfinite(state.particle_q.numpy()).all())
 
@@ -318,14 +324,14 @@ def test_bowl_graph_and_runtime_changes(test, device):
         example = Example(ViewerNull(), args)
         test.assertIsNotNone(example.graph)
         example.step()
-        before = _particle_snapshot(example.model, example.state_0)
-        sim_time = example.sim_time
 
         for update in (
             lambda: example.set_voxel_size(0.08),
             lambda: example.set_particle_radius(0.036),
             example.capture,
         ):
+            before = _particle_snapshot(example.model, example.state_0)
+            sim_time = example.sim_time
             old_graph = example.graph
             update()
             _assert_particle_snapshot(example.model, example.state_0, before)
@@ -333,14 +339,14 @@ def test_bowl_graph_and_runtime_changes(test, device):
             test.assertAlmostEqual(float(example.sim_clock.numpy()[0]), sim_time, places=6)
             test.assertIsNotNone(example.graph)
             test.assertIsNot(example.graph, old_graph)
+            example.step()
+            test.assertGreater(example.sim_time, sim_time)
+            example.test_post_step()
+            example.mpm_solver.check_sparse_grid_rebuild_status()
 
         test.assertAlmostEqual(example.mpm_solver.voxel_size, 0.08)
         test.assertAlmostEqual(example.model.particle_max_radius, 0.036)
         np.testing.assert_allclose(example.model.particle_radius.numpy(), 0.036)
-        example.step()
-        test.assertGreater(example.sim_time, sim_time)
-        example.test_post_step()
-        example.mpm_solver.check_sparse_grid_rebuild_status()
 
 
 class TestImplicitMPMAdaptive(unittest.TestCase):
