@@ -3,6 +3,7 @@
 
 import base64
 import os
+import sys
 import tempfile
 import unittest
 import warnings
@@ -484,6 +485,25 @@ class TestImportUrdfBasic(unittest.TestCase):
                 assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
                 assert builder.shape_source[0].vertices.shape[0] == 8
                 assert builder.shape_source[0].indices.shape[0] == 3 * 12
+
+    @unittest.skipIf(sys.platform == "win32", "trimesh's meshio loader reopens an open NamedTemporaryFile")
+    def test_gmsh_mesh_urdf(self):
+        """Keep Gmsh .msh files on the shared mesh loader's existing path."""
+        import meshio
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
+        faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
+        mesh = meshio.Mesh(vertices, [("triangle", faces)])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tetra.msh"
+            for binary in (False, True):
+                with self.subTest(binary=binary):
+                    meshio.write(path, mesh, file_format="gmsh22", binary=binary)
+                    builder = newton.ModelBuilder()
+                    parse_urdf(MESH_URDF.format(filename=path), builder)
+                    source = builder.shape_source[0]
+                    np.testing.assert_array_equal(source.vertices, vertices)
+                    np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
 
     def test_empty_mesh_reports_filename(self):
         """Reject empty geometry before processing colors or material overrides."""
