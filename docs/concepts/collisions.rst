@@ -528,7 +528,7 @@ out many copies of a template environment builder into separate worlds in one ca
     # Combined builder: global geometry + 1024 replicated worlds
     main = newton.ModelBuilder()
     main.add_ground_plane()  # global (world -1), shared across all worlds
-    main.replicate(env_builder, world_count=1024)
+    main.replicate(env_builder, copy_count=1024)
     model = main.finalize()
 
 .. note::
@@ -745,11 +745,35 @@ Broad Phase and Shape Compatibility
    * - Mode
      - Description
    * - **NxN**
-     - All-pairs AABB broad phase. O(N²), optimal for small scenes (<100 shapes).
+     - All-pairs AABB broad phase. O(N²), suited to small worlds (<100 shapes per world).
    * - **SAP**
      - Sweep-and-prune AABB broad phase. O(N log N), better for larger scenes with spatial coherence.
    * - **EXPLICIT**
      - Uses precomputed shape pairs (default). Combines static pair efficiency with advanced contact algorithms.
+
+:meth:`ModelBuilder.finalize` computes :attr:`Model.shape_contact_pair_count`
+without enumerating pairs. The explicit pair array,
+:attr:`Model.shape_contact_pairs`, is constructed and cached on first
+access, normally when creating an explicit collision pipeline. SAP and NxN do
+not request this array. Hydroelastic setup uses the pipeline's explicit pairs
+when supplied; otherwise, it constructs only its hydroelastic subset.
+Default pairs and counts use the collision topology captured during finalization;
+editing model arrays does not change them. Assigning ``None`` to
+``model.shape_contact_pairs`` disables the model's shape-contact pairs.
+When using the pair array directly in CUDA graph capture, access it once before
+capture to initialize its storage.
+
+Explicit construction uses bounded temporary buffers and reuses equivalent
+worlds. Its final storage still scales with the number of compatible pairs,
+which can be quadratic in shapes per world. For large scenes, SAP avoids that
+array; its runtime candidate buffer is controlled separately by
+``CollisionPipeline(shape_pairs_max=...)``. Choose that capacity to accommodate
+the scene's overlapping candidates.
+
+Explicit broad-phase setup warns when the configured list contains more than
+100 million pairs and the busiest world contributes at least 20,000 pairs,
+including shared global pairs. These pairs are tested on every collision update;
+consider SAP for large worlds.
 
 .. testsetup:: broad-phase
 
@@ -1023,12 +1047,11 @@ memory budget and silence the warning. Optional collision features and solvers m
 allocate additional per-contact memory.
 
 Pipeline construction publishes the resolved rigid and soft capacities as
-``model.rigid_contact_max`` and ``model.soft_contact_max``. Before collision
-setup these are ``None``; zero is a valid empty capacity. Contact-indexed
-:ref:`solver_observables` use these capacities for eager allocation and freeze them
-once allocated. Construct the pipeline and create its contacts before calling
-``solver.observables(contacts=contacts, kinds=...)`` for contact diagnostics; the live
-contact counts are not needed during allocation.
+``model.rigid_contact_max`` and ``model.soft_contact_max``, which later pipelines
+reuse as defaults; ``publish_capacity=False`` keeps a private pipeline's capacities
+to itself. Before collision setup these are ``None``; zero is a valid empty
+capacity. Contact-indexed :ref:`solver_observables` are sized from the
+:class:`~newton.Contacts` passed to ``solver.observables()`` instead.
 
 .. _Mesh Collisions:
 
@@ -1120,6 +1143,19 @@ call outside graph capture raises :class:`RuntimeError`; graph replays alone do 
 Mesh-plane and mesh-convex contacts read the current scale directly and do not trigger
 this diagnostic.
 
+Changing :attr:`~newton.Model.shape_scale` on mesh, convex-mesh, or heightfield shapes also
+requires updating :attr:`~newton.Model.shape_collision_radius`,
+:attr:`~newton.Model.shape_collision_aabb_lower`, and
+:attr:`~newton.Model.shape_collision_aabb_upper` to match the new scale. The local collision
+bounds already include scale, and collision does not rescale them again; stale bounds can
+cause broadphase culling to omit candidate pairs. ``dynamic_shape_scale=True`` changes only
+unbaked texture-SDF queries and does not update these bounds or rebuild baked SDFs or
+heightfield collision data. To rebuild, recreate the affected shapes on a
+:class:`~newton.ModelBuilder` with the new scale, then call
+:meth:`~newton.ModelBuilder.finalize` and construct a new :class:`~newton.CollisionPipeline`.
+For explicitly prebuilt mesh SDFs, first rerun :meth:`~newton.Mesh.build_sdf` with
+the new scale before adding the mesh to the builder.
+
 **Edge simplification.** ``mesh.build_sdf(...)`` also runs a dihedral-angle pre-filter over
 the mesh's manifold edges and caches the surviving subset on the mesh; the SDF-mesh contact
 pipeline picks up that cached set in preference to the unfiltered :attr:`~Mesh.edges`,
@@ -1184,6 +1220,43 @@ with convex hulls, bounding boxes, or convex decompositions:
 
 Supported methods: ``"convex_hull"`` (default), ``"bounding_box"``, ``"bounding_sphere"``,
 ``"coacd"`` (convex decomposition), ``"vhacd"``.
+
+CoACD and V-HACD decompositions support opt-in disk caching for reuse across
+builders and processes, including automatic approximation during USD import.
+Mesh decomposition caching is disabled by default. Enable it by setting a
+directory through :mod:`newton.config` before importing a scene:
+
+.. code-block:: python
+
+    import newton
+
+    newton.config.cache_dir_meshes = ".cache/convex"
+    builder = newton.ModelBuilder()
+    builder.add_usd("robot.usda")  # Uses this cache for authored convex decompositions.
+
+    # Disable mesh decomposition caching for subsequent calls and imports.
+    newton.config.cache_dir_meshes = None
+
+Explicit ``cache_dir`` directories on :meth:`~ModelBuilder.approximate_meshes`
+override the global setting. Omitting the argument or passing ``None`` uses
+:attr:`config.cache_dir_meshes` at call time. Asset downloads are controlled
+independently by :attr:`config.cache_dir_assets` and remain cached by default in
+the Newton cache directory (``NEWTON_CACHE_PATH`` or the platform's user cache
+location). Setting that to ``None`` keeps each download in a fresh temporary
+directory until process exit. The asset cache environment default is read when
+Newton is imported. These settings do not affect
+:meth:`Mesh.build_sdf`, which retains its explicit, opt-in cache.
+
+Cache directories are created if needed. Entries include the source geometry, effective decomposition options
+(including the hull-vertex limit), backend versions, and cache format version in
+their keys. Shape scales, transforms, and materials are applied independently,
+so cached parts can be reused by differently configured shapes. Missing, corrupt,
+or incompatible entries are recomputed; cache I/O errors are logged without
+preventing approximation. Backend dependencies must still be installed. Failed
+decompositions and fallback hulls are not cached. Delete the directory to reclaim
+disk space. Other approximation methods ignore ``cache_dir``.
+
+Cache locations are runtime settings; they are not authored in USD.
 
 .. note::
    ``approximate_meshes()`` modifies the builder's shape geometry in-place. By default
@@ -1580,6 +1653,51 @@ Soft contacts are generated automatically when particles are present. They use a
     particles = contacts.soft_contact_particle.numpy()[:n_soft]
     shapes = contacts.soft_contact_shape.numpy()[:n_soft]
 
+With full-surface deformable-rigid mesh contacts enabled, detection retains
+the returned feature pairs, including endpoint contacts. :class:`~solvers.SolverVBD`
+selects force contributions inside each consuming kernel using its current particle
+and body positions, including during CUDA graph replay. Selection can change
+without another collision detection; it does not change the contact count,
+row order, or detected geometry. Coupling copies ownership and mesh provenance;
+the consuming solver evaluates eligibility. If the source contact buffer
+has overflowed, VBD accepts all stored rows, including through coupling.
+Rigid-soft division-plane constraints consume the detected rows independently
+of force selection.
+
+Reverse rigid-vertex/soft-triangle contacts test the soft target's neighbors
+and retain one eligible owner for a shared soft edge or vertex. They remain
+separate force contributions from soft-vertex/rigid-triangle queries.
+Preserving returned rows does not guarantee complete contact topology:
+mesh detection may use SDF-selected rigid edges, and edge penetration-recovery
+records are not ordinary edge-edge quadrature samples.
+
+.. _full-surface-mesh-contact-costs:
+
+Full-surface mesh contact costs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Full-surface contact catches rigid features that can pass between deformable
+vertices, which is useful for coarse cloth. On finely tessellated or complex
+rigid meshes, however, retaining nearby feature pairs can produce many more
+records than particle-only contacts or SDF minimization. This increases contact
+storage and can substantially increase both collision detection and VBD solve
+time. Larger contact bands also admit more pairs. Profile the intended scene;
+the cost depends on mesh resolution, geometry, and contact density.
+
+:class:`CollisionPipeline` automatically estimates mesh contact storage. Set
+``soft_contact_max`` to choose the total soft-contact capacity explicitly.
+The estimate is not an upper bound: dense patches can still overflow. The mesh
+overflow warning prints the current ``soft_contact_max`` and the required count
+for that collision pass. Increase ``soft_contact_max`` to at least that count,
+and verify that contacts fit throughout the simulation before relying on the
+results; later frames may require more storage.
+
+This setting controls reserved storage, not the contact band or the number of
+feature pairs queried. Lowering capacity can save memory but produces incomplete
+contacts if it is too small; it is not a way to reduce query work while preserving
+the same contacts. The edge and vertex queries and the processing of their
+records remain a runtime cost even when the buffer is sized appropriately.
+
 .. _collision-frequency-in-the-simulation-loop:
 
 Collision frequency in the simulation loop
@@ -1748,8 +1866,8 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Description
    * - ``SolverBase.ObservableKind.CONTACT_F`` / ``SolverBase.Observables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
-       Bind the observable allocation to the contacts buffer and pass it to the
-       solver step.
+       Allocate the observables with a contacts buffer and pass each step's buffer
+       to the solver step.
 
 .. note::
 
@@ -1765,6 +1883,8 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    soft-contact rows (row ``rigid_contact_max + i`` for soft contact ``i``) for
    rigid-soft particle, edge, and face records. With an external rigid solver, VBD's
    rigid rows are zero; consume that solver's forces from its own observables.
+   Soft rows retain their detection indices; mesh rows rejected at the exported
+   configuration report zero force.
    See :ref:`vbd_contact_forces` for the sign and torque convention.
 
 Example usage:
@@ -2179,6 +2299,85 @@ Example:
         restitution=0.5,  # Bouncy where supported
     )
 
+.. _Contact friction gain and adhesion:
+
+Friction gain and adhesion
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This section covers rigid shape-shape contacts in the penalty contact model of
+:class:`~newton.solvers.SolverSemiImplicit` and
+:class:`~newton.solvers.SolverFeatherstone`, which average ``ke``, ``kd``,
+``kf``, ``ka`` and ``mu`` of the two shapes. Particle-shape contacts in these
+solvers work differently: ``kf`` is averaged with ``Model.soft_contact_kf``, the
+shape's ``ka`` is ignored in favor of ``Model.particle_adhesion``, and damping
+and friction also act inside the adhesion zone. For
+:class:`~newton.solvers.SolverMuJoCo`, see
+:ref:`mujoco-contact-friction-solreffriction`.
+
+Let :math:`d` be the contact-space distance :math:`d = s - m` from
+:ref:`margin and gap semantics <margin-gap-semantics>`, where :math:`s` is the
+surface distance and :math:`m` the pair margin, so :math:`d` is negative once
+the surfaces come within the pair margin. Let :math:`v_n` and :math:`v_t` be the
+normal and tangential relative velocities. Per contact, the normal force
+:math:`f_n` acts along the contact normal and is negative (repulsive) for
+:math:`d < 0` and positive (attractive) inside the adhesion zone:
+
+.. math::
+
+   f_n &= k_e \, d \qquad (d < k_a) \\
+   f_d &= k_d \, \min(v_n, 0) \qquad (d < 0) \\
+   \lVert f_t \rVert &= \min(k_f \, \lVert v_t \rVert,\, \mu |f_n + f_d|) \qquad (d < 0)
+
+**Friction gain** ``kf`` **[N·s/m]** is the slope of a viscous regularization
+of Coulomb friction: at low slip speed the friction force is
+:math:`k_f \lVert v_t \rVert`, so a body at rest on a slope creeps instead of
+sticking. With :math:`N` contacts carrying the load, the creep speed is roughly
+:math:`m g \sin\theta / (N k_f)`. At higher slip speed the force is capped at
+:math:`\mu |f_n + f_d|`, including normal damping. Friction opposes tangential
+relative motion. For positive ``kf``, the transition speed is
+:math:`\mu |f_n + f_d| / k_f`.
+
+The viscous branch evaluates :math:`k_f v_t` directly, so its velocity
+derivative remains well-defined at rest without a separate smoothing
+parameter. The force is continuous at the Coulomb limit, where its derivative
+changes between the viscous and capped branches.
+
+The solver argument and attribute ``friction_smoothing`` are deprecated in
+Newton 1.8 and have no effect on friction. Explicit constructor values and
+attribute reads or assignments emit a deprecation warning. Constructor calls
+and attribute access remain supported, and the attribute retains its last
+assigned value; all values use the corrected force law above. Remove its use
+and configure ``kf`` for the low-speed slope and ``mu`` for the Coulomb limit.
+
+- Larger ``kf`` gives less creep but stiffens the friction force. With these
+  explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
+  where :math:`m_\text{eff}` is the effective mass of the lightest contact pair,
+  or reduce the time step.
+- Smaller ``kf`` is more stable but makes contacts slide and objects creep.
+- ``kf = 0`` disables friction.
+
+**Adhesion distance** ``ka`` **[m]** lets the normal force act before the
+surfaces come within the pair margin. Contacts are processed while
+:math:`d < k_a` instead of :math:`d < 0`, so the adhesion zone is
+:math:`m \le s < m + k_a`. For :math:`0 \le d < k_a`, :math:`f_n = k_e \, d` is
+attractive and grows linearly with :math:`d` up to about :math:`k_e \, k_a`
+per contact just inside :math:`d = k_a`. At :math:`d \ge k_a` the contact applies
+no force. Damping and friction only act while :math:`d < 0`.
+
+- ``ka = 0`` (the default) disables adhesion.
+- Use a small nonzero value for sticky or suction-like contacts, for example to
+  hold a light object against a gripper pad. Choose ``ka`` so that
+  :math:`N k_e \, k_a` exceeds the force you want to resist.
+- Adhesion only acts on contacts the collision pipeline reports, so the pair
+  gap ``gap_a + gap_b`` (see :ref:`margin and gap semantics <margin-gap-semantics>`)
+  must be at least the pair's averaged ``ka``.
+- The force jumps from about :math:`k_e \, k_a` to zero at the cutoff. Shapes
+  that enter the zone are pulled in and bounce, and damping only acts for
+  :math:`d < 0`, so large values make contacts lively. Explicit stepping across
+  the cutoff also adds an error of order :math:`k_e \, k_a \, |v_n| \, \Delta t`
+  per step, which can add or remove energy. Keep ``ka`` small relative to the
+  shape size.
+
 .. _USD Collision:
 
 USD Integration
@@ -2298,6 +2497,14 @@ contributions across threads:
 
 Together these give bit-exact repeatability across runs on the same GPU
 architecture when the consuming solver is deterministic as well.
+For example, :class:`~newton.solvers.SolverSteel` reserves its constraint rows
+in contact-buffer order when constructed with
+``deterministic=wp.DeterministicMode.RUN_TO_RUN``:
+
+.. code-block:: python
+
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    solver = newton.solvers.SolverSteel(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
 
 .. note::
 
@@ -2611,7 +2818,21 @@ specializations. Rebuild the pipeline after modifying or resizing the pair array
 **Narrow phase**
 
 :class:`~geometry.NarrowPhase` accepts the candidate pairs from any broad phase and
-generates contacts:
+generates contacts. Low-level mesh-SDF collision requires packed edge indices and
+per-shape edge ranges; omitting them disables mesh edge contacts. Centers and
+half-vectors are optional acceleration arrays in unscaled mesh coordinates.
+Caller-owned arrays can use the full public :attr:`~newton.Mesh.edges` set and
+zero endpoint-ownership codes, but reproducing the pipeline's simplified edges
+and ownership requires internal data without a stable public accessor. Use
+:class:`~newton.CollisionPipeline` for model collision detection.
+
+.. deprecated:: 1.8
+
+   The ``Model.mesh_edge_indices``, ``Model.mesh_edge_centers``,
+   ``Model.mesh_edge_halves``, and ``Model.shape_edge_range`` aliases expose
+   internal collision acceleration data. They remain readable and writable with
+   :class:`~newton.exceptions.NewtonDeprecationWarning` through Newton 1.8 and
+   will be removed in 1.9. Use :class:`~newton.CollisionPipeline` instead.
 
 .. code-block:: python
 
@@ -2628,7 +2849,7 @@ generates contacts:
         shape_types=...,
         shape_data=...,
         shape_transform=...,
-        # ... remaining geometry arrays from Model
+        # ... remaining geometry arrays and caller-owned mesh edge data
         contact_pair=out_pairs,
         contact_position=out_positions,
         contact_normal=out_normals,

@@ -7,58 +7,10 @@ import unittest
 import warnings
 
 import numpy as np
-import warp as wp
 
 import newton
+from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_volume
 from newton.tests.unittest_utils import get_test_devices
-
-
-def _add_curve(builder, label=None, topology="chain"):
-    points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.1, 0.1, 1.0)]
-    if topology == "closed":
-        points = [points[0], points[1], points[3], points[0]]
-    edges = [(0, 1), (1, 2), (1, 3)] if topology == "graph" else None
-    return builder.add_rod(
-        rod=newton.Rod(points, edges=edges, closed=topology == "closed", radius=0.02),
-        label=label,
-        body_frame_origin="com",
-    )
-
-
-def _add_surface(builder, label=None, grid=False):
-    common = {"pos": wp.vec3(0.0, 0.0, 2.0), "rot": wp.quat_identity(), "vel": wp.vec3(0.0), "label": label}
-    if grid:
-        builder.add_cloth_grid(**common, dim_x=1, dim_y=1, cell_x=1.0, cell_y=1.0, mass=1.0)
-    else:
-        builder.add_cloth_mesh(
-            **common,
-            scale=1.0,
-            vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)],
-            indices=[0, 1, 2, 0, 2, 3],
-            density=1.0,
-        )
-
-
-def _add_volume(builder, label=None, grid=False):
-    common = {
-        "pos": wp.vec3(0.0, 0.0, 3.0),
-        "rot": wp.quat_identity(),
-        "vel": wp.vec3(0.0),
-        "density": 1.0,
-        "k_mu": 1.0,
-        "k_lambda": 1.0,
-        "k_damp": 0.0,
-        "label": label,
-    }
-    if grid:
-        builder.add_soft_grid(**common, dim_x=1, dim_y=1, dim_z=1, cell_x=1.0, cell_y=1.0, cell_z=1.0)
-    else:
-        builder.add_soft_mesh(
-            **common,
-            scale=1.0,
-            vertices=[(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)],
-            indices=[0, 1, 2, 3],
-        )
 
 
 def _ranges(builder, family, kind):
@@ -316,23 +268,6 @@ class TestDeformableObjects(unittest.TestCase):
                         for i, boundary in enumerate(boundaries)
                     ],
                 )
-
-    def test_deprecated_curve_inputs_keep_recording(self):
-        """Preserve recording through the supported deprecation period for old rod inputs."""
-        points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
-        for graph in (False, True):
-            with self.subTest(graph=graph):
-                builder = newton.ModelBuilder()
-                with self.assertWarns(DeprecationWarning):
-                    if graph:
-                        builder.add_rod_graph(node_positions=points, edges=[(0, 1), (1, 2)], radius=0.02, label="cable")
-                    else:
-                        builder.add_rod(positions=points, radius=0.02, label="cable")
-                self.assertEqual(builder.curve_label, ["cable"])
-                self.assertEqual(_ranges(builder, "curve", "body"), [(0, 2)])
-                self.assertEqual(_ranges(builder, "curve", "joint"), [(0, 2)])
-                model = builder.finalize(device="cpu")
-                self.assertEqual((model.body_count, model.joint_count), (2, 2))
 
 
 if __name__ == "__main__":

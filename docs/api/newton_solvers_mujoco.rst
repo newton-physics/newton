@@ -44,6 +44,8 @@ Example::
 
 .. rubric:: Functions
 
+.. autofunction:: add_actuator_dcmotor
+
 .. autofunction:: add_actuator_general
 
 .. autofunction:: add_actuator_motor
@@ -57,6 +59,8 @@ Example::
 .. autofunction:: add_equality_connect
 
 .. autofunction:: add_equality_joint
+
+.. autofunction:: add_equality_tendon
 
 .. autofunction:: add_equality_weld
 

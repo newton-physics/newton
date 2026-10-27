@@ -61,9 +61,10 @@ Model labels and ranges
    count, and range attributes may change without the normal deprecation period.
 
 :meth:`~newton.ModelBuilder.finalize` copies the labels, worlds, and simulation
-ranges to public :class:`~newton.Model` attributes. Each family retains its
-builder order. Later builder edits do not change an existing model. Treat
-model labels, worlds, and ranges as read-only.
+ranges to public :class:`~newton.Model` attributes without reordering the
+builder's lists. Within a family, the label, world index, and element ranges
+at index ``i`` describe the same deformable object. Later builder edits do not change
+an existing model. Treat model labels, worlds, and ranges as read-only.
 
 Labels are Python lists. Worlds and range endpoints are one-dimensional
 ``int32`` Warp arrays on the model device. Each list or array has one entry per
@@ -84,9 +85,11 @@ select matching deformable objects and read or update their state.
 Coupled solver models
 ~~~~~~~~~~~~~~~~~~~~~
 
-Compact coupled-solver models retain only deformable objects whose recorded
-elements are all present. Their ranges refer to the compact model's arrays,
-not the parent model's arrays. Particle-based deformables follow the coupled
+Compact coupled-solver models retain a deformable object only when all its
+recorded elements remain in contiguous ranges in their original order. A range
+may move to a different position in the compact model. A new FREE root does not
+count as the original joint it replaces. The ranges refer to the compact model's
+arrays, not the parent model's arrays. Particle-based deformables follow the coupled
 solver's existing particle layout. Unlike :ref:`builder fixed-joint collapse
 <deformable-objects-collapse>`, a solver partition does not retain partially
 included curves.
@@ -179,7 +182,9 @@ Native and USD-created curves use the same model attributes and
 Curve joint ranges
 ~~~~~~~~~~~~~~~~~~
 
-Curve joint ranges include the joints created with the deformable object.
+:attr:`~newton.Model.curve_joint_start` and :attr:`~newton.Model.curve_joint_end`
+store each curve's ``[start, end)`` joint range. The range includes the joints
+created with the deformable object.
 Native rods and USD cables include each generated free root or the
 attachment root created in its place. Earlier rigid-body joints and independent
 attachments added later are outside the range. These complete ranges differ
@@ -207,8 +212,6 @@ Rod graphs
 A :class:`~newton.Rod` with explicit edges can describe a graph with shared
 junctions. Pass it to :meth:`~newton.ModelBuilder.add_rod` with ``rod=...``.
 One call records the complete graph, not separate objects for its branches.
-The deprecated :meth:`~newton.ModelBuilder.add_rod_graph` also records one
-object per call; use ``add_rod(rod=...)`` for new code.
 
 A welded USD graph uses the same construction path. Its record includes all
 created segment bodies and joints, including generated roots. The source

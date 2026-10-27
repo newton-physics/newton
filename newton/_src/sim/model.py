@@ -8,9 +8,9 @@ from __future__ import annotations
 import logging
 import operator
 import warnings
-from collections.abc import Callable, Container, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, SupportsIndex
 
@@ -18,11 +18,13 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.flags import ShapeFlags
-from ..utils.deprecation import RemovedAttribute
+from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,12 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "Model.joint_twist_lower and Model.joint_twist_upper are deprecated in Newton 1.7 and will be removed "
     "in a future release. They were never populated or used by any solver; limit joint rotations with the "
     "per-DOF Model.joint_limit_lower and Model.joint_limit_upper instead."
+)
+
+_COLLISION_EDGE_DEPRECATION_MSG = (
+    "Model.{name} is deprecated in Newton 1.8 and will be removed in Newton 1.9. "
+    "Packed collision edges are internal acceleration data; use CollisionPipeline for collision detection. "
+    "Low-level NarrowPhase mesh-SDF collision relies on internal edge data without a stable public accessor."
 )
 
 if TYPE_CHECKING:
@@ -247,8 +255,8 @@ class Model:
 
         .. experimental::
 
-            ``compaction_policy`` is part of the experimental coupled-solver
-            framework and may change without a deprecation period.
+            ``compaction_policy`` and ``default`` are part of the experimental
+            coupled-solver framework and may change without a deprecation period.
         """
 
         frequency: Model.AttributeFrequency | str
@@ -278,6 +286,13 @@ class Model:
         structured handling; and ``"passthrough"`` disables automatic count
         limiting. Non-generic policies may still be overridden by the coupled
         solver when constructing a compact view.
+        """
+        default: Any = field(default=None, compare=False)
+        """Experimental value of one row for entities without authored data, or ``None`` for the dtype's zero.
+
+        :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` sets it to
+        :attr:`ModelBuilder.CustomAttribute.default <newton.ModelBuilder.CustomAttribute.default>`.
+        Coupled model views use it for the rows they synthesize.
         """
 
         def __post_init__(self) -> None:
@@ -320,6 +335,7 @@ class Model:
         # particles
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
+        "particle_f": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_mass": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_inv_mass": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_radius": AttributeSpec(AttributeFrequency.PARTICLE),
@@ -393,12 +409,29 @@ class Model:
             AttributeFrequency.SHAPE,
             requires_empty_sentinel=True,
         ),
-        "shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
+        "_shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
+        "shape_edge_range": AttributeSpec(
+            AttributeFrequency.SHAPE, alias_of="_shape_edge_range", deprecated=True, requires_empty_sentinel=True
+        ),
+        "_mesh_edge_indices": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_mesh_edge_centers": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_mesh_edge_halves": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "mesh_edge_indices": AttributeSpec(
+            AttributeFrequency.ONCE, alias_of="_mesh_edge_indices", deprecated=True, compaction_policy="passthrough"
+        ),
+        "mesh_edge_centers": AttributeSpec(
+            AttributeFrequency.ONCE, alias_of="_mesh_edge_centers", deprecated=True, compaction_policy="passthrough"
+        ),
+        "mesh_edge_halves": AttributeSpec(
+            AttributeFrequency.ONCE, alias_of="_mesh_edge_halves", deprecated=True, compaction_policy="passthrough"
+        ),
         "_shape_support_data": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_mesh_boundary_start": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "shape_collision_aabb_lower": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_interior_point": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_world_start": AttributeSpec(
             AttributeFrequency.SHAPE,
@@ -520,6 +553,7 @@ class Model:
         "joint_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_armature": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
         "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF),
@@ -679,7 +713,7 @@ class Model:
             warnings.warn(
                 "Model.AttributeNamespace.add_deprecated_alias() is deprecated; "
                 "define an explicit property on a custom namespace instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             if name in self.__dict__ or name in self._deprecated_aliases:
@@ -690,7 +724,7 @@ class Model:
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
-                warnings.warn(message, DeprecationWarning, stacklevel=2)
+                warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                 return getter()
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -699,7 +733,7 @@ class Model:
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
-                    warnings.warn(message, DeprecationWarning, stacklevel=2)
+                    warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                     target = getter()
                     if isinstance(target, wp.array):
                         target.assign(value)
@@ -824,7 +858,7 @@ class Model:
         """Geometry source pointers to be used inside the Warp kernels which are generated by finalizing the geometry objects, see for example :meth:`newton.Mesh.finalize`, shape [shape_count], uint64."""
 
         self._shape_support_data: wp.array[wp.vec4i] | None = None
-        """Per-shape LUT, offset, neighbor starts, and resolution.
+        """Per-shape LUT, vertex-offset, and neighbor-block starts, and resolution.
 
         The final entry packs the LUT resolution in its low 16 bits and the
         strict hull-validity flag in bit 16. Zero resolution disables acceleration.
@@ -832,9 +866,17 @@ class Model:
         self._convex_support_lut: wp.array[wp.int32] | None = None
         """Packed octahedral directional seed tables shared by convex geometries."""
         self._convex_support_vertex_offsets: wp.array[wp.int32] | None = None
-        """Packed CSR vertex-neighbor offsets shared by convex geometries."""
+        """Packed CSR vertex-neighbor offsets shared by convex geometries.
+
+        Offsets index ``_convex_support_neighbors`` past each hull's edge records.
+        """
         self._convex_support_neighbors: wp.array[wp.int32] | None = None
-        """Packed CSR vertex neighbors shared by convex geometries."""
+        """Packed per-hull neighbor blocks shared by convex geometries.
+
+        A verified hull's block starts with its edge count and one ``(a, b, c1, c2)``
+        record per edge (vertex indices of the edge and of its two outward faces),
+        followed by the CSR vertex neighbors of accelerated hulls.
+        """
         self.shape_scale: wp.array[wp.vec3] | None = None
         """Shape 3D scale, shape [shape_count], vec3."""
         self.shape_color: wp.array[wp.vec3] | None = None
@@ -849,14 +891,11 @@ class Model:
         self._shape_collision_filter_pairs = _ShapeCollisionFilterPairs(np.empty(0, dtype=np.int64))
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
-        self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
-        """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int.
-
-        Static-static pairs are omitted. Kinematic-kinematic and static-kinematic pairs
-        are retained so consumers can opt into them during contact generation.
-        """
-        self.shape_contact_pair_count: int = 0
-        """Number of shape contact pairs."""
+        self._shape_contact_pairs: wp.array[wp.vec2i] | None = None
+        self._shape_contact_pair_data: _ShapeContactPairs | None = None
+        """Finalized collision topology for lazy pair construction and statistics."""
+        self._shape_contact_pair_count: int = 0
+        self._shape_contact_pair_counts: dict[bytes | tuple[bytes, int | None] | None, np.ndarray] = {}
         self.shape_world: wp.array[wp.int32] | None = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
         self.shape_world_start: wp.array[wp.int32] | None = None
@@ -917,26 +956,32 @@ class Model:
         self._mesh_keep_alive: list[wp.Mesh] = []
         """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
 
-        # Mesh edge data (packed arrays + per-shape slice)
-        self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
+        # Internal collision edges; public names remain as deprecated property aliases.
+        self._mesh_edge_indices: wp.array[wp.vec2i] | None = None
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
-        self.mesh_edge_centers: wp.array[wp.vec4] | None = None
+        self._mesh_edge_centers: wp.array[wp.vec4] | None = None
         """Packed collision-edge centers and radii, shape [total_edge_count, 4] [m].
 
         Components ``xyz`` are edge centers and ``w`` is the edge half-length, both in
         unscaled mesh coordinates; collision applies :attr:`shape_scale` when reading them.
         """
-        self.mesh_edge_halves: wp.array[wp.vec4] | None = None
+        self._mesh_edge_halves: wp.array[wp.vec4] | None = None
         """Packed collision-edge half-vectors and corner ownership, shape [total_edge_count, 4].
 
         Components ``xyz`` are half-vectors in unscaled mesh coordinates [m];
         collision applies :attr:`shape_scale` when reading them. Component ``w``
         is a unitless internal endpoint-ownership code.
         """
-        self.shape_edge_range: wp.array[wp.vec2i] | None = None
+        self._shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh edge arrays, shape [shape_count]. (-1,0) if no edges."""
         self._shape_mesh_properties: wp.array[wp.int32] | None = None
         """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
+        self._mesh_boundary_flags: wp.array[wp.uint8] | None = None
+        """Packed per-face open-boundary bits of non-watertight collision meshes, shape [face_count].
+
+        Bit ``i`` marks the edge opposite face vertex ``i`` and bit ``3 + i`` marks vertex ``i``."""
+        self._shape_mesh_boundary_start: wp.array[wp.int32] | None = None
+        """Per-shape start into :attr:`_mesh_boundary_flags`, or -1 without boundary bits, shape [shape_count]."""
 
         # SDF storage (compact table + per-shape index indirection).
         # All SDF arrays are private; the public attribute names are exposed
@@ -971,6 +1016,9 @@ class Model:
         """Scaled local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
         Includes shape scale but excludes margin and gap (those are applied at runtime).
         Used for broadphase AABB computation and voxel-based contact reduction."""
+        self._shape_interior_point: wp.array[wp.vec3] | None = None
+        """Scaled local-space point [m] inside each shape, shape [shape_count, 3], float.
+        Convex meshes use their volume centroid; other shapes use their origin."""
         self._shape_voxel_resolution: wp.array[wp.vec3i] | None = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
@@ -1144,13 +1192,11 @@ class Model:
         """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
         For FREE, DISTANCE, and ROD joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
         self.joint_target_q: wp.array[wp.float32] | None = None
-        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]`` or ``[joint_dof_count]``, float.
+        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]``, float.
 
-        Shape matches :attr:`joint_q` (``joint_coord_count``) when
-        :attr:`newton.use_coord_layout_targets` is ``True``; otherwise the array
-        is shaped ``(joint_dof_count,)`` (legacy layout). Index via
-        :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
-        :attr:`joint_qd_start` to match the active layout.
+        Shape matches :attr:`joint_q`. Index via :attr:`joint_target_q_start`,
+        which aliases :attr:`joint_q_start`. Ball and free joint rotations use
+        unit quaternions.
 
         For ROD joints, this Model-owned array defines structural rest;
         see :ref:`Rod joints`.
@@ -1338,8 +1384,8 @@ class Model:
         self.curve_label: list[str] = []
         """Experimental labels of rod-backed deformable objects, shape [curve_count].
 
-        Copied from :attr:`ModelBuilder.curve_label` at finalization, in builder order.
-        Treat finalized identities and ranges as read-only; edit labels on the builder.
+        Copied from :attr:`ModelBuilder.curve_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
         """
         self.curve_world: wp.array[wp.int32] | None = None
         """Experimental world indices for :attr:`curve_label`, shape [curve_count]. -1 means global."""
@@ -1355,8 +1401,8 @@ class Model:
         self.surface_label: list[str] = []
         """Experimental labels of triangle-surface deformable objects, shape [surface_count].
 
-        Copied from :attr:`ModelBuilder.surface_label` at finalization, in builder order.
-        Treat finalized identities and ranges as read-only; edit labels on the builder.
+        Copied from :attr:`ModelBuilder.surface_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
         """
         self.surface_world: wp.array[wp.int32] | None = None
         """Experimental world indices for :attr:`surface_label`, shape [surface_count]. -1 means global."""
@@ -1376,8 +1422,8 @@ class Model:
         self.volume_label: list[str] = []
         """Experimental labels of tetrahedral deformable objects, shape [volume_count].
 
-        Copied from :attr:`ModelBuilder.volume_label` at finalization, in builder order.
-        Treat finalized identities and ranges as read-only; edit labels on the builder.
+        Copied from :attr:`ModelBuilder.volume_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
         """
         self.volume_world: wp.array[wp.int32] | None = None
         """Experimental world indices for :attr:`volume_label`, shape [volume_count]. -1 means global."""
@@ -1404,7 +1450,6 @@ class Model:
         self._rigid_contact_max: int | None = None
         self._soft_contact_max: int | None = None
         self._contact_capacity_initialized = False
-        self._solver_observable_contact_capacity: tuple[int, int] | None = None
 
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
@@ -1515,13 +1560,6 @@ class Model:
         self.device: wp.Device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
-        import newton  # noqa: PLC0415
-
-        self.use_coord_layout_targets: bool = newton.use_coord_layout_targets
-        """Snapshot of :data:`newton.use_coord_layout_targets` taken at
-        :meth:`ModelBuilder.finalize`. All layout decisions for this Model
-        consult this — toggling the global later doesn't change behavior."""
-
         self.custom_frequency_counts: dict[str, int] = {}
         """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
 
@@ -1536,19 +1574,12 @@ class Model:
         # cached collision pipeline
         self._requested_contact_attributes: set[str] = set()
 
-        target_q_freq = (
-            Model.AttributeFrequency.JOINT_COORD
-            if self.use_coord_layout_targets
-            else Model.AttributeFrequency.JOINT_DOF
-        )
         self.attribute_specs: dict[str, Model.AttributeSpec] = dict(Model._CORE_ATTRIBUTE_SPECS)
         """Semantic metadata keyed by built-in or custom attribute name.
 
         Attribute values remain normal Python attributes on the model. This
         registry describes their indexing, ownership, and reference semantics.
         """
-
-        self.attribute_specs["joint_target_q"] = Model.AttributeSpec(target_q_freq)
 
         # Deprecated solver-produced State attributes remain registered for
         # compatibility with request_state_attributes().
@@ -1567,6 +1598,44 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+
+    @property
+    def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
+        """Pairs of shape indices that may collide, shape [shape_contact_pair_count], vec2i.
+
+        Constructed on first access; access it before CUDA graph capture if needed.
+
+        Default pairs omit static-static pairs and retain static-kinematic and
+        kinematic-kinematic pairs.
+
+        Assign a replacement array to change pairs, or ``None`` to remove the
+        model's pair array and set its count to zero. In-place edits are unsupported.
+        """
+        pairs = self._shape_contact_pairs
+        if pairs is None and self._shape_contact_pair_data is not None:
+            topology = self._shape_contact_pair_data
+            if self.device.is_cuda and self.device.is_capturing and topology.counts.any():
+                raise RuntimeError(
+                    "Initialize model.shape_contact_pairs before CUDA graph capture, "
+                    "for example by constructing the explicit CollisionPipeline before capture."
+                )
+            pairs = wp.array(topology.build_pairs(), dtype=wp.vec2i, device=self.device, copy=False)
+            self._shape_contact_pairs = pairs
+        return pairs
+
+    @shape_contact_pairs.setter
+    def shape_contact_pairs(self, pairs: wp.array[wp.vec2i] | None) -> None:
+        self._shape_contact_pairs = pairs
+        self._shape_contact_pair_data = None
+        self._shape_contact_pair_count = len(pairs) if pairs is not None else 0
+        self._shape_contact_pair_counts.clear()
+
+    @property
+    def shape_contact_pair_count(self) -> int:
+        """Number of shape pairs. Read-only; does not construct the full pair array."""
+        if self._shape_contact_pairs is not None:
+            return len(self._shape_contact_pairs)
+        return self._shape_contact_pair_count
 
     def _set_shape_collision_filter_packed(self, packed: np.ndarray) -> None:
         """Install the canonical filter store: sorted unique packed pair codes."""
@@ -1682,42 +1751,35 @@ class Model:
         else:
             self.attribute_assignment[name] = spec.assignment
 
+    # Keep existing string aliases; new built-in families use enums so their
+    # names remain available to custom frequencies regardless of registration order.
+    _REFERENCE_ALIASES: ClassVar[dict[str, AttributeFrequency]] = {
+        "body": AttributeFrequency.BODY,
+        "shape": AttributeFrequency.SHAPE,
+        "joint": AttributeFrequency.JOINT,
+        "joint_dof": AttributeFrequency.JOINT_DOF,
+        "joint_coord": AttributeFrequency.JOINT_COORD,
+        "joint_constraint": AttributeFrequency.JOINT_CONSTRAINT,
+        "articulation": AttributeFrequency.ARTICULATION,
+        "constraint_mimic": AttributeFrequency.CONSTRAINT_MIMIC,
+        "particle": AttributeFrequency.PARTICLE,
+        "edge": AttributeFrequency.EDGE,
+        "triangle": AttributeFrequency.TRIANGLE,
+        "tetrahedron": AttributeFrequency.TETRAHEDRON,
+        "spring": AttributeFrequency.SPRING,
+        "tendon": AttributeFrequency.TENDON,
+        "tendon_guide": AttributeFrequency.TENDON_GUIDE,
+        "tendon_segment": AttributeFrequency.TENDON_SEGMENT,
+        "attachment_particle_body": AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
+        "world": AttributeFrequency.WORLD,
+    }
+
     @staticmethod
     def _normalize_attribute_reference(
-        references: Model.AttributeFrequency | str | None, custom_frequencies: Container[str]
+        references: Model.AttributeFrequency | str | None,
     ) -> Model.AttributeFrequency | str | None:
-        """Return the frequency domain addressed by a builder reference declaration."""
-        if references is None:
-            return None
-        if isinstance(references, Model.AttributeFrequency):
-            return references
-        # Preserve existing unnamespaced custom frequencies when adding the deformable families.
-        if references in {"curve", "surface", "volume"} and references in custom_frequencies:
-            return references
-        built_in = {
-            "body": Model.AttributeFrequency.BODY,
-            "shape": Model.AttributeFrequency.SHAPE,
-            "joint": Model.AttributeFrequency.JOINT,
-            "joint_dof": Model.AttributeFrequency.JOINT_DOF,
-            "joint_coord": Model.AttributeFrequency.JOINT_COORD,
-            "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
-            "articulation": Model.AttributeFrequency.ARTICULATION,
-            "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
-            "particle": Model.AttributeFrequency.PARTICLE,
-            "edge": Model.AttributeFrequency.EDGE,
-            "triangle": Model.AttributeFrequency.TRIANGLE,
-            "tetrahedron": Model.AttributeFrequency.TETRAHEDRON,
-            "spring": Model.AttributeFrequency.SPRING,
-            "tendon": Model.AttributeFrequency.TENDON,
-            "tendon_guide": Model.AttributeFrequency.TENDON_GUIDE,
-            "tendon_segment": Model.AttributeFrequency.TENDON_SEGMENT,
-            "attachment_particle_body": Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
-            "world": Model.AttributeFrequency.WORLD,
-            "curve": Model.AttributeFrequency.CURVE,
-            "surface": Model.AttributeFrequency.SURFACE,
-            "volume": Model.AttributeFrequency.VOLUME,
-        }
-        return built_in.get(references, references)
+        """Resolve existing built-in aliases without changing the supplied declaration."""
+        return Model._REFERENCE_ALIASES.get(references, references)
 
     # ----- Removed joint-target aliases -------------------------------------
     # Tombstones so that assigning the 1.3-era names fails loudly instead of
@@ -1727,18 +1789,96 @@ class Model:
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
 
     @property
+    def mesh_edge_indices(self) -> wp.array[wp.vec2i] | None:
+        """Packed collision-edge vertex pairs, shape [total_edge_count].
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline`; low-level :class:`geometry.NarrowPhase` mesh-SDF
+            collision relies on internal edge data without a stable public accessor.
+        """
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_indices"))
+        return self._mesh_edge_indices
+
+    @mesh_edge_indices.setter
+    def mesh_edge_indices(self, value: wp.array[wp.vec2i] | None) -> None:
+        """Replace packed edge indices through the deprecated public alias."""
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_indices"))
+        self._mesh_edge_indices = value
+
+    @property
+    def mesh_edge_centers(self) -> wp.array[wp.vec4] | None:
+        """Packed collision-edge centers (xyz) and half-lengths (w), shape [total_edge_count, 4] [m].
+
+        Centers and half-lengths are in unscaled mesh coordinates.
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline`; low-level :class:`geometry.NarrowPhase` mesh-SDF
+            collision relies on internal edge data without a stable public accessor.
+        """
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_centers"))
+        return self._mesh_edge_centers
+
+    @mesh_edge_centers.setter
+    def mesh_edge_centers(self, value: wp.array[wp.vec4] | None) -> None:
+        """Replace packed edge centers through the deprecated public alias."""
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_centers"))
+        self._mesh_edge_centers = value
+
+    @property
+    def mesh_edge_halves(self) -> wp.array[wp.vec4] | None:
+        """Packed collision-edge half-vectors (xyz) [m] and unitless endpoint-ownership codes (w).
+
+        Shape [total_edge_count, 4]. Half-vectors are in unscaled mesh coordinates.
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline`; low-level :class:`geometry.NarrowPhase` mesh-SDF
+            collision relies on internal edge data without a stable public accessor.
+        """
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_halves"))
+        return self._mesh_edge_halves
+
+    @mesh_edge_halves.setter
+    def mesh_edge_halves(self, value: wp.array[wp.vec4] | None) -> None:
+        """Replace packed edge half-vectors through the deprecated public alias."""
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_halves"))
+        self._mesh_edge_halves = value
+
+    @property
+    def shape_edge_range(self) -> wp.array[wp.vec2i] | None:
+        """Per-shape (start, count) into packed collision-edge arrays, shape [shape_count].
+
+        A range of (-1, 0) means no edges.
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline`; low-level :class:`geometry.NarrowPhase` mesh-SDF
+            collision relies on internal edge data without a stable public accessor.
+        """
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="shape_edge_range"))
+        return self._shape_edge_range
+
+    @shape_edge_range.setter
+    def shape_edge_range(self, value: wp.array[wp.vec2i] | None) -> None:
+        """Replace shape edge ranges through the deprecated public alias."""
+        warn_deprecation(_COLLISION_EDGE_DEPRECATION_MSG.format(name="shape_edge_range"))
+        self._shape_edge_range = value
+
+    @property
     def joint_twist_lower(self) -> wp.array[wp.float32] | None:
         """Joint lower twist limit [rad], shape [joint_count], float. Never populated.
 
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_lower
 
     @joint_twist_lower.setter
     def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_lower = value
 
     @property
@@ -1748,22 +1888,20 @@ class Model:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_upper
 
     @joint_twist_upper.setter
     def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_upper = value
 
     @property
     def joint_target_q_start(self) -> wp.array | None:
         """Per-joint start index into :attr:`joint_target_q`, shape
-        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start` under coord
-        layout, :attr:`joint_qd_start` otherwise. Solvers and actuators should
-        index :attr:`joint_target_q` through this regardless of layout.
+        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start`.
         """
-        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+        return self.joint_q_start
 
     def bvh_build_shapes(
         self,
@@ -2154,9 +2292,8 @@ class Model:
     def rigid_contact_max(self) -> int | None:
         """Rigid contact buffer capacity, or ``None`` before collision setup.
 
-        :class:`CollisionPipeline` publishes its resolved capacity. Zero is a
-        valid capacity. Contact-indexed solver observables freeze both capacities
-        for the lifetime of this model.
+        :class:`CollisionPipeline` publishes its resolved capacity, which later
+        pipelines reuse as their default. Zero is a valid capacity.
         """
         return self._rigid_contact_max
 
@@ -2184,20 +2321,16 @@ class Model:
         self._soft_contact_max = value
 
     def _validate_contact_capacity(self, rigid_max: int | None, soft_max: int | None) -> None:
-        """Reject invalid capacities or changes that invalidate solver observables."""
+        """Reject negative capacities."""
         if (rigid_max is not None and rigid_max < 0) or (soft_max is not None and soft_max < 0):
             raise ValueError("Contact capacities must be nonnegative or None.")
-        frozen = self._solver_observable_contact_capacity
-        if frozen is not None and (rigid_max, soft_max) != frozen:
-            raise ValueError(
-                f"Contact capacities are frozen at {frozen} by allocated solver observables; "
-                "create a new model and solver observables to change capacities."
-            )
 
     def _get_contact_capacity(self) -> tuple[int, int]:
         """Return capacities published by a successfully initialized pipeline."""
         if not self._contact_capacity_initialized or self.rigid_contact_max is None or self.soft_contact_max is None:
-            raise RuntimeError("Create CollisionPipeline(model) before requesting contact-indexed solver observables.")
+            raise RuntimeError(
+                "Create CollisionPipeline(model) to publish contact capacities before resolving contact frequencies."
+            )
         return self.rigid_contact_max, self.soft_contact_max
 
     def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
@@ -2245,7 +2378,7 @@ class Model:
         """
         warnings.warn(
             "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2291,7 +2424,7 @@ class Model:
         warnings.warn(
             "Model.collide() is deprecated; create a CollisionPipeline and call "
             "pipeline.collide(state, contacts) instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2331,7 +2464,7 @@ class Model:
         warnings.warn(
             "Model.request_state_attributes() is deprecated in Newton 1.7; "
             "request SolverBase.Observables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._request_state_attributes(*attributes)
@@ -2355,7 +2488,7 @@ class Model:
         warnings.warn(
             "Model.request_contact_attributes() is deprecated in Newton 1.7; "
             "request SolverBase.Observables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._request_contact_attributes(*attributes)
@@ -2456,7 +2589,10 @@ class Model:
             references: Entity or custom-frequency domain indexed by the
                 attribute values, or ``None`` when values are not references.
                 Use a Model.AttributeFrequency enum for built-in domains or a
-                string for custom frequencies. Built-in string names are also supported.
+                string for custom frequencies. Existing built-in strings such as
+                ``"body"`` and ``"world"`` are also supported. Use enums for
+                ``CURVE``, ``SURFACE``, and ``VOLUME``; their string names refer
+                to custom frequencies.
 
         Raises:
             AttributeError: If the attribute already exists or is on the wrong device.
@@ -2483,9 +2619,16 @@ class Model:
             setattr(self, name, attrib)
             full_name = name
 
-        reference_frequency = self._normalize_attribute_reference(references, self.custom_frequency_counts)
+        reference_frequency = self._normalize_attribute_reference(references)
         if isinstance(reference_frequency, str) and reference_frequency not in self.custom_frequency_counts:
-            raise ValueError(f"Unknown custom attribute reference frequency {references!r}")
+            hint = ""
+            enum_name = reference_frequency.upper()
+            if enum_name in Model.AttributeFrequency.__members__:
+                hint = (
+                    f"; to reference the built-in {reference_frequency} domain, "
+                    f"use Model.AttributeFrequency.{enum_name}"
+                )
+            raise ValueError(f"Unknown custom attribute reference frequency {references!r}{hint}")
         if reference_frequency is not None and isinstance(attrib, wp.array):
             integral_dtypes = (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64)
             scalar_dtype = getattr(attrib.dtype, "_wp_scalar_type_", attrib.dtype)

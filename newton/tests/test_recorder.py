@@ -1,9 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
 import tempfile
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -195,6 +197,7 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
     builder = newton.ModelBuilder()
     body = builder.add_body()
     builder.add_shape_capsule(body)
+    builder.add_shape_mesh(body, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
     model = builder.finalize(device=device)
 
     # Create recorder with ring buffer (capacity 3)
@@ -226,14 +229,25 @@ def test_recorder_ringbuffer_save_load(test: TestRecorder, device):
         # Should have loaded the 3 states that were saved
         test.assertEqual(len(new_recorder.history), 3)
 
-        # Test that we can create a new model and restore it
-        restored_model = newton.Model(device=device)
-        new_recorder.playback_model(restored_model)
+        edge_names = ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range")
+        for legacy_names in (False, True):
+            with test.subTest(legacy_names=legacy_names):
+                if legacy_names:
+                    for name in edge_names:
+                        new_recorder.deserialized_model[name] = new_recorder.deserialized_model.pop(f"_{name}")
+                restored_model = newton.Model(device=device)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
+                    new_recorder.playback_model(restored_model)
 
-        # Basic model validation
-        test.assertEqual(restored_model.body_count, model.body_count)
-        test.assertEqual(restored_model.joint_count, model.joint_count)
-        test.assertEqual(restored_model.shape_count, model.shape_count)
+                test.assertEqual(restored_model.body_count, model.body_count)
+                test.assertEqual(restored_model.joint_count, model.joint_count)
+                test.assertEqual(restored_model.shape_count, model.shape_count)
+                for name in edge_names:
+                    original = getattr(model, f"_{name}")
+                    restored = getattr(restored_model, f"_{name}")
+                    test.assertIsNotNone(restored, name)
+                    np.testing.assert_array_equal(restored.numpy(), original.numpy(), err_msg=name)
 
         # Test state history comparison
         for original_state_data, loaded_state_data in zip(recorder.history, new_recorder.history, strict=False):
@@ -683,7 +697,7 @@ def test_mesh_recording_keeps_distinct_appearance(test: TestRecorder, device):
     mesh_b.vertices = mesh_a.vertices
     mesh_b.indices = mesh_a.indices
 
-    serialized = pointer_as_key([mesh_a, mesh_b, mesh_a], cache=ArrayCache())
+    serialized = json.loads(json.dumps(pointer_as_key([mesh_a, mesh_b, mesh_a], cache=ArrayCache())))
     restored = depointer_as_key(serialized, cache=ArrayCache())
 
     test.assertIs(restored[0], restored[2])

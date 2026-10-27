@@ -2163,6 +2163,47 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         for source in sources:
             self.assertEqual(source.custom_attributes["sensor_body"].values, [])
 
+    def test_merge_unused_reference_registered_later(self):
+        """Allow unused reference declarations, then validate and offset their rows."""
+        for method in ("add_builder", "replicate"):
+            with self.subTest(method=method):
+                source = ModelBuilder()
+                source.add_custom_frequency(ModelBuilder.CustomFrequency(name="sensor"))
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(name="sensor_tag", frequency="sensor", dtype=wp.int32)
+                )
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(
+                        name="sensor_target", frequency="sensor", dtype=wp.int32, references="marker", default=0
+                    )
+                )
+                builder = ModelBuilder()
+                merge = getattr(builder, method)
+                args = (source,) if method == "add_builder" else (source, 1)
+                for _ in range(3):
+                    merge(*args)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.get_custom_frequency_count("sensor"), 0)
+                self.assertFalse(hasattr(model, "sensor_target"))
+
+                # Adding a row must invalidate the deferred check, even when
+                # the reference itself still has only a default value.
+                source.add_custom_values(sensor_tag=10)
+                with self.assertRaisesRegex(ValueError, "Unknown references value 'marker'"):
+                    merge(*args)
+
+                source.add_custom_frequency(ModelBuilder.CustomFrequency(name="marker"))
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(name="marker_tag", frequency="marker", dtype=wp.int32)
+                )
+                source.add_custom_values(marker_tag=20)
+                merge(*args)
+                merge(*args)
+                model = builder.finalize(device="cpu")
+                np.testing.assert_array_equal(model.sensor_target.numpy(), [0, 1])
+                np.testing.assert_array_equal(model.sensor_tag.numpy(), [10, 10])
+                np.testing.assert_array_equal(model.marker_tag.numpy(), [20, 20])
+
     def test_custom_frequency_unknown_raises_keyerror(self):
         """Test that get_custom_frequency_count raises KeyError for unknown frequencies."""
         builder = ModelBuilder()
@@ -2296,7 +2337,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         world.add_builder(robot, label_prefix="left")
         world.add_builder(robot, label_prefix="right")
         scene = ModelBuilder()
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model = scene.finalize(device=self.device)
         control = model.control()
 
@@ -2365,9 +2406,50 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         view.set_attribute("test.item_value", model, np.array([[[11.0, 31.0]]], dtype=np.float32))
         np.testing.assert_allclose(model.test.item_value.numpy(), [11.0, 20.0, 31.0])
 
+    def test_once_reference_defaults_preserve_destination(self):
+        """Keep a global reference unless the source explicitly overrides it."""
+        source = ModelBuilder()
+        source.add_body()
+        source.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="root_body",
+                dtype=wp.int32,
+                frequency=AttributeFrequency.ONCE,
+                references="body",
+                default=0,
+            )
+        )
+        self.assertEqual(source.custom_attributes["root_body"].references, "body")
+        for values, expected in ((None, 2), ({}, 0), ({0: 1}, 1)):
+            with self.subTest(destination_values=values):
+                scene = ModelBuilder()
+                scene.add_body()
+                scene.add_body()
+                if values is not None:
+                    scene.add_custom_attribute(
+                        ModelBuilder.CustomAttribute(
+                            name="root_body",
+                            dtype=wp.int32,
+                            frequency=AttributeFrequency.ONCE,
+                            references=AttributeFrequency.BODY,
+                            default=0,
+                            values=values.copy(),
+                        )
+                    )
+                scene.add_builder(source)
+                scene.replicate(source, 2)
+                model = scene.finalize(device=self.device)
+                np.testing.assert_array_equal(model.root_body.numpy(), [expected])
+
+        source.custom_attributes["root_body"].values[0] = 0
+        scene.add_builder(source)
+        np.testing.assert_array_equal(scene.finalize(device=self.device).root_body.numpy(), [5])
+
     def test_world_frequency_merge_add_world(self):
-        """Test that WORLD-frequency attributes are correctly indexed when using add_world()."""
+        """Copy world rows without letting a global merge overwrite their reference defaults."""
         sub = ModelBuilder()
+        sub.add_body()
+        sub.add_body()
         sub.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="world_data",
@@ -2380,17 +2462,31 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # Manually set value at index 0 for the sub-builder's world
         sub.custom_attributes["test:world_data"].values = {0: 42}
 
-        main = ModelBuilder()
-        main.add_world(sub)
-        main.add_world(sub)
-
-        model = main.finalize(device=self.device)
-        arr = model.test.world_data.numpy()
-
-        self.assertEqual(model.world_count, 2)
-        self.assertEqual(len(arr), 2)
-        self.assertEqual(arr[0], 42)
-        self.assertEqual(arr[1], 42)
+        ground = ModelBuilder()
+        ground.add_body()
+        for builder in (sub, ground):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="world_root_body",
+                    dtype=wp.int32,
+                    frequency=AttributeFrequency.WORLD,
+                    references="body",
+                    default=0,
+                )
+            )
+        for method in ("add_world", "replicate"):
+            with self.subTest(method=method):
+                main = ModelBuilder()
+                if method == "add_world":
+                    main.add_world(sub)
+                    main.add_world(sub)
+                else:
+                    main.replicate(sub, 2)
+                main.add_builder(ground)
+                model = main.finalize(device=self.device)
+                self.assertEqual(model.world_count, 2)
+                np.testing.assert_array_equal(model.test.world_data.numpy(), [42, 42])
+                np.testing.assert_array_equal(model.world_root_body.numpy(), [0, 2])
 
     def test_custom_attribute_model_finalizer_rejects_conflicting_registration(self):
         builder = ModelBuilder()

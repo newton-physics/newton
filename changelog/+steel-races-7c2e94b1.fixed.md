@@ -1,0 +1,1 @@
+Fix `SolverSteel` races that could change CUDA results from run to run: the mass-matrix fill of free and ball joints, and missing warp synchronization in several PGS solve kernels. A full `SolverSteel.reset()` (`world_mask=None`) also restarts the step cadence of later eager steps, so they repeat a fresh solver's steps.

@@ -13,6 +13,7 @@ from ...math import (
     velocity_at_point,
 )
 from ...sim import BodyFlags, JointType, Model
+from ...sim.articulation import eval_angular_coordinates
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from ...sim.joint_mimic import eval_joint_mimic_coordinate
 
@@ -326,10 +327,12 @@ def solve_springs(
     spring_stiffness: wp.array[float],
     spring_damping: wp.array[float],
     dt: float,
-    lambdas: wp.array[float],
+    lambda_in: wp.array[float],
+    lambda_out: wp.array[float],
     delta: wp.array[wp.vec3],
 ):
     tid = wp.tid()
+    lambda_out[tid] = lambda_in[tid]
 
     i = spring_indices[tid * 2 + 0]
     j = spring_indices[tid * 2 + 1]
@@ -371,12 +374,13 @@ def solve_springs(
     gamma = kd / (ke * dt)
 
     grad_c_dot_v = dt * wp.dot(grad_c_xi, vij)  # Note: dt because from the paper we want x_i - x^n, not v...
-    dlambda = -1.0 * (c + alpha * lambdas[tid] + gamma * grad_c_dot_v) / ((1.0 + gamma) * denom + alpha)
+    lambda_prev = lambda_in[tid]
+    dlambda = -1.0 * (c + alpha * lambda_prev + gamma * grad_c_dot_v) / ((1.0 + gamma) * denom + alpha)
 
     dxi = wi * dlambda * grad_c_xi
     dxj = wj * dlambda * grad_c_xj
 
-    lambdas[tid] = lambdas[tid] + dlambda
+    lambda_out[tid] = lambda_prev + dlambda
 
     wp.atomic_add(delta, i, dxi)
     wp.atomic_add(delta, j, dxj)
@@ -391,10 +395,12 @@ def bending_constraint(
     rest: wp.array[float],
     bending_properties: wp.array2d[float],
     dt: float,
-    lambdas: wp.array[float],
+    lambda_in: wp.array[float],
+    lambda_out: wp.array[float],
     delta: wp.array[wp.vec3],
 ):
     tid = wp.tid()
+    lambda_out[tid] = lambda_in[tid]
     eps = 1.0e-6
 
     ke = bending_properties[tid, 0]
@@ -468,14 +474,15 @@ def bending_constraint(
 
     grad_dot_v = dt * (wp.dot(grad_x1, v1) + wp.dot(grad_x2, v2) + wp.dot(grad_x3, v3) + wp.dot(grad_x4, v4))
 
-    dlambda = -1.0 * (c + alpha * lambdas[tid] + gamma * grad_dot_v) / ((1.0 + gamma) * denominator + alpha)
+    lambda_prev = lambda_in[tid]
+    dlambda = -1.0 * (c + alpha * lambda_prev + gamma * grad_dot_v) / ((1.0 + gamma) * denominator + alpha)
 
     delta0 = w1 * dlambda * grad_x1
     delta1 = w2 * dlambda * grad_x2
     delta2 = w3 * dlambda * grad_x3
     delta3 = w4 * dlambda * grad_x4
 
-    lambdas[tid] = lambdas[tid] + dlambda
+    lambda_out[tid] = lambda_prev + dlambda
 
     wp.atomic_add(delta, i, delta0)
     wp.atomic_add(delta, j, delta1)
@@ -494,6 +501,8 @@ def solve_tetrahedra(
     materials: wp.array2d[float],
     dt: float,
     relaxation: float,
+    lambda_in: wp.array[float],
+    lambda_out: wp.array[float],
     delta: wp.array[wp.vec3],
 ):
     # Tetrahedral XPBD constraint solve.
@@ -523,12 +532,15 @@ def solve_tetrahedra(
     # Damping uses XPBD's compliant Rayleigh term:
     #
     #     gamma = k_damp / (k * dt)
-    #     dlambda = -(C + gamma * dt * grad(C).dot(v))
+    #     dlambda = -(C + alpha * lambda + gamma * dt * grad(C).dot(v))
     #               / ((1 + gamma) * sum_i(w_i |grad_i C|^2) + alpha)
     #
-    # The solver does not persist lambdas for this constraint, so each iteration
-    # computes a local multiplier and accumulates relaxed position corrections.
+    # Each tetrahedron stores one accumulated multiplier per scalar constraint.
+    # They persist across nonlinear iterations within the time step so finite
+    # compliance does not harden as the iteration count increases.
     tid = wp.tid()
+    lambda_out[tid * 2] = lambda_in[tid * 2]
+    lambda_out[tid * 2 + 1] = lambda_in[tid * 2 + 1]
 
     i = indices[tid, 0]
     j = indices[tid, 1]
@@ -597,37 +609,36 @@ def solve_tetrahedra(
             compliance = inv_rest_volume / k_lambda
             stiffness = k_lambda
 
-        if C != 0.0:
-            dP = dC * inv_QT
-            grad1 = wp.vec3(dP[0][0], dP[1][0], dP[2][0])
-            grad2 = wp.vec3(dP[0][1], dP[1][1], dP[2][1])
-            grad3 = wp.vec3(dP[0][2], dP[1][2], dP[2][2])
-            grad0 = -grad1 - grad2 - grad3
+        dP = dC * inv_QT
+        grad1 = wp.vec3(dP[0][0], dP[1][0], dP[2][0])
+        grad2 = wp.vec3(dP[0][1], dP[1][1], dP[2][1])
+        grad3 = wp.vec3(dP[0][2], dP[1][2], dP[2][2])
+        grad0 = -grad1 - grad2 - grad3
 
-            w = (
-                wp.dot(grad0, grad0) * w0
-                + wp.dot(grad1, grad1) * w1
-                + wp.dot(grad2, grad2) * w2
-                + wp.dot(grad3, grad3) * w3
-            )
+        w = (
+            wp.dot(grad0, grad0) * w0
+            + wp.dot(grad1, grad1) * w1
+            + wp.dot(grad2, grad2) * w2
+            + wp.dot(grad3, grad3) * w3
+        )
 
-            if w > 0.0:
-                alpha = compliance / dt / dt
-                gamma = float(0.0)
-                grad_dot_v = float(0.0)
-                if k_damp > 0.0 and stiffness > 0.0:
-                    gamma = k_damp / (stiffness * dt)
-                    grad_dot_v = dt * (wp.dot(grad0, v0) + wp.dot(grad1, v1) + wp.dot(grad2, v2) + wp.dot(grad3, v3))
-                dlambda = -1.0 * (C + gamma * grad_dot_v) / ((1.0 + gamma) * w + alpha)
+        if w > 0.0:
+            alpha = compliance / dt / dt
+            gamma = float(0.0)
+            grad_dot_v = float(0.0)
+            if k_damp > 0.0 and stiffness > 0.0:
+                gamma = k_damp / (stiffness * dt)
+                grad_dot_v = dt * (wp.dot(grad0, v0) + wp.dot(grad1, v1) + wp.dot(grad2, v2) + wp.dot(grad3, v3))
+            lambda_index = tid * num_terms + term
+            lambda_prev = lambda_in[lambda_index]
+            dlambda = -1.0 * (C + alpha * lambda_prev + gamma * grad_dot_v) / ((1.0 + gamma) * w + alpha)
+            dlambda *= relaxation
+            lambda_out[lambda_index] = lambda_prev + dlambda
 
-                wp.atomic_add(delta, i, w0 * dlambda * grad0 * relaxation)
-                wp.atomic_add(delta, j, w1 * dlambda * grad1 * relaxation)
-                wp.atomic_add(delta, k, w2 * dlambda * grad2 * relaxation)
-                wp.atomic_add(delta, l, w3 * dlambda * grad3 * relaxation)
-                # wp.atomic_add(particle.num_corr, id0, 1)
-                # wp.atomic_add(particle.num_corr, id1, 1)
-                # wp.atomic_add(particle.num_corr, id2, 1)
-                # wp.atomic_add(particle.num_corr, id3, 1)
+            wp.atomic_add(delta, i, w0 * dlambda * grad0)
+            wp.atomic_add(delta, j, w1 * dlambda * grad1)
+            wp.atomic_add(delta, k, w2 * dlambda * grad2)
+            wp.atomic_add(delta, l, w3 * dlambda * grad3)
 
     # C_Spherical
     # r_s = wp.sqrt(wp.dot(f1, f1) + wp.dot(f2, f2) + wp.dot(f3, f3))
@@ -1087,24 +1098,21 @@ def apply_joint_forces(
             a_p = wp.transform_vector(X_wp, axis)
             f_total += f * a_p
 
-        if ang_axis_count > 0:
-            axis = joint_axis[qd_start + lin_axis_count + 0]
-            f = joint_f[qd_start + lin_axis_count + 0]
-            a_p = wp.transform_vector(X_wp, axis)
-            t_total += f * a_p
-        if ang_axis_count > 1:
-            axis = joint_axis[qd_start + lin_axis_count + 1]
-            f = joint_f[qd_start + lin_axis_count + 1]
-            a_p = wp.transform_vector(X_wp, axis)
-            t_total += f * a_p
-        if ang_axis_count > 2:
-            axis = joint_axis[qd_start + lin_axis_count + 2]
-            f = joint_f[qd_start + lin_axis_count + 2]
-            a_p = wp.transform_vector(X_wp, axis)
-            t_total += f * a_p
+        ang_start = qd_start + lin_axis_count
+        if ang_axis_count == 1:
+            axis = joint_axis[ang_start]
+            t_total += joint_f[ang_start] * wp.transform_vector(X_wp, axis)
+        elif ang_axis_count > 1:
+            _angles, covectors = eval_angular_coordinates(
+                joint_axis, ang_start, ang_axis_count, wp.transform_get_rotation(X_wp), wp.transform_get_rotation(X_wc)
+            )
+            tau = wp.vec3(joint_f[ang_start], joint_f[ang_start + 1], 0.0)
+            if ang_axis_count == 3:
+                tau[2] = joint_f[ang_start + 2]
+            t_total += wp.transpose(covectors) * tau
 
     else:
-        print("joint type not handled in apply_joint_forces")
+        print("joint type not handled in apply_joint_forces")  # noqa: T201
 
     # write forces
     child_wrench_at_com = wp.spatial_vector(f_total, t_total + wp.cross(r_c, f_total))
@@ -1888,7 +1896,73 @@ def solve_body_joints(
                 lin_delta_c += linear_c * (d_lambda * linear_relaxation)
                 ang_delta_c += angular_c * (d_lambda * angular_relaxation)
 
-    if type == JointType.FIXED or type == JointType.PRISMATIC or type == JointType.REVOLUTE or type == JointType.D6:
+    if type == JointType.D6 and ang_axis_count >= 2:
+        # constrain the intrinsic-Euler coordinates used by eval_fk, one per angular DOF
+        ang_start = axis_start + lin_axis_count
+        ang_target_start = target_axis_start + lin_axis_count
+        angles, covectors = eval_angular_coordinates(
+            joint_axis, ang_start, ang_axis_count, wp.transform_get_rotation(X_wp), wp.transform_get_rotation(X_wc)
+        )
+        omega_rel = omega_c - omega_p
+
+        for dim in range(3):
+            e = angles[dim]
+            angular_c = covectors[dim]
+            angular_p = -angular_c
+            derr = wp.dot(angular_c, omega_rel)
+
+            # the third coordinate of a 2-axis joint is locked
+            lower = 0.0
+            upper = 0.0
+            ke = 0.0
+            kd = 0.0
+            target_pos = 0.0
+            target_vel = 0.0
+            if dim < ang_axis_count:
+                lower = joint_limit_lower[ang_start + dim]
+                upper = joint_limit_upper[ang_start + dim]
+                ke = joint_target_ke[ang_start + dim]
+                kd = joint_target_kd[ang_start + dim]
+                target_pos = joint_target_q[ang_target_start + dim]
+                target_vel = joint_target_qd[ang_start + dim]
+
+            err = 0.0
+            compliance = angular_compliance
+            damping = 0.0
+            if e < lower:
+                err = e - lower
+            elif e > upper:
+                err = e - upper
+            elif ke > 0.0:
+                err = e - wp.clamp(target_pos, lower, upper)
+                compliance = 1.0 / ke
+                damping = kd
+            elif kd > 0.0:
+                compliance = 1.0 / kd
+                damping = kd
+
+            d_lambda = (
+                compute_angular_correction(
+                    err,
+                    derr - target_vel,
+                    pose_p,
+                    pose_c,
+                    I_inv_p,
+                    I_inv_c,
+                    angular_p,
+                    angular_c,
+                    0.0,
+                    compliance,
+                    damping,
+                    dt,
+                )
+                * angular_relaxation
+            )
+
+            ang_delta_p += angular_p * d_lambda
+            ang_delta_c += angular_c * d_lambda
+
+    elif type == JointType.FIXED or type == JointType.PRISMATIC or type == JointType.REVOLUTE or type == JointType.D6:
         # handle angular constraints
 
         # local joint rotations

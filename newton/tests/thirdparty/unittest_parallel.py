@@ -374,6 +374,8 @@ def main(argv=None):
                 file=sys.stderr,
             )
 
+        test_suites = _spread_by_module(test_suites)  # NVIDIA Modification
+
         # Don't use more processes than test suites
         process_count = max(1, min(len(test_suites), process_count))
 
@@ -453,6 +455,9 @@ def main(argv=None):
             print(f"Running {discover_suite.countTestCases()} total tests (serial fallback)", file=sys.stderr)
             if args.verbose > 1:
                 print(file=sys.stderr)
+
+            # Initialize here so the init banner never lands in a test's captured output.
+            wp.init()
 
             # Run the tests in serial
             start_time = time.perf_counter()
@@ -648,6 +653,24 @@ def _iter_class_suites(test_suite):
             yield from _iter_class_suites(suite)
 
 
+def _spread_by_module(test_suites, depth=0):
+    """Order suites so each package, and each module within it, is spread evenly over the run.
+
+    Concurrent suites of one module or package can each compile the same uncached kernels.
+    NVIDIA Modification
+    """
+    groups = {}
+    for suite in test_suites:
+        case = next(_iter_test_cases(suite), None)
+        path = type(case).__module__.split(".") if case is not None else []
+        groups.setdefault(path[depth] if depth < len(path) else None, []).append(suite)
+    keyed = []
+    for index, (key, group) in enumerate(groups.items()):
+        ordered = group if key is None else _spread_by_module(group, depth + 1)
+        keyed += [((i + 0.5) / len(ordered), index, suite) for i, suite in enumerate(ordered)]
+    return [suite for *_, suite in sorted(keyed, key=lambda item: item[:2])]
+
+
 # Iterate test cases (methods)
 def _iter_test_cases(test_suite):
     if isinstance(test_suite, unittest.TestCase):
@@ -841,6 +864,9 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
         elif "WARP_CACHE_ROOT" in os.environ:
             # Using a shared cache for all test processes
             wp.config.kernel_cache_dir = os.getenv("WARP_CACHE_ROOT")
+
+        # Initialize here so the init banner never lands in a test's captured output.
+        wp.init()
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -32,8 +32,10 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL
 from newton._src.geometry.kernels import triangle_closest_point
+from newton._src.geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from newton._src.math import orthonormal_basis, quat_velocity
 from newton._src.sim import JointType
+from newton._src.sim.articulation import eval_angular_coordinates
 from newton._src.sim.contacts import contact_surface_point, contact_surface_separation
 from newton._src.solvers.solver import integrate_rigid_body
 from newton._src.solvers.vbd.interval_arithmetic import (
@@ -982,6 +984,33 @@ def compute_kappa_and_jacobian(
 
 
 @wp.func
+def compute_joint_kappa_and_jacobian(
+    joint_axis: wp.array[wp.vec3],
+    ang_start: int,
+    ang_count: int,
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    q_wp_rest: wp.quat,
+    q_wc_rest: wp.quat,
+):
+    """:func:`compute_kappa_and_jacobian` with D6 coordinates for joints with 2-3 angular axes.
+
+    Such joints use the absolute coordinates of ``eval_fk`` expressed in their joint-axis basis, so
+    ``dot(kappa, a_k)`` is coordinate ``k`` and ``J_world * a_k`` its world-frame covector.
+    """
+    if ang_count < 2:
+        return compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+    coords, covectors = eval_angular_coordinates(joint_axis, ang_start, ang_count, q_wp, q_wc)
+    a0 = wp.normalize(joint_axis[ang_start])
+    a1 = wp.normalize(joint_axis[ang_start + 1])
+    a2 = wp.cross(a0, a1)
+    if ang_count == 3:
+        a2 = wp.normalize(joint_axis[ang_start + 2])
+    axes = wp.matrix_from_cols(a0, a1, a2)
+    return axes * coords, wp.transpose(covectors) * wp.transpose(axes)
+
+
+@wp.func
 def build_joint_projectors(
     jt: int,
     joint_axis: wp.array[wp.vec3],
@@ -1470,8 +1499,8 @@ def _update_joint_structural_dual(
 def evaluate_angular_constraint_force_hessian(
     q_wp: wp.quat,
     q_wc: wp.quat,
-    q_wp_rest: wp.quat,
-    q_wc_rest: wp.quat,
+    kappa_now_vec: wp.vec3,
+    J_world: wp.mat33,
     q_wp_prev: wp.quat,
     q_wc_prev: wp.quat,
     is_parent: bool,
@@ -1485,7 +1514,7 @@ def evaluate_angular_constraint_force_hessian(
     use_compliant_alm: int,
     dt: float,
 ):
-    """Projected angular constraint force/Hessian using rotation-vector error (kappa).
+    """Projected angular constraint force/Hessian for an angular error ``kappa`` with Jacobian ``J_world``.
 
     Generic evaluator for non-rod angular constraints. Computes force and
     Hessian in the constrained subspace defined by the orthogonal-complement
@@ -1504,13 +1533,10 @@ def evaluate_angular_constraint_force_hessian(
     stiffness in legacy mode. ``material_k`` supplies the finite material stiffness
     used by compliant ALM.
     Returns:
-        (tau_world, H_aa, kappa, J_world) -- constraint torque and Hessian in world
-        frame, plus the rotation vector and world-frame Jacobian for reuse by the
-        drive/limit block.
+        (tau_world, H_aa) -- constraint torque and Hessian in world frame.
     """
     inv_dt = 1.0 / dt
 
-    kappa_now_vec, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
     kappa_stab = kappa_now_vec - alpha * C0_ang
     kappa_perp = P * kappa_stab
     joint_primal_k, lambda_eff = _material_force_terms(solve_weight, material_k, lambda_ang, use_compliant_alm)
@@ -1539,7 +1565,7 @@ def evaluate_angular_constraint_force_hessian(
     if not is_parent:
         tau_world = -tau_world
 
-    return tau_world, H_aa, kappa_now_vec, J_world
+    return tau_world, H_aa
 
 
 @wp.func
@@ -1807,10 +1833,12 @@ def evaluate_rod_stretch_shear_force_hessian(
 @wp.struct
 class RigidForceElementAdjacencyInfo:
     r"""
-    Stores adjacency information for rigid bodies and their connected joints using CSR (Compressed Sparse Row) format.
+    Stores adjacency information for rigid bodies and constrained joints using CSR (Compressed Sparse Row) format.
+
+    FREE joints are excluded; disabled constraints are retained because they can be enabled between steps.
 
     - body_adj_joints: Flattened array of joint IDs. Size is sum over all bodies of N_i, where N_i is the
-      number of joints connected to body i.
+      number of constrained joints connected to body i.
 
     - body_adj_joints_offsets: Offset array indicating where each body's joint list starts.
       Size is |B|+1 (number of bodies + 1).
@@ -1820,16 +1848,6 @@ class RigidForceElementAdjacencyInfo:
     # Rigid body joint adjacency
     body_adj_joints: wp.array[wp.int32]
     body_adj_joints_offsets: wp.array[wp.int32]
-
-    def to(self, device):
-        if device == self.body_adj_joints.device:
-            return self
-        else:
-            adjacency_gpu = RigidForceElementAdjacencyInfo()
-            adjacency_gpu.body_adj_joints = self.body_adj_joints.to(device)
-            adjacency_gpu.body_adj_joints_offsets = self.body_adj_joints_offsets.to(device)
-
-            return adjacency_gpu
 
 
 @wp.func
@@ -3267,11 +3285,12 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, _ang_kappa, _ang_J = evaluate_angular_constraint_force_hessian(
+            kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3329,16 +3348,14 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
 
-        kappa_cached = wp.vec3(0.0)
-        J_world_cached = wp.mat33(0.0)
-        has_cached = False
+        kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, kappa_cached, J_world_cached = evaluate_angular_constraint_force_hessian(
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3352,7 +3369,6 @@ def evaluate_joint_force_hessian(
                 joint_compliant_alm,
                 dt,
             )
-            has_cached = True
         else:
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
@@ -3379,12 +3395,6 @@ def evaluate_joint_force_hessian(
 
         if has_drive or has_limits:
             inv_dt = 1.0 / dt
-
-            if has_cached:
-                kappa = kappa_cached
-                J_world = J_world_cached
-            else:
-                kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
             theta = wp.dot(kappa, a)
             theta_abs = _unwrap_hinge_angle(theta + joint_rest_angle[dof_idx], joint_angle_prev[dof_idx])
@@ -3450,11 +3460,12 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, _ang_kappa, _ang_J = evaluate_angular_constraint_force_hessian(
+            kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3594,16 +3605,16 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
 
-        kappa_cached = wp.vec3(0.0)
-        J_world_cached = wp.mat33(0.0)
-        has_cached = False
+        kappa, J_world = compute_joint_kappa_and_jacobian(
+            joint_axis, qd_start + lin_count, ang_count, q_wp, q_wc, q_wp_rest, q_wc_rest
+        )
 
         if ang_count < 3 and solve_weight_ang > 0.0:
-            t_ang, Haa_ang, kappa_cached, J_world_cached = evaluate_angular_constraint_force_hessian(
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3617,7 +3628,6 @@ def evaluate_joint_force_hessian(
                 joint_compliant_alm,
                 dt,
             )
-            has_cached = True
 
             total_torque = total_torque + t_ang
             total_H_aa = total_H_aa + Haa_ang
@@ -3694,12 +3704,6 @@ def evaluate_joint_force_hessian(
         # Angular drives/limits (per free angular DOF)
         if ang_count > 0:
             inv_dt = 1.0 / dt
-
-            if has_cached:
-                kappa = kappa_cached
-                J_world = J_world_cached
-            else:
-                kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
             omega_p = quat_velocity(q_wp, q_wp_prev, dt)
             omega_c = quat_velocity(q_wc, q_wc_prev, dt)
@@ -3868,52 +3872,6 @@ def reset_rigid_state(
                 dof = dof_start + offset
                 joint_drive_lambda[dof] = 0.0
                 joint_limit_lambda[dof] = 0.0
-
-
-@wp.kernel
-def _count_num_adjacent_joints(
-    joint_parent: wp.array[wp.int32],
-    joint_child: wp.array[wp.int32],
-    num_body_adjacent_joints: wp.array[wp.int32],
-):
-    joint_count = joint_parent.shape[0]
-    for joint_id in range(joint_count):
-        parent_id = joint_parent[joint_id]
-        child_id = joint_child[joint_id]
-
-        # Skip world joints (parent/child == -1)
-        if parent_id >= 0:
-            num_body_adjacent_joints[parent_id] = num_body_adjacent_joints[parent_id] + 1
-        if child_id >= 0:
-            num_body_adjacent_joints[child_id] = num_body_adjacent_joints[child_id] + 1
-
-
-@wp.kernel
-def _fill_adjacent_joints(
-    joint_parent: wp.array[wp.int32],
-    joint_child: wp.array[wp.int32],
-    body_adjacent_joints_offsets: wp.array[wp.int32],
-    body_adjacent_joints_fill_count: wp.array[wp.int32],
-    body_adjacent_joints: wp.array[wp.int32],
-):
-    joint_count = joint_parent.shape[0]
-    for joint_id in range(joint_count):
-        parent_id = joint_parent[joint_id]
-        child_id = joint_child[joint_id]
-
-        # Add joint to parent body's adjacency list
-        if parent_id >= 0:
-            fill_count_parent = body_adjacent_joints_fill_count[parent_id]
-            buffer_offset_parent = body_adjacent_joints_offsets[parent_id]
-            body_adjacent_joints[buffer_offset_parent + fill_count_parent] = joint_id
-            body_adjacent_joints_fill_count[parent_id] = fill_count_parent + 1
-
-        # Add joint to child body's adjacency list
-        if child_id >= 0:
-            fill_count_child = body_adjacent_joints_fill_count[child_id]
-            buffer_offset_child = body_adjacent_joints_offsets[child_id]
-            body_adjacent_joints[buffer_offset_child + fill_count_child] = joint_id
-            body_adjacent_joints_fill_count[child_id] = fill_count_child + 1
 
 
 @wp.kernel
@@ -4178,7 +4136,7 @@ def build_body_particle_contact_lists(
     body_particle_contact_overflow_max: wp.array[wp.int32],
 ):
     """
-    Build per-body contact lists for body-particle contacts.
+    Build per-body candidate lists independent of current force eligibility.
 
     Each contact is listed only if its body is dynamic (effective inverse
     mass > 0); static/kinematic bodies are skipped since VBD never moves them.
@@ -4220,7 +4178,7 @@ def check_contact_overflow(
             )
         else:
             wp.printf(
-                "Warning: Per-body particle contact buffer overflowed %d > %d.\n",
+                "Warning: Per-body particle contact buffer overflowed %d > %d; scanning all stored contacts.\n",
                 omax,
                 buffer_size,
             )
@@ -4333,7 +4291,6 @@ def init_rod_rest_bend_twist(
     joint_type: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_target_q: wp.array[float],
-    target_uses_coord_layout: bool,
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
 ):
@@ -4346,20 +4303,12 @@ def init_rod_rest_bend_twist(
         return
 
     target_start = joint_target_q_start[j]
-    if target_uses_coord_layout:
-        q_wc_rest = wp.quat(
-            joint_target_q[target_start + 3],
-            joint_target_q[target_start + 4],
-            joint_target_q[target_start + 5],
-            joint_target_q[target_start + 6],
-        )
-    else:
-        angles = wp.vec3(
-            joint_target_q[target_start + 3],
-            joint_target_q[target_start + 4],
-            joint_target_q[target_start + 5],
-        )
-        q_wc_rest = wp.quat_from_euler(angles, 2, 1, 0)
+    q_wc_rest = wp.quat(
+        joint_target_q[target_start + 3],
+        joint_target_q[target_start + 4],
+        joint_target_q[target_start + 5],
+        joint_target_q[target_start + 6],
+    )
     q_wc_rest = wp.normalize(q_wc_rest)
 
     # Rest DER bend (parent-local curvature binormal) and rest twist (transported
@@ -4568,7 +4517,9 @@ def step_joint_C0_lambda_rho(
                     (body_q_rest[parent] * joint_X_p[j]) if parent >= 0 else joint_X_p[j]
                 )
                 q_wc_rest = wp.transform_get_rotation(body_q_rest[child] * joint_X_c[j])
-                _kappa, angular_jacobian_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+                _kappa, angular_jacobian_world = compute_joint_kappa_and_jacobian(
+                    joint_axis, qd_start + linear_count, angular_count, q_wp, q_wc, q_wp_rest, q_wc_rest
+                )
                 for axis in range(angular_count):
                     dof = qd_start + linear_count + axis
                     if _drive_limit_needs_support(
@@ -4705,7 +4656,13 @@ def step_joint_C0_lambda_rho(
         X_wc_rest = body_q_rest[child] * joint_X_c[j]
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-        joint_C0_ang[j] = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        ang_count = int(0)
+        if jt == JointType.D6:
+            ang_count = joint_dof_dim[j, 1]
+        kappa, _J_world = compute_joint_kappa_and_jacobian(
+            joint_axis, joint_qd_start[j] + joint_dof_dim[j, 0], ang_count, q_wp, q_wc, q_wp_rest, q_wc_rest
+        )
+        joint_C0_ang[j] = kappa
         joint_lambda_ang[j] = joint_lambda_ang[j] * lambda_retention
     else:
         joint_C0_ang[j] = zero
@@ -5351,6 +5308,8 @@ def create_accumulate_body_body_contacts_per_body():
         num_contacts = body_contact_counts[body_id]
         if num_contacts > body_contact_buffer_pre_alloc:
             num_contacts = body_contact_buffer_pre_alloc
+        if thread_id_within_body >= num_contacts:
+            return
 
         contact_count = rigid_contact_count[0]
 
@@ -5929,6 +5888,7 @@ def accumulate_body_particle_attachments_per_body(
 def accumulate_body_particle_contacts_per_body(
     dt: float,
     color_group: wp.array[wp.int32],
+    threads_per_body: int,
     # Particle state
     particle_q: wp.array[wp.vec3],
     particle_q_prev: wp.array[wp.vec3],
@@ -5961,6 +5921,7 @@ def accumulate_body_particle_contacts_per_body(
     body_particle_contact_buffer_pre_alloc: int,
     body_particle_contact_counts: wp.array[wp.int32],
     body_particle_contact_indices: wp.array[wp.int32],
+    contact_filter: _SoftContactFilterData,
     # Outputs
     body_forces: wp.array[wp.vec3],
     body_torques: wp.array[wp.vec3],
@@ -5984,8 +5945,8 @@ def accumulate_body_particle_contacts_per_body(
       - Uses per-contact effective penalty/material parameters initialized once per step.
     """
     tid = wp.tid()
-    body_idx_in_group = tid // _NUM_CONTACT_THREADS_PER_BODY
-    thread_id_within_body = tid % _NUM_CONTACT_THREADS_PER_BODY
+    body_idx_in_group = tid // threads_per_body
+    thread_id_within_body = tid % threads_per_body
 
     if body_idx_in_group >= color_group.shape[0]:
         return
@@ -5994,11 +5955,15 @@ def accumulate_body_particle_contacts_per_body(
     if body_inv_mass[body_id] <= 0.0:
         return
 
+    max_contacts = wp.min(body_particle_contact_count[0], body_particle_contact_shape.shape[0])
     num_contacts = body_particle_contact_counts[body_id]
-    if num_contacts > body_particle_contact_buffer_pre_alloc:
-        num_contacts = body_particle_contact_buffer_pre_alloc
-
-    max_contacts = body_particle_contact_count[0]  # single total soft-contact count
+    overflow = num_contacts > body_particle_contact_buffer_pre_alloc
+    if overflow:
+        # The bounded list is only a fast path. Preserve every stored candidate
+        # so particle forces never lose their corresponding body reactions.
+        num_contacts = max_contacts
+    if thread_id_within_body >= num_contacts:
+        return
 
     X_wb = body_q[body_id]
     X_wb_prev = body_q_prev[body_id]
@@ -6012,9 +5977,17 @@ def accumulate_body_particle_contacts_per_body(
 
     i = thread_id_within_body
     while i < num_contacts:
-        contact_idx = body_particle_contact_indices[body_id * body_particle_contact_buffer_pre_alloc + i]
-        i += _NUM_CONTACT_THREADS_PER_BODY
+        contact_idx = i
+        if not overflow:
+            contact_idx = body_particle_contact_indices[body_id * body_particle_contact_buffer_pre_alloc + i]
+        i += threads_per_body
         if contact_idx >= max_contacts:
+            continue
+        if overflow:
+            shape_idx = body_particle_contact_shape[contact_idx]
+            if shape_idx < 0 or shape_body[shape_idx] != body_id:
+                continue
+        if not _soft_contact_force_enabled(contact_idx, contact_filter):
             continue
 
         f_soft = wp.vec3(0.0)
@@ -6127,6 +6100,7 @@ def compute_body_particle_contact_forces(
     body_particle_contact_material_mu: wp.array[float],
     # Soft contact data (body-particle)
     body_particle_contact_count: wp.array[int],
+    contact_filter: _SoftContactFilterData,
     soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
@@ -6148,7 +6122,7 @@ def compute_body_particle_contact_forces(
     solver state.
     """
     tid = wp.tid()
-    if tid >= body_particle_contact_count[0]:
+    if tid >= body_particle_contact_count[0] or not _soft_contact_force_enabled(tid, contact_filter):
         contact_force[tid] = wp.spatial_vector()
         return
 
@@ -7047,7 +7021,9 @@ def update_duals_joint(
         q_wc_prev = wp.transform_get_rotation(X_wc_prev)
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-        kappa, J_world = compute_kappa_and_jacobian(q_wp_rot, q_wc, q_wp_rest, q_wc_rest)
+        kappa, J_world = compute_joint_kappa_and_jacobian(
+            joint_axis, qd_start + lin_count, ang_count, q_wp_rot, q_wc, q_wp_rest, q_wc_rest
+        )
         omega_p = quat_velocity(q_wp_rot, q_wp_prev, dt)
         omega_c = quat_velocity(q_wc, q_wc_prev, dt)
         dkappa_dt = compute_kappa_dot(J_world, omega_p, omega_c)
@@ -7297,6 +7273,7 @@ update_duals_body_body_contacts = create_update_duals_body_body_contacts()
 @wp.kernel
 def update_duals_body_particle_contacts(
     body_particle_contact_count: wp.array[int],
+    contact_filter: _SoftContactFilterData,
     soft_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_shape: wp.array[int],
     body_particle_contact_body_pos: wp.array[wp.vec3],
@@ -7320,7 +7297,7 @@ def update_duals_body_particle_contacts(
     2-3 soft particles -- matching _eval_soft_ef_contact.
     """
     idx = wp.tid()
-    if idx >= body_particle_contact_count[0]:
+    if idx >= body_particle_contact_count[0] or not _soft_contact_force_enabled(idx, contact_filter):
         return
 
     corners = soft_contact_indices[idx]

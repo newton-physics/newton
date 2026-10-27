@@ -11,7 +11,7 @@ capstan slip through the guide friction coefficient.
 import warp as wp
 
 from ...sim.tendon import TendonGuideType
-from ..tendon_kernels import tendon_material_tension, tendon_segment_length_rate
+from ..tendon_kernels import tendon_body_pose, tendon_material_tension, tendon_segment_length_rate
 
 
 @wp.kernel
@@ -112,19 +112,30 @@ def solve_tendon_stretch(
     guide_type_l = tendon_guide_type[guide_l]
     guide_type_r = tendon_guide_type[guide_r]
 
-    pose_l = body_q[body_l]
-    pose_r = body_q[body_r]
-    vel_l = wp.spatial_top(body_qd[body_l])  # linear velocity
-    omega_l = wp.spatial_bottom(body_qd[body_l])  # angular velocity
-    vel_r = wp.spatial_top(body_qd[body_r])
-    omega_r = wp.spatial_bottom(body_qd[body_r])
-
-    com_l = body_com[body_l]
-    com_r = body_com[body_r]
-    m_inv_l = body_inv_mass[body_l]
-    m_inv_r = body_inv_mass[body_r]
-    I_inv_l = body_inv_inertia[body_l]
-    I_inv_r = body_inv_inertia[body_r]
+    pose_l = tendon_body_pose(body_q, body_l)
+    pose_r = tendon_body_pose(body_q, body_r)
+    vel_l = wp.vec3(0.0)
+    omega_l = wp.vec3(0.0)
+    vel_r = wp.vec3(0.0)
+    omega_r = wp.vec3(0.0)
+    com_l = wp.vec3(0.0)
+    com_r = wp.vec3(0.0)
+    m_inv_l = float(0.0)
+    m_inv_r = float(0.0)
+    I_inv_l = wp.mat33(0.0)
+    I_inv_r = wp.mat33(0.0)
+    if body_l >= 0:
+        vel_l = wp.spatial_top(body_qd[body_l])
+        omega_l = wp.spatial_bottom(body_qd[body_l])
+        com_l = body_com[body_l]
+        m_inv_l = body_inv_mass[body_l]
+        I_inv_l = body_inv_inertia[body_l]
+    if body_r >= 0:
+        vel_r = wp.spatial_top(body_qd[body_r])
+        omega_r = wp.spatial_bottom(body_qd[body_r])
+        com_r = body_com[body_r]
+        m_inv_r = body_inv_mass[body_r]
+        I_inv_r = body_inv_inertia[body_r]
 
     x_l = wp.transform_point(pose_l, seg_attachment_l_local[seg])
     x_r = wp.transform_point(pose_r, seg_attachment_r_local[seg])
@@ -223,14 +234,17 @@ def solve_tendon_stretch(
     ang_delta_r = angular_r * d_lambda
 
     if body_l == body_r:
-        wp.atomic_add(
-            body_deltas,
-            body_l,
-            wp.spatial_vector(lin_delta_l + lin_delta_r, ang_delta_l + ang_delta_r),
-        )
+        if body_l >= 0:
+            wp.atomic_add(
+                body_deltas,
+                body_l,
+                wp.spatial_vector(lin_delta_l + lin_delta_r, ang_delta_l + ang_delta_r),
+            )
     else:
-        wp.atomic_add(body_deltas, body_l, wp.spatial_vector(lin_delta_l, ang_delta_l))
-        wp.atomic_add(body_deltas, body_r, wp.spatial_vector(lin_delta_r, ang_delta_r))
+        if body_l >= 0:
+            wp.atomic_add(body_deltas, body_l, wp.spatial_vector(lin_delta_l, ang_delta_l))
+        if body_r >= 0:
+            wp.atomic_add(body_deltas, body_r, wp.spatial_vector(lin_delta_r, ang_delta_r))
 
 
 @wp.kernel
@@ -273,6 +287,8 @@ def solve_tendon_slip(
     if radius <= 0.0 or seg_left < 0 or seg_right < 0:
         return
     body = tendon_guide_body[guide_idx]
+    if body < 0:
+        return
     pose = body_q[body]
     center = wp.transform_point(pose, tendon_guide_offset[guide_idx])
     normal = wp.transform_vector(pose, tendon_guide_axis[guide_idx])
