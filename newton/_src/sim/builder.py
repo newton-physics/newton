@@ -4841,6 +4841,7 @@ class ModelBuilder:
         parse_visuals_as_colliders: bool = False,
         parse_meshes: bool = True,
         parse_sites: bool = True,
+        parse_sensors: bool = False,
         parse_visuals: bool = True,
         parse_mujoco_options: bool = True,
         up_axis: AxisType = Axis.Z,
@@ -4951,6 +4952,9 @@ class ModelBuilder:
             parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
             parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+            parse_sensors: Experimental opt-in import of scalar joint encoders, site poses, and IMU
+                declarations as ``model.mujoco.sensor_*`` bindings. Site-based declarations require
+                ``parse_sites=True``. Does not create runtime sensor outputs. Default is False.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -5005,6 +5009,7 @@ class ModelBuilder:
             parse_visuals_as_colliders=parse_visuals_as_colliders,
             parse_meshes=parse_meshes,
             parse_sites=parse_sites,
+            parse_sensors=parse_sensors,
             parse_visuals=parse_visuals,
             parse_mujoco_options=parse_mujoco_options,
             up_axis=up_axis,

@@ -24,6 +24,7 @@ from newton._src.solvers.mujoco.constants import (
 )
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton._src.utils.import_mjcf import _load_and_expand_mjcf, parse_mjcf
+from newton.sensors import SensorFrameTransform, SensorIMU
 from newton.solvers import SolverMuJoCo
 
 MASSLESS_FIXED_ROOT_MJCF = """
@@ -11694,6 +11695,248 @@ class TestImportMjcfHeightfieldOrientation(unittest.TestCase):
             png_payload = gray_png((high_low * 255).astype(np.uint8))
             png = '<hfield name="terrain" file="terrain.png" nrow="4" ncol="4" size="2 2 1 0.1"/>'
             np.testing.assert_allclose(imported_grid(png, {"terrain.png": png_payload}), flipped)
+
+
+class TestImportMjcfSensors(unittest.TestCase):
+    XML = """<mujoco model="imu"><compiler angle="degree"/><worldbody>
+        <site name="world_site" pos="1 2 3" euler="0 0 90"/>
+        <body name="base"><freejoint name="root"/><geom size="0.1"/>
+            <body name="mount" pos="0 0 1"><site name="imu_site" quat="0.70710678 0 0 0.70710678"/></body>
+            <body name="moving"><joint name="hinge" ref="30" axis="0 0 1"/>
+                <joint name="slide" type="slide" ref="0.2" axis="0 0 1"/><geom size="0.1"/>
+                <site name="tracked" pos="0.1 0.2 0.3"/>
+            </body>
+        </body></worldbody><sensor>
+        <gyro name="angular" site="imu_site"/>
+        <accelerometer name="linear" site="imu_site"/>
+        <gyro site="world_site"/>
+        <jointpos name="hinge_pos" joint="hinge"/><jointvel name="hinge_vel" joint="hinge"/>
+        <jointpos name="slide_pos" joint="slide"/><jointvel name="slide_vel" joint="slide"/>
+        <framepos name="world_pos" objtype="site" objname="tracked"/>
+        <framequat name="world_quat" objtype="site" objname="tracked"/>
+        <framepos name="relative_pos" objtype="site" objname="tracked" reftype="site" refname="world_site"/>
+        <framequat name="relative_quat" objtype="site" objname="tracked" reftype="site" refname="world_site"/>
+        </sensor></mujoco>"""
+
+    def test_opt_in_and_bindings(self):
+        """Read encoder, pose, and IMU bindings through existing runtime interfaces."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.XML)
+        self.assertNotIn("mujoco:sensor_label", builder.custom_attributes)
+        builder = newton.ModelBuilder()
+        origin = builder.add_site(-1)
+        builder.add_mjcf(self.XML, parse_sensors=True)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.get_custom_frequency_count("mujoco:sensor"), 11)
+        self.assertEqual(
+            model.mujoco.sensor_type,
+            [
+                "gyro",
+                "accelerometer",
+                "gyro",
+                "jointpos",
+                "jointvel",
+                "jointpos",
+                "jointvel",
+                "framepos",
+                "framequat",
+                "framepos",
+                "framequat",
+            ],
+        )
+        self.assertEqual(model.mujoco.sensor_label[:3], ["imu/angular", "imu/linear", "imu/gyro_2"])
+        self.assertEqual(
+            {key for key in builder.custom_attributes if key.startswith("mujoco:sensor_")},
+            {f"mujoco:sensor_{field}" for field in ("label", "type", "site", "refsite", "joint_coord", "joint_dof")},
+        )
+        sites = model.mujoco.sensor_site.numpy()
+        coords, dofs = model.mujoco.sensor_joint_coord.numpy(), model.mujoco.sensor_joint_dof.numpy()
+        self.assertEqual(sites[0], sites[1])
+        self.assertEqual(model.shape_body.numpy()[sites[2]], -1)
+        self.assertGreater(dofs[3], dofs[5])  # Newton groups linear axes before angular axes.
+        self.assertEqual(coords[3], dofs[3] + 1)  # The preceding free joint has seven coordinates.
+        np.testing.assert_array_equal(coords[3:7], [8, 8, 7, 7])
+        np.testing.assert_array_equal(sites[3:7], -1)
+        np.testing.assert_allclose(model.shape_transform.numpy()[sites[0], 3:], [0, 0, 0.70710678, 0.70710678])
+        imu = SensorIMU(model, list(dict.fromkeys(int(site) for site in sites[:3])), request_state_attributes=False)
+        self.assertEqual(imu.n_sensors, 2)
+        state = model.state()
+        q, qd = state.joint_q.numpy(), state.joint_qd.numpy()
+        q[coords[3]], q[coords[5]] = 0.2, 0.1
+        qd[dofs[3]], qd[dofs[5]] = 0.3, 0.4
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        positions = q[coords[3:7]] + model.mujoco.dof_ref.numpy()[dofs[3:7]]
+        np.testing.assert_allclose(positions, [np.deg2rad(30) + 0.2] * 2 + [0.3] * 2, atol=1e-6)
+        refs = model.mujoco.sensor_refsite.numpy()
+        poses = SensorFrameTransform(model, sites[7:].tolist(), [origin if ref < 0 else int(ref) for ref in refs[7:]])
+        poses.update(state)
+        transforms = poses.transforms.numpy()
+        delta = transforms[0, :3] - [1, 2, 3]
+        np.testing.assert_allclose(transforms[2, :3], [delta[1], -delta[0], delta[2]], atol=1e-6)
+        if importlib.util.find_spec("mujoco"):
+            import mujoco
+
+            native = mujoco.MjModel.from_xml_string(self.XML)
+            data = mujoco.MjData(native)
+            data.qpos[7:] += [0.2, 0.1]
+            data.qvel[6:] = [0.3, 0.4]
+            mujoco.mj_forward(native, data)
+            for row in range(3, 11):
+                expected = data.sensordata[native.sensor_adr[row] : native.sensor_adr[row] + native.sensor_dim[row]]
+                if row < 7:
+                    actual = positions[row - 3] if row % 2 else qd[dofs[row]]
+                else:
+                    actual = transforms[row - 7, :3] if row % 2 else transforms[row - 7, 3:][[3, 0, 1, 2]]
+                    if row % 2 == 0 and np.dot(actual, expected) < 0:
+                        actual = -actual
+                np.testing.assert_allclose(actual, expected, atol=1e-6)
+
+    def test_merge_and_replication(self):
+        """Remap mixed shape, coordinate, and DOF references during composition."""
+        source = newton.ModelBuilder()
+        source.add_mjcf(self.XML, parse_sensors=True, collapse_fixed_joints=True)
+        for method in ("add_builder", "add_world", "replicate"):
+            with self.subTest(method=method):
+                target = newton.ModelBuilder()
+                target.add_site(-1)
+                if method == "replicate":
+                    target.replicate(source, 2, label_prefixes=["left", "right"])
+                else:
+                    getattr(target, method)(source, label_prefix="left")
+                    getattr(target, method)(source, label_prefix="right")
+                model = target.finalize(device="cpu")
+                for field, offset in (
+                    ("site", source.shape_count),
+                    ("refsite", source.shape_count),
+                    ("joint_coord", source.joint_coord_count),
+                    ("joint_dof", source.joint_dof_count),
+                ):
+                    values = getattr(model.mujoco, f"sensor_{field}").numpy()
+                    np.testing.assert_array_equal(values[11:], np.where(values[:11] < 0, -1, values[:11] + offset))
+                self.assertEqual(model.mujoco.sensor_label[0], "left/imu/angular")
+                self.assertEqual(model.mujoco.sensor_label[11], "right/imu/angular")
+                sites = model.mujoco.sensor_site.numpy()
+                expected = [-1, -1] if method == "add_builder" else [0, 1]
+                np.testing.assert_array_equal(model.shape_world.numpy()[sites[[0, 11]]], expected)
+
+    def test_repeated_import(self):
+        """Keep raw source names and each import's references through later collapse."""
+        xml = (
+            self.XML.replace('"hinge"', '"j-left"')
+            .replace('"slide" type=', '"j_left" type=')
+            .replace('joint="slide"', 'joint="j_left"')
+        )
+        xml = xml.replace("world_site", "imu-site")
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml, parse_sensors=True)
+        offsets = (builder.shape_count, builder.joint_coord_count, builder.joint_dof_count)
+        builder.add_mjcf(xml.replace('model="imu"', 'model="other"'), parse_sensors=True, scale=2.0)
+        builder.collapse_fixed_joints()
+        model = builder.finalize(device="cpu")
+        for field, offset in zip(("site", "joint_coord", "joint_dof"), offsets, strict=True):
+            values = getattr(model.mujoco, f"sensor_{field}").numpy()
+            np.testing.assert_array_equal(values[11:], np.where(values[:11] < 0, -1, values[:11] + offset))
+        self.assertNotEqual(model.mujoco.sensor_site.numpy()[0], model.mujoco.sensor_site.numpy()[2])
+        np.testing.assert_array_equal(model.mujoco.sensor_joint_coord.numpy()[3:7], [8, 8, 7, 7])
+        self.assertEqual(model.mujoco.sensor_label[11], "other/angular")
+        slide_dof = model.mujoco.sensor_joint_dof.numpy()[16]
+        self.assertAlmostEqual(model.mujoco.dof_ref.numpy()[slide_dof], 0.4)
+
+    def test_unnamed_sensors_avoid_authored_name_collisions(self):
+        """Keep unnamed sensors without overwriting or rejecting authored names."""
+        cases = (
+            ('<gyro site="s"/><gyro name="gyro_0" site="s"/>', ["gyro_0_1", "gyro_0"]),
+            ('<gyro name="gyro_1" site="s"/><gyro site="s"/>', ["gyro_1", "gyro_1_1"]),
+            (
+                '<gyro site="s"/><gyro name="gyro_0" site="s"/><gyro name="gyro_0_1" site="s"/>',
+                ["gyro_0_2", "gyro_0", "gyro_0_1"],
+            ),
+        )
+        for declarations, expected_labels in cases:
+            with self.subTest(declarations=declarations):
+                xml = f'<mujoco><worldbody><site name="s"/></worldbody><sensor>{declarations}</sensor></mujoco>'
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(xml, parse_sensors=True)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.mujoco.sensor_label, expected_labels)
+                np.testing.assert_array_equal(model.mujoco.sensor_site.numpy(), [0] * len(expected_labels))
+
+    def test_invalid_references_and_names(self):
+        """Reject invalid sensor targets, incomplete references, and duplicate source names."""
+        for xml, message in (
+            (self.XML.replace('site="imu_site"', 'site="missing"'), "Unknown sensor site"),
+            (self.XML.replace('joint="hinge"', 'joint="missing"'), "Unknown sensor joint"),
+            (self.XML.replace('joint="hinge"', 'joint="root"'), "scalar hinge or slide"),
+            (self.XML.replace('name="linear"', 'name="angular"'), "Duplicate sensor name"),
+            (self.XML.replace('name="imu_site"', 'name="world_site"'), "Duplicate site name"),
+            (self.XML.replace('name="slide"', 'name="hinge"'), "Duplicate joint name"),
+            (self.XML.replace('refname="world_site"', 'refname="missing"'), "Unknown sensor site"),
+            (self.XML.replace('reftype="site" ', ""), "reftype and refname"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                newton.ModelBuilder().add_mjcf(xml, parse_sensors=True)
+
+    def test_skipped_sites_and_unsupported_types(self):
+        """Keep encoders when site parsing is disabled and diagnose skipped content."""
+        for options, expected in (({"parse_sites": False}, 4), ({"ignore_names": ["imu_site"]}, 9)):
+            with self.subTest(options=options), self.assertLogs("newton", level="WARNING") as caught:
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(self.XML, parse_sensors=True, **options)
+            self.assertTrue(any("Skipping sensor" in item for item in caught.output))
+            self.assertEqual(builder._custom_frequency_counts["mujoco:sensor"], expected)
+        xml = self.XML.replace("<gyro name=", "<magnetometer name=").replace('objtype="site"', 'objtype="body"')
+        with self.assertLogs("newton", level="WARNING"):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(xml, parse_sensors=True)
+        self.assertEqual(builder._custom_frequency_counts["mujoco:sensor"], 6)
+
+    def test_site_defaults_and_ignored_classes(self):
+        """Resolve inherited site transforms and diagnose excluded site classes."""
+        xml = self.XML.replace(
+            "<worldbody>", '<default><default class="imu"><site pos="0.1 0.2 0.3"/></default></default><worldbody>'
+        )
+        xml = xml.replace('name="imu_site"', 'name="imu_site" class="imu"')
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml, parse_sensors=True, collapse_fixed_joints=True)
+        model = builder.finalize(device="cpu")
+        site = model.mujoco.sensor_site.numpy()[0]
+        np.testing.assert_allclose(model.shape_transform.numpy()[site, :3], [0.1, 0.2, 1.3])
+        with self.assertLogs("newton", level="WARNING"):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(xml, parse_sensors=True, ignore_classes=["imu"])
+        self.assertEqual(builder._custom_frequency_counts["mujoco:sensor"], 9)
+
+    def test_unsupported_bindings_and_configuration(self):
+        """Diagnose unapplied configuration and scalar joints replaced by a ball joint."""
+        with self.assertLogs("newton", level="WARNING") as caught:
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(
+                self.XML.replace("<gyro name=", '<gyro noise="0.01" cutoff="20" user="1 2" future="1" name='),
+                parse_sensors=True,
+            )
+        self.assertTrue(any("not imported" in item for item in caught.output))
+        xml = '<mujoco><worldbody><body><joint name="x" axis="1 0 0"/><joint name="y" axis="0 1 0"/><joint name="z" axis="0 0 1"/><geom size="0.1"/></body></worldbody><sensor><jointpos joint="x"/><jointvel joint="y"/></sensor></mujoco>'
+        with self.assertLogs("newton", level="WARNING"):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(xml, parse_sensors=True, convert_3d_hinge_to_ball_joints=True)
+        self.assertEqual(builder.finalize(device="cpu").get_custom_frequency_count("mujoco:sensor"), 0)
+        with self.assertLogs("newton", level="WARNING"):
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(xml, parse_sensors=True, floating=False)
+        self.assertEqual(builder._custom_frequency_counts["mujoco:sensor"], 0)
+
+    def test_multiple_worldbody_sections(self):
+        """Resolve included worldbody sections and allow an empty sensor frequency."""
+        xml = '<mujoco><worldbody><site name="a"/></worldbody><worldbody><site name="b"/></worldbody><sensor><gyro site="b"/></sensor><sensor><accelerometer site="a"/></sensor></mujoco>'
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(xml, parse_sensors=True)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.mujoco.sensor_site.numpy().tolist(), [1, 0])
+        builder = newton.ModelBuilder()
+        builder.add_mjcf("<mujoco/>", parse_sensors=True)
+        self.assertEqual(builder.finalize(device="cpu").get_custom_frequency_count("mujoco:sensor"), 0)
 
 
 if __name__ == "__main__":

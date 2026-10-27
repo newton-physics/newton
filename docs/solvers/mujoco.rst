@@ -1040,10 +1040,11 @@ other direction, MuJoCo has several modeling concepts that are not
 imported when loading an MJCF or USD asset into Newton, and that
 :class:`~newton.solvers.SolverMuJoCo` does not reconstruct during conversion:
 
-- **Sensors** (``<sensor>`` — force/torque, IMU, gyro, accelerometer,
-  rangefinder, touch, camera-based, …). Newton has its own sensor
-  pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo
-  solver.
+- **Runtime sensor computation** (``<sensor>`` — force/torque, IMU, gyro,
+  accelerometer, rangefinder, touch, camera-based, …). Selected encoder,
+  site pose, and IMU bindings can be imported as opt-in :ref:`mujoco-sensor-metadata`, but
+  this does not enable MuJoCo sensor computation. Newton has its own sensor
+  pipeline (:doc:`/concepts/sensors`) that is independent of the MuJoCo solver.
 - **Cameras and lights** declared in MJCF/USD. Newton uses its own viewer
   and lighting pipeline; camera/light primitives in the source asset are
   ignored.
@@ -1250,3 +1251,100 @@ API and subject to change.
 - :class:`~newton.usd.SchemaResolverMjc`
   (:github:`newton/_src/usd/schemas.py`) — USD ``mjc:*`` attribute →
   Newton built-in property mapping.
+
+
+.. _mujoco-sensor-metadata:
+
+MJCF sensor bindings
+--------------------
+
+.. experimental::
+
+   The ``parse_sensors`` parameter and ``model.mujoco.sensor_*`` attributes may
+   change without the normal deprecation period.
+
+``ModelBuilder.add_mjcf(parse_sensors=True)`` preserves the following source
+bindings in the ``mujoco:sensor`` custom frequency. Import is disabled by default;
+these bindings allocate no solver outputs or runtime sensors.
+
+.. list-table::
+   :header-rows: 1
+
+   * - MJCF declaration
+     - Supported target
+     - Runtime value
+   * - ``jointpos``, ``jointvel``
+     - Scalar hinge/slide, including individual axes grouped into a D6 joint.
+     - ``state.joint_q[coord] + model.mujoco.dof_ref[dof]`` or ``state.joint_qd[dof]``.
+   * - ``framepos``, ``framequat``
+     - ``objtype="site"``, with the world or ``reftype="site"`` as reference.
+     - Site position or orientation in the selected frame.
+   * - ``gyro``, ``accelerometer``
+     - Imported site, including world sites.
+     - :class:`newton.sensors.SensorIMU` angular velocity or specific force.
+
+Each supported declaration contributes one row in source order:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Attribute
+     - Meaning
+   * - ``sensor_label``, ``sensor_type``
+     - Model-prefixed source name and original MJCF tag. Unnamed declarations use
+       ``<tag>_<source index>`` with a suffix when needed to avoid collisions.
+   * - ``sensor_site``, ``sensor_refsite``
+     - Target and reference site shape indices. A pose reference of -1 means the world.
+   * - ``sensor_joint_coord``, ``sensor_joint_dof``
+     - Scalar coordinate and DOF indices. These can differ after free/ball joints.
+
+Unused references are -1. Names and references follow builder composition,
+replication, and fixed-joint collapse. Use
+``model.get_custom_frequency_count("mujoco:sensor")`` before reading arrays:
+with zero supported declarations the count is zero and the arrays may be absent.
+Joint values use model units: radians for hinges and scaled metres for sliders.
+Newton quaternions use ``xyzw`` order, while native MuJoCo uses ``wxyz``.
+
+Site bindings require ``parse_sites=True``; encoders can be imported without
+sites. Unknown references and duplicate source names raise ``ValueError``.
+Excluded targets, hinges converted into a ball joint, replaced root joints,
+unsupported sensor types/pose references, and unapplied attributes are logged.
+Noise, cutoff clipping, sampling/history/delays, and user data are not imported
+or applied. Body, xbody, geom, and camera pose references are not supported.
+These bindings do not reproduce the complete MuJoCo ``sensordata`` pipeline.
+
+Construct runtime sensors explicitly once. For example, consume the distinct
+IMU sites and request only their required solver diagnostics::
+
+    import newton
+    import newton.sensors
+
+    builder = newton.ModelBuilder()
+    builder.add_mjcf("robot.xml", parse_sensors=True)
+    model = builder.finalize()
+    if model.get_custom_frequency_count("mujoco:sensor"):
+        metadata = model.mujoco
+        sites = metadata.sensor_site.numpy()
+        imu_sites = list(dict.fromkeys(
+            int(site) for kind, site in zip(metadata.sensor_type, sites)
+            if kind in ("gyro", "accelerometer")
+        ))
+        if imu_sites:
+            imu = newton.sensors.SensorIMU(model, imu_sites, request_state_attributes=False)
+            solver = newton.solvers.SolverMuJoCo(model)
+            observables = solver.observables(kinds=imu.solver_observable_kinds)
+            state = model.state()
+            solver.step(state, state, None, None, 1.0 / 60.0, observables=observables)
+            imu.update(state, observables=observables)
+
+Use the label and type of each declaration to bind its channel to the matching
+IMU output or encoder slot. For site poses, compute
+``inverse(X_world_reference) * X_world_target`` using
+:class:`newton.sensors.SensorFrameTransform`. It requires an actual reference
+site; an application may provide a static identity site for world poses, or
+compose the existing body/site transforms directly. Import creates no hidden sites.
+
+These attributes describe MJCF source bindings only. USD sensor schema
+import/export and cross-format authoring remain outside this experimental mode;
+see `issue 4500 <https://github.com/newton-physics/newton/issues/4500>`_
+for the design discussion.

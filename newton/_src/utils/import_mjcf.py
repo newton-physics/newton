@@ -299,6 +299,7 @@ def parse_mjcf(
     parse_visuals_as_colliders: bool = False,
     parse_meshes: bool = True,
     parse_sites: bool = True,
+    parse_sensors: bool = False,
     parse_visuals: bool = True,
     parse_mujoco_options: bool = True,
     up_axis: AxisType = Axis.Z,
@@ -410,6 +411,9 @@ def parse_mjcf(
         parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
         parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+        parse_sensors: Experimental opt-in import of scalar joint encoders, site poses, and IMU
+            declarations as ``model.mujoco.sensor_*`` bindings. Site-based declarations require
+            ``parse_sites=True``. Does not create runtime sensor outputs. Default is False.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
         parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -2170,6 +2174,8 @@ def parse_mjcf(
 
                 # default to hinge if not specified
                 joint_type_str = joint_attrib.get("type", "hinge")
+                if parse_sensors and joint.attrib.get("name"):
+                    sensor_joint_types[joint.attrib["name"]] = joint_type_str
 
                 joint_name.append(sanitize_name(joint_attrib.get("name") or f"{body_name}_joint_{i}"))
                 joint_pos.append(parse_vec(joint_attrib, "pos", (0.0, 0.0, 0.0)) * scale)
@@ -2473,6 +2479,17 @@ def parse_mjcf(
                     custom_attributes=joint_custom_attributes | dof_custom_attributes,
                 )
                 joint_indices.append(joint_idx)
+
+                if parse_sensors and joint_type in (JointType.REVOLUTE, JointType.PRISMATIC, JointType.D6):
+                    # Keep authored names and scalar slots before label sanitization or joint collapse.
+                    for source_joint, (_, is_linear_slot, slot) in zip(joints, mjcf_joint_dof_slots, strict=True):
+                        raw_name = source_joint.attrib.get("name")
+                        if raw_name:
+                            offset = slot if is_linear_slot else num_linear_dofs + slot
+                            sensor_joint_slots[raw_name] = (
+                                builder.joint_q_start[joint_idx] + offset,
+                                builder.joint_qd_start[joint_idx] + offset,
+                            )
 
                 # Populate per-MJCF-joint DOF mapping for actuator resolution
                 # This allows actuators to target specific DOFs when multiple MJCF joints are combined
@@ -2954,6 +2971,8 @@ def parse_mjcf(
     raw_site_name_to_idx: dict[str, int] = {}
     raw_geom_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
+    sensor_joint_slots: dict[str, tuple[int, int]] = {}
+    sensor_joint_types: dict[str, str] = {}
 
     # Extract articulation label early for hierarchical label construction
     articulation_label = root.attrib.get("model")
@@ -3842,6 +3861,120 @@ def parse_mjcf(
                 parent_body=-1,
                 articulation_label=label,
             )
+
+    if parse_sensors:
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(name="sensor", namespace="mujoco", label_attribute="mujoco:sensor_label")
+        )
+        for name, dtype, default, references in (
+            ("sensor_label", str, "", None),
+            ("sensor_type", str, "", None),
+            ("sensor_site", wp.int32, -1, "shape"),
+            ("sensor_refsite", wp.int32, -1, "shape"),
+            ("sensor_joint_coord", wp.int32, -1, "joint_coord"),
+            ("sensor_joint_dof", wp.int32, -1, "joint_dof"),
+        ):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency="mujoco:sensor",
+                    assignment=Model.AttributeAssignment.MODEL,
+                    dtype=dtype,
+                    default=default,
+                    namespace="mujoco",
+                    references=references,
+                )
+            )
+
+        declared_sites = set()
+        declared_joints = {}
+        for worldbody in root.findall("worldbody"):
+            for element in worldbody.iter():
+                name = element.attrib.get("name")
+                if not name:
+                    continue
+                if element.tag == "site":
+                    if name in declared_sites:
+                        raise ValueError(f"Duplicate site name '{name}' in MJCF sensor source")
+                    declared_sites.add(name)
+                elif element.tag in ("joint", "freejoint"):
+                    if name in declared_joints:
+                        raise ValueError(f"Duplicate joint name '{name}' in MJCF sensor source")
+                    declared_joints[name] = sensor_joint_types.get(
+                        name, "free" if element.tag == "freejoint" else element.attrib.get("type", "hinge")
+                    )
+
+        sensors = [sensor for section in root.findall("sensor") for sensor in section]
+        sensor_names = set()
+        for sensor in sensors:
+            name = sensor.attrib.get("name")
+            if name:
+                if name in sensor_names:
+                    raise ValueError(f"Duplicate sensor name '{name}'")
+                sensor_names.add(name)
+        for sensor_index, sensor in enumerate(sensors):
+            name = sensor.attrib.get("name")
+            if not name:
+                # Reserve authored names before selecting names for anonymous declarations.
+                base_name = f"{sensor.tag}_{sensor_index}"
+                name = base_name
+                suffix = 1
+                while name in sensor_names:
+                    name = f"{base_name}_{suffix}"
+                    suffix += 1
+                sensor_names.add(name)
+            values = {
+                "mujoco:sensor_label": f"{articulation_label}/{name}" if articulation_label else name,
+                "mujoco:sensor_type": sensor.tag,
+                "mujoco:sensor_site": -1,
+                "mujoco:sensor_refsite": -1,
+                "mujoco:sensor_joint_coord": -1,
+                "mujoco:sensor_joint_dof": -1,
+            }
+            site_references = {}
+            if sensor.tag in ("jointpos", "jointvel"):
+                joint_name = sensor.attrib.get("joint", "")
+                if joint_name not in declared_joints:
+                    raise ValueError(f"Unknown sensor joint '{joint_name}' for sensor '{name}'")
+                if declared_joints[joint_name] not in ("hinge", "slide"):
+                    raise ValueError(f"Sensor '{name}' requires a scalar hinge or slide joint")
+                if joint_name not in sensor_joint_slots:
+                    logger.warning("Skipping sensor '%s': joint '%s' was excluded or replaced", name, joint_name)
+                    continue
+                coord, dof = sensor_joint_slots[joint_name]
+                values["mujoco:sensor_joint_coord"] = coord
+                values["mujoco:sensor_joint_dof"] = dof
+                supported_attributes = {"name", "joint"}
+            elif sensor.tag in ("framepos", "framequat"):
+                if "objtype" not in sensor.attrib:
+                    raise ValueError(f"Sensor '{name}' requires objtype")
+                if ("reftype" in sensor.attrib) != ("refname" in sensor.attrib):
+                    raise ValueError(f"Sensor '{name}' requires both reftype and refname")
+                if sensor.attrib["objtype"] != "site" or sensor.attrib.get("reftype", "site") != "site":
+                    logger.warning("Skipping sensor '%s': only site pose targets and references are supported", name)
+                    continue
+                site_references["mujoco:sensor_site"] = sensor.attrib.get("objname", "")
+                if "refname" in sensor.attrib:
+                    site_references["mujoco:sensor_refsite"] = sensor.attrib["refname"]
+                supported_attributes = {"name", "objtype", "objname", "reftype", "refname"}
+            elif sensor.tag in ("gyro", "accelerometer"):
+                site_references["mujoco:sensor_site"] = sensor.attrib.get("site", "")
+                supported_attributes = {"name", "site"}
+            else:
+                logger.warning("Unsupported MJCF sensor '%s'; skipping '%s'", sensor.tag, name)
+                continue
+            for field, site_name in site_references.items():
+                if site_name not in declared_sites:
+                    raise ValueError(f"Unknown sensor site '{site_name}' for sensor '{name}'")
+                if site_name not in raw_site_name_to_idx:
+                    logger.warning("Skipping sensor '%s': site '%s' was not imported", name, site_name)
+                    break
+                values[field] = raw_site_name_to_idx[site_name]
+            else:
+                unhandled = set(sensor.attrib) - supported_attributes
+                if unhandled:
+                    logger.warning("Sensor '%s': attributes %s are not imported or applied", name, sorted(unhandled))
+                builder.add_custom_values(**values)
 
     if collapse_fixed_joints:
         builder.collapse_fixed_joints()
