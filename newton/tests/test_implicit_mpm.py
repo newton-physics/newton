@@ -1650,6 +1650,30 @@ def test_shape_adhesion_attribute(test, device):
     solver.setup_collider(collider_adhesion=[10.0], collider_body_ids=[-1])
     np.testing.assert_allclose(solver.collider_materials(0)["adhesion"].numpy(), [10.0, 10.0])
 
+    # particles hanging under a collider fall more slowly when it is adhesive;
+    # the iteration budget covers a full batch of the non-graph solver loop
+    config = _make_mpm_config()
+    config.max_iterations = 50
+    mean_vy = []
+    for adhesion in (0.0, 1.0e3):
+        builder = _make_mpm_particle_builder()
+        builder.add_shape_box(
+            -1,
+            xform=wp.transform(wp.vec3(0.05, 0.6, 0.05), wp.quat_identity()),
+            hx=0.5,
+            hy=0.5,
+            hz=0.5,
+            custom_attributes={"mpm:adhesion": adhesion},
+        )
+        model = builder.finalize(device=device)
+        solver = SolverImplicitMPM(model, config)
+        state_0, state_1 = model.state(), model.state()
+        for _ in range(10):
+            solver.step(state_0, state_1, control=None, contacts=None, dt=0.01)
+            state_0, state_1 = state_1, state_0
+        mean_vy.append(state_0.particle_qd.numpy()[:, 1].mean())
+    test.assertGreater(mean_vy[1], mean_vy[0] + 0.1)
+
 
 def test_collider_face_materials(test, device):
     """Verify per-face material views of a mesh collider are writable and queried by the SDF."""
