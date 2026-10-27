@@ -5696,8 +5696,11 @@ class TestMuJoCoContactForce(unittest.TestCase):
             for capacity in (1, 0):
                 limited = newton.Contacts(capacity, 0, device=model.device)
                 limited.force = wp.empty(capacity, dtype=wp.spatial_vector, device=model.device)
+                limited_observables = solver.observables(
+                    contacts=limited, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                )
                 with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exporting only the first") as warning:
-                    solver.step(state_in, state_out, control, limited, dt, observables=observables)
+                    solver.step(state_in, state_out, control, limited, dt, observables=limited_observables)
                 self.assertEqual(warning.filename, __file__)
                 self.assertEqual(int(limited.rigid_contact_count.numpy()[0]), capacity)
                 limited.force = None
