@@ -1660,16 +1660,21 @@ and body positions, including during CUDA graph replay. Selection can change
 without another collision detection; it does not change the contact count,
 row order, or detected geometry. Coupling copies ownership and mesh provenance;
 the consuming solver evaluates eligibility. If the source contact buffer
-has overflowed, VBD accepts all stored rows, including through coupling.
+has overflowed, VBD bypasses geometric selection for stored mesh rows, including
+through coupling. A mesh row still needs a resolved inside/outside sign and at
+least one active soft participant to contribute forces.
 Rigid-soft division-plane constraints consume the detected rows independently
 of force selection.
 
 Reverse rigid-vertex/soft-triangle contacts test the soft target's neighbors
 and retain one eligible owner for a shared soft edge or vertex. They remain
 separate force contributions from soft-vertex/rigid-triangle queries.
-Preserving returned rows does not guarantee complete contact topology:
-mesh detection may use SDF-selected rigid edges, and edge penetration-recovery
-records are not ordinary edge-edge quadrature samples.
+Full-surface mesh detection includes all rigid triangle edges, independently of
+SDF-selected edges. If the narrow vertex sign query fails, an expanded query
+supplies the sign for nearby vertex-triangle rows and, for an interior point, a
+recovery contact. Pairs whose sign remains unresolved are retained for DAT but
+do not contribute VBD forces until a subsequent detection resolves their sign.
+Edge penetration-recovery records are not ordinary edge-edge quadrature samples.
 
 .. _full-surface-mesh-contact-costs:
 

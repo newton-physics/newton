@@ -60,25 +60,37 @@ def _mesh_query_partition(mesh_id: wp.uint64, lane: int, depth: int) -> int:
 
 @wp.func_native("""
 int sign = 0;
+int recovery_face = -1;
 #if defined(__CUDA_ARCH__)
 const unsigned mask = __activemask();
 const int leader = (threadIdx.x & 31) & ~(lanes - 1);
 if ((threadIdx.x & (lanes - 1)) == 0) {
 #endif
-    const auto query = parity ? wp::mesh_query_point_sign_parity(mesh_id, point, radius)
-                              : wp::mesh_query_point_sign_normal(mesh_id, point, radius);
+    auto query = parity ? wp::mesh_query_point_sign_parity(mesh_id, point, radius)
+                        : wp::mesh_query_point_sign_normal(mesh_id, point, radius);
+    if (!query.result) {
+        query = parity ? wp::mesh_query_point_sign_parity(mesh_id, point, recovery_radius)
+                       : wp::mesh_query_point_sign_normal(mesh_id, point, recovery_radius);
+        if (query.result && query.sign < 0.0f)
+            recovery_face = query.face;
+    }
     sign = query.result ? (query.sign < 0.0f ? -1 : 1) : 0;
 #if defined(__CUDA_ARCH__)
 }
-return __shfl_sync(mask, sign, leader);
+return wp::vec2i(__shfl_sync(mask, sign, leader), __shfl_sync(mask, recovery_face, leader));
 #else
-return sign;
+return wp::vec2i(sign, recovery_face);
 #endif
 """)
-def _mesh_partition_sign(mesh_id: wp.uint64, point: wp.vec3, radius: float, lanes: int, parity: bool) -> int:
-    """Share an exact nearest query within a power-of-two group of CUDA lanes.
+def _mesh_partition_sign(
+    mesh_id: wp.uint64, point: wp.vec3, radius: float, recovery_radius: float, lanes: int, parity: bool
+) -> wp.vec2i:
+    """Share the resolved sign and optional recovery face within a CUDA query group.
 
     ``parity`` selects ray-crossing parity (watertight meshes) instead of the pseudo-normal sign.
+    Retry a failed narrow query with ``recovery_radius``. A successful fallback signs every
+    retained VT row; an interior fallback also supplies a recovery face. Both failures leave
+    sign zero. A negative face ID means no recovery row is needed.
 
     All lanes in each group must participate with identical query arguments.
     Group size must divide the CUDA warp size and the launch block dimension.
@@ -311,7 +323,7 @@ def _build_feature_adjacency(model: Model, meshes: dict[int, Mesh], edge_table: 
                 a, b = int(tri[(k + 1) % 3]), int(tri[(k + 2) % 3])
                 key = tuple(sorted((a, b)))
                 opposite.setdefault(key, set())
-                # Detection skips zero-area faces. They must neither own a shared feature
+                # Zero-area faces remain detection candidates, but must neither own a shared feature
                 # nor constrain its validity cone, or they can suppress a valid neighbor.
                 if areas[face] > 0.0:
                     incident[v].update((a, b))
@@ -474,6 +486,15 @@ _MESH_FEATURE_FAMILY_MASK = wp.constant(7)
 _MESH_FEATURE_INSIDE = wp.constant(8)
 # Penetration recovery records have no incident-feature representation, so the filter keeps them.
 _MESH_FEATURE_RECOVERY = wp.constant(16)
+# Keep unresolved primitives for DAT without inventing an inside/outside force orientation.
+_MESH_FEATURE_SIGN_UNKNOWN = wp.constant(32)
+
+
+@wp.func
+def _mesh_feature_flags(family: int, sign: int) -> int:
+    if sign == 0:
+        return family | _MESH_FEATURE_SIGN_UNKNOWN
+    return family | wp.where(sign < 0, _MESH_FEATURE_INSIDE, 0)
 
 
 @wp.func
@@ -623,27 +644,26 @@ def _detect_mesh_vertex_contacts(
     x_mesh = wp.cw_div(x_local, scale)
     r_mesh = threshold / min_scale
     sign_method = resolve_mesh_sign_method(shape_mesh_properties[shape_index])
-    vertex_sign = _mesh_partition_sign(mesh, x_mesh, r_mesh, partitions, sign_method == MeshSignMethod.PARITY)
-    if vertex_sign == 0:
-        if lane == 0:
-            # A finite proximity band must not discard already penetrating points.
-            # The expanded shape bounds have already rejected distant particles.
-            recovery_radius = wp.length(upper_bound - lower_bound) / min_scale
-            recovery = mesh_query_point_sign(mesh, x_mesh, recovery_radius, sign_method)
-            if recovery.result and recovery.sign < 0.0:
-                _append_mesh_contact(
-                    _MESH_FEATURE_VT + _MESH_FEATURE_INSIDE + _MESH_FEATURE_RECOVERY,
-                    particle_index,
-                    shape_index,
-                    recovery.face,
-                    contact_max,
-                    contact_count,
-                    features,
-                    contact_shapes,
-                )
-        # Warp's nearest-face query skips slivers, including nonzero-area faces
-        # needed by DAT. Retain the partitioned traversal even without a sign;
-        # test_mesh_complete_bvh_query_coverage exercises this case.
+    # Share the fallback answer before the lanes traverse different BVH partitions.
+    # Expanded shape bounds above have already rejected distant particles.
+    recovery_radius = wp.length(upper_bound - lower_bound) / min_scale
+    sign_and_face = _mesh_partition_sign(
+        mesh, x_mesh, r_mesh, recovery_radius, partitions, sign_method == MeshSignMethod.PARITY
+    )
+    vertex_sign = sign_and_face[0]
+    recovery_face = sign_and_face[1]
+    if lane == 0 and recovery_face >= 0:
+        _append_mesh_contact(
+            _MESH_FEATURE_VT + _MESH_FEATURE_INSIDE + _MESH_FEATURE_RECOVERY,
+            particle_index,
+            shape_index,
+            recovery_face,
+            contact_max,
+            contact_count,
+            features,
+            contact_shapes,
+        )
+    # Sign queries can skip slivers that DAT still needs. Traverse even if unresolved.
     root = _mesh_query_partition(mesh, lane, partition_depth)
     if root == -2:
         return
@@ -656,7 +676,7 @@ def _detect_mesh_vertex_contacts(
         cp, _rigid_bary, _feature = triangle_closest_point(a, b, c, x_local)
         if wp.length(x_local - cp) < threshold:
             _append_mesh_contact(
-                _MESH_FEATURE_VT + wp.where(vertex_sign < 0, _MESH_FEATURE_INSIDE, 0),
+                _mesh_feature_flags(_MESH_FEATURE_VT, vertex_sign),
                 particle_index,
                 shape_index,
                 face,
@@ -767,7 +787,7 @@ def _detect_mesh_face_contacts(
                         reference = transform_normal_with_scale(X_ws, scale, vertex_outward[tid])
                         sign = _local_side(outward, inward, cp - x_w, reference)
                     _append_mesh_contact(
-                        _MESH_FEATURE_TV + wp.where(sign < 0, _MESH_FEATURE_INSIDE, 0),
+                        _mesh_feature_flags(_MESH_FEATURE_TV, sign),
                         tri_index,
                         shape_index,
                         tid,
@@ -882,7 +902,7 @@ def _detect_mesh_edge_contacts(
                         reference = transform_normal_with_scale(X_ws, scale, edge_outward[tid])
                         sign = _local_side(outward, inward, soft_point - rigid_point, reference)
                     _append_mesh_contact(
-                        _MESH_FEATURE_EE + wp.where(sign < 0, _MESH_FEATURE_INSIDE, 0),
+                        _mesh_feature_flags(_MESH_FEATURE_EE, sign),
                         edge_index,
                         shape_index,
                         tid,
@@ -1441,8 +1461,8 @@ def mesh_contact_valid(
     constrain the target cone. Reverse VT and TV queries are separate energy contributions,
     even at vertex endpoints. EE tests both sides and defers endpoint solutions to VT/TV. This
     test is discrete: a small motion can flip it, so solvers should apply it to force evaluation
-    only and keep every record for penetration prevention. The caller checks particle activity;
-    penetration recovery records need no further geometric selection here.
+    only and keep every record for penetration prevention. The caller checks particle activity
+    and rejects unresolved signs. Recovery records need no further geometric selection here.
     """
     if (feature[0] & _MESH_FEATURE_RECOVERY) != 0:
         return True
@@ -1574,7 +1594,7 @@ def _soft_contact_force_enabled(contact_index: int, data: _SoftContactFilterData
     """Select mesh forces from live particle activity, geometry, and feature ownership.
 
     Preserve all raw records for DAT. Recovery and overflow can bypass geometric
-    selection, but a mesh row still needs at least one ACTIVE particle. Zero
+    selection, but a mesh row still needs a resolved sign and at least one ACTIVE particle. Zero
     inverse mass does not make an ACTIVE particle ineligible for contact forces.
     """
     if not data.features:
@@ -1586,6 +1606,8 @@ def _soft_contact_force_enabled(contact_index: int, data: _SoftContactFilterData
     # Analytic rows retain their existing force behavior.
     if feature[0] < 0:
         return True
+    if (feature[0] & _MESH_FEATURE_SIGN_UNKNOWN) != 0:
+        return False
     active = int(0)
     corners = data.soft_contact_indices[contact_index]
     for k in range(3):

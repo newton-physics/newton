@@ -22,6 +22,7 @@ from newton._src.geometry.soft_contacts_sdf import (
     optimize_edge_sdf,
     optimize_face_sdf,
 )
+from newton._src.solvers.vbd.rigid_vbd_kernels import compute_body_particle_contact_forces
 from newton.solvers.experimental.coupled import SolverCoupled
 from newton.tests.unittest_utils import (
     StdOutCapture,
@@ -1909,6 +1910,105 @@ def _mesh_nearest_query_results(mesh: wp.uint64, point: wp.vec3, radius: float, 
     results[1] = wp.int32(parity_query.result)
 
 
+def test_mesh_vertex_fallback_sign(test, device):
+    """Propagate the expanded sign to all VT rows and their production forces during replay."""
+    # The unscaled box has sliver faces skipped by the narrow sign query.
+    # The expanded query reaches an end face and resolves inside/outside.
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.add_shape_mesh(
+        -1,
+        mesh=newton.Mesh.create_box(1.0, 1.0e-7, 1.0e-7),
+        scale=wp.vec3(1.0, 1.0e6, 1.0e6),
+        cfg=builder.ShapeConfig(margin=0.0, gap=0.0),
+    )
+    builder.add_particle(wp.vec3(0.25, 0.02, 0.095), wp.vec3(0.0), mass=1.0, radius=0.01)
+    model = builder.finalize(device=device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        enable_rigid_soft_full_surface_contact=True,
+        soft_contact_gap=0.02,
+        soft_contact_max=32,
+    )
+    contacts = pipeline.contacts()
+    mask = wp.empty(contacts.soft_contact_max, dtype=bool, device=device)
+    forces = wp.empty(contacts.soft_contact_max, dtype=wp.spatial_vector, device=device)
+    penalty = wp.full(contacts.soft_contact_max, 1000.0, device=device)
+    zero_material = wp.zeros(contacts.soft_contact_max, device=device)
+    query_results = wp.empty(2, dtype=wp.int32, device=device)
+    wp.launch(
+        _mesh_nearest_query_results,
+        dim=1,
+        inputs=[int(model.shape_source_ptr.numpy()[0]), wp.vec3(0.25, 2.0e-8, 9.5e-8), 0.03],
+        outputs=[query_results],
+        device=device,
+    )
+    np.testing.assert_array_equal(query_results.numpy(), (0, 0))
+
+    def detect_and_evaluate():
+        pipeline.collide(state, contacts)
+        evaluate_soft_contact_force_mask(model, state, contacts, out=mask)
+        wp.launch(
+            compute_body_particle_contact_forces,
+            dim=contacts.soft_contact_max,
+            inputs=[
+                1.0 / 60.0,
+                state.particle_q,
+                state.particle_q,
+                model.particle_radius,
+                model.shape_body,
+                state.body_q,
+                state.body_q,
+                state.body_qd,
+                model.body_com,
+                0.01,
+                False,
+                penalty,
+                zero_material,
+                zero_material,
+                contacts.soft_contact_count,
+                soft_contacts_mesh._make_soft_contact_filter_data(model, contacts, state.particle_q, state.body_q),
+                contacts.soft_contact_indices,
+                contacts.soft_contact_shape,
+                contacts.soft_contact_body_pos,
+                contacts.soft_contact_body_vel,
+                contacts.soft_contact_normal,
+                contacts.soft_contact_barycentric,
+                model.shape_margin,
+            ],
+            outputs=[forces],
+            device=device,
+        )
+
+    detect_and_evaluate()
+    if device.is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            detect_and_evaluate()
+    for z, inside, expected_force in ((0.095, True, 15.0), (0.105, False, 5.0), (0.095, True, 15.0)):
+        with test.subTest(z=z, inside=inside):
+            state.particle_q.assign(np.array([(0.25, 0.02, z)], dtype=np.float32))
+            if device.is_cuda:
+                wp.capture_launch(capture.graph)
+            else:
+                detect_and_evaluate()
+            count = int(contacts.soft_contact_count.numpy()[0])
+            features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0]
+            recovery_np = (features_np & int(soft_contacts_mesh._MESH_FEATURE_RECOVERY)) != 0
+            test.assertEqual(np.count_nonzero(recovery_np), int(inside))
+            ordinary = np.flatnonzero(~recovery_np)
+            test.assertGreater(len(ordinary), 0)
+            np.testing.assert_array_equal(
+                (features_np[ordinary] & int(soft_contacts_mesh._MESH_FEATURE_INSIDE)) != 0, inside
+            )
+            test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy()[ordinary] >= 0))
+            selected = ordinary[mask.numpy()[ordinary]]
+            test.assertEqual(len(selected), 1)
+            np.testing.assert_allclose(contacts.soft_contact_normal.numpy()[selected[0]], (0.0, 0.0, 1.0), atol=3.0e-4)
+            # The observable stores the rigid reaction; negate it for the soft force.
+            np.testing.assert_allclose(-forces.numpy()[selected[0], :3], (0.0, 0.0, expected_force), atol=5.0e-3)
+
+
 def test_mesh_complete_bvh_query_coverage(test, device):
     """Keep all edges, fixed geometry, short edges and slivers without crossing worlds."""
     builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -2009,10 +2109,54 @@ def test_mesh_complete_bvh_query_coverage(test, device):
     pipeline.collide(state, contacts)
     test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 1)
     np.testing.assert_array_equal(contacts.soft_contact_rigid_indices.numpy()[0], (0, 1, 2))
+    # Unresolved sign must not silently become outside, even when overflow
+    # otherwise bypasses geometric filtering. The complete DAT row stays intact.
+    features_np = contacts._soft_contact_mesh_features.numpy().copy()
+    for count, source_overflow in ((1, 0), (contacts.soft_contact_max + 1, 0), (1, 1)):
+        contacts.soft_contact_count.fill_(count)
+        contacts._soft_contact_source_overflow.fill_(source_overflow)
+        test.assertFalse(evaluate_soft_contact_force_mask(model, state, contacts).numpy()[0])
+        np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy(), features_np)
+        np.testing.assert_array_equal(contacts.soft_contact_rigid_indices.numpy()[0], (0, 1, 2))
+
+    # Reuse the sliver with a soft triangle to exercise unresolved TV and EE
+    # records too; a particle-only fixture cannot reach those detection paths.
+    _add_bvh_dat_patch(builder, [(-0.3, -0.1, 1.0e-5), (0.25, 0.1, 1.0e-5), (0.6, -0.1, 1.0e-5)])
+    model = builder.finalize(device=device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        enable_rigid_soft_full_surface_contact=True,
+        soft_contact_gap=query_radius,
+        soft_contact_max=512,
+    )
+    contacts = pipeline.contacts()
+    mask = wp.empty(contacts.soft_contact_max, dtype=bool, device=device)
+
+    def detect_and_filter():
+        pipeline.collide(state, contacts)
+        evaluate_soft_contact_force_mask(model, state, contacts, out=mask)
+
+    detect_and_filter()
+    if device.is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            detect_and_filter()
+        wp.capture_launch(capture.graph)
+    count = int(contacts.soft_contact_count.numpy()[0])
+    features_np = contacts._soft_contact_mesh_features.numpy()[:count].copy()
+    families = set(features_np[:, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+    test.assertEqual(families, {0, 1, 2})
+    test.assertFalse(np.any(mask.numpy()[:count]))
+    test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy()[:count, 0] >= 0))
+    contacts._soft_contact_source_overflow.fill_(1)
+    test.assertFalse(np.any(evaluate_soft_contact_force_mask(model, state, contacts).numpy()[:count]))
+    np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy()[:count], features_np)
 
 
 for device in get_test_devices():
     for fn in (
+        test_mesh_vertex_fallback_sign,
         test_mesh_complete_rigid_indices_and_reuse,
         test_mesh_complete_bvh_query_coverage,
         test_disconnected_mesh_contact_capacity,
