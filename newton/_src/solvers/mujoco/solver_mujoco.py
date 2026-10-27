@@ -10091,6 +10091,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self.jnt_connect_constraint_q_rel,
                     self.jnt_connect_constraint_t_rel,
                 )
+                self._recompute_jnt_eq_anchor1()
         wrote_eq_data = False
         if self.has_connect_constraints and (update_anchor_rel_xform_at_ref_pose or update_anchors):
             SolverMuJoCo._update_connect_constraint_anchors(
@@ -10101,8 +10102,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.connect_constraint_t_rel,
             )
             wrote_eq_data = True
-        if update_anchor_rel_xform_at_ref_pose and self.has_jnt_connect_constraints:
-            self._recompute_jnt_eq_anchor1()
+        if self.has_jnt_connect_constraints:
             SolverMuJoCo._update_jnt_connect_constraint_anchors(
                 self.model,
                 self.mjw_model,
@@ -10124,12 +10124,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         jnt_connect_constraint_q_rel: wp.array2d[wp.quat] | None = None,
         jnt_connect_constraint_t_rel: wp.array2d[wp.vec3] | None = None,
     ) -> tuple[wp.array2d[wp.quat], wp.array2d[wp.vec3]]:
-        """Compute relative body transforms for joint-synthesized CONNECT constraints at the reference pose.
+        """Compute relative body transforms for joint-synthesized CONNECT constraints.
 
         Launches
-        :func:`update_jnt_connect_constraint_rel_body_poses_at_qref_kernel`
-        to produce per-``[world, eq]`` ``(q_rel, t_rel)`` arrays from the
-        precomputed ``ref_body_q``.
+        :func:`update_jnt_connect_constraint_rel_body_poses_at_qref_kernel`.
+        Ball (spherical) loop joints derive ``(q_rel, t_rel)`` from their own
+        parent/child frames (``joint_X_p`` / ``joint_X_c``), honoring the
+        authored child anchor regardless of whether the model is assembled at
+        the reference pose; all other loop joints derive them from
+        ``ref_body_q``.
 
         Args:
             model: The Newton :class:`Model`.
@@ -10157,8 +10160,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dim=(world_count, mjw_neq),
             inputs=[
                 mjc_eq_to_newton_jnt,
+                model.joint_type,
                 model.joint_parent,
                 model.joint_child,
+                model.joint_X_p,
+                model.joint_X_c,
                 ref_body_q,
             ],
             outputs=[
