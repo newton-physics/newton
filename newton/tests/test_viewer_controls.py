@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import inspect
 import unittest
 from collections import namedtuple
@@ -95,6 +96,43 @@ class TestViewerBaseShouldStep(unittest.TestCase):
         viewer = ViewerNull()
         for _ in range(3):
             self.assertTrue(viewer.should_step())
+
+
+@unittest.skipUnless(importlib.util.find_spec("imgui_bundle"), "Requires imgui_bundle")
+class TestViewerGuiRecovery(unittest.TestCase):
+    def test_callback_failure_leaves_next_frame_usable(self):
+        """Unwind real ImGui windows and styles without a renderer or model."""
+        from imgui_bundle import imgui
+
+        context = imgui.create_context()
+        self.addCleanup(imgui.destroy_context, context)
+        io = imgui.get_io()
+        io.set_ini_filename("")
+        io.display_size = (320, 320)
+        io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+        gui = ViewerGui.__new__(ViewerGui)
+        gui._viewer = SimpleNamespace(show_ui=True)
+        gui._loading_splash_active = False
+        gui.ui = SimpleNamespace(
+            is_available=True, imgui=imgui, io=io, begin_frame=imgui.new_frame, end_frame=imgui.render
+        )
+        error = RuntimeError("GUI callback failed")
+
+        def fail():
+            imgui.begin("Example")
+            imgui.begin_child("Nested")
+            imgui.push_style_color(imgui.Col_.text, (1.0, 0.0, 0.0, 1.0))
+            raise error
+
+        gui._render_ui = fail
+        with self.assertRaises(RuntimeError) as raised:
+            gui.prepare_frame(update_fps=False)
+        self.assertIs(raised.exception, error)
+        self.assertFalse(gui._frame_prepared)
+        self.assertTrue(io.config_error_recovery_enable_assert)
+        gui._render_ui = lambda: imgui.text("Retry")
+        gui.prepare_frame(update_fps=False)
+        self.assertTrue(gui._frame_prepared)
 
 
 class TestViewerCameraSpeed(unittest.TestCase):
@@ -404,6 +442,18 @@ class TestViewerGizmos(unittest.TestCase):
                     self.assertLess(self.viewer.camera.yaw, -90.0)
                     np.testing.assert_array_equal(target, original)
                 self.frame(700, 300, False)
+
+        # RTX does not define the optional viewer activity flag. Scene presses
+        # must still navigate through the shared GUI path without a gizmo.
+        del self.viewer.gizmo_is_using
+        self.viewer._gizmo_log.clear()
+        self.frame(700, 300, False)
+        self.native_press(700, 300)
+        self.gui.prepare_frame(update_fps=False)
+        yaw = self.viewer.camera.yaw
+        self.native_drag(720, 300, 20, 0)
+        self.assertLess(self.viewer.camera.yaw, yaw)
+        self.frame(720, 300, False)
 
     def test_cancel_drag(self) -> None:
         """Keep the pose and clear ownership on removal, pause, and focus loss."""
