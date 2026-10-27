@@ -1,0 +1,1 @@
+Remove the legacy rigid VBD formulation deprecated in Newton 1.6, including `rigid_contact_hard`, `rigid_avbd_angular_beta`, the `rigid_joint_*_k_start` controls, `vbd:joint_is_hard`, and `SolverVBD.set_joint_constraint_mode()`. Rigid constraints always use compliant ALM; `rigid_compliant_alm=False` raises `ValueError`. Body-particle contact behavior is unchanged.

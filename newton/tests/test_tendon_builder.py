@@ -4,7 +4,6 @@
 """Test complete tendon routes and builder composition."""
 
 import unittest
-from contextlib import nullcontext
 from unittest.mock import patch
 
 import numpy as np
@@ -362,22 +361,10 @@ class TestTendonBuilder(unittest.TestCase):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             builder.replicate(source, 3)
             for device in wp.get_devices():
-                for solver_type, options in (
-                    (newton.solvers.SolverXPBD, {}),
-                    (newton.solvers.SolverVBD, {"rigid_compliant_alm": False}),
-                    (newton.solvers.SolverVBD, {"rigid_compliant_alm": True}),
-                ):
-                    with self.subTest(
-                        device=device, solver=solver_type.__name__, options=options, world_attached=world_attached
-                    ):
+                for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+                    with self.subTest(device=device, solver=solver_type.__name__, world_attached=world_attached):
                         model = builder.finalize(device=device)
-                        expected_warning = (
-                            self.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated")
-                            if options.get("rigid_compliant_alm") is False
-                            else nullcontext()
-                        )
-                        with expected_warning:
-                            solver = solver_type(model, iterations=2, **options)
+                        solver = solver_type(model, iterations=2)
                         state_0, state_1 = model.state(), model.state()
                         control = model.control()
                         initial_rest = solver.tendon_segment_rest_length.numpy().copy()
@@ -484,14 +471,7 @@ class TestTendonBuilder(unittest.TestCase):
                 np.testing.assert_array_equal(model.tendon_guide_body.numpy(), [0, 1, 2, 3, 4, 5])
                 np.testing.assert_array_equal(model.body_world.numpy(), [0, 0, 1, 1, 2, 2])
                 for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
-                    options = {"rigid_compliant_alm": False} if solver_type is newton.solvers.SolverVBD else {}
-                    expected_warning = (
-                        self.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated")
-                        if options.get("rigid_compliant_alm") is False
-                        else nullcontext()
-                    )
-                    with expected_warning:
-                        solver = solver_type(model, iterations=1, **options)
+                    solver = solver_type(model, iterations=1)
                     state_0, state_1 = model.state(), model.state()
                     solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
                     np.testing.assert_allclose(solver.tendon_segment_rest_length.numpy(), [1.0, 1.0, 1.0])

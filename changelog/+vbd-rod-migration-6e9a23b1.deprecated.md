@@ -1,0 +1,1 @@
+Deprecate explicitly passing `rigid_compliant_alm=True` to `SolverVBD`; omit the argument. Deprecate `ModelBuilder.add_rod(body_frame_origin="start")` while preserving its behavior during migration. Use the default `"com"` origin and subtract the old local COM offset from body-local points. Both explicit settings emit `NewtonDeprecationWarning`.

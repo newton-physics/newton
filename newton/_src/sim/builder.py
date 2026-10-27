@@ -9997,8 +9997,12 @@ class ModelBuilder:
                 offset by half its rest length. The world-space origin equals the initial
                 segment start only when initial and rest lengths match. ``"com"`` places
                 the body origin at the initial segment midpoint so the
-                body origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
-                a supported option.
+                body origin and COM coincide. Defaults to ``"com"``.
+
+                .. deprecated:: 1.8
+                    ``"start"`` emits a :class:`~newton.exceptions.NewtonDeprecationWarning`
+                    and will be removed in a future release. Use ``"com"`` instead.
+                    When migrating body-local points, subtract the old local COM offset.
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10054,6 +10058,15 @@ class ModelBuilder:
         """
         if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
+
+        if body_frame_origin == "start":
+            warnings.warn(
+                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8 and will be removed '
+                'in a future release. Use the default "com" origin and subtract the old local COM '
+                "offset from body-local points.",
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
 
         start_body = self.body_count
         start_joint = self.joint_count

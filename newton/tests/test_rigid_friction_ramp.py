@@ -463,7 +463,6 @@ _SOLVERS = {
         "factory": lambda model: newton.solvers.SolverVBD(
             model,
             iterations=40,
-            rigid_compliant_alm=True,
         ),
         "mus": _VBD_MUS,
         "angles_deg": _VBD_ANGLES_DEG,

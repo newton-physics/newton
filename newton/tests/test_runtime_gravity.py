@@ -801,7 +801,7 @@ solvers_global_particles = {
 solvers_global_bodies = {
     "xpbd": SolverXPBD,
     "semi_implicit": SolverSemiImplicit,
-    "vbd": lambda model: SolverVBD(model, rigid_compliant_alm=True),
+    "vbd": SolverVBD,
     "mujoco_cpu": solvers_bodies["mujoco_cpu"],
     "mujoco_warp": solvers_bodies["mujoco_warp"],
     "kamino": SolverKamino,

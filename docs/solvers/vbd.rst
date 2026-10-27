@@ -10,9 +10,9 @@ VBD
 Vertex Block Descent (VBD): cloth, soft bodies, rigid bodies (joints,
 contacts, rods), and their interactions are all solved in one VBD loop, with
 joint and contact constraints enforced through an augmented-Lagrangian (ALM)
-extension of the method. The compliant ALM constraint path is enabled
-by default (``rigid_compliant_alm=True``). Pass ``rigid_compliant_alm=False``
-explicitly to retain the deprecated legacy path during its migration period.
+extension of the method. Rigid constraints use compliant ALM with finite
+material stiffness. The legacy rigid path was removed in Newton 1.8;
+omit the deprecated ``rigid_compliant_alm`` argument.
 
 .. experimental::
 
@@ -47,7 +47,7 @@ cited by :class:`~newton.solvers.SolverVBD`:
   Descent. *ACM Trans. Graph.* 43, 4. https://doi.org/10.1145/3658179
 - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block
   Descent. *ACM Trans. Graph.* 44, 4. https://doi.org/10.1145/3731195
-  (the deprecated legacy rigid constraint path)
+  (the original rigid constraint formulation)
 
 API Explanations
 ----------------
@@ -70,11 +70,7 @@ Model Inputs
 *In development.* This section will explain what the solver consumes from
 :class:`~newton.ModelBuilder` for each system: triangle meshes for cloth,
 tetrahedral meshes for soft bodies, rigid bodies with the supported joint
-types (including rods), the default compliant ALM constraint mode
-(``rigid_compliant_alm=True``) versus the deprecated legacy path, and the deprecated
-legacy-path controls — ``model.vbd.joint_is_hard`` and
-:meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode` (deprecated since
-1.6; no solver-mode effect under compliant ALM).
+types (including rods), and finite-material compliant ALM constraints.
 
 Coupling Modes
 ~~~~~~~~~~~~~~

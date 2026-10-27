@@ -4,7 +4,6 @@
 """Regression tests for routed tendons in the VBD rigid solver."""
 
 import unittest
-import warnings
 
 import numpy as np
 import warp as wp
@@ -30,10 +29,8 @@ TENDON_VBD_SOLVER_KWARGS = {
     "iterations": 20,
     "tendon_max_sweeps": 32,
     "tendon_settle_tol": 1.0e-3,
-    "rigid_compliant_alm": False,
-    "rigid_avbd_beta": 1.0e6,
-    "rigid_joint_linear_k_start": 1.0e7,
-    "rigid_joint_angular_k_start": 1.0e5,
+    # Keep the guide supports stiffer than the tendon material.
+    "rigid_joint_linear_ke": 1.0e7,
     "rigid_joint_linear_kd": 5.0e-2,
     "rigid_joint_angular_kd": 2.0e-2,
 }
@@ -70,12 +67,7 @@ def _hinge_z_angle(body_q, body_idx):
 
 
 def _make_tendon_vbd_solver(model, **overrides):
-    # Retain legacy-mode coverage without suppressing unrelated warnings.
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore", message="^rigid_compliant_alm=False is deprecated", category=DeprecationWarning
-        )
-        return newton.solvers.SolverVBD(model, **(TENDON_VBD_SOLVER_KWARGS | overrides))
+    return newton.solvers.SolverVBD(model, **(TENDON_VBD_SOLVER_KWARGS | overrides))
 
 
 def test_vbd_no_tendon_specialization(test, device):
@@ -88,7 +80,7 @@ def test_vbd_no_tendon_specialization(test, device):
         builder.add_articulation([joint])
         builder.color()
         model = builder.finalize()
-        solvers = [newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True) for _ in range(2)]
+        solvers = [newton.solvers.SolverVBD(model, iterations=5) for _ in range(2)]
         test.assertIs(solvers[0]._solve_rigid_body_kernel, create_solve_rigid_body(False))
         solvers[1]._solve_rigid_body_kernel = create_solve_rigid_body(True)
         states = [(model.state(), model.state()) for _ in solvers]
@@ -735,13 +727,7 @@ def test_vbd_tendon_diagnostics_match_final_pose(test, device):
         builder.add_tendon(route)
         builder.color()
         model = builder.finalize()
-        with test.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated"):
-            solver = newton.solvers.SolverVBD(
-                model,
-                iterations=1,
-                rigid_compliant_alm=False,
-                rigid_avbd_beta=1.0e6,
-            )
+        solver = newton.solvers.SolverVBD(model, iterations=1)
         state_0 = model.state()
         state_1 = model.state()
 
