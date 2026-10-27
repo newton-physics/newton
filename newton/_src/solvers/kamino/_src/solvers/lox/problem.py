@@ -22,7 +22,7 @@ import warp as wp
 from ......sim import BodyFlags, JointType
 from ...core.bodies import update_body_inertias
 from ...core.data import DataKamino
-from ...core.joints import DofActuationPath, JointActuationType, JointCorrectionMode
+from ...core.joints import DofActuationPath, JointActuationType, JointCorrectionMode, JointDoFType
 from ...core.model import ModelKamino
 from ...core.types import to_warp_int32_array, vec6f
 from ...geometry.contacts import ContactsKamino
@@ -240,6 +240,7 @@ class LOXProblem:
         self.contact_compliance = contact_compliance
         self.contact_implicit_restitution = contact_implicit_restitution
         self.contact_spatial_friction = contact_spatial_friction
+        self._has_rod_joints = bool(np.any(model.joints.dof_type.numpy() == JointDoFType.ROD))
 
         if jacobians._J_cts is None or jacobians._J_dofs is None:
             raise RuntimeError("Sparse Jacobians must be finalized before constructing the LOX problem.")
@@ -570,7 +571,7 @@ class LOXProblem:
             joint_rotation_dead_zone=self._joint_rotation_dead_zone,
         )
         # The tension of stretched rods stiffens the rotation of their bodies
-        if self._data.dynamic_rows.count > 0:
+        if self._has_rod_joints and self._data.dynamic_rows.count > 0:
             self.system.add_rod_geometric_stiffness(
                 self.model.joints.wid,
                 self.model.joints.dof_type,
@@ -584,6 +585,7 @@ class LOXProblem:
                 data.bodies.q_i,
                 self._data.dynamic_rows,
                 time_step,
+                prescribed_twist=self.body_velocity_begin,
             )
 
     def prepare_patch_schur(self) -> None:

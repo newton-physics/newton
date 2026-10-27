@@ -654,6 +654,7 @@ def _assemble_rod_geometric_stiffness(
     body_pose: wp.array[wp.transformf],
     body_block: wp.array[wp.int32],
     body_local: wp.array[wp.int32],
+    prescribed_twist: wp.array[vec6f],
     model_time_dt: wp.array[wp.float32],
     dynamic_offset: wp.array[wp.int32],
     dynamic_count: wp.array[wp.int32],
@@ -669,7 +670,8 @@ def _assemble_rod_geometric_stiffness(
     """Add the rotational geometric stiffness of the stretch and shear rows of each stretched rod joint.
 
     The stretch and shear rows of a rod act at the joint point, and their elastic force at the beginning of
-    the step ``effective_inertia * free_velocity / h`` turns with the arm of each body. When the rod is
+    the step ``effective_inertia * free_velocity / h``, taken at the prescribed twists of the bodies outside
+    the system as in :func:`_assemble_joint_rows`, turns with the arm of each body. When the rod is
     longer than its rest length, each dynamic body adds ``h^2`` times the stiffness of the tension of this
     force to its angular block, see :func:`_compute_point_geometric_stiffness`. The right-hand side holds
     the elastic force already, so the matrix term completes the linearization of the rows about the
@@ -681,7 +683,9 @@ def _assemble_rod_geometric_stiffness(
     stretch_coord = joint_coords_offset[jid] + 2
     if joint_q[stretch_coord] <= joint_q_ref[stretch_coord]:
         return
-    bid = wp.where(side == 0, joint_body_a[jid], joint_body_b[jid])
+    bid_a = joint_body_a[jid]
+    bid_b = joint_body_b[jid]
+    bid = wp.where(side == 0, bid_a, bid_b)
     if bid < 0 or bid >= body_block.shape[0]:
         return
     block = body_block[bid]
@@ -693,6 +697,14 @@ def _assemble_rod_geometric_stiffness(
     if dt <= 0.0:
         return
 
+    # The rows are linearized about zero dynamic twists and the prescribed twists of the other bodies
+    a_twist = vec6f(0.0)
+    b_twist = vec6f(0.0)
+    if prescribed_twist and bid_a >= 0 and body_local[bid_a] < 0:
+        a_twist = prescribed_twist[bid_a]
+    if prescribed_twist and bid_b >= 0 and body_local[bid_b] < 0:
+        b_twist = prescribed_twist[bid_b]
+
     # Sum the elastic force of the stretch and shear rows on the body
     force = wp.vec3f(0.0)
     dofs_offset = joint_dofs_offset[jid]
@@ -700,8 +712,11 @@ def _assemble_rod_geometric_stiffness(
     for row in range(dynamic_start, dynamic_start + dynamic_count[jid]):
         if dynamic_dof[row] - dofs_offset >= 3:
             continue
-        jacobian = wp.where(side == 0, dynamic_jacobian_a[row], dynamic_jacobian_b[row])
-        row_force = dynamic_effective_inertia[row] * dynamic_free_velocity[row] / dt
+        a_jacobian = dynamic_jacobian_a[row]
+        b_jacobian = dynamic_jacobian_b[row]
+        velocity = dynamic_free_velocity[row] - wp.dot(a_jacobian, a_twist) - wp.dot(b_jacobian, b_twist)
+        jacobian = wp.where(side == 0, a_jacobian, b_jacobian)
+        row_force = dynamic_effective_inertia[row] * velocity / dt
         force += row_force * wp.vec3f(jacobian[0], jacobian[1], jacobian[2])
 
     arm = wp.transform_get_translation(joint_pose[jid]) - wp.transform_get_translation(body_pose[bid])
