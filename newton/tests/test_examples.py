@@ -819,6 +819,14 @@ add_example_batch(
 )
 add_example_test(
     TestClothExamples,
+    name="cloth.example_cloth_vr_teleop",
+    devices=test_devices,
+    test_options={"num-frames": 60},
+    test_options_cpu={"width": 20, "height": 20},
+    use_viewer=True,
+)
+add_example_test(
+    TestClothExamples,
     name="cloth.example_cloth_style3d",
     devices=cuda_test_devices,
     test_options={},
