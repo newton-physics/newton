@@ -353,7 +353,7 @@ Known gaps of the experimental importer, tracked as follow-ups:
   They are preserved in ``path_attachment_attrs`` with their authored stiffness and damping
   (silently hardening them would change the authored physics); only hard cable attachments
   (unauthored or infinite stiffness; damping does not affect hardness) become joints.
-* **Hard cloth/volume attachments** -- Newton's body-particle attachments are compliant.
+* **Hard cloth/volume attachments** -- Newton's particle-body attachments are compliant.
   Cloth or volume attachments with unauthored or infinite stiffness warn and are preserved in
   ``path_attachment_attrs`` with an ``unsupported_reason``; no attachment is created. Author a
   finite stiffness to request a compliant attachment. Only ``point`` sites attached to an
@@ -455,11 +455,11 @@ compliant cable attachments warn and are preserved as metadata instead of becomi
 
 When ``src0`` is an imported cloth or volume deformable, ``type0`` is ``point``, ``type1`` is
 ``xform`` under an imported rigid body, and stiffness is finite, each ``indices0`` simulation
-point becomes one body-particle attachment (see
-:meth:`~newton.ModelBuilder.add_attachment_body_particle`) to the ``coords1`` anchor in the
+point becomes one particle-body attachment (see
+:meth:`~newton.ModelBuilder.add_attachment_particle_body`) to the ``coords1`` anchor in the
 ``src1`` xform frame. The authored stiffness, damping, and ``attachmentEnabled`` state are kept,
 including disabled attachments and zero stiffness. The created attachment indices are listed
-under ``attachment_body_particle_indices`` in that prim's ``path_attachment_attrs`` entry.
+under ``attachment_particle_body_indices`` in that prim's ``path_attachment_attrs`` entry.
 Hard attachments (unauthored or infinite stiffness) warn and are preserved as unsupported
 metadata instead of becoming compliant springs.
 

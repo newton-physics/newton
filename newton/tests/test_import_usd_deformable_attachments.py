@@ -1140,7 +1140,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         self.assertNotIn("/World/AttachDisabled", result["path_attachment_map"])
         self.assertNotIn("/World/AttachCloth", result["path_attachment_map"])
         self.assertEqual(len(result["path_attachment_map"]), 0)
-        self.assertEqual(builder.attachment_body_particle_count, 0)
+        self.assertEqual(builder.attachment_particle_body_count, 0)
         self.assertFalse(result["path_attachment_attrs"]["/World/AttachDisabled"]["enabled"])
         attrs = result["path_attachment_attrs"]["/World/AttachCloth"]
         self.assertEqual(attrs["src0"], "/World/Cloth")
@@ -1202,24 +1202,24 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         cloth_p0 = ref["path_cloth_map"]["/World/Cloth"]["particle"][0]
         solid_p0 = ref["path_soft_map"]["/World/Solid"]["particle"][0]
         for particle, point in ((2, (0.1, 0.0, 0.0)), (3, (0.0, 0.2, 0.0))):
-            expected.add_attachment_body_particle(
-                body, cloth_p0 + particle, body_point=point, stiffness=500.0, damping=2.0
+            expected.add_attachment_particle_body(
+                cloth_p0 + particle, body, body_point=point, stiffness=500.0, damping=2.0
             )
-        expected.add_attachment_body_particle(body, solid_p0 + 3, stiffness=800.0, enabled=False)
-        expected.add_attachment_body_particle(body, cloth_p0, stiffness=0.0, damping=3.0)
+        expected.add_attachment_particle_body(solid_p0 + 3, body, stiffness=800.0, enabled=False)
+        expected.add_attachment_particle_body(cloth_p0, body, stiffness=0.0, damping=3.0)
 
         self.assertEqual(
-            result["path_attachment_attrs"]["/World/AttachCloth"]["attachment_body_particle_indices"], [0, 1]
+            result["path_attachment_attrs"]["/World/AttachCloth"]["attachment_particle_body_indices"], [0, 1]
         )
-        self.assertEqual(result["path_attachment_attrs"]["/World/AttachSolid"]["attachment_body_particle_indices"], [2])
-        self.assertEqual(result["path_attachment_attrs"]["/World/AttachZero"]["attachment_body_particle_indices"], [3])
+        self.assertEqual(result["path_attachment_attrs"]["/World/AttachSolid"]["attachment_particle_body_indices"], [2])
+        self.assertEqual(result["path_attachment_attrs"]["/World/AttachZero"]["attachment_particle_body_indices"], [3])
         self.assertNotIn("/World/AttachCloth", result["path_attachment_map"])
         for name in ("body", "particle", "stiffness", "damping", "enabled", "world"):
-            attr = f"attachment_body_particle_{name}"
+            attr = f"attachment_particle_body_{name}"
             self.assertEqual(getattr(imported, attr), getattr(expected, attr), attr)
         np.testing.assert_allclose(
-            np.array(imported.attachment_body_particle_body_point),
-            np.array(expected.attachment_body_particle_body_point),
+            np.array(imported.attachment_particle_body_body_point),
+            np.array(expected.attachment_particle_body_body_point),
             atol=1e-6,
         )
 
@@ -1249,14 +1249,14 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                         builder = newton.ModelBuilder()
                         with self.assertWarnsRegex(UserWarning, "hard.*not supported"):
                             result = builder.add_usd(stage, return_deformable_results=True)
-                        self.assertEqual(builder.attachment_body_particle_count, 0)
+                        self.assertEqual(builder.attachment_particle_body_count, 0)
                         self.assertNotIn("/World/Attach", result["path_attachment_map"])
                         attrs = result["path_attachment_attrs"]["/World/Attach"]
                         self.assertEqual(attrs["stiffness"], math.inf)
                         self.assertEqual(attrs["damping"], 2.0)
                         self.assertEqual(attrs["enabled"], enabled)
                         self.assertIn("unsupported_reason", attrs)
-                        self.assertNotIn("attachment_body_particle_indices", attrs)
+                        self.assertNotIn("attachment_particle_body_indices", attrs)
                         self.assertNotIn("approximated_stiffness", attrs)
 
     def test_attachment_anchors_survive_root_override(self):
@@ -1307,7 +1307,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     return_deformable_results=True,
                 )
                 np.testing.assert_allclose(
-                    np.array(builder.attachment_body_particle_body_point[0]), (0.2, 0.3, 0.4), atol=1e-5
+                    np.array(builder.attachment_particle_body_body_point[0]), (0.2, 0.3, 0.4), atol=1e-5
                 )
                 (cable_joint,) = result["path_attachment_map"]["/World/AttachCable"]
                 np.testing.assert_allclose(np.array(builder.joint_X_p[cable_joint].p), (0.2, 0.3, 0.4), atol=1e-5)
@@ -1339,7 +1339,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             stage, xform=wp.transform((5.0, -3.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4))
         )
         np.testing.assert_allclose(
-            np.array(builder.attachment_body_particle_body_point[0]), (-0.8, 0.6, 1.9), atol=1e-5
+            np.array(builder.attachment_particle_body_body_point[0]), (-0.8, 0.6, 1.9), atol=1e-5
         )
 
     def test_nonfinite_particle_attachment_anchor_creates_no_rows(self):
@@ -1360,10 +1360,10 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "finite"):
             result = builder.add_usd(stage, return_deformable_results=True)
-        self.assertEqual(builder.attachment_body_particle_count, 0)
+        self.assertEqual(builder.attachment_particle_body_count, 0)
         attrs = result["path_attachment_attrs"]["/World/Attach"]
         self.assertIn("unsupported_reason", attrs)
-        self.assertNotIn("attachment_body_particle_indices", attrs)
+        self.assertNotIn("attachment_particle_body_indices", attrs)
 
     def test_unsupported_cloth_attachments_warn_and_create_nothing(self):
         """Non-point sites and targets without a rigid body are preserved, not imported."""
@@ -1390,7 +1390,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 with self.assertWarnsRegex(UserWarning, reason):
                     result = builder.add_usd(stage, return_deformable_results=True)
-                self.assertEqual(builder.attachment_body_particle_count, 0)
+                self.assertEqual(builder.attachment_particle_body_count, 0)
                 self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Attach"])
 
     def test_imported_solid_attachment_couples_bidirectionally(self):

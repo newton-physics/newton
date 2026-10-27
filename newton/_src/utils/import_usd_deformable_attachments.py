@@ -4,7 +4,7 @@
 """USD attachment / element-collision-filter import passes.
 
 Lowers ``PhysicsAttachment`` prims onto imported cables (as ball joints to xform targets) and
-cloth/volume particles (as body-particle attachments to rigid bodies), and lowers
+cloth/volume particles (as particle-body attachments to rigid bodies), and lowers
 ``PhysicsElementCollisionFilter`` prims to shape collision-filter pairs, plus the post-collapse
 index remap. Driven by :func:`.import_usd.parse_usd` via a
 :class:`.import_usd_deformable_utils._DeformableImportContext`.
@@ -39,7 +39,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
 
     Cable ``point`` / ``segment`` sites with ``type1 = "xform"`` become hard ball joints to the
     target xform / rigid body / world frame (``path_attachment_map``); cloth/volume
-    ``point`` sites on a rigid-body ``xform`` become body-particle attachments; curve-to-curve
+    ``point`` sites on a rigid-body ``xform`` become particle-body attachments; curve-to-curve
     junctions already consumed as rod-graph topology are skipped, and unsupported sites (non-xform
     target, cloth/volume attachment to the world, ...) are warned and preserved in
     ``path_attachment_attrs``.
@@ -273,7 +273,7 @@ def _import_particle_attachment(
     damping: float,
     enabled: bool,
 ) -> None:
-    """Lower a cloth/volume ``point`` -> rigid-body ``xform`` attachment to body-particle attachments.
+    """Lower a cloth/volume ``point`` -> rigid-body ``xform`` attachment to particle-body attachments.
 
     Each ``indices0`` simulation point becomes one compliant attachment, with the authored enabled
     state, from its particle to the ``coords1`` anchor in the ``src1`` xform frame. Hard
@@ -352,9 +352,9 @@ def _import_particle_attachment(
         return
 
     attachments = [
-        ctx.builder.add_attachment_body_particle(
-            body,
+        ctx.builder.add_attachment_particle_body(
             p0 + src_index,
+            body,
             body_point=body_point,
             stiffness=stiffness,
             damping=damping,
@@ -362,9 +362,9 @@ def _import_particle_attachment(
         )
         for src_index, (body, body_point) in zip(indices0, targets, strict=True)
     ]
-    attrs["attachment_body_particle_indices"] = attachments
+    attrs["attachment_particle_body_indices"] = attachments
     if ctx.verbose:
-        print(f"Added PhysicsAttachment {path} with {len(attachments)} body-particle attachment(s).")
+        logger.info("Added PhysicsAttachment %s with %s particle-body attachment(s).", path, len(attachments))
 
 
 def _deformable_remap_collapsed(
