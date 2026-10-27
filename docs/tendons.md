@@ -11,8 +11,8 @@ Native routed-tendon USD authoring and MuJoCo lowering below are design sketches
 not implemented APIs. Existing MuJoCo-provider tendon import is supported separately.
 ```
 
-Newton's tendon model represents a massless cable routed through points on
-rigid bodies. It complements Newton's rod-based cable model: rods discretize
+Newton's tendon model represents a massless cable routed through guides attached
+to rigid bodies or the world. It complements Newton's rod-based cable model: rods discretize
 the cable itself into massive bodies, while a tendon stores only its route and
 applies forces to the bodies along that route.
 
@@ -26,14 +26,20 @@ routing state.
 
 Pass a complete ordered list of {class}`~newton.TendonGuide` entries to
 {meth}`~newton.ModelBuilder.add_tendon`. A guide describes the cable's interaction
-with a body; it is not an articulation link. Every guide after the first owns
+with a body or the world; it is not an articulation link. Every guide after the first owns
 the incoming straight segment, so its `compliance`, `damping`, and `rest_length`
 describe that segment. The first guide has no incoming segment: non-default
 values there are rejected. For a linear span, compliance is `1 / stiffness`
 (m/N versus N/m); zero compliance requests an inextensible XPBD constraint.
 
 The builder validates the entire route before changing any tendon arrays.
-At least two guides are required, all attached to bodies in the same world.
+At least two guides are required, all belonging to the same simulation world.
+Use `TendonGuide(body=-1, ...)` for a world-attached anchor, pinhole, or roller.
+Its offset and axis are world-space coordinates, and it belongs to the builder's
+current world. Body-attached guides retain body-local offsets and axes.
+When using `add_world` or `replicate`, author world-attached routes in the source
+builder. Adding them afterward does not infer ownership from a copied body's
+world: outside a world context, new world-attached guides belong to world `-1`.
 Routes are open and do not implicitly form loops. Internal anchors are allowed;
 they prevent material transfer between their incoming and outgoing spans.
 
@@ -42,15 +48,13 @@ import newton
 
 builder = newton.ModelBuilder()
 
-anchor_body = builder.add_body(mass=0.0)
-guide_body = builder.add_body(mass=0.0)
 payload_body = builder.add_body(mass=1.0)
 
 tendon = builder.add_tendon(
     [
-        newton.TendonGuide(body=anchor_body, offset=(-1.0, 0.0, 0.0)),
+        newton.TendonGuide(body=-1, offset=(-1.0, 0.0, 0.0)),
         newton.TendonGuide(
-            body=guide_body,
+            body=-1,
             guide_type=newton.TendonGuideType.PINHOLE,
             offset=(0.0, 0.0, 1.0),
             mu=0.1,
@@ -80,7 +84,9 @@ than its guide range.
 
 `add_builder`, `add_world`, and `replicate` copy guide and segment data and remap
 body indices. Local offsets and axes follow the copied body transforms;
-fixed-joint collapse transforms them into the retained body's frame.
+fixed-joint collapse transforms them into the retained body's frame, or world
+space when the body is merged into the world. Placement transforms apply directly
+to world-attached guides when composing or replicating builders.
 
 ## Guide types
 

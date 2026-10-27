@@ -12,7 +12,6 @@ import tempfile
 import types
 import unittest
 import warnings
-from contextlib import nullcontext
 from typing import ClassVar
 from unittest import mock
 from urllib.parse import urlparse
@@ -49,30 +48,6 @@ _PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ value
 
 
 class TestImportUsdPhysics(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_unit_flags_warn_when_enabled(self):
-        """Deprecate each enabled legacy unit flag without warning for defaults."""
-        from pxr import Usd
-
-        for kwargs, expected_flags in (
-            ({}, ()),
-            ({"legacy_angular_velocity_units": False, "legacy_springref_units": False}, ()),
-            ({"legacy_angular_velocity_units": True}, ("legacy_angular_velocity_units",)),
-            ({"legacy_springref_units": True}, ("legacy_springref_units",)),
-            (
-                {"legacy_angular_velocity_units": True, "legacy_springref_units": True},
-                ("legacy_angular_velocity_units", "legacy_springref_units"),
-            ),
-        ):
-            with self.subTest(kwargs=kwargs):
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always", DeprecationWarning)
-                    newton.ModelBuilder().add_usd(Usd.Stage.CreateInMemory(), **kwargs)
-                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
-                self.assertEqual(len(deprecations), len(expected_flags))
-                for warning, flag in zip(deprecations, expected_flags, strict=True):
-                    self.assertRegex(str(warning.message), rf"{flag}.*deprecated.*1\.8")
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_binding_outside_import_root(self):
         """Import shared physics materials without importing unrelated bodies."""
@@ -148,12 +123,6 @@ class TestImportUsdPhysics(unittest.TestCase):
         for bodies_follow_joint_ordering in (False, True):
             with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
                 self._check_rigid_body_velocity(bodies_follow_joint_ordering=bodies_follow_joint_ordering)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_rigid_body_velocity_units(self):
-        """Keep rigid-body velocity conversion unchanged by the deprecated flag."""
-        with self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8"):
-            self._check_rigid_body_velocity(legacy_angular_velocity_units=True)
 
     def _check_rigid_body_velocity(self, **import_kwargs):
         """Import a rotated body and check its body and joint velocities."""
@@ -236,36 +205,23 @@ class TestImportUsdPhysics(unittest.TestCase):
         merged_hinge.CreateBody1Rel().SetTargets(["/World/Merged"])
         set_state(merged_hinge.GetPrim(), "angular", 90.0, 180.0)
 
-        # Reuse the stage and builder to catch options leaking across imports.
         builder = newton.ModelBuilder()
-        for kwargs, angular_velocity in (
-            ({"legacy_angular_velocity_units": True}, 180.0),
-            ({}, np.pi),
-            ({"legacy_angular_velocity_units": False}, np.pi),
+        result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()])
+        joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
+        for path, offset, position, velocity in (
+            ("/World/Revolute", 0, 0.5 * np.pi, np.pi),
+            ("/World/Prismatic", 0, 0.25, 0.5),
+            ("/World/D6", 0, 0.5 * np.pi, np.pi),
         ):
-            with self.subTest(kwargs=kwargs):
-                warning = (
-                    self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8")
-                    if kwargs.get("legacy_angular_velocity_units")
-                    else nullcontext()
-                )
-                with warning:
-                    result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()], **kwargs)
-                joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
-                for path, offset, position, velocity in (
-                    ("/World/Revolute", 0, 0.5 * np.pi, angular_velocity),
-                    ("/World/Prismatic", 0, 0.25, 0.5),
-                    ("/World/D6", 0, 0.5 * np.pi, angular_velocity),
-                ):
-                    with self.subTest(joint=path):
-                        joint = result["path_joint_map"][path]
-                        self.assertAlmostEqual(joint_q[builder.joint_q_start[joint] + offset], position, places=5)
-                        self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint] + offset], velocity, places=5)
+            with self.subTest(joint=path):
+                joint = result["path_joint_map"][path]
+                self.assertAlmostEqual(joint_q[builder.joint_q_start[joint] + offset], position, places=5)
+                self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint] + offset], velocity, places=5)
 
-                merged = result["path_joint_map"]["/World/MergedHinge"]
-                self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
-                qd_start = builder.joint_qd_start[merged]
-                np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, angular_velocity], atol=1e-5)
+        merged = result["path_joint_map"]["/World/MergedHinge"]
+        self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
+        qd_start = builder.joint_qd_start[merged]
+        np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, np.pi], atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
@@ -5220,8 +5176,8 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.joint_target_q.numpy()[target_idx], np.deg2rad(20.0), places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_springref_units(self):
-        """Restore raw springrefs without changing refs, lengths, or later imports."""
+    def test_springref_compiler_angle_units(self):
+        """Convert revolute springrefs using compiler units, including merged D6 joints."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         for angle_units in (None, "degree", "radian", "no_scene"):
@@ -5254,37 +5210,24 @@ def Xform "Articulation" (
 
             builder = newton.ModelBuilder()
             SolverMuJoCo.register_custom_attributes(builder)
-            for kwargs, legacy in (
-                ({"legacy_springref_units": True}, True),
-                ({}, False),
-                ({"legacy_springref_units": False}, False),
-            ):
-                with self.subTest(angle_units=angle_units, kwargs=kwargs):
-                    warning = (
-                        self.assertWarnsRegex(DeprecationWarning, r"legacy_springref_units.*1\.8")
-                        if legacy
-                        else nullcontext()
-                    )
-                    with warning:
-                        result = builder.add_usd(stage, **kwargs)
-                    model = builder.finalize(device="cpu")
-                    springref = model.mujoco.dof_springref.numpy()
-                    reference = model.mujoco.dof_ref.numpy()
-                    angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
-                    expected_springref = 30.0 if legacy else 30.0 * angular_factor
+            with self.subTest(angle_units=angle_units):
+                result = builder.add_usd(stage)
+                model = builder.finalize(device="cpu")
+                springref = model.mujoco.dof_springref.numpy()
+                reference = model.mujoco.dof_ref.numpy()
+                angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
+                expected_springref = 30.0 * angular_factor
 
-                    for path, offset, expected_spring, expected_ref in (
-                        ("Revolute", 0, expected_springref, 15.0 * angular_factor),
-                        ("Prismatic", 0, 0.25, 0.1),
-                        ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
-                        ("MergedSlide", 0, 0.25, 0.1),
-                    ):
-                        joint = result["path_joint_map"][f"/World/{path}"]
-                        dof = builder.joint_qd_start[joint] + offset
-                        self.assertAlmostEqual(springref[dof], expected_spring, places=5)
-                        self.assertAlmostEqual(reference[dof], expected_ref, places=5)
-
-                    self.assertEqual(stage.GetPrimAtPath("/World/Revolute").GetAttribute("mjc:springref").Get(), 30.0)
+                for path, offset, expected_spring, expected_ref in (
+                    ("Revolute", 0, expected_springref, 15.0 * angular_factor),
+                    ("Prismatic", 0, 0.25, 0.1),
+                    ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
+                    ("MergedSlide", 0, 0.25, 0.1),
+                ):
+                    joint = result["path_joint_map"][f"/World/{path}"]
+                    dof = builder.joint_qd_start[joint] + offset
+                    self.assertAlmostEqual(springref[dof], expected_spring, places=5)
+                    self.assertAlmostEqual(reference[dof], expected_ref, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
@@ -14408,6 +14351,107 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
             display_color,
             atol=1e-6,
         )
+
+    @staticmethod
+    def _define_material_mesh(stage, name: str, color_space: str, *, texture_asset: str | None = None):
+        """Define a mesh bound to a preview surface whose color or texture file is tagged with ``color_space``."""
+        from pxr import Gf, Sdf, UsdGeom, UsdShade
+
+        mesh = UsdGeom.Mesh.Define(stage, f"/World/{name}")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0.0, 0.0, 0.0), Gf.Vec3f(1.0, 0.0, 0.0), Gf.Vec3f(0.0, 1.0, 0.0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        material = UsdShade.Material.Define(stage, f"/World/Looks/{name}")
+        shader = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        color_input = shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+        if texture_asset is None:
+            color_input.Set(Gf.Vec3f(0.25, 0.5, 0.75))
+            color_input.GetAttr().SetColorSpace(color_space)
+        else:
+            texture = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/Albedo")
+            texture.CreateIdAttr("UsdUVTexture")
+            file_input = texture.CreateInput("file", Sdf.ValueTypeNames.Asset)
+            file_input.Set(Sdf.AssetPath(texture_asset))
+            file_input.GetAttr().SetColorSpace(color_space)
+            color_input.ConnectToSource(texture.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+        return mesh.GetPrim()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_acescg_color_and_texture_are_converted_from_linear(self):
+        """Treat ``acescg`` scalar colors and textures as linear and convert them to display/sRGB."""
+        from PIL import Image
+        from pxr import Usd
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        for token in ("acescg", "ACEScg"):
+            with self.subTest(token=token):
+                prim = self._define_material_mesh(stage, f"Color_{token}", token)
+                with self.assertLogs("newton._src.usd.utils", level="WARNING"):
+                    material_props = resolve_material_properties_for_prim(prim)
+                np.testing.assert_allclose(material_props["color"], color_linear_to_srgb((0.25, 0.5, 0.75)), atol=1e-6)
+
+        source_rgba = np.array([[[64, 128, 255, 200]]], dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            texture_path = os.path.join(tmpdir, "acescg.png")
+            Image.fromarray(source_rgba).save(texture_path)
+            prim = self._define_material_mesh(stage, "Texture", "acescg", texture_asset=texture_path)
+            with self.assertLogs("newton._src.usd.utils", level="WARNING"):
+                mesh = usd.get_mesh(prim)
+
+        self.assertIsInstance(mesh.texture, np.ndarray)
+        expected_rgb = np.round(np.asarray(color_linear_to_srgb(source_rgba[0, 0, :3] / 255.0)) * 255.0)
+        np.testing.assert_array_equal(np.asarray(mesh.texture)[0, 0, :3], expected_rgb.astype(np.uint8))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_non_rec709_color_spaces_warn_for_colors_textures_and_gaussians(self):
+        """Log the same warning for scalar colors, textures and Gaussians in spaces Newton does not convert."""
+        from PIL import Image
+        from pxr import Sdf, Usd
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        texture_path = os.path.join(tmpdir.name, "texture.png")
+        Image.fromarray(np.zeros((1, 1, 4), dtype=np.uint8)).save(texture_path)
+
+        stage = Usd.Stage.CreateInMemory()
+        for token in ("lin_ap1_scene", "srgb_ap1_scene"):
+            color_prim = self._define_material_mesh(stage, f"Color_{token}", token)
+            texture_prim = self._define_material_mesh(stage, f"Texture_{token}", token, texture_asset=texture_path)
+            gaussian_prim = stage.DefinePrim(f"/World/Gaussian_{token}", "ParticleField3DGaussianSplat")
+            gaussian_prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+            sh = gaussian_prim.CreateAttribute(
+                "radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array
+            )
+            sh.Set([(0.0, 0.0, 0.0)])
+            sh.SetColorSpace(token)
+
+            for what, load in (
+                ("Color", lambda prim=color_prim: resolve_material_properties_for_prim(prim)),
+                ("Color texture", lambda prim=texture_prim: usd.get_mesh(prim)),
+                ("Gaussian SH radiance", lambda prim=gaussian_prim: newton.Gaussian.create_from_usd(prim)),
+            ):
+                with self.subTest(token=token, what=what):
+                    with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
+                        load()
+                    self.assertEqual(len(logs.output), 1)
+                    self.assertIn(f"{what} of ", logs.output[0])
+                    self.assertIn(f"unsupported color space '{token}'", logs.output[0])
+
+        prim = self._define_material_mesh(stage, "Supported", "lin_rec709_scene")
+        with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+            resolve_material_properties_for_prim(prim)
+        # Omniverse assets tag texture files with ``auto``, which means untagged.
+        prim = self._define_material_mesh(stage, "Auto", "auto", texture_asset=texture_path)
+        with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+            self.assertEqual(usd.get_mesh(prim).texture, texture_path)
 
 
 if __name__ == "__main__":

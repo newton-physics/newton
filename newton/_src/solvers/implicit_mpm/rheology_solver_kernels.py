@@ -8,16 +8,14 @@ import warp.fem as fem
 import warp.sparse as sp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
+from .contact_solver_kernels import ColoredContacts, make_solve_colored_cell_contacts
+
 _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
 """Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
 
 _SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
 """Tolerance for the Newton method to solve for the sliding velocity"""
 
-_INCLUDE_LEFTOVER_STRAIN = wp.constant(False)
-"""Whether to include leftover strain (due to not fully-converged implicit solve) in the elastic strain.
-
-More accurate, but less stable for stiff materials. Development toggle for experimentation."""
 
 _USE_CAM_CLAY = wp.constant(False)
 """Use Modified Cam-Clay flow rule instead of the piecewise-linear anisotropic one. Development toggle for experimentation."""
@@ -299,6 +297,7 @@ def postprocess_stress_and_strain(
     strain_rhs: wp.array[vec6],
     stress: wp.array[vec6],
     velocity: wp.array[wp.vec3],
+    include_unconverged_strain: bool,
     elastic_strain: wp.array[vec6],
     plastic_strain: wp.array[vec6],
 ):
@@ -306,7 +305,8 @@ def postprocess_stress_and_strain(
 
     Uses the generic (non-specialized) flow-rule solver to ensure correct
     results regardless of which compile-time flags were active during the
-    iterative solve.
+    iterative solve. With ``include_unconverged_strain``, the elastic strain
+    also receives the flow-rule residual left by an unconverged solve.
     """
     tau_i = wp.tid()
 
@@ -345,7 +345,7 @@ def postprocess_stress_and_strain(
     )
     world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot) - offset_strain
 
-    if _INCLUDE_LEFTOVER_STRAIN:
+    if include_unconverged_strain:
         minus_elastic_strain -= world_plastic_strain - world_plastic_strain_new
 
     elastic_strain[tau_i] = -minus_elastic_strain
@@ -606,9 +606,11 @@ def make_solve_flow_rule(has_viscosity: bool = True, has_dilatancy: bool = True)
             dilatancy = 0.0
 
         if wp.static(has_viscosity):
-            D_visc = vec6(1.0) + get_viscosity(yield_params) / strain_node_volume * D
-            D = wp.cw_div(D, D_visc)
-            b = wp.cw_div(b, D_visc)
+            # Empty strain modes have no material viscosity to apply.
+            if strain_node_volume > 0.0:
+                D_visc = vec6(1.0) + get_viscosity(yield_params) / strain_node_volume * D
+                D = wp.cw_div(D, D_visc)
+                b = wp.cw_div(b, D_visc)
 
         if wp.static(_USE_CAM_CLAY):
             return solve_flow_rule_camclay(D, b, r_guess, yield_params)
@@ -980,36 +982,239 @@ def make_jacobi_solve_kernel(
     return jacobi_solve_kernel_impl
 
 
+@wp.struct
+class StrainMatrixRows:
+    offsets: wp.array[int]
+    columns: wp.array[int]
+    values: wp.array[mat13]
+
+
+@wp.struct
+class StrainMatrixRowsSoA:
+    node_indices: wp.array[int]
+    entry_count: wp.array[int]
+    columns: wp.array2d[int]
+    values_x: wp.array2d[float]
+    values_y: wp.array2d[float]
+    values_z: wp.array2d[float]
+    block_offsets: wp.array[int]
+
+
+@wp.func
+def _strain_row_node(rows: StrainMatrixRows, row: int):
+    return row
+
+
+@wp.func
+def _strain_row_node(rows: StrainMatrixRowsSoA, row: int):
+    return rows.node_indices[row]
+
+
+@wp.func
+def _strain_row_length(rows: StrainMatrixRows, row: int):
+    return rows.offsets[row + 1] - rows.offsets[row]
+
+
+@wp.func
+def _strain_row_length(rows: StrainMatrixRowsSoA, row: int):
+    return rows.entry_count[row]
+
+
+@wp.func
+def _strain_row_entry(rows: StrainMatrixRows, row: int, k: int):
+    b = rows.offsets[row] + k
+    return rows.columns[b], rows.values[b]
+
+
+@wp.func
+def _strain_row_entry(rows: StrainMatrixRowsSoA, row: int, k: int):
+    return rows.columns[k, row], wp.vec3(rows.values_x[k, row], rows.values_y[k, row], rows.values_z[k, row])
+
+
+@wp.struct
+class _CellVelocityCache:
+    nodes: wp.types.vector(length=8, dtype=int)
+    inverse_mass: wp.types.vector(length=8, dtype=float)
+    vx: wp.types.vector(length=8, dtype=float)
+    vy: wp.types.vector(length=8, dtype=float)
+    vz: wp.types.vector(length=8, dtype=float)
+
+
+@wp.func
+def _gather_cell_velocity(rows: Any, row: int, inv_mass: wp.array[float], velocity: wp.array[wp.vec3]):
+    cache = _CellVelocityCache()
+    for k in range(8):
+        node, _weight = _strain_row_entry(rows, row, k)
+        cache.nodes[k] = node
+        cache.inverse_mass[k] = inv_mass[node]
+        v = velocity[node]
+        cache.vx[k] = v[0]
+        cache.vy[k] = v[1]
+        cache.vz[k] = v[2]
+    return cache
+
+
+def make_solve_strain_rows(
+    has_viscosity: bool,
+    has_dilatancy: bool,
+    has_compliance_mat: bool,
+    has_rotation: bool,
+    cache_cell_velocity: bool,
+    batched: bool,
+    max_entries: int,
+):
+    """Share the local stress solve and velocity updates across all GS layouts."""
+    key = (
+        has_viscosity,
+        has_dilatancy,
+        has_compliance_mat,
+        has_rotation,
+        cache_cell_velocity,
+        batched,
+        max_entries,
+    )
+
+    @fem.cache.dynamic_func(suffix=key, allow_overloads=True)
+    def solve_strain_rows(
+        beg: int,
+        end: int,
+        rows: Any,
+        yield_params: wp.array[YieldParamVec],
+        strain_node_volume: wp.array[float],
+        compliance_offsets: wp.array[int],
+        compliance_columns: wp.array[int],
+        compliance_values: wp.array[mat66],
+        diagonal: wp.array[vec6],
+        rotation: wp.array[mat55],
+        inv_mass: wp.array[float],
+        rhs: wp.array[vec6],
+        velocity: wp.array[wp.vec3],
+        stress: wp.array[vec6],
+        delta: wp.array[vec6],
+    ):
+        cache = _CellVelocityCache()
+        if wp.static(cache_cell_velocity):
+            first = int(-1)
+            for row in range(beg, end):
+                if first < 0 and _strain_row_length(rows, row) > 0:
+                    first = row
+            if first < 0:
+                for row in range(beg, end):
+                    delta[_strain_row_node(rows, row)] = vec6(0.0)
+                return
+            cache = _gather_cell_velocity(rows, first, inv_mass, velocity)
+
+        for row in range(beg, end):
+            tau_i = _strain_row_node(rows, row)
+            n = _strain_row_length(rows, row)
+            if n == 0:
+                delta[tau_i] = vec6(0.0)
+                continue
+            tau = rhs[tau_i]
+            entries = n
+            if wp.static(max_entries > 0):
+                entries = wp.static(max_entries)
+            for k in range(entries):
+                node, weight = _strain_row_entry(rows, row, k)
+                v = wp.vec3(0.0)
+                if wp.static(cache_cell_velocity):
+                    v = wp.vec3(cache.vx[k], cache.vy[k], cache.vz[k])
+                else:
+                    v = velocity[node]
+                tau += _symmetric_part_op(weight, v)
+            if wp.static(has_compliance_mat):
+                for b in range(compliance_offsets[tau_i], compliance_offsets[tau_i + 1]):
+                    tau += compliance_values[b] @ stress[compliance_columns[b]]
+            ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
+                tau_i, tau, yield_params, strain_node_volume, diagonal, rotation, stress
+            )
+            # Batched compliant solves read frozen stresses and commit them in a separate kernel.
+            if wp.static(not (batched and has_compliance_mat)):
+                stress[tau_i] += ds
+            delta[tau_i] = ds
+            if wp.static(not batched):
+                scatter_entries = n
+                if wp.static(cache_cell_velocity):
+                    scatter_entries = 8
+                for k in range(scatter_entries):
+                    node, weight = _strain_row_entry(rows, row, k)
+                    dv = _symmetric_part_transposed_op(weight, ds)
+                    if wp.static(cache_cell_velocity):
+                        cache.vx[k] += cache.inverse_mass[k] * dv[0]
+                        cache.vy[k] += cache.inverse_mass[k] * dv[1]
+                        cache.vz[k] += cache.inverse_mass[k] * dv[2]
+                    else:
+                        velocity[node] += inv_mass[node] * dv
+
+        if wp.static(cache_cell_velocity):
+            for k in range(8):
+                velocity[cache.nodes[k]] = wp.vec3(cache.vx[k], cache.vy[k], cache.vz[k])
+
+    return solve_strain_rows
+
+
 def make_gs_solve_kernel(
     has_viscosity: bool,
     has_dilatancy: bool,
     has_compliance_mat: bool,
     strain_velocity_node_count: int = -1,
     has_rotation: bool = not _ISOTROPIC_LOCAL_LHS,
+    *,
+    soa: bool = False,
+    batched: bool = False,
+    strain_nodes_per_cell: int = 0,
+    max_entries: int = -1,
+    cache_cell_velocity: bool = True,
+    colored_contact_nodes: int = 0,
 ):
-    """Return a Gauss-Seidel colored-block stress solve kernel specialized for the given feature flags.
+    """Specialize one GS kernel for BSR/SoA storage and colored/batched updates.
 
-    The returned kernel processes strain nodes in color order to avoid write conflicts,
-    immediately propagating velocity updates within each color. Each unique combination
-    of flags produces a separate Warp kernel compiled and cached via
-    :func:`fem.cache.dynamic_kernel`.
+    With ``colored_contact_nodes`` > 0, each strain cell also solves its particle contact rows,
+    whose velocity nodes it does not share with other cells of its color.
     """
-    key = (has_viscosity, has_dilatancy, has_compliance_mat, has_rotation, strain_velocity_node_count)
+    # Batched updates read frozen velocities and scatter in a separate kernel.
+    cache_cell_velocity = (
+        cache_cell_velocity and not batched and strain_velocity_node_count == 8 and strain_nodes_per_cell > 1
+    )
+    if max_entries < 0:
+        max_entries = strain_velocity_node_count
+    key = (
+        has_viscosity,
+        has_dilatancy,
+        has_compliance_mat,
+        has_rotation,
+        soa,
+        batched,
+        max_entries,
+        cache_cell_velocity,
+        colored_contact_nodes,
+        strain_nodes_per_cell if colored_contact_nodes > 0 else 0,
+    )
+    solve_rows = make_solve_strain_rows(
+        has_viscosity,
+        has_dilatancy,
+        has_compliance_mat,
+        has_rotation,
+        cache_cell_velocity,
+        batched,
+        max_entries,
+    )
 
-    @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
+    solve_contacts = make_solve_colored_cell_contacts(colored_contact_nodes) if colored_contact_nodes > 0 else None
+
+    @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True}, allow_overloads=True)
     def gs_solve_kernel_impl(
         color: int,
         launch_dim: int,
         color_offsets: wp.array[int],
         color_blocks: wp.array2d[int],
+        rows: Any,
+        colors_per_batch: int,
         yield_params: wp.array[YieldParamVec],
         strain_node_volume: wp.array[float],
         compliance_mat_offsets: wp.array[int],
         compliance_mat_columns: wp.array[int],
         compliance_mat_values: wp.array[mat66],
-        strain_mat_offsets: wp.array[int],
-        strain_mat_columns: wp.array[int],
-        strain_mat_values: wp.array[mat13],
         delassus_diagonal: wp.array[vec6],
         delassus_rotation: wp.array[mat55],
         inv_mass_matrix: wp.array[float],
@@ -1017,53 +1222,46 @@ def make_gs_solve_kernel(
         velocities: wp.array[wp.vec3],
         local_stress: wp.array[vec6],
         delta_correction: wp.array[vec6],
+        contacts: ColoredContacts,
     ):
-        i = wp.tid()
-        color_beg = color_offsets[color] + i
-        color_end = color_offsets[color + 1]
-
-        for color_offset in range(color_beg, color_end, launch_dim):
-            beg, end = color_blocks[0, color_offset], color_blocks[1, color_offset]
-            for tau_i in range(beg, end):
-                if strain_mat_offsets[tau_i] == strain_mat_offsets[tau_i + 1]:
-                    delta_correction[tau_i] = vec6(0.0)
-                    continue
-
-                local_strain = wp.static(make_compute_local_strain(has_compliance_mat, strain_velocity_node_count))(
-                    tau_i,
-                    compliance_mat_offsets,
-                    compliance_mat_columns,
-                    compliance_mat_values,
-                    strain_mat_offsets,
-                    strain_mat_columns,
-                    strain_mat_values,
-                    local_strain_rhs,
-                    velocities,
-                    local_stress,
-                )
-
-                delta_stress = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
-                    tau_i,
-                    local_strain,
-                    yield_params,
-                    strain_node_volume,
-                    delassus_diagonal,
-                    delassus_rotation,
-                    local_stress,
-                )
-
-                local_stress[tau_i] += delta_stress
-                delta_correction[tau_i] = delta_stress
-
-                wp.static(make_apply_stress_delta(strain_velocity_node_count))(
-                    tau_i,
-                    delta_stress,
-                    strain_mat_offsets,
-                    strain_mat_columns,
-                    strain_mat_values,
-                    inv_mass_matrix,
-                    velocities,
-                )
+        first_color = color
+        last_color = color + 1
+        if wp.static(batched):
+            first_color = color * colors_per_batch
+            last_color = wp.min(first_color + colors_per_batch, color_offsets.shape[0] - 1)
+        first, last = int(color_offsets[first_color]), int(color_offsets[last_color])
+        if wp.static(batched):
+            # Batched rows read frozen velocities, so each thread solves a single row.
+            first, last = int(rows.block_offsets[first]), int(rows.block_offsets[last])
+        for block in range(first + wp.tid(), last, launch_dim):
+            beg, end = int(0), int(0)
+            if wp.static(batched):
+                beg, end = block, block + 1
+            elif wp.static(soa):
+                beg, end = int(rows.block_offsets[block]), int(rows.block_offsets[block + 1])
+            else:
+                beg, end = int(color_blocks[0, block]), int(color_blocks[1, block])
+            wp.static(solve_rows)(
+                beg,
+                end,
+                rows,
+                yield_params,
+                strain_node_volume,
+                compliance_mat_offsets,
+                compliance_mat_columns,
+                compliance_mat_values,
+                delassus_diagonal,
+                delassus_rotation,
+                inv_mass_matrix,
+                local_strain_rhs,
+                velocities,
+                local_stress,
+                delta_correction,
+            )
+            if wp.static(colored_contact_nodes > 0):
+                # Rows start at the cell's first partition node; contacts are keyed by that cell.
+                cell = int(color_blocks[0, block]) // wp.static(max(strain_nodes_per_cell, 1))
+                wp.static(solve_contacts)(cell, contacts, inv_mass_matrix, velocities)
 
     return gs_solve_kernel_impl
 
@@ -1156,84 +1354,6 @@ def reorder_strain_mat(
         reordered_vals_z[k, fi] = v[2]
 
 
-def make_reordered_gs_solve_kernel(
-    has_viscosity: bool,
-    has_dilatancy: bool,
-    has_compliance_mat: bool,
-    max_entries: int,
-    strain_velocity_node_count: int = -1,
-    has_rotation: bool = not _ISOTROPIC_LOCAL_LHS,
-):
-    """Return a GS solve kernel using entry-major SoA strain matrix layout.
-
-    The kernel processes strain nodes in color order (one launch per color),
-    with a statically unrolled gather loop over the reordered SoA arrays for
-    coalesced memory access.  Gather, local solve, and velocity scatter are
-    fused into a single kernel launch per color.
-    """
-    key = (has_viscosity, has_dilatancy, has_compliance_mat, has_rotation, max_entries)
-
-    @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
-    def reordered_gs_solve_kernel_impl(
-        color: int,
-        launch_dim: int,
-        flat_color_offsets: wp.array[int],
-        flat_constraint_ids: wp.array[int],
-        reordered_n_entries: wp.array[int],
-        reordered_cols: wp.array2d[int],
-        reordered_vals_x: wp.array2d[float],
-        reordered_vals_y: wp.array2d[float],
-        reordered_vals_z: wp.array2d[float],
-        yield_params: wp.array[YieldParamVec],
-        strain_node_volume: wp.array[float],
-        compliance_mat_offsets: wp.array[int],
-        compliance_mat_columns: wp.array[int],
-        compliance_mat_values: wp.array[mat66],
-        delassus_diagonal: wp.array[vec6],
-        delassus_rotation: wp.array[mat55],
-        inv_mass_matrix: wp.array[float],
-        local_strain_rhs: wp.array[vec6],
-        velocities: wp.array[wp.vec3],
-        local_stress: wp.array[vec6],
-        delta_correction: wp.array[vec6],
-    ):
-        i = wp.tid()
-        for fi in range(flat_color_offsets[color] + i, flat_color_offsets[color + 1], launch_dim):
-            tau_i = flat_constraint_ids[fi]
-            n = reordered_n_entries[fi]
-
-            # Gather (statically unrolled; zero-padded entries contribute nothing)
-            tau = local_strain_rhs[tau_i]
-            for k in range(wp.static(max_entries)):
-                col = reordered_cols[k, fi]
-                val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
-                tau += _symmetric_part_op(val, velocities[col])
-
-            if wp.static(has_compliance_mat):
-                for b in range(compliance_mat_offsets[tau_i], compliance_mat_offsets[tau_i + 1]):
-                    tau += compliance_mat_values[b] @ local_stress[compliance_mat_columns[b]]
-
-            ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
-                tau_i,
-                tau,
-                yield_params,
-                strain_node_volume,
-                delassus_diagonal,
-                delassus_rotation,
-                local_stress,
-            )
-            local_stress[tau_i] += ds
-            delta_correction[tau_i] = ds
-
-            # Scatter
-            for k in range(n):
-                col = reordered_cols[k, fi]
-                val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
-                velocities[col] += inv_mass_matrix[col] * _symmetric_part_transposed_op(val, ds)
-
-    return reordered_gs_solve_kernel_impl
-
-
 # ── Batched GS-Jacobi solver ─────────────────────────────────────────────────
 #
 # Merges original colors into fewer batches.  Within each batch,
@@ -1258,82 +1378,6 @@ def build_strain_to_batch(
         if fi >= batch_beg and fi < batch_end:
             strain_batch[flat_constraint_ids[fi]] = bi
             return
-
-
-def make_batched_solve_kernel(
-    has_viscosity: bool,
-    has_dilatancy: bool,
-    has_compliance_mat: bool,
-    max_entries: int,
-    has_rotation: bool = not _ISOTROPIC_LOCAL_LHS,
-):
-    """Return the Phase-1 kernel for the batched solver (solve only, no scatter).
-
-    Processes one batch per launch.  Reads stale velocities, computes
-    delta_stress via SoA gather + local solve, and updates stress inline.
-    The velocity scatter is done by a separate Phase-2 kernel.
-    """
-    key = ("batched_solve", has_viscosity, has_dilatancy, has_compliance_mat, has_rotation, max_entries)
-
-    @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True})
-    def batched_solve_impl(
-        batch_index: int,
-        launch_dim: int,
-        flat_color_offsets: wp.array[int],
-        colors_per_batch: int,
-        flat_constraint_ids: wp.array[int],
-        reordered_cols: wp.array2d[int],
-        reordered_vals_x: wp.array2d[float],
-        reordered_vals_y: wp.array2d[float],
-        reordered_vals_z: wp.array2d[float],
-        yield_params: wp.array[YieldParamVec],
-        strain_node_volume: wp.array[float],
-        compliance_mat_offsets: wp.array[int],
-        compliance_mat_columns: wp.array[int],
-        compliance_mat_values: wp.array[mat66],
-        delassus_diagonal: wp.array[vec6],
-        delassus_rotation: wp.array[mat55],
-        local_strain_rhs: wp.array[vec6],
-        velocities: wp.array[wp.vec3],
-        local_stress: wp.array[vec6],
-        delta_correction: wp.array[vec6],
-    ):
-        i = wp.tid()
-        batch_beg = flat_color_offsets[batch_index * colors_per_batch]
-        batch_end = flat_color_offsets[
-            wp.min(
-                (batch_index + 1) * colors_per_batch,
-                flat_color_offsets.shape[0] - 1,
-            )
-        ]
-
-        for fi in range(batch_beg + i, batch_end, launch_dim):
-            tau_i = flat_constraint_ids[fi]
-
-            # Gather (statically unrolled)
-            tau = local_strain_rhs[tau_i]
-            for k in range(wp.static(max_entries)):
-                col = reordered_cols[k, fi]
-                val = wp.vec3(reordered_vals_x[k, fi], reordered_vals_y[k, fi], reordered_vals_z[k, fi])
-                tau += _symmetric_part_op(val, velocities[col])
-
-            if wp.static(has_compliance_mat):
-                for b in range(compliance_mat_offsets[tau_i], compliance_mat_offsets[tau_i + 1]):
-                    tau += compliance_mat_values[b] @ local_stress[compliance_mat_columns[b]]
-
-            ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
-                tau_i,
-                tau,
-                yield_params,
-                strain_node_volume,
-                delassus_diagonal,
-                delassus_rotation,
-                local_stress,
-            )
-            local_stress[tau_i] += ds
-            delta_correction[tau_i] = ds
-
-    return batched_solve_impl
 
 
 @wp.kernel
@@ -1436,6 +1480,24 @@ def fill_batch_transpose(
         batch_columns[out] = tau_i
         batch_values[out] = transposed_strain_mat_values[b]
         batch_write_cursors[bi, u_i] = out + 1
+
+
+@wp.kernel
+def commit_batched_stress(
+    batch_index: int,
+    launch_dim: int,
+    flat_color_offsets: wp.array[int],
+    colors_per_batch: int,
+    flat_constraint_ids: wp.array[int],
+    delta_stress: wp.array[vec6],
+    stress: wp.array[vec6],
+):
+    """Add one batch's stress deltas once all its rows have read the frozen stresses."""
+    batch_beg = flat_color_offsets[batch_index * colors_per_batch]
+    batch_end = flat_color_offsets[wp.min((batch_index + 1) * colors_per_batch, flat_color_offsets.shape[0] - 1)]
+    for fi in range(batch_beg + wp.tid(), batch_end, launch_dim):
+        tau_i = flat_constraint_ids[fi]
+        stress[tau_i] += delta_stress[tau_i]
 
 
 @wp.kernel

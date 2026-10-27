@@ -2326,15 +2326,28 @@ normal and tangential relative velocities. Per contact, the normal force
 
    f_n &= k_e \, d \qquad (d < k_a) \\
    f_d &= k_d \, \min(v_n, 0) \qquad (d < 0) \\
-   \lVert f_t \rVert &= k_f \, \lVert v_t \rVert \qquad (d < 0, \text{ low slip speed})
+   \lVert f_t \rVert &= \min(k_f \, \lVert v_t \rVert,\, \mu |f_n + f_d|) \qquad (d < 0)
 
 **Friction gain** ``kf`` **[N·s/m]** is the slope of a viscous regularization
 of Coulomb friction: at low slip speed the friction force is
 :math:`k_f \lVert v_t \rVert`, so a body at rest on a slope creeps instead of
 sticking. With :math:`N` contacts carrying the load, the creep speed is roughly
-:math:`m g \sin\theta / (N k_f)`. At higher slip speed the force is capped by a
-term proportional to ``mu``. The exact cap is under review in
-`#4796 <https://github.com/newton-physics/newton/issues/4796>`__.
+:math:`m g \sin\theta / (N k_f)`. At higher slip speed the force is capped at
+:math:`\mu |f_n + f_d|`, including normal damping. Friction opposes tangential
+relative motion. For positive ``kf``, the transition speed is
+:math:`\mu |f_n + f_d| / k_f`.
+
+The viscous branch evaluates :math:`k_f v_t` directly, so its velocity
+derivative remains well-defined at rest without a separate smoothing
+parameter. The force is continuous at the Coulomb limit, where its derivative
+changes between the viscous and capped branches.
+
+The solver argument and attribute ``friction_smoothing`` are deprecated in
+Newton 1.8 and have no effect on friction. Explicit constructor values and
+attribute reads or assignments emit a deprecation warning. Constructor calls
+and attribute access remain supported, and the attribute retains its last
+assigned value; all values use the corrected force law above. Remove its use
+and configure ``kf`` for the low-speed slope and ``mu`` for the Coulomb limit.
 
 - Larger ``kf`` gives less creep but stiffens the friction force. With these
   explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
