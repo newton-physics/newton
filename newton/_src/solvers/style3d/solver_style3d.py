@@ -8,7 +8,7 @@ import warp as wp
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelBuilder, State
 from ..solver import SolverBase
-from .builder import PDMatrixBuilder, _compute_max_neighbors
+from .builder import PDMatrixBuilder, _compute_max_neighbors, _PDMatrixCapacityError
 from .collision import Collision
 from .kernels import (
     accumulate_dragging_pd_diag_kernel,
@@ -438,21 +438,24 @@ class SolverStyle3D(SolverBase):
             tri_poses = model.tri_poses.numpy().tolist()
             tri_areas = model.tri_areas.numpy().tolist()
             edge_indices = model.edge_indices.numpy().tolist()
-            # Bending couples opposite vertices too, beyond triangle adjacency.
-            max_neighbors = max(32, _compute_max_neighbors(model.particle_count, tri_indices, edge_indices))
-            pd_matrix_builder = PDMatrixBuilder(model.particle_count, max_neighbor=max_neighbors)
             edge_bending_properties = model.edge_bending_properties.numpy().tolist()
             tri_aniso_ke = model.style3d.tri_aniso_ke.numpy().tolist()
             edge_rest_area = model.style3d.edge_rest_area.numpy().tolist()
             edge_bending_cot = model.style3d.edge_bending_cot.numpy().tolist()
 
-            pd_matrix_builder.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
-            pd_matrix_builder.add_bend_constraints(
-                edge_indices,
-                edge_bending_properties,
-                edge_rest_area,
-                edge_bending_cot,
-            )
+            def assemble(max_neighbors):
+                """Assemble from scratch so failed attempts never contribute partial entries."""
+                matrix = PDMatrixBuilder(model.particle_count, max_neighbor=max_neighbors)
+                matrix.add_stretch_constraints(tri_indices, tri_poses, tri_aniso_ke, tri_areas)
+                matrix.add_bend_constraints(edge_indices, edge_bending_properties, edge_rest_area, edge_bending_cot)
+                return matrix
+
+            try:
+                pd_matrix_builder = assemble(32)
+            except _PDMatrixCapacityError:
+                # Only overflowing meshes pay for counting stretch and bending connections.
+                max_neighbors = _compute_max_neighbors(model.particle_count, tri_indices, edge_indices)
+                pd_matrix_builder = assemble(max_neighbors)
             self.pd_diags, self.pd_non_diags.num_nz, self.pd_non_diags.nz_ell = pd_matrix_builder.finalize(self.device)
 
     def _update_drag_info(self, index: int, pos: wp.vec3, bary_coord: wp.vec3):
