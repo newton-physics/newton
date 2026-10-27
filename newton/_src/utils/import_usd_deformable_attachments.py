@@ -341,13 +341,6 @@ def _import_particle_attachment(
         )
         return
 
-    warnings.warn(
-        f"{path}: physics:stiffness={stiffness} is read as a point-spring stiffness [N/m] and "
-        f"physics:damping={damping} as [N·s/m] per attachment site; the proposal's force/area "
-        "units are not converted.",
-        NewtonWarning,
-        stacklevel=3,
-    )
     attachments = [
         ctx.builder.add_attachment_particle_body(
             p0 + src_index,

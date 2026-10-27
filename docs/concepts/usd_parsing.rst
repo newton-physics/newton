@@ -467,8 +467,7 @@ For these experimental cloth/volume attachments, Newton interprets finite
 ``physics:stiffness`` as a point-spring stiffness [N/m] and ``physics:damping`` as an absolute
 damping coefficient [N·s/m], matching the builder API. The pinned proposal describes attachment
 stiffness in force/area units; that dimensional discrepancy remains unresolved. The importer
-preserves the authored numeric values, does not derive an area-dependent conversion, and
-warns once per imported attachment prim.
+preserves the authored numeric values and does not derive an area-dependent conversion.
 
 A ``point``->``point`` attachment between two imported cables can be a weld. Welding happens
 only when the attachment is **hard** (no authored stiffness, or infinite; authored damping

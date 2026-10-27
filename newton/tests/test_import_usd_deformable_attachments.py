@@ -1192,8 +1192,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         author(stage, True)
         imported = newton.ModelBuilder()
         imported.add_particle(pos=(9.0, 9.0, 9.0), vel=(0.0, 0.0, 0.0), mass=1.0)
-        with self.assertWarnsRegex(UserWarning, r"/World/AttachCloth.*point-spring stiffness \[N/m\]"):
-            result = imported.add_usd(stage, return_deformable_results=True)
+        result = imported.add_usd(stage, return_deformable_results=True)
 
         ref_stage = _deformable_stage()
         author(ref_stage, False)
@@ -1302,14 +1301,13 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     coords1=[(0.2, 0.3, 0.4)],
                 )
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(UserWarning, "point-spring stiffness"):
-                    result = builder.add_usd(
-                        stage,
-                        xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
-                        floating=False,
-                        override_root_xform=override,
-                        return_deformable_results=True,
-                    )
+                result = builder.add_usd(
+                    stage,
+                    xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+                    floating=False,
+                    override_root_xform=override,
+                    return_deformable_results=True,
+                )
                 np.testing.assert_allclose(
                     np.array(builder.attachment_particle_body_body_point[0]), (0.2, 0.3, 0.4), atol=1e-5
                 )
@@ -1340,10 +1338,9 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             stiffness=500.0,
         )
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "point-spring stiffness"):
-            builder.add_usd(
-                stage, xform=wp.transform((5.0, -3.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4))
-            )
+        builder.add_usd(
+            stage, xform=wp.transform((5.0, -3.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4))
+        )
         np.testing.assert_allclose(
             np.array(builder.attachment_particle_body_body_point[0]), (-0.8, 0.6, 1.9), atol=1e-5
         )
