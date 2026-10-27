@@ -91,6 +91,9 @@ def build_scene() -> newton.ModelBuilder:
 class Example(DeterminismExample):
     def __init__(self, viewer, args):
         """Build the arms, their sweep and the default and deterministic copies."""
+        # Check the device before build_scene() downloads and parses the Franka asset.
+        if not wp.get_device().is_cuda:
+            raise RuntimeError("The Steel determinism example requires a CUDA device.")
         self.reach_q = wp.array(ARM_REACH_POSE, dtype=wp.float32)
         super().__init__(
             viewer,

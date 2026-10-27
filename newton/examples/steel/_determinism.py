@@ -55,9 +55,6 @@ class DeterminismExample:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
 
-        if not wp.get_device().is_cuda:
-            raise RuntimeError("The Steel determinism examples require a CUDA device.")
-
         self.copies = {
             mode: [
                 _SimulationCopy(f"{mode} {color_name}", scene, solver_options, deterministic, color)
