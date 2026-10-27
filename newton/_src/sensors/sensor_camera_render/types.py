@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import warp as wp
 
@@ -81,6 +81,26 @@ class AntiAliasing(enum.IntEnum):
     """
 
 
+class DeformableSurfaceMode(enum.IntEnum):
+    """Which deformable surfaces a :class:`~newton.sensors.SensorCamera` uploads and renders.
+
+    Visual meshes can overlap the simulation surface or lie inside it. Drawing both may
+    hide parts of the visual mesh. The choice is made when the sensor is constructed.
+
+    .. experimental::
+
+        This option may change without a formal deprecation cycle while deformable visual
+        support is experimental.
+    """
+
+    BOTH = 0
+    """Render the simulation triangles (cloth and soft-body surfaces) and the visual meshes, as the viewers do."""
+    SIMULATION_ONLY = 1
+    """Render the simulation triangles only; the model's visual meshes are left out."""
+    VISUAL_ONLY = 2
+    """Render the visual meshes only; every simulation triangle is left out, including surfaces without a visual mesh."""
+
+
 class TextureProjectionMode(enum.IntEnum):
     """Projection mode for texture-mapped shapes without authored UVs."""
 
@@ -119,15 +139,8 @@ class RenderConfig:
     enable_particles: bool = True
     """Enable standalone particle rendering.
 
-    Particles referenced by simulation triangles or tetrahedra are not emitted
-    as spheres, even when the simulation surface is hidden.
-    """
-
-    enable_simulation_triangles: bool = field(default=True, kw_only=True)
-    """Include coarse simulation surfaces. Set when constructing the sensor.
-
-    .. experimental::
-        This deformable-visual rendering option may change without a formal deprecation cycle.
+    When the model has simulation triangles, particles referenced by them or by
+    tetrahedra are not emitted as spheres, even when that surface is hidden.
     """
 
     enable_backface_culling: bool = True

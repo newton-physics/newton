@@ -11,12 +11,21 @@ import warp as wp
 
 from ...core import Axis
 from ...geometry import GeoType, Mesh
-from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals
+from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from ...utils.texture import compute_texture_hash
 from .render import create_kernel
-from .types import AntiAliasing, ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
+from .types import (
+    AntiAliasing,
+    ClearData,
+    DeformableSurfaceMode,
+    LightType,
+    MeshData,
+    RenderConfig,
+    RenderOrder,
+    TextureData,
+)
 
 # Default hemispheric ambient radiance (linear RGB) for surfaces facing up and down.
 DEFAULT_AMBIENT_SKY_COLOR = (0.2, 0.2, 0.225)
@@ -43,7 +52,13 @@ class RenderContext:
     DEFAULT_CLEAR_DATA = ClearData()
     DEFAULT_RENDER_CONFIG = RenderConfig()
 
-    def __init__(self, model: Model, load_textures: bool = True, *, enable_simulation_triangles: bool = True):
+    def __init__(
+        self,
+        model: Model,
+        load_textures: bool = True,
+        *,
+        deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
+    ):
         """Create a render context for a Newton simulation model.
 
         Populates shape, triangle, and texture data from *model*. BVH
@@ -56,10 +71,9 @@ class RenderContext:
 
         Args:
             model: Newton simulation model providing shapes and particles.
-            load_textures: Load mesh textures from file paths or in-memory images. Set False for
-                checkerboard or custom texture workflows.
-            enable_simulation_triangles: Include the coarse simulation surface
-                alongside any deformable visual meshes.
+            load_textures: Load shape and visual mesh textures from file paths or in-memory images.
+            deformable_surface_mode: Which deformable surfaces to upload: the simulation triangles,
+                the visual meshes, or both.
         """
         self._model = model
         self._render_state = RenderContext.RenderState()
@@ -75,11 +89,12 @@ class RenderContext:
         self._triangle_indices: wp.array[wp.int32] | None = None
         self._topology_particle_mask: wp.array[wp.bool] | None = None
 
-        self._dynamic_triangle_points: wp.array[wp.vec3f] | None = None
-        self._dynamic_triangle_particle_count = 0
-        self._deformable_visual_texture_ids: list[int] = []
-        self._triangle_world = model.particle_world
-        self._triangle_colors: wp.array[wp.vec3f] | None = None
+        # The camera owns the point buffer of its deformable surfaces: the simulation particles
+        # first, then the skinned vertices; both counts are 0 when that surface is left out.
+        self._triangle_particle_start = 0
+        self._triangle_particle_count = 0
+        self._skinned_vertex_count = 0
+        self._triangle_groups: wp.array[wp.int32] | None = None
         self._triangle_mesh_uvs = wp.empty(0, dtype=wp.vec2f, device=self.device)
         self._triangle_mesh_texture_ids = wp.empty(0, dtype=wp.int32, device=self.device)
 
@@ -121,8 +136,21 @@ class RenderContext:
                 shape_type_np[as_mesh] = int(GeoType.MESH)
                 self._shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
 
-        deformable_visual_meshes = model.deformable_visual_meshes
-        has_simulation_triangles = bool(enable_simulation_triangles and model.particle_count and model.tri_count)
+        # The batches name the meshes this camera uploads and skins; they are the one source for
+        # the skin topology, texture ids and per-frame skinning.
+        self._skin_batches: _DeformableVisualSkinBatches = model._get_deformable_visual_skin_batches()
+        deformable_visual_meshes = (
+            self._skin_batches.meshes if deformable_surface_mode != DeformableSurfaceMode.SIMULATION_ONLY else ()
+        )
+        has_simulation_triangles = bool(
+            deformable_surface_mode != DeformableSurfaceMode.VISUAL_ONLY and model.particle_count and model.tri_count
+        )
+        if has_simulation_triangles:
+            # Only the particle span the triangles reference is copied each frame, so unrelated
+            # particles (granular material, for example) cost nothing here.
+            tri_particles = model.tri_indices.numpy()
+            self._triangle_particle_start = int(tri_particles.min())
+            self._triangle_particle_count = int(tri_particles.max()) + 1 - self._triangle_particle_start
         if model.particle_q is not None and model.particle_q.shape[0]:
             self._has_particles = True
             self._render_state.has_particles = True
@@ -132,12 +160,6 @@ class RenderContext:
                 if indices is not None and indices.shape[0]:
                     topology_particle_mask[indices.numpy().reshape(-1)] = True
 
-            if has_simulation_triangles:
-                if deformable_visual_meshes:
-                    self._dynamic_triangle_particle_count = model.particle_count
-                else:
-                    self._set_triangle_points(model.particle_q)
-                    self._set_triangle_indices(model.tri_indices.flatten())
             if model.tri_count:
                 # Hiding the coarse surface must not expose its particles as spheres.
                 mask_topology_particles(model.tri_indices)
@@ -149,9 +171,9 @@ class RenderContext:
         if model.gaussians_data is not None:
             self._render_state.num_gaussians = model.gaussians_data.shape[0]
 
-        self._load_texture_and_mesh_data(model, load_textures)
-        if deformable_visual_meshes:
-            self._init_deformable_visual_triangle_mesh(model, deformable_visual_meshes, has_simulation_triangles)
+        skin_texture_ids = self._load_texture_and_mesh_data(model, load_textures, deformable_visual_meshes)
+        if has_simulation_triangles or deformable_visual_meshes:
+            self._init_triangle_mesh(model, deformable_visual_meshes, skin_texture_ids)
 
     @property
     def model(self) -> Model:
@@ -170,16 +192,13 @@ class RenderContext:
         return Axis.from_any(self.model.up_axis)
 
     def _get_triangle_colors(self) -> wp.array[wp.vec3f]:
-        """Per-face display colors (sRGB) for simulation and visual triangles."""
-        if self._triangle_colors is not None:
-            if (
-                self._dynamic_triangle_particle_count
-                and self.model.tri_color is not None
-                and self.model.tri_color.shape[0] == self.model.tri_count
-            ):
-                wp.copy(self._triangle_colors, self.model.tri_color, count=self.model.tri_count)
-            return self._triangle_colors
-        colors = self.model.tri_color
+        """Per-face display colors (sRGB) of the simulation triangles; empty without ``Model.tri_color``.
+
+        Simulation faces come first in the combined index buffer and the kernel shades faces
+        beyond this array white, so visual-mesh faces need no entries. With the simulation
+        surface hidden, the first faces are visual meshes and must not take its colors.
+        """
+        colors = self.model.tri_color if self._triangle_particle_count else None
         if colors is not None and colors.shape[0] == self.model.tri_count:
             return colors
         if self._empty_triangle_colors is None:
@@ -199,26 +218,41 @@ class RenderContext:
         :meth:`~newton.Model.bvh_refit_particles`.
 
         Args:
-            state: Current simulation state with particle positions.
-            deformable_visuals: Updated geometry for the model's deformable
-                visual payloads, or ``None`` when the model has none.
+            state: Current simulation state with particle positions and body transforms.
+            deformable_visuals: Precomputed visual points, or ``None`` to skin from the state.
         """
 
-        if self._dynamic_triangle_points is not None:
-            if deformable_visuals is None:
-                raise ValueError("deformable_visuals is required by this render context")
-            if self._dynamic_triangle_particle_count:
-                wp.copy(self._dynamic_triangle_points, state.particle_q, count=self._dynamic_triangle_particle_count)
-            # Both buffers pack visual meshes in model order, after any simulation vertices.
-            wp.copy(
-                self._dynamic_triangle_points,
-                deformable_visuals.points,
-                dest_offset=self._dynamic_triangle_particle_count,
-                count=deformable_visuals.points.shape[0],
-            )
-            self._sync_triangle_mesh()
-        elif self._has_triangle_mesh:
-            self._set_triangle_points(state.particle_q)
+        if self._triangle_points is not None:
+            model = self.model
+            # A state change is a copy and a BVH refit, never a rebuild, so each state can be
+            # captured in its own graph.
+            if self._triangle_particle_count:
+                needed = self._triangle_particle_start + self._triangle_particle_count
+                if state.particle_q is None or state.particle_q.shape[0] < needed:
+                    raise ValueError(
+                        f"State.particle_q with at least {needed} entries is required by this model's "
+                        "simulation triangles"
+                    )
+                wp.copy(
+                    self._triangle_points,
+                    state.particle_q,
+                    src_offset=self._triangle_particle_start,
+                    count=self._triangle_particle_count,
+                )
+            if self._skinned_vertex_count:
+                if deformable_visuals is None:
+                    model._validate_deformable_visual_state(state, self._skin_batches)
+                    # The camera uses face normals, so the direct path only evaluates points.
+                    self._skin_batches.skin(
+                        state, model, self._triangle_points, out_offset=self._triangle_particle_count
+                    )
+                else:
+                    wp.copy(
+                        self._triangle_points,
+                        deformable_visuals.points,
+                        dest_offset=self._triangle_particle_count,
+                        count=self._skinned_vertex_count,
+                    )
             self._sync_triangle_mesh()
 
     def _up_vector(self) -> wp.vec3f:
@@ -299,6 +333,11 @@ class RenderContext:
     ) -> None:
         """Assign a gray checkerboard texture material to selected shapes.
 
+        Each call sets the whole selection: the selected shapes show the
+        checkerboard and every other shape is untextured. Skinned visual
+        meshes keep their textures, and the textures loaded at construction
+        stay resident so every texture id stays valid.
+
         Args:
             shape_indices: Shape indices that should use the checkerboard texture.
             resolution: Texture resolution in pixels (square texture).
@@ -333,7 +372,7 @@ class RenderContext:
 
         checkerboard_data.repeat = wp.vec2f(1.0, 1.0)
 
-        # Keep skinned-mesh texture IDs valid when adding a ground checkerboard.
+        # The checkerboard owns one stable slot, so shape and skinned-mesh texture ids stay valid.
         if self._checkerboard_texture_id == len(self._texture_data_source):
             self._texture_data_source.append(checkerboard_data)
         else:
@@ -604,26 +643,10 @@ class RenderContext:
     def _has_gaussians(self) -> bool:
         return self.model.gaussians_data is not None
 
-    def _set_triangle_points(self, triangle_points: wp.array[wp.vec3f]) -> None:
-        if self._triangle_points is None or self._triangle_points.ptr != triangle_points.ptr:
-            self._triangle_mesh = None
-        self._triangle_points = triangle_points
-
-    def _set_triangle_indices(self, triangle_indices: wp.array[wp.int32]) -> None:
-        if self._triangle_indices is None or self._triangle_indices.ptr != triangle_indices.ptr:
-            self._triangle_mesh = None
-        self._triangle_indices = triangle_indices
-
     def _sync_triangle_mesh(self):
         if self._triangle_mesh is None:
-            triangle_indices_np = self._triangle_indices.reshape((-1, 3)).numpy()
-            vertex_world_np = self._triangle_world.numpy()
-            triangle_world_np = vertex_world_np[triangle_indices_np[:, 0]]
-            triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(np.int32)
-            triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
-
             self._triangle_mesh = wp.Mesh(
-                self._triangle_points, self._triangle_indices, groups=triangle_groups, bvh_constructor="sah"
+                self._triangle_points, self._triangle_indices, groups=self._triangle_groups, bvh_constructor="sah"
             )
 
             wp.launch(
@@ -640,7 +663,9 @@ class RenderContext:
         group = wp.tid()
         out_group_roots[group] = wp.mesh_get_group_root(mesh_id, group)
 
-    def _load_texture_and_mesh_data(self, model: Model, load_textures: bool):
+    def _load_texture_and_mesh_data(
+        self, model: Model, load_textures: bool, deformable_visual_meshes: Sequence[DeformableVisualMesh]
+    ) -> list[int]:
         """Load mesh UV/normal data and textures from *model*.
 
         Populates mesh data, texture data, and the
@@ -651,6 +676,12 @@ class RenderContext:
             model: Newton simulation model containing shape sources.
             load_textures: Load image textures from paths or in-memory images.
                 Otherwise leave shapes and visual meshes untextured.
+            deformable_visual_meshes: The visual meshes this camera renders, whose
+                textures are loaded like shape textures.
+
+        Returns:
+            The texture slot of each visual mesh, in the given order, or ``-1`` for an
+            untextured mesh.
         """
         self._mesh_data_source = []
         self._texture_data_source = []
@@ -716,61 +747,76 @@ class RenderContext:
                 texture_data_ids.append(-1)
                 mesh_data_ids.append(-1)
 
-        self._deformable_visual_texture_ids = [
+        skin_texture_ids = [
             texture_id(mesh.texture, compute_texture_hash(mesh.texture)) if mesh.uvs is not None else -1
-            for mesh in model.deformable_visual_meshes
+            for mesh in deformable_visual_meshes
         ]
-        self._render_state.has_triangle_mesh_textures = any(i >= 0 for i in self._deformable_visual_texture_ids)
+        self._render_state.has_triangle_mesh_textures = any(i >= 0 for i in skin_texture_ids)
 
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
-        self._shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
+        self._shape_texture_ids = wp.array(
+            np.asarray(texture_data_ids, dtype=np.int32), dtype=wp.int32, device=self.device
+        )
 
         self._mesh_data = wp.array(self._mesh_data_source, dtype=MeshData, device=self.device)
         self._shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
+        return skin_texture_ids
 
-    def _init_deformable_visual_triangle_mesh(
-        self,
-        model: Model,
-        deformable_visual_meshes: list[DeformableVisualMesh],
-        has_simulation_triangles: bool,
+    def _init_triangle_mesh(
+        self, model: Model, deformable_visual_meshes: Sequence[DeformableVisualMesh], skin_texture_ids: list[int]
     ):
-        """Build the static index buffer and dynamic point buffer for skinned visual meshes."""
+        """Build the static index buffer and camera-owned point buffer for the deformable surfaces.
+
+        The buffer holds the particle span the simulation triangles reference, then the skinned
+        vertices of every visual mesh in model order, so the skinning batches apply with that span's
+        length as offset and later frames skin exactly these meshes.
+        """
         triangle_indices: list[np.ndarray] = []
         triangle_uvs: list[np.ndarray] = []
         triangle_texture_ids: list[np.ndarray] = []
         vertex_worlds: list[np.ndarray] = []
-        vertex_offset = 0
 
-        if has_simulation_triangles:
-            sim_indices = model.tri_indices.numpy().astype(np.int32, copy=False)
+        # UVs are only read back and uploaded when some visual mesh has a texture to sample.
+        textured = self._render_state.has_triangle_mesh_textures
+        if self._triangle_particle_count:
+            start, count = self._triangle_particle_start, self._triangle_particle_count
+            sim_indices = model.tri_indices.numpy().astype(np.int32, copy=False) - start
             triangle_indices.append(sim_indices.reshape(-1))
-            triangle_uvs.append(np.zeros((model.particle_q.shape[0], 2), dtype=np.float32))
+            if textured:
+                triangle_uvs.append(np.zeros((count, 2), dtype=np.float32))
             triangle_texture_ids.append(np.full(sim_indices.shape[0], -1, dtype=np.int32))
-            vertex_worlds.append(model.particle_world.numpy().astype(np.int32, copy=False))
-            vertex_offset = model.particle_q.shape[0]
+            vertex_worlds.append(model.particle_world.numpy()[start : start + count].astype(np.int32, copy=False))
 
+        # The batches already hold every mesh's triangles indexed by destination vertex; those
+        # vertices follow the simulation particles in the camera's buffer.
+        if deformable_visual_meshes:
+            triangle_indices.append(self._skin_batches.face_indices.numpy() + self._triangle_particle_count)
         for mesh_index, mesh in enumerate(deformable_visual_meshes):
-            visual_indices = mesh.indices.numpy().astype(np.int32, copy=False)
-            triangle_indices.append(visual_indices + vertex_offset)
-            if mesh.uvs is None:
-                triangle_uvs.append(np.zeros((mesh.vertex_count, 2), dtype=np.float32))
-                texture_id = -1
-            else:
-                triangle_uvs.append(mesh.uvs.numpy().astype(np.float32, copy=False).reshape(-1, 2))
-                texture_id = self._deformable_visual_texture_ids[mesh_index]
-            triangle_texture_ids.append(np.full(visual_indices.size // 3, texture_id, dtype=np.int32))
-            vertex_worlds.append(np.full(mesh.vertex_count, mesh.world, dtype=np.int32))
+            start, end = self._skin_batches.mesh_ranges[mesh_index]
+            if textured:
+                if mesh.uvs is None:
+                    triangle_uvs.append(np.zeros((mesh.vertex_count, 2), dtype=np.float32))
+                else:
+                    triangle_uvs.append(mesh.uvs.numpy().astype(np.float32, copy=False).reshape(-1, 2))
+            face_count = mesh.indices.shape[0] // 3
+            triangle_texture_ids.append(np.full(face_count, skin_texture_ids[mesh_index], dtype=np.int32))
+            vertex_worlds.append(np.full(end - start, mesh.world, dtype=np.int32))
 
-            vertex_offset += mesh.vertex_count
-
-        self._dynamic_triangle_points = wp.empty(vertex_offset, dtype=wp.vec3f, device=self.device)
-        self._set_triangle_points(self._dynamic_triangle_points)
-        self._set_triangle_indices(wp.array(np.concatenate(triangle_indices), dtype=wp.int32, device=self.device))
-        self._triangle_mesh_uvs = wp.array(np.concatenate(triangle_uvs), dtype=wp.vec2f, device=self.device)
-        self._triangle_mesh_texture_ids = wp.array(
-            np.concatenate(triangle_texture_ids), dtype=wp.int32, device=self.device
+        self._skinned_vertex_count = self._skin_batches.vertex_count if deformable_visual_meshes else 0
+        self._triangle_points = wp.empty(
+            self._triangle_particle_count + self._skinned_vertex_count, dtype=wp.vec3f, device=self.device
         )
-        self._triangle_world = wp.array(np.concatenate(vertex_worlds), dtype=wp.int32, device=self.device)
-        self._triangle_colors = wp.full(
-            sum(len(indices) // 3 for indices in triangle_indices), wp.vec3f(1.0), dtype=wp.vec3f, device=self.device
+        indices_np = np.concatenate(triangle_indices)
+        self._triangle_indices = wp.array(indices_np, dtype=wp.int32, device=self.device)
+        if textured:
+            self._triangle_mesh_uvs = wp.array(np.concatenate(triangle_uvs), dtype=wp.vec2f, device=self.device)
+            self._triangle_mesh_texture_ids = wp.array(
+                np.concatenate(triangle_texture_ids), dtype=wp.int32, device=self.device
+            )
+        # Each face belongs to its first vertex's world; global faces (-1) share the extra group.
+        face_world_np = np.concatenate(vertex_worlds)[indices_np.reshape(-1, 3)[:, 0]]
+        self._triangle_groups = wp.array(
+            np.where(face_world_np < 0, self.world_count, face_world_np).astype(np.int32),
+            dtype=wp.int32,
+            device=self.device,
         )
