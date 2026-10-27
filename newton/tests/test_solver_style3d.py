@@ -8,10 +8,48 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.style3d.builder import PDMatrixBuilder
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
+def _assert_pd_matrix(test, model, solver):
+    """Compare the stored matrix with independently assembled dense element contributions."""
+    expected = np.zeros((model.particle_count, model.particle_count), dtype=np.float64)
+    for face, pose, area, stiffness in zip(
+        model.tri_indices.numpy(),
+        model.tri_poses.numpy(),
+        model.tri_areas.numpy(),
+        model.style3d.tri_aniso_ke.numpy(),
+        strict=True,
+    ):
+        gradients = np.vstack((-pose.sum(axis=0), pose)).astype(np.float64)
+        weights = stiffness[:2] + stiffness[2]
+        expected[np.ix_(face, face)] += area * (gradients * weights) @ gradients.T
+    for edge, prop, area, cot in zip(
+        model.edge_indices.numpy(),
+        model.edge_bending_properties.numpy(),
+        model.style3d.edge_rest_area.numpy(),
+        model.style3d.edge_bending_cot.numpy(),
+        strict=True,
+    ):
+        if edge[0] < 0 or edge[1] < 0:
+            continue
+        weights = np.array([-cot[0] - cot[2], -cot[1] - cot[3], cot[2] + cot[3], cot[0] + cot[1]])
+        expected[np.ix_(edge, edge)] += prop[0] * (3.0 / area) * np.outer(weights, weights)
+    actual = np.diag(solver.pd_diags.numpy())
+    counts = solver.pd_non_diags.num_nz.numpy()
+    entries = solver.pd_non_diags.nz_ell.numpy()
+    for row, count in enumerate(counts):
+        columns = entries["column_index"][:count, row]
+        test.assertEqual(len(set(columns.tolist())), count)
+        actual[row, columns] += entries["value"][:count, row]
+    np.testing.assert_allclose(actual, expected, rtol=2e-5, atol=2e-4)
+    np.testing.assert_allclose(actual, actual.T, rtol=1e-6, atol=1e-5)
+    np.testing.assert_allclose(actual.sum(axis=1), 0.0, atol=1e-3)
+
+
 def test_constructor_precomputes_fixed_pd_matrix(test, device):
+    """Preserve the ordinary grid's assembled PD stiffness matrix."""
     builder = newton.ModelBuilder()
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_grid(
@@ -33,6 +71,54 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
 
     test.assertGreater(float(solver.pd_diags.numpy().sum()), 0.0)
     test.assertGreater(int(solver.pd_non_diags.num_nz.numpy().sum()), 0)
+    _assert_pd_matrix(test, model, solver)
+
+
+def test_high_valence_pd_matrix(test, device):
+    """Preserve stretch and bending entries across the old capacity boundary."""
+    for n, outer_ring in ((32, False), (33, False), (20, True)):
+        with test.subTest(neighbors=n, outer_ring=outer_ring):
+            angle = np.linspace(0, 2 * np.pi, n, endpoint=False)
+            vertices = [[0.0, 0.0, 0.0], *np.column_stack((np.cos(angle), np.sin(angle), np.zeros(n))).tolist()]
+            triangles = [[0, 1 + i, 1 + (i + 1) % n] for i in range(n)]
+            if outer_ring:
+                outer_angle = angle + np.pi / n
+                vertices += np.column_stack((2 * np.cos(outer_angle), 2 * np.sin(outer_angle), np.zeros(n))).tolist()
+                triangles += [[1 + i, n + 1 + i, 1 + (i + 1) % n] for i in range(n)]
+            builder = newton.ModelBuilder()
+            newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+            newton.solvers.style3d.add_cloth_mesh(
+                builder,
+                pos=(0.0, 0.0, 0.0),
+                rot=wp.quat_identity(),
+                vel=(0.0, 0.0, 0.0),
+                vertices=vertices,
+                indices=np.array(triangles).flatten().tolist(),
+                density=1.0,
+                tri_aniso_ke=wp.vec3(100.0, 100.0, 10.0),
+                edge_aniso_ke=wp.vec3(2.0e-4, 1.0e-4, 5.0e-5),
+            )
+            model = builder.finalize(device=device)
+            solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+            test.assertEqual(int(solver.pd_non_diags.num_nz.numpy()[0]), n * (2 if outer_ring else 1))
+            _assert_pd_matrix(test, model, solver)
+
+
+class TestPDMatrixCapacity(unittest.TestCase):
+    def test_overflow_rejects_incomplete_matrix(self):
+        """Raise for undersized stretch and bending assembly, including later finalization."""
+        for kind in ("stretch", "bend"):
+            with self.subTest(kind=kind):
+                builder = PDMatrixBuilder(4, max_neighbor=1)
+                with self.assertRaisesRegex(ValueError, "PD matrix capacity 1 exceeded at vertex"):
+                    if kind == "stretch":
+                        builder.add_stretch_constraints(
+                            [[0, 1, 2]], [[[1.0, 0.0], [0.0, 1.0]]], [[1.0, 1.0, 1.0]], [0.5]
+                        )
+                    else:
+                        builder.add_bend_constraints([[0, 1, 2, 3]], [[1.0, 0.0]], [1.0], [[1.0, 1.0, 1.0, 1.0]])
+                with self.assertRaisesRegex(ValueError, "PD matrix capacity"):
+                    builder.finalize("cpu")
 
 
 def test_invalid_topology_is_rejected_before_precompute(test, device):
@@ -191,6 +277,14 @@ devices = get_test_devices()
 class TestSolverStyle3D(unittest.TestCase):
     pass
 
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_high_valence_pd_matrix",
+    test_high_valence_pd_matrix,
+    devices=devices,
+    check_output=False,
+)
 
 add_function_test(
     TestSolverStyle3D,

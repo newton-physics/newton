@@ -8,7 +8,7 @@ import warp as wp
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelBuilder, State
 from ..solver import SolverBase
-from .builder import PDMatrixBuilder
+from .builder import PDMatrixBuilder, _compute_max_neighbors
 from .collision import Collision
 from .kernels import (
     accumulate_dragging_pd_diag_kernel,
@@ -434,11 +434,13 @@ class SolverStyle3D(SolverBase):
                     "Call SolverStyle3D.register_custom_attributes() before building the model."
                 )
 
-            pd_matrix_builder = PDMatrixBuilder(model.particle_count)
             tri_indices = model.tri_indices.numpy().tolist()
             tri_poses = model.tri_poses.numpy().tolist()
             tri_areas = model.tri_areas.numpy().tolist()
             edge_indices = model.edge_indices.numpy().tolist()
+            # Bending couples opposite vertices too, beyond triangle adjacency.
+            max_neighbors = max(32, _compute_max_neighbors(model.particle_count, tri_indices, edge_indices))
+            pd_matrix_builder = PDMatrixBuilder(model.particle_count, max_neighbor=max_neighbors)
             edge_bending_properties = model.edge_bending_properties.numpy().tolist()
             tri_aniso_ke = model.style3d.tri_aniso_ke.numpy().tolist()
             edge_rest_area = model.style3d.edge_rest_area.numpy().tolist()
