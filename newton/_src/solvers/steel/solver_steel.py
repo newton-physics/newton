@@ -2388,11 +2388,11 @@ class SolverSteel(SolverBase):
         if self._propagation_torsion_rows:
             if not contact_torsion_device:
                 raise NotImplementedError(
-                    "Contact torsion with articulated_contact_response='propagation' requires contact_torsion_device=True"
+                    "contact torsion with articulated_contact_response='propagation' requires contact_torsion_device=True"
                 )
             if self._velocity_iterations > 0:
                 raise NotImplementedError(
-                    "Contact torsion with articulated_contact_response='propagation' requires velocity_iterations=0"
+                    "contact torsion with articulated_contact_response='propagation' requires velocity_iterations=0"
                 )
 
         # Stand-ins for models without the physx attributes.
