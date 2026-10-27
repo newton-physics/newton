@@ -37,6 +37,12 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+**USD angular units:** Newton uses radians internally. UsdPhysics joint angles
+and resolved joint-state angular velocities use degrees and degrees/s, respectively.
+Revolute ``mjc:ref`` and ``mjc:springref`` instead follow the PhysicsScene's
+``mjc:compiler:angle`` setting (degrees by default). The importer converts these
+values to radians or radians/s.
+
 Particle Simulation Geometry
 ----------------------------
 
@@ -517,7 +523,35 @@ colors such as ``srgb_rec709_scene`` are kept as authored.
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on
 the file attribute, and converts linear/raw color textures to display/sRGB when
-they are loaded. Display/sRGB textures stay display-encoded.
+they are loaded. Display/sRGB textures stay display-encoded, as do untagged
+textures, whose ``sourceColorSpace`` is ``auto`` or unset and whose file
+attribute has no color-space metadata or ``auto``.
+
+Gaussian splat spherical-harmonics radiance is resolved from the same
+color-space metadata. Untagged radiance is treated as display/sRGB.
+
+Scalar colors, textures and Gaussian radiance classify color-space names the
+same way. The supported names are:
+
+* ``srgb``, ``srgb_texture``, ``srgb_rec709_scene``, ``srgb_rec709_display``:
+  display/sRGB (:attr:`~newton.utils.ColorSpace.SRGB`).
+  ``srgb_rec709_display`` is a display-referred marker that renderers without
+  special handling treat like ``srgb_rec709_scene``.
+* ``lin_rec709_scene``, ``lin_rec709``, ``lin_srgb``, ``raw``, ``data``,
+  ``identity`` and ``linear``: linear (:attr:`~newton.utils.ColorSpace.LINEAR`).
+
+Newton does not convert color primaries or transfer functions. Any other name,
+such as ``lin_ap1_scene``, ``acescg``, ``srgb_ap1_scene`` or
+``g22_rec709_scene``, is imported as linear if it looks linear (``lin_*`` or
+``acescg``) and as sRGB otherwise, and a warning naming the prim or attribute
+is logged. The import itself does not fail.
+
+.. note::
+
+   A ``colorSpace`` fallback that a schema declares on the coefficient attribute
+   takes precedence over a color space inherited from a parent prim or applied
+   with ``ColorSpaceAPI`` on the prim. For such prims, author linear radiance by
+   setting ``colorSpace`` on the coefficient attribute itself.
 
 Mass and Inertia Precedence
 ---------------------------
@@ -725,7 +759,7 @@ The following USD example demonstrates how PhysX attributes are authored in a US
        float physxLimit:angular:damping = 10.0  # → limit_angular_kd = 10.0
 
        # Initial joint state
-       float state:angular:physics:position = 1.57  # → joint_q = 1.57 rad
+       float state:angular:physics:position = 90  # degrees → joint_q ≈ 1.57 rad
    }
 
    def Mesh "collision_shape" (

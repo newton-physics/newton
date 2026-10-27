@@ -509,6 +509,16 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(view.shape_flags.shape[0], 1)
         self.assertEqual(self.model.body_mass.shape[0], 2)
 
+    def test_control_uses_view_joint_arrays(self):
+        """Create controls from the view's joint arrays."""
+        view = ModelView(self.model, "test")
+        view.joint_dof_count = 6
+        view.joint_f = wp.full(6, 2.0, dtype=float, device="cpu")
+
+        np.testing.assert_array_equal(view.control().joint_f.numpy(), np.full(6, 2.0))
+        self.assertIs(view.control(clone_variables=False).joint_f, view.joint_f)
+        self.assertEqual(self.model.control().joint_f.shape[0], 12)
+
     def test_zero_count_override_exposes_empty_frequency_arrays(self):
         """Zero-count views should expose empty arrays, not parent arrays."""
         builder = newton.ModelBuilder()
@@ -1557,7 +1567,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         template.add_articulation([root, shoulder, elbow])
         builder = newton.ModelBuilder()
-        builder.replicate(template, copy_count=world_count)
+        builder.replicate(template, world_count)
         model = builder.finalize(device="cpu")
 
         bpw, jpw = template.body_count, template.joint_count
@@ -1797,6 +1807,38 @@ class TestSolverCoupledBasic(unittest.TestCase):
         for entry_state in (entry.state_0, entry.state_1):
             np.testing.assert_allclose(entry_state.joint_q.numpy()[coord : coord + 7], body_q[child], atol=1.0e-6)
             np.testing.assert_allclose(entry_state.joint_qd.numpy()[dof : dof + 6], body_qd[child], atol=1.0e-6)
+
+    def test_split_fixed_articulation_gets_free_root(self):
+        """Synthesize a FREE root joint when the model has no joint coordinates or DOFs."""
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(np.eye(3) * 0.01)
+        base = builder.add_link(mass=1.0, inertia=inertia)
+        child = builder.add_link(
+            xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia
+        )
+        mount = builder.add_joint_fixed(-1, base)
+        weld = builder.add_joint_fixed(
+            base, child, parent_xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity())
+        )
+        builder.add_articulation([mount, weld])
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.joint_dof_count, 0)
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="base", solver=SolverFeatherstone, bodies=[base], joints=[mount]),
+                SolverCoupled.Entry(name="child", solver=SolverFeatherstone, bodies=[child]),
+            ],
+        )
+
+        view = coupled.view("child")
+        np.testing.assert_array_equal(view.joint_type.numpy(), [int(newton.JointType.FREE)])
+        np.testing.assert_allclose(view.joint_q.numpy(), [0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+        self.assertEqual(view.joint_qd.shape[0], 6)
+        body_q = _step_coupled(model, coupled)
+        np.testing.assert_allclose(body_q[base, :3], [0.0, 0.0, 0.0], atol=1.0e-6)
+        self.assertLess(body_q[child, 2], -0.01)
 
     def test_split_articulation_mujoco_child_moves_with_parent(self):
         """Let SolverMuJoCo step a split child through its synthesized FREE root joint."""
@@ -3158,6 +3200,73 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
     }
 
 
+def _harvest_comoving_proxy_contact(
+    proxy, vbd_substeps, contact_kd, speed=1.0, particle_speed=None, depth=1.0e-3, radius=0.05, dt=0.01
+):
+    """Harvest the proxy force of one particle resting on a box that moves up at ``speed``.
+
+    Without gravity, the particle slightly penetrates the box top and moves up at
+    ``particle_speed``, which defaults to ``speed`` (no relative motion). With ``proxy="body"``
+    the box is the proxy and the VBD destination entry simulates the particle; the harvested
+    proxy-body force is returned. With ``proxy="particle"`` the roles are swapped and the
+    harvested proxy-particle force is returned.
+    """
+    if particle_speed is None:
+        particle_speed = speed
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    shape_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, kd=contact_kd, mu=0.0)
+    body = builder.add_body(mass=1.0e3, inertia=wp.mat33(np.eye(3) * 1.0e3))
+    builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.1, cfg=shape_cfg)
+    builder.body_qd[body] = (0.0, 0.0, speed, 0.0, 0.0, 0.0)
+    builder.add_particle(pos=(0.0, 0.0, 0.1 + radius - depth), vel=(0.0, 0.0, particle_speed), mass=1.0, radius=radius)
+    builder.color()
+    model = builder.finalize(device="cpu")
+    model.soft_contact_kd = contact_kd
+    model.soft_contact_mu = 0.0
+
+    harvested = []
+
+    class _RecordingVBD(SolverVBD):
+        def coupling_harvest_proxy_wrenches(self, body_local_to_proxy_global, out_body_f, **kwargs):
+            super().coupling_harvest_proxy_wrenches(body_local_to_proxy_global, out_body_f, **kwargs)
+            harvested.append(out_body_f.numpy()[0, :3].copy())
+
+        def coupling_harvest_proxy_particle_forces(self, particle_local_to_proxy_global, out_particle_f, **kwargs):
+            super().coupling_harvest_proxy_particle_forces(particle_local_to_proxy_global, out_particle_f, **kwargs)
+            harvested.append(out_particle_f.numpy()[0].copy())
+
+    proxy_bodies = [body] if proxy == "body" else []
+    proxy_particles = [0] if proxy == "particle" else []
+    coupled = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(
+                name="source", solver=SolverSemiImplicit, bodies=proxy_bodies, particles=proxy_particles
+            ),
+            SolverCoupled.Entry(
+                name="vbd",
+                solver=lambda view: _RecordingVBD(view, iterations=4, rigid_compliant_alm=True),
+                bodies=[] if proxy_bodies else [body],
+                particles=[] if proxy_particles else [0],
+                substeps=vbd_substeps,
+            ),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[
+                SolverCoupledProxy.Proxy(
+                    source="source",
+                    destination="vbd",
+                    bodies=proxy_bodies,
+                    particles=proxy_particles,
+                    collision_pipeline=lambda view: newton.CollisionPipeline(view, soft_contact_gap=0.01),
+                )
+            ],
+        ),
+    )
+    coupled.step(model.state(), model.state(), None, None, dt)
+    return harvested[-1]
+
+
 class TestSolverVBDCouplingHooks(unittest.TestCase):
     """VBD-specific coupling hook behavior."""
 
@@ -3178,6 +3287,42 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
         self.assertGreater(capped["overflow_max"], cap, "the small buffer must actually overflow")
 
         np.testing.assert_allclose(capped["wrench"], full["wrench"], rtol=1.0e-5, atol=1.0e-6)
+
+    def test_proxy_wrench_harvest_ignores_damping_without_relative_motion(self):
+        """Harvest the same proxy-body wrench with and without contact damping for a co-moving contact.
+
+        Sub-stepping the destination entry must not turn the proxy's motion over the whole
+        coupled step into a relative approach velocity against the last substep's particle motion.
+        """
+        for substeps in (1, 2):
+            with self.subTest(substeps=substeps):
+                undamped = _harvest_comoving_proxy_contact("body", substeps, contact_kd=0.0)
+                damped = _harvest_comoving_proxy_contact("body", substeps, contact_kd=1.0e3)
+                self.assertLess(undamped[2], 0.0, "the particle must press on the box top")
+                np.testing.assert_allclose(damped, undamped, rtol=1.0e-2, atol=1.0e-3)
+
+    def test_proxy_particle_harvest_ignores_damping_without_relative_motion(self):
+        """Harvest the same proxy-particle force with and without contact damping for a co-moving contact."""
+        for substeps in (1, 2):
+            with self.subTest(substeps=substeps):
+                undamped = _harvest_comoving_proxy_contact("particle", substeps, contact_kd=0.0)
+                damped = _harvest_comoving_proxy_contact("particle", substeps, contact_kd=1.0e3)
+                self.assertGreater(undamped[2], 0.0, "the box top must push the particle up")
+                np.testing.assert_allclose(damped, undamped, rtol=1.0e-2, atol=1.0e-3)
+
+    def test_proxy_particle_harvest_reads_solved_pose_with_substeps(self):
+        """Harvest the proxy-particle force at the solved pose of a sub-stepped destination entry.
+
+        The box moves up into a resting particle, so the contact force grows over the step. A
+        sub-stepped entry steps its own scratch states, and the harvest reads the solved pose from
+        ``state_out``; the result then stays close to the single-substep harvest.
+        """
+        for contact_kd in (0.0, 1.0e3):
+            with self.subTest(contact_kd=contact_kd):
+                single = _harvest_comoving_proxy_contact("particle", 1, contact_kd=contact_kd, particle_speed=0.0)
+                substepped = _harvest_comoving_proxy_contact("particle", 2, contact_kd=contact_kd, particle_speed=0.0)
+                self.assertGreater(single[2], 0.0, "the box top must push the particle up")
+                np.testing.assert_allclose(substepped, single, rtol=0.15, atol=1.0e-3)
 
     def test_external_rigid_solver_harvests_particle_soft_contacts(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))

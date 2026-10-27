@@ -14,7 +14,7 @@ from ...geometry import ParticleFlags
 from ...sim import BodyFlags, JointType, Model
 
 if TYPE_CHECKING:
-    from ...sim import State
+    from ...sim import Control, State
 
 
 def _types_compatible(current, value) -> bool:
@@ -312,6 +312,17 @@ class ModelView:
 
         with self._temporary_state_array_overrides():
             return Model.state(self, requires_grad=requires_grad)
+
+    def control(self, requires_grad: bool | None = None, clone_variables: bool = True) -> Control:
+        """Create a :class:`~newton.Control` from view-local control defaults.
+
+        This calls the normal :meth:`~newton.Model.control` implementation with
+        this view as the model object, so the control arrays follow the joint
+        rows and counts visible through the view.
+        """
+        from ...sim import Model  # noqa: PLC0415
+
+        return Model.control(self, requires_grad=requires_grad, clone_variables=clone_variables)
 
     def get_requested_state_attributes(self) -> list[str]:
         """Return requested state attributes using view-local counts."""

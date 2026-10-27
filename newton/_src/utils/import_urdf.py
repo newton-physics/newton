@@ -16,9 +16,8 @@ import numpy as np
 import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
-from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Transform
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
 from ..sim.enums import JointTargetMode
@@ -113,7 +112,7 @@ def parse_urdf(
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
-    joint_damping_mode: Literal["passive", "drive"] | None = None,
+    joint_damping_mode: Literal["passive", "drive"] = "passive",
     package_dirs: list[str] | None = None,
 ):
     """
@@ -127,6 +126,8 @@ def parse_urdf(
             Roots supplement environment paths without guaranteed precedence or restricting access.
             Plain relative paths use the URDF directory; file URIs require an absolute local path.
         xform: The transform to apply to the root body. If None, the transform is set to identity.
+            If ``parent_body`` is set, ``xform`` is expressed in that body's frame
+            instead of the world frame.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
@@ -219,22 +220,16 @@ def parse_urdf(
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
         joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
-            ``"passive"`` imports it into ``joint_damping`` and keeps drive
+            ``"passive"`` (default) imports it into ``joint_damping`` and keeps drive
             damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
             into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
             In drive mode, passive damping uses ``default_joint_cfg.damping``
             for revolute, prismatic, and planar joints.
             XPBD/VBD do not consume passive joint damping.
-
-            .. deprecated:: 1.7
-                The implicit None default retains the drive mapping and warns
-                when the URDF authors damping. The default will become
-                ``"passive"`` in Newton 1.8. Pass either mode explicitly to
-                silence the warning; both explicit modes remain supported.
     """
-    if joint_damping_mode not in (None, "passive", "drive"):
-        raise ValueError("joint_damping_mode must be 'passive', 'drive', or None")
-    use_drive_damping = joint_damping_mode != "passive"
+    if joint_damping_mode not in ("passive", "drive"):
+        raise ValueError("joint_damping_mode must be 'passive' or 'drive'")
+    use_drive_damping = joint_damping_mode == "drive"
 
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
@@ -267,16 +262,6 @@ def parse_urdf(
     else:
         xml_content = sanitize_xml_content(source)
         urdf_root = ET.fromstring(xml_content)
-
-    if joint_damping_mode is None and urdf_root.find("joint/dynamics[@damping]") is not None:
-        warnings.warn(
-            "The default joint_damping_mode currently maps URDF damping to drive damping. "
-            "The default will switch to 'passive' in Newton 1.8. "
-            "Pass joint_damping_mode='drive' to retain the current mapping or "
-            "joint_damping_mode='passive' to use passive damping explicitly.",
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
 
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower

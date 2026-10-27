@@ -186,14 +186,6 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
     "limits of ModelBuilder.JointDofConfig instead."
 )
-_ADD_ROD_POSITIONS_DEPRECATION_MSG = (
-    "ModelBuilder.add_rod(positions=...) is deprecated in Newton 1.6; "
-    "construct newton.Rod(...) and pass it with add_rod(rod=...) instead."
-)
-_ADD_ROD_GRAPH_DEPRECATION_MSG = (
-    "ModelBuilder.add_rod_graph() is deprecated in Newton 1.6; "
-    "construct newton.Rod(..., edges=...) and pass it with add_rod(rod=...) instead."
-)
 _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
     "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
 )
@@ -956,9 +948,20 @@ class ModelBuilder:
         kd: float = 100.0
         """The normal contact damping coefficient [N·s/m]."""
         kf: float = 1000.0
-        """The contact friction gain [N·s/m]."""
+        """The contact friction gain [N·s/m].
+
+        Slope of the viscous friction regularization in
+        :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone`; also used by
+        :class:`~newton.solvers.SolverMuJoCo`. See
+        :ref:`Contact friction gain and adhesion`."""
         ka: float = 0.0
-        """The contact adhesion distance [m]."""
+        """The contact adhesion distance [m].
+
+        Distance within which the normal force attracts the shapes, used by
+        :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone`. ``0`` disables adhesion. See
+        :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
         """The coefficient of friction."""
         restitution: float = 0.0
@@ -2134,7 +2137,7 @@ class ModelBuilder:
         self.curve_label: list[str] = []
         """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
 
-        Native :meth:`add_rod` and :meth:`add_rod_graph` calls each append one entry.
+        Native :meth:`add_rod` calls each append one entry.
         USD cable imports record one entry per simulation prim, except that curves
         welded into a graph share one entry for the complete graph. A prim containing
         several disconnected curves also has one entry. See :ref:`deformable-objects`
@@ -3782,6 +3785,29 @@ class ModelBuilder:
                 targets = shape_transform_start + moved_copies[:, None] * counts["shape"] + static_shapes[None]
                 store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
 
+        # World guides carry their own frame; body-local guides follow the placed body.
+        world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
+        for name in ("tendon_guide_offset", "tendon_guide_axis"):
+            attribute_specs.pop(name)
+            start = int(bases["tendon_guide"])
+            values = getattr(self, name)
+            values.extend(source_list(name) * copy_count)
+            is_offset = name == "tendon_guide_offset"
+            if world_guides.size == 0 or (not is_offset and translations_only):
+                continue
+            source_vectors = np.asarray(getattr(builder, name), dtype=np.float32)[world_guides]
+            for world_index, xform in enumerate(xforms):
+                if xform is None:
+                    continue
+                transformed = source_vectors.copy()
+                if not translations_only:
+                    rotate_vectors(xform.q, transformed)
+                if is_offset:
+                    transformed += np.asarray(xform.p, dtype=np.float32)
+                targets = start + world_index * counts["tendon_guide"] + world_guides
+                for target, vector in zip(targets, transformed.tolist(), strict=True):
+                    values[target] = tuple(vector)
+
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():
                 translated_shapes = [shape + int(shape_start) for shape in shapes]
@@ -4326,7 +4352,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
-        joint_damping_mode: Literal["passive", "drive"] | None = None,
+        joint_damping_mode: Literal["passive", "drive"] = "passive",
         package_dirs: list[str] | None = None,
     ):
         """
@@ -4339,6 +4365,8 @@ class ModelBuilder:
                 Roots supplement environment paths without guaranteed precedence or restricting access.
                 Plain relative paths use the URDF directory; file URIs require an absolute local path.
             xform: The transform to apply to the root body. If None, the transform is set to identity.
+                If ``parent_body`` is set, ``xform`` is expressed in that body's frame
+                instead of the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -4431,18 +4459,12 @@ class ModelBuilder:
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
             joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
-                ``"passive"`` imports it into ``joint_damping`` and keeps drive
+                ``"passive"`` (default) imports it into ``joint_damping`` and keeps drive
                 damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
                 into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
                 In drive mode, passive damping uses ``default_joint_cfg.damping``
                 for revolute, prismatic, and planar joints.
                 XPBD/VBD do not consume passive joint damping.
-
-                .. deprecated:: 1.7
-                    The implicit None default retains the drive mapping and warns
-                    when the URDF authors damping. The default will become
-                    ``"passive"`` in Newton 1.8. Pass either mode explicitly to
-                    silence the warning; both explicit modes remain supported.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
@@ -4503,8 +4525,6 @@ class ModelBuilder:
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
-        legacy_angular_velocity_units: bool = False,
-        legacy_springref_units: bool = False,
         return_deformable_results: bool = False,
         allow_unsafe_torch_checkpoints: bool = False,
     ) -> dict[str, Any]:
@@ -4517,6 +4537,8 @@ class ModelBuilder:
         Args:
             source: The file path to the USD file, or an existing USD stage instance.
             xform: The transform to apply to the entire scene.
+                If ``parent_body`` is set, imported bodies are placed relative to that
+                body's frame; static shapes still use ``xform`` in the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -4642,32 +4664,6 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
-            legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state angular velocity handling:
-                resolved ``state:angular:physics:velocity``
-                and D6 ``state:rot*:physics:velocity`` values are copied into
-                ``joint_qd`` without converting degrees/s to radians/s. Applies
-                to revolute, native D6, and merged joints. Rigid-body velocities,
-                linear joint velocities, positions, and drive targets retain their
-                usual unit conversion. Defaults to False.
-
-                .. deprecated:: 1.7
-                    This temporary flag will be removed in Newton 1.8. Enabling
-                    it emits a :class:`DeprecationWarning`. Migrate authored
-                    asset values to their documented units and leave it False.
-
-            legacy_springref_units: If True, restore Newton 1.6 handling of ``mjc:springref`` as an
-                already converted Newton value, ignoring
-                ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
-                conversion is unchanged. Requires registered MuJoCo custom
-                attributes to load spring references. Defaults to False, which
-                interprets revolute spring references using the compiler's angle
-                units (degrees if unauthored) and converts them to radians.
-
-                .. deprecated:: 1.7
-                    This temporary flag will be removed in Newton 1.8. Enabling
-                    it emits a :class:`DeprecationWarning`. Migrate authored
-                    asset values to their documented units and leave it False.
-
             return_deformable_results: If True, include the experimental deformable entries in the
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
@@ -4827,8 +4823,6 @@ class ModelBuilder:
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
-            legacy_angular_velocity_units=legacy_angular_velocity_units,
-            legacy_springref_units=legacy_springref_units,
             return_deformable_results=return_deformable_results,
             allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints,
         )
@@ -4873,10 +4867,15 @@ class ModelBuilder:
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
         MuJoCo-specific custom attributes are registered on the builder automatically.
+        Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+        (included in ``newton[sim]``) to resolve native defaults, and raises
+        :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.
+                If ``parent_body`` is set, imported bodies are placed relative to that
+                body's frame; static shapes still use ``xform`` in the world frame.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
                 preserving only the internal structure (relative body positions). Useful
@@ -4986,7 +4985,7 @@ class ModelBuilder:
                 :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
                 :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
                 Subsequent damping edits use ``joint_target_kd`` as usual.
-            path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+            path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model with the compiler asset directory, then relative to the included file without that directory prefix, and finally relative to the included file with it. Custom resolvers receive the authoring file's directory and the file path with that file's compiler asset directory prefix.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
                 Use for MJCF files authored against MuJoCo <= 3.8. Defaults
@@ -6557,8 +6556,8 @@ class ModelBuilder:
             Rod joints use each anchor frame's local ``+Z`` as the corresponding
             segment's material tangent axis for separating axial stretch from
             shear and twist from bend. At structural rest, the transformed
-            parent and child anchor points coincide. :meth:`add_rod` and
-            :meth:`add_rod_graph` satisfy both conventions automatically.
+            parent and child anchor points coincide. :meth:`add_rod` satisfies
+            both conventions automatically.
 
         Args:
             parent: The index of the parent body.
@@ -6676,9 +6675,12 @@ class ModelBuilder:
         """Add a complete experimental massless routed tendon atomically.
 
         Each guide after the first owns the incoming span's material parameters.
-        All guides must reference bodies in one world. Roller guides may be
-        dynamic only when internal and not adjacent to another dynamic guide.
+        All guides must belong to one simulation world. A guide with ``body=-1``
+        is fixed in world space and belongs to :attr:`current_world`. Roller guides
+        may be dynamic only when internal and not adjacent to another dynamic guide.
         The route is validated and copied before any tendon arrays are changed.
+        Author world-attached routes in the source builder before :meth:`add_world`
+        or :meth:`replicate`; those methods end outside the copied world contexts.
 
         .. experimental::
 
@@ -6742,10 +6744,10 @@ class ModelBuilder:
         previous_dynamic = False
         for index, guide in enumerate(route):
             body = guide.body
-            if not self._is_integer_scalar(body) or body < 0 or body >= self.body_count:
+            if not self._is_integer_scalar(body) or body < -1 or body >= self.body_count:
                 raise ValueError(f"Tendon guide body index {body} is out of range")
             body = int(body)
-            world = self.body_world[body]
+            world = self.body_world[body] if body >= 0 else self.current_world
             if tendon_world is not None and world != tendon_world:
                 raise ValueError("All guides in a tendon must belong to the same world")
             tendon_world = world
@@ -7416,8 +7418,8 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
-        # Preserve body frames needed by equality constraints and tendon guides when collapsing into world.
-        bodies_requiring_body_frame = set(self.tendon_guide_body)
+        # Preserve body frames still required by constraints when collapsing into world.
+        bodies_requiring_body_frame = set()
         for body1, body2 in zip(
             self._eq_list("equality_constraint_body1"),
             self._eq_list("equality_constraint_body2"),
@@ -7475,20 +7477,20 @@ class ModelBuilder:
             entry_xform = incoming_xform
             entry_last_dynamic_body = last_dynamic_body
             joint = joint_data[(parent_body, child_body)][0]
-            # Local frames referenced by constraints or tendons cannot be remapped onto body -1.
+            # These constraints still require an actual body frame.
             should_skip_merge = child_body in bodies_requiring_body_frame and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
             joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
-                # Keep a body frame required by a constraint or tendon instead of merging it into world.
+                # Keep a body frame required by a constraint instead of merging it into world.
                 if verbose:
                     parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                     child_lbl = self.body_label[child_body]
                     logger.info(
                         "Skipping collapse of fixed joint %s between %s and %s: %s is referenced by a "
-                        "constraint or tendon and cannot be merged into world",
+                        "constraint and cannot be merged into world",
                         joint["label"],
                         parent_lbl,
                         child_lbl,
@@ -9246,6 +9248,7 @@ class ModelBuilder:
             For ``coacd`` and ``vhacd``, each geometrically connected component
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
+            CoACD decompositions repeat across runs; pass CoACD's ``seed`` through ``remeshing_kwargs`` to change it.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -9764,11 +9767,11 @@ class ModelBuilder:
         self,
         positions: list[Vec3],
         *,
-        quaternions: list[Quat] | None,
+        quaternions: list[Quat],
         rest_positions: list[Vec3] | np.ndarray | None = None,
         rest_quaternions: list[Quat] | np.ndarray | None = None,
         rest_straight: bool = False,
-        radius: float | None,
+        radius: float,
         cfg: ShapeConfig | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
@@ -9778,30 +9781,15 @@ class ModelBuilder:
         bend_damping: float | None,
         twist_stiffness: float | None,
         twist_damping: float | None,
-        closed: bool | None,
+        closed: bool,
         label: str | None,
         wrap_in_articulation: bool,
         color: Vec3 | None,
         body_frame_origin: Literal["start", "com"],
     ) -> tuple[list[int], list[int]]:
         """Add an ordered point chain through the established graph path."""
-        self._validate_rod_stiffness_inputs(
-            "add_rod",
-            stretch_stiffness=stretch_stiffness,
-            shear_stiffness=shear_stiffness,
-            bend_stiffness=bend_stiffness,
-            twist_stiffness=twist_stiffness,
-        )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
-        closed = False if closed is None else closed
-
-        radius = 0.1 if radius is None else radius
         if cfg is None:
             cfg = self.default_shape_cfg
-        if rest_straight and (rest_positions is not None or rest_quaternions is not None):
-            raise ValueError(
-                "add_rod: rest_straight=True cannot be combined with explicit rest_positions or rest_quaternions"
-            )
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -9812,51 +9800,12 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         num_segments = len(positions) - 1
-        if num_segments < 1:
-            raise ValueError("add_rod: positions must contain at least 2 points")
 
-        # Coerce all input positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
-        # always operate on Warp vector types even if the caller passed tuples/lists.
-        positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in positions]
         rest_positions_wp = (
-            positions_wp if rest_positions is None else [axis_to_vec3(position) for position in rest_positions]
+            positions if rest_positions is None else [axis_to_vec3(position) for position in rest_positions]
         )
-        if len(rest_positions_wp) != len(positions_wp):
-            raise ValueError(
-                f"add_rod: rest_positions must have {len(positions_wp)} elements to match positions, "
-                f"got {len(rest_positions_wp)}"
-            )
 
-        if quaternions is not None and len(quaternions) != num_segments:
-            raise ValueError(
-                f"add_rod: quaternions must have {num_segments} elements for {num_segments} segments, "
-                f"got {len(quaternions)} quaternions"
-            )
-        if rest_quaternions is not None and len(rest_quaternions) != num_segments:
-            raise ValueError(
-                f"add_rod: rest_quaternions must have {num_segments} elements for {num_segments} segments, "
-                f"got {len(rest_quaternions)} quaternions"
-            )
-
-        if num_segments < 2:
-            # A "rod" in this API is defined as multiple capsules coupled by rod joints.
-            # If you want a single capsule, create a body + capsule shape directly.
-            raise ValueError(
-                f"add_rod: requires at least 2 segments (got {num_segments}); "
-                "for a single capsule, create a body and add a capsule shape instead."
-            )
         if closed:
-            closure_gap = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[0]))
-            first_length = float(wp.length(rest_positions_wp[1] - rest_positions_wp[0]))
-            last_length = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[-2]))
-            if not all(math.isfinite(value) for value in (closure_gap, first_length, last_length)):
-                raise ValueError("add_rod: closed structural-rest centerline must have finite endpoint segments")
-            closure_tolerance = max(1.0e-9, 1.0e-3 * min(first_length, last_length))
-            if closure_gap > closure_tolerance:
-                raise ValueError(
-                    "add_rod: closed structural-rest centerline must have coincident first and last points "
-                    f"(gap={closure_gap:.3e}, tolerance={closure_tolerance:.3e})"
-                )
             rest_positions_wp[-1] = rest_positions_wp[0]
 
         # Build linear graph edges: (0, 1), (1, 2), ..., (N-1, N)
@@ -9865,7 +9814,7 @@ class ModelBuilder:
 
         # The graph builder creates the bodies, internal joints, and optional articulation.
         link_bodies, link_joints = self._add_rod_graph(
-            node_positions=positions_wp,
+            node_positions=positions,
             edges=edges,
             rest_node_positions=rest_positions_wp if rest_positions is not None else None,
             radius=radius,
@@ -9932,16 +9881,11 @@ class ModelBuilder:
                             rest_dir,
                         )
 
-                    initial_dir, _ = self._rod_segment_direction(positions_wp[segment], positions_wp[segment + 1])
-                    initial_argument = (
-                        f"quaternions[{segment}]"
-                        if quaternions is not None
-                        else f"derived quaternion at segment {segment}"
-                    )
+                    initial_dir, _ = self._rod_segment_direction(positions[segment], positions[segment + 1])
                     initial_q = self._rod_frame_for_direction(
                         "add_rod",
-                        initial_argument,
-                        None if quaternions is None else quaternions[segment],
+                        f"quaternions[{segment}]",
+                        quaternions[segment],
                         initial_dir,
                     )
                     return self._transport_rod_frame(
@@ -9987,10 +9931,8 @@ class ModelBuilder:
 
     def add_rod(
         self,
-        positions: list[Vec3] | None = None,
         *,
-        quaternions: list[Quat] | None = None,
-        radius: float | None = None,
+        rod: Rod,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
@@ -10000,24 +9942,17 @@ class ModelBuilder:
         bend_damping: float | None = None,
         twist_stiffness: float | None = None,
         twist_damping: float | None = None,
-        closed: bool | None = None,
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] = "com",
-        rod: Rod | None = None,
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
 
-        Exactly one input form is required:
-
-        - ``positions=...`` constructs an ordered chain. The separate
-          ``quaternions`` and ``closed`` arguments belong only to this
-          compatibility form.
-        - ``rod=...`` uses the geometry, frames, topology, and optional
-          constitutive data stored on a :class:`newton.Rod`, which may represent
-          an ordered chain or an explicit graph.
+        Uses the geometry, frames, topology, and optional constitutive data
+        stored on a :class:`newton.Rod`, which may represent an ordered chain
+        or an explicit graph.
 
         The remaining arguments configure assembly. Each segment becomes a
         capsule body, and incident segments are connected by rod joints with
@@ -10028,22 +9963,7 @@ class ModelBuilder:
         normalized and minimally rotated to align while preserving roll.
 
         Args:
-            positions: Geometry source for the ordered-chain form: centerline
-                node positions (segment endpoints) in world space [m].
-                Mutually exclusive with ``rod``.
-
-                .. deprecated:: 1.6
-                    Construct a :class:`newton.Rod` and pass it with
-                    ``rod=...`` instead.
-            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
-                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
-                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
-                orientations are computed automatically to align +Z with each segment direction.
-                Valid only with ``positions``; must be None when ``rod`` is
-                supplied.
-            radius: Capsule radius [m] for the ``positions`` form. If None,
-                defaults to 0.1 m. Must be None with ``rod``; the Rod's radius
-                is used, with the same default when it is unset.
+            rod: Initial/rest geometry, frame, topology, and constitutive-data source.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, it is derived locally from Rod material or section rigidity;
@@ -10065,10 +9985,6 @@ class ModelBuilder:
                 ``bend_stiffness`` otherwise.
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            closed: For the ``positions`` form, whether to connect the last
-                segment back to the first. Repeat the first position at the end
-                to include the closing segment. When using ``rod``, pass
-                ``closed=True`` to the :class:`newton.Rod` constructor instead.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
                 The same name is appended to :attr:`curve_label` for this rod; if None,
                 a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
@@ -10086,8 +10002,6 @@ class ModelBuilder:
                 the body origin at the initial segment midpoint so the
                 body origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
                 a supported option.
-            rod: Initial/rest geometry, frame, topology, and constitutive-data source for
-                the prepared-object form. Mutually exclusive with ``positions``.
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10113,17 +10027,11 @@ class ModelBuilder:
             articulations may remain outside them.
 
         Raises:
-            ValueError: If both or neither of ``positions`` and ``rod`` are supplied.
-            TypeError: If ``rod`` is not a :class:`newton.Rod`, or a Rod is
-                passed as ``positions``.
-            ValueError: If ``quaternions``, ``radius``, or ``closed`` is non-None
-                with ``rod``.
-            ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
+            TypeError: If ``rod`` is not a :class:`newton.Rod`.
             ValueError: If initial/rest positions or frames have incompatible lengths,
                 non-finite or too-short edges, or invalid frame alignment.
             ValueError: If the structural-rest centerline of a closed chain does not close.
             ValueError: If the Rod uses ``rest_straight`` with explicit rest inputs or a graph.
-            ValueError: If the ordered point-list form has fewer than 2 segments.
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
             ValueError: If automatic section-rigidity discretization is requested
                 for branching topology or for a wrapped explicit cycle.
@@ -10147,182 +10055,13 @@ class ModelBuilder:
               midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
               ``(0, 0, half_height)``.
         """
-        if (positions is None) == (rod is None):
-            raise ValueError("add_rod: exactly one of positions and rod must be supplied")
-
-        if isinstance(positions, Rod):
-            raise TypeError("add_rod: pass a Rod with the rod keyword, not as positions")
-
-        if rod is not None and not isinstance(rod, Rod):
+        if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
 
         start_body = self.body_count
         start_joint = self.joint_count
-        if rod is not None:
-            if quaternions is not None:
-                raise ValueError("add_rod: quaternions must be None when rod is supplied")
-            if radius is not None:
-                raise ValueError("add_rod: radius must be None when rod is supplied; set rod.radius instead")
-            if closed is not None:
-                raise ValueError("add_rod: closed must be None when rod is supplied")
-            result = self._add_rod_object(
-                rod,
-                cfg=cfg,
-                stretch_stiffness=stretch_stiffness,
-                stretch_damping=stretch_damping,
-                shear_stiffness=shear_stiffness,
-                shear_damping=shear_damping,
-                bend_stiffness=bend_stiffness,
-                bend_damping=bend_damping,
-                twist_stiffness=twist_stiffness,
-                twist_damping=twist_damping,
-                label=label,
-                wrap_in_articulation=wrap_in_articulation,
-                junction_collision_filter=junction_collision_filter,
-                color=color,
-                body_frame_origin=body_frame_origin,
-            )
-            self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
-            return result
-
-        assert positions is not None
-        warnings.warn(
-            _ADD_ROD_POSITIONS_DEPRECATION_MSG,
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        result = self._add_rod_chain(
-            positions,
-            quaternions=quaternions,
-            radius=radius,
-            cfg=cfg,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
-            shear_stiffness=shear_stiffness,
-            shear_damping=shear_damping,
-            bend_stiffness=bend_stiffness,
-            bend_damping=bend_damping,
-            twist_stiffness=twist_stiffness,
-            twist_damping=twist_damping,
-            closed=closed,
-            label=label,
-            wrap_in_articulation=wrap_in_articulation,
-            color=color,
-            body_frame_origin=body_frame_origin,
-        )
-        self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
-        return result
-
-    def add_rod_graph(
-        self,
-        node_positions: list[Vec3],
-        edges: list[tuple[int, int]],
-        *,
-        radius: float = 0.1,
-        cfg: ShapeConfig | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        label: str | None = None,
-        wrap_in_articulation: bool = True,
-        quaternions: list[Quat] | None = None,
-        junction_collision_filter: bool = True,
-        color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "com",
-    ) -> tuple[list[int], list[int]]:
-        """Adds a rod *graph* (supports junctions) from nodes + edges.
-
-        .. deprecated:: 1.6
-            Construct a :class:`newton.Rod` with ``edges=...`` and pass it to
-            :meth:`add_rod` with ``rod=...`` instead.
-
-        Representation:
-
-        - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (local +Z points toward ``v``).
-        - Rod joints are created between edge-bodies that share a node, using a spanning-tree
-          traversal so that each body has a single parent in an articulation.
-
-        Notes:
-
-        - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
-          free-rooted articulation per connected component). This keeps the joint graph
-          articulation-safe (tree/forest), avoiding cycles at junctions.
-        - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
-          ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
-          you need closed loops, build them explicitly without placing the joints in an articulation.
-        - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
-          all incident edges. This can preserve rings/loops, but does not produce an articulation
-          tree (edges may effectively have multiple "parents" in the joint graph).
-
-        Args:
-            node_positions: Junction node positions in world space.
-            edges: List of (u, v) node index pairs defining rod segments. Each edge creates one
-                capsule body oriented so its local +Z points from node ``u`` to node ``v``.
-            radius: Capsule radius.
-            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
-                Defaults to 1.0e5.
-            stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
-            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
-                ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
-                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
-                Defaults to 0.0.
-            bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
-                ``bend_stiffness``.
-            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
-                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations.
-                The same name is appended to :attr:`curve_label` for this rod; if None,
-                a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
-                Generated joint labels retain
-                the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, places each connected component's generated joints and a
-                free joint to the world in one articulation.
-            quaternions: Optional per-edge orientations in world space. If provided, must have
-                ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
-                the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
-                None, orientations are computed automatically to align +Z with each edge direction.
-            junction_collision_filter: If True, adds collision filters between *non-jointed* segment
-                bodies that are incident to a junction node (degree >= 3). This prevents immediate
-                self-collision impulses at welded junctions, even though the joint set is a spanning
-                tree (so not all incident body pairs are directly jointed).
-            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
-                capsule shapes. If None, the graph uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the convention where the body origin is at the edge start node
-                (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
-                the edge length. ``"com"`` places the body origin at the edge midpoint so the body
-                origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
-                a supported option.
-
-        Returns:
-            A pair ``(body_indices, joint_indices)`` where bodies correspond to
-            edges in the same order as ``edges``. ``joint_indices`` contains only rod joints,
-            not the automatically-created free root joints.
-
-        Raises:
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
-        """
-        start_body = self.body_count
-        start_joint = self.joint_count
-        warnings.warn(
-            _ADD_ROD_GRAPH_DEPRECATION_MSG,
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        result = self._add_rod_graph(
-            node_positions,
-            edges,
-            radius=radius,
+        result = self._add_rod_object(
+            rod,
             cfg=cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
@@ -10334,7 +10073,6 @@ class ModelBuilder:
             twist_damping=twist_damping,
             label=label,
             wrap_in_articulation=wrap_in_articulation,
-            quaternions=quaternions,
             junction_collision_filter=junction_collision_filter,
             color=color,
             body_frame_origin=body_frame_origin,
@@ -10381,35 +10119,35 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         self._validate_rod_stiffness_inputs(
-            "add_rod_graph",
+            "add_rod",
             stretch_stiffness=stretch_stiffness,
             shear_stiffness=shear_stiffness,
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod_graph", body_frame_origin)
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
         if len(node_positions) < 2:
-            raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
+            raise ValueError("add_rod: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
-            raise ValueError("add_rod_graph: edges must contain at least 1 edge")
+            raise ValueError("add_rod: edges must contain at least 1 edge")
 
         num_nodes = len(node_positions)
         num_edges = len(edges)
         if articulation_root_node is not None:
             if articulation_root_joint_factory is None:
-                raise ValueError("add_rod_graph: articulation_root_node requires an articulation root joint factory")
+                raise ValueError("add_rod: articulation_root_node requires an articulation root joint factory")
             if articulation_root_node < 0 or articulation_root_node >= num_nodes:
                 raise ValueError(
-                    f"add_rod_graph: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
+                    f"add_rod: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
                 )
         if quaternions is not None and len(quaternions) != num_edges:
             raise ValueError(
-                f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"add_rod: quaternions must have {num_edges} elements for {num_edges} edges, "
                 f"got {len(quaternions)} quaternions"
             )
         if rest_quaternions is not None and len(rest_quaternions) != num_edges:
             raise ValueError(
-                f"add_rod_graph: rest_quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"add_rod: rest_quaternions must have {num_edges} elements for {num_edges} edges, "
                 f"got {len(rest_quaternions)} quaternions"
             )
 
@@ -10427,7 +10165,7 @@ class ModelBuilder:
         )
         if len(rest_node_positions_wp) != num_nodes:
             raise ValueError(
-                f"add_rod_graph: rest_node_positions must have {num_nodes} elements to match node_positions, "
+                f"add_rod: rest_node_positions must have {num_nodes} elements to match node_positions, "
                 f"got {len(rest_node_positions_wp)}"
             )
 
@@ -10447,18 +10185,16 @@ class ModelBuilder:
         # Validate all edge geometry and frames before adding bodies.
         for e_idx, (u, v) in enumerate(edges):
             if u < 0 or u >= num_nodes or v < 0 or v >= num_nodes:
-                raise ValueError(
-                    f"add_rod_graph: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes"
-                )
+                raise ValueError(f"add_rod: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes")
             if u == v:
-                raise ValueError(f"add_rod_graph: edge {e_idx} connects a node to itself ({u} -> {v})")
+                raise ValueError(f"add_rod: edge {e_idx} connects a node to itself ({u} -> {v})")
 
             p0 = node_positions_wp[u]
             p1 = node_positions_wp[v]
             seg_dir, seg_length = self._rod_segment_direction(p0, p1)
             if not math.isfinite(seg_length) or seg_length <= min_segment_length:
                 raise ValueError(
-                    f"add_rod_graph: edge {e_idx} has a too-small or non-finite length "
+                    f"add_rod: edge {e_idx} has a too-small or non-finite length "
                     f"(length={seg_length:.3e}); segment length must be finite and > {min_segment_length:.1e}"
                 )
 
@@ -10466,7 +10202,7 @@ class ModelBuilder:
                 f"quaternions[{e_idx}]" if quaternions is not None else f"derived quaternion at edge {e_idx}"
             )
             q = self._rod_frame_for_direction(
-                "add_rod_graph",
+                "add_rod",
                 initial_argument,
                 None if quaternions is None else quaternions[e_idx],
                 seg_dir,
@@ -10478,7 +10214,7 @@ class ModelBuilder:
                 )
                 if not math.isfinite(rest_seg_length) or rest_seg_length <= min_segment_length:
                     raise ValueError(
-                        f"add_rod_graph: rest edge {e_idx} has a too-small or non-finite length "
+                        f"add_rod: rest edge {e_idx} has a too-small or non-finite length "
                         f"(length={rest_seg_length:.3e}); rest segment length must be finite and "
                         f"> {min_segment_length:.1e}"
                     )
@@ -10488,14 +10224,14 @@ class ModelBuilder:
 
             if rest_quaternions is not None:
                 q_rest = self._rod_frame_for_direction(
-                    "add_rod_graph",
+                    "add_rod",
                     f"rest_quaternions[{e_idx}]",
                     rest_quaternions[e_idx],
                     rest_seg_dir,
                 )
             elif has_separate_rest_positions:
                 q_rest = self._transport_rod_frame(
-                    "add_rod_graph",
+                    "add_rod",
                     f"derived rest quaternion at edge {e_idx}",
                     q,
                     seg_dir,
@@ -10555,7 +10291,7 @@ class ModelBuilder:
             elif node_idx == edge_v[e_idx]:
                 z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
-                raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
+                raise RuntimeError("add_rod: internal error (node not incident to edge)")
             rotation = _reverse_tangent_rotation if reverse_tangent else _identity_rotation
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), rotation)
 
@@ -10607,7 +10343,7 @@ class ModelBuilder:
                 for child_edge in inc[1:]:
                     child_body = edge_bodies[child_edge]
                     if parent_body == child_body:
-                        raise RuntimeError("add_rod_graph: internal error (self-connection)")
+                        raise RuntimeError("add_rod: internal error (self-connection)")
 
                     child_xform = _edge_anchor_xform(child_edge, node_idx)
 
@@ -10647,9 +10383,7 @@ class ModelBuilder:
             if articulation_root_node is not None:
                 root_edges = node_incidence[articulation_root_node]
                 if not root_edges:
-                    raise ValueError(
-                        f"add_rod_graph: articulation_root_node {articulation_root_node} has no incident edge"
-                    )
+                    raise ValueError(f"add_rod: articulation_root_node {articulation_root_node} has no incident edge")
                 start_edges.remove(root_edges[0])
                 start_edges.insert(0, root_edges[0])
 
@@ -10694,7 +10428,7 @@ class ModelBuilder:
 
                             child_body = edge_bodies[child_edge]
                             if parent_body == child_body:
-                                raise RuntimeError("add_rod_graph: internal error (self-connection)")
+                                raise RuntimeError("add_rod: internal error (self-connection)")
 
                             # Anchors at the shared node on each edge body
                             parent_reversed = shared_node == edge_u[parent_edge]
@@ -14928,22 +14662,22 @@ class ModelBuilder:
                 else:
                     shape_edge_ranges.append((-1, 0))
 
-            m.shape_edge_range = wp.array(
+            m._shape_edge_range = wp.array(
                 shape_edge_ranges if shape_edge_ranges else [(-1, 0)],
                 dtype=wp.vec2i,
                 device=device,
             )
-            m.mesh_edge_indices = (
+            m._mesh_edge_indices = (
                 wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec2i, device=device)
             )
-            m.mesh_edge_centers = (
+            m._mesh_edge_centers = (
                 wp.array(np.concatenate(edge_center_chunks), dtype=wp.vec4, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec4, device=device)
             )
-            m.mesh_edge_halves = (
+            m._mesh_edge_halves = (
                 wp.array(np.concatenate(edge_half_chunks), dtype=wp.vec4, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec4, device=device)

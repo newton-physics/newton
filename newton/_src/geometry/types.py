@@ -14,6 +14,7 @@ import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..utils.color import ColorSpace
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
@@ -257,6 +258,7 @@ class Mesh:
         self._cached_render_attribute_hash = None
         self._texture_hash = None
         self._edges = None
+        self._canonical_ids = None
         self._collision_edges: np.ndarray | None = None
         self._is_watertight: bool | None = None
         self.sdf = sdf
@@ -417,19 +419,25 @@ class Mesh:
         compute_uvs: bool = True,
         compute_inertia: bool = True,
     ) -> "Mesh":
-        """Create a capsule mesh.
+        """Create a capsule mesh with shared equators and pole vertices.
+
+        Positive-radius meshes are watertight. A zero radius produces degenerate
+        geometry for compatibility with zero-size shapes.
 
         Args:
-            radius [m]: Radius of the capsule hemispheres and cylindrical body.
-            half_height [m]: Half-height of the cylindrical section.
+            radius [m]: Nonnegative radius of the capsule hemispheres and cylindrical body.
+            half_height [m]: Nonnegative half-height of the cylindrical section. Zero creates a sphere.
             up_axis: Long axis as a ``newton.Axis`` value.
-            segments: Tessellation resolution for both caps and body.
+            segments: Tessellation resolution for both caps and body, at least 3.
             compute_normals: If ``True``, generate per-vertex normals.
             compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
             A capsule mesh.
+
+        Raises:
+            ValueError: If the dimensions, segment count, or up axis are invalid.
         """
         from ..utils.mesh import create_mesh_capsule  # noqa: PLC0415
 
@@ -1185,6 +1193,7 @@ class Mesh:
         self._cached_hash = None
         self._cached_render_attribute_hash = None
         self._edges = None
+        self._canonical_ids = None
         self._collision_edges = None
         self._is_watertight = None
         self._finalized_meshes = {}
@@ -1215,11 +1224,22 @@ class Mesh:
         """Per-vertex canonical IDs that fold geometrically coincident vertices
         together. Vertex positions are quantized to the nearest 1e-7 m bucket
         before hashing, so vertices closer than 100 nm collapse to one id."""
-        q = np.round(self._vertices * 1e7).astype(np.int64)
-        q_contig = np.ascontiguousarray(q)
-        void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
-        _, canonical = np.unique(void_verts, return_inverse=True)
-        return canonical.ravel()
+        if self._canonical_ids is None:
+            q = np.round(self._vertices * 1e7).astype(np.int64)
+            q_contig = np.ascontiguousarray(q)
+            void_verts = q_contig.view(np.dtype((np.void, q_contig.dtype.itemsize * q_contig.shape[1])))
+            _, canonical = np.unique(void_verts, return_inverse=True)
+            self._canonical_ids = canonical.ravel()
+        return self._canonical_ids
+
+    @staticmethod
+    def _edge_keys(lo: np.ndarray, hi: np.ndarray, count: int) -> np.ndarray:
+        """Pack (min, max) canonical vertex id pairs into one int64 key per edge.
+
+        Sorting a 1-D int64 array is several times faster than sorting the
+        equivalent 16-byte void view, and keeps the same ordering.
+        """
+        return lo.astype(np.int64) * np.int64(max(count, 1)) + hi.astype(np.int64)
 
     @property
     def edges(self) -> np.ndarray:
@@ -1245,10 +1265,9 @@ class Mesh:
                 canon_edges[k::3, 1] = np.maximum(ca, cb)
                 orig_edges[k::3, 0] = tris[:, a]
                 orig_edges[k::3, 1] = tris[:, b]
-            # Deduplicate via void view (fast 1-D unique)
-            canon_edges = np.ascontiguousarray(canon_edges)
-            void_edges = canon_edges.view(np.dtype((np.void, canon_edges.dtype.itemsize * 2)))
-            _, first_idx = np.unique(void_edges, return_index=True)
+            # Deduplicate on packed int64 keys (fast 1-D unique)
+            keys = self._edge_keys(canon_edges[:, 0], canon_edges[:, 1], int(canonical.max()) + 1)
+            _, first_idx = np.unique(keys, return_index=True)
             first_idx.sort()
             self._edges = orig_edges[first_idx]
         return self._edges
@@ -1531,9 +1550,8 @@ class Mesh:
             for k, (a, b) in enumerate(((0, 1), (1, 2), (0, 2))):
                 pairs[k::3, 0] = np.minimum(c[:, a], c[:, b])
                 pairs[k::3, 1] = np.maximum(c[:, a], c[:, b])
-            pairs_contig = np.ascontiguousarray(pairs)
-            void_edges = pairs_contig.view(np.dtype((np.void, pairs_contig.dtype.itemsize * 2)))
-            _, counts = np.unique(void_edges, return_counts=True)
+            keys = self._edge_keys(pairs[:, 0], pairs[:, 1], int(c.max()) + 1)
+            _, counts = np.unique(keys, return_counts=True)
             self._is_watertight = bool(np.all(counts == 2))
         return self._is_watertight
 
@@ -2520,6 +2538,10 @@ class Heightfield:
         return self._cached_hash
 
 
+SH_C0 = 0.28209479177387814
+"""Zeroth-order real spherical-harmonics basis constant, :math:`1 / (2\\sqrt{\\pi})`."""
+
+
 class Gaussian:
     """Represents a Gaussian splat asset for rendering and rigid body attachment.
 
@@ -2562,6 +2584,7 @@ class Gaussian:
         scales: wp.array[wp.vec3f]
         opacities: wp.array[wp.float32]
         sh_coeffs: wp.array2d[wp.float32]
+        sh_color_space: wp.int32
         bvh_id: wp.uint64
         min_response: wp.float32
         sorting_mode: wp.int32
@@ -2582,6 +2605,8 @@ class Gaussian:
         sh_degree: int | None = None,
         min_response: float = 0.1,
         sorting_mode: SortingMode = SortingMode.RAY_HIT_DISTANCE,
+        *,
+        sh_color_space: ColorSpace = ColorSpace.SRGB,
     ):
         """Construct a Gaussian splat asset from arrays.
 
@@ -2601,6 +2626,11 @@ class Gaussian:
             sorting_mode: Sorting strategy for depth-ordering Gaussian
                 intersections along each ray before alpha compositing
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
+            sh_color_space: Color space of evaluated SH radiance. Defaults to
+                sRGB (display-encoded); pass :attr:`~newton.utils.ColorSpace.LINEAR`
+                for scene-linear radiance. Only :class:`~newton.sensors.SensorCamera`
+                honors this; the deprecated :class:`~newton.sensors.SensorTiledCamera`
+                ignores it.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2636,6 +2666,7 @@ class Gaussian:
         self._min_response = float(min_response)
 
         self._sorting_mode = sorting_mode
+        self._sh_color_space = ColorSpace(sh_color_space)
 
         self._cached_hash = None
         self._positions.setflags(write=False)
@@ -2691,6 +2722,11 @@ class Gaussian:
     def sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), int"""
         return self._sh_degree
+
+    @property
+    def sh_color_space(self) -> ColorSpace:
+        """Color space of evaluated spherical-harmonics radiance."""
+        return self._sh_color_space
 
     @property
     def min_response(self) -> float:
@@ -2773,6 +2809,7 @@ class Gaussian:
             warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
             warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
             warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            warp_data.sh_color_space = int(self._sh_color_space)
             warp_data.min_response = self.min_response
             warp_data.sorting_mode = self.sorting_mode
             warp_data.num_points = warp_data.transforms.shape[0]
@@ -2821,17 +2858,23 @@ class Gaussian:
     # ---- Factory methods -----------------------------------------------------
 
     @staticmethod
-    def create_from_ply(filename: str, min_response: float = 0.1) -> "Gaussian":
+    def create_from_ply(
+        filename: str, min_response: float = 0.1, *, sh_color_space: ColorSpace = ColorSpace.SRGB
+    ) -> "Gaussian":
         """Load Gaussian splat data from a ``.ply`` file (standard 3DGS format).
 
         Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
         (``scale_0..2``, stored as log-scale), opacities (logit-space),
         and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
-        and logit-opacity to linear values. Requires Open3D 0.20 or newer.
+        and logit-opacity to linear values. SH radiance is treated as sRGB
+        unless ``sh_color_space`` says otherwise. Requires Open3D 0.20 or newer.
 
         Args:
             filename: Path to a ``.ply`` file in standard 3DGS format.
             min_response: Min response (default = 0.1).
+            sh_color_space: Color space of the SH radiance (default:
+                :attr:`~newton.utils.ColorSpace.SRGB`, as 3DGS assets are
+                display-referred).
 
         Returns:
             A new :class:`Gaussian` instance.
@@ -2884,6 +2927,7 @@ class Gaussian:
             opacities=opacities,
             sh_coeffs=sh_coeffs,
             min_response=min_response,
+            sh_color_space=sh_color_space,
         )
 
     @staticmethod
@@ -2891,6 +2935,11 @@ class Gaussian:
         """Load Gaussian splat data from a USD prim.
 
         Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+        The (possibly inherited) USD color space of the SH radiance selects :attr:`sh_color_space`:
+        untagged, ``srgb_rec709_scene`` and ``srgb_rec709_display`` radiance is :attr:`~newton.utils.ColorSpace.SRGB`, and
+        ``lin_rec709_scene`` and other Rec.709 linear names are :attr:`~newton.utils.ColorSpace.LINEAR`.
+        Other color spaces are imported without conversion and a warning is logged; see the
+        USD parsing documentation for the full list of supported names.
 
         Args:
             prim: A USD prim containing Gaussian splat data.
@@ -2976,6 +3025,7 @@ class Gaussian:
                     self._sh_coeffs.data.tobytes(),
                     float(self._min_response),
                     int(self._sorting_mode),
+                    int(self._sh_color_space),
                 )
             )
         return self._cached_hash
@@ -2992,4 +3042,5 @@ class Gaussian:
             and np.array_equal(self._sh_coeffs, other._sh_coeffs)
             and self._min_response == other._min_response
             and self._sorting_mode == other._sorting_mode
+            and self._sh_color_space == other._sh_color_space
         )

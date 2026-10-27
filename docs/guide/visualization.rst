@@ -432,21 +432,15 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 
     uv sync --extra rtx
 
-This installs ``ovrtx`` 0.5 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2 or newer for runtime scene
-management, and ``usd-core``, in addition to ``pyglet`` for the window.
+This installs ``ovrtx`` 0.5.1.385782 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2.1.385922 or newer
+for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for the window.
 
-ViewerRTX has been validated with the following renderer configurations:
+ViewerRTX has been validated with the following renderer configuration:
 
-- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349`` (minimum-dependency CI; Isaac Sim 6.2)
-- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (GPU CI; Isaac Lab 3.0)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency and GPU CI; Isaac Lab 3.0)
 
-Only the exact configurations above are part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
+Only the exact configuration above is part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
 together; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
-
-.. warning::
-    With ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave ViewerRTX showing a uniform
-    gray image, commonly after switching examples in the same process. OVStage 0.2.1 no longer shows this. See
-    `issue #4283 <https://github.com/newton-physics/newton/issues/4283>`__.
 
 .. code-block:: python
 
@@ -1008,8 +1002,25 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.Viewe
 Contact normals, mode disks, and force arrows are sized relative to the smaller
 shape in each contact pair. Use the ``Contact Relative Scale`` control to adjust
 all contact glyphs while preserving their proportions across differently sized
-contacts. Contact mode coloring and force arrows require the ``"force"``
-extended contact attribute.
+contacts. To infer contact modes and draw force arrows, request the solver's
+``CONTACT_F`` observable, pass it to the solver step, and provide the resulting
+observables to the viewer:
+
+.. code-block:: python
+
+    viewer.log_contacts(contacts, state, observables=observables)
+
+See :ref:`solver_observables` for allocation, contact-buffer identity, and backend
+support. Without force output, mode disks are amber (unknown) and force arrows
+are hidden. With force output, disks are black for open contacts, light gray for
+sticking contacts, and blue for slipping contacts. A measured force magnitude
+at or below ``contact_mode_eps_force`` is open, including zero force when the
+threshold is zero.
+
+Default force-arrow calibration uses the average dynamic mass of populated local
+worlds plus shared global dynamic mass, so replicating identical worlds does not
+change arrow lengths. Set ``viewer.contact_force_scale`` after attaching the
+model to override the calibration.
 
 **Transform gizmos:**
 
