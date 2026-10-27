@@ -3068,7 +3068,10 @@ class SolverSteel(SolverBase):
             self._device_torsion.clear_status()
         world_mask = self._normalize_reset_world_mask(world_mask)
         if self._sleeping is not None:
-            self._sleeping.wake(world_mask, state)
+            if world_mask is None:
+                self._sleeping.wake()
+            else:
+                self._sleeping.wake_worlds(world_mask, state)
         if self._world_count == 0:
             return
 

@@ -927,6 +927,37 @@ def test_masked_reset_restarts_state_change_history(test, device):
     np.testing.assert_array_equal(body_q[0], body_q[1])
 
 
+def test_global_reset_keeps_shared_support_history(test, device):
+    """Wake unselected worlds whose global kinematic support moved before a reset of only the global entry."""
+    box = newton.ModelBuilder()
+    body = box.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
+    box.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder = newton.ModelBuilder()
+    support = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
+    builder.add_shape_box(support, hx=1.0, hy=1.0, hz=0.05)
+    builder.replicate(box, 2)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, deterministic=True)
+    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **PROFILE)
+    states = [model.state(), model.state()]
+    for state in states:
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    control = model.control()
+    _advance(pipeline, solver, states, control, 400)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[1:], [0, 0])
+    # Slide the support under both boxes; the contact stays closed, so only its pose history shows the move.
+    x = model.joint_q_start.numpy()[support]
+    for state in states:
+        body_q, joint_q = state.body_q.numpy(), state.joint_q.numpy()
+        body_q[support, 0] += 0.05
+        joint_q[x] += 0.05
+        state.body_q.assign(body_q)
+        state.joint_q.assign(joint_q)
+    solver.reset(states[0], world_mask=wp.array([False, False, True], dtype=wp.bool, device=device))
+    _advance(pipeline, solver, states, control, 1)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[1:], [1, 1])
+
+
 def test_property_notification_wakes_only_changed_islands(test, device):
     """Wake the island whose mass changed, and nothing for a notification without a change."""
     model, pipeline, solver, states = _two_world_boxes(device)
@@ -1168,7 +1199,7 @@ def _two_world_boxes(device):
     builder.add_ground_plane()
     builder.replicate(box, 2)
     model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, deterministic=True)
     solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **PROFILE)
     return model, pipeline, solver, [model.state(), model.state()]
 
@@ -1197,6 +1228,7 @@ for _name in (
     "test_masked_reset_wakes_only_selected_worlds",
     "test_masked_reset_restarts_only_selected_history",
     "test_masked_reset_restarts_state_change_history",
+    "test_global_reset_keeps_shared_support_history",
     "test_property_notification_wakes_only_changed_islands",
     "test_frozen_patch_carry_matches_rebuild",
     "test_frozen_patch_carry_matches_rebuild_for_flooded_pairs",

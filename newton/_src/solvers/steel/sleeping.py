@@ -90,6 +90,7 @@ class _SleepState:
         self.coord_art = wp.array(coord_art, dtype=int, device=device)
         # Articulations without response DOFs are prescribed; their kinematics always run.
         skippable = response_counts > 0
+        self.global_islands = int(np.any(skippable & (articulation_world < 0)))
         self.art_skippable = wp.array(skippable.astype(np.int32), dtype=int, device=device)
         self.joint_skip_art = wp.array(
             np.where(np.isin(joint_art, np.flatnonzero(skippable)), joint_art, -1).astype(np.int32),
@@ -135,20 +136,21 @@ class _SleepState:
         """Bodies whose friction-patch history can be carried; only row-free sleeping qualifies."""
         return self.frozen_bodies if self.skip_constraints and self.carry_frozen_patches else None
 
-    def wake(self, world_mask=None, state=None):
-        """Wake every component and invalidate state-change history, or do both for the masked worlds only.
+    def wake(self):
+        """Wake every component and invalidate state-change history."""
+        requested = self.solver._mass_update_requested
+        wp.launch(_wake_all, self.art_awake.size, [self.art_awake, requested], device=self.model.device)
+        self.body_awake.fill_(1)
+        self.quiet_age.zero_()
+        self.valid.zero_()
+        self.asleep_steps.zero_()
 
-        ``world_mask`` has the solver's ``(world_count + 1,)`` reset layout; its final entry
-        selects global articulations. A masked wake restarts the selected worlds' history from ``state``.
+    def wake_worlds(self, world_mask, state):
+        """Wake the masked worlds and restart their state-change history from ``state``.
+
+        ``world_mask`` has the solver's ``(world_count + 1,)`` reset layout; its final entry selects global entities.
         """
         requested = self.solver._mass_update_requested
-        if world_mask is None:
-            wp.launch(_wake_all, self.art_awake.size, [self.art_awake, requested], device=self.model.device)
-            self.body_awake.fill_(1)
-            self.quiet_age.zero_()
-            self.valid.zero_()
-            self.asleep_steps.zero_()
-            return
         device = self.model.device
         world = self.solver._articulation_model_world
         world_count = int(self.model.world_count)
@@ -171,9 +173,10 @@ class _SleepState:
             [
                 world_mask,
                 world_count,
-                world,
-                self.body_nodes,
                 self.model.body_world,
+                self.body_nodes,
+                self.model.body_flags,
+                self.global_islands,
                 state.body_q,
                 state.body_qd,
                 self.last_body_q,
@@ -653,9 +656,10 @@ def _wake_worlds(
 def _restart_world_body_history(
     mask: wp.array[wp.bool],
     world_count: int,
-    world: wp.array[int],
-    nodes: wp.array[int],
     body_world: wp.array[int],
+    nodes: wp.array[int],
+    flags: wp.array[int],
+    global_islands: int,
     q: wp.array[wp.transform],
     qd: wp.array[wp.spatial_vector],
     last_q: wp.array[wp.transform],
@@ -663,11 +667,14 @@ def _restart_world_body_history(
 ):
     i = wp.tid()
     w = body_world[i]
-    if nodes[i] >= 0:
-        w = world[nodes[i]]
-    if reset_world_selected(w, mask, world_count):
-        last_q[i] = q[i]
-        last_qd[i] = qd[i]
+    if not reset_world_selected(w, mask, world_count):
+        return
+    # A contact boundary's history also shows its moves to other entries' islands: every world's for a global
+    # boundary, the global islands' for a world boundary. Keep it unless those entries are selected too.
+    if _node(i, nodes, flags) < 0 and (w < 0 or (global_islands != 0 and not mask[world_count])):
+        return
+    last_q[i] = q[i]
+    last_qd[i] = qd[i]
 
 
 @wp.kernel(enable_backward=False)
