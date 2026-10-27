@@ -17,6 +17,10 @@
 # motion (also used in test mode), and the client page offers a mouse-driven
 # fallback. Sessions can be recorded to and replayed from ``.npz`` files.
 #
+# Headset note: WebXR requires a secure context, which a plain http:// LAN
+# address is not. From a standalone headset use adb (e.g.
+# ``adb reverse tcp:8091 tcp:8091``) and open ``http://localhost:8091/``.
+#
 # Command: python -m newton.examples cloth_vr_teleop [--vr-port 8091]
 #
 ###########################################################################
@@ -106,8 +110,15 @@ async function startXR() {
     return;
   }
   enterBtn.disabled = true;
-  status("VR session running");
-  const ref = await session.requestReferenceSpace("local");
+  let refSpaceName = "local-floor";
+  let ref;
+  try {
+    ref = await session.requestReferenceSpace(refSpaceName);
+  } catch (err) {
+    refSpaceName = "local";
+    ref = await session.requestReferenceSpace(refSpaceName);
+  }
+  status("VR session running (" + refSpaceName + ")");
   session.addEventListener("end", () => {
     session = null;
     enterBtn.disabled = false;
@@ -134,21 +145,11 @@ function handPose(frame, src, ref) {
   if (src.hand) {
     const wrist = frame.getJointPose(src.hand.get("wrist"), ref);
     if (!wrist) return null;
-    const out = { p: posOf(wrist.transform), q: quatOf(wrist.transform), pinch: false };
-    const tip = frame.getJointPose(src.hand.get("index-fingertip"), ref);
-    const thumb = frame.getJointPose(src.hand.get("thumb-tip"), ref);
-    if (tip && thumb) {
-      const dx = tip.transform.position.x - thumb.transform.position.x;
-      const dy = tip.transform.position.y - thumb.transform.position.y;
-      const dz = tip.transform.position.z - thumb.transform.position.z;
-      out.pinch = Math.sqrt(dx * dx + dy * dy + dz * dz) < 0.025;
-    }
-    return out;
+    return { p: posOf(wrist.transform), q: quatOf(wrist.transform) };
   }
   if (src.gripSpace) {
     const grip = frame.getPose(src.gripSpace, ref);
-    const pressed = src.gamepad && src.gamepad.buttons[0] && src.gamepad.buttons[0].pressed;
-    if (grip) return { p: posOf(grip.transform), q: quatOf(grip.transform), pinch: !!pressed };
+    if (grip) return { p: posOf(grip.transform), q: quatOf(grip.transform) };
   }
   return null;
 }
@@ -193,7 +194,7 @@ function drawPad() {
 setInterval(() => {
   if (session) return;  // in VR, the session loop drives the poses
   msg.head = HEAD_FALLBACK;
-  msg.hands = { right: { p: [handX, handH, -1.5 - handF], q: [0, 0, 0, 1], pinch: false } };
+  msg.hands = { right: { p: [handX, handH, -1.5 - handF], q: [0, 0, 0, 1] } };
   msg.t = performance.now() / 1000;
   post(msg);
   drawPad();
@@ -304,7 +305,10 @@ def _as_pos(entry):
     p = entry.get("p")
     if not isinstance(p, (list, tuple)) or len(p) != 3:
         return None
-    p = np.asarray(p, dtype=np.float32)
+    try:
+        p = np.asarray(p, dtype=np.float32)
+    except (ValueError, TypeError, OverflowError):
+        return None
     if not np.all(np.isfinite(p)) or np.linalg.norm(p) > _MAX_TRACKED_POS:
         return None
     return p
@@ -317,7 +321,10 @@ def _as_quat(entry):
     q = entry.get("q")
     if not isinstance(q, (list, tuple)) or len(q) != 4:
         return identity
-    q = np.asarray(q, dtype=np.float32)
+    try:
+        q = np.asarray(q, dtype=np.float32)
+    except (ValueError, TypeError, OverflowError):
+        return identity
     norm = float(np.linalg.norm(q))
     if not math.isfinite(norm) or norm < 1e-6:
         return identity
@@ -360,7 +367,7 @@ def _frame_from_message(message, origin_yup):
             return None
         p = _quat_rotate(_YUP_TO_ZUP_QUAT, p + origin_yup)
         q = _quat_mul(_YUP_TO_ZUP_QUAT, _as_quat(entry))
-        return p, q, bool(entry.get("pinch", False))
+        return p, q
 
     frame = {}
     head = _as_pos(message.get("head"))
@@ -405,7 +412,9 @@ class ProceduralPoseSource:
         look_at = np.array([0.0, 0.0, 0.55], dtype=np.float32)
         direction = look_at - head_p
         direction /= np.linalg.norm(direction)
-        head_q = _quat_between(np.array([0.0, 1.0, 0.0], dtype=np.float32), direction.astype(np.float32))
+        # Stored head quats map the head-local frame to model space, with the
+        # local forward direction at (0, 0, -1) (same convention as WebXR).
+        head_q = _quat_between(np.array([0.0, 0.0, -1.0], dtype=np.float32), direction.astype(np.float32))
 
         # Hand waypoints in model space; x is mirrored for the left hand.
         home = np.array([0.55, -0.10, 1.30], dtype=np.float32)
@@ -432,8 +441,8 @@ class ProceduralPoseSource:
 
         return {
             "head": (head_p, head_q),
-            "left": (left_p, np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), False),
-            "right": (right_p, np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32), False),
+            "left": (left_p, np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)),
+            "right": (right_p, np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)),
         }
 
 
@@ -470,7 +479,6 @@ class ReplayPoseSource:
             frame[side] = (
                 np.asarray(self.data[f"{side}_p"][i], dtype=np.float32),
                 quat(f"{side}_q"),
-                False,
             )
         return frame
 
@@ -584,7 +592,10 @@ class Example:
         self._frame_idx = 0
         self._mode_name = "procedural"
         self._source = None
+        self._fallback_source = None
         self._server = None
+        self._cloth_touched = False
+        self._camera_framed = False
 
         origin_yup = np.asarray([float(v) for v in args.xr_origin.split(",")], dtype=np.float32)
         if args.replay:
@@ -594,8 +605,9 @@ class Example:
             server = _ACTIVE_SERVER
             if server is not None:
                 self._source = XRPoseSource(server, origin_yup)
+                self._fallback_source = ProceduralPoseSource(half_y)
                 self._server = server
-                self._mode_name = "vr (waiting for client)"
+                self._mode_name = "vr (procedural until client connects)"
             else:
                 self._source = ProceduralPoseSource(half_y)
                 self._mode_name = "procedural"
@@ -646,8 +658,14 @@ class Example:
         frame = self._source.next(self._frame_idx)
         if frame is not None:
             self._frame = frame
-            if self._mode_name.startswith("vr") and self._server is not None and self._server.packets:
+            if self._server is not None:
                 self._mode_name = "vr"
+        elif self._fallback_source is not None:
+            # No client connected yet: run the procedural choreography so the
+            # example matches its documented behavior from the first frame.
+            frame = self._fallback_source.next(self._frame_idx)
+            if frame is not None:
+                self._frame = frame
 
         targets = [self.home_left, self.home_right]
         if self._hands_enabled and self._frame is not None:
@@ -669,20 +687,28 @@ class Example:
     def _record_frame(self):
         if not self._record_path:
             return
-        frame = self._frame
+        frame = self._frame or {}
         self._rec["t"].append(self._frame_idx * self.frame_dt)
-        for key in ("head", "left", "right"):
-            entry = (frame or {}).get(key)
-            if entry is None:
-                if self._rec[f"{key}_p"]:
-                    self._rec[f"{key}_p"].append(self._rec[f"{key}_p"][-1])
-                    self._rec[f"{key}_q"].append(self._rec[f"{key}_q"][-1])
-                else:
-                    self._rec[f"{key}_p"].append(np.zeros(3, dtype=np.float32))
-                    self._rec[f"{key}_q"].append(np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32))
-            else:
-                self._rec[f"{key}_p"].append(np.asarray(entry[0], dtype=np.float32))
-                self._rec[f"{key}_q"].append(np.asarray(entry[1], dtype=np.float32))
+
+        head = frame.get("head")
+        if head is not None:
+            head_p, head_q = np.asarray(head[0], dtype=np.float32), np.asarray(head[1], dtype=np.float32)
+        elif self._rec["head_p"]:
+            head_p, head_q = self._rec["head_p"][-1], self._rec["head_q"][-1]
+        else:
+            head_p = np.array([0.0, -2.0, 1.8], dtype=np.float32)
+            head_q = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        self._rec["head_p"].append(head_p)
+        self._rec["head_q"].append(head_q)
+
+        # Record the targets the simulation actually used (after the hands
+        # toggle and home fallback), so replay reproduces the run exactly.
+        identity = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        for i, side in enumerate(("left", "right")):
+            self._rec[f"{side}_p"].append(self._targets_np[i].copy())
+            entry = frame.get(side)
+            self._rec[f"{side}_q"].append(np.asarray(entry[1], dtype=np.float32) if entry is not None else identity)
+
         if len(self._rec["t"]) % 100 == 0:
             self._flush_record()
 
@@ -698,10 +724,18 @@ class Example:
     def _apply_head_camera(self):
         if self._frame is None or "head" not in self._frame:
             return
+        follow = self._mode_name == "vr" or isinstance(self._source, ReplayPoseSource)
+        if not follow:
+            # Procedural and not-yet-connected runs frame the scene once and
+            # then leave the camera to the user (mouse/keyboard orbit).
+            if self._camera_framed:
+                return
+            self._camera_framed = True
         p, q = self._frame["head"]
-        # Model space is Z-up and the camera up axis follows the model, so the
-        # head's view direction maps onto the Z-up pitch/yaw conventions.
-        f = _quat_rotate(q, np.array([0.0, 1.0, 0.0], dtype=np.float32))
+        # Stored quats map the head-local frame to model space with local
+        # forward (0, 0, -1); model space is Z-up and the viewer camera up
+        # axis follows the model, so yaw/pitch follow the Z-up conventions.
+        f = _quat_rotate(q, np.array([0.0, 0.0, -1.0], dtype=np.float32))
         norm = float(np.linalg.norm(f))
         if norm < 1e-6:
             return
@@ -709,6 +743,19 @@ class Example:
         yaw = math.degrees(math.atan2(float(f[1]), float(f[0])))
         pitch = math.degrees(math.asin(max(-1.0, min(1.0, float(f[2])))))
         self.viewer.set_camera(wp.vec3(float(p[0]), float(p[1]), float(p[2])), pitch, yaw)
+
+    def test_post_step(self):
+        # Witness that a hand proxy actually reached the cloth; combined with
+        # the lateral-displacement check in test_final this proves the drag.
+        if self._cloth_touched:
+            return
+        particle_q = self.state_0.particle_q.numpy()
+        body_q = self.state_0.body_q.numpy()
+        for body in (self.left_body, self.right_body):
+            center = body_q[body][:3]
+            if float(np.linalg.norm(particle_q - center, axis=1).min()) < 0.15:
+                self._cloth_touched = True
+                return
 
     def test_final(self):
         self._flush_record()
@@ -726,9 +773,12 @@ class Example:
             lambda q, qd: newton.math.vec_inside_limits(q, lower, upper),
         )
 
-        # The hand proxies must have interacted with the cloth. Lateral (x-y)
-        # displacement ignores the initial free-fall and drape onto the table,
-        # which is mostly vertical, so particles moving sideways were dragged.
+        # The hand proxies must have interacted with the cloth. test_post_step
+        # witnesses a hand proxy actually reaching the cloth (the overhang
+        # flaps sway on their own, so motion alone is not proof of a drag);
+        # the lateral displacement check confirms the sheet actually moved.
+        if not self._cloth_touched:
+            raise ValueError("Hand proxies never reached the cloth during the test run")
         particle_q = self.state_0.particle_q.numpy()
         lateral = np.linalg.norm(particle_q[:, 0:2] - self.initial_particle_q[:, 0:2], axis=1)
         moved = float(np.mean(lateral > 0.03))
@@ -765,7 +815,11 @@ class Example:
         parser.add_argument("--height", type=int, default=40, help="Cloth resolution in y.")
         parser.add_argument("--max-hand-speed", type=float, default=2.5, help="Maximum tracked hand proxy speed [m/s].")
         parser.add_argument(
-            "--vr-host", type=str, default="127.0.0.1", help="Host address for the WebXR client server."
+            "--vr-host",
+            type=str,
+            default="127.0.0.1",
+            help="Host address for the WebXR client server. For standalone headsets use 0.0.0.0 together "
+            "with 'adb reverse tcp:<port> tcp:<port>' and open http://localhost:<port>/ on the headset.",
         )
         parser.add_argument("--vr-port", type=int, default=8091, help="Port for the WebXR client server.")
         parser.add_argument(
@@ -797,12 +851,18 @@ if __name__ == "__main__":
             host, port = server.server_address[:2]
             print(f"WebXR client page: http://{host}:{port}/")
             if host in ("0.0.0.0", "::"):
-                print("Open this page from the headset browser using this machine's LAN address.")
+                print(
+                    f"Standalone headsets: run 'adb reverse tcp:{port} tcp:{port}' on this machine, then open "
+                    f"http://localhost:{port}/ in the headset browser (WebXR requires a secure context; "
+                    "plain http:// LAN addresses do not provide one)."
+                )
             _ACTIVE_SERVER = server
         except OSError as err:
             print(f"Warning: could not start the WebXR client server ({err}); using procedural input")
 
-    newton.examples.run(Example(viewer, args), args)
+    example = Example(viewer, args)
+    newton.examples.run(example, args)
+    example._flush_record()
 
     if server is not None:
         server.stop()
