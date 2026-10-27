@@ -37,6 +37,12 @@ Newton's :meth:`newton.ModelBuilder.add_usd` method provides a USD import pipeli
 * Collects solver-specific attributes preserving solver-native attributes for potential use in the solver
 * Supports parsing of custom Newton model/state/control attributes for specialized simulation requirements
 
+**USD angular units:** Newton uses radians internally. UsdPhysics joint angles
+and resolved joint-state angular velocities use degrees and degrees/s, respectively.
+Revolute ``mjc:ref`` and ``mjc:springref`` instead follow the PhysicsScene's
+``mjc:compiler:angle`` setting (degrees by default). The importer converts these
+values to radians or radians/s.
+
 Particle Simulation Geometry
 ----------------------------
 
@@ -753,7 +759,7 @@ The following USD example demonstrates how PhysX attributes are authored in a US
        float physxLimit:angular:damping = 10.0  # → limit_angular_kd = 10.0
 
        # Initial joint state
-       float state:angular:physics:position = 1.57  # → joint_q = 1.57 rad
+       float state:angular:physics:position = 90  # degrees → joint_q ≈ 1.57 rad
    }
 
    def Mesh "collision_shape" (

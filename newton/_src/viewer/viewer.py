@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import enum
 import hashlib
 import math
@@ -10,7 +11,8 @@ import os
 import sys
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -131,6 +133,10 @@ class ViewerBase(ABC):
         self.picking_enabled = True
         self._camera_speed = 4.0
         self._rendering_paused = False
+        # Built-in display controls record explicit edits for example switching.
+        # Constructor defaults must not become preferences for later examples.
+        # Contact force scale is stored as a gain relative to model calibration.
+        self._display_options_user: dict[str, Any] = {}
 
         # Layer registry. The default layer is always present and has an
         # empty name prefix to keep backward compatibility for code that
@@ -164,6 +170,106 @@ class ViewerBase(ABC):
         active_layer_id = self.__dict__.get("_active_layer_id")
         if layers is not None and active_layer_id in layers:
             setattr(layers[active_layer_id], name, value)
+
+    @staticmethod
+    def _apply_attrs(target: Any, values: dict[str, Any]) -> None:
+        """Apply a saved set of display attributes to its owner."""
+        for name, value in values.items():
+            setattr(target, name, value)
+
+    def _edit_display_option(self, target: Any, name: str, widget: Callable, label: str, *args) -> None:
+        """Apply a widget's value and remember only explicit user edits."""
+        changed, value = widget(label, getattr(target, name), *args)
+        setattr(target, name, value)
+        if changed:
+            self._display_options_user[name] = value
+
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Restore reset state, or explicit display choices when entering a new example."""
+        user_options = self._display_options_user
+        option_names = {
+            "visible",
+            "sdf_margin_mode",
+            "contact_mode_eps_force",
+            "contact_mode_eps_velocity",
+            "contact_viz_scale",
+            "gaussians_max_points",
+        }
+        saved = {
+            layer_id: {
+                name: value
+                for name, value in vars(layer).items()
+                if name.startswith("show_") or name in option_names or name in user_options
+            }
+            for layer_id, layer in self.layers.items()
+        }
+        force_gains = {
+            layer_id: layer.contact_force_scale / layer._contact_force_scale_default
+            for layer_id, layer in self.layers.items()
+        }
+        active_id = self.layer.layer_id
+        defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
+        globals_saved = {
+            name: user_options[name] if switching else getattr(self, name)
+            for name in ("show_ui", "vsync", "_paused", "camera_speed")
+            if hasattr(self, name) and (not switching or name in user_options)
+        }
+        camera = getattr(self, "camera", None)
+        # Reset keeps the navigated view in every interactive backend. A new
+        # scene chooses its own framing, projection, and navigation speed.
+        camera_saved = {
+            name: copy.deepcopy(getattr(camera, name))
+            for name in ("fov", "near", "far", "pos", "pitch", "yaw", "pivot")
+            if not switching and hasattr(camera, name)
+        }
+        renderer = getattr(self, "renderer", None)
+        # Include recorded names directly so new controls need no switch allowlist.
+        render_saved = {
+            name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
+            for name in (
+                "draw_sky",
+                "draw_shadows",
+                "draw_wireframe",
+                "draw_edges",
+                "wireframe_line_width",
+                "_light_color",
+                "sky_upper",
+                "sky_lower",
+                "arrow_scale",
+                "joint_scale",
+                "com_scale",
+                *user_options,
+            )
+            if hasattr(renderer, name) and (not switching or name in user_options)
+        }
+        try:
+            yield
+        finally:
+            for layer_id, layer in self.layers.items():
+                if switching:
+                    options = {name: value for name, value in user_options.items() if hasattr(layer, name)}
+                    if "contact_force_scale" in user_options:
+                        options["contact_force_scale"] = (
+                            layer._contact_force_scale_default * user_options["contact_force_scale"]
+                        )
+                else:
+                    options = dict(saved.get(layer_id, defaults))
+                    options["contact_force_scale"] = layer._contact_force_scale_default * force_gains.get(
+                        layer_id, force_gains.get(active_id, 1.0)
+                    )
+                for name, value in options.items():
+                    setattr(layer, name, value)
+                    if layer is self.layer and name != "visible":
+                        setattr(self, name, value)
+                layer.model_changed = True
+                if layer is self.layer:
+                    self.model_changed = True
+            self._apply_attrs(self, globals_saved)
+            camera = getattr(self, "camera", None)
+            if camera is not None:
+                self._apply_attrs(camera, camera_saved)
+            self._apply_attrs(getattr(self, "renderer", None), render_saved)
 
     @staticmethod
     def _snapshot_layer_runtime_fields(layer: Layer) -> frozenset[str]:
@@ -1149,7 +1255,7 @@ class ViewerBase(ABC):
             materials = shapes.materials if self.model_changed else None
 
             # Capsules may be rendered via a specialized path by the concrete viewer/backend
-            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # (e.g., deforming a shared capsule prototype to batch different dimensions).
             # The base implementation of log_capsules() falls back to log_instances().
             if shapes.geo_type == newton.GeoType.CAPSULE:
                 self.log_capsules(

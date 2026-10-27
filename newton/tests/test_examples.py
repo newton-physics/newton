@@ -1157,6 +1157,19 @@ add_example_test(
 )
 
 
+class TestSteelExamples(NewtonTestCase):
+    pass
+
+
+add_example_test(
+    TestSteelExamples,
+    name="steel.example_steel_sleeping",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 340},
+    use_viewer=True,
+)
+
+
 class TestSelectionAPIExamples(unittest.TestCase):
     pass
 
@@ -1425,6 +1438,14 @@ add_example_test(
     name="mpm.example_mpm_viscous",
     devices=cuda_test_devices,
     test_options={"num-frames": 30, "voxel-size": 0.01},
+    use_viewer=True,
+)
+
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_pinch_carry",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 300, "spacing": 0.002, "substeps": 2, "travel-scale": 0.25},
     use_viewer=True,
 )
 
@@ -1853,6 +1874,18 @@ add_example_test(
     test_options={"num-frames": 500},
     use_viewer=True,
 )
+for example_name, num_frames in (
+    ("kamino.example_kamino_robot_dr_legs", 120),
+    ("kamino.example_kamino_robot_anymal_d", 500),
+):
+    add_example_test(
+        TestKaminoExamples,
+        name=example_name,
+        devices=cuda_test_devices,
+        test_options={"num-frames": num_frames, "dynamics-solver": "lox"},
+        use_viewer=True,
+        test_suffix="lox",
+    )
 
 
 class TestControllersExamples(unittest.TestCase):
