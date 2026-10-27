@@ -1737,7 +1737,9 @@ def test_compact_cable_requires_its_generated_root(test, device):
             )
             compact = coupled.view("cable")
             test.assertEqual(compact.body_count, 3)
-            test.assertEqual(compact.joint_count, len(joints))
+            # An omitted root is replaced by a FREE joint, not the original recorded joint.
+            test.assertEqual(compact.joint_count, 3)
+            test.assertEqual(compact.joint_type.numpy()[0], newton.JointType.FREE)
             test.assertEqual(compact.curve_count, int(include_root))
             test.assertEqual(compact.curve_label, ["/World/Cable"] if include_root else [])
             if include_root:
