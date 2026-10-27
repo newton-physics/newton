@@ -187,12 +187,10 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             # Proposal bind pose (or the mesh points), in the common world frame the
             # simulation geometry was imported in.
             try:
-                mesh, source_point_indices = usd.get_mesh(
-                    prim, load_uvs=True, load_visual_materials=False, return_source_point_indices=True
-                )
+                mesh, source_point_indices = usd.get_mesh(prim, load_uvs=True, return_source_point_indices=True)
                 points = usd.get_deformable_bind_pose(prim)[source_point_indices]
             except ValueError as exc:
-                logger.warning("%s: invalid visual mesh or bind pose; skipping (%s)", path, exc)
+                logger.warning("%s: invalid visual mesh, material, or bind pose; skipping (%s)", path, exc)
                 continue
             if len(mesh.vertices) == 0 or len(mesh.indices) == 0:
                 logger.warning("%s: graphics mesh has no geometry; skipping visual mesh.", path)
@@ -200,7 +198,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
             world_verts = _transform_points_np(world_mat, points).astype(np.float32)
             uvs = mesh._uvs if mesh._uvs is not None and len(mesh._uvs) == len(world_verts) else None
-            texture = usd.resolve_material_properties_for_prim(prim).get("texture")
+            texture = mesh.texture
             if texture is not None and uvs is None:
                 logger.warning("%s: visual texture requires UVs; importing the visual mesh without its texture.", path)
                 texture = None

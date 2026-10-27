@@ -373,6 +373,7 @@ Known gaps of the experimental importer, tracked as follow-ups:
   bind points are used for both the visual mesh and its simulation geometry.
   UV-seam vertex splitting preserves that correspondence. Cable reference frames
   use the simulation bind points without changing the imported physics pose.
+  Imported textures follow the shared :ref:`usd-material-color-spaces` rules.
   Missing bind poses fall back to the imported geometry. Invalid bind points
   produce a warning-level log and skip the affected visual rather than silently
   using a different reference.
@@ -647,6 +648,8 @@ computed when requested. To request both index arrays, unpack them in this order
 UV indices refer to the loaded mesh's UV array. Source point indices refer to
 the original USD ``points`` array. Computing skinning weights and connecting
 visual geometry to simulation remain separate steps.
+
+.. _usd-material-color-spaces:
 
 Material Color Spaces
 ---------------------

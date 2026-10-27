@@ -17,6 +17,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import usd
 from newton._src.utils.import_usd_deformable_visual import _sim_bind_positions
 from newton._src.viewer.viewer_file import HAS_CBOR2, transfer_to_model
 from newton.examples.sensors.example_deformable_visual_mesh_camera import (
@@ -33,6 +34,7 @@ from newton.tests._usd_deformable_test_utils import (
     _deformable_stage,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+from newton.utils import load_texture
 from newton.viewer import ViewerBase, ViewerFile, ViewerNull, ViewerUSD
 
 
@@ -2197,9 +2199,10 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         self.assertEqual(model.body_count, 2)
         self.assertEqual(model.deformable_visual_mesh_count, 0)
 
-    def test_uvs_survive_import(self):
-        """Vertex-interpolated primvars:st arrive on the visual mesh."""
-        from pxr import Sdf, UsdGeom
+    def test_uvs_and_texture_colors_survive_import(self):
+        """Visual import preserves UVs and the mesh reader's display-space pixels."""
+        from PIL import Image
+        from pxr import Sdf, UsdGeom, UsdShade
 
         stage = self._stage()
         self._add_volume_body(stage, "/World/Tire")
@@ -2209,11 +2212,31 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         )
         pv.Set([(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)])
 
-        builder = self._import(stage)
-        model = builder.finalize()
-        rm = model.deformable_visual_meshes[0]
-        self.assertIsNotNone(rm.uvs)
-        assert_np_equal(rm.uvs.numpy(), np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32), tol=1e-6)
+        material = UsdShade.Material.Define(stage, "/World/Material")
+        shader = UsdShade.Shader.Define(stage, "/World/Material/Surface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        texture = UsdShade.Shader.Define(stage, "/World/Material/Texture")
+        texture.CreateIdAttr("UsdUVTexture")
+        texture.CreateOutput("rgb", Sdf.ValueTypeNames.Float3)
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).ConnectToSource(texture.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(gfx.GetPrim()).Bind(material)
+
+        with tempfile.TemporaryDirectory() as directory:
+            texture_path = os.path.join(directory, "skin.png")
+            Image.fromarray(np.array([[[64, 128, 255, 200]]], dtype=np.uint8)).save(texture_path)
+            texture.CreateInput("file", Sdf.ValueTypeNames.Asset).Set(Sdf.AssetPath(texture_path))
+            for color_space, expected in (("sRGB", [64, 128, 255, 200]), ("raw", [137, 188, 255, 200])):
+                with self.subTest(color_space=color_space):
+                    texture.CreateInput("sourceColorSpace", Sdf.ValueTypeNames.Token).Set(color_space)
+                    source_mesh = usd.get_mesh(gfx.GetPrim())
+                    model = self._import(stage).finalize(device="cpu")
+                    mesh = model.deformable_visual_meshes[0]
+                    self.assertIsNotNone(mesh.uvs)
+                    assert_np_equal(mesh.uvs.numpy(), np.array([[0, 0], [1, 0], [0, 1]], dtype=np.float32))
+                    pixels = load_texture(mesh.texture)
+                    np.testing.assert_array_equal(pixels, load_texture(source_mesh.texture))
+                    np.testing.assert_array_equal(pixels, np.array([[expected]], dtype=np.uint8))
 
     def test_missing_uvs_omit_texture_not_visual_geometry(self):
         """Keep an imported visual binding when its texture has no UV coordinates."""
