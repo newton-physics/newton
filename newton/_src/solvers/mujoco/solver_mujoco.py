@@ -129,6 +129,7 @@ from .kernels import (
     update_tendon_properties_kernel,
     wake_changed_trees_kernel,
 )
+from .sensors import _add_imported_sensors, _register_sensor_attributes
 from .utils import solref_invalid_mask
 
 if TYPE_CHECKING:
@@ -1400,6 +1401,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Note: only attributes with usd_attribute_name defined are parsed from USD at the moment.
 
         _register_equality_constraint_attributes(builder)
+        _register_sensor_attributes(builder)
 
         def parse_solreflimit_mode_usd(_value: Any, context: dict[str, Any]) -> int | None:
             prim = context.get("prim")
@@ -2003,6 +2005,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjcf_attribute_name="integrator",
                 mjcf_value_transformer=cls._parse_integrator,
                 usd_value_transformer=cls._parse_integrator,
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="timestep",
+                frequency=AttributeFrequency.ONCE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.002,
+                namespace="mujoco",
+                mjcf_attribute_name="timestep",
             )
         )
         builder.add_custom_attribute(
@@ -4594,8 +4607,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_types_arr = model.shape_type.numpy()
         has_box = bool(np.any(shape_types_arr == GeoType.BOX))
         has_mesh = bool(np.any((shape_types_arr == GeoType.MESH) | (shape_types_arr == GeoType.CONVEX_MESH)))
-        self._zero_margins_for_native_ccd = (has_box and (flags["nativeccd"] or enable_multiccd)) or (
-            enable_multiccd and has_mesh
+        self._zero_margins_for_native_ccd = not use_mujoco_cpu and (
+            (has_box and (flags["nativeccd"] or enable_multiccd)) or (enable_multiccd and has_mesh)
         )
         """True when the NATIVECCD/MULTICCD margin workaround applies (#2106)."""
 
@@ -6768,6 +6781,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError("enable_sleeping=True does not support integrator='rk4'.")
 
         spec = mujoco.MjSpec()
+        if mujoco_attrs is not None and hasattr(mujoco_attrs, "timestep"):
+            spec.option.timestep = float(mujoco_attrs.timestep.numpy()[0])
         spec.option.enableflags = enableflags
         spec.option.disableflags = disableflags
         spec.option.gravity = np.array([*model.gravity.numpy()[0]])
@@ -6909,6 +6924,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         eq_constraint_relpose = get_custom_attribute("equality_constraint_relpose")
         eq_constraint_joint1 = get_custom_attribute("equality_constraint_joint1")
         eq_constraint_joint2 = get_custom_attribute("equality_constraint_joint2")
+        eq_constraint_joint1_dof = get_custom_attribute("equality_constraint_joint1_dof")
+        eq_constraint_joint2_dof = get_custom_attribute("equality_constraint_joint2_dof")
         eq_constraint_tendon1 = get_custom_attribute("equality_constraint_tendon1")
         eq_constraint_tendon2 = get_custom_attribute("equality_constraint_tendon2")
         eq_constraint_polycoef = get_custom_attribute("equality_constraint_polycoef")
@@ -8258,8 +8275,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 eq.active = eq_constraint_enabled[i]
                 j1_idx = int(eq_constraint_joint1[i])
                 j2_idx = int(eq_constraint_joint2[i])
-                eq.name1 = joint_mapping.get(j1_idx, model.joint_label[j1_idx].replace("/", "_"))
-                eq.name2 = joint_mapping.get(j2_idx, model.joint_label[j2_idx].replace("/", "_"))
+                for endpoint, joint_idx, dofs in (
+                    (1, j1_idx, eq_constraint_joint1_dof),
+                    (2, j2_idx, eq_constraint_joint2_dof),
+                ):
+                    dof = int(dofs[i]) if dofs is not None else -1
+                    if joint_idx < 0:
+                        joint_name = ""
+                    elif dof >= 0:
+                        joint_name = mjc_joint_names[dof_to_mjc_joint[dof]]
+                    elif len(joint_axis_mapping.get(joint_idx, ())) > 1:
+                        raise ValueError("Joint equality on a multi-axis joint requires an individual DoF target.")
+                    else:
+                        joint_name = joint_mapping.get(joint_idx, model.joint_label[joint_idx].replace("/", "_"))
+                    setattr(eq, f"name{endpoint}", joint_name)
                 eq.data[0:5] = eq_constraint_polycoef[i]
                 if eq_constraint_solref is not None:
                     eq.solref = eq_constraint_solref[i]
@@ -8588,6 +8617,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_ball_jnt = None
             self.mjc_actuator_to_newton_actuator_idx = None
 
+        _add_imported_sensors(spec, model, first_world, separate_worlds, get_body_name, site_mapping)
         self.mj_model = spec.compile()
         self._canonical_bvh_aabb = self.mj_model.bvh_aabb.copy()
         self._canonical_body_ipos = self.mj_model.body_ipos.copy()
@@ -8678,12 +8708,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Determine nworld for mapping dimensions
             nworld = model.world_count if separate_worlds else 1
             batch_sizes = dict.fromkeys(_MJW_BATCHED_MODEL_FIELDS, nworld) if nworld > 1 else None
+            cpu_disableflags = self.mj_model.opt.disableflags
+            cpu_enableflags = self.mj_model.opt.enableflags
+            if self.use_mujoco_cpu:
+                self.mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_NATIVECCD
+                if hasattr(mujoco.mjtDisableBit, "mjDSBL_MULTICCD"):
+                    self.mj_model.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
+                else:
+                    self.mj_model.opt.enableflags &= ~int(mujoco.mjtEnableBit.mjENBL_MULTICCD)
             try:
                 self.mjw_model = mujoco_warp.put_model(self.mj_model, batch_sizes=batch_sizes)
             finally:
                 # MuJoCo Warp consumes only the compiled runtime policy. Keep
                 # the authoring policy on the CPU model for inspection and MJCF export.
                 self.mj_model.tree_sleep_policy[:] = sleep_policies
+                self.mj_model.opt.disableflags = cpu_disableflags
+                self.mj_model.opt.enableflags = cpu_enableflags
 
             # patch mjw_model with mesh_pos if it doesn't have it
             if not hasattr(self.mjw_model, "mesh_pos"):

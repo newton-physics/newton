@@ -1,0 +1,1 @@
+Preserve MJCF joint equalities with an omitted leader or individual DoFs of combined joints, inherit partial actuator parameter arrays component-wise, load MuJoCo binary mesh assets, and retain mesh inertia modes, compiler mass/inertia guards, gravity, timestep, integrator and contact defaults. Preserve authored contact margins when using the CPU MuJoCo solver.

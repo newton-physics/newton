@@ -145,6 +145,18 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
             namespace="mujoco",
         )
     )
+    for endpoint in (1, 2):
+        builder.add_custom_attribute(
+            ca(
+                name=f"equality_constraint_joint{endpoint}_dof",
+                frequency=eq_freq,
+                assignment=model_assignment,
+                dtype=wp.int32,
+                default=-1,
+                references="joint_dof",
+                namespace="mujoco",
+            )
+        )
     # polycoef is materialized as ``wp.array2d[wp.float32]`` with shape
     # ``[equality_constraint_count, 5]``; the value stored per entry is a
     # 5-element list of floats so the standard pipeline yields the expected 2D layout.
