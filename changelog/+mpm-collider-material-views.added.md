@@ -1,1 +1,0 @@
-Add per-shape `mpm:adhesion` and `mpm:projection_threshold` attributes for `SolverImplicitMPM` colliders, and `collider_material_counts` with `collider_face_materials()`, `collider_materials()` and `collider_material_range()` for per-face collider materials.
