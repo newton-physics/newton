@@ -208,7 +208,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
             )
 
         gaussian = newton.Gaussian(positions=positions)
-        with self.assertRaisesRegex(ValueError, "supports only kind='tet'"):
+        with self.assertRaisesRegex(ValueError, "supports only kind='tetrahedron'"):
             builder.add_deformable_visual_gaussian(
                 gaussian,
                 kind="particle",
@@ -546,9 +546,9 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         def camera_images(render_model, render_state):
             sensor = SensorCamera(
                 render_model,
+                deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
                 default_render_config=SensorCamera.RenderConfig(
                     enable_particles=False,
-                    enable_simulation_triangles=False,
                     gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
                     max_distance=10.0,
                 ),
@@ -758,9 +758,9 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         state = model.state()
         sensor = SensorCamera(
             model,
+            deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
             default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
-                enable_simulation_triangles=False,
                 gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
                 max_distance=10.0,
             ),
@@ -807,9 +807,9 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
 
         sensor = SensorCamera(
             model,
+            deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
             default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
-                enable_simulation_triangles=False,
                 gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
                 max_distance=10.0,
             ),
@@ -838,6 +838,12 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         self.assertGreater(rest_depth, 0.0)
         self.assertGreater(moved_depth, 0.0)
         self.assertAlmostEqual(rest_depth - moved_depth, 0.4, delta=0.1)
+
+        direct_depth = depth_image.numpy().copy()
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(state, visuals)
+        sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image, deformable_visuals=visuals)
+        np.testing.assert_allclose(depth_image.numpy(), direct_depth, atol=1e-6)
 
     def test_camera_keeps_replicated_gaussians_independent(self):
         """Render one independently deformed Gaussian field in each world."""
@@ -868,9 +874,9 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
 
         sensor = SensorCamera(
             model,
+            deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
             default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
-                enable_simulation_triangles=False,
                 gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
                 max_distance=10.0,
             ),

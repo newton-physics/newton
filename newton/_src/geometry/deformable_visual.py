@@ -34,13 +34,14 @@ class DeformableVisualMesh:
     Instances are created by :meth:`newton.ModelBuilder.finalize` from meshes
     registered with :meth:`newton.ModelBuilder.add_deformable_visual_mesh` and
     stored in :attr:`newton.Model.deformable_visual_meshes`. Treat a mesh as fixed
-    asset data. Every attribute except :attr:`label` and :attr:`texture` is a
-    read-only property. Do not modify the returned arrays in place: consumers
-    may read them only once when they are created, and meshes
-    with the same rest geometry, such as replicated copies, share one device copy
-    of :attr:`rest_vertices`, :attr:`indices` and :attr:`uvs`. The :attr:`parent`,
-    :attr:`weights`, and :attr:`local_offsets` arrays describe how simulation
-    elements move the visual vertices.
+    asset data. Its geometry and binding attributes are read-only properties.
+    Do not modify the returned arrays in place: consumers
+    such as :class:`~newton.sensors.SensorCamera` may read them only once when
+    they are created, and meshes with the same rest geometry,
+    such as replicated copies, share one device copy of :attr:`rest_vertices`,
+    :attr:`indices` and :attr:`uvs`. The :attr:`parent`, :attr:`weights`, and
+    :attr:`local_offsets` arrays describe how simulation elements move the
+    visual vertices.
 
     Attributes are device :class:`warp.array` objects unless noted otherwise.
 
@@ -120,7 +121,8 @@ class DeformableVisualMesh:
         """Albedo texture as an image array (H, W, C) or a path, or ``None``. Viewers
         may cache this asset, so replace the value instead of editing its image
         contents in place; the USD-based viewers keep the texture they first
-        exported for a mesh."""
+        exported for a mesh, and :class:`~newton.sensors.SensorCamera` reads it
+        once when constructed."""
         self._world = world
         self._index = index
         self.label = label

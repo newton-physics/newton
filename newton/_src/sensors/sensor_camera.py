@@ -17,6 +17,7 @@ from .sensor_camera_render import Utils
 from .sensor_camera_render.types import (
     AntiAliasing,
     ClearData,
+    DeformableSurfaceMode,
     GaussianRenderMode,
     RenderConfig,
     RenderOrder,
@@ -84,8 +85,11 @@ class SensorCamera:
 
     Deformable triangle surfaces use :attr:`Model.tri_color` as sRGB albedo,
     like shape colors, and fall back to white when triangle colors are
-    unavailable. Set :attr:`RenderConfig.enable_backface_culling` to ``False``
-    to render both sides with camera-facing normals.
+    unavailable. Deformable visual meshes are skinned from the state each
+    frame and render white, or with their UV texture when
+    :attr:`RenderConfig.enable_textures` is set. Set
+    :attr:`RenderConfig.enable_backface_culling` to ``False`` to render both
+    sides with camera-facing normals.
 
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
@@ -111,6 +115,7 @@ class SensorCamera:
 
     AntiAliasing = AntiAliasing
     ClearData = ClearData
+    DeformableSurfaceMode = DeformableSurfaceMode
     GaussianRenderMode = GaussianRenderMode
     RenderConfig = RenderConfig
     RenderOrder = RenderOrder
@@ -125,6 +130,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
+        deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
 
@@ -135,11 +141,27 @@ class SensorCamera:
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
-                ``RenderConfig()``. The experimental ``enable_simulation_triangles``
-                option is applied only when constructing the sensor.
-            load_textures: Load mesh textures from file paths or in-memory images. Set ``False`` for
-                checkerboard or custom-texture workflows (see
-                :meth:`assign_checkerboard_material`).
+                ``RenderConfig()``.
+            load_textures: Load the textures of shape meshes and deformable visual
+                meshes from file paths or in-memory images. A texture that cannot
+                be loaded raises ``ValueError`` here, so pass ``False`` for
+                depth-only use, for example when replaying a recording whose
+                texture files are elsewhere; it leaves all of them untextured.
+            deformable_surface_mode: Which deformable surfaces the sensor uploads
+                and renders: :attr:`DeformableSurfaceMode.BOTH` renders the
+                simulation triangles and the visual meshes, as the viewers do;
+                :attr:`DeformableSurfaceMode.SIMULATION_ONLY` leaves the visual
+                meshes out; :attr:`DeformableSurfaceMode.VISUAL_ONLY` leaves every
+                simulation triangle out, including surfaces without a visual
+                mesh, and their particles stay hidden. Like ``load_textures``,
+                this is decided at construction and cannot change later;
+                per-render switches live on :class:`RenderConfig`. See
+                :ref:`deformable-visual-camera-output` for how visual meshes
+                relate to the simulation surface.
+
+                .. experimental::
+                    This deformable-visual option may change without a formal
+                    deprecation cycle.
         """
         self.default_clear_data: ClearData = default_clear_data if default_clear_data is not None else ClearData()
         """Clear values used by :meth:`update` when its ``clear_data`` argument is ``None``."""
@@ -153,12 +175,7 @@ class SensorCamera:
         self._render_context = RenderContext(
             model,
             load_textures=load_textures,
-            enable_simulation_triangles=self.default_render_config.enable_simulation_triangles,
-        )
-        self._deformable_visuals = (
-            model.deformable_visuals()
-            if model.deformable_visual_mesh_count or model.deformable_visual_gaussian_count
-            else None
+            deformable_surface_mode=DeformableSurfaceMode(deformable_surface_mode),
         )
 
     @property
@@ -875,6 +892,10 @@ class SensorCamera:
     ) -> None:
         """Assign a gray checkerboard texture material to selected shapes.
 
+        Each call sets the whole selection: the selected shapes show the
+        checkerboard and every other shape is untextured. Skinned visual
+        meshes keep their textures.
+
         Args:
             shape_indices: Shape indices that should use the checkerboard texture.
             resolution: Texture resolution [px] (square texture).
@@ -894,36 +915,29 @@ class SensorCamera:
         refit the shape BVH. Other
         shape and particle BVHs are refit separately via
         :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
-        Supplied visual buffers are consumed as-is. Update or replay them before
-        this call; the camera does not track their source State or freshness.
+        Deformable visual meshes are skinned from *state* in a few launches, however
+        many worlds were replicated. Supplied visual buffers are consumed as-is;
+        update or replay them before this call. Their source state and freshness
+        are not checked.
 
         Args:
             state: Current particle positions and body transforms.
-            deformable_visuals: Experimental precomputed visual mesh and Gaussian
-                buffers for this model. If omitted, evaluate the sensor's own
-                reusable buffers. Share this argument with a viewer to avoid
-                evaluating the same visuals twice.
+            deformable_visuals: Experimental precomputed visual buffers for this
+                model. Share these with a viewer to avoid skinning twice. If
+                omitted, evaluate directly into reusable camera buffers.
 
         .. experimental::
 
             The ``deformable_visuals`` argument is experimental.
         """
-        model = self._render_context.model
-        if deformable_visuals is None:
-            deformable_visuals = self._deformable_visuals
-            if deformable_visuals is not None:
-                model.update_deformable_visuals(state, deformable_visuals)
-        else:
+        if deformable_visuals is not None:
             if not isinstance(deformable_visuals, DeformableVisuals):
                 raise TypeError(
                     f"deformable_visuals must be DeformableVisuals, got {type(deformable_visuals).__name__}"
                 )
-            deformable_visuals._validate_model(model)
-        if deformable_visuals is not None:
+            deformable_visuals._validate_model(self._render_context.model)
             deformable_visuals.wait()
-            self._render_context.update(state, deformable_visuals)
-        else:
-            self._render_context.update(state)
+        self._render_context.update(state, deformable_visuals)
 
     @staticmethod
     def _validate_render_array(name: str, array: Any, dtype: Any, device: wp.Device) -> None:
@@ -1001,15 +1015,14 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
-            sync_deformables: Sync simulation surfaces and deformable visual meshes
-                and Gaussians before rendering. Set ``False`` if you already called
-                :meth:`sync_deformable_meshes` this frame.
-            deformable_visuals: Experimental precomputed visual mesh and Gaussian
-                buffers for this model. If omitted, evaluate the sensor's own
-                buffers. Requires ``sync_deformables=True``; otherwise pass the
-                buffers to :meth:`sync_deformable_meshes` explicitly. Update or
-                replay supplied buffers before rendering; their source State
-                and freshness are not checked.
+            sync_deformables: Sync simulation surfaces, visual meshes, and Gaussians
+                from *state* before rendering. Set ``False`` if you already
+                called :meth:`sync_deformable_meshes` this frame.
+            deformable_visuals: Experimental precomputed visual buffers for this
+                model. If omitted, skin directly into the camera's point buffer.
+                Requires ``sync_deformables=True``; otherwise pass the buffers
+                to :meth:`sync_deformable_meshes` explicitly. Update or replay
+                supplied buffers before rendering; their freshness is not checked.
 
         .. experimental::
 

@@ -163,9 +163,12 @@ class Example:
         render_config = SensorCamera.RenderConfig(
             gaussians_mode=SensorCamera.GaussianRenderMode.QUALITY,
             gaussians_max_num_hits=32,
-            enable_simulation_triangles=False,
         )
-        self.sensor = SensorCamera(self.model, default_render_config=render_config)
+        self.sensor = SensorCamera(
+            self.model,
+            default_render_config=render_config,
+            deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
+        )
         self.sensor.create_default_light(enable_shadows=False)
         self.camera_width = args.camera_width
         self.camera_height = args.camera_height

@@ -440,9 +440,9 @@ class Example:
 
         self.camera_sensor = SensorCamera(
             model=self.model,
+            deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
             default_render_config=SensorCamera.RenderConfig(
                 enable_particles=False,
-                enable_simulation_triangles=False,
                 enable_textures=True,
                 max_distance=self.camera_depth_range[1],
             ),
