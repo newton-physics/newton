@@ -2162,6 +2162,7 @@ def update_actuator_properties_kernel(
     newton_actuator_gear: wp.array[wp.spatial_vector],
     newton_actuator_cranklength: wp.array[float],
     actuators_per_world: wp.int32,
+    actuator_gear_fixed: wp.array[wp.bool],
     # outputs
     actuator_gain: wp.array2d[vec10],
     actuator_bias: wp.array2d[vec10],
@@ -2190,6 +2191,7 @@ def update_actuator_properties_kernel(
         newton_actuator_gear: Newton's model.mujoco.actuator_gear
         newton_actuator_cranklength: Newton's model.mujoco.actuator_cranklength
         actuators_per_world: Number of actuators per world in Newton model
+        actuator_gear_fixed: Actuators whose damping was folded using their compiled gear
     """
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
@@ -2213,7 +2215,8 @@ def update_actuator_properties_kernel(
         actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
 
     actuator_actrange[world, actuator] = newton_actuator_actrange[world_newton_idx]
-    actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
+    if not actuator_gear_fixed or not actuator_gear_fixed[actuator]:
+        actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
     actuator_cranklength[world, actuator] = newton_actuator_cranklength[world_newton_idx]
 
 

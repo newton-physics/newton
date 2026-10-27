@@ -549,7 +549,16 @@ class TestMuJoCoActuators(unittest.TestCase):
                     for _ in range(2):
                         replicated.add_world(builder)
                     builder = replicated
-                model = builder.finalize(device="cpu")
+                model = builder.finalize(device="cpu" if use_mujoco_cpu else None)
+                gears = model.mujoco.actuator_gear.numpy().copy()
+                if not use_mujoco_cpu:
+                    for row in (2, 3):  # World 1's joint and tendon actuators.
+                        changed = gears.copy()
+                        changed[row, 0] *= 2.0
+                        model.mujoco.actuator_gear.assign(changed)
+                        with self.subTest(row=row), self.assertRaisesRegex(ValueError, "actuator_gear"):
+                            SolverMuJoCo(model, disable_contacts=True)
+                    model.mujoco.actuator_gear.assign(gears)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
                 model.joint_damping.fill_(0.4)
                 model.mujoco.tendon_damping.fill_(0.3)
@@ -562,6 +571,24 @@ class TestMuJoCoActuators(unittest.TestCase):
                     ):
                         values = getattr(actual, name)
                         np.testing.assert_allclose(values if use_mujoco_cpu else values.numpy(), expected)
+
+                changed = gears.copy()
+                changed[:, 0] *= 2.0
+                model.mujoco.actuator_gear.assign(changed)
+                if use_mujoco_cpu:
+                    solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                    np.testing.assert_allclose(solver.mj_model.actuator_gear, changed)
+                else:
+                    with self.assertRaisesRegex(ValueError, "actuator_gear"):
+                        solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                    model.mujoco.actuator_gear.assign(gears)
+                    solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                    if model.device.is_cuda and wp.is_mempool_enabled(model.device):
+                        with wp.ScopedCapture(device=model.device) as capture:
+                            solver.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+                        model.mujoco.actuator_gear.assign(changed)
+                        wp.capture_launch(capture.graph)
+                    np.testing.assert_array_equal(solver.mjw_model.actuator_gear.numpy().reshape(-1, 6), gears)
 
     def test_mjcf_dcmotor_rejects_unsupported_control_signatures(self):
         """Reject DC-motor signatures that do not map one control to one actuator row."""
@@ -725,6 +752,14 @@ class TestMuJoCoActuators(unittest.TestCase):
             with self.subTest(attribute=name), self.assertRaisesRegex(ValueError, f"identical.*mujoco:{name}"):
                 SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
             attribute.assign(original)
+
+        # Polynomial-only damping also folds the construction-time gear.
+        model.mujoco.actuator_dampingpoly.fill_(wp.vec2(0.1, 0.0))
+        gears = model.mujoco.actuator_gear.numpy().copy()
+        gears[1, 0] *= 2.0
+        model.mujoco.actuator_gear.assign(gears)
+        with self.assertRaisesRegex(ValueError, "actuator_gear"):
+            SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
 
     def test_mjcf_dcmotor_runtime_updates_noncompiled_properties(self):
         """Update independent DC-motor properties without replacing compiled parameters."""

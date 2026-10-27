@@ -484,7 +484,12 @@ passive properties are set at solver construction, must be uniform across
 replicated worlds, and are not refreshed by ``notify_model_changed(ACTUATOR_PROPERTIES)``.
 The solver rejects mismatched passive properties or control signatures across worlds,
 including on compiled ``GENERAL`` rows. Worlds must also have matching actuator row counts.
-Warp's folded damping uses the construction-time transmission gear.
+Warp's folded damping uses the construction-time transmission gear. For actuators
+with nonzero linear or polynomial damping, ``actuator_gear`` must match the compiled
+gear in every world and remain unchanged. Construction and eager property
+notifications reject mismatches; captured notifications retain the compiled gear.
+Recreate the solver to change these gears. Undamped Warp actuators still support
+per-world and runtime gear edits. Native CPU actuator gears remain runtime-editable.
 DC-motor trajectory parity with native MuJoCo is tested with ``integrator="euler"``;
 MuJoCo-Warp's approximate implicit DC-motor derivatives can produce different
 trajectories with ``implicitfast``.
