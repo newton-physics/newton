@@ -1809,15 +1809,21 @@ class ViewerViser(ViewerBase):
             self._sync_gizmo_handles(entry)
 
     @override
+    def _init_layer_state(self, layer):
+        super()._init_layer_state(layer)
+        # Viser does not draw skinned meshes yet, so a layer shows the simulation geometry
+        # instead; turning the option on is an error rather than a silent no-op.
+        layer.show_deformable_visual_meshes = False
+
+    @override
     def _log_deformable_visual_meshes(self, state):
-        # Viser's textured GLB path resends topology and textures on every update.
         if not self.show_deformable_visual_meshes or self._layer_force_hidden():
             return
         meshes = getattr(self.model, "deformable_visual_meshes", ())
         if any(self._should_render_world(mesh.world) for mesh in meshes):
-            raise ValueError(
-                "Viser does not support skinned meshes. Use GL or RTX, or set "
-                "viewer.show_deformable_visual_meshes = False to display the simulation geometry."
+            raise NotImplementedError(
+                "Viser does not draw skinned meshes yet. Use GL or RTX, or leave "
+                "viewer.show_deformable_visual_meshes False to display the simulation geometry."
             )
 
     @override
@@ -2590,8 +2596,6 @@ class ViewerViser(ViewerBase):
         """
         self._running = False
         self._end_atomic_frame()
-        for layer in self.layers.values():
-            layer._deformable_visual_textures.clear()
         self.hide_loading_splash()
         for name in list(self._gizmo_handles):
             self._remove_gizmo(name)

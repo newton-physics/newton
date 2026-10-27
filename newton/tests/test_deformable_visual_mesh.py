@@ -16,11 +16,10 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.geometry.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
-from newton._src.viewer.viewer_file import HAS_CBOR2
+from newton._src.viewer.viewer_file import HAS_CBOR2, transfer_to_model
 from newton.exceptions import NewtonWarning
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
-from newton.viewer import ViewerFile, ViewerNull, ViewerUSD
+from newton.viewer import ViewerBase, ViewerFile, ViewerNull, ViewerUSD
 
 
 class _MeshProbe(ViewerNull):
@@ -29,6 +28,10 @@ class _MeshProbe(ViewerNull):
     def __init__(self):
         super().__init__(num_frames=1)
         self.calls: dict[str, dict] = {}
+
+    def _log_deformable_visual_meshes(self, state):
+        # ViewerNull draws nothing; this probe wants the base class's skinning and log_mesh calls.
+        ViewerBase._log_deformable_visual_meshes(self, state)
 
     def log_mesh(
         self,
@@ -96,9 +99,8 @@ _QUAD = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
 
 
 def _skin(model, mesh, state):
-    out = wp.empty(mesh.vertex_count, dtype=wp.vec3, device=model.device)
-    skin_deformable_visual_mesh(mesh, state, model, out)
-    return out.numpy()
+    """Skin ``mesh`` through the model's per-kind batches and return its points."""
+    return model.update_deformable_visuals(state, model.deformable_visuals()).get_points(mesh).numpy()
 
 
 class TestDeformableVisualMeshBindings(unittest.TestCase):
@@ -115,7 +117,7 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         expected_vertices, expected_uvs = verts.copy(), uvs.copy()
         indices, particles = _QUAD.copy(), np.arange(n, dtype=np.int32)
         index = builder.add_deformable_visual_mesh(
-            verts, indices, kind="particle", particles=particles, uvs=uvs, texture=Path("skin.png"), label="skin"
+            verts, indices, kind="particle", parent=particles, uvs=uvs, texture=Path("skin.png"), label="skin"
         )
         verts[:] = 100.0
         uvs[:] = 0.0
@@ -177,11 +179,11 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
             [[0.25, 0.25, 0.25], [0.75, 0.75, 0.75], [0.5, 0.5, 0.5], [0.1, 0.9, 0.4]],
             dtype=np.float32,
         )
-        builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet", tet_range=(0, builder.tet_count))
+        builder.add_deformable_visual_mesh(verts, _QUAD, kind="tetrahedron", tet_range=(0, builder.tet_count))
         model = builder.finalize()
         rm = model.deformable_visual_meshes[0]
 
-        self.assertEqual(rm.kind, newton.DeformableVisualMesh.Kind.TET)
+        self.assertEqual(rm.kind, newton.DeformableVisualMesh.Kind.TETRAHEDRON)
         weights = rm.weights.numpy()
         assert_np_equal(weights.sum(axis=1), np.ones(len(verts), dtype=np.float32), tol=1.0e-5)
 
@@ -194,6 +196,58 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         state2 = model.state()
         state2.particle_q = wp.array((model.state().particle_q.numpy() @ rot.T).astype(np.float32), dtype=wp.vec3)
         assert_np_equal(_skin(model, rm, state2), verts @ rot.T, tol=1.0e-4)
+
+    def test_meshes_with_equal_rest_geometry_share_device_arrays(self):
+        """Replicated copies and equal meshes share one device copy of rest vertices, indices and UVs."""
+        source = newton.ModelBuilder()
+        _add_cloth(source)
+        verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        uvs = verts[:, :2]
+        source.add_deformable_visual_mesh(verts, _QUAD, kind="particle", parent=np.arange(4), uvs=uvs)
+        # Equal bytes in other array objects share too; different geometry does not.
+        source.add_deformable_visual_mesh(
+            verts.copy(), list(_QUAD), kind="particle", parent=np.arange(4), uvs=uvs.copy()
+        )
+        source.add_deformable_visual_mesh(verts * 2.0, _QUAD, kind="particle", parent=np.arange(4), uvs=uvs * 2.0)
+        scene = newton.ModelBuilder()
+        scene.replicate(source, 3)
+        model = scene.finalize()
+        meshes = model.deformable_visual_meshes
+        self.assertEqual(len(meshes), 9)
+        first = meshes[0]
+        for mesh in (meshes[1], meshes[3], meshes[4], meshes[6], meshes[7]):
+            for name in ("rest_vertices", "indices", "uvs"):
+                self.assertEqual(getattr(mesh, name).ptr, getattr(first, name).ptr, name)
+            self.assertNotEqual(mesh.parent.ptr, first.parent.ptr)
+        for name in ("rest_vertices", "uvs"):
+            self.assertNotEqual(getattr(meshes[2], name).ptr, getattr(first, name).ptr, name)
+        self.assertEqual(meshes[2].indices.ptr, first.indices.ptr)
+        state = model.state()
+        for mesh in meshes:
+            assert_np_equal(_skin(model, mesh, state), model.particle_q.numpy()[mesh.parent.numpy()], tol=1.0e-6)
+
+    def test_body_binding_uses_center_of_mass_or_given_parent(self):
+        """Nearest-body binding measures to the center of mass; ``parent`` names the body directly."""
+        builder = newton.ModelBuilder()
+        # A segment whose frame origin sits at its start: its center of mass is at x = 1.
+        start = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        other = builder.add_body(xform=wp.transform(wp.vec3(1.5, 0.0, 0.0), wp.quat_identity()))
+        # The shape's mass places the first body's center of mass at x = 1.
+        builder.add_shape_sphere(start, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()), radius=0.1)
+        builder.add_shape_sphere(other, radius=0.1)
+        verts = np.array([[0.9, 0.0, 0.0], [0.9, 0.1, 0.0], [0.8, 0.1, 0.0], [0.8, 0.0, 0.0]], dtype=np.float32)
+        # Nearer to the other body's origin, but inside the first segment.
+        builder.add_deformable_visual_mesh(verts, _QUAD, kind="body", bodies=[start, other])
+        builder.add_deformable_visual_mesh(verts, _QUAD, kind="body", parent=[other] * 4)
+        model = builder.finalize()
+        nearest, given = model.deformable_visual_meshes
+        assert_np_equal(nearest.parent.numpy(), np.full(4, start, dtype=np.int32))
+        assert_np_equal(given.parent.numpy(), np.full(4, other, dtype=np.int32))
+        state = model.state()
+        for mesh in (nearest, given):
+            assert_np_equal(_skin(model, mesh, state), verts, tol=1.0e-6)
+        with self.assertRaisesRegex(ValueError, "requires bodies or parent"):
+            builder.add_deformable_visual_mesh(verts, _QUAD, kind="body", bodies=[start], parent=[start] * 4)
 
     def test_body_binding_follows_bodies(self):
         """A body-bound visual mesh follows its nearest body's current pose."""
@@ -370,7 +424,7 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
 
     def test_automatic_binding_preserves_ties_and_thin_elements(self):
         """Equal candidates choose the first parent, including thin or inverted elements."""
-        for kind in ("triangle", "tet"):
+        for kind in ("triangle", "tetrahedron"):
             with self.subTest(kind=kind):
                 builder = newton.ModelBuilder()
                 corners = [(0, 0, 0), (1, 0, 0), (0, 1.0e-5, 0), (0, 0, 1)]
@@ -406,7 +460,7 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         _add_soft(builder)
         verts = np.array([[5.0, 5.0, 5.0], [0.5, 0.5, 0.5], [0.2, 0.2, 0.2], [0.7, 0.7, 0.7]], dtype=np.float32)
         with self.assertLogs("newton", level="WARNING") as logs:
-            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet", tet_range=(0, builder.tet_count))
+            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tetrahedron", tet_range=(0, builder.tet_count))
         self.assertEqual(len(logs.records), 1)
         self.assertIn("1 of 4 visual vertices fell outside", logs.records[0].getMessage())
         self.assertIn("clamped to the nearest owning tetrahedron", logs.records[0].getMessage())
@@ -425,7 +479,9 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         _add_soft(builder)  # identical grid at the same location
         # This vertex lies inside both grids; ownership must pin it to body 2.
         verts = np.array([[0.5, 0.5, 0.5], [0.2, 0.2, 0.2], [0.7, 0.2, 0.4], [0.3, 0.6, 0.6]], dtype=np.float32)
-        builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet", tet_range=(first_tet_end, builder.tet_count))
+        builder.add_deformable_visual_mesh(
+            verts, _QUAD, kind="tetrahedron", tet_range=(first_tet_end, builder.tet_count)
+        )
         model = builder.finalize()
         parents = model.deformable_visual_meshes[0].parent.numpy()
         self.assertTrue((parents >= first_tet_end).all())
@@ -438,7 +494,7 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         parent = np.zeros(4, dtype=np.int32)
         weights = np.full((4, 4), 0.25, dtype=np.float32)
         builder.add_deformable_visual_mesh(
-            verts, _QUAD, kind="tet", tet_range=(0, builder.tet_count), parent=parent, weights=weights
+            verts, _QUAD, kind="tetrahedron", tet_range=(0, builder.tet_count), parent=parent, weights=weights
         )
         parent[:] = 1
         weights[:] = 0.0
@@ -451,7 +507,10 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         """Normalize accepted rounding errors so bindings preserve translations."""
         builder = newton.ModelBuilder()
         _add_soft(builder)
-        for kind, arity, owning_range in (("triangle", 3, {"tri_range": (0, 1)}), ("tet", 4, {"tet_range": (0, 1)})):
+        for kind, arity, owning_range in (
+            ("triangle", 3, {"tri_range": (0, 1)}),
+            ("tetrahedron", 4, {"tet_range": (0, 1)}),
+        ):
             weights = np.full((3, arity), 1.0 / arity, dtype=np.float32)
             weights[0, 0] += 9.0e-5
             weights[1] = 0.0
@@ -472,20 +531,27 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
 
     def test_add_builder_rebases_parents_by_kind(self):
         """add_builder shifts particle, triangle, tet, and body parents into the
-        merged index space so skinning stays correct."""
+        merged index space so skinning stays correct.
+
+        The sub-builder is added twice, so the four kinds interleave in model order
+        and every mesh's skinned points must land in its own slot of the shared
+        output, not in its kind's group order.
+        """
         sub = newton.ModelBuilder()
         _add_cloth(sub)
         n = sub.particle_count
         cloth_verts = np.array(sub.particle_q, dtype=np.float32)
         sub.add_deformable_visual_mesh(
-            cloth_verts, _QUAD, kind="particle", particles=np.arange(n, dtype=np.int32), label="cloth"
+            cloth_verts, _QUAD, kind="particle", parent=np.arange(n, dtype=np.int32), label="cloth"
         )
         sub.add_deformable_visual_mesh(
             cloth_verts[:4], _QUAD, kind="triangle", tri_range=(0, sub.tri_count), label="tri"
         )
         _add_soft(sub)
         tet_verts = np.array([[0.25, 0.25, 0.25], [0.5, 0.5, 0.5], [0.75, 0.75, 0.75], [0.4, 0.6, 0.5]], np.float32)
-        sub.add_deformable_visual_mesh(tet_verts, _QUAD, kind="tet", tet_range=(0, sub.tet_count), label="tet")
+        sub.add_deformable_visual_mesh(
+            tet_verts, _QUAD, kind="tetrahedron", tet_range=(0, sub.tet_count), label="tetrahedron"
+        )
         b = sub.add_body(xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()))
         sub.add_shape_sphere(b, radius=0.1)
         body_verts = np.array([[2.0, 0.1, 0.0], [2.1, 0.0, 0.0], [2.0, 0.0, 0.1], [1.9, 0.0, 0.0]], np.float32)
@@ -496,22 +562,29 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         b0 = main.add_body(xform=wp.transform(wp.vec3(-5.0, 0.0, 0.0), wp.quat_identity()))
         main.add_shape_sphere(b0, radius=0.1)
         main.add_builder(sub, label_prefix="copy")
+        # The second copy sits elsewhere, so a slot mix-up between two meshes of one kind shows.
+        offset = np.array([0.0, 0.0, 3.0], dtype=np.float32)
+        main.add_builder(sub, label_prefix="again", xform=wp.transform(wp.vec3(*offset), wp.quat_identity()))
         model = main.finalize()
 
-        self.assertEqual(model.deformable_visual_mesh_count, 4)
+        self.assertEqual(model.deformable_visual_mesh_count, 8)
+        kinds = ["cloth", "tri", "tetrahedron", "body"]
         self.assertEqual(
-            [rm.label for rm in model.deformable_visual_meshes], ["copy/cloth", "copy/tri", "copy/tet", "copy/body"]
+            [rm.label for rm in model.deformable_visual_meshes],
+            [f"copy/{k}" for k in kinds] + [f"again/{k}" for k in kinds],
         )
-        by_label = {rm.label.removeprefix("copy/"): rm for rm in model.deformable_visual_meshes}
         state = model.state()
-
-        # Particle and tet meshes reproduce their bind pose at rest.
-        assert_np_equal(_skin(model, by_label["cloth"], state), cloth_verts, tol=1.0e-4)
-        assert_np_equal(_skin(model, by_label["tet"], state), tet_verts, tol=1.0e-4)
-        assert_np_equal(_skin(model, by_label["body"], state), body_verts, tol=1.0e-4)
-        # The triangle mesh reproduces its on-surface projection at rest.
-        tri_rest = _skin(model, by_label["tri"], state)
-        assert_np_equal(tri_rest, cloth_verts[:4], tol=1.0e-4)
+        visuals = model.update_deformable_visuals(state, model.deformable_visuals())
+        for mesh in model.deformable_visual_meshes:
+            # Particle, tet and body meshes reproduce their bind pose at rest; the
+            # triangle mesh reproduces its on-surface projection.
+            prefix, kind_name = mesh.label.split("/")
+            expected = {"cloth": cloth_verts, "tri": cloth_verts[:4], "tetrahedron": tet_verts, "body": body_verts}[
+                kind_name
+            ]
+            if prefix == "again":
+                expected = expected + offset
+            assert_np_equal(visuals.get_points(mesh).numpy(), expected, tol=1.0e-4)
 
     def test_visual_copy_labels_and_parents(self):
         """Keep distinct drivers when copies share a world or use separate worlds."""
@@ -526,9 +599,7 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                 vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
                 for point in vertices:
                     builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
-                builder.add_deformable_visual_mesh(
-                    vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2], label="skin"
-                )
+                builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", parent=[0, 1, 2], label="skin")
                 if mode != "self":
                     scene = newton.ModelBuilder()
                     if mode == "shared_world":
@@ -565,7 +636,7 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         for point in vertices:
             source.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
         for label in ("skin", None):
-            source.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2], label=label)
+            source.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", parent=[0, 1, 2], label=label)
         scene = newton.ModelBuilder()
         for prefix in (None, "", "copy"):
             scene.add_builder(source, label_prefix=prefix)
@@ -577,16 +648,16 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         )
 
     def test_normals_recompute_from_current_positions(self):
-        """compute_deformable_visual_mesh_normals yields unit normals for the deformed quad."""
+        """The batched normal pass yields unit normals for the quad's current positions."""
         builder = newton.ModelBuilder()
         _add_cloth(builder)
         verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-        builder.add_deformable_visual_mesh(verts, _QUAD, kind="particle", particles=np.arange(4, dtype=np.int32))
+        builder.add_deformable_visual_mesh(verts, _QUAD, kind="particle", parent=np.arange(4, dtype=np.int32))
         model = builder.finalize()
-        rm = model.deformable_visual_meshes[0]
+        batches = model._get_deformable_visual_skin_batches()
         points = wp.array(verts, dtype=wp.vec3, device=model.device)
         normals = wp.empty(4, dtype=wp.vec3, device=model.device)
-        compute_deformable_visual_mesh_normals(points, rm.indices, normals)
+        batches.compute_normals(points, normals)
         n = normals.numpy()
         assert_np_equal(np.linalg.norm(n, axis=1), np.ones(4, dtype=np.float32), tol=1.0e-5)
         assert_np_equal(n[:, 2], np.ones(4, dtype=np.float32), tol=1.0e-5)
@@ -605,7 +676,7 @@ class TestDeformableVisuals(unittest.TestCase):
             vertices,
             _QUAD,
             kind="particle",
-            particles=particle_indices,
+            parent=particle_indices,
             label="first",
         )
         second_particles = np.array([6, 7, 11], dtype=np.int32)
@@ -613,7 +684,7 @@ class TestDeformableVisuals(unittest.TestCase):
             np.asarray(builder.particle_q, dtype=np.float32)[second_particles],
             [0, 1, 2],
             kind="particle",
-            particles=second_particles,
+            parent=second_particles,
             label="second",
         )
         return builder.finalize(), particle_indices, vertices
@@ -725,7 +796,7 @@ class TestDeformableVisuals(unittest.TestCase):
         assert_np_equal(visuals.get_points(0).numpy(), moved_b[model.deformable_visual_meshes[0].parent.numpy()])
 
     def test_rejects_results_and_meshes_from_another_model(self):
-        """Output buffers and mesh handles cannot be used with another model."""
+        """Output buffers and mesh handles cannot be used with another model, and the mesh tuple is read-only."""
         model_a, _particle_indices, _vertices = self._model()
         model_b, _particle_indices, _vertices = self._model()
         visuals_a = model_a.deformable_visuals()
@@ -737,6 +808,10 @@ class TestDeformableVisuals(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not belong"):
             visuals_a.get_points(model_b.deformable_visual_meshes[0])
 
+        # The mesh tuple is read-only and fixed at finalize.
+        with self.assertRaises(AttributeError):
+            model_a.deformable_visual_meshes = model_b.deformable_visual_meshes
+
     def test_rejects_short_state_arrays(self):
         """Reject short particle and body arrays before changing visual output."""
         builder = newton.ModelBuilder()
@@ -744,7 +819,7 @@ class TestDeformableVisuals(unittest.TestCase):
         for point in vertices:
             builder.add_particle(point, wp.vec3(0), mass=1.0)
         body = builder.add_body()
-        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2])
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", parent=[0, 1, 2])
         builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="body", bodies=[body])
         # Unused final drivers keep the pre-fix regression safe to execute.
         builder.add_particle(wp.vec3(2), wp.vec3(0), mass=1.0)
@@ -777,9 +852,9 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
         builder = self._soft_builder()
         verts = np.zeros((4, 3), dtype=np.float32)
         with self.assertRaisesRegex(ValueError, "do not apply to this kind"):
-            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet", tet_range=(0, 1), particles=np.arange(4))
+            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tetrahedron", tet_range=(0, 1), bodies=[0])
         with self.assertRaisesRegex(ValueError, "do not apply to this kind"):
-            builder.add_deformable_visual_mesh(verts, _QUAD, kind="particle", particles=np.arange(4), bodies=[0])
+            builder.add_deformable_visual_mesh(verts, _QUAD, kind="particle", parent=np.arange(4), bodies=[0])
 
     def test_rejects_unknown_kind_and_missing_mode_argument(self):
         """Each binding kind requires its own driving elements."""
@@ -788,10 +863,10 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unknown kind"):
             builder.add_deformable_visual_mesh(verts, _QUAD, kind="auto")
         with self.assertRaisesRegex(ValueError, "requires tet_range"):
-            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet")
-        with self.assertRaisesRegex(ValueError, "requires particles"):
+            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tetrahedron")
+        with self.assertRaisesRegex(ValueError, "requires parent"):
             builder.add_deformable_visual_mesh(verts, _QUAD, kind="particle")
-        with self.assertRaisesRegex(ValueError, "requires bodies"):
+        with self.assertRaisesRegex(ValueError, "requires bodies or parent"):
             builder.add_deformable_visual_mesh(verts, _QUAD, kind="body")
 
     def test_rejects_malformed_geometry(self):
@@ -800,24 +875,26 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
         verts = np.zeros((4, 3), dtype=np.float32)
         for indices in ([-0.2, 1.9, 2.0], np.array([2**32, 1, 2], dtype=np.int64)):
             with self.subTest(indices=indices), self.assertRaisesRegex(ValueError, "integer indices"):
-                builder.add_deformable_visual_mesh(verts, indices, kind="particle", particles=np.arange(4))
+                builder.add_deformable_visual_mesh(verts, indices, kind="particle", parent=np.arange(4))
         with self.assertRaisesRegex(ValueError, "non-empty"):
-            builder.add_deformable_visual_mesh(np.zeros((0, 3), np.float32), _QUAD, kind="tet", tet_range=(0, 1))
+            builder.add_deformable_visual_mesh(
+                np.zeros((0, 3), np.float32), _QUAD, kind="tetrahedron", tet_range=(0, 1)
+            )
         with self.assertRaisesRegex(ValueError, "multiple of 3"):
-            builder.add_deformable_visual_mesh(verts, [0, 1], kind="tet", tet_range=(0, 1))
+            builder.add_deformable_visual_mesh(verts, [0, 1], kind="tetrahedron", tet_range=(0, 1))
         with self.assertRaisesRegex(ValueError, "outside the vertex array"):
-            builder.add_deformable_visual_mesh(verts, [0, 1, 9], kind="tet", tet_range=(0, 1))
+            builder.add_deformable_visual_mesh(verts, [0, 1, 9], kind="tetrahedron", tet_range=(0, 1))
         with self.assertRaisesRegex(ValueError, "must be finite"):
             bad = verts.copy()
             bad[0, 0] = np.nan
-            builder.add_deformable_visual_mesh(bad, _QUAD, kind="tet", tet_range=(0, 1))
+            builder.add_deformable_visual_mesh(bad, _QUAD, kind="tetrahedron", tet_range=(0, 1))
         with self.assertRaisesRegex(ValueError, "uvs length"):
             builder.add_deformable_visual_mesh(
-                verts, _QUAD, kind="tet", tet_range=(0, 1), uvs=np.zeros((2, 2), np.float32)
+                verts, _QUAD, kind="tetrahedron", tet_range=(0, 1), uvs=np.zeros((2, 2), np.float32)
             )
         with self.assertRaisesRegex(ValueError, "texture requires uvs"):
             builder.add_deformable_visual_mesh(
-                verts, _QUAD, kind="tet", tet_range=(0, 1), texture=np.zeros((2, 2, 3), np.uint8)
+                verts, _QUAD, kind="tetrahedron", tet_range=(0, 1), texture=np.zeros((2, 2, 3), np.uint8)
             )
 
     def test_rejects_out_of_range_drivers(self):
@@ -826,20 +903,20 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
         verts = np.zeros((4, 3), dtype=np.float32)
         builder.add_body(mass=1.0)
         for kind, options in (
-            ("particle", {"particles": [-0.2, 1, 2, 3]}),
+            ("particle", {"parent": [-0.2, 1, 2, 3]}),
             ("body", {"bodies": [-0.2]}),
             ("triangle", {"tri_range": (-0.2, 1)}),
-            ("tet", {"tet_range": (0, 1.9)}),
-            ("tet", {"tet_range": (0, 1), "parent": [-0.2] * 4, "weights": np.full((4, 4), 0.25)}),
+            ("tetrahedron", {"tet_range": (0, 1.9)}),
+            ("tetrahedron", {"tet_range": (0, 1), "parent": [-0.2] * 4, "weights": np.full((4, 4), 0.25)}),
         ):
             with self.subTest(kind=kind, options=options), self.assertRaisesRegex(ValueError, "integer indices"):
                 builder.add_deformable_visual_mesh(verts, _QUAD, kind=kind, **options)
         with self.assertRaisesRegex(ValueError, "not a valid non-empty range"):
-            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet", tet_range=(0, builder.tet_count + 1))
+            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tetrahedron", tet_range=(0, builder.tet_count + 1))
         with self.assertRaisesRegex(ValueError, "not a valid non-empty range"):
-            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet", tet_range=(3, 3))
+            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tetrahedron", tet_range=(3, 3))
         with self.assertRaisesRegex(ValueError, "outside the current builder"):
-            builder.add_deformable_visual_mesh(verts, _QUAD, kind="particle", particles=[0, 1, 2, 10**6])
+            builder.add_deformable_visual_mesh(verts, _QUAD, kind="particle", parent=[0, 1, 2, 10**6])
         with self.assertRaisesRegex(ValueError, "outside the current builder"):
             builder.add_deformable_visual_mesh(verts, _QUAD, kind="body", bodies=[7])
         with self.assertRaisesRegex(ValueError, "requires at least one body"):
@@ -853,25 +930,27 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
         for weights in (np.full((4, 3), 0.25), np.full(12, 0.25)):
             with self.subTest(shape=weights.shape), self.assertRaisesRegex(ValueError, "weights.*shape"):
                 builder.add_deformable_visual_mesh(
-                    verts[:3], [0, 1, 2], kind="tet", tet_range=(0, 1), parent=[0, 0, 0], weights=weights
+                    verts[:3], [0, 1, 2], kind="tetrahedron", tet_range=(0, 1), parent=[0, 0, 0], weights=weights
                 )
         with self.assertRaisesRegex(ValueError, "passed together"):
-            builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet", tet_range=(0, 1), parent=np.zeros(4, np.int32))
+            builder.add_deformable_visual_mesh(
+                verts, _QUAD, kind="tetrahedron", tet_range=(0, 1), parent=np.zeros(4, np.int32)
+            )
         with self.assertRaisesRegex(ValueError, "within the owning range"):
             builder.add_deformable_visual_mesh(
-                verts, _QUAD, kind="tet", tet_range=(0, 1), parent=np.full(4, 3, np.int32), weights=good_w
+                verts, _QUAD, kind="tetrahedron", tet_range=(0, 1), parent=np.full(4, 3, np.int32), weights=good_w
             )
         with self.assertRaisesRegex(ValueError, "finite and non-negative"):
             bad_w = good_w.copy()
             bad_w[0, 0] = -1.0
             builder.add_deformable_visual_mesh(
-                verts, _QUAD, kind="tet", tet_range=(0, 1), parent=np.zeros(4, np.int32), weights=bad_w
+                verts, _QUAD, kind="tetrahedron", tet_range=(0, 1), parent=np.zeros(4, np.int32), weights=bad_w
             )
 
     def test_rejects_nonunit_precomputed_weights(self):
         """Reject weights that would scale translations or collapse visual points."""
         builder = self._soft_builder()
-        for kind, arity in (("triangle", 3), ("tet", 4)):
+        for kind, arity in (("triangle", 3), ("tetrahedron", 4)):
             for total in (0.0, 0.5, 2.0):
                 with self.subTest(kind=kind, total=total):
                     options = {"tri_range" if kind == "triangle" else "tet_range": (0, 1)}
@@ -894,7 +973,7 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
         source.add_body()
         vertices = np.array([[0, 0, 0], [10, 0, 0], [10, 1, 0]], dtype=np.float32)
         modes = (
-            ("particle", {"particles": [0, source.particle_count, source.particle_count + 1]}),
+            ("particle", {"parent": [0, source.particle_count, source.particle_count + 1]}),
             (
                 "triangle",
                 {
@@ -904,7 +983,7 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
                 },
             ),
             (
-                "tet",
+                "tetrahedron",
                 {
                     "tet_range": (0, 2 * source.tet_count),
                     "parent": [0, source.tet_count, source.tet_count],
@@ -930,7 +1009,7 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
         n = source.particle_count
         verts = np.array(source.particle_q, dtype=np.float32)
         source.add_deformable_visual_mesh(
-            verts, _QUAD, kind="particle", particles=np.arange(n, dtype=np.int32), label="skin"
+            verts, _QUAD, kind="particle", parent=np.arange(n, dtype=np.int32), label="skin"
         )
         builder = newton.ModelBuilder()
         builder.replicate(source, 2)
@@ -957,7 +1036,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         # A non-degenerate grid quad (0-1-5-4) so face normals are well defined.
         quad = np.array([0, 1, 5, 0, 5, 4], dtype=np.int32)
         builder.add_deformable_visual_mesh(
-            verts, quad, kind="particle", particles=np.arange(n, dtype=np.int32), uvs=uvs, label=label
+            verts, quad, kind="particle", parent=np.arange(n, dtype=np.int32), uvs=uvs, label=label
         )
         return builder, uvs
 
@@ -1107,7 +1186,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         n = source.particle_count
         verts = np.array(source.particle_q, dtype=np.float32)
         source.add_deformable_visual_mesh(
-            verts, _QUAD, kind="particle", particles=np.arange(n, dtype=np.int32), label="skin"
+            verts, _QUAD, kind="particle", parent=np.arange(n, dtype=np.int32), label="skin"
         )
         builder = newton.ModelBuilder()
         builder.replicate(source, 2)
@@ -1205,7 +1284,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                     verts,
                     _QUAD,
                     kind="particle",
-                    particles=np.arange(n, dtype=np.int32),
+                    parent=np.arange(n, dtype=np.int32),
                     uvs=uvs,
                     texture=source,
                     label=label,
@@ -1237,6 +1316,46 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                     restored_state = restored_model.state()
                     playback.load_state(restored_state, 0)
                     self.assertEqual(restored_model.deformable_visual_mesh_count, 4)
+                    self.assertEqual(len(restored_model.deformable_visual_meshes), 4)
+                    # A finalized model keeps its own meshes and their count when a recording is
+                    # loaded into it.
+                    kept = scene.finalize()
+                    kept_meshes = kept.deformable_visual_meshes
+                    playback.load_model(kept)
+                    self.assertIs(kept.deformable_visual_meshes, kept_meshes)
+                    self.assertEqual(kept.deformable_visual_mesh_count, 4)
+                    # A physics-only recording of the same scene loads into a model with skins.
+                    twin = newton.ModelBuilder()
+                    _add_cloth(twin)
+                    physics_only = newton.ModelBuilder()
+                    physics_only.replicate(twin, 2)
+                    physics_recorder = ViewerFile(str(Path(directory) / f"physics.{suffix}"), auto_save=False)
+                    physics_model = physics_only.finalize()
+                    physics_recorder.set_model(physics_model)
+                    physics_recorder.log_state(physics_model.state())
+                    physics_recorder.save_recording()
+                    physics_playback = ViewerFile(str(Path(directory) / f"physics.{suffix}"), auto_save=False)
+                    physics_playback.load_recording()
+                    physics_playback.load_model(kept)
+                    self.assertIs(kept.deformable_visual_meshes, kept_meshes)
+                    mismatch = builder.finalize()  # two meshes, not the recorded four
+                    particle_q = mismatch.particle_q.numpy().copy()
+                    with self.assertRaisesRegex(ValueError, "does not match"):
+                        playback.load_model(mismatch)
+                    # The check runs before anything is copied, so the model is untouched.
+                    self.assertEqual(mismatch.particle_count, len(particle_q))
+                    assert_np_equal(mismatch.particle_q.numpy(), particle_q)
+                    # Older recordings store the meshes before the count; the count follows the meshes
+                    # whatever the recorded order and value.
+                    old_order = newton.Model()
+                    transfer_to_model(
+                        {
+                            "deformable_visual_meshes": list(restored_model.deformable_visual_meshes),
+                            "deformable_visual_mesh_count": 0,
+                        },
+                        old_order,
+                    )
+                    self.assertEqual(old_order.deformable_visual_mesh_count, 4)
                     for mesh in restored_model.deformable_visual_meshes:
                         self.assertIsInstance(mesh, newton.DeformableVisualMesh)
                         self.assertEqual(mesh.kind, newton.DeformableVisualMesh.Kind.PARTICLE)
@@ -1261,7 +1380,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
             points = np.array([[-0.5, 0, 0], [0.5, 0, 0], [0, 0, 1]], dtype=np.float32)
             for point in points:
                 builder.add_particle(point, wp.vec3(0), mass=1.0)
-            builder.add_deformable_visual_mesh(points, [0, 1, 2], kind="particle", particles=[0, 1, 2])
+            builder.add_deformable_visual_mesh(points, [0, 1, 2], kind="particle", parent=[0, 1, 2])
             model = builder.finalize()
             viewer.set_model(model)
             viewer.show_particles = False
@@ -1336,7 +1455,7 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                         vertices,
                         [0, 1, 2],
                         kind="particle",
-                        particles=[0, 1, 2],
+                        parent=[0, 1, 2],
                         uvs=[[0, 0], [1, 0], [0, 1]],
                         texture=source,
                     )

@@ -1002,7 +1002,7 @@ follows a cloth surface:
     )
 
 Use ``PARTICLE`` to map visual vertices directly to simulation particles,
-``TRIANGLE`` for a surface, ``TET`` for a volume, or ``BODY`` for rigid segments
+``TRIANGLE`` for a surface, ``TETRAHEDRON`` for a volume, or ``BODY`` for rigid segments
 such as cable links. Triangle and tetrahedron bindings store barycentric
 weights: each visual vertex follows a weighted sum of its driving vertices.
 Body bindings store an offset in the driving body's local frame.
@@ -1108,8 +1108,9 @@ tetrahedron range. Outside-tet vertices still search all owning tet centroids.
 Pass precomputed ``parent`` and ``weights`` to skip this setup work.
 Triangle binding drops normal offsets. Vertices outside the owning tetrahedra
 are clamped with a warning-level log (see :ref:`diagnostics`).
-Body binding chooses the nearest candidate body origin, keeping the first
-candidate in a tie. It uses one segment per vertex, so seams
+Body binding chooses the candidate body whose center of mass is nearest,
+keeping the first candidate in a tie; pass ``parent`` to name each vertex's
+body instead. It uses one segment per vertex, so seams
 can appear between segments. Finish topology changes, including fixed-joint
 collapse, before attaching visual meshes when possible. If fixed joints are
 collapsed afterward, body bindings follow the surviving body, or remain fixed
@@ -1135,11 +1136,10 @@ Rerun reuses decoded path textures. Failed paths
 are not retried each frame; replacing the source or resetting the model clears
 the cached result.
 
-Viser does not support these skinned meshes. Its textured mesh path resends the
-full GLB asset, including topology and texture, on each update. Use GL or RTX
-for skinned meshes. To inspect the simulation geometry in Viser, set
-``viewer.show_deformable_visual_meshes = False`` before calling ``log_state()``.
-Ordinary Viser meshes, particles, and simulation triangles are unchanged.
+Viser does not draw these skinned meshes yet: its ``show_deformable_visual_meshes``
+option defaults to ``False``, so a Viser layer shows the simulation geometry, and
+turning the option on raises ``NotImplementedError``. Use GL or RTX for skinned
+meshes. Ordinary Viser meshes, particles, and simulation triangles are unchanged.
 
 Untextured skins use the viewer's default appearance; per-mesh color and opacity
 are not exposed here. USD visual import, camera consumption, and Gaussian

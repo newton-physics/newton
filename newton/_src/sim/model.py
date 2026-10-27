@@ -22,8 +22,7 @@ from ..exceptions import NewtonDeprecationWarning
 from ..geometry.deformable_visual import (
     DeformableVisualMesh,
     DeformableVisuals,
-    compute_deformable_visual_mesh_normals,
-    skin_deformable_visual_mesh,
+    _DeformableVisualSkinBatches,
 )
 from ..geometry.flags import ShapeFlags
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
@@ -1067,15 +1066,8 @@ class Model:
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
         Stored per-element; kernels multiply by rest volume internally."""
 
-        self.deformable_visual_meshes: list[DeformableVisualMesh] = []
-        """High-resolution visual meshes embedded in deformables, skinned from the
-        simulation state for visualization only (see
-        :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). Empty when no
-        visual meshes were attached.
-
-        .. experimental::
-
-            This attribute may change without a formal deprecation cycle."""
+        self._deformable_visual_meshes: tuple[DeformableVisualMesh, ...] = ()
+        self._deformable_visual_skin_batches: _DeformableVisualSkinBatches | None = None
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
         self.muscle_params: wp.array2d[wp.float32] | None = None
@@ -1415,13 +1407,6 @@ class Model:
         """Total number of rigid-body-to-particle attachments in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
-        self.deformable_visual_mesh_count: int = 0
-        """Total number of deformable visual meshes.
-
-        .. experimental::
-
-            Deformable visual APIs may change without a formal deprecation cycle.
-        """
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
         self.joint_dof_count: int = 0
@@ -1981,6 +1966,29 @@ class Model:
         )
         self.bvh_particles.refit()
 
+    @property
+    def deformable_visual_meshes(self) -> tuple[DeformableVisualMesh, ...]:
+        """High-resolution visual meshes embedded in deformables, skinned from the
+        simulation state for visualization only (see
+        :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). Empty when no
+        visual meshes were attached. Read-only; set when the model is finalized or
+        filled from a recording and fixed after that, since the skinning data is
+        derived from it then.
+
+        .. experimental::
+
+            This attribute may change without a formal deprecation cycle."""
+        return self._deformable_visual_meshes
+
+    @property
+    def deformable_visual_mesh_count(self) -> int:
+        """Number of deformable visual meshes. Read-only; the length of :attr:`deformable_visual_meshes`.
+
+        .. experimental::
+
+            This attribute may change without a formal deprecation cycle."""
+        return len(self._deformable_visual_meshes)
+
     def deformable_visuals(self) -> DeformableVisuals:
         """Allocate current points and normals for deformable visual meshes.
 
@@ -1997,6 +2005,19 @@ class Model:
             deformable visual support is experimental.
         """
         return DeformableVisuals(self)
+
+    def _get_deformable_visual_skin_batches(self) -> _DeformableVisualSkinBatches:
+        """Return the per-kind skinning batches of the visual meshes.
+
+        :meth:`~newton.ModelBuilder.finalize` builds them with the meshes; a model
+        restored from a recording builds them from its meshes on first use. Consumers
+        keep the batches they were sized with and skin exactly those meshes.
+        """
+        batches = self._deformable_visual_skin_batches
+        if batches is None:
+            batches = _DeformableVisualSkinBatches.from_meshes(self._deformable_visual_meshes, self.device)
+            self._deformable_visual_skin_batches = batches
+        return batches
 
     def update_deformable_visuals(self, state: State, visuals: DeformableVisuals) -> DeformableVisuals:
         """Update current deformable visual points and normals from a state.
@@ -2031,10 +2052,19 @@ class Model:
             raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
         visuals._validate_model(self)
 
-        needs_particles = any(mesh.kind != DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes)
-        needs_bodies = self.body_count > 0 and any(
-            mesh.kind == DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes
-        )
+        # Skin and shade the meshes the output was sized for.
+        batches = visuals._skin_batches
+        self._validate_deformable_visual_state(state, batches)
+        batches.skin(state, self, visuals.points)
+        batches.compute_normals(visuals.points, visuals.normals)
+
+        visuals._mark_updated()
+        return visuals
+
+    def _validate_deformable_visual_state(self, state: State, batches: _DeformableVisualSkinBatches) -> None:
+        """Check that ``state`` provides the arrays ``batches`` skin from."""
+        needs_particles = batches.needs_particles
+        needs_bodies = self.body_count > 0 and batches.needs_bodies
         if needs_particles and state.particle_q is None:
             raise ValueError("State.particle_q is required by this model's deformable visual meshes")
         if needs_bodies and state.body_q is None:
@@ -2051,23 +2081,6 @@ class Model:
             )
         if needs_bodies and len(state.body_q) < self.body_count:
             raise ValueError(f"State.body_q must contain at least {self.body_count} bodies; got {len(state.body_q)}")
-
-        visuals.normals.zero_()
-        for mesh, (start, end) in zip(self.deformable_visual_meshes, visuals.mesh_ranges, strict=True):
-            skin_deformable_visual_mesh(mesh, state, self, visuals.points, device=self.device, out_offset=start)
-            compute_deformable_visual_mesh_normals(
-                visuals.points,
-                mesh.indices,
-                visuals.normals,
-                device=self.device,
-                point_offset=start,
-                normal_offset=start,
-                vertex_count=end - start,
-                clear=False,
-            )
-
-        visuals._mark_updated()
-        return visuals
 
     def state(self, requires_grad: bool | None = None) -> State:
         """

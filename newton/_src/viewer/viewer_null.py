@@ -58,9 +58,8 @@ class ViewerNull(ViewerBase):
 
     @override
     def _log_deformable_visual_meshes(self, state: newton.State):
-        # Derived consumers may replace the no-op mesh sink.
-        if type(self).log_mesh is not ViewerNull.log_mesh:
-            super()._log_deformable_visual_meshes(state)
+        # Nothing is drawn, so nothing is skinned.
+        return
 
     @override
     def log_mesh(
