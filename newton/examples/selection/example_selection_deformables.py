@@ -108,7 +108,7 @@ class Example:
 
         scene = newton.ModelBuilder()
         scene.add_ground_plane()
-        scene.replicate(prototype, world_count=self.world_count, spacing=(2.2, 2.2, 0.0))
+        scene.replicate(prototype, copy_count=self.world_count, spacing=(2.2, 2.2, 0.0))
         scene.color(balance_colors=False)
         self.model = scene.finalize()
 
@@ -324,7 +324,7 @@ class Example:
         np.testing.assert_array_equal(
             self.surfaces.deformable_object_boundaries.numpy(), expected_deformable_object_boundaries
         )
-        np.testing.assert_array_equal(self.surfaces.world_ids.numpy(), expected_world_ids)
+        np.testing.assert_array_equal(self.surfaces.worlds_device.numpy(), expected_world_ids)
 
         expected_counts = {
             (self.curve, "body"): 3,
@@ -336,7 +336,7 @@ class Example:
             (self.volume, "tetrahedron"): 5,
         }
         for (view, kind), expected in expected_counts.items():
-            if view.elements_per_deformable_object(kind) != expected:
+            if view.element_count(kind) != expected:
                 raise ValueError(f"Unexpected {view.family} {kind} count")
 
         if not np.all(np.isfinite(self.state_0.particle_q.numpy())):
