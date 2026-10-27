@@ -1204,13 +1204,11 @@ state:
 
 If a viewer already needs evaluated visuals, both can reuse the result:
 
-.. testsetup:: deformable-visual-mesh
+.. testcode:: deformable-visual-mesh
 
     from newton.viewer import ViewerNull
     viewer = ViewerNull()
     viewer.set_model(model)
-
-.. testcode:: deformable-visual-mesh
 
     visuals = model.deformable_visuals()  # Allocate once.
     viewer.set_deformable_visuals(visuals)
