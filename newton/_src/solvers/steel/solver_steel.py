@@ -1507,6 +1507,7 @@ class SolverSteel(SolverBase):
     propagation_same_articulation_rows = _ConstructionOption()
     propagation_cached_response = _ConstructionOption()
     propagation_cached_response_body_max = _ConstructionOption()
+    propagation_color_order = _ConstructionOption()
     deterministic = _ConstructionOption()
 
     @classmethod
@@ -1658,6 +1659,7 @@ class SolverSteel(SolverBase):
         propagation_same_articulation_rows: bool = False,
         propagation_cached_response: bool = True,
         propagation_cached_response_body_max: int = 8,
+        propagation_color_order: Literal["contact", "longest_first"] = "contact",
         deterministic: wp.DeterministicMode | None = None,
     ):
         """Create a Steel solver for a finalized model.
@@ -2071,6 +2073,13 @@ class SolverSteel(SolverBase):
             propagation_cached_response_body_max: Capacity of the cached responses in
                 contact-active bodies of cache-eligible articulations per world; free bodies
                 do not count. At least 1.
+            propagation_color_order: Order in which ``"propagation_colored"`` colors a world's
+                contacts: ``"contact"`` (default) by contact index, or ``"longest_first"`` by row
+                count, longest first, then contact index. A batch takes as long as its longest
+                contact, so ``"longest_first"`` puts long contacts together, which shortens the
+                sweep where one body carries many contacts with different row counts; on some
+                stacked scenes it converges more slowly at a fixed iteration count. Other
+                responses ignore it.
             deterministic: Run-to-run determinism of the solve. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit ``wp.config.deterministic``, which defaults to
                 ``NOT_GUARANTEED``. With ``RUN_TO_RUN`` the solver reserves its constraint rows in a fixed
@@ -2342,6 +2351,11 @@ class SolverSteel(SolverBase):
         self._propagation_cached_response_body_max = int(propagation_cached_response_body_max)
         if self._propagation_cached_response_body_max < 1:
             raise ValueError("propagation_cached_response_body_max must be at least 1")
+        if propagation_color_order not in ("contact", "longest_first"):
+            raise ValueError(
+                f"propagation_color_order must be 'contact' or 'longest_first', got {propagation_color_order!r}"
+            )
+        self._propagation_color_order = propagation_color_order
         if self._propagation_same_articulation_rows and articulated_contact_response != "propagation":
             raise ValueError(
                 "propagation_same_articulation_rows requires articulated_contact_response='propagation', "
@@ -10131,6 +10145,7 @@ class SolverSteel(SolverBase):
             self._color_order_stride,
             device_arch,
             max_body_span=min(max(span, 1), 16384 // (color_words * 4)),
+            longest_first=self._propagation_color_order == "longest_first",
         )
 
     def _propagation_clear_rows(self) -> None:
@@ -16192,10 +16207,12 @@ def _get_color_propagation_prebuild_kernel(
     order_stride: int,
     device_arch: str,
     max_body_span: int = 0,
+    longest_first: bool = False,
 ) -> "wp.Kernel":
     """Build the per-world coloring of the propagation contact units, run before the rows are built.
 
-    Each block owns one world: it sorts the units by contact index, colors them first-fit over
+    Each block owns one world: it sorts the units by contact index, after row count (longest first)
+    when ``longest_first`` is set, colors them first-fit over
     per-body used-color bitmasks, counting-sorts them by color and rewrites ``contact_slot`` so
     every color's rows are contiguous. It also writes each unit's start slot in color order and
     the per-color unit offsets. The same contact set gives the same coloring on every launch.
@@ -16215,6 +16232,13 @@ def _get_color_propagation_prebuild_kernel(
     SORT_CAP = min(4096, OS)  # units a world may have for the sort to run on packed keys in shared memory
     # One raw buffer: the sort's keys first, then the masks and the staged chunks.
     RAW_WORDS = max(2 * SORT_CAP, max(MBW, 1) * WORDS + 4 * CH)
+    # A color costs its longest unit, so longest_first sorts longer units first to share colors. The
+    # rank takes 4 bits above the 31-bit contact index; packed keys keep the unit in the low 12 bits.
+    assert SORT_CAP <= 1 << 12
+
+    def rank_key(u: str) -> str:
+        rank = f"(15 - min(unit_len.data[world_base + {u}], 15))" if longest_first else "0"
+        return f"(((unsigned long long){rank} << 31) | (unsigned long long)unit_contact.data[world_base + {u}])"
 
     def greedy(mask: str, index_a: str, index_b: str) -> str:
         return f"""
@@ -16288,15 +16312,15 @@ def _get_color_propagation_prebuild_kernel(
     }}
     for (int c = t; c < {NE}; c += {B}) s_counts[c] = 0;
     __syncthreads();
-    // Bitonic sort of the permutation by global contact index: the greedy pass below
-    // is order-dependent, and this order is independent of the atomic list build.
+    // Bitonic sort of the permutation by (length rank, global contact index): the greedy
+    // pass below is order-dependent, and this order is independent of the atomic list build.
     if (n_pad <= {SORT_CAP}) {{
-        // Packed (contact index, unit) keys sort in shared memory; contact indices are
+        // Packed (rank, contact index, unit) keys sort in shared memory; contact indices are
         // unique per unit, so the order matches the permutation sort below.
         unsigned long long* s_key = reinterpret_cast<unsigned long long*>(s_raw);
         for (int i = t; i < n_pad; i += {B})
             s_key[i] = (i < n_units)
-                ? ((unsigned long long)(unsigned)unit_contact.data[world_base + i] << 32) | (unsigned)i
+                ? ({rank_key("i")} << 12) | (unsigned long long)i
                 : 0xFFFFFFFFFFFFFFFFull;
         __syncthreads();
         for (int k = 2; k <= n_pad; k <<= 1) {{
@@ -16314,7 +16338,7 @@ def _get_color_propagation_prebuild_kernel(
                 __syncthreads();
             }}
         }}
-        for (int i = t; i < n_units; i += {B}) unit_order.data[order_base + i] = (int)(s_key[i] & 0xFFFFFFFFull);
+        for (int i = t; i < n_units; i += {B}) unit_order.data[order_base + i] = (int)(s_key[i] & 0xFFFull);
         __syncthreads();
     }} else {{
         for (int k = 2; k <= n_pad; k <<= 1) {{
@@ -16324,8 +16348,8 @@ def _get_color_propagation_prebuild_kernel(
                     if (partner <= i) continue;
                     const int ui = unit_order.data[order_base + i];
                     const int up = unit_order.data[order_base + partner];
-                    const int ki = (ui >= 0) ? unit_contact.data[world_base + ui] : 0x7FFFFFFF;
-                    const int kp = (up >= 0) ? unit_contact.data[world_base + up] : 0x7FFFFFFF;
+                    const unsigned long long ki = (ui >= 0) ? {rank_key("ui")} : 0xFFFFFFFFFFFFFFFFull;
+                    const unsigned long long kp = (up >= 0) ? {rank_key("up")} : 0xFFFFFFFFFFFFFFFFull;
                     const bool ascending = (i & k) == 0;
                     if ((ki > kp) == ascending) {{
                         unit_order.data[order_base + i] = up;
@@ -16391,7 +16415,7 @@ def _get_color_propagation_prebuild_kernel(
     }}
     __syncthreads();
 
-    // Stable counting sort by color in sorted-contact order, so the serial tail
+    // Stable counting sort by color in sorted unit order, so the serial tail
     // keeps a deterministic sweep order. world_row_order temporarily holds the
     // unit index at each color-ordered position until the slot prefix below.
     for (int base = 0; base < n_units; base += {CH}) {{
@@ -16493,7 +16517,7 @@ def _get_color_propagation_prebuild_kernel(
             unit_sorted_contact,
         )
 
-    name = f"color_propagation_prebuild_{M}_{NE}_bd{B}_os{OS}_mbw{MBW}"
+    name = f"color_propagation_prebuild_{M}_{NE}_bd{B}_os{OS}_mbw{MBW}{'_lf' if longest_first else ''}"
     color_propagation_prebuild_template.__name__ = name
     color_propagation_prebuild_template.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(

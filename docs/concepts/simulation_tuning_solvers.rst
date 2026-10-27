@@ -239,6 +239,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``sleep_quiet_time``, ``sleep_skip_constraints``,
        ``articulated_contact_response``, ``propagation_same_articulation_rows``,
        ``propagation_cached_response``, ``propagation_cached_response_body_max``,
+       ``propagation_color_order``,
        ``contact_shared_anchor``, ``contact_friction_shared_anchor``,
        ``row_watermark``, ``row_schedule``, ``use_parallel_streams``,
        ``double_buffer``, ``friction_mode``.
