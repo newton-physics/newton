@@ -83,7 +83,7 @@ examples = [
     "newton[onnx]",         # for RL policy examples
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
     "GitPython>=3.1.58",    # for downloading assets via newton.utils.download_asset()
-    "imgui_bundle>=1.92.3", # for viewer GUI
+    "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
     "matplotlib>=3.10.7",   # for plotting utilities and diagnostics

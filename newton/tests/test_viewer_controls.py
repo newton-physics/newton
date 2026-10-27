@@ -104,7 +104,7 @@ class TestViewerGuiRecovery(unittest.TestCase):
         context = imgui.create_context()
         self.addCleanup(imgui.destroy_context, context)
         io = imgui.get_io()
-        io.set_ini_filename(None)
+        io.set_ini_filename("")
         io.display_size = (320, 320)
         io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
         gui = ViewerGui.__new__(ViewerGui)
