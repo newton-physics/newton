@@ -2373,15 +2373,18 @@ def test_propagation_spin_decelerates_at_the_coulomb_rate_and_sticks(test, devic
             test.assertLess(np.max(np.abs(held["body_qd"][:, 5])), 1e-4)
 
 
-def test_propagation_contact_force_keeps_friction_with_a_spare(test, device):
-    """Report the same contact forces as immediate when the propagation contacts reserve torsion spares."""
-    forces = {}
-    for response in ("immediate", "propagation"):
-        options = {"articulated_contact_response": response, "contact_torsion_device": True}
-        result, *_ = fixture(0.01, device=device, spin=10.0, sliding=0.2, **options)
-        forces[response] = result["contact_f"]
-    test.assertGreater(float(np.abs(forces["immediate"][:, :2]).max()), 0.0)
-    np.testing.assert_allclose(forces["propagation"], forces["immediate"], rtol=1e-3, atol=1e-3)
+def test_propagation_friction_keeps_its_rows_with_a_spare(test, device):
+    """Solve and report friction as immediate does when the propagation contacts reserve torsion spares."""
+    for patches in ({}, PATCH_OPTIONS):
+        with test.subTest(patches=bool(patches)):
+            results = {}
+            for response in ("immediate", "propagation"):
+                options = {"articulated_contact_response": response, "contact_torsion_device": True}
+                results[response], *_ = fixture(0.01, device=device, spin=10.0, sliding=0.2, **options, **patches)
+            expected, actual = results["immediate"], results["propagation"]
+            test.assertGreater(float(np.abs(expected["contact_f"][:, :2]).max()), 0.0)
+            np.testing.assert_allclose(actual["contact_f"], expected["contact_f"], rtol=1e-3, atol=1e-3)
+            np.testing.assert_allclose(actual["body_qd"], expected["body_qd"], rtol=1e-3, atol=1e-3)
 
 
 def test_propagation_spin_effect_tracks_immediate(test, device):
@@ -2644,7 +2647,7 @@ for _fn in (
     test_propagation_budget_holds_after_every_sweep,
     test_propagation_budget_check_catches_an_unbounded_row,
     test_propagation_spin_decelerates_at_the_coulomb_rate_and_sticks,
-    test_propagation_contact_force_keeps_friction_with_a_spare,
+    test_propagation_friction_keeps_its_rows_with_a_spare,
     test_propagation_spin_effect_tracks_immediate,
     test_propagation_converges_to_the_immediate_response,
     test_propagation_worlds_solve_as_if_isolated,
@@ -2797,6 +2800,11 @@ def _turntable(device, response, steps=8):
         pipeline.collide(state, contacts)
         solver.step(state, output, model.control(), contacts, 0.0025)
         state, output = output, state
+        if response == "propagation":
+            # The platform has no response DOFs, so no propagation row, its torsion row included, may name it.
+            rows = int(solver._propagation_constraint_count.numpy()[0])
+            for bodies in (solver._propagation_body_a, solver._propagation_body_b):
+                assert platform not in bodies.numpy()[0, :rows], "a propagation row names the kinematic platform"
     return float(state.joint_qd.numpy()[11])
 
 
