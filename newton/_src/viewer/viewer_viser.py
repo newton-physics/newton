@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import collections
+import copy
 import inspect
 import logging
 import os
 import queue
+import re
 import time
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
@@ -41,7 +44,7 @@ from .image_logger import (
     _validate,
 )
 from .picking import Picking
-from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
+from .utils import gaussian_display_colors, prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
 # ViewerGL uses 0.07 clip-space units; 56 px matches that at an 800 px viewport.
@@ -73,7 +76,6 @@ class ViewerViser(ViewerBase):
 
     _viser_module = None
     _IMAGE_JPEG_QUALITY = 90
-    _SH_C0 = 0.28209479177387814
 
     class _ImmediateGuiAdapter:
         """Translate the examples' immediate-mode controls to native Viser GUI handles."""
@@ -206,7 +208,8 @@ class ViewerViser(ViewerBase):
             return max(abs(float(maximum) - float(minimum)) / 100.0, 1.0e-6)
 
         def text(self, value: Any) -> None:
-            content = str(value)
+            # ImGui text is literal; retain that behavior in Markdown widgets.
+            content = re.sub(r"([\\`*_{}\[\]<>()#+.!|~-])", r"\\\1", str(value)).replace("\n", "  \n")
 
             def create(_key):
                 return self._add(lambda: self._viewer._server.gui.add_markdown(content))
@@ -614,6 +617,41 @@ class ViewerViser(ViewerBase):
         """Clear all scenes and restore the default camera for example switching."""
         super().clear_all_layers()
         self._reset_camera_to_default(self._get_camera_up_axis())
+
+    @override
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Preserve native wireframe choices and each client's view on reset."""
+        wireframe = self._display_options_user.get("wireframe") if switching else self._wireframe
+        if not switching:
+            camera_request = copy.deepcopy(self._camera_request)
+            camera_fov = self._camera_fov_radians
+            camera_pitch, camera_yaw = self._camera_pitch, self._camera_yaw
+            client_cameras = {
+                client_id: {
+                    name: copy.deepcopy(getattr(client.camera, name))
+                    for name in ("position", "look_at", "up_direction", "fov", "near", "far")
+                }
+                for client_id, client in self._server.get_clients().items()
+            }
+        try:
+            with super()._preserve_display_options(switching=switching):
+                yield
+        finally:
+            if wireframe is not None:
+                self._set_wireframe(wireframe)
+            if not switching:
+                self._camera_fov_radians = camera_fov
+                self._camera_pitch, self._camera_yaw = camera_pitch, camera_yaw
+                if camera_request is not None:
+                    self._set_camera_request(*camera_request)
+                # Client navigation is independent of the cached request used
+                # for new connections. Restore each connected view separately.
+                for client_id, client in self._server.get_clients().items():
+                    if client_id in client_cameras:
+                        with client.atomic():
+                            self._apply_attrs(client.camera, client_cameras[client_id])
+            self._sync_gui_controls()
 
     @override
     def _init_extra_layer_state(self, layer):
@@ -1401,6 +1439,7 @@ class ViewerViser(ViewerBase):
                         self._end_gizmo_drag(name)
             elif event_type == "viewer_option":
                 _, attribute, value = event
+                self._display_options_user[attribute] = value
                 if attribute == "wireframe":
                     self._set_wireframe(value)
                 else:
@@ -3086,7 +3125,7 @@ class ViewerViser(ViewerBase):
 
             sh_coeffs = to_numpy(gaussian.sh_coeffs)
             if sh_coeffs is not None and sh_coeffs.shape[1] >= 3:
-                rgbs = np.clip(self._SH_C0 * sh_coeffs[:, :3] + 0.5, 0.0, 1.0).astype(np.float32)
+                rgbs = gaussian_display_colors(sh_coeffs, gaussian.sh_color_space)
             else:
                 rgbs = np.ones((gaussian.count, 3), dtype=np.float32)
 

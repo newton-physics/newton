@@ -12,6 +12,7 @@ import warp as wp
 from ..core.types import MAXVAL, Devicelike
 from ..geometry.collision_convex import ConvexQueryResult, create_write_convex_query_result
 from ..geometry.collision_core import (
+    MINKOWSKI_CORE_RADIUS,
     check_infinite_plane_bsphere_overlap,
     compute_bounding_sphere_from_aabb,
     compute_tight_aabb_from_support,
@@ -317,13 +318,12 @@ def create_prepare_convex_pair(external_aabb: bool, speculative: bool = False):
 
         radius_eff_a = float(0.0)
         radius_eff_b = float(0.0)
-        small_radius = 0.0001
         if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
             radius_eff_a = geom_a.scale[0]
-            geom_a.scale[0] = small_radius
+            geom_a.scale[0] = MINKOWSKI_CORE_RADIUS
         if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
             radius_eff_b = geom_b.scale[0]
-            geom_b.scale[0] = small_radius
+            geom_b.scale[0] = MINKOWSKI_CORE_RADIUS
 
         margin_sum = margin_a + margin_b
         eps = 1.0e-4
@@ -3358,13 +3358,16 @@ class NarrowPhase:
                 used to cull back-facing mesh triangles and seed triangle contacts. If
                 ``None``, convex-mesh volume centroids are computed on each launch.
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
+                Required with ``shape_edge_range`` for mesh edge contacts; omitting these
+                arrays disables mesh edge contacts rather than extracting edges from meshes.
             mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
                 unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
-                Layout matches :attr:`~newton.Model.mesh_edge_centers`.
+                Each radius is the length of the corresponding unscaled half-vector.
             mesh_edge_halves: Packed precomputed mesh edge half-vectors (xyz) in unscaled mesh
-                coordinates [m] and endpoint-ownership codes (w). Layout matches
-                :attr:`~newton.Model.mesh_edge_halves`.
+                coordinates [m] and endpoint-ownership codes (w). Set the ownership code to zero
+                to allow both endpoints.
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
+                Required with ``mesh_edge_indices`` for mesh edge contacts.
             hydroelastic_shape_sdf_data_prepared: Whether finalized hydroelastic SDF descriptors were cached upstream.
             shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.
             shape_angular_velocity: Shape angular velocities [rad/s]. Required in speculative mode.
@@ -4055,6 +4058,16 @@ class NarrowPhase:
             shape_interior_point: Optional scaled local-space point inside each shape [m],
                 used to cull back-facing mesh triangles and seed triangle contacts. If
                 ``None``, convex-mesh volume centroids are computed on each launch.
+            mesh_edge_indices: Packed mesh edge vertex pairs, passed through ``kwargs``.
+                Required with ``shape_edge_range`` for mesh edge contacts; omitting either
+                disables mesh edge contacts.
+            shape_edge_range: Per-shape (start, count) into ``mesh_edge_indices``,
+                passed through ``kwargs``.
+            mesh_edge_centers: Optional packed unscaled edge centers (xyz) and half-lengths
+                (w) [m], passed through ``kwargs``. Omit with ``mesh_edge_halves`` to read
+                endpoints from meshes using the supplied indices and ranges.
+            mesh_edge_halves: Optional packed unscaled edge half-vectors (xyz) [m] and
+                endpoint-ownership codes (w), passed through ``kwargs``. Zero allows both endpoints.
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
