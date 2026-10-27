@@ -1809,6 +1809,7 @@ void main() {
             return 1.0
         return None
 
+    @override
     def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
         name = self._qualify(name)
         if hidden and self._phase == self._PHASE_RENDER and name in self._mesh_prim_paths:

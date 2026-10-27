@@ -131,6 +131,23 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: ".python-version"
+      # Warp names CPU objects after the host's ISA features (-march=native), which
+      # vary across hosted runners.
+      - name: Compute Warp kernel cache key
+        id: warp-cache-key
+        shell: bash
+        env:
+          SHARD: shard${{ matrix.shard-index }}of${{ matrix.shard-count }}
+        run: |
+          uv run --extra dev python - <<'EOF'
+          import os
+          import warp as wp
+
+          prefix = f"warp-kernels-{wp.get_cpu_kernel_cache_key()}-{os.environ['SHARD']}-"
+          print(f"Warp kernel cache key prefix: {prefix}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"prefix={prefix}\n")
+          EOF
       # Post-submit (push) runs start cold to catch stale-cache issues without
       # slowing the merge queue.
       - name: Restore Warp kernel cache
@@ -142,9 +159,9 @@ jobs:
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: ${{ steps.warp-cache-key.outputs.prefix }}${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-${{ runner.os }}-${{ runner.arch }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}-
+            ${{ steps.warp-cache-key.outputs.prefix }}
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
@@ -179,7 +196,7 @@ jobs:
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: ${{ steps.warp-cache-key.outputs.prefix }}${{ hashFiles('uv.lock', 'newton/**/*.py') }}
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:

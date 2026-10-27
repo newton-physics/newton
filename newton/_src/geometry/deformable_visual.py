@@ -14,8 +14,9 @@ See :meth:`newton.ModelBuilder.add_deformable_visual_mesh`.
 from __future__ import annotations
 
 import operator
+from collections.abc import Sequence
 from enum import IntEnum
-from typing import TYPE_CHECKING, SupportsIndex
+from typing import TYPE_CHECKING, Any, SupportsIndex
 
 import numpy as np
 import warp as wp
@@ -30,10 +31,14 @@ class DeformableVisualMesh:
 
     Instances are created by :meth:`newton.ModelBuilder.finalize` from meshes
     registered with :meth:`newton.ModelBuilder.add_deformable_visual_mesh` and
-    stored in :attr:`newton.Model.deformable_visual_meshes`. Bind-pose vertices
-    and topology are immutable asset data. The :attr:`parent`, :attr:`weights`,
-    and :attr:`local_offsets` arrays describe how simulation elements move the
-    visual vertices.
+    stored in :attr:`newton.Model.deformable_visual_meshes`. Treat a mesh as fixed
+    asset data. Every attribute except :attr:`label` and :attr:`texture` is a
+    read-only property. Do not modify the returned arrays in place: consumers
+    may read them only once when they are created, and meshes
+    with the same rest geometry, such as replicated copies, share one device copy
+    of :attr:`rest_vertices`, :attr:`indices` and :attr:`uvs`. The :attr:`parent`,
+    :attr:`weights`, and :attr:`local_offsets` arrays describe how simulation
+    elements move the visual vertices.
 
     Attributes are device :class:`warp.array` objects unless noted otherwise.
 
@@ -56,7 +61,7 @@ class DeformableVisualMesh:
         barycentric weights. Its current position is the weighted sum of the
         triangle's particle positions; normal offsets are not retained."""
 
-        TET = 2
+        TETRAHEDRON = 2
         """Each visual sample is embedded in a simulation tetrahedron with four
         barycentric weights. Its current position is the weighted sum of the
         tetrahedron's particle positions."""
@@ -96,43 +101,81 @@ class DeformableVisualMesh:
             label: Display label.
             index: Index in :attr:`newton.Model.deformable_visual_meshes`.
         """
-        self.kind = DeformableVisualMesh.Kind(kind)
-        """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
-        self.rest_vertices = rest_vertices
-        """Authored bind-pose visual vertices [m], shape [vertex_count, 3].
-        Copies retain this frame; evaluated points follow the copied simulation."""
-        self.indices = indices
-        """Flattened triangle indices into the visual vertices, shape [tri_count*3]."""
-        self.parent = parent
-        """Per-visual-vertex driver index, shape [vertex_count]. A particle index
-        for :attr:`Kind.PARTICLE`, a triangle index into
-        :attr:`newton.Model.tri_indices` for :attr:`Kind.TRIANGLE`, a tetrahedron
-        index into :attr:`newton.Model.tet_indices` for :attr:`Kind.TET`, and a
-        body index into ``State.body_q`` for :attr:`Kind.BODY`. A body parent
-        of ``-1`` fixes the vertex in world space after fixed-joint collapse."""
-        self.weights = weights
-        """Barycentric weights, shape [vertex_count, 4] (vec4) for
-        :attr:`Kind.TET`, shape [vertex_count, 3] (vec3) for
-        :attr:`Kind.TRIANGLE`; ``None`` for other kinds."""
-        self.local_offsets = local_offsets
-        """Body-local bind offsets [m] for :attr:`Kind.BODY`,
-        shape [vertex_count, 3]; ``None`` for other kinds."""
-        self.uvs = uvs
-        """Per-visual-vertex texture coordinates, shape [vertex_count, 2], or ``None``."""
+        self._kind = DeformableVisualMesh.Kind(kind)
+        self._rest_vertices = rest_vertices
+        self._indices = indices
+        self._parent = parent
+        self._weights = weights
+        self._local_offsets = local_offsets
+        self._uvs = uvs
         self.texture = texture
-        """Albedo texture as an image array (H, W, C) or a path, or ``None``.
-        Viewers may cache this asset; do not edit its image contents in place."""
-        self.world = world
-        """World index this visual mesh belongs to (-1 for global)."""
+        """Albedo texture as an image array (H, W, C) or a path, or ``None``. Viewers
+        may cache this asset, so replace the value instead of editing its image
+        contents in place; the USD-based viewers keep the texture they first
+        exported for a mesh."""
+        self._world = world
+        self._index = index
         self.label = label
         """Display label. Not unique; use :attr:`index` for a stable identity."""
-        self.index = index
-        """Invariant index of this mesh in :attr:`newton.Model.deformable_visual_meshes`."""
+
+    @property
+    def kind(self) -> Kind:
+        """Embedding kind (see :class:`DeformableVisualMesh.Kind`). Read-only."""
+        return self._kind
+
+    @property
+    def rest_vertices(self) -> wp.array[wp.vec3]:
+        """Authored bind-pose visual vertices [m], shape [vertex_count, 3]. Read-only.
+        Copies retain this frame; evaluated points follow the copied simulation."""
+        return self._rest_vertices
+
+    @property
+    def indices(self) -> wp.array[wp.int32]:
+        """Flattened triangle indices into the visual vertices, shape [tri_count*3]. Read-only."""
+        return self._indices
+
+    @property
+    def parent(self) -> wp.array[wp.int32]:
+        """Per-visual-vertex driver index, shape [vertex_count]. Read-only. A particle
+        index for :attr:`Kind.PARTICLE`, a triangle index into
+        :attr:`newton.Model.tri_indices` for :attr:`Kind.TRIANGLE`, a tetrahedron
+        index into :attr:`newton.Model.tet_indices` for :attr:`Kind.TETRAHEDRON`, and a
+        body index into ``State.body_q`` for :attr:`Kind.BODY`. A body parent
+        of ``-1`` fixes the vertex in world space after fixed-joint collapse."""
+        return self._parent
+
+    @property
+    def weights(self) -> wp.array[wp.vec4] | wp.array[wp.vec3] | None:
+        """Barycentric weights, shape [vertex_count, 4] (vec4) for
+        :attr:`Kind.TETRAHEDRON`, shape [vertex_count, 3] (vec3) for
+        :attr:`Kind.TRIANGLE`; ``None`` for other kinds. Read-only."""
+        return self._weights
+
+    @property
+    def local_offsets(self) -> wp.array[wp.vec3] | None:
+        """Body-local bind offsets [m] for :attr:`Kind.BODY`,
+        shape [vertex_count, 3]; ``None`` for other kinds. Read-only."""
+        return self._local_offsets
+
+    @property
+    def uvs(self) -> wp.array[wp.vec2] | None:
+        """Per-visual-vertex texture coordinates, shape [vertex_count, 2], or ``None``. Read-only."""
+        return self._uvs
+
+    @property
+    def world(self) -> int:
+        """World index this visual mesh belongs to (-1 for global). Read-only."""
+        return self._world
+
+    @property
+    def index(self) -> int:
+        """Invariant index of this mesh in :attr:`newton.Model.deformable_visual_meshes`. Read-only."""
+        return self._index
 
     @property
     def vertex_count(self) -> int:
         """Number of visual mesh vertices."""
-        return 0 if self.rest_vertices is None else len(self.rest_vertices)
+        return len(self._rest_vertices)
 
 
 class DeformableVisuals:
@@ -162,20 +205,16 @@ class DeformableVisuals:
         self.device = model.device
         """Device containing :attr:`points` and :attr:`normals`."""
 
-        ranges: list[tuple[int, int]] = []
-        vertex_start = 0
-        for mesh in model.deformable_visual_meshes:
-            vertex_end = vertex_start + mesh.vertex_count
-            ranges.append((vertex_start, vertex_end))
-            vertex_start = vertex_end
-
-        self.mesh_ranges = tuple(ranges)
+        # Keep the batches this output is sized for, so updates skin exactly these meshes. A model
+        # restored from a recording builds them here.
+        self._skin_batches = model._get_deformable_visual_skin_batches()
+        self.mesh_ranges = self._skin_batches.mesh_ranges
         """Stable ``[start, end)`` vertex range for each visual mesh."""
-        self.vertex_count = vertex_start
+        self.vertex_count = self._skin_batches.vertex_count
         """Total number of current visual vertices."""
-        self.points = wp.empty(vertex_start, dtype=wp.vec3, device=self.device)
+        self.points = wp.empty(self.vertex_count, dtype=wp.vec3, device=self.device)
         """Current skinned visual points [m], shape [vertex_count, 3]."""
-        self.normals = wp.zeros(vertex_start, dtype=wp.vec3, device=self.device)
+        self.normals = wp.zeros(self.vertex_count, dtype=wp.vec3, device=self.device)
         """Current visual unit normals, shape [vertex_count, 3]."""
 
         self._updated = False
@@ -189,7 +228,8 @@ class DeformableVisuals:
     def _mesh_index(self, mesh: DeformableVisualMesh | SupportsIndex) -> int:
         if isinstance(mesh, DeformableVisualMesh):
             index = mesh.index
-            if index < 0 or index >= len(self.mesh_ranges) or self._model.deformable_visual_meshes[index] is not mesh:
+            # Compare with the meshes these buffers were sized for, not the model's current tuple.
+            if index < 0 or index >= len(self.mesh_ranges) or self._skin_batches.meshes[index] is not mesh:
                 raise ValueError("The deformable visual mesh does not belong to this DeformableVisuals model.")
             return index
 
@@ -279,29 +319,31 @@ class DeformableVisuals:
 
 
 @wp.kernel
-def _skin_deformable_visual_mesh_particle(
+def _skin_deformable_visual_batch_particle(
     particle_q: wp.array[wp.vec3],
     parent: wp.array[wp.int32],
+    dest: wp.array[wp.int32],
     out_offset: int,
     out_points: wp.array[wp.vec3],
 ):
     i = wp.tid()
-    out_points[out_offset + i] = particle_q[parent[i]]
+    out_points[out_offset + dest[i]] = particle_q[parent[i]]
 
 
 @wp.kernel
-def _skin_deformable_visual_mesh_triangle(
+def _skin_deformable_visual_batch_triangle(
     particle_q: wp.array[wp.vec3],
     tri_indices: wp.array[wp.int32],
     parent: wp.array[wp.int32],
     weights: wp.array[wp.vec3],
+    dest: wp.array[wp.int32],
     out_offset: int,
     out_points: wp.array[wp.vec3],
 ):
     i = wp.tid()
     t = parent[i]
     w = weights[i]
-    out_points[out_offset + i] = (
+    out_points[out_offset + dest[i]] = (
         w[0] * particle_q[tri_indices[3 * t + 0]]
         + w[1] * particle_q[tri_indices[3 * t + 1]]
         + w[2] * particle_q[tri_indices[3 * t + 2]]
@@ -309,18 +351,19 @@ def _skin_deformable_visual_mesh_triangle(
 
 
 @wp.kernel
-def _skin_deformable_visual_mesh_tet(
+def _skin_deformable_visual_batch_tet(
     particle_q: wp.array[wp.vec3],
     tet_indices: wp.array[wp.int32],
     parent: wp.array[wp.int32],
     weights: wp.array[wp.vec4],
+    dest: wp.array[wp.int32],
     out_offset: int,
     out_points: wp.array[wp.vec3],
 ):
     i = wp.tid()
     t = parent[i]
     w = weights[i]
-    out_points[out_offset + i] = (
+    out_points[out_offset + dest[i]] = (
         w[0] * particle_q[tet_indices[4 * t + 0]]
         + w[1] * particle_q[tet_indices[4 * t + 1]]
         + w[2] * particle_q[tet_indices[4 * t + 2]]
@@ -329,10 +372,11 @@ def _skin_deformable_visual_mesh_tet(
 
 
 @wp.kernel
-def _skin_deformable_visual_mesh_body(
+def _skin_deformable_visual_batch_body(
     body_q: wp.array[wp.transform],
     parent: wp.array[wp.int32],
     local_offsets: wp.array[wp.vec3],
+    dest: wp.array[wp.int32],
     out_offset: int,
     out_points: wp.array[wp.vec3],
 ):
@@ -340,134 +384,163 @@ def _skin_deformable_visual_mesh_body(
     point = local_offsets[i]
     if parent[i] >= 0:
         point = wp.transform_point(body_q[parent[i]], point)
-    out_points[out_offset + i] = point
+    out_points[out_offset + dest[i]] = point
 
 
-@wp.kernel
-def _accumulate_face_normals(
-    points: wp.array[wp.vec3],
-    indices: wp.array[wp.int32],
-    point_offset: int,
-    normal_offset: int,
-    normals: wp.array[wp.vec3],
-):
-    # Face normals are weighted by triangle area (the un-normalized cross
-    # product), yielding area-weighted vertex normals after accumulation.
-    f = wp.tid()
-    i0 = indices[3 * f + 0]
-    i1 = indices[3 * f + 1]
-    i2 = indices[3 * f + 2]
-    n = wp.cross(
-        points[point_offset + i1] - points[point_offset + i0],
-        points[point_offset + i2] - points[point_offset + i0],
-    )
-    wp.atomic_add(normals, normal_offset + i0, n)
-    wp.atomic_add(normals, normal_offset + i1, n)
-    wp.atomic_add(normals, normal_offset + i2, n)
+class _DeformableVisualSkinBatches:
+    """Skin every visual mesh of a model into one vertex buffer with one launch per binding kind,
+    and shade all of them with two launches.
 
-
-@wp.kernel
-def _normalize_normals(normals: wp.array[wp.vec3], normal_offset: int):
-    i = wp.tid()
-    n = normals[normal_offset + i]
-    length = wp.length(n)
-    if length > 1.0e-12:
-        normals[normal_offset + i] = n / length
-
-
-def skin_deformable_visual_mesh(
-    mesh: DeformableVisualMesh,
-    state: State,
-    model: Model,
-    out_points: wp.array[wp.vec3],
-    device: wp.DeviceLike | None = None,
-    out_offset: int = 0,
-) -> None:
-    """Evaluate a visual mesh's current vertex positions from the simulation state.
-
-    Writes the skinned positions in the simulation frame into ``out_points``
-    (shape [vertex_count, 3]); world offsets and layer transforms are the
-    consumer's responsibility so viewers and external integrations can
-    apply their own placement. Runs entirely on ``device`` (the simulation
-    device by default).
-
-    Args:
-        mesh: Visual mesh and its simulation binding.
-        state: Simulation state providing current driver positions [m] and poses.
-        model: Model providing triangle and tetrahedron topology.
-        out_points: Destination positions [m].
-        device: Device on which to evaluate the binding.
-        out_offset: First destination vertex to write.
+    The bindings of all meshes of one :class:`DeformableVisualMesh.Kind` live in one array per
+    driver, together with each vertex's destination index, so the launch count is independent
+    of the number of meshes, which replication multiplies by the world count.
+    :meth:`newton.ModelBuilder.finalize` builds the batches from its host data and gives each
+    mesh views into them (see :meth:`mesh_bindings`), so a model holds one copy of its binding
+    data. A model restored from a recording builds them from its meshes on first use; those
+    meshes keep their own arrays, which other models loaded from the same recording may share.
+    :attr:`meshes` is the tuple the batches were built for; consumers size their buffers from it.
     """
-    device = device if device is not None else out_points.device
-    kind = DeformableVisualMesh.Kind
-    if mesh.kind == kind.TET:
-        wp.launch(
-            _skin_deformable_visual_mesh_tet,
-            dim=mesh.vertex_count,
-            inputs=[state.particle_q, model.tet_indices.flatten(), mesh.parent, mesh.weights, out_offset],
-            outputs=[out_points],
-            device=device,
-        )
-    elif mesh.kind == kind.TRIANGLE:
-        wp.launch(
-            _skin_deformable_visual_mesh_triangle,
-            dim=mesh.vertex_count,
-            inputs=[state.particle_q, model.tri_indices.flatten(), mesh.parent, mesh.weights, out_offset],
-            outputs=[out_points],
-            device=device,
-        )
-    elif mesh.kind == kind.BODY:
-        wp.launch(
-            _skin_deformable_visual_mesh_body,
-            dim=mesh.vertex_count,
-            inputs=[state.body_q, mesh.parent, mesh.local_offsets, out_offset],
-            outputs=[out_points],
-            device=device,
-        )
-    else:
-        wp.launch(
-            _skin_deformable_visual_mesh_particle,
-            dim=mesh.vertex_count,
-            inputs=[state.particle_q, mesh.parent, out_offset],
-            outputs=[out_points],
-            device=device,
-        )
 
+    def __init__(
+        self,
+        kinds: Sequence[DeformableVisualMesh.Kind],
+        parents: Sequence[np.ndarray],
+        drivers: Sequence[np.ndarray | None],
+        indices: Sequence[np.ndarray],
+        device: wp.Device,
+    ) -> None:
+        """Concatenate per-mesh host bindings per kind and upload each kind once.
 
-def compute_deformable_visual_mesh_normals(
-    points: wp.array[wp.vec3],
-    indices: wp.array[wp.int32],
-    out_normals: wp.array[wp.vec3],
-    device: wp.DeviceLike | None = None,
-    point_offset: int = 0,
-    normal_offset: int = 0,
-    vertex_count: int | None = None,
-    clear: bool = True,
-) -> None:
-    """Recompute area-weighted vertex normals from current positions and topology.
+        Args:
+            kinds: Binding kind of each mesh, in model order.
+            parents: Driver index of every vertex, per mesh.
+            drivers: Barycentric weights (triangle, tetrahedron) or body-local offsets (body)
+                per mesh; ``None`` for particle bindings.
+            indices: Flattened triangle indices of each mesh, into its own vertices.
+            device: Device that holds the concatenated arrays and runs the launches.
+        """
+        kind = DeformableVisualMesh.Kind
+        self.device = device
+        self.needs_particles = any(k != kind.BODY for k in kinds)
+        """Whether skinning reads ``State.particle_q``."""
+        self.needs_bodies = any(k == kind.BODY for k in kinds)
+        """Whether skinning reads ``State.body_q``."""
+        self.meshes: tuple[DeformableVisualMesh, ...] = ()
+        """The mesh tuple these batches skin, in model order, once the meshes exist."""
+        groups: dict[DeformableVisualMesh.Kind, list[int]] = {k: [] for k in kind}
+        starts: list[int] = []
+        start = 0
+        for index, (k, parent) in enumerate(zip(kinds, parents, strict=True)):
+            groups[kind(k)].append(index)
+            starts.append(start)
+            start += len(parent)
+        self.vertex_count = start
+        """Number of destination vertices the batches write, the sum over all meshes."""
+        self.mesh_ranges = tuple((s, s + len(parent)) for s, parent in zip(starts, parents, strict=True))
+        """Destination ``[start, end)`` vertex range of each mesh, in model order; consumers size and
+        index their buffers from it so that it agrees with the destination indices by construction."""
+        faces = [np.asarray(idx, dtype=np.int32).reshape(-1) + s for idx, s in zip(indices, starts, strict=True)]
+        self.face_indices = wp.array(
+            np.concatenate(faces) if faces else np.empty(0, dtype=np.int32), dtype=wp.int32, device=device
+        )
+        """Triangle indices of every mesh into the destination vertices, so one normal pass covers all meshes."""
+        self._batches: list[
+            tuple[DeformableVisualMesh.Kind, wp.array[wp.int32], wp.array[Any] | None, wp.array[wp.int32]]
+        ] = []
+        # Position of each mesh inside its kind's arrays: (batch, offset, length).
+        self._mesh_slices: list[tuple[int, int, int]] = [(0, 0, 0)] * len(kinds)
+        for k, members in groups.items():
+            if not members:
+                continue
+            offset = 0
+            for index in members:
+                self._mesh_slices[index] = (len(self._batches), offset, len(parents[index]))
+                offset += len(parents[index])
+            parent = np.concatenate([np.asarray(parents[i], dtype=np.int32) for i in members])
+            dest = np.concatenate([np.arange(starts[i], starts[i] + len(parents[i]), dtype=np.int32) for i in members])
+            driver = None
+            if k != kind.PARTICLE:
+                values = np.concatenate([np.asarray(drivers[i], dtype=np.float32) for i in members])
+                driver = wp.array(values, dtype=wp.vec4 if k == kind.TETRAHEDRON else wp.vec3, device=device)
+            self._batches.append(
+                (
+                    k,
+                    wp.array(parent, dtype=wp.int32, device=device),
+                    driver,
+                    wp.array(dest, dtype=wp.int32, device=device),
+                )
+            )
 
-    Args:
-        points: Current visual vertex positions [m].
-        indices: Flattened triangle vertex indices.
-        out_normals: Destination unit normals.
-        device: Device on which to compute the normals.
-        point_offset: Offset applied to each triangle vertex index.
-        normal_offset: First destination normal to write.
-        vertex_count: Number of destination normals to normalize.
-        clear: Whether to clear the complete destination before accumulating.
-    """
-    device = device if device is not None else out_normals.device
-    if vertex_count is None:
-        vertex_count = len(out_normals) - normal_offset
-    if clear:
-        if normal_offset != 0 or vertex_count != len(out_normals):
-            raise ValueError("Partial normal updates require clear=False and a pre-cleared output array")
-        out_normals.zero_()
-    wp.launch(
-        _accumulate_face_normals,
-        dim=len(indices) // 3,
-        inputs=[points, indices, point_offset, normal_offset, out_normals],
-        device=device,
-    )
-    wp.launch(_normalize_normals, dim=vertex_count, inputs=[out_normals, normal_offset], device=device)
+    @classmethod
+    def from_meshes(cls, meshes: Sequence[DeformableVisualMesh], device: wp.Device) -> _DeformableVisualSkinBatches:
+        """Build the batches from existing meshes, reading each binding array back once."""
+        kind = DeformableVisualMesh.Kind
+        drivers: list[np.ndarray | None] = []
+        for mesh in meshes:
+            if mesh.kind == kind.BODY:
+                drivers.append(mesh.local_offsets.numpy())
+            elif mesh.kind == kind.PARTICLE:
+                drivers.append(None)
+            else:
+                drivers.append(mesh.weights.numpy())
+        batches = cls(
+            [mesh.kind for mesh in meshes],
+            [mesh.parent.numpy() for mesh in meshes],
+            drivers,
+            [mesh.indices.numpy() for mesh in meshes],
+            device,
+        )
+        batches.meshes = tuple(meshes)
+        return batches
+
+    def mesh_bindings(self, index: int) -> tuple[wp.array[wp.int32], wp.array[Any] | None]:
+        """Return views of mesh ``index``'s ``parent`` and driver arrays into its kind's arrays."""
+        batch, offset, length = self._mesh_slices[index]
+        _, parent, driver, _ = self._batches[batch]
+        return parent[offset : offset + length], None if driver is None else driver[offset : offset + length]
+
+    def skin(self, state: State, model: Model, out_points: wp.array[wp.vec3], out_offset: int = 0) -> None:
+        """Write the current skinned positions [m] of every mesh into ``out_points``.
+
+        Args:
+            state: Simulation state providing current particle positions and body poses.
+            model: Model providing triangle and tetrahedron topology.
+            out_points: Destination positions [m].
+            out_offset: Added to every destination index, for buffers that hold other
+                vertices before the visual meshes.
+
+        Raises:
+            ValueError: If ``out_points`` cannot hold every destination vertex.
+        """
+        if out_offset + self.vertex_count > out_points.shape[0]:
+            raise ValueError(
+                f"out_points holds {out_points.shape[0]} vertices but the visual meshes need "
+                f"{out_offset + self.vertex_count}"
+            )
+        kind = DeformableVisualMesh.Kind
+        for k, parent, drivers, dest in self._batches:
+            if k == kind.TETRAHEDRON:
+                inputs = [state.particle_q, model.tet_indices.flatten(), parent, drivers, dest, out_offset]
+                kernel = _skin_deformable_visual_batch_tet
+            elif k == kind.TRIANGLE:
+                inputs = [state.particle_q, model.tri_indices.flatten(), parent, drivers, dest, out_offset]
+                kernel = _skin_deformable_visual_batch_triangle
+            elif k == kind.BODY:
+                inputs = [state.body_q, parent, drivers, dest, out_offset]
+                kernel = _skin_deformable_visual_batch_body
+            else:
+                inputs = [state.particle_q, parent, dest, out_offset]
+                kernel = _skin_deformable_visual_batch_particle
+            wp.launch(kernel, dim=dest.shape[0], inputs=inputs, outputs=[out_points], device=self.device)
+
+    def compute_normals(self, points: wp.array[wp.vec3], out_normals: wp.array[wp.vec3]) -> None:
+        """Write unit area-weighted vertex normals of every mesh into ``out_normals``.
+
+        Args:
+            points: Skinned positions [m] of every destination vertex, as written by :meth:`skin`
+                with ``out_offset=0``.
+            out_normals: Destination normals, one per destination vertex; cleared first.
+        """
+        from ..utils.mesh import compute_vertex_normals  # noqa: PLC0415
+
+        compute_vertex_normals(points, self.face_indices, out_normals, device=self.device)

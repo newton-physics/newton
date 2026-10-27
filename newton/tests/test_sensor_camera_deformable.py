@@ -22,7 +22,7 @@ class TestSensorCameraDeformable(unittest.TestCase):
         builder = newton.ModelBuilder()
         points = np.array([[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0]])
         particles = [builder.add_particle(pos=tuple(p), vel=(0, 0, 0), mass=1, radius=0) for p in points]
-        builder.add_deformable_visual_mesh(points, [0, 1, 2, 0, 2, 3], kind="particle", particles=particles)
+        builder.add_deformable_visual_mesh(points, [0, 1, 2, 0, 2, 3], kind="particle", parent=particles)
         return builder
 
     @staticmethod

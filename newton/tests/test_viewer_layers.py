@@ -320,7 +320,7 @@ class TestViewerLayers(unittest.TestCase):
         vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
         for point in vertices:
             builder.add_particle(tuple(point), (0, 0, 0), mass=1.0)
-        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2])
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", parent=[0, 1, 2])
         model = builder.finalize(device="cpu")
         state = model.state()
         viewer = _MinimalRTXViewer()
