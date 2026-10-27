@@ -5575,10 +5575,27 @@ class TestMuJoCoContactForce(unittest.TestCase):
         self.assertIsNone(contacts.force)
 
     def test_external_contact_observables_preserve_input_geometry(self):
-        """Keep collision rows stable across substeps and map forces past culled rows."""
-        model, _ = self._build_box_on_ground()
-        solver = SolverMuJoCo(model, use_mujoco_contacts=False)
-        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
+        """Preserve supplied contacts across substeps and export forces on both backends."""
+        models = {mesh: self._build_box_on_ground(mesh_ground=mesh)[0] for mesh in (False, True)}
+        cases = (
+            (False, None, False),
+            (True, "euler", False),
+            (True, "implicit", False),
+            (True, "implicitfast", False),
+            (True, "implicitfast", True),
+        )
+        for use_mujoco_cpu, integrator, mesh in cases:
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu, integrator=integrator, mesh=mesh):
+                self._check_external_contact_observables(models[mesh], use_mujoco_cpu, integrator)
+
+    def _check_external_contact_observables(self, model, use_mujoco_cpu, integrator):
+        """Check compacted force indices and caller-owned geometry during buffer reuse."""
+        solver = SolverMuJoCo(
+            model, use_mujoco_contacts=False, use_mujoco_cpu=use_mujoco_cpu, integrator=integrator, nconmax=64
+        )
+        pipeline = newton.CollisionPipeline(
+            model, rigid_contact_max=solver.mjw_data.naconmax + 1 if use_mujoco_cpu else 16
+        )
         self.assertLess(model.rigid_contact_max, solver.get_max_contact_count())
         contacts = pipeline.contacts()
         state_in, state_out = model.state(), model.state()
@@ -5593,6 +5610,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
         # making the compacted MuJoCo indices differ from the input row indices.
         shapes = contacts.rigid_contact_shape0.numpy()
         shapes[0] = -1
+        shapes[count:] = -1
         contacts.rigid_contact_shape0.assign(shapes)
         fields = (
             "rigid_contact_count",
@@ -5621,13 +5639,96 @@ class TestMuJoCoContactForce(unittest.TestCase):
             self.assertGreater(np.linalg.norm(forces[1:count, :3]), 0.0)
             state_in, state_out = state_out, state_in
 
-    def _build_box_on_ground(self, *, friction: float = 1.0, height: float = 0.1):
-        """Create a box above a ground plane with the given friction and height."""
+        if use_mujoco_cpu:
+            self.assertEqual(solver.mj_data.ncon, count - 1)
+            disabled = int(solver._mujoco.mjtDisableBit.mjDSBL_CONTACT)
+            solver.mj_model.opt.disableflags |= disabled
+            solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+            self.assertEqual(solver.mj_data.ncon, 0)
+            np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
+            solver.mj_model.opt.disableflags &= ~disabled
+            # Caller-side culling after an earlier solve must take effect even
+            # without another collision pass or a generation-counter change.
+            shapes[1] = -1
+            contacts.rigid_contact_shape0.assign(shapes)
+            solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+            self.assertEqual(solver.mj_data.ncon, count - 2)
+            np.testing.assert_array_equal(observables.contact_f.numpy()[:2], 0.0)
+            contacts.rigid_contact_count.zero_()
+            solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+            self.assertEqual(solver.mj_data.ncon, 0)
+            np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
+            with self.assertRaisesRegex(ValueError, "contacts is required"):
+                solver.step(state_in, state_out, None, None, 0.002)
+            with self.assertRaisesRegex(ValueError, "Pass contact observables to step"):
+                solver.update_contacts(contacts)
+            if integrator == "euler":
+                contacts.rigid_contact_count.assign([count])
+                disabled_solver = SolverMuJoCo(
+                    model, use_mujoco_cpu=True, use_mujoco_contacts=False, disable_contacts=True
+                )
+                disabled_observables = disabled_solver.observables(
+                    {disabled_solver.ObservableKind.CONTACT_F}, contacts=contacts
+                )
+                disabled_solver.step(state_in, state_out, None, contacts, 0.002, observables=disabled_observables)
+                self.assertEqual(disabled_solver.mj_data.ncon, 0)
+                np.testing.assert_array_equal(disabled_observables.contact_f.numpy(), 0.0)
+                contacts.rigid_contact_count.assign([solver.mjw_data.naconmax + 1])
+                solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+                self.assertEqual(solver.mj_data.ncon, count - 2)
+                self.assertTrue(np.isfinite(observables.contact_f.numpy()).all())
+                np.testing.assert_array_equal(observables.contact_f.numpy()[count:], 0.0)
+                solver._strict_capacity = True
+                with self.assertRaisesRegex(RuntimeError, "exceeds nconmax"):
+                    solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+                solver._strict_capacity = False
+                for unsupported in ("rk4", int(solver._mujoco.mjtIntegrator.mjINT_DISCRETE)):
+                    with self.subTest(unsupported=unsupported):
+                        with self.assertRaisesRegex(ValueError, "requires Euler, implicit, or implicitfast"):
+                            SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, integrator=unsupported)
+
+        if use_mujoco_cpu and integrator == "euler":
+            contacts.rigid_contact_count.assign([count])
+            for attribute in ("joint_q", "joint_qd", "body_f"):
+                values = getattr(state_in, attribute)
+                saved = values.numpy().copy()
+                invalid = saved.copy()
+                invalid.flat[0] = 1.0e20
+                values.assign(invalid)
+                flags = solver.mj_model.opt.disableflags
+                observables.contact_f.fill_(float("nan"))
+                solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+                self.assertEqual(solver.mj_model.opt.disableflags, flags)
+                self.assertEqual(solver.mj_data.time, 0.0)
+                self.assertEqual(solver.mj_data.ncon, 0)
+                np.testing.assert_array_equal(solver.mj_data.qpos, solver.mj_model.qpos0)
+                np.testing.assert_array_equal(state_out.joint_qd.numpy(), 0.0)
+                self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
+                np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
+                values.assign(saved)
+            state_in, state_out = state_out, state_in
+            contacts.rigid_contact_count.zero_()
+            state_in.clear_forces()
+            solver.step(state_in, state_out, None, contacts, 0.002, observables=observables)
+            self.assertEqual(solver.mj_data.time, 0.002)
+            self.assertEqual(solver.mj_data.ncon, 0)
+            np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
+
+    def _build_box_on_ground(self, *, friction: float = 1.0, height: float = 0.1, mesh_ground: bool = False):
+        """Create a box above a plane or mesh with the given friction and height."""
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.mu = friction
-        ground_shape = builder.add_ground_plane()
+        if mesh_ground:
+            mesh = newton.Mesh(
+                vertices=np.array([[-2, -2, 0], [2, -2, 0], [2, 2, 0], [-2, 2, 0]], dtype=np.float32),
+                indices=np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
+                compute_inertia=False,
+            )
+            ground_shape = builder.add_shape_mesh(body=-1, mesh=mesh)
+        else:
+            ground_shape = builder.add_ground_plane()
         # At the default height, the box's bottom face touches the ground.
         body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_identity()))
         builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
@@ -5770,6 +5871,113 @@ class TestMuJoCoContactForce(unittest.TestCase):
         force, shape0 = self._run_and_collect_forces(model, cone="pyramidal", settle=300, avg=80)
         expected_fz = -self.BOX_MASS * self.GRAVITY if shape0 == ramp_shape else self.BOX_MASS * self.GRAVITY
         np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
+
+    def test_native_cpu_contact_arena_limits(self):
+        """Check contact and constraint storage exhaustion."""
+        model, _ = self._build_box_on_ground()
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "model.xml")
+            solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, nconmax=64, save_to_mjcf=path)
+            root = ET.parse(path).getroot()
+        size = root.find("size")
+        if size is None:
+            size = ET.SubElement(root, "size")
+        size.set("memory", "4096")
+        native_model, native_data = solver.mj_model, solver.mj_data
+        solver.mj_model = solver._mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+        solver.mj_data = solver._mujoco.MjData(solver.mj_model)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16)
+        contacts = pipeline.contacts()
+        observables = solver.observables({solver.ObservableKind.CONTACT_F}, contacts=contacts)
+        state, state_out = model.state(), model.state()
+        q = state.joint_q.numpy()
+        q[2] = 0.09
+        state.joint_q.assign(q)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        pipeline.collide(state, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertEqual(count, 4)
+        solver.step(state, state_out, None, contacts, 0.002, observables=observables)
+        self.assertEqual(solver.mj_data.nefc, 0)
+        np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
+        self.assertGreater(solver.mj_data.warning[solver._mujoco.mjtWarning.mjWARN_CNSTRFULL].number, 0)
+        solver._strict_capacity = True
+        with self.assertRaisesRegex(RuntimeError, "constraint storage"):
+            solver.step(state, state_out, None, contacts, 0.002, observables=observables)
+        solver._strict_capacity = False
+        for name in (
+            "rigid_contact_shape0",
+            "rigid_contact_shape1",
+            "rigid_contact_point0",
+            "rigid_contact_point1",
+            "rigid_contact_normal",
+            "rigid_contact_offset0",
+            "rigid_contact_offset1",
+            "rigid_contact_margin0",
+            "rigid_contact_margin1",
+        ):
+            array = getattr(contacts, name)
+            values = array.numpy()
+            values[count : 2 * count] = values[:count]
+            array.assign(values)
+        contacts.rigid_contact_count.assign([2 * count])
+        self.assertLess(solver.get_max_contact_count(), 2 * count)
+        solver._invalidate_contact_fast_path()
+        solver._convert_contacts_to_mjwarp(model, state, contacts)
+        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exceeds MuJoCo CPU arena capacity"):
+            solver._copy_mjwarp_contacts_to_mj_data()
+        self.assertEqual(solver.mj_data.ncon, solver.get_max_contact_count())
+        solver._strict_capacity = True
+        with self.assertRaisesRegex(RuntimeError, "exceeds MuJoCo CPU arena capacity"):
+            solver._copy_mjwarp_contacts_to_mj_data()
+        solver._strict_capacity = False
+        contacts.rigid_contact_count.assign([count])
+        solver.mj_model, solver.mj_data = native_model, native_data
+        solver.step(state, state_out, None, contacts, 0.002, observables=observables)
+        self.assertGreater(np.linalg.norm(observables.contact_f.numpy()[:count]), 0.0)
+
+    def test_native_cpu_separated_contacts_with_joint_limit(self):
+        """Solve a joint limit while nearby collision candidates remain outside the contact margin."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.rigid_gap = 0.05
+        builder.add_ground_plane()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body, radius=0.5, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+        joint = builder.add_joint_prismatic(
+            parent=-1,
+            child=body,
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.5), wp.quat_identity()),
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            limit_lower=-0.1,
+            limit_upper=0.0,
+        )
+        builder.add_articulation([joint])
+        builder.joint_q[0] = 0.01
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        observables = solver.observables({solver.ObservableKind.CONTACT_F}, contacts=contacts)
+        state_in, state_out = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        pipeline.collide(state_in, contacts)
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 0)
+        control = model.control()
+        solver.step(state_in, state_out, control, contacts, 0.001, observables=observables)
+        self.assertEqual(solver.mj_data.ncon, count)
+        np.testing.assert_array_equal(solver.mj_data.contact.exclude, 1)
+        np.testing.assert_array_equal(solver.mj_data.contact.efc_address, -1)
+        self.assertGreater(solver.mj_data.nefc, 0)
+        np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
+        self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
+        self.assertLess(float(state_out.joint_qd.numpy()[0]), 0.0)
+
+        # An empty supplied contact set must also work without observables.
+        contacts.rigid_contact_count.zero_()
+        solver.step(state_in, state_out, control, contacts, 0.001)
+        self.assertEqual(solver.mj_data.ncon, 0)
+        self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
 
 
 class TestMuJoCoUpdateDataIntervalDeprecation(unittest.TestCase):
@@ -6281,6 +6489,9 @@ class TestMuJoCoConversion(unittest.TestCase):
         self.assertIn("separate_worlds=False", str(context.exception))
         self.assertIn("single-world", str(context.exception))
         self.assertIn("world_count=2", str(context.exception))
+
+        with self.assertRaisesRegex(ValueError, "Newton contacts requires a single-world model"):
+            SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False, separate_worlds=True)
 
         # Test that separate_worlds=True works fine
         solver = SolverMuJoCo(model, separate_worlds=True)
@@ -7975,11 +8186,9 @@ class TestMuJoCoOptions(unittest.TestCase):
         np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
 
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=False)
-        self.assertNotIn(solver.ObservableKind.CONTACT_F, solver.supported_observables)
-        with self.assertRaisesRegex(ValueError, "does not support"):
-            solver.observables({solver.ObservableKind.CONTACT_F}, contacts=contacts)
-        with self.assertRaisesRegex(NotImplementedError, "requires use_mujoco_contacts=True"):
-            solver.update_contacts(contacts)
+        self.assertIn(solver.ObservableKind.CONTACT_F, solver.supported_observables)
+        observables = solver.observables({solver.ObservableKind.CONTACT_F}, contacts=contacts)
+        self.assertIsNotNone(observables.contact_f)
 
         model = self._create_multiworld_model(world_count=2)
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, nconmax=64)

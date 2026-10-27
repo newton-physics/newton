@@ -352,7 +352,7 @@ the mode from user code.
 
 .. note::
 
-   ``use_mujoco_contacts=True`` and the MuJoCo CPU backend do not
+   ``use_mujoco_contacts=True`` does not
    apply the per-contact two-body factor — MuJoCo's internal
    ``contact_params`` averages per-geom ``solref``, which cannot
    reproduce the inverse-mass sum. ``SOLREF_MODE_FORCE_SPACE`` shapes
@@ -701,6 +701,17 @@ distances, and normals at RK4's intermediate stages. This can reduce contact
 accuracy as bodies move, and the solver warns at construction. Use
 ``integrator="implicitfast"`` or ``use_mujoco_contacts=True`` to avoid this
 limitation.
+
+When ``use_mujoco_cpu=True``, only the template world is simulated when
+``separate_worlds=True``.
+
+With ``use_mujoco_cpu=True``, Newton contacts require Euler, implicit, or implicitfast integration.
+Unsupported modes and insufficient contact storage
+raise an error. Request ``CONTACT_F`` through ``step``; ``update_contacts`` is
+unavailable in this mode. When MuJoCo's autoreset is enabled, invalid dynamics
+reset the simulation and abort the current step without integration or collision
+detection. Contact-force outputs are zeroed; generate fresh Newton contacts
+before the next step.
 
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
