@@ -120,7 +120,8 @@ class DeterminismExample:
                 self.viewer.log_state(copy.state_0)
             # The plot is named under the active layer, one of this mode's copies.
             self.viewer.log_scalar(
-                f"{mode.capitalize()} ({side}), max divergence [mm]", 1.0e3 * self.max_divergence[mode]
+                f"{mode.capitalize()} ({side}): magenta vs. green, max body divergence [mm]",
+                1.0e3 * self.max_divergence[mode],
             )
         self.viewer.end_frame()
 
@@ -128,8 +129,9 @@ class DeterminismExample:
         """Show the largest body distance between the two copies of each mode."""
         ui.text("Left: default, right: deterministic")
         ui.text("Copies in magenta and green, gray where they coincide")
-        for mode, divergence in self.max_divergence.items():
-            ui.text(f"{mode.capitalize()} max distance: {1.0e3 * divergence:.3f} mm")
+        ui.text("Max body divergence (magenta vs. green):")
+        for (mode, divergence), side in zip(self.max_divergence.items(), ("left", "right"), strict=True):
+            ui.text(f"  {mode.capitalize()} ({side}): {1.0e3 * divergence:.3f} mm")
 
     def test_final(self):
         """Verify every copy is finite, no copy dropped constraint rows and the deterministic copies are bitwise equal."""

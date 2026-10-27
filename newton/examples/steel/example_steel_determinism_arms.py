@@ -13,7 +13,9 @@
 # copies at one place, one magenta and one green, both half transparent.
 # The default copies push the boxes to different places; in the GL
 # viewer they come apart into two ghosts, while the deterministic copies
-# stay bitwise identical and blend into one gray scene.
+# stay bitwise identical and blend into one gray scene. The plots show,
+# for each side, the largest distance in mm between a body in the magenta
+# copy and the same body in the green copy.
 #
 # Command: python -m newton.examples steel_determinism_arms
 #
