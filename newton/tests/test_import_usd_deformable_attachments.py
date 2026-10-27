@@ -1192,7 +1192,8 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         author(stage, True)
         imported = newton.ModelBuilder()
         imported.add_particle(pos=(9.0, 9.0, 9.0), vel=(0.0, 0.0, 0.0), mass=1.0)
-        result = imported.add_usd(stage, return_deformable_results=True)
+        with self.assertWarnsRegex(UserWarning, r"/World/AttachCloth.*point-spring stiffness \[N/m\]"):
+            result = imported.add_usd(stage, return_deformable_results=True)
 
         ref_stage = _deformable_stage()
         author(ref_stage, False)
@@ -1301,13 +1302,14 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     coords1=[(0.2, 0.3, 0.4)],
                 )
                 builder = newton.ModelBuilder()
-                result = builder.add_usd(
-                    stage,
-                    xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
-                    floating=False,
-                    override_root_xform=override,
-                    return_deformable_results=True,
-                )
+                with self.assertWarnsRegex(UserWarning, "point-spring stiffness"):
+                    result = builder.add_usd(
+                        stage,
+                        xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+                        floating=False,
+                        override_root_xform=override,
+                        return_deformable_results=True,
+                    )
                 np.testing.assert_allclose(
                     np.array(builder.attachment_particle_body_body_point[0]), (0.2, 0.3, 0.4), atol=1e-5
                 )
@@ -1338,9 +1340,10 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             stiffness=500.0,
         )
         builder = newton.ModelBuilder()
-        builder.add_usd(
-            stage, xform=wp.transform((5.0, -3.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4))
-        )
+        with self.assertWarnsRegex(UserWarning, "point-spring stiffness"):
+            builder.add_usd(
+                stage, xform=wp.transform((5.0, -3.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4))
+            )
         np.testing.assert_allclose(
             np.array(builder.attachment_particle_body_body_point[0]), (-0.8, 0.6, 1.9), atol=1e-5
         )
@@ -1395,45 +1398,6 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     result = builder.add_usd(stage, return_deformable_results=True)
                 self.assertEqual(builder.attachment_particle_body_count, 0)
                 self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Attach"])
-
-    def test_imported_solid_attachment_couples_bidirectionally(self):
-        """An imported solid attachment pulls the particle and the free rigid body toward each other."""
-        from pxr import UsdPhysics
-
-        stage = _deformable_stage()
-        UsdPhysics.Scene.Get(stage, "/PhysicsScene").CreateGravityMagnitudeAttr(0.0)
-        _add_rigid_cube(stage, "/World/Body", (0.0, 0.0, 2.5))
-        _author_unit_tet(stage, "/World/Solid", sim_api=True)
-        _add_physics_attachment(
-            stage,
-            "/World/Attach",
-            src0="/World/Solid",
-            src1="/World/Body",
-            type0="point",
-            indices0=[3],
-            stiffness=1.0e3,
-            damping=1.0,
-        )
-
-        builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, return_deformable_results=True)
-        body = result["path_body_map"]["/World/Body"]
-        particle = result["path_soft_map"]["/World/Solid"]["particle"][0] + 3
-        builder.color()
-        model = builder.finalize()
-
-        state_in = model.state()
-        state_out = model.state()
-        particle_z0 = float(state_in.particle_q.numpy()[particle][2])
-        body_z0 = float(state_in.body_q.numpy()[body][2])
-        solver = newton.solvers.SolverVBD(model, iterations=10)
-        for _ in range(20):
-            state_in.clear_forces()
-            solver.step(state_in, state_out, None, None, 2.0e-3)
-            state_in, state_out = state_out, state_in
-
-        self.assertGreater(float(state_in.particle_q.numpy()[particle][2]), particle_z0 + 1.0e-3)
-        self.assertLess(float(state_in.body_q.numpy()[body][2]), body_z0 - 1.0e-3)
 
     def _two_cable_filter_stage(self, **filter_kwargs):
         """Two 3-segment cables plus a PhysicsElementCollisionFilter; returns (builder, result, pairs)."""

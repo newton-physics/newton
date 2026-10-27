@@ -132,21 +132,28 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
             )
             continue
         if is_particle_source:
-            particle_range = (path_cloth_map.get(src0) or path_soft_map[src0])["particle"]
-            _import_particle_attachment(
-                ctx,
-                path,
+            if type0 != "point":
+                _mark_attachment_unsupported(
+                    attrs,
+                    path,
+                    f"PhysicsAttachment type0='{type0}' is not supported for cloth/volume deformables; "
+                    "only 'point' sites are imported.",
+                )
+                continue
+            coords1 = _xform_site_coords(
                 attrs,
-                src1,
-                type0,
+                path,
                 type1,
                 indices0,
                 indices1,
                 coords1,
-                particle_range,
-                stiffness,
-                damping,
-                enabled,
+                "is not supported for cloth/volume deformables; only rigid-body 'xform' targets are imported.",
+            )
+            if coords1 is None:
+                continue
+            particle_range = (path_cloth_map.get(src0) or path_soft_map[src0])["particle"]
+            _import_particle_attachment(
+                ctx, path, attrs, src1, indices0, coords1, particle_range, stiffness, damping, enabled
             )
             continue
         if src0 not in path_cable_segments:
@@ -164,23 +171,16 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
                 "supported cable site types are 'point' and 'segment'.",
             )
             continue
-        if type1 != "xform":
-            _mark_attachment_unsupported(
-                attrs,
-                path,
-                f"PhysicsAttachment type1='{type1}' is parsed but not imported yet; only xform targets "
-                "are currently supported for cable attachments.",
-            )
-            continue
-        if indices1:
-            _mark_attachment_unsupported(
-                attrs,
-                path,
-                "PhysicsAttachment type1='xform' must not author indices1; skipping.",
-            )
-            continue
-        if not indices0:
-            _mark_attachment_unsupported(attrs, path, "PhysicsAttachment has no indices0 attachment sites; skipping.")
+        coords1 = _xform_site_coords(
+            attrs,
+            path,
+            type1,
+            indices0,
+            indices1,
+            coords1,
+            "is parsed but not imported yet; only xform targets are currently supported for cable attachments.",
+        )
+        if coords1 is None:
             continue
         if type0 == "segment" and len(coords0) != len(indices0):
             _mark_attachment_unsupported(
@@ -190,16 +190,6 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
                 f"{len(indices0)} for segment sites; skipping.",
             )
             continue
-        if coords1 and len(coords1) != len(indices0):
-            _mark_attachment_unsupported(
-                attrs,
-                path,
-                f"PhysicsAttachment coords1 length {len(coords1)} does not match indices0 length "
-                f"{len(indices0)} for xform sites; skipping.",
-            )
-            continue
-        if not coords1:
-            coords1 = [wp.vec3(0.0, 0.0, 0.0) for _ in indices0]
 
         if math.isfinite(stiffness):
             # Silently hardening a compliant attachment would change the authored physics;
@@ -258,15 +248,48 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
                 logger.info("Added PhysicsAttachment %s with %s joint(s).", path, len(joints))
 
 
+def _xform_site_coords(
+    attrs: dict[str, Any],
+    path: str,
+    type1: str,
+    indices0: list[int],
+    indices1: list[int],
+    coords1: list[wp.vec3],
+    type1_reason: str,
+) -> list[wp.vec3] | None:
+    """Validate ``xform`` target sites shared by all attachment sources.
+
+    Returns one ``coords1`` anchor per ``indices0`` site (the xform origin when unauthored),
+    or ``None`` after marking the attachment unsupported.
+    """
+    if type1 != "xform":
+        _mark_attachment_unsupported(attrs, path, f"PhysicsAttachment type1='{type1}' {type1_reason}")
+        return None
+    if indices1:
+        _mark_attachment_unsupported(attrs, path, "PhysicsAttachment type1='xform' must not author indices1; skipping.")
+        return None
+    if not indices0:
+        _mark_attachment_unsupported(attrs, path, "PhysicsAttachment has no indices0 attachment sites; skipping.")
+        return None
+    if coords1 and len(coords1) != len(indices0):
+        _mark_attachment_unsupported(
+            attrs,
+            path,
+            f"PhysicsAttachment coords1 length {len(coords1)} does not match indices0 length "
+            f"{len(indices0)} for xform sites; skipping.",
+        )
+        return None
+    if not coords1:
+        return [wp.vec3(0.0, 0.0, 0.0) for _ in indices0]
+    return coords1
+
+
 def _import_particle_attachment(
     ctx: _DeformableImportContext,
     path: str,
     attrs: dict[str, Any],
     src1: str,
-    type0: str,
-    type1: str,
     indices0: list[int],
-    indices1: list[int],
     coords1: list[wp.vec3],
     particle_range: tuple[int, int],
     stiffness: float,
@@ -277,39 +300,9 @@ def _import_particle_attachment(
 
     Each ``indices0`` simulation point becomes one compliant attachment, with the authored enabled
     state, from its particle to the ``coords1`` anchor in the ``src1`` xform frame. Hard
-    (infinite-stiffness) attachments, other site types, and targets without a rigid body are
-    preserved in ``attrs`` as unsupported.
+    (infinite-stiffness) attachments and targets without a rigid body are preserved in ``attrs``
+    as unsupported. ``coords1`` holds one validated anchor per site.
     """
-    if type0 != "point":
-        _mark_attachment_unsupported(
-            attrs,
-            path,
-            f"PhysicsAttachment type0='{type0}' is not supported for cloth/volume deformables; "
-            "only 'point' sites are imported.",
-        )
-        return
-    if type1 != "xform":
-        _mark_attachment_unsupported(
-            attrs,
-            path,
-            f"PhysicsAttachment type1='{type1}' is not supported for cloth/volume deformables; "
-            "only rigid-body 'xform' targets are imported.",
-        )
-        return
-    if indices1:
-        _mark_attachment_unsupported(attrs, path, "PhysicsAttachment type1='xform' must not author indices1; skipping.")
-        return
-    if not indices0:
-        _mark_attachment_unsupported(attrs, path, "PhysicsAttachment has no indices0 attachment sites; skipping.")
-        return
-    if coords1 and len(coords1) != len(indices0):
-        _mark_attachment_unsupported(
-            attrs,
-            path,
-            f"PhysicsAttachment coords1 length {len(coords1)} does not match indices0 length "
-            f"{len(indices0)} for xform sites; skipping.",
-        )
-        return
     p0, p1 = particle_range
     bad_indices = [i for i in indices0 if i < 0 or i >= p1 - p0]
     if bad_indices:
@@ -319,9 +312,6 @@ def _import_particle_attachment(
             f"PhysicsAttachment indices0 {bad_indices} are out of range for {p1 - p0} simulation points; skipping.",
         )
         return
-    if not coords1:
-        coords1 = [wp.vec3(0.0, 0.0, 0.0) for _ in indices0]
-
     targets = []
     for coord1 in coords1:
         target_info = _resolve_attachment_target(ctx, src1, coord1)
@@ -351,6 +341,13 @@ def _import_particle_attachment(
         )
         return
 
+    warnings.warn(
+        f"{path}: physics:stiffness={stiffness} is read as a point-spring stiffness [N/m] and "
+        f"physics:damping={damping} as [N·s/m] per attachment site; the proposal's force/area "
+        "units are not converted.",
+        NewtonWarning,
+        stacklevel=3,
+    )
     attachments = [
         ctx.builder.add_attachment_particle_body(
             p0 + src_index,
