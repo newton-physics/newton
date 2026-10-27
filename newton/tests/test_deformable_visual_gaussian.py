@@ -72,7 +72,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         gaussian = newton.Gaussian(positions=positions, scales=np.full((4, 3), 0.05, dtype=np.float32))
         index = builder.add_deformable_visual_gaussian(
             gaussian,
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, builder.tet_count),
             parent=np.zeros(4, dtype=np.int32),
             weights=np.full((4, 4), 0.25, dtype=np.float32),
@@ -86,7 +86,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         visual = model.deformable_visual_gaussians[index]
         self.assertIsInstance(visual, newton.DeformableVisualGaussian)
         self.assertIs(visual.gaussian, gaussian)
-        self.assertEqual(visual.kind, newton.DeformableVisualMesh.Kind.TET)
+        self.assertEqual(visual.kind, newton.DeformableVisualMesh.Kind.TETRAHEDRON)
         self.assertEqual(visual.count, 4)
         self.assertEqual(visual.label, "soft_splats")
         self.assertEqual(visual.index, index)
@@ -102,7 +102,9 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
             builder.begin_world()
             tet_start = builder.tet_count
             builder.add_builder(prototype)
-            builder.add_deformable_visual_gaussian(gaussian, kind="tet", tet_range=(tet_start, builder.tet_count))
+            builder.add_deformable_visual_gaussian(
+                gaussian, kind="tetrahedron", tet_range=(tet_start, builder.tet_count)
+            )
             builder.end_world()
 
         model = builder.finalize(device="cpu")
@@ -116,7 +118,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         gaussian = newton.Gaussian(positions=positions, scales=np.full((2, 3), 0.05, dtype=np.float32))
         source.add_deformable_visual_gaussian(
             gaussian,
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, source.tet_count),
             parent=np.array([0, 1], dtype=np.int32),
             weights=np.full((2, 4), 0.25, dtype=np.float32),
@@ -152,7 +154,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         gaussian = newton.Gaussian(positions=np.array([[0.2, 0.2, 0.2]], dtype=np.float32))
 
         with self.assertRaisesRegex(ValueError, "current world is -1"):
-            builder.add_deformable_visual_gaussian(gaussian, kind="tet", tet_range=(0, builder.tet_count))
+            builder.add_deformable_visual_gaussian(gaussian, kind="tetrahedron", tet_range=(0, builder.tet_count))
 
         model = builder.finalize(device="cpu")
         self.assertEqual(model.shape_count, 0)
@@ -177,7 +179,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "same world scope"):
                     builder.add_deformable_visual_gaussian(
                         gaussian,
-                        kind="tet",
+                        kind="tetrahedron",
                         tet_range=(0, builder.tet_count),
                         parent=parents,
                         weights=np.full((len(parents), 4), 0.25, dtype=np.float32),
@@ -199,7 +201,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Gaussian data must be finite"):
             builder.add_deformable_visual_gaussian(
                 gaussian,
-                kind="tet",
+                kind="tetrahedron",
                 tet_range=(0, builder.tet_count),
                 parent=[0],
                 weights=np.full((1, 4), 0.25, dtype=np.float32),
@@ -222,7 +224,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         visual_gaussian = newton.Gaussian(positions=np.array([[0.2, 0.2, 0.2]], dtype=np.float32))
         builder.add_deformable_visual_gaussian(
             visual_gaussian,
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, builder.tet_count),
             parent=[0],
             weights=np.full((1, 4), 0.25, dtype=np.float32),
@@ -533,7 +535,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         builder.add_usd(stage)
         builder.add_shape_box(-1, xform=wp.transform(wp.vec3(3, 0, 0), wp.quat_identity()))
         builder.add_deformable_visual_mesh(
-            [[0, 0, 0], [2, 0, 0], [0, 2, 0]], [0, 1, 2], kind="particle", particles=[0, 1, 2]
+            [[0, 0, 0], [2, 0, 0], [0, 2, 0]], [0, 1, 2], kind="particle", parent=[0, 1, 2]
         )
         model = builder.finalize()
         state = model.state()
@@ -632,7 +634,7 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         gaussian = newton.Gaussian(positions=center, scales=rest_scale)
         builder.add_deformable_visual_gaussian(
             gaussian,
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, builder.tet_count),
             parent=[0],
             weights=np.full((1, 4), 0.25002, dtype=np.float32),
@@ -659,7 +661,7 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         gaussian = newton.Gaussian(positions=center, scales=rest_scale)
         builder.add_deformable_visual_gaussian(
             gaussian,
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, builder.tet_count),
             parent=[0],
             weights=np.full((1, 4), 0.25, dtype=np.float32),
@@ -688,7 +690,7 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         center = rest_particles[tet_indices[0]].mean(axis=0, keepdims=True)
         builder.add_deformable_visual_gaussian(
             newton.Gaussian(positions=center, scales=np.full((1, 3), 0.1, dtype=np.float32)),
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, builder.tet_count),
             parent=[0],
             weights=np.full((1, 4), 0.25, dtype=np.float32),
@@ -747,7 +749,7 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
                 scales=np.full((count, 3), 0.05, dtype=np.float32),
                 opacities=np.full(count, 0.95, dtype=np.float32),
             ),
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, builder.tet_count),
             parent=np.zeros(count, dtype=np.int32),
             weights=weights,
@@ -794,7 +796,7 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         )
         builder.add_deformable_visual_gaussian(
             gaussian,
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, builder.tet_count),
             parent=[0],
             weights=np.full((1, 4), 0.25, dtype=np.float32),
@@ -849,7 +851,7 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
                 scales=np.full((1, 3), 0.18, dtype=np.float32),
                 opacities=np.array([0.95], dtype=np.float32),
             ),
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, prototype.tet_count),
             parent=[0],
             weights=np.full((1, 4), 0.25, dtype=np.float32),

@@ -383,7 +383,7 @@ class Example:
             rest,
             indices,
             kind="particle",
-            particles=np.arange(particle_start, particle_start + particle_count, dtype=np.int32),
+            parent=np.arange(particle_start, particle_start + particle_count, dtype=np.int32),
             uvs=uvs.astype(np.float32),
             texture=self._diagnostic_texture(),
             label="camera_cloth_skin",
@@ -420,7 +420,7 @@ class Example:
         builder.add_deformable_visual_mesh(
             visual_verts,
             visual_indices,
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(tet_start, builder.tet_count),
             uvs=sphere.uvs,
             texture=self._diagnostic_texture(),

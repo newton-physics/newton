@@ -87,7 +87,7 @@ class Example:
             rest,
             indices,
             kind="particle",
-            particles=np.arange(particle_start, particle_start + particle_count, dtype=np.int32),
+            parent=np.arange(particle_start, particle_start + particle_count, dtype=np.int32),
             uvs=uvs.astype(np.float32),
             texture=self._diagnostic_texture(),
             label="cloth_skin",

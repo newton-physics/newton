@@ -69,7 +69,7 @@ class Example:
         builder.add_deformable_visual_mesh(
             visual_verts,
             visual_indices,
-            kind="tet",
+            kind="tetrahedron",
             tet_range=(0, builder.tet_count),
             uvs=visual_uvs,
             texture=self._diagnostic_texture(),

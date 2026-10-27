@@ -474,6 +474,9 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
         # Custom object — serialize attributes
         if hasattr(obj, "__dict__"):
             attributes = vars(obj)
+            if isinstance(obj, DeformableVisualMesh):
+                # Read-only attributes are stored under private names; keep the public ones in the file.
+                attributes = {name.removeprefix("_"): value for name, value in attributes.items()}
             if isinstance(obj, Model):
                 attributes = dict(attributes)
                 attributes["shape_contact_pairs"] = attributes.pop("_shape_contact_pairs", None)
@@ -481,6 +484,11 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                 if pair_count is not None:
                     attributes["shape_contact_pair_count"] = pair_count
                 attributes.pop("_shape_contact_pair_counts", None)
+                # Keep the public name in the file; the skinning batches are derived from the
+                # meshes and rebuilt on demand.
+                attributes["deformable_visual_meshes"] = attributes.pop("_deformable_visual_meshes", ())
+                attributes["deformable_visual_mesh_count"] = len(attributes["deformable_visual_meshes"])
+                attributes.pop("_deformable_visual_skin_batches", None)
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,
@@ -666,6 +674,30 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
 _MISSING = object()
 
 
+def _check_recorded_visual_meshes(source_dict: Mapping[str, Any], model: Model) -> None:
+    """Raise if a recording's visual meshes or their driver layout differ from a finalized model's.
+
+    A recording without visual meshes, whether it predates them or recorded a model that had
+    none, only has to match the element counts the kept meshes are bound to.
+    """
+    recorded = source_dict.get("deformable_visual_meshes")
+    current = model.deformable_visual_meshes
+    same_meshes = not recorded or (
+        len(current) == len(recorded)
+        and all(a.kind == b.kind and a.vertex_count == b.vertex_count for a, b in zip(current, recorded, strict=True))
+    )
+    same_drivers = all(
+        source_dict.get(name, getattr(model, name)) == getattr(model, name)
+        for name in ("particle_count", "body_count", "tri_count", "tet_count")
+    )
+    if not (same_meshes and same_drivers):
+        raise ValueError(
+            f"The recording does not match the {len(current)} deformable visual meshes of the finalized model or "
+            "the particle, body, triangle and tetrahedron counts they are bound to; load it into a model without "
+            "visual meshes"
+        )
+
+
 def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init_callback=None, _path=""):
     """
     Recursively transfer values from ``source_dict`` into ``target_obj``.
@@ -693,6 +725,12 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     target_is_namespace = isinstance(target_obj, Model.AttributeNamespace)
     target_is_model = isinstance(target_obj, Model)
 
+    if target_is_model and target_obj.deformable_visual_meshes:
+        # Visual meshes are fixed once set, so a finalized model keeps its own; the recording
+        # must then describe the same meshes over the same particle and body layout. Check
+        # this before anything is copied, so a mismatch leaves the model untouched.
+        _check_recorded_visual_meshes(source_dict, target_obj)
+
     for attr_name, source_value in source_dict.items():
         if target_is_model and attr_name in {
             "_shape_collision_filter_pairs",
@@ -708,6 +746,18 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
             "_shape_contact_pair_count",
         }:
             continue
+
+        if target_is_model and attr_name == "deformable_visual_meshes":
+            # Only a model without visual meshes takes the recorded ones; skinning batches
+            # derived earlier, for example by finalizing an empty builder, are dropped. A
+            # finalized model keeps its own, checked above.
+            if not target_obj.deformable_visual_meshes:
+                target_obj._deformable_visual_meshes = tuple(source_value)
+                target_obj._deformable_visual_skin_batches = None
+            continue
+
+        if target_is_model and attr_name == "deformable_visual_mesh_count":
+            continue  # derived from the meshes the model ends up with
 
         if target_is_model and attr_name.removeprefix("_") in {
             "mesh_edge_indices",
@@ -1331,9 +1381,8 @@ class ViewerFile(ViewerBase):
 
     @override
     def _log_deformable_visual_meshes(self, state: State):
-        # Record simulation data; playback evaluates visuals when it renders.
-        if type(self).log_mesh is not ViewerFile.log_mesh:
-            super()._log_deformable_visual_meshes(state)
+        # Only simulation data is recorded; playback skins the meshes when it renders.
+        return
 
     @override
     def log_state(self, state: State):
@@ -1424,6 +1473,10 @@ class ViewerFile(ViewerBase):
 
         Args:
             model: Destination model object to populate.
+
+        Raises:
+            ValueError: If the model already has deformable visual meshes and the
+                recording's meshes or element counts do not match them.
         """
         if not self.deserialized_model:
             logger.warning("No model data to playback.")
@@ -1696,10 +1749,17 @@ class ViewerFile(ViewerBase):
         """Restore a Model from the loaded recording.
 
         Must be called after load_recording(). The given model is populated
-        with the recorded model structure (bodies, shapes, etc.).
+        with the recorded model structure (bodies, shapes, etc.). A model that
+        already has deformable visual meshes keeps them; the recording must then
+        have the same particle, body, triangle and tetrahedron counts, and if it
+        holds visual meshes, the same ones (count, kind and vertex count).
 
         Args:
             model: A Newton Model instance to populate.
+
+        Raises:
+            ValueError: If the model already has deformable visual meshes and the
+                recording's meshes or element counts do not match them.
         """
         self.playback_model(model)
 

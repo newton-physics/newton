@@ -217,7 +217,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     index = builder.add_deformable_visual_mesh(
                         world_verts,
                         indices,
-                        kind="tet",
+                        kind="tetrahedron",
                         tet_range=tet_range,
                         parent=parent,
                         weights=weights,
@@ -257,7 +257,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                             if isinstance(pose, ValueError):
                                 raise pose
                         reference_binding = builder._bind_visual_vertices_to_bodies(
-                            world_verts, bodies, poses=np.asarray(poses)
+                            world_verts, bodies, nearest=True, poses=np.asarray(poses)
                         )
                     index = builder.add_deformable_visual_mesh(
                         world_verts,
@@ -312,7 +312,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 bind_poses = np.linalg.inv(basis).astype(np.float32)
                 index = builder.add_deformable_visual_gaussian(
                     gaussian,
-                    kind="tet",
+                    kind="tetrahedron",
                     tet_range=tet_range,
                     parent=parent,
                     weights=weights,
