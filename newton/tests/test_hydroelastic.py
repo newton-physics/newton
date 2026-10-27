@@ -738,7 +738,7 @@ def test_buffer_fraction_no_crash(test, device):
     )
 
 
-def test_deterministic_hydroelastic_contacts(test, device, moment_matching=False):
+def test_deterministic_hydroelastic_contacts(test, device, moment_matching=False, *, use_pressure_gradient=False):
     """Produce bit-identical hydroelastic contacts across repeated collision calls."""
     model, _, state, _, _, pipeline, _, _ = build_stacked_cubes_scene(
         device=device,
@@ -749,6 +749,7 @@ def test_deterministic_hydroelastic_contacts(test, device, moment_matching=False
             reduce_contacts=True,
             anchor_contact=True,
             moment_matching=moment_matching,
+            use_pressure_gradient=use_pressure_gradient,
         ),
     )
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -798,6 +799,11 @@ def test_deterministic_hydroelastic_contacts(test, device, moment_matching=False
 def test_deterministic_hydroelastic_contacts_moment_matching(test, device):
     """Keep hydroelastic contacts bit-identical when moment matching is enabled."""
     test_deterministic_hydroelastic_contacts(test, device, moment_matching=True)
+
+
+def test_deterministic_pressure_tangent_contacts(test, device):
+    """Keep opt-in patch tangents bit-identical with anchors and moment matching."""
+    test_deterministic_hydroelastic_contacts(test, device, moment_matching=True, use_pressure_gradient=True)
 
 
 def test_cached_shape_sdf_data_matches_fallback(test, device):
@@ -1351,7 +1357,7 @@ def test_hydroelastic_margin_contact_area_is_deprecated(test, device, reduce_con
     )
 
 
-def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
+def test_mujoco_warp_hydroelastic_speculative_activation(test, device, use_pressure_gradient=False):
     """Keep speculative contacts inactive until they enter the margin band."""
     model, state_0, body_b = _build_margin_gap_boxes(device)
     state_1 = model.state()
@@ -1363,6 +1369,7 @@ def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
         sdf_hydroelastic_config=HydroelasticSDF.Config(
             reduce_contacts=True,
             buffer_fraction=1.0,
+            use_pressure_gradient=use_pressure_gradient,
         ),
     )
     contacts = pipeline.contacts()
@@ -2793,6 +2800,13 @@ add_function_test(
     test_mujoco_warp_hydroelastic_speculative_activation,
     devices=cuda_devices,
 )
+add_function_test(
+    TestHydroelastic,
+    "test_mujoco_warp_hydroelastic_speculative_activation_pressure_gradient",
+    test_mujoco_warp_hydroelastic_speculative_activation,
+    devices=cuda_devices,
+    use_pressure_gradient=True,
+)
 
 add_function_test(
     TestHydroelastic,
@@ -2854,6 +2868,14 @@ add_function_test(
     TestHydroelastic,
     "test_deterministic_hydroelastic_contacts",
     test_deterministic_hydroelastic_contacts,
+    devices=cuda_devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestHydroelastic,
+    "test_deterministic_pressure_tangent_contacts",
+    test_deterministic_pressure_tangent_contacts,
     devices=cuda_devices,
     check_output=False,
 )
