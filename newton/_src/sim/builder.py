@@ -1334,13 +1334,23 @@ class ModelBuilder:
         namespace: str | None = None
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
 
-        references: str | None = None
+        references: Model.AttributeFrequency | str | None = None
         """For attributes containing entity indices, specifies how values are transformed during add_builder/add_world/replicate merging.
 
-        Built-in entity types (values are offset by entity count):
+        Use :class:`Model.AttributeFrequency` for a built-in reference domain, such as
+        ``Model.AttributeFrequency.CURVE``, or a string for a custom frequency.
+        Unlike :attr:`frequency`, which indexes the attribute's rows, this field
+        identifies what its stored integer values refer to.
+
+        Built-in string names are also supported (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
               ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``
+
+        For experimental deformable object types, use ``Model.AttributeFrequency.CURVE``,
+        ``SURFACE``, or ``VOLUME``. The strings ``"curve"``, ``"surface"``, and ``"volume"``
+        refer to custom frequencies, regardless of registration order.
+        Registration preserves the supplied value of this field.
 
         Special handling:
             - ``"world"``: Missing custom-frequency row values are initialized from
@@ -1496,6 +1506,14 @@ class ModelBuilder:
                 return 0
             return len(self.values)
 
+        def _values_with_defaults(self, count: int) -> dict[int, Any] | list[Any]:
+            """Return explicit values for existing rows without changing this declaration."""
+            if self.is_custom_frequency:
+                values = list(self.values or [])
+                values.extend([None] * max(0, count - len(values)))
+                return [self.default if value is None else value for value in values]
+            return {**dict.fromkeys(range(count), self.default), **(self.values or {})}
+
         def _build_default_array(
             self, count: int, device: Devicelike | None = None, requires_grad: bool = False
         ) -> wp.array[Any] | list:
@@ -1548,8 +1566,8 @@ class ModelBuilder:
         Represents a custom frequency definition for the ModelBuilder.
 
         Custom frequencies allow defining entity types beyond the built-in ones (BODY, SHAPE, JOINT, etc.).
-        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before any custom attributes
-        using them can be added.
+        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before assigning them
+        to an attribute's :attr:`CustomAttribute.frequency` field.
 
         The optional ``usd_prim_filter`` callback enables automatic USD parsing for this frequency.
         When provided, :meth:`ModelBuilder.add_usd` will call this function for each prim in the USD
@@ -2450,7 +2468,8 @@ class ModelBuilder:
             and existing.dtype == incoming.dtype
             and existing.assignment == incoming.assignment
             and existing.namespace == incoming.namespace
-            and existing.references == incoming.references
+            and Model._normalize_attribute_reference(existing.references)
+            == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
         )
 
@@ -2544,7 +2563,10 @@ class ModelBuilder:
 
     def _index_custom_world_reference_attribute(self, attribute: CustomAttribute) -> None:
         """Index a custom-frequency world reference for row insertion."""
-        if not attribute.is_custom_frequency or attribute.references != "world":
+        if (
+            not attribute.is_custom_frequency
+            or Model._normalize_attribute_reference(attribute.references) != Model.AttributeFrequency.WORLD
+        ):
             return
 
         freq_key = attribute.frequency
@@ -2571,7 +2593,8 @@ class ModelBuilder:
         """
         Register a custom frequency for the builder.
 
-        Custom frequencies must be registered before adding any custom attributes that use them.
+        Custom frequencies must be registered before assigning them to an attribute's
+        :attr:`CustomAttribute.frequency` field.
         This enables explicit declaration of custom entity types and optionally provides USD
         parsing support via the ``usd_prim_filter`` callback.
 
@@ -2720,7 +2743,10 @@ class ModelBuilder:
                     )
                 if owner_attribute.assignment != Model.AttributeAssignment.MODEL:
                     raise ValueError(f"Articulation owner attribute '{owner_key}' must be assigned to Model")
-                if owner_attribute.references != "articulation":
+                if (
+                    Model._normalize_attribute_reference(owner_attribute.references)
+                    != Model.AttributeFrequency.ARTICULATION
+                ):
                     raise ValueError(
                         f"Articulation owner attribute '{owner_key}' must declare references='articulation'"
                     )
@@ -3986,9 +4012,12 @@ class ModelBuilder:
         self.joint_coord_count += copy_count * counts["joint_coord"]
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
+        custom_attributes = self._prepare_builder_custom_attributes(builder)
         for copy_index, world in enumerate(worlds.tolist()):
             entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
-            self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[copy_index])
+            self._merge_builder_custom_attributes(
+                builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
+            )
             self._merge_builder_actuators(
                 builder,
                 int(joint_dof_starts[copy_index]),
@@ -4012,6 +4041,8 @@ class ModelBuilder:
                 counts[key] = count
             elif frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
                 counts[key] = len(builder.constraint_mimic_joint0)
+            elif key in cls._BUILDER_GROUP_REFERENCES:
+                counts[key] = len(getattr(builder, f"{key}_label"))
         return counts
 
     @staticmethod
@@ -4057,7 +4088,7 @@ class ModelBuilder:
                 specs[name] = Model.AttributeSpec(
                     group,
                     references=reference,
-                    compaction_policy="start" if suffix.endswith("_start") else "end",
+                    compaction_policy="range_start" if suffix.endswith("_start") else "end",
                 )
                 declared_builder_attributes.add(name)
 
@@ -4110,7 +4141,9 @@ class ModelBuilder:
         if validated.get(builder) == cache_key:
             return
 
-        valid_references = entity_kinds | set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
+        custom_references = set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
+        valid_references = entity_kinds | custom_references
+        references_resolved = True
 
         for freq_key, frequency in builder.custom_frequencies.items():
             existing = self.custom_frequencies.get(freq_key)
@@ -4130,11 +4163,23 @@ class ModelBuilder:
                         f"existing={merged.default}, incoming={attr.default}"
                     )
 
-            if attr.values and attr.references not in (None, "world") and attr.references not in valid_references:
-                raise ValueError(
-                    f"Unknown references value '{attr.references}'. "
-                    f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
+            reference = Model._normalize_attribute_reference(attr.references)
+            reference_key = None if reference is None else self._builder_frequency_key(reference)
+            reference_domains = entity_kinds if isinstance(reference, Model.AttributeFrequency) else custom_references
+            if reference_key not in (None, "world") and reference_key not in reference_domains:
+                unused_custom_reference = (
+                    isinstance(reference, str)
+                    and isinstance(attr.frequency, str)
+                    and not attr.values
+                    and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
                 )
+                if unused_custom_reference:
+                    references_resolved = False
+                else:
+                    raise ValueError(
+                        f"Unknown references value '{attr.references}'. "
+                        f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
+                    )
 
             if (
                 attr.values
@@ -4160,7 +4205,10 @@ class ModelBuilder:
                     f"({existing!r} != {finalizer!r})."
                 )
 
-        validated[builder] = cache_key
+        # Adding rows does not change the schema epoch. Recheck deferred references
+        # on the next merge so default-only rows cannot bypass validation.
+        if references_resolved:
+            validated[builder] = cache_key
 
     def add_articulation(
         self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None
@@ -4867,6 +4915,9 @@ class ModelBuilder:
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
         MuJoCo-specific custom attributes are registered on the builder automatically.
+        Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+        (included in ``newton[sim]``) to resolve native defaults, and raises
+        :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -5176,17 +5227,43 @@ class ModelBuilder:
 
     # endregion
 
+    def _prepare_builder_custom_attributes(self, builder: ModelBuilder) -> dict[str, ModelBuilder.CustomAttribute]:
+        # Resolve source rows before deciding which attributes need per-copy work.
+        builder._resolve_custom_frequency_articulation_owners()
+        attributes = {}
+        for full_key, attr in builder.custom_attributes.items():
+            # Empty declarations are shared by all copies. Reference defaults on
+            # frequencies with rows still need per-copy remapping.
+            if not attr.values:
+                can_skip_remapping = attr.references is None
+                if not can_skip_remapping:
+                    has_empty_custom_frequency = (
+                        isinstance(attr.frequency, str) and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
+                    )
+                    can_skip_remapping = (
+                        has_empty_custom_frequency and attr.reference_value_transformer is None
+                    ) or attr.references in (Model.AttributeFrequency.WORLD, "world")
+                if can_skip_remapping:
+                    if full_key not in self.custom_attributes:
+                        mapped_values = [] if isinstance(attr.frequency, str) else {}
+                        merged = replace(attr, values=mapped_values)
+                        self.custom_attributes[full_key] = merged
+                        self._custom_schema_epoch += 1
+                        self._index_custom_world_reference_attribute(merged)
+                    continue
+            attributes[full_key] = attr
+        return attributes
+
     def _merge_builder_custom_attributes(
         self,
         builder: ModelBuilder,
         entity_offsets: dict[str, int],
         world: int,
         label_prefix: str | None,
+        attributes: dict[str, ModelBuilder.CustomAttribute],
     ) -> None:
-        # Resolve source rows before ordinary reference remapping copies them.
-        # Resolve existing destination rows too, since its topology may have
+        # Resolve existing destination rows, since its topology may have
         # changed since the rows were first added.
-        builder._resolve_custom_frequency_articulation_owners()
         self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
@@ -5213,11 +5290,11 @@ class ModelBuilder:
                 if source_domain >= 0:
                     collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
 
-        def get_offset(entity_or_key: str | None) -> int:
+        def get_offset(entity_or_key: Model.AttributeFrequency | str | None) -> int:
             if entity_or_key is None:
                 return 0
-            if entity_or_key in entity_offsets:
-                return entity_offsets[entity_or_key]
+            if isinstance(entity_or_key, Model.AttributeFrequency):
+                return entity_offsets[entity_or_key.name.lower()]
             if entity_or_key in custom_frequency_offsets:
                 return custom_frequency_offsets[entity_or_key]
             if entity_or_key in builder._custom_frequency_counts:
@@ -5227,16 +5304,11 @@ class ModelBuilder:
                 f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
             )
 
-        for full_key, attr in builder.custom_attributes.items():
-            if not attr.values:
-                if full_key not in self.custom_attributes:
-                    freq_key = attr.frequency
-                    mapped_values = [] if isinstance(freq_key, str) else {}
-                    merged = replace(attr, values=mapped_values)
-                    self.custom_attributes[full_key] = merged
-                    self._custom_schema_epoch += 1
-                    self._index_custom_world_reference_attribute(merged)
-                continue
+        source_counts = None
+        for full_key, attr in attributes.items():
+            reference = attr.references
+            if isinstance(reference, str):
+                reference = Model._normalize_attribute_reference(reference)
 
             freq_key = attr.frequency
             if isinstance(freq_key, str):
@@ -5246,10 +5318,10 @@ class ModelBuilder:
             elif attr.frequency == Model.AttributeFrequency.WORLD:
                 index_offset = 0 if world == -1 else world
             else:
-                index_offset = get_offset(attr.frequency.name.lower())
+                index_offset = get_offset(attr.frequency)
 
-            use_current_world = attr.references == "world"
-            value_offset = 0 if use_current_world else get_offset(attr.references)
+            use_current_world = reference == Model.AttributeFrequency.WORLD
+            value_offset = 0 if use_current_world else get_offset(reference)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             source_values = attr.values
@@ -5328,12 +5400,20 @@ class ModelBuilder:
                     if offset == 0:
                         return value
                     if self._is_integer_scalar(value):
-                        return value + offset if value >= 0 else value
+                        index = int(value)
+                        return index + offset if index >= 0 else value
                     if isinstance(value, (list, tuple)):
                         transformed = [
                             item + offset if self._is_integer_scalar(item) and item >= 0 else item for item in value
                         ]
                         return type(value)(transformed)
+                    value_type = type(value)
+                    if wp.types.type_is_vector(value_type) and wp.types.type_is_int(value_type._wp_scalar_type_):
+                        return value_type(*(item + offset if item >= 0 else item for item in value))
+                    if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.integer):
+                        transformed = value.copy()
+                        transformed[value >= 0] += offset
+                        return transformed
                     try:
                         return value + offset
                     except TypeError:
@@ -5350,6 +5430,26 @@ class ModelBuilder:
                     if is_collision_mask_domain:
                         return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
+
+                if value_offset and not self._custom_attribute_defaults_match(
+                    transform_value(attr.default), attr.default
+                ):
+                    # Different copies need different reference values, not a shared shifted default.
+                    if freq_key == Model.AttributeFrequency.ONCE:
+                        # Implicit source defaults must not replace an existing global value.
+                        count = int(full_key not in self.custom_attributes)
+                    elif freq_key == Model.AttributeFrequency.WORLD:
+                        # Each copy uses one destination world, or none for global entities.
+                        count = int(world >= 0)
+                    else:
+                        if source_counts is None:
+                            source_counts = self._builder_merge_counts(builder)
+                        count = (
+                            builder._custom_frequency_counts.get(freq_key, 0)
+                            if isinstance(freq_key, str)
+                            else source_counts.get(self._builder_frequency_key(freq_key), 0)
+                        )
+                    source_values = attr._values_with_defaults(count)
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
@@ -7318,12 +7418,15 @@ class ModelBuilder:
 
         Note:
             Deformable labels do not change which fixed joints are collapsed. A curve's
-            record is retained only if all of its segment bodies and joints survive.
-            Otherwise the incomplete record is omitted with a warning. Pass the relevant
-            fixed joint through ``joints_to_keep`` to preserve the complete curve.
+            record describes its surviving segment bodies and joints. It is omitted with
+            a warning only when no segment bodies remain. Pass the relevant fixed joints
+            through ``joints_to_keep`` to preserve the original segment layout.
             Curve-removal warnings are emitted after collapse completes.
         """
         joints_to_keep = set(joints_to_keep or ())
+
+        original_counts = self._builder_merge_counts(self)
+        original_counts.update(once=1, world=max(1, self.world_count))
 
         body_data = {}
         body_children = {-1: []}
@@ -7783,33 +7886,29 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Rebuild deformable curve ranges after reindexing. Retain a deformable object record only when
-        # every one of its simulation bodies and joints survived collapse; exposing a partial
-        # range would misrepresent the original curve topology.
+        # Records describe the surviving simulation bodies, not the original segments.
+        # Retained bodies and joints preserve their order, so each range stays contiguous.
         curve_records = []
-        incomplete_curve_labels = []
-        for label, world, body_start, body_end, joint_start, joint_end in zip(
-            self.curve_label,
-            self.curve_world,
-            self._curve_body_start,
-            self._curve_body_end,
-            self._curve_joint_start,
-            self._curve_joint_end,
-            strict=True,
+        curve_remap = {}
+        removed_curve_labels = []
+        for curve_index, (label, world, body_start, body_end, joint_start, joint_end) in enumerate(
+            zip(
+                self.curve_label,
+                self.curve_world,
+                self._curve_body_start,
+                self._curve_body_end,
+                self._curve_joint_start,
+                self._curve_joint_end,
+                strict=True,
+            )
         ):
             old_bodies = list(range(body_start, body_end))
             old_joints = list(range(joint_start, joint_end))
             new_bodies = [body_remap[body] for body in old_bodies if body in body_remap]
             new_joints = [joint_remap[joint] for joint in old_joints if joint in joint_remap]
 
-            bodies_complete = len(new_bodies) == len(old_bodies) and all(
-                body == new_bodies[0] + offset for offset, body in enumerate(new_bodies)
-            )
-            joints_complete = len(new_joints) == len(old_joints) and (
-                not new_joints or all(joint == new_joints[0] + offset for offset, joint in enumerate(new_joints))
-            )
-            if not old_bodies or not bodies_complete or not joints_complete:
-                incomplete_curve_labels.append(label)
+            if not new_bodies:
+                removed_curve_labels.append(label)
                 continue
 
             if new_joints:
@@ -7821,6 +7920,7 @@ class ModelBuilder:
                 new_boundary = bisect_left(retained_joints, joint_start, key=lambda joint: joint["original_id"])
                 remapped_joint_range = (new_boundary, new_boundary)
 
+            curve_remap[curve_index] = len(curve_records)
             curve_records.append((label, world, new_bodies[0], new_bodies[-1] + 1, *remapped_joint_range))
 
         self.curve_label = [record[0] for record in curve_records]
@@ -7830,39 +7930,73 @@ class ModelBuilder:
         self._curve_joint_start = [record[4] for record in curve_records]
         self._curve_joint_end = [record[5] for record in curve_records]
 
-        def remap_articulation_reference(value: Any) -> Any:
+        def remap_object_reference(value: Any, remap: dict[int, int]) -> Any:
             if isinstance(value, bool):
                 return value
             if isinstance(value, list):
-                return [remap_articulation_reference(v) for v in value]
+                return [remap_object_reference(v, remap) for v in value]
             if isinstance(value, tuple):
-                return tuple(remap_articulation_reference(v) for v in value)
+                return tuple(remap_object_reference(v, remap) for v in value)
+            if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.integer):
+                transformed = value.copy()
+                for index in np.ndindex(value.shape):
+                    transformed[index] = remap_object_reference(value[index], remap)
+                return transformed
+            value_type = type(value)
+            if wp.types.type_is_vector(value_type) and wp.types.type_is_int(value_type._wp_scalar_type_):
+                return value_type(*(remap_object_reference(v, remap) for v in value))
             # Covers Python int as well as Warp scalar integer types (wp.int32 etc.),
             # whose default `dtype(0)` instances are not Python ints.
             try:
                 idx = int(value)
             except (TypeError, ValueError):
                 return value
-            return articulation_remap.get(idx, -1) if idx >= 0 else value
+            return remap.get(idx, -1) if idx >= 0 else value
 
-        # ARTICULATION-frequency attributes use dict storage by construction
+        object_remaps = {
+            Model.AttributeFrequency.ARTICULATION: articulation_remap,
+            Model.AttributeFrequency.CURVE: curve_remap,
+        }
+        for custom_attr in self.custom_attributes.values():
+            remap = object_remaps.get(Model._normalize_attribute_reference(custom_attr.references))
+            if remap is None or self._custom_attribute_defaults_match(
+                remap_object_reference(custom_attr.default, remap), custom_attr.default
+            ):
+                continue
+            # Fill old rows before their indices change; leave defaults for future rows alone.
+            frequency = custom_attr.frequency
+            count = (
+                self._custom_frequency_counts.get(frequency, 0)
+                if isinstance(frequency, str)
+                else original_counts.get(self._builder_frequency_key(frequency), 0)
+            )
+            custom_attr.values = custom_attr._values_with_defaults(count)
+
+        # Built-in frequency attributes use dict storage by construction
         # (see CustomAttribute._create_empty_values_container).
-        for custom_attr in self.get_custom_attributes_by_frequency([Model.AttributeFrequency.ARTICULATION]):
-            custom_attr.values = {
-                new_idx: custom_attr.values[old_idx]
-                for old_idx, new_idx in articulation_remap.items()
-                if old_idx in custom_attr.values
-            }
+        for frequency, remap in (
+            (Model.AttributeFrequency.BODY, body_remap),
+            (Model.AttributeFrequency.JOINT, joint_remap),
+            (Model.AttributeFrequency.ARTICULATION, articulation_remap),
+            (Model.AttributeFrequency.CURVE, curve_remap),
+        ):
+            for custom_attr in self.get_custom_attributes_by_frequency([frequency]):
+                custom_attr.values = {
+                    new_idx: custom_attr.values[old_idx]
+                    for old_idx, new_idx in remap.items()
+                    if old_idx in custom_attr.values
+                }
 
         for custom_attr in self.custom_attributes.values():
-            if custom_attr.references != "articulation" or custom_attr.values is None:
+            remap = object_remaps.get(Model._normalize_attribute_reference(custom_attr.references))
+            if remap is None or custom_attr.values is None:
                 continue
             if isinstance(custom_attr.values, dict):
                 custom_attr.values = {
-                    entity_idx: remap_articulation_reference(value) for entity_idx, value in custom_attr.values.items()
+                    entity_idx: remap_object_reference(value, remap) for entity_idx, value in custom_attr.values.items()
                 }
             else:
-                custom_attr.values = [remap_articulation_reference(value) for value in custom_attr.values]
+                custom_attr.values = [remap_object_reference(value, remap) for value in custom_attr.values]
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
@@ -8157,9 +8291,10 @@ class ModelBuilder:
             return joint_remap.get(idx, -1)
 
         for custom_attr in self.custom_attributes.values():
-            if custom_attr.references == "body":
+            reference = Model._normalize_attribute_reference(custom_attr.references)
+            if reference == Model.AttributeFrequency.BODY:
                 remap_reference = _remap_body_reference
-            elif custom_attr.references == "joint":
+            elif reference == Model.AttributeFrequency.JOINT:
                 remap_reference = _remap_joint_reference
             else:
                 continue
@@ -8185,10 +8320,10 @@ class ModelBuilder:
                 self.joint_children[p].append((c, i))
 
         # Warning filters may raise, so finish rebuilding all references before emitting these.
-        for label in incomplete_curve_labels:
+        for label in removed_curve_labels:
             warnings.warn(
-                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
-                "of its segment bodies or joints were removed; pass the relevant fixed joint through "
+                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because all "
+                "of its segment bodies were removed; pass the relevant fixed joint through "
                 "joints_to_keep to preserve the complete deformable object.",
                 NewtonWarning,
                 stacklevel=2,
@@ -15004,6 +15139,15 @@ class ModelBuilder:
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
+            # Snapshot identities so later builder edits cannot change model inspection.
+            for family, references in self._BUILDER_GROUP_REFERENCES.items():
+                labels = list(getattr(self, f"{family}_label"))
+                setattr(m, f"{family}_label", labels)
+                setattr(m, f"{family}_count", len(labels))
+                setattr(m, f"{family}_world", wp.array(getattr(self, f"{family}_world"), dtype=wp.int32))
+                for suffix in references:
+                    setattr(m, f"{family}_{suffix}", wp.array(getattr(self, f"_{family}_{suffix}"), dtype=wp.int32))
+
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
             # can live on it. The per-row ``equality_constraint_*`` arrays are materialized by the
@@ -15192,6 +15336,9 @@ class ModelBuilder:
                     custom_attr.assignment,
                     custom_attr.namespace,
                     custom_attr.references,
+                )
+                m._set_attribute_spec(
+                    custom_attr.key, replace(m.attribute_specs[custom_attr.key], default=custom_attr.default)
                 )
 
             self._finalize_custom_frequency_metadata(m, device)

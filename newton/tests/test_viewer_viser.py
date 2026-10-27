@@ -14,6 +14,7 @@ import time
 import unittest
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -269,14 +270,103 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertTrue(self.viewer.picking_enabled)
             example.render()
             self.assertTrue(self.viewer._picking_click_callbacks)
+            self.update_gui(self.viewer._viewer_option_handles["show_particles"], True)
+            self.wait_for(lambda: self.viewer.show_particles)
+            self.update_gui(self.viewer._viewer_option_handles["show_contacts"], True)
+            self.wait_for(lambda: self.viewer.show_contacts)
+            self.update_gui(self.viewer._viewer_option_handles["wireframe"], True)
+            self.wait_for(lambda: self.viewer._wireframe)
             self.viewer.picking_enabled = False
             self.assertFalse(self.viewer._picking_click_callbacks)
+            self.viewer.set_camera(wp.vec3(8.0, 9.0, 4.0), pitch=-10.0, yaw=30.0)
+            camera_request = tuple(value.copy() for value in self.viewer._camera_request)
+            self.viewer._set_camera_request(*camera_request, fov=65.0)
+            # Browser navigation is client-local and does not update the cached
+            # programmatic request. Preserve both across reset.
+            client = next(iter(self.server.get_clients().values()))
+            self.send(
+                "ViewerCameraMessage",
+                wxyz=(1.0, 0.0, 0.0, 0.0),
+                position=(2.0, 3.0, 8.0),
+                look_at=(2.0, 3.0, 0.0),
+                up_direction=(0.0, 1.0, 0.0),
+                fov=1.1,
+                near=0.12,
+                far=77.0,
+                image_height=800,
+                image_width=1000,
+            )
+            self.wait_for(lambda: np.allclose(client.camera.position, (2.0, 3.0, 8.0)))
             del example
             example = browser.reset(example_class)
             self.assertIsNotNone(example)
             self.assertTrue(self.viewer.picking_enabled)
             example.render()
             self.assertTrue(self.viewer._picking_click_callbacks)
+            self.assertTrue(self.viewer.show_contacts)
+            self.assertTrue(self.viewer.show_particles)
+            self.assertIn("show_particles", self.viewer._display_options_user)
+            with self.subTest(camera="programmatic"):
+                for actual, expected in zip(self.viewer._camera_request, camera_request, strict=True):
+                    np.testing.assert_allclose(actual, expected)
+                self.assertAlmostEqual(self.viewer._camera_fov_radians, np.deg2rad(65.0))
+                self.assertEqual((self.viewer._camera_pitch, self.viewer._camera_yaw), (-10.0, 30.0))
+            with self.subTest(camera="client"):
+                np.testing.assert_allclose(client.camera.position, (2.0, 3.0, 8.0))
+                np.testing.assert_allclose(client.camera.look_at, (2.0, 3.0, 0.0))
+                np.testing.assert_allclose(client.camera.up_direction, (0.0, 1.0, 0.0))
+                self.assertAlmostEqual(client.camera.fov, 1.1)
+                self.assertAlmostEqual(client.camera.near, 0.12)
+                self.assertAlmostEqual(client.camera.far, 77.0)
+
+            # A failed native browser selection must show the error and retry
+            # that selection, rather than resetting the previously loaded class.
+            model = example.model
+            del example
+
+            class SelectedExample:
+                fail = True
+
+                def __init__(self, viewer: ViewerViser, args: object) -> None:
+                    viewer.set_model(model)
+                    viewer.show_contacts = False
+                    viewer._set_wireframe(False)
+                    viewer.set_camera(wp.vec3(-2.0, 1.0, 3.0), pitch=-20.0, yaw=-60.0)
+                    if self.fail:
+                        raise SystemExit("bad *setting*\n[details]")
+
+            browser.switch_target = "test.selected"
+            with mock.patch(
+                "newton.examples.importlib.import_module", return_value=SimpleNamespace(Example=SelectedExample)
+            ):
+                with self.assertLogs("newton", level="ERROR"):
+                    example, _ = browser.switch(example_class)
+                self.assertIsNone(example)
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+                error_widgets = list(self.viewer._example_gui_handles.values())
+                error_text = next(handle.content for _, handle in error_widgets if hasattr(handle, "content"))
+                self.assertIn("SystemExit: bad \\*setting\\*  \n\\[details\\]", error_text)
+                retry = next(handle for _, handle in error_widgets if getattr(handle, "label", "").startswith("Retry"))
+                self.update_gui(retry, True)
+                self.wait_for(lambda: bool(self.viewer._example_gui_pending))
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+                self.assertEqual(browser.switch_target, "test.selected")
+                SelectedExample.fail = False
+                example, _ = browser.switch(example_class)
+                self.assertIsInstance(example, SelectedExample)
+                self.assertIsNone(browser.load_error)
+                self.assertTrue(self.viewer.show_contacts)
+                self.assertTrue(self.viewer._wireframe)
+                np.testing.assert_allclose(client.camera.position, (-2.0, 1.0, 3.0))
+                self.assertAlmostEqual(client.camera.fov, np.deg2rad(45.0))
+                example = None
+                self.assertIsNotNone(browser.reset(SelectedExample))
+                self.assertTrue(self.viewer._wireframe)
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+                self.assertFalse(self.viewer._example_gui_handles)
 
     def test_gizmo_roundtrip_and_disconnect(self):
         """Mutate a caller-owned transform through real drag messages and release on disconnect."""
