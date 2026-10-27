@@ -12,6 +12,7 @@ import newton
 from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
 from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
 from newton._src.geometry.contact_sort import ContactSorter
+from newton._src.solvers.vbd.particle_vbd_kernels import relax_self_contact_anchors
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -1217,6 +1218,141 @@ def test_sticky_disabled_no_sticky_buffers(test, device):
         test.assertIsNotNone(p_sticky._contact_matcher._prev_offset1)
 
 
+def _build_self_contact_scene(device, world_count=1):
+    """Build one particle hovering 3 mm over a pinned cloth square per world, the particle at ``x = 0.02``."""
+    world = newton.ModelBuilder()
+    world.add_cloth_grid(
+        pos=wp.vec3(0.0, 0.0, 0.0),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.0,
+        tri_ke=1.0e2,
+        tri_ka=1.0e2,
+        tri_kd=0.0,
+    )
+    world.add_particle(pos=wp.vec3(0.02, 0.07, 0.003), vel=wp.vec3(0.0), mass=1.0)
+    builder = newton.ModelBuilder()
+    for w in range(world_count):
+        builder.add_world(world, xform=wp.transform(wp.vec3(0.0, 2.0 * w, 0.0)))
+    model = builder.finalize(device=device)
+    return model, model.state()
+
+
+def _self_contact_pipeline(model, **kwargs):
+    pipeline = newton.CollisionPipeline(model, contact_matching="sticky", **kwargs)
+    pipeline.init_soft_self_contact(margin=0.005, gap=0.005)
+    return pipeline
+
+
+def _vertex_anchor_x(model, contacts, vertices):
+    """World x of each vertex's anchored position, one per vertex-triangle pair of ``vertices``."""
+    info = contacts.soft_self_contact_data
+    q = model.particle_q.numpy()
+    tri_indices = model.tri_indices.numpy()
+    offsets = info.vertex_colliding_triangles_offsets.numpy()
+    counts = info.vertex_colliding_triangles_count.numpy()
+    pairs = info.vertex_colliding_triangles.numpy()
+    anchors = info.vertex_colliding_triangles_anchor.numpy()
+    xs = []
+    for v in vertices:
+        assert counts[v] > 0
+        for slot in range(offsets[v], offsets[v] + counts[v]):
+            a, b, c = q[tri_indices[pairs[2 * slot + 1]]]
+            n = np.cross(b - a, c - a)
+            u, w, h = anchors[slot]
+            xs.append((a + u * (b - a) + w * (c - a) + h * n / np.linalg.norm(n))[0])
+    return np.array(xs)
+
+
+def _check_sticky_self_contact_anchors(test, device, *, use_capture):
+    with wp.ScopedDevice(device):
+        model, state = _build_self_contact_scene(device)
+        pipeline = _self_contact_pipeline(model)
+        contacts = pipeline.contacts()
+        particle = model.particle_count - 1
+        if use_capture:
+            with wp.ScopedCapture(device=device) as capture:
+                pipeline.collide(state, contacts, soft_self_contact=True)
+
+        def anchor_x_at(x):
+            q = state.particle_q.numpy()
+            q[particle, 0] = x
+            state.particle_q.assign(q)
+            if use_capture:
+                wp.capture_launch(capture.graph)
+            else:
+                pipeline.collide(state, contacts, soft_self_contact=True)
+            return _vertex_anchor_x(model, contacts, [particle])
+
+        np.testing.assert_allclose(anchor_x_at(0.02), 0.02, atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0202), 0.02, atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0204), 0.02, atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0206), 0.0201, atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0207), 0.0202, atol=1.0e-7)
+        wp.launch(
+            relax_self_contact_anchors,
+            dim=model.particle_count,
+            inputs=[0.0001, state.particle_q, model.tri_indices, model.edge_indices, contacts.soft_self_contact_data],
+        )
+        np.testing.assert_allclose(anchor_x_at(0.0207), 0.0206, atol=1.0e-7)
+        pipeline.reset_contact_matching()
+        np.testing.assert_allclose(anchor_x_at(0.0208), 0.0208, atol=1.0e-7)
+
+
+def test_sticky_self_contact_anchors_replayed(test, device):
+    """STICKY mode keeps a self-contact pair's friction anchor at most the threshold behind the pair.
+
+    A particle hovers over a pinned cloth square and slides along it. Each pass would anchor the
+    particle where it is; sticky replay keeps the first anchor and drags it along once the particle
+    is farther than ``contact_matching_pos_threshold`` from it. Anchors a solver drags closer still
+    are what the next pass keeps, and a reset forgets them.
+    """
+    _check_sticky_self_contact_anchors(test, device, use_capture=False)
+
+
+def test_sticky_self_contact_anchors_cuda_graph(test, device):
+    """Replay and release self-contact anchors from a captured collision pass."""
+    _check_sticky_self_contact_anchors(test, device, use_capture=True)
+
+
+def test_sticky_self_contact_history_follows_world_and_buffer(test, device):
+    """A masked reset restarts only the selected world's anchors, and each buffer replays its own."""
+    with wp.ScopedDevice(device):
+        model, state = _build_self_contact_scene(device, world_count=2)
+        pipeline = _self_contact_pipeline(model)
+        contacts = pipeline.contacts()
+        particles = [model.particle_count // 2 - 1, model.particle_count - 1]
+
+        def anchor_x_at(x, buffer=contacts):
+            q = state.particle_q.numpy()
+            q[particles, 0] = x
+            state.particle_q.assign(q)
+            pipeline.collide(state, buffer, soft_self_contact=True)
+            return [_vertex_anchor_x(model, buffer, [p]).max() for p in particles]
+
+        np.testing.assert_allclose(anchor_x_at(0.02), [0.02, 0.02], atol=1.0e-7)
+        pipeline.reset_contact_matching(wp.array((True, False, False), dtype=wp.bool, device=device))
+        np.testing.assert_allclose(anchor_x_at(0.0202), [0.0202, 0.02], atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0203), [0.0202, 0.02], atol=1.0e-7)
+
+        other = pipeline.contacts()
+        np.testing.assert_allclose(anchor_x_at(0.0204, other), [0.0204, 0.0204], atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0204), [0.0202, 0.02], atol=1.0e-7)
+
+        # Without persistent anchors, VBD measures self-contact slip as each step's motion.
+        for fresh in (
+            _self_contact_pipeline(model, requires_grad=True),
+            newton.CollisionPipeline(model, contact_matching="latest"),
+        ):
+            if fresh._soft_self_contact_detector is None:
+                fresh.init_soft_self_contact(margin=0.005, gap=0.005)
+            test.assertEqual(fresh.contacts().soft_self_contact_data.vertex_colliding_triangles_anchor.shape[0], 0)
+
+
 # ---------------------------------------------------------------------------
 # Register tests
 # ---------------------------------------------------------------------------
@@ -1384,6 +1520,24 @@ add_function_test(
     "test_sticky_rotated_witness_cuda_graph",
     test_sticky_rotated_witness_cuda_graph,
     devices=cuda_devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_anchors_replayed",
+    test_sticky_self_contact_anchors_replayed,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_anchors_cuda_graph",
+    test_sticky_self_contact_anchors_cuda_graph,
+    devices=cuda_devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_history_follows_world_and_buffer",
+    test_sticky_self_contact_history_follows_world_and_buffer,
+    devices=devices,
 )
 
 if __name__ == "__main__":

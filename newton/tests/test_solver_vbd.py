@@ -678,6 +678,7 @@ def _eval_vertex_triangle_uniform_motion_kernel(
     pos: wp.array[wp.vec3],
     pos_prev: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
+    friction_anchors: wp.array[wp.vec3],
     forces: wp.array[wp.vec3],
     hessians: wp.array[wp.mat33],
 ):
@@ -705,6 +706,8 @@ def _eval_vertex_triangle_uniform_motion_kernel(
         0.0,
         0.01,
         0.1,
+        friction_anchors,
+        -1,
     )
     forces[i] = force_3
     hessians[i] = hessian_3
@@ -1013,6 +1016,7 @@ def _eval_vertex_triangle_contact_rigid_motion_kernel(
     soft_pos: wp.array[wp.vec3],
     soft_pos_anchor: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
+    friction_anchors: wp.array[wp.vec3],
     damping_delta_norms: wp.array[float],
 ):
     sample = wp.tid()
@@ -1040,6 +1044,8 @@ def _eval_vertex_triangle_contact_rigid_motion_kernel(
         0.0,
         0.01,
         dt,
+        friction_anchors,
+        -1,
     )
     (
         _has_contact_undamped,
@@ -1063,6 +1069,8 @@ def _eval_vertex_triangle_contact_rigid_motion_kernel(
         0.0,
         0.01,
         dt,
+        friction_anchors,
+        -1,
     )
     soft_delta = wp.max(wp.length(force_0_damped - force_0_undamped), wp.length(force_1_damped - force_1_undamped))
     soft_delta = wp.max(soft_delta, wp.length(force_2_damped - force_2_undamped))
@@ -3224,7 +3232,7 @@ def _contact_damping_ignores_rigid_motion(test, device):
         wp.launch(
             _eval_vertex_triangle_contact_rigid_motion_kernel,
             dim=sample_count,
-            inputs=[soft_pos, soft_pos_anchor, tri_indices],
+            inputs=[soft_pos, soft_pos_anchor, tri_indices, wp.empty(0, dtype=wp.vec3, device=device)],
             outputs=[soft_delta_norms],
             device=device,
         )
@@ -3267,7 +3275,7 @@ def _self_contact_damping_uses_relative_gap_rate(test, device):
         wp.launch(
             _eval_vertex_triangle_uniform_motion_kernel,
             dim=2,
-            inputs=[pos, pos_prev, tri_indices],
+            inputs=[pos, pos_prev, tri_indices, wp.empty(0, dtype=wp.vec3, device=device)],
             outputs=[forces, hessians],
             device=device,
         )
@@ -3276,16 +3284,26 @@ def _self_contact_damping_uses_relative_gap_rate(test, device):
         np.testing.assert_allclose(hessians.numpy()[1], hessians.numpy()[0], rtol=1.0e-6, atol=1.0e-6)
 
 
-def _soft_block_on_pinned_sheet(load: float, matching: str, substeps: int, seconds: tuple):
+@wp.kernel
+def _translate_kinematic_particles_kernel(delta: wp.vec3, q_0: wp.array[wp.vec3], q_1: wp.array[wp.vec3]):
+    i = wp.tid()
+    q_0[i] = q_0[i] + delta
+    q_1[i] = q_0[i]
+
+
+def _soft_block_on_pinned_sheet(
+    load: float | tuple, matching: str, substeps: int, seconds: tuple, sheet_speeds: tuple | None = None
+):
     """Mean positions of a soft block resting on a pinned cloth sheet under gravity tilted along x.
 
     Only self-contact holds the block: the sheet has zero mass and there are no shapes. The tangential
-    load is ``load`` times the friction limit mu * N. Returns the block's mean position after each
-    duration in ``seconds``, advanced in turn.
+    load is ``load`` times the friction limit mu * N. During each duration in ``seconds`` the load is
+    the matching entry of ``load`` when it is a tuple, and the sheet slides along x at the matching
+    entry of ``sheet_speeds``, moved between steps as kinematic particles are. Returns the block's
+    mean position after each duration, advanced in turn.
     """
     mu = 0.5
     radius = 0.004
-    tilt = math.atan(load * mu)
     fps = 60
     dt = 1.0 / (fps * substeps)
     builder = newton.ModelBuilder()
@@ -3323,20 +3341,28 @@ def _soft_block_on_pinned_sheet(load: float, matching: str, substeps: int, secon
     builder.color()
     model = builder.finalize()
     model.soft_contact_mu = mu
-    model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
     solver = newton.solvers.SolverVBD(
         model,
         iterations=10,
         collision_pipeline=newton.CollisionPipeline(model, contact_matching=matching),
         particle_enable_self_contact=True,
-        particle_self_contact_radius=radius,
-        particle_self_contact_margin=2.0 * radius,
+        particle_self_contact_margin=radius,
+        particle_self_contact_gap=radius,
     )
     state_0, state_1 = model.state(), model.state()
 
     positions = []
-    for duration in seconds:
+    loads = load if isinstance(load, tuple) else (load,) * len(seconds)
+    for duration, window_load, sheet_speed in zip(seconds, loads, sheet_speeds or (0.0,) * len(seconds), strict=True):
+        tilt = math.atan(window_load * mu)
+        model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
         for _ in range(round(duration * fps * substeps)):
+            wp.launch(
+                _translate_kinematic_particles_kernel,
+                dim=sheet_count,
+                inputs=[wp.vec3(sheet_speed * dt, 0.0, 0.0), state_0.particle_q[:sheet_count]],
+                outputs=[state_1.particle_q[:sheet_count]],
+            )
             solver.step(state_0, state_1, None, None, dt)
             state_0, state_1 = state_1, state_0
         positions.append(state_0.particle_q.numpy()[sheet_count:].mean(axis=0))
@@ -3358,12 +3384,46 @@ def _sticky_self_contacts_hold_static_load(test, device, substeps):
 
 
 def _sticky_self_contacts_slide_beyond_friction_cone(test, device):
-    """Sticky self-contacts slide like fresh ones once the tangential load exceeds mu * N."""
+    """Sticky self-contacts hold no load beyond mu * N: the block slides about as far as on fresh contacts.
+
+    The two differ by a few percent at this iteration count, either way as iterations grow, because an
+    anchored slip spans several steps and softens the friction Hessian the iterations see.
+    """
     with wp.ScopedDevice(device):
         (fresh,) = _soft_block_on_pinned_sheet(1.5, "disabled", 5, (0.3,))
         (sticky,) = _soft_block_on_pinned_sheet(1.5, "sticky", 5, (0.3,))
     test.assertGreater(fresh[0], 0.05)
-    np.testing.assert_allclose(sticky[0], fresh[0], rtol=0.02)
+    test.assertGreater(sticky[0], 0.9 * fresh[0])
+
+
+def _sticky_self_contacts_ride_moving_sheet(test, device):
+    """A block resting on a kinematic sheet that starts to slide rides along on sticky self-contacts.
+
+    Kinematic particles move between steps, so the step's relative motion misses the sheet's travel and
+    regularized friction leaves the block in place while the sheet slides under it. The anchors move
+    with the sheet, so friction measured from them carries the block along: it catches up within
+    0.2 s, about 5 mm behind, then rides at the sheet's speed.
+    """
+    with wp.ScopedDevice(device):
+        settled, caught_up, rode = _soft_block_on_pinned_sheet(
+            0.0, "sticky", 5, (0.3, 0.2, 0.2), sheet_speeds=(0.0, 0.1, 0.1)
+        )
+    test.assertGreater(caught_up[0] - settled[0], 0.01)
+    np.testing.assert_allclose(rode[0] - caught_up[0], 0.02, rtol=0.01)
+
+
+def _sticky_self_contacts_stop_without_springback(test, device):
+    """A block that slides on sticky self-contacts and then stops stays where it stopped.
+
+    While the block decelerates, each pass moves it less than the matching threshold, so the anchors
+    could trail it by nearly the threshold and pull it back up to 0.4 mm once it stops. The solver
+    drags them to within the friction regularization length after each step.
+    """
+    with wp.ScopedDevice(device):
+        positions = _soft_block_on_pinned_sheet((1.5,) + (0.0,) * 30, "sticky", 5, (0.1,) + (0.01,) * 30)
+    xs = np.array([p[0] for p in positions[1:]])
+    test.assertGreater(xs.max() - positions[0][0], 0.002)
+    test.assertLess(xs.max() - xs[-1], 1.0e-4)
 
 
 def _d6_fully_free_structural_slots_are_inactive(test, device):
@@ -6332,6 +6392,18 @@ add_function_test(
     TestSolverVBD,
     "test_sticky_self_contacts_slide_beyond_friction_cone",
     _sticky_self_contacts_slide_beyond_friction_cone,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_sticky_self_contacts_ride_moving_sheet",
+    _sticky_self_contacts_ride_moving_sheet,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_sticky_self_contacts_stop_without_springback",
+    _sticky_self_contacts_stop_without_springback,
     devices=devices,
 )
 add_function_test(

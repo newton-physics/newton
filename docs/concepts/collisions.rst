@@ -2536,7 +2536,8 @@ argument on :class:`~CollisionPipeline` selects one of three modes:
   contact — no extra state is kept for them.  Unmatched contacts pass
   through with their fresh narrow-phase geometry.  Useful for stacking
   scenarios where small frame-to-frame geometric jitter on persistent
-  contacts degrades stability.
+  contacts degrades stability.  Sticky mode also keeps self-contact friction
+  anchors; see :ref:`Sticky self-contacts <sticky-self-contacts>`.
 
   .. experimental::
 
@@ -2617,12 +2618,40 @@ per-contact buffers (four ``vec3`` columns for the body-frame points and
 offsets) are only allocated when the mode is ``"sticky"``; ``"latest"`` and
 ``"disabled"`` pay zero additional memory and launch no additional kernels.
 
+.. _sticky-self-contacts:
+
+**Sticky self-contacts**
+
+Once soft self-contact is configured, sticky mode also gives each vertex-triangle
+and edge-edge pair a friction anchor
+(:attr:`TriMeshCollisionInfo.vertex_colliding_triangles_anchor
+<newton.geometry.TriMeshCollisionInfo.vertex_colliding_triangles_anchor>` and
+:attr:`~newton.geometry.TriMeshCollisionInfo.edge_colliding_edges_anchor`).  An
+anchor names material points: the vertex position in the triangle's frame, or the
+closest points of the two edge lines and their separation.  A new pair anchors
+where it was at the start of the step.  A pair found again in the next pass keeps
+its anchor, dragged along so the pair is at most ``contact_matching_pos_threshold``
+from it.  Parallel edges get no anchor, and neither do the pairs of a pipeline with
+``requires_grad``.
+
+:class:`~newton.solvers.SolverVBD` measures self-contact friction slip as a pair's
+drift from its anchor, so stacked or folded soft bodies hold static tangential
+loads on each other.  After each step it drags the anchors to within
+``friction_epsilon * dt`` of their pairs: drift beyond that within a step is
+sliding, and friction then does not pull a body back once it stops.  Drift that
+builds up between steps, as kinematic particles move, is kept up to the threshold,
+so a kinematic surface carries resting bodies along at up to about
+``contact_matching_pos_threshold / dt``.  Contact geometry and normals stay fresh.
+
 **Memory**
 
 Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
 contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
 ``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
-``contact_report=True`` adds 4.  ``"disabled"`` allocates no matching history.
+``contact_report=True`` adds 4.  With soft self-contact, ``"sticky"`` also keeps 28
+bytes per vertex-triangle and edge-edge pair slot (the self-contact buffer
+capacities) and 4 bytes per vertex and per edge.  ``"disabled"`` allocates no
+matching history.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,
 saving 48 bytes per ``rigid_contact_max`` slot. This more than offsets the

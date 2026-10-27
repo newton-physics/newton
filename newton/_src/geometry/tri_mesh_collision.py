@@ -52,6 +52,10 @@ class TriMeshCollisionInfo:
     """Detected collision count for each vertex; values may exceed row capacity."""
     vertex_colliding_triangles_min_dist: wp.array[float]
     """Minimum detected vertex-triangle distance for each vertex [m]."""
+    vertex_colliding_triangles_anchor: wp.array[wp.vec3]
+    """Friction anchor of each vertex-triangle pair: the vertex position in the triangle's
+    frame (see :func:`vertex_triangle_anchor`), shape ``[sum(vertex row capacities)]``; empty unless
+    the collision pipeline keeps sticky anchors."""
 
     triangle_colliding_vertices: wp.array[wp.int32]
     """Vertex indices grouped into rows for each triangle."""
@@ -74,6 +78,9 @@ class TriMeshCollisionInfo:
     """Detected collision count for each edge; values may exceed row capacity."""
     edge_colliding_edges_min_dist: wp.array[float]
     """Minimum detected edge-edge distance for each edge [m]."""
+    edge_colliding_edges_anchor: wp.array[wp.vec3]
+    """Friction anchor of each edge-edge pair (see :func:`edge_edge_anchor`), shape
+    ``[sum(edge row capacities)]``; empty unless the collision pipeline keeps sticky anchors."""
 
 
 @wp.func
@@ -128,6 +135,101 @@ def get_edge_colliding_edges(collision_info: TriMeshCollisionInfo, edge: int, co
     """Return the target edge for ``collision_index`` of ``edge``."""
     offset = collision_info.edge_colliding_edges_offsets[edge]
     return collision_info.edge_colliding_edges[2 * (offset + collision_index) + 1]
+
+
+NO_ANCHOR = wp.constant(math.inf)
+"""Anchor component marking a self-contact pair without a friction anchor: parallel edges or a
+degenerate triangle, whose closest points are not unique."""
+
+EDGE_ANCHOR_PARALLEL_SIN_SQ = wp.constant(1.0e-6)
+"""Squared sine of the angle below which two edges count as parallel and get no friction anchor."""
+
+
+@wp.func
+def vertex_triangle_anchor(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3):
+    """Return vertex ``p`` in the frame of triangle ``abc``: plane coordinates along ``b - a`` and
+    ``c - a``, unclamped, and the height along the triangle normal; ``NO_ANCHOR`` for a degenerate
+    triangle."""
+    e1 = b - a
+    e2 = c - a
+    n = wp.cross(e1, e2)
+    det = wp.length_sq(n)
+    if det == 0.0:
+        return wp.vec3(NO_ANCHOR)
+    w = p - a
+    height = wp.dot(w, n) / wp.sqrt(det)
+    d12 = wp.dot(e1, e2)
+    u = (wp.dot(e2, e2) * wp.dot(w, e1) - d12 * wp.dot(w, e2)) / det
+    v = (wp.dot(e1, e1) * wp.dot(w, e2) - d12 * wp.dot(w, e1)) / det
+    return wp.vec3(u, v, height)
+
+
+@wp.func
+def vertex_triangle_anchor_slip(anchor: wp.vec3, p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3):
+    """Return how far vertex ``p`` has moved from its ``anchor`` in the frame of triangle ``abc``."""
+    n = wp.normalize(wp.cross(b - a, c - a))
+    return p - (a + anchor[0] * (b - a) + anchor[1] * (c - a) + anchor[2] * n)
+
+
+@wp.func
+def edge_edge_anchor(p0: wp.vec3, p1: wp.vec3, q0: wp.vec3, q1: wp.vec3):
+    """Return the closest points of the lines through edges ``p0p1`` and ``q0q1``: their line
+    parameters (s, t), unclamped, and their separation along the common normal; ``NO_ANCHOR`` for
+    parallel edges."""
+    d1 = p1 - p0
+    d2 = q1 - q0
+    n = wp.cross(d1, d2)
+    d11 = wp.dot(d1, d1)
+    d22 = wp.dot(d2, d2)
+    den = wp.length_sq(n)
+    if den <= EDGE_ANCHOR_PARALLEL_SIN_SQ * d11 * d22:
+        return wp.vec3(NO_ANCHOR)
+    w = p0 - q0
+    d12 = wp.dot(d1, d2)
+    s = (d12 * wp.dot(d2, w) - d22 * wp.dot(d1, w)) / den
+    t = (d11 * wp.dot(d2, w) - d12 * wp.dot(d1, w)) / den
+    return wp.vec3(s, t, wp.dot(w, n) / wp.sqrt(den))
+
+
+@wp.func
+def edge_edge_anchor_slip(anchor: wp.vec3, p0: wp.vec3, p1: wp.vec3, q0: wp.vec3, q1: wp.vec3):
+    """Return how far edge ``p0p1`` has moved from its ``anchor`` (see :func:`edge_edge_anchor`)
+    relative to edge ``q0q1``."""
+    n = wp.normalize(wp.cross(p1 - p0, q1 - q0))
+    return wp.lerp(p0, p1, anchor[0]) - wp.lerp(q0, q1, anchor[1]) - anchor[2] * n
+
+
+@wp.func
+def drag_vertex_triangle_anchor(anchor: wp.vec3, p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, max_slip: float):
+    """Return ``anchor`` moved along so vertex ``p`` has slipped at most ``max_slip`` from it."""
+    slip = vertex_triangle_anchor_slip(anchor, p, a, b, c)
+    slip_length = wp.length(slip)
+    if slip_length <= max_slip:
+        return anchor
+    return vertex_triangle_anchor(p - slip * (max_slip / slip_length), a, b, c)
+
+
+@wp.func
+def drag_edge_edge_anchor(anchor: wp.vec3, p0: wp.vec3, p1: wp.vec3, q0: wp.vec3, q1: wp.vec3, max_slip: float):
+    """Return ``anchor`` moved along so edge ``p0p1`` has slipped at most ``max_slip`` from it."""
+    slip = edge_edge_anchor_slip(anchor, p0, p1, q0, q1)
+    slip_length = wp.length(slip)
+    if slip_length <= max_slip:
+        return anchor
+    excess = slip * (1.0 - max_slip / slip_length)
+    d1 = p1 - p0
+    d2 = q1 - q0
+    n = wp.normalize(wp.cross(d1, d2))
+    dh = wp.dot(excess, n)
+    e = excess - dh * n
+    d11 = wp.dot(d1, d1)
+    d12 = wp.dot(d1, d2)
+    d22 = wp.dot(d2, d2)
+    # Shift (s, t) so d1 * ds - d2 * dt = -e in the plane of the edges, and the separation by dh.
+    det = d11 * d22 - d12 * d12
+    ds = (d12 * wp.dot(e, d2) - d22 * wp.dot(e, d1)) / det
+    dt = (d11 * wp.dot(e, d2) - d12 * wp.dot(e, d1)) / det
+    return wp.vec3(anchor[0] + ds, anchor[1] + dt, anchor[2] + dh)
 
 
 @wp.func
@@ -364,6 +466,10 @@ def build_tri_mesh_collision_info(
     info.edge_colliding_edges_offsets = wp.array(shape=(edge_count + 1,), dtype=wp.int32, device=device)
     _compute_collision_buffer_offsets(info.edge_colliding_edges_buffer_sizes, info.edge_colliding_edges_offsets)
     info.edge_colliding_edges_min_dist = wp.zeros(shape=(edge_count,), dtype=float, device=device)
+
+    # Friction anchors stay empty unless sticky self-contact matching allocates them.
+    info.vertex_colliding_triangles_anchor = wp.empty(shape=(0,), dtype=wp.vec3, device=device)
+    info.edge_colliding_edges_anchor = wp.empty(shape=(0,), dtype=wp.vec3, device=device)
 
     return info
 
