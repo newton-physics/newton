@@ -212,6 +212,7 @@ class MeshGL:
         self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
         self.texture_id = None
+        self._texture_file_signature: tuple[str, int, int] | None = None
         self.opacity = 1.0
         self._capsule_instancing = False
 
@@ -394,6 +395,20 @@ class MeshGL:
         )
 
     def update_texture(self, texture=None):
+        """Reuse unchanged local image files; upload array inputs on every update."""
+        signature = None
+        if isinstance(texture, (str, os.PathLike)):
+            path = os.path.abspath(os.fspath(texture))
+            try:
+                stat = os.stat(path)
+                signature = (path, stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                # URLs, USD package paths and missing files still use the texture loader.
+                pass
+        if signature is not None and self.texture_id is not None and signature == self._texture_file_signature:
+            return
+
+        self._texture_file_signature = None
         gl = RendererGL.gl
         texture_image = None
         if texture is not None:
@@ -421,6 +436,7 @@ class MeshGL:
         if not texture_id:
             return
         self.texture_id = texture_id
+        self._texture_file_signature = signature
 
     def render(self):
         if not self.hidden:

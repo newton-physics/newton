@@ -4,9 +4,12 @@
 """Tests for texture loading, assets packaged inside USD (.usdz) archives, and linear-to-sRGB conversion."""
 
 import importlib.util
+import os
 import tempfile
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -97,6 +100,69 @@ class TestPackagedTextureLoading(unittest.TestCase):
             usdz_path = _build_usdz_with_texture(tmpdir, (1, 2, 3))
             with self.assertWarns(UserWarning):
                 self.assertIsNone(load_texture(f"{usdz_path}[does_not_exist.png]"))
+
+
+@unittest.skipUnless(_PIL_AVAILABLE, "Requires Pillow")
+class TestMeshGLTextureCaching(unittest.TestCase):
+    def setUp(self):
+        from newton._src.viewer.gl import opengl  # noqa: PLC0415
+
+        stack = ExitStack()
+        self.addCleanup(stack.close)
+        self.mesh = opengl.MeshGL.__new__(opengl.MeshGL)
+        self.mesh.texture_id = None
+        self.mesh._texture_file_signature = None
+        self.gl = mock.Mock()
+        stack.enter_context(mock.patch.object(opengl.RendererGL, "gl", self.gl))
+        self.upload = stack.enter_context(mock.patch.object(opengl, "_upload_texture_from_file", return_value=1))
+        self.load = stack.enter_context(mock.patch("newton._src.utils.texture.load_texture", wraps=load_texture))
+
+    def test_unchanged_file_reuses_texture_until_file_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "texture.png"
+            _write_png(path, (10, 20, 30))
+            self.mesh.update_texture(str(path))
+            self.mesh.update_texture(path)
+            self.assertEqual(self.load.call_count, 1)
+            self.assertEqual(self.upload.call_count, 1)
+            self.gl.glDeleteTextures.assert_not_called()
+
+            previous_mtime = path.stat().st_mtime_ns
+            _write_png(path, (30, 20, 10))
+            os.utime(path, ns=(previous_mtime + 1_000_000_000, previous_mtime + 1_000_000_000))
+            self.mesh.update_texture(path)
+            self.assertEqual(self.upload.call_count, 2)
+            self.gl.glDeleteTextures.assert_called_once_with(1, 1)
+            np.testing.assert_array_equal(self.upload.call_args.args[1][0, 0, :3], [30, 20, 10])
+
+            other = Path(tmpdir) / "other.png"
+            _write_png(other, (40, 50, 60))
+            self.mesh.update_texture(other)
+            self.assertEqual(self.upload.call_count, 3)
+
+            self.mesh.update_texture(None)
+            self.assertIsNone(self.mesh.texture_id)
+            self.mesh.update_texture(other)
+            self.assertEqual(self.upload.call_count, 4)
+
+    def test_array_updates_are_not_cached(self):
+        image = np.zeros((2, 2, 3), dtype=np.uint8)
+        self.mesh.update_texture(image)
+        image[:] = 255
+        self.mesh.update_texture(image)
+        self.assertEqual(self.upload.call_count, 2)
+        np.testing.assert_array_equal(self.upload.call_args.args[1], image)
+
+    def test_failed_upload_is_retried(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "texture.png"
+            _write_png(path, (10, 20, 30))
+            self.upload.side_effect = [None, 1]
+            self.mesh.update_texture(path)
+            self.assertIsNone(self.mesh.texture_id)
+            self.mesh.update_texture(path)
+            self.assertEqual(self.mesh.texture_id, 1)
+            self.assertEqual(self.upload.call_count, 2)
 
 
 if __name__ == "__main__":

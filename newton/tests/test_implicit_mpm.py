@@ -1170,7 +1170,7 @@ def test_multiworld_fixed_capped_jacobi_matches_uncapped(test, device):
 
 
 def test_multiworld_fixed_outer_graph_matches_eager(test, device):
-    """Verify multi-world fixed outer graph matches eager."""
+    """A captured step matches eager stepping across material and particle-mask updates."""
     if (
         not device.is_cuda
         or not device.is_mempool_supported
@@ -1203,6 +1203,18 @@ def test_multiworld_fixed_outer_graph_matches_eager(test, device):
 
     captured_offset_history = []
     for cycle in range(4):
+        if cycle in (1, 3):
+            for model, solver in ((eager_model, eager_solver), (captured_model, captured_solver)):
+                # Mutate existing arrays, as reset-time material randomization does.
+                model.mpm.young_modulus.fill_(2.0e5 if cycle == 1 else 8.0e5)
+                model.mpm.friction.fill_(0.2 if cycle == 1 else 0.8)
+                masses = model.particle_mass.numpy()
+                masses[world_starts[1] :] *= 1.5
+                model.particle_mass.assign(masses)
+                flags = model.particle_flags.numpy()
+                flags[-1] = 0 if cycle == 1 else int(newton.ParticleFlags.ACTIVE)
+                model.particle_flags.assign(flags)
+                solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
         eager_solver.step(eager_state_0, eager_state_1, control=None, contacts=None, dt=dt)
         eager_solver.step(eager_state_1, eager_state_0, control=None, contacts=None, dt=dt)
         wp.capture_launch(capture.graph)
