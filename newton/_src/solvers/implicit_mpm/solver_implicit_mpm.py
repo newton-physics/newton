@@ -1369,6 +1369,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         Attributes registered on Model (per-shape):
             - ``mpm:adhesion``: Collider adhesion in Pa, used when the shape is a collider
               (see :meth:`setup_collider`)
+            - ``mpm:projection_threshold``: Collider projection threshold in m; a negative value (default)
+              selects the solver default, which scales with the voxel size
 
         Attributes registered on State (per-particle):
             - ``mpm:particle_qd_grad``: Velocity gradient for APIC transfer
@@ -1507,6 +1509,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
+                namespace="mpm",
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="projection_threshold",
+                frequency=newton.Model.AttributeFrequency.SHAPE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=-1.0,
                 namespace="mpm",
             )
         )

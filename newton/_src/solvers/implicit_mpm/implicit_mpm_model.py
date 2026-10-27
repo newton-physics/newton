@@ -212,7 +212,7 @@ def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
     thicknesses = model.shape_margin.numpy()[shape_ids]
     friction = model.shape_material_mu.numpy()[shape_ids]
 
-    # Adhesion is an optional ``mpm:adhesion`` shape attribute
+    # Adhesion and projection threshold are optional ``mpm:*`` shape attributes
     mpm_attributes = getattr(model, "mpm", None)
     shape_adhesion = getattr(mpm_attributes, "adhesion", None)
     if shape_adhesion is None:
@@ -220,7 +220,14 @@ def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
     else:
         adhesion = shape_adhesion.numpy()[shape_ids]
 
-    return thicknesses, friction, adhesion
+    # A negative value selects the solver default, which scales with the voxel size
+    shape_projection_threshold = getattr(mpm_attributes, "projection_threshold", None)
+    if shape_projection_threshold is None:
+        projection_threshold = np.full(len(shape_ids), -1.0)
+    else:
+        projection_threshold = shape_projection_threshold.numpy()[shape_ids]
+
+    return thicknesses, friction, adhesion, projection_threshold
 
 
 def _create_body_collider_mesh(
@@ -778,14 +785,19 @@ class ImplicitMPMModel:
         for collider_id, body_id in enumerate(collider_body_ids):
             if body_id is not None:
                 shape_count = len(collider_shapes[collider_id])
-                for material_id, shape_margin, shape_friction, shape_adhesion in zip(
+                for material_id, shape_margin, shape_friction, shape_adhesion, shape_projection_threshold in zip(
                     collider_material_ids[collider_id][:shape_count],
                     *_get_shape_collision_materials(model, collider_shapes[collider_id]),
                     strict=True,
                 ):
                     # use material from shapes as default
+                    has_projection_threshold = shape_projection_threshold >= 0.0
                     assign_material(
-                        material_id, thickness=shape_margin, friction=shape_friction, adhesion=shape_adhesion
+                        material_id,
+                        thickness=shape_margin,
+                        friction=shape_friction,
+                        adhesion=shape_adhesion,
+                        projection_threshold=shape_projection_threshold if has_projection_threshold else None,
                     )
                     # override with user-provided material
                     assign_collider_material(material_id, collider_id)

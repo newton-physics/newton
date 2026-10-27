@@ -1621,14 +1621,18 @@ def test_particle_force_input(test, device):
 def test_shape_adhesion_attribute(test, device):
     """Verify per-shape ``mpm:adhesion`` reaches the collider material table."""
     builder = _make_mpm_particle_builder()
-    for x, adhesion in ((-1.0, 0.0), (1.0, 250.0)):
+    shape_attributes = (
+        (-1.0, {"mpm:adhesion": 0.0}),
+        (1.0, {"mpm:adhesion": 250.0, "mpm:projection_threshold": 0.02}),
+    )
+    for x, attributes in shape_attributes:
         builder.add_shape_box(
             -1,
             xform=wp.transform(wp.vec3(x, -1.0, 0.0), wp.quat_identity()),
             hx=0.5,
             hy=0.5,
             hz=0.5,
-            custom_attributes={"mpm:adhesion": adhesion},
+            custom_attributes=attributes,
         )
     model = builder.finalize(device=device)
     solver = SolverImplicitMPM(model, _make_mpm_config())
@@ -1637,6 +1641,10 @@ def test_shape_adhesion_attribute(test, device):
     test.assertEqual(count, 2)
     np.testing.assert_allclose(solver.collider_materials(0)["adhesion"].numpy(), [0.0, 250.0])
     test.assertEqual(first, 1)
+
+    # a negative (default) threshold keeps the solver default, a set one is used as is
+    threshold = solver.collider_materials(0)["projection_threshold"].numpy()
+    np.testing.assert_allclose(threshold, [0.01 * solver.voxel_size, 0.02], rtol=1.0e-5)
 
     # explicit per-collider values override the shape attribute
     solver.setup_collider(collider_adhesion=[10.0], collider_body_ids=[-1])
