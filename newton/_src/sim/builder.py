@@ -12209,7 +12209,7 @@ class ModelBuilder:
           choose each vertex's body yourself. Single-segment binding: seams can
           show at segment boundaries.
 
-        Automatic ``TRIANGLE`` / ``TET`` binding uses CPU spatial queries.
+        Automatic ``TRIANGLE`` / ``TETRAHEDRON`` binding uses CPU spatial queries.
         Outside-tet vertices still search all owning tet centroids. Pass
         precomputed ``parent`` / ``weights`` to reuse a binding or avoid setup
         work. Barycentric weights must be nonnegative and each row must sum to
