@@ -566,16 +566,14 @@ def evaluate_neo_hookean_membrane_force_hessian(
     f0 = x01 * DmInv00 + x02 * DmInv10
     f1 = x01 * DmInv01 + x02 * DmInv11
 
-    # Cauchy-Green invariants
-    f0_dot_f0 = wp.dot(f0, f0)
-    f1_dot_f1 = wp.dot(f1, f1)
-    f0_dot_f1 = wp.dot(f0, f1)
-
-    # J_s = area ratio = sqrt(det(F^T F))
-    J_s_sq = f0_dot_f0 * f1_dot_f1 - f0_dot_f1 * f0_dot_f1
+    # The Gram determinant subtracts nearly equal large values for stretched,
+    # almost collinear columns. Use the equivalent cross-product area instead.
+    area_vector = wp.cross(f0, f1)
+    J_s_sq = wp.length_sq(area_vector)
     J_s_sq = wp.max(J_s_sq, 1.0e-20)
     J_s = wp.sqrt(J_s_sq)
     inv_J_s = 1.0 / J_s
+    normal = area_vector * inv_J_s
 
     # Convert Lamé parameters to stable Neo-Hookean parameters per Smith et al.
     # 2018, §3.4 (eq. 13): mu_NH = mu_Lamé, lambda_NH = lambda_Lamé + mu_Lamé.
@@ -584,9 +582,9 @@ def evaluate_neo_hookean_membrane_force_hessian(
     lmbd_safe = wp.sign(lmbd_nh) * wp.max(wp.abs(lmbd_nh), 1.0e-6)
     alpha = 1.0 + mu_nh / lmbd_safe
 
-    # 2D "cofactor" vectors: g_i = dJ_s/df_i
-    g0 = inv_J_s * (f1_dot_f1 * f0 - f0_dot_f1 * f1)
-    g1 = inv_J_s * (f0_dot_f0 * f1 - f0_dot_f1 * f0)
+    # Area derivatives in the same cross-product form avoid cancellation too.
+    g0 = wp.cross(f1, normal)
+    g1 = wp.cross(normal, f0)
 
     # First Piola-Kirchhoff stress: P = mu*F + lambda*(J_s - alpha)*[g0, g1]
     s = lmbd_nh * (J_s - alpha)
@@ -621,9 +619,7 @@ def evaluate_neo_hookean_membrane_force_hessian(
     # Cross-column vector for cofactor-derivative contraction
     w = f1 * df0_dx - f0 * df1_dx
 
-    I_coeff = mu_nh * (df0_dx_sq + df1_dx_sq) + r * (
-        df0_dx_sq * f1_dot_f1 + df1_dx_sq * f0_dot_f0 - 2.0 * df0_dx * df1_dx * f0_dot_f1
-    )
+    I_coeff = mu_nh * (df0_dx_sq + df1_dx_sq) + r * wp.length_sq(w)
 
     I33 = wp.identity(n=3, dtype=float)
     hessian = I_coeff * I33 + c1 * wp.outer(dJ_dx, dJ_dx) - r * wp.outer(w, w)
@@ -631,6 +627,10 @@ def evaluate_neo_hookean_membrane_force_hessian(
     # Objective damping based on the metric C = F^T F, so rigid rotations do not damp.
     if damping > 0.0:
         inv_dt = 1.0 / dt
+
+        f0_dot_f0 = wp.dot(f0, f0)
+        f1_dot_f1 = wp.dot(f1, f1)
+        f0_dot_f1 = wp.dot(f0, f1)
 
         x0_prev = pos_anchor[v0]
         x01_prev = pos_anchor[v1] - x0_prev

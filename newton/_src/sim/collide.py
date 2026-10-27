@@ -2699,9 +2699,10 @@ class CollisionPipeline:
         # afterwards -- otherwise the generation would advance by 2 per collide() call.
         if contacts.clear_buffers:
             contacts.clear(bump_generation=False)
-        # Non-mesh emitters have no complete rigid primitive. Clear previous mesh
-        # identities before any pass can reuse their contact slots.
-        contacts.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
+        elif self._soft_mesh_contact_data is not None or contacts._soft_contact_mesh_features is not None:
+            # Non-mesh emitters must not inherit rigid primitive IDs from mesh rows.
+            # Fresh particle-only buffers already contain -1, and clear() resets them.
+            contacts.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
 
         model = self.model
         # update any additional parameters

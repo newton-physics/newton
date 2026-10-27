@@ -470,6 +470,7 @@ _MESH_FEATURE_EE = wp.constant(2)
 # Edge penetration recovery: the middle of a soft-edge chord inside the solid, whose soft-edge
 # parameter is stored with the record, pairs with its nearest surface point. Bit 3 marks penetration.
 _MESH_FEATURE_EE_DEPTH = wp.constant(3)
+_MESH_FEATURE_FAMILY_MASK = wp.constant(7)
 _MESH_FEATURE_INSIDE = wp.constant(8)
 # Penetration recovery records have no incident-feature representation, so the filter keeps them.
 _MESH_FEATURE_RECOVERY = wp.constant(16)
@@ -640,6 +641,9 @@ def _detect_mesh_vertex_contacts(
                     features,
                     contact_shapes,
                 )
+        # Warp's nearest-face query skips slivers, including nonzero-area faces
+        # needed by DAT. Retain the partitioned traversal even without a sign;
+        # test_mesh_complete_bvh_query_coverage exercises this case.
     root = _mesh_query_partition(mesh, lane, partition_depth)
     if root == -2:
         return
@@ -1063,7 +1067,7 @@ def _evaluate_mesh_contacts(
     if shape_type[shape] != GeoType.MESH and shape_type[shape] != GeoType.CONVEX_MESH:
         return
     feature = features[tid]
-    family = feature[0] & 7
+    family = feature[0] & _MESH_FEATURE_FAMILY_MASK
     soft_feature = feature[1]
     if feature[0] < 0:
         return
@@ -1442,7 +1446,7 @@ def mesh_contact_valid(
     """
     if (feature[0] & _MESH_FEATURE_RECOVERY) != 0:
         return True
-    family = feature[0] & 7
+    family = feature[0] & _MESH_FEATURE_FAMILY_MASK
     if family == _MESH_FEATURE_EE_DEPTH:
         return True
     sign = wp.where((feature[0] & _MESH_FEATURE_INSIDE) != 0, -1.0, 1.0)

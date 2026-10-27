@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry import soft_contacts_mesh
 from newton._src.geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     gather_particle_body_contact_force_and_hessian,
@@ -325,7 +326,9 @@ def test_current_mesh_filter_consumers(test, device):
         particle_flags_np = model.particle_flags.numpy().copy()
         particle_inv_mass_np = model.particle_inv_mass.numpy().copy()
         soft_contact_indices_np = original["soft_contact_indices"][:count]
-        families_np = original["_soft_contact_mesh_features"][:count, 0] & 7
+        families_np = original["_soft_contact_mesh_features"][:count, 0] & int(
+            soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK
+        )
         interior_tv_np = np.all(original["soft_contact_barycentric"][:count] > 0.0, axis=1)
         stable_owner_np = (families_np != 1) | interior_tv_np
         for activity in ("inactive", "mixed", "active_zero_mass", "restored"):
@@ -377,9 +380,14 @@ def test_current_mesh_filter_consumers(test, device):
                 for name, value in original.items():
                     np.testing.assert_array_equal(getattr(contacts, name).numpy(), value)
                 test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), count)
-    families = original["_soft_contact_mesh_features"][:count, 0] & 7
+    families = original["_soft_contact_mesh_features"][:count, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK)
     changed = (masks[0] != masks[1])[:count] | (masks[0] != masks[2])[:count]
-    test.assertTrue({0, 1, 2} <= set(families[changed]))
+    expected_families = {
+        int(soft_contacts_mesh._MESH_FEATURE_VT),
+        int(soft_contacts_mesh._MESH_FEATURE_TV),
+        int(soft_contacts_mesh._MESH_FEATURE_EE),
+    }
+    test.assertTrue(expected_families <= set(families[changed]))
     became_active = masks[1] & ~masks[0]
     became_inactive = masks[0] & ~masks[1]
     test.assertTrue(np.any(np.linalg.norm(forces[1][became_active], axis=1) > 0.0))

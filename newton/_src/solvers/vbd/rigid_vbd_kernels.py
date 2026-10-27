@@ -7857,32 +7857,17 @@ def find_edge_edge_separator(
 def find_primitive_pair_separator(
     soft_indices: wp.vec3i,
     rigid_indices: wp.vec3i,
-    particle_q_ref: wp.array[wp.vec3],
-    rigid_mesh: wp.uint64,
-    rigid_scale: wp.vec3,
-    X_wr_ref: wp.transform,
+    soft_vertices: wp.mat33,
+    rigid_vertices: wp.mat33,
     collision_normal: wp.vec3,
     separation_eps: float,
 ):
-    """Assemble and dispatch one indexed rigid-soft BVH primitive pair.
+    """Dispatch one rigid-soft BVH pair using prepared reference-world positions.
 
-    The ``-1`` padding identifies VT, TV, or EE. Returned ``n`` always points
-    from the rigid primitive toward the soft primitive, independent of which
-    side supplies the vertex in a VT pair.
+    Matrix rows correspond to the ``-1``-padded indices identifying VT, TV, or EE.
+    Returned ``n`` always points from the rigid primitive toward the soft primitive,
+    independent of which side supplies the vertex in a VT pair.
     """
-    soft_vertices = wp.mat33(0.0)
-    rigid_vertices = wp.mat33(0.0)
-    for i in range(3):
-        soft_index = soft_indices[i]
-        if soft_index >= 0:
-            soft_vertices[i] = particle_q_ref[soft_index]
-        rigid_index = rigid_indices[i]
-        if rigid_index >= 0:
-            rigid_vertices[i] = wp.transform_point(
-                X_wr_ref,
-                wp.cw_mul(wp.mesh_get_point(rigid_mesh, rigid_index), rigid_scale),
-            )
-
     is_vt = (
         soft_indices[0] >= 0
         and soft_indices[1] < 0
@@ -7942,7 +7927,7 @@ def find_primitive_pair_separator(
         return valid, n, soft_support, rigid_support, gap, candidate_index
 
     wp.printf(
-        "Unsupported rigid-soft DAT primitive layout: soft=(%d, %d, %d), rigid=(%d, %d, %d)\n",
+        "Warning: Unsupported rigid-soft DAT primitive layout: soft=(%d, %d, %d), rigid=(%d, %d, %d)\n",
         soft_indices[0],
         soft_indices[1],
         soft_indices[2],
@@ -8261,13 +8246,18 @@ def apply_rigid_soft_truncation(
     bary = soft_contact_barycentric[contact_index]
     rigid_indices = soft_contact_rigid_indices[contact_index]
 
-    # Stored contact point on the soft feature. Analytic SDF rows use it directly;
-    # dense BVH rows additionally load all vertices of their complete pair below.
-    x_ref = bary[0] * pos_prev_collision_detection[indices[0]]
+    # Reuse the same reference geometry for the separator and both DAT phases.
+    soft_vertices = wp.mat33(0.0)
+    for i in range(3):
+        vi = indices[i]
+        if vi >= 0:
+            soft_vertices[i] = pos_prev_collision_detection[vi]
+    # Analytic SDF rows use the stored soft anchor; BVH rows use complete primitives.
+    x_ref = bary[0] * soft_vertices[0]
     for i in range(1, 3):
         vi = indices[i]
         if vi >= 0:
-            x_ref += bary[i] * pos_prev_collision_detection[vi]
+            x_ref += bary[i] * soft_vertices[i]
 
     shape_index = soft_contact_shape[contact_index]
     body_index = shape_body[shape_index]
@@ -8279,6 +8269,9 @@ def apply_rigid_soft_truncation(
     # contact position on body, transformed to world frame
     bx0 = wp.transform_point(X_wb_ref, soft_contact_body_pos[contact_index])
 
+    rigid_vertices = wp.mat33(0.0)
+    rigid_vertices_body = wp.mat33(0.0)
+
     # Use a one-micrometer band around meter-scale scenes. At larger
     # world-coordinate magnitudes, increase it so the band remains several
     # representable float32 steps wide.
@@ -8286,40 +8279,38 @@ def apply_rigid_soft_truncation(
     for i in range(3):
         vi = indices[i]
         if vi >= 0:
-            coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(pos_prev_collision_detection[vi])))
+            coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(soft_vertices[i])))
     if rigid_indices[0] >= 0:
         mesh = shape_source_ptr[shape_index]
-        X_wr_ref = wp.transform_multiply(X_wb_ref, shape_transform[shape_index])
+        X_bs = shape_transform[shape_index]
+        X_wr_ref = wp.transform_multiply(X_wb_ref, X_bs)
+        rigid_scale = shape_scale[shape_index]
         for i in range(3):
             rigid_index = rigid_indices[i]
             if rigid_index >= 0:
-                x_rigid_ref = wp.transform_point(
-                    X_wr_ref,
-                    wp.cw_mul(wp.mesh_get_point(mesh, rigid_index), shape_scale[shape_index]),
-                )
-                coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(x_rigid_ref)))
+                x_shape = wp.cw_mul(wp.mesh_get_point(mesh, rigid_index), rigid_scale)
+                # Body-local positions evaluate the candidate pose without reconstructing
+                # them from rounded world coordinates; world positions serve the separator.
+                rigid_vertices_body[i] = wp.transform_point(X_bs, x_shape)
+                rigid_vertices[i] = wp.transform_point(X_wr_ref, x_shape)
+                coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(rigid_vertices[i])))
     else:
         coordinate_scale = wp.max(coordinate_scale, wp.max(wp.abs(bx0)))
     separation_eps = dat_separation_epsilon(coordinate_scale)
 
     if rigid_indices[0] >= 0:
-        # Dense BVH rows assemble their complete primitive pair and certify its
-        # separating plane before accepting it.
-        mesh = shape_source_ptr[shape_index]
-        X_wr_ref = wp.transform_multiply(X_wb_ref, shape_transform[shape_index])
+        # Certify a separator for the prepared complete primitive pair.
         valid_plane, n, x_ref, bx0, gap, _candidate_index = find_primitive_pair_separator(
             indices,
             rigid_indices,
-            pos_prev_collision_detection,
-            mesh,
-            shape_scale[shape_index],
-            X_wr_ref,
+            soft_vertices,
+            rigid_vertices,
             soft_contact_normal[contact_index],
             separation_eps,
         )
         if not valid_plane:
             wp.printf(
-                "Rigid-soft DAT found no separating normal for BVH row %d: "
+                "Warning: Rigid-soft DAT found no separating normal for BVH row %d: "
                 "shape=%d, soft=(%d, %d, %d), rigid=(%d, %d, %d)\n",
                 contact_index,
                 shape_index,
@@ -8370,15 +8361,11 @@ def apply_rigid_soft_truncation(
     if body_is_moving:
         if rigid_indices[0] >= 0:
             # BVH mesh query
-            mesh = shape_source_ptr[shape_index]
             for i in range(3):
                 rigid_index = rigid_indices[i]
                 if rigid_index >= 0:
-                    x_shape = wp.cw_mul(wp.mesh_get_point(mesh, rigid_index), shape_scale[shape_index])
-                    x_body = wp.transform_point(shape_transform[shape_index], x_shape)
-                    x_rigid_ref = wp.transform_point(X_wb_ref, x_body)
-                    x_rigid_end = wp.transform_point(body_q[body_index], x_body)
-                    delta_rigid = wp.max(delta_rigid, wp.dot(n, x_rigid_end - x_rigid_ref))
+                    x_rigid_end = wp.transform_point(body_q[body_index], rigid_vertices_body[i])
+                    delta_rigid = wp.max(delta_rigid, wp.dot(n, x_rigid_end - rigid_vertices[i]))
         else:
             # SDF query
             anchor_end = wp.transform_point(body_q[body_index], soft_contact_body_pos[contact_index])
@@ -8398,7 +8385,7 @@ def apply_rigid_soft_truncation(
         # positive closest-point barycentric weight.  Endpoint/edge cases still
         # require every vertex of the paired edge or triangle to stay on its side.
         if vi >= 0:
-            x_v = pos_prev_collision_detection[vi]
+            x_v = soft_vertices[i]
             t_v = planar_truncation_t(
                 x_v,
                 particle_displacements[vi],
@@ -8416,13 +8403,9 @@ def apply_rigid_soft_truncation(
     if body_is_moving:
         t_b = float(1.0)
         if rigid_indices[0] >= 0:
-            mesh = shape_source_ptr[shape_index]
             for i in range(3):
                 rigid_index = rigid_indices[i]
                 if rigid_index >= 0:
-                    x_shape = wp.cw_mul(wp.mesh_get_point(mesh, rigid_index), shape_scale[shape_index])
-                    x_body = wp.transform_point(shape_transform[shape_index], x_shape)
-                    x_rigid_ref = wp.transform_point(X_wb_ref, x_body)
                     t_v = rigid_trajectory_truncation_t(
                         n,
                         plane_point,
@@ -8430,7 +8413,7 @@ def apply_rigid_soft_truncation(
                         dx_body,
                         rot_axis,
                         rot_angle,
-                        x_rigid_ref - c0,
+                        rigid_vertices[i] - c0,
                         gamma,
                         1.0e-3,
                         use_interval_arithmetic,

@@ -763,6 +763,24 @@ def _eval_bending_degenerate_anchor_kernel(
 
 
 @wp.kernel
+def _eval_membrane_force_hessian_kernel(
+    pos: wp.array[wp.vec3],
+    tri_indices: wp.array2d[int],
+    tri_poses: wp.array[wp.mat22],
+    tri_areas: wp.array[float],
+    forces: wp.array[wp.vec3],
+    hessians: wp.array[wp.mat33],
+):
+    """Evaluate every corner of the membrane regression triangles."""
+    face, corner = wp.tid()
+    force, hessian = evaluate_neo_hookean_membrane_force_hessian(
+        face, corner, pos, pos, tri_indices, tri_poses[face], tri_areas[face], 1.0e4, 1.0e4, 0.0, 1.0 / 600.0
+    )
+    forces[3 * face + corner] = force
+    hessians[3 * face + corner] = hessian
+
+
+@wp.kernel
 def _eval_elastic_damping_rigid_motion_kernel(
     pos: wp.array[wp.vec3],
     pos_anchor: wp.array[wp.vec3],
@@ -3104,6 +3122,89 @@ def _bending_damping_handles_degenerate_anchor(test, device):
 
     test.assertTrue(np.all(np.isfinite(force_norms_np)))
     np.testing.assert_allclose(force_norms_np, np.zeros(4), rtol=0.0, atol=1.0e-6)
+
+
+def _membrane_area_handles_stretched_triangles(test, device):
+    """Compare membrane forces and projected Hessians with a float64 geometric reference."""
+    # The first triangle is captured from a failed punch-cloth run. Its float32
+    # Gram determinant is negative despite a nonzero cross-product area.
+    pos_np = np.array(
+        [
+            [
+                [0.500496149, -0.299742132, 0.314137489],
+                [0.508631945, -0.298153758, 0.831121743],
+                [0.442254573, -0.311238766, -3.338513374],
+            ],
+            [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+            [[0, 0, 0], [1.8, 0.2, -0.1], [0.3, 1.4, 0.2]],
+            [[0, 0, 0], [0.7, 0, 0], [0, 0.6, 0]],
+            [[0, 0, 0], [1, 2, 3], [2, 4, 6.0001]],
+            [[0, 0, 0], [1, 2, 3], [2, 4, 6]],
+            [[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+            [[0, 0, 0], [1, 0, 0], [2, 1.0e-12, 0]],
+        ],
+        dtype=np.float32,
+    )
+    count = len(pos_np)
+    tri_poses_np = np.tile(np.eye(2, dtype=np.float32), (count, 1, 1))
+    tri_poses_np[0] *= np.float32(50.00004959106445)
+    tri_areas_np = np.full(count, 0.5, dtype=np.float32)
+    tri_areas_np[0] = np.float32(0.0001999996165977791)
+    with wp.ScopedDevice(device):
+        forces = wp.zeros(3 * count, dtype=wp.vec3)
+        hessians = wp.zeros(3 * count, dtype=wp.mat33)
+        wp.launch(
+            _eval_membrane_force_hessian_kernel,
+            dim=(count, 3),
+            inputs=[
+                wp.array(pos_np.reshape(-1, 3), dtype=wp.vec3),
+                wp.array(np.arange(3 * count, dtype=np.int32).reshape(-1, 3), dtype=int),
+                wp.array(tri_poses_np, dtype=wp.mat22),
+                wp.array(tri_areas_np, dtype=float),
+            ],
+            outputs=[forces, hessians],
+        )
+        forces_np = forces.numpy().reshape(count, 3, 3)
+        hessians_np = hessians.numpy().reshape(count, 3, 3, 3)
+
+    test.assertTrue(np.isfinite(forces_np).all())
+    test.assertTrue(np.isfinite(hessians_np).all())
+    for face in range(count):
+        positions_np = pos_np[face].astype(np.float64)
+        pose_np = tri_poses_np[face].astype(np.float64)
+        f0, f1 = ((positions_np[1:] - positions_np[0]).T @ pose_np).T
+        area_vector_np = np.cross(f0, f1)
+        area_ratio = max(np.linalg.norm(area_vector_np), 1.0e-10)
+        normal_np = area_vector_np / area_ratio
+        mu, lmbd = 1.0e4, 2.0e4  # Lamé -> stable Neo-Hookean parameters.
+        s = lmbd * (area_ratio - 1.5)
+        coefficients_np = np.array([[-1, -1], [1, 0], [0, 1]]) @ pose_np
+        for corner, (a, b) in enumerate(coefficients_np):
+            with test.subTest(face=face, corner=corner):
+                # dc/dx = -skew(a*f1 - b*f0). Differentiate the geometric area
+                # directly; project only its coefficient, as in the production model.
+                x, y, z = a * f1 - b * f0
+                area_jacobian_np = np.array([[0, z, -y], [-z, 0, x], [y, -x, 0]])
+                gradient_np = area_jacobian_np.T @ normal_np
+                area_hessian_np = (
+                    area_jacobian_np.T @ (np.eye(3) - np.outer(normal_np, normal_np)) @ area_jacobian_np / area_ratio
+                )
+                force_np = -tri_areas_np[face] * (mu * (a * f0 + b * f1) + s * gradient_np)
+                hessian_np = tri_areas_np[face] * (
+                    mu * (a * a + b * b) * np.eye(3)
+                    + lmbd * np.outer(gradient_np, gradient_np)
+                    + max(s, 0.0) * area_hessian_np
+                )
+                for actual_np, expected_np in (
+                    (forces_np[face, corner], force_np),
+                    (hessians_np[face, corner], hessian_np),
+                ):
+                    test.assertLessEqual(
+                        np.linalg.norm(actual_np - expected_np),
+                        3.0e-4 * max(np.linalg.norm(expected_np), 1.0),
+                    )
+                eigenvalues_np = np.linalg.eigvalsh(hessians_np[face, corner].astype(np.float64))
+                test.assertGreaterEqual(eigenvalues_np.min(), -1.0e-6 * max(eigenvalues_np.max(), 1.0))
 
 
 def _elastic_damping_ignores_rigid_motion(test, device):
@@ -6216,6 +6317,12 @@ add_function_test(
 )
 add_function_test(
     TestSolverVBD,
+    "test_membrane_area_handles_stretched_triangles",
+    _membrane_area_handles_stretched_triangles,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
     "test_elastic_damping_ignores_rigid_motion",
     _elastic_damping_ignores_rigid_motion,
     devices=devices,
@@ -8349,7 +8456,7 @@ def test_bvh_dat_small_and_zero_gap(test, device):
         output = capture.end()
     # Native printf capture is unavailable on Windows; still verify truncation.
     if sys.platform != "win32":
-        test.assertIn("Rigid-soft DAT found no separating normal for BVH row 0", output)
+        test.assertIn("Warning: Rigid-soft DAT found no separating normal for BVH row 0", output)
     test.assertEqual(truncation_t, 0.0)
     test.assertEqual(body_t, 0.0)
 
