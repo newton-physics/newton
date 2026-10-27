@@ -31,9 +31,10 @@ class DeformableVisualMesh:
 
     Instances are created by :meth:`newton.ModelBuilder.finalize` from meshes
     registered with :meth:`newton.ModelBuilder.add_deformable_visual_mesh` and
-    stored in :attr:`newton.Model.deformable_visual_meshes`. A mesh is immutable
-    asset data: every attribute except :attr:`label` and :attr:`texture` is
-    read-only, so consumers may read it once when they are created, and meshes
+    stored in :attr:`newton.Model.deformable_visual_meshes`. Treat a mesh as fixed
+    asset data. Every attribute except :attr:`label` and :attr:`texture` is a
+    read-only property. Do not modify the returned arrays in place: consumers
+    may read them only once when they are created, and meshes
     with the same rest geometry, such as replicated copies, share one device copy
     of :attr:`rest_vertices`, :attr:`indices` and :attr:`uvs`. The :attr:`parent`,
     :attr:`weights`, and :attr:`local_offsets` arrays describe how simulation

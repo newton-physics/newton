@@ -1007,6 +1007,12 @@ def _freeze_dofs(
 
 
 @wp.kernel(enable_backward=False)
+def _publish_body_awake(body_awake: wp.array[int], out: wp.array[wp.bool]):
+    i = wp.tid()
+    out[i] = body_awake[i] != 0
+
+
+@wp.kernel(enable_backward=False)
 def _freeze_bodies(
     nodes: wp.array[int],
     parent: wp.array[int],
