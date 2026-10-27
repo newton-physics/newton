@@ -235,22 +235,43 @@ particle indices. A world with no matches has equal start and end values, so it
 remains represented.
 
 ``count_per_world`` includes every model world, even those without a match.
-It is ``None`` when their counts differ. For example, if only worlds 0 and 2
-contain a selected cloth:
+It is ``None`` when their counts differ. For example, suppose worlds 0 and 2
+each contain two selected cloths, and world 1 has none:
 
 .. code-block:: python
 
     cloth = DeformableSurfaceView(model, "cloth")
-    print(cloth.count)                       # 2
-    print(cloth.worlds)                      # [0, 2]
-    print(cloth.deformable_object_ranges())  # [(0, 1), (1, 1), (1, 2)]
-    print(cloth.count_per_world)             # None: the counts are [1, 0, 1]
+    print(cloth.count)                       # 4
+
+    # Python list on the host: one world ID per selected cloth object.
+    print(cloth.worlds)                      # [0, 0, 2, 2]
+
+    # Warp array on model.device: the same IDs, in the same order.
+    # Use .numpy() here only to inspect the values on the host.
+    print(cloth.worlds_device.numpy().tolist())  # [0, 0, 2, 2]
+
+    print(cloth.deformable_object_ranges())  # [(0, 2), (2, 2), (2, 4)]
+    print(cloth.count_per_world)             # None: the counts are [2, 0, 2]
 
     world_id = 1
     start, end = cloth.deformable_object_ranges()[world_id]
     print(cloth.labels[start:end])           # []
 
-The same ranges are available on the device as a compact boundaries array:
+    # If worlds 0 and 2 also each have two matching robot articulations:
+    from newton.selection import ArticulationView
+
+    robots = ArticulationView(model, "robot*", homogeneous=False)
+    # Warp array: one ID per selected world, not per selected object.
+    print(robots.world_ids.numpy().tolist())  # [0, 2]
+
+Deformable ``worlds`` and articulation ``world_ids`` have different meanings.
+``worlds`` and its device copy, ``worlds_device``, have one entry per selected
+deformable object, so world IDs can repeat. ``ArticulationView.world_ids`` has
+one entry per selected world. The difference is not just host versus device
+storage.
+
+For the earlier cable selection, the ranges are also available on the device
+as a compact boundaries array:
 
 .. code-block:: python
 
