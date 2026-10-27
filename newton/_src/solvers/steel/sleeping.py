@@ -166,7 +166,7 @@ class _SleepState:
             [world_mask, world_count, world, self.body_nodes, self.body_awake],
             device=device,
         )
-        # The masked counterpart of valid=0: the selected worlds see no state change on the next step.
+        # The masked counterpart of valid=0, except for contact boundaries that unselected entries also read.
         wp.launch(
             _restart_world_body_history,
             self.model.body_count,

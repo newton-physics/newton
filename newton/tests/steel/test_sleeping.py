@@ -928,34 +928,23 @@ def test_masked_reset_restarts_state_change_history(test, device):
 
 
 def test_global_reset_keeps_shared_support_history(test, device):
-    """Wake unselected worlds whose global kinematic support moved before a reset of only the global entry."""
-    box = newton.ModelBuilder()
-    body = box.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
-    box.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    """Wake two worlds' sleepers whose global kinematic support moved before a reset of only the global entry."""
     builder = newton.ModelBuilder()
-    support = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
-    builder.add_shape_box(support, hx=1.0, hy=1.0, hz=0.05)
+    support = _add_slab(builder)
+    box = newton.ModelBuilder()
+    _add_box(box)
     builder.replicate(box, 2)
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, deterministic=True)
-    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **PROFILE)
-    states = [model.state(), model.state()]
-    for state in states:
-        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-    control = model.control()
-    _advance(pipeline, solver, states, control, 400)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[1:], [0, 0])
-    # Slide the support under both boxes; the contact stays closed, so only its pose history shows the move.
-    x = model.joint_q_start.numpy()[support]
-    for state in states:
-        body_q, joint_q = state.body_q.numpy(), state.joint_q.numpy()
-        body_q[support, 0] += 0.05
-        joint_q[x] += 0.05
-        state.body_q.assign(body_q)
-        state.joint_q.assign(joint_q)
-    solver.reset(states[0], world_mask=wp.array([False, False, True], dtype=wp.bool, device=device))
-    _advance(pipeline, solver, states, control, 1)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[1:], [1, 1])
+    _expect_support_move_wakes(builder, support, [1, 2], [False, False, True], device)
+
+
+def test_world_reset_keeps_shared_support_history(test, device):
+    """Wake a global sleeper whose world's kinematic support moved before a reset of only that world."""
+    builder = newton.ModelBuilder()
+    _add_box(builder)
+    slab = newton.ModelBuilder()
+    _add_slab(slab)
+    builder.replicate(slab, 1)
+    _expect_support_move_wakes(builder, 1, [0], [True, False], device)
 
 
 def test_property_notification_wakes_only_changed_islands(test, device):
@@ -1204,6 +1193,41 @@ def _two_world_boxes(device):
     return model, pipeline, solver, [model.state(), model.state()]
 
 
+def _add_box(builder):
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+
+
+def _add_slab(builder):
+    slab = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
+    builder.add_shape_box(slab, hx=1.0, hy=1.0, hz=0.05)
+    return slab
+
+
+def _expect_support_move_wakes(builder, support, sleepers, world_mask, device):
+    """Let ``sleepers`` sleep on ``support``, slide it, reset with ``world_mask``, and require them awake a step later."""
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, deterministic=True)
+    solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", **PROFILE)
+    states = [model.state(), model.state()]
+    for state in states:
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    control = model.control()
+    _advance(pipeline, solver, states, control, 400)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[sleepers], 0)
+    # The contact stays closed under a slide, so only the support's pose history shows the move.
+    x = model.joint_q_start.numpy()[support]
+    for state in states:
+        body_q, joint_q = state.body_q.numpy(), state.joint_q.numpy()
+        body_q[support, 0] += 0.05
+        joint_q[x] += 0.05
+        state.body_q.assign(body_q)
+        state.joint_q.assign(joint_q)
+    solver.reset(states[0], world_mask=wp.array(world_mask, dtype=wp.bool, device=device))
+    _advance(pipeline, solver, states, control, 1)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[sleepers], 1)
+
+
 _HISTORY = ("last_q", "last_qd", "last_body_q", "last_body_qd")
 
 
@@ -1229,6 +1253,7 @@ for _name in (
     "test_masked_reset_restarts_only_selected_history",
     "test_masked_reset_restarts_state_change_history",
     "test_global_reset_keeps_shared_support_history",
+    "test_world_reset_keeps_shared_support_history",
     "test_property_notification_wakes_only_changed_islands",
     "test_frozen_patch_carry_matches_rebuild",
     "test_frozen_patch_carry_matches_rebuild_for_flooded_pairs",
