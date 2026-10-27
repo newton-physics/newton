@@ -327,9 +327,11 @@ repository examples spend tuning effort, not a shared solver API.
        parallel batches of contacts that share no responding body, which pays off on
        scenes with many contacts per world. ``propagation_cached_response`` replaces the
        per-iteration tree walk with cached per-body responses (on by default); which is
-       faster depends on the model. The propagation responses reject contact torsion,
-       contact compliance, sleeping and loop-closing joints, and fall back from bilateral
-       pre-elimination to iterative mimic rows with a warning.
+       faster depends on the model. ``"propagation"`` solves contact torsion with
+       ``contact_torsion_device=True`` and ``velocity_iterations=0``; ``"propagation_colored"``
+       rejects it. The propagation responses reject contact compliance, sleeping and
+       loop-closing joints, and fall back from bilateral pre-elimination to iterative mimic
+       rows with a warning.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.

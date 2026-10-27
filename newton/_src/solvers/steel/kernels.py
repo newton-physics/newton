@@ -2341,7 +2341,7 @@ def contact_linear_force_from_impulses(
             count = world_constraint_count[world]
         elif path == 2:
             count = propagation_constraint_count[world]
-        has_friction = contact_slots_needed[c] == 3 and slot + 2 < count
+        has_friction = contact_slots_needed[c] >= 3 and slot + 2 < count
         lam_n = float(0.0)
         lam_t0 = float(0.0)
         lam_t1 = float(0.0)
@@ -3697,6 +3697,24 @@ def contact_row_points(
 
 
 @wp.func
+def contact_base_rows(slots_needed: int):
+    """Return a contact's normal and friction row count, without its propagation torsion spare."""
+    if slots_needed >= 3:
+        return 3
+    return wp.min(slots_needed, 1)
+
+
+@wp.func
+def _has_torsion_radius(shape_a: int, shape_b: int, shape_torsion_radius: wp.array[float]):
+    radius = float(0.0)
+    if shape_a >= 0:
+        radius = shape_torsion_radius[shape_a]
+    if shape_b >= 0:
+        radius = wp.max(radius, shape_torsion_radius[shape_b])
+    return radius > 0.0
+
+
+@wp.func
 def _allocate_world_contact_slot(
     c: int,
     contact_shape0: wp.array[int],
@@ -3726,6 +3744,8 @@ def _allocate_world_contact_slot(
     contact_friction_gap_limit: float,
     friction_patches: FrictionPatches,
     classify_only: int,
+    shape_torsion_radius: wp.array[float],
+    torsion_spares: int,
     # outputs
     contact_world: wp.array[int],
     contact_slot: wp.array[int],
@@ -3756,7 +3776,9 @@ def _allocate_world_contact_slot(
     A contact reserves one normal row, plus two adjacent friction rows when its gap
     is within the friction gap threshold and, with friction patches, when it is one
     of its region's friction anchors. ``contact_slots_needed`` records the reservation
-    (1 or 3), which every later row builder follows.
+    (1 or 3), which every later row builder follows. With ``torsion_spares``, a propagation
+    contact that is not between free bodies and whose shapes have a torsion radius reserves
+    one more row after them, for its contact torsion group (see :func:`contact_base_rows`).
 
     With a propagation response (``propagation_articulated``), contacts touching an
     articulation that is not a free body go to the body-space propagation rows
@@ -3858,6 +3880,8 @@ def _allocate_world_contact_slot(
         a_is_mf_compatible = not a_has_dofs or is_free_rigid[art_a] != 0
         b_is_mf_compatible = not b_has_dofs or is_free_rigid[art_b] != 0
         is_mf = a_is_mf_compatible and b_is_mf_compatible
+    # The immediate response solves free-body contacts without torsion, whichever family they route to.
+    free_body_pair = is_mf
     is_propagation = False
     if propagation_free_free != 0 and is_mf:
         is_mf = False
@@ -3876,6 +3900,13 @@ def _allocate_world_contact_slot(
         add_friction = add_friction and friction_patches.weight[c] > 0.0
     if add_friction:
         slots_needed = 3
+    if (
+        torsion_spares != 0
+        and is_propagation
+        and not free_body_pair
+        and _has_torsion_radius(shape_a, shape_b, shape_torsion_radius)
+    ):
+        slots_needed += 1
     contact_slots_needed[c] = slots_needed
 
     if classify_only != 0:
@@ -3959,6 +3990,8 @@ def allocate_world_contact_slots(
     contact_friction_gap_limit: float,
     friction_patches: FrictionPatches,
     classify_only: int,
+    shape_torsion_radius: wp.array[float],
+    torsion_spares: int,
     # outputs
     contact_world: wp.array[int],
     contact_slot: wp.array[int],
@@ -4028,6 +4061,8 @@ def allocate_world_contact_slots(
             contact_friction_gap_limit,
             friction_patches,
             classify_only,
+            shape_torsion_radius,
+            torsion_spares,
             contact_world,
             contact_slot,
             contact_art_a,
@@ -7368,7 +7403,8 @@ def build_propagation_contact_rows(
     or a prescribed kinematic body) gets body ``-1``; its prescribed motion enters
     through the row target velocity. With friction patches the friction rows act at the
     patch anchor points and their ``phi`` holds ``friction_anchor_beta`` times the anchor's
-    tangential displacement.
+    tangential displacement. A reserved contact torsion spare becomes an inert torsion row
+    without bodies, which contact torsion preparation may then take for its group.
     """
     total_contacts = wp.min(contact_count[0], contact_point0.shape[0])
     for c in range(wp.tid(), total_contacts, total_num_threads):
@@ -7412,7 +7448,19 @@ def build_propagation_contact_rows(
             com_b = wp.transform_point(body_q[response_body_b], body_com[response_body_b])
 
         restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
-        for row_offset in range(contact_slots_needed[c]):
+        base_rows = contact_base_rows(contact_slots_needed[c])
+        if contact_slots_needed[c] > base_rows:
+            # The step cleared its Jacobians.
+            spare = slot + base_rows
+            propagation_body_a[world, spare] = -1
+            propagation_body_b[world, spare] = -1
+            propagation_row_type[world, spare] = PGS_CONSTRAINT_TYPE_TORSION
+            propagation_row_parent[world, spare] = -1
+            propagation_row_mu[world, spare] = 0.0
+            propagation_phi[world, spare] = 0.0
+            propagation_target_velocity[world, spare] = 0.0
+            propagation_row_restitution[world, spare] = 0.0
+        for row_offset in range(base_rows):
             row = slot + row_offset
             d = normal
             if row_offset == 1:
