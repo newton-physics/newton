@@ -1587,6 +1587,17 @@ def vertex_triangle_collision_detection_kernel(
     min_dis_to_tris = max_query_radius
     vertex_world = particle_world[v_index]
 
+    fl_start = wp.int32(0)
+    fl_end = wp.int32(0)
+    first_val = wp.int32(0)
+    last_val = wp.int32(-1)
+    if vertex_triangle_filtering_list:
+        fl_start = vertex_triangle_filtering_list_offsets[v_index]
+        fl_end = vertex_triangle_filtering_list_offsets[v_index + 1]
+        if fl_end > fl_start:
+            first_val = vertex_triangle_filtering_list[fl_start]
+            last_val = vertex_triangle_filtering_list[fl_end - 1]
+
     # Only collide a vertex with triangles in its own world or in the global
     # (world -1) group. The BVH is grouped by world, so a real-world vertex queries
     # two subtrees: its own world's, then the global one. A global (world -1) vertex
@@ -1615,28 +1626,18 @@ def vertex_triangle_collision_detection_kernel(
 
             tri_index = wp.int32(0)
             while wp.bvh_query_next(query, tri_index):
+                if fl_end > fl_start:
+                    if (tri_index >= first_val) and (tri_index <= last_val):
+                        idx = binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end)
+                        if idx > fl_start and vertex_triangle_filtering_list[idx - 1] == tri_index:
+                            continue
+
                 t1 = tri_indices[tri_index, 0]
                 t2 = tri_indices[tri_index, 1]
                 t3 = tri_indices[tri_index, 2]
 
                 if vertex_adjacent_to_triangle(v_index, t1, t2, t3):
                     continue
-
-                if vertex_triangle_filtering_list:
-                    fl_start = vertex_triangle_filtering_list_offsets[v_index]
-                    fl_end = vertex_triangle_filtering_list_offsets[
-                        v_index + 1
-                    ]  # start of next vertex slice (end exclusive)
-
-                    if fl_end > fl_start:
-                        # Optional fast-fail using first/last elements (remember end is exclusive)
-                        first_val = vertex_triangle_filtering_list[fl_start]
-                        last_val = vertex_triangle_filtering_list[fl_end - 1]
-                        if (tri_index >= first_val) and (tri_index <= last_val):
-                            idx = binary_search(vertex_triangle_filtering_list, tri_index, fl_start, fl_end)
-                            # `idx` is the first index > tri_index within [fl_start, fl_end)
-                            if idx > fl_start and vertex_triangle_filtering_list[idx - 1] == tri_index:
-                                continue
 
                 u1 = pos[t1]
                 u2 = pos[t2]
