@@ -1151,7 +1151,8 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         def author(stage, with_attachments):
             _add_rigid_cube(stage, "/World/Body", (0.5, 0.5, 2.0))
-            _add_cloth_mesh(stage, "/World/Cloth")
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
             _author_unit_tet(stage, "/World/Solid", sim_api=True)
             if not with_attachments:
                 return
@@ -1277,7 +1278,8 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                 joint.CreateBody1Rel().SetTargets(["/World/Env/Robot/Body"])
                 joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
                 joint.CreateAxisAttr().Set("Z")
-                _add_cloth_mesh(stage, "/World/Cloth")
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
                 _add_physics_attachment(
                     stage,
                     "/World/Attach",
@@ -1323,7 +1325,8 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         socket.AddTranslateOp().Set(Gf.Vec3d(0.1, 0.2, 0.3))
         socket.AddRotateZOp().Set(90.0)
         socket.AddScaleOp().Set(Gf.Vec3f(2.0, 3.0, 4.0))
-        _add_cloth_mesh(stage, "/World/Cloth")
+        mesh = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
         _add_physics_attachment(
             stage,
             "/World/Attach",
