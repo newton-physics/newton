@@ -723,8 +723,8 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
           well-formed ``(verts, faces)`` pair with ``M >= 3`` and ``K >= 2``.
         - ``verts`` is always a subset of the true convex hull's vertex set.
         - For full-rank (rank-3) inputs, the output is a closed 3D convex hull
-          with outward-facing triangle windings, unchanged from the pre-degeneracy
-          behavior.
+          with outward-facing triangle windings, including hulls capped by
+          ``maxhullvert``.
 
     Degenerate outputs (rank < 3):
         - **Coplanar (rank 2):** a flat, zero-volume triangle soup covering the
@@ -871,21 +871,9 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
     verts = vertices.astype(np.float32)
     faces = hull.simplices.astype(np.int32)
 
-    # fix winding order of faces so every normal points away from the centroid
-    centre_f = verts.mean(0)
-    a, b, c = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
-    normal = np.cross(b - a, c - a)
-    offset = a - centre_f
-    alignment = np.einsum("ij,ij->i", normal, offset)
-    # Summation order can flip the sign of a near-zero dot product, so faces within a few float32
-    # rounding errors of zero, or whose terms can overflow float32, take the scalar np.dot decision.
-    # Preserve the scalar winding decision on these faces for convex-decomposition cache compatibility.
-    magnitude = np.einsum("ij,ij->i", np.abs(normal).astype(np.float64), np.abs(offset).astype(np.float64))
-    tolerance = 8.0 * np.finfo(np.float32).eps * magnitude
-    scalar_faces = ~(np.abs(alignment) > tolerance) | (magnitude > np.finfo(np.float32).max)
-    for i in np.flatnonzero(scalar_faces):
-        alignment[i] = np.dot(normal[i], offset[i])
-    inward = alignment < 0
+    # Qhull leaves simplex winding arbitrary; flip faces whose normal opposes their facet's outward normal.
+    a, b, c = vertices[faces[:, 0]], vertices[faces[:, 1]], vertices[faces[:, 2]]
+    inward = np.einsum("ij,ij->i", np.cross(b - a, c - a), hull.equations[:, :3]) < 0
     faces[inward] = faces[inward][:, [0, 2, 1]]
 
     # trim vertices to only those that are used in the faces
