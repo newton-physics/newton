@@ -432,6 +432,52 @@ class TestSolverKaminoRods(unittest.TestCase):
                 wp.capture_launch(capture.graph)
                 self.assertAlmostEqual(float(state_next.body_qd.numpy()[0, 5]), 5.0, delta=1.0e-4)
 
+    def test_lox_tensioned_cable_stays_stable(self):
+        """Keep a tensioned cable of light segments stable in LOX, whose geometric stiffness resists the
+        rotation of each segment about its anchor."""
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        segment_length = 0.02
+        # Build the cable upwards, so the welded top segment closes a loop and the end mass is its root
+        points = [wp.vec3(0.0, 0.0, 0.6 + i * segment_length) for i in range(21)]
+        cfg = builder.default_shape_cfg.copy()
+        cfg.density = 1000.0
+        bodies, _joints = builder.add_rod(
+            rod=newton.Rod(points, radius=0.002),
+            cfg=cfg,
+            stretch_stiffness=1.0e5,
+            bend_stiffness=1.0e-3,
+            bend_damping=0.0,
+            wrap_in_articulation=True,
+        )
+        end, top = int(bodies[0]), int(bodies[-1])
+        builder.add_joint_fixed(parent=-1, child=top, parent_xform=builder.body_q[top])
+        # A 1 kg end mass puts every 0.25 g segment under about 10 N of tension
+        scale = 1.0 / builder.body_mass[end]
+        builder.body_mass[end] = 1.0
+        builder.body_inv_mass[end] = 1.0
+        builder.body_inertia[end] = builder.body_inertia[end] * scale
+        builder.body_inv_inertia[end] = builder.body_inv_inertia[end] * (1.0 / scale)
+        model = builder.finalize(device=self.default_device)
+
+        config = SolverKamino.Config.from_model(model, dynamics_solver="lox")
+        config.use_collision_detector = False
+        solver = SolverKamino(model, config=config)
+        state_previous, state_next, control = model.state(), model.state(), model.control()
+        velocities = state_previous.body_qd.numpy()
+        velocities[end, 0] = 0.05
+        state_previous.body_qd.assign(velocities)
+        for _ in range(120):
+            solver.step(state_previous, state_next, control, contacts=None, dt=1.0 / 120.0)
+            state_previous, state_next = state_next, state_previous
+
+        segments = np.asarray(bodies[1:])
+        poses = state_previous.body_q.numpy()[np.asarray(bodies)]
+        velocities = state_previous.body_qd.numpy()[segments]
+        self.assertTrue(np.isfinite(poses).all() and np.isfinite(velocities).all())
+        self.assertLess(float(np.abs(velocities[:, 3:]).max()), 10.0)
+        self.assertLess(float(np.abs(poses[:, :2]).max()), 0.05)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
