@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import inspect
 import itertools
 import math
 import os
@@ -5684,7 +5685,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
             solver.step(state_in, state_out, control, contacts, dt, observables=observables)
             state_in, state_out = state_out, state_in
 
-            nacon = int(contacts.rigid_contact_count.numpy()[0])
+            nacon = solver.mj_data.ncon if use_mujoco_cpu else int(solver.mjw_data.nacon.numpy()[0])
             if nacon > 0:
                 f = observables.contact_f.numpy()[:nacon, :3]
                 force_acc += np.sum(f, axis=0)
@@ -5695,15 +5696,30 @@ class TestMuJoCoContactForce(unittest.TestCase):
             for capacity in (1, 0):
                 limited = newton.Contacts(capacity, 0, device=model.device)
                 limited.force = wp.empty(capacity, dtype=wp.spatial_vector, device=model.device)
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exporting only the first"):
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exporting only the first") as warning:
                     solver.step(state_in, state_out, control, limited, dt, observables=observables)
+                self.assertEqual(warning.filename, __file__)
                 self.assertEqual(int(limited.rigid_contact_count.numpy()[0]), capacity)
+                limited.force = None
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exporting only the first") as warning:
+                    caller_line = inspect.currentframe().f_lineno + 1
+                    solver.update_contacts(limited)
+                self.assertEqual(warning.filename, __file__)
+                self.assertEqual(warning.lineno, caller_line)
         return total_force, shape0
 
     def test_pyramidal_cone_weight(self):
         """Box weight via pyramidal cone contacts must match mg."""
         model, ground_shape = self._build_box_on_ground(friction=0.5)
-        for use_mujoco_cpu, integrator in ((False, None), (True, None), (True, "discrete")):
+        for use_mujoco_cpu, integrator in (
+            (False, None),
+            (True, None),
+            (True, "euler"),
+            (True, "implicit"),
+            (True, "implicitfast"),
+            (True, "rk4"),
+            (True, "discrete"),
+        ):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu, integrator=integrator):
                 force, shape0 = self._run_and_collect_forces(
                     model, cone="pyramidal", use_mujoco_cpu=use_mujoco_cpu, integrator=integrator

@@ -629,6 +629,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         :meth:`SolverMuJoCo.get_max_contact_count`. Otherwise, use the collision
         pipeline's contact storage.
 
+        With ``use_mujoco_cpu=True``, ``CONTACT_F`` requires
+        ``use_mujoco_contacts=True``.
+
         See :ref:`solver_observables` for allocation, backend limitations, and examples.
 
         .. experimental::
@@ -4933,14 +4936,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 SolverBase.ObservableKind.CONTACT_F
             )
             if needs_body_observables or (
-                needs_contact_observables and self.mj_model.opt.integrator != self._mujoco.mjtIntegrator.mjINT_DISCRETE
+                needs_contact_observables and self.mj_model.opt.integrator == self._mujoco.mjtIntegrator.mjINT_RK4
             ):
                 self._step_mujoco_cpu_with_observables(state_out, observables)
             else:
                 self._mujoco.mj_step(self.mj_model, self.mj_data)
                 if needs_contact_observables:
-                    # Discrete integration retains the input contact geometry and forces.
-                    self._populate_contact_observables(observables.contacts, observables.contact_f)
+                    # After non-RK4 integration, mj_data retains the input contact geometry and forces.
+                    self._populate_contact_observables(
+                        observables.contacts, observables.contact_f, warning_stacklevel=5
+                    )
             self._update_newton_state(self.model, state_out, self.mj_data, state_prev=state_in, observables=observables)
         else:
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
@@ -6078,7 +6083,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mujoco.mj_compareFwdInv(model, data)
         self._update_body_observables(self.model, state_out, data, observables)
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
-            self._populate_contact_observables(observables.contacts, observables.contact_f)
+            self._populate_contact_observables(observables.contacts, observables.contact_f, warning_stacklevel=6)
 
         if integrator == mujoco.mjtIntegrator.mjINT_EULER:
             mujoco.mj_Euler(model, data)
@@ -6464,13 +6469,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         contact_f: wp.array[wp.spatial_vector] | None,
         *,
         preserve_geometry: bool = False,
+        warning_stacklevel: int = 4,
     ) -> None:
         """Export MuJoCo geometry, or map forces to unchanged Newton collision rows."""
         self._apply_module_options()
         if self.use_mujoco_cpu:
             if not self._use_mujoco_contacts:
                 raise NotImplementedError("Contact export with use_mujoco_cpu=True requires use_mujoco_contacts=True.")
-            self._populate_mjc_contact_observables(contacts, contact_f)
+            self._populate_mjc_contact_observables(contacts, contact_f, warning_stacklevel=warning_stacklevel)
         else:
             # TODO: ensure that class invariants are preserved
             # TODO: fill actual contact arrays instead of creating new ones
@@ -6531,7 +6537,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 wp.copy(contacts.force, contact_f, count=count)
 
     def _populate_mjc_contact_observables(
-        self, contacts: Contacts, contact_f: wp.array[wp.spatial_vector] | None
+        self, contacts: Contacts, contact_f: wp.array[wp.spatial_vector] | None, *, warning_stacklevel: int
     ) -> None:
         """Export MuJoCo CPU contact geometry and world-frame wrenches."""
         data = self.mj_data
@@ -6542,7 +6548,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"({contacts.rigid_contact_max}); exporting only the first {count} contacts. "
                 "Increase rigid_contact_max to export all contacts.",
                 NewtonWarning,
-                stacklevel=5,
+                stacklevel=warning_stacklevel,
             )
 
         if count:
