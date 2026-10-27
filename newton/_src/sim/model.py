@@ -10,7 +10,7 @@ import operator
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, SupportsIndex
 
@@ -249,8 +249,8 @@ class Model:
 
         .. experimental::
 
-            ``compaction_policy`` is part of the experimental coupled-solver
-            framework and may change without a deprecation period.
+            ``compaction_policy`` and ``default`` are part of the experimental
+            coupled-solver framework and may change without a deprecation period.
         """
 
         frequency: Model.AttributeFrequency | str
@@ -276,6 +276,13 @@ class Model:
         structured handling; and ``"passthrough"`` disables automatic count
         limiting. Non-generic policies may still be overridden by the coupled
         solver when constructing a compact view.
+        """
+        default: Any = field(default=None, compare=False)
+        """Experimental value of one row for entities without authored data, or ``None`` for the dtype's zero.
+
+        :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` sets it to
+        :attr:`ModelBuilder.CustomAttribute.default <newton.ModelBuilder.CustomAttribute.default>`.
+        Coupled model views use it for the rows they synthesize.
         """
 
         def __post_init__(self) -> None:
