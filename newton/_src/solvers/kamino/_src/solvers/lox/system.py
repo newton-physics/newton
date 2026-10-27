@@ -367,6 +367,7 @@ class LOXSystem:
         body_pose: wp.array[wp.transformf],
         dynamic_rows: DynamicRows,
         time_step: wp.array[wp.float32],
+        prescribed_twist: wp.array[vec6f] | None = None,
     ) -> None:
         """Add the rotational geometric stiffness of the stretch and shear rows of the stretched rod joints.
 
@@ -389,6 +390,7 @@ class LOXSystem:
             body_pose: World pose of each body's center of mass.
             dynamic_rows: Dynamic rows, with their Jacobians, effective inertias and free velocities.
             time_step: Time step of each world [s].
+            prescribed_twist: Twist of each body outside the system, or ``None`` for zero twists.
         """
         joint_count = joint_world.shape[0]
         if joint_count == 0 or dynamic_rows.count == 0:
@@ -411,6 +413,7 @@ class LOXSystem:
                 body_pose,
                 self._data.body_block,
                 self._data.body_local,
+                prescribed_twist,
                 time_step,
                 dynamic_rows.joint_offset,
                 dynamic_rows.joint_count,
