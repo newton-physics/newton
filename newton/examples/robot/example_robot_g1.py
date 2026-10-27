@@ -52,6 +52,8 @@ class Example:
             enable_self_collisions=False,
             hide_collision_shapes=True,
             skip_mesh_approximation=True,
+            # Use the same Newton joint drives for both solvers.
+            ignore_paths=[".*/Physics/.*_joint$"],
         )
 
         for i in range(6, g1.joint_dof_count):
@@ -115,7 +117,9 @@ class Example:
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         self.viewer.set_model(self.model)
 
@@ -163,6 +167,14 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Verify one actuator per joint and a settled robot pose."""
+        if self.solver_type == "mujoco":
+            assert self.solver.mj_model.nu == self.model.joint_dof_count // self.world_count - 6, (
+                "Each G1 joint should have exactly one MuJoCo actuator"
+            )
+            assert (self.solver.mjc_actuator_ctrl_source.numpy() == self.solver.CtrlSource.JOINT_TARGET).all(), (
+                "G1 actuators should use Newton joint targets"
+            )
         newton.examples.test_body_state(
             self.model,
             self.state_0,

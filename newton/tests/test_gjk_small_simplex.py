@@ -30,7 +30,7 @@ def _query_triangle_point(a: wp.vec3, b: wp.vec3, c: wp.vec3, out: wp.array[floa
     point = GenericShapeData()
     point.shape_type = int(GeoType.SPHERE)
     point.scale = wp.vec3(0.0)
-    # Keep the overlap and convergence tolerance below the face gap so this
+    # Keep the near-contact threshold below the face gap so this
     # query isolates simplex degeneracy rather than near-contact termination.
     separated, _, _, normal, distance = wp.static(create_solve_closest_distance(support_map).core)(
         triangle, point, wp.quat_identity(), -a, 0.0, SupportMapDataProvider(), 30, 1e-6

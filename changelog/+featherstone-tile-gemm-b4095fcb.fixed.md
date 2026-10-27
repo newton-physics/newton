@@ -1,0 +1,1 @@
+Fix `SolverFeatherstone(use_tile_gemm=True)` failing to load its kernels, only supporting articulations with 18 DOFs, and computing wrong gradients. Articulations of different sizes are now grouped, with one tile kernel per size.

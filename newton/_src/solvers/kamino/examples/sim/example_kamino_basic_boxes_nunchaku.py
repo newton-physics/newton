@@ -16,7 +16,11 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import (
+    add_recording_args,
+    enable_recording_from_args,
+)
+from newton._src.solvers.kamino.examples import get_examples_output_path
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
 
@@ -33,14 +37,8 @@ class Example:
         self.viewer = viewer
         self.device = wp.get_device()
 
-        video_output_filename = getattr(args, "video_path", None)
-        self.record_video = enable_recording(
-            viewer=self.viewer,
-            record_video=args.record_video if args else False,
-            start_clip=True,
-            output_path=video_output_filename if video_output_filename is not None else "recording.mp4",
-            max_frames=getattr(args, "max_video_frames", 1000),
-            fps=self.fps,
+        self.record_video = enable_recording_from_args(
+            self.viewer, args, name="boxes_nunchaku", output_root=get_examples_output_path(), fps=self.fps
         )
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
@@ -98,7 +96,7 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
-        self.observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.observables = self.solver.observables(contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F})
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -179,24 +177,7 @@ class Example:
             default=True,
             help="Load the basic boxes nunchaku from USD.",
         )
-        parser.add_argument(
-            "--record-video",
-            action=argparse.BooleanOptionalAction,
-            default=False,
-            help="Record a video of the viewer, up to 1000 frames.",
-        )
-        parser.add_argument(
-            "--video-path",
-            type=str,
-            default=None,
-            help="Output video path (defaults to 'recording.mp4').",
-        )
-        parser.add_argument(
-            "--max-video-frames",
-            type=int,
-            default=1000,
-            help="Maximum number of frames recorded for the video (defaults to 1000).",
-        )
+        add_recording_args(parser, example_name="boxes_nunchaku")
         return parser
 
 
@@ -205,5 +186,3 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
-    if hasattr(viewer, "finish_clip"):
-        viewer.finish_clip()

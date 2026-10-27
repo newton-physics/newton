@@ -31,6 +31,17 @@ def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, den
     return curves
 
 
+def _author_cable_rest_shape(curves, *, points=None, normals=None):
+    """Author rest points and normals at default time when supplied."""
+    from pxr import Sdf
+
+    prim = curves.GetPrim()
+    if points is not None:
+        prim.CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(points)
+    if normals is not None:
+        prim.CreateAttribute("physics:restNormals", Sdf.ValueTypeNames.Normal3fArray).Set(normals)
+
+
 def _author_deformable_element_array(prim, name, values, element_type):
     """Author a deformable simulation array with its required element-type token."""
     from pxr import Sdf

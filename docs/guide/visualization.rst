@@ -252,7 +252,7 @@ windowed mode:
     rgb = frame.numpy()  # NumPy uint8 array with shape (height, width, 3)
 
     # Reuse the output buffer after rendering subsequent frames.
-    viewer.get_frame(target_image=frame)
+    viewer.get_frame(output=frame)
 
 Use an image library to save the captured pixels, for example:
 
@@ -407,9 +407,8 @@ RTX Viewer
 ~~~~~~~~~~
 
 :class:`~newton.viewer.ViewerRTX` provides real-time path-traced rendering using the NVIDIA OVRTX renderer.
-It builds a USD scene on the first frame and updates rigid-body transforms each frame via the renderer's runtime
-scene interface, presenting the result in a pyglet/OpenGL window. ViewerRTX selects the legacy OVRTX attribute
-interface for OVRTX versions before 0.4 and the OVStage interface for OVRTX 0.4 and newer.
+It builds a USD scene on the first frame and updates rigid-body transforms each frame through OVStage,
+presenting the result in a pyglet/OpenGL window.
 
 Debug geometry can be added before or after the first rendered frame using
 :meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
@@ -433,24 +432,15 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 
     uv sync --extra rtx
 
-This installs ``ovrtx`` (the NVIDIA OVRTX renderer), ``ovstage`` for runtime scene management, and
-``usd-core``, in addition to ``pyglet`` for the window.
+This installs ``ovrtx`` 0.5.1.385782 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2.1.385922 or newer
+for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for the window.
 
-ViewerRTX has been validated with the following renderer configurations:
+ViewerRTX has been validated with the following renderer configuration:
 
-- ``ovrtx==0.3.0.312915`` (local compatibility testing)
-- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349`` (GPU CI)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency and GPU CI; Isaac Lab 3.0)
 
-OVRTX 0.4 and newer select the same OVStage interface, but only the exact configurations above are part of
-Newton's validated matrix. The minimum-dependency CI workflow does not install the optional ``rtx`` dependency
-group and therefore does not exercise the OVRTX 0.3 integration.
-
-.. warning::
-    With ``ovrtx==0.5.0.377615`` and ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave
-    ViewerRTX showing a uniform gray image, commonly after switching examples in the same process. Until this is
-    resolved, use the validated OVRTX 0.3 configuration for reliable interactive switching. CPU staging avoids
-    the symptom but is not enabled because it introduces a per-frame GPU-to-CPU synchronization and copy. See
-    `issue #4283 <https://github.com/newton-physics/newton/issues/4283>`__.
+Only the exact configuration above is part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
+together; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
 
 .. code-block:: python
 
@@ -483,7 +473,7 @@ lights, e.g. an HDR ``DomeLight``, via :meth:`~newton.viewer.ViewerRTX.add_backg
 Rendering an existing USD scene
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-With OVStage 0.2 or newer, ``ViewerRTX(ovstage=stage)`` renders a populated ``ovstage.Stage`` with its authored
+``ViewerRTX(ovstage=stage)`` renders a populated ``ovstage.Stage`` with its authored
 materials and lights instead of building a scene from the model. The stage presents the scene; Newton only moves it:
 
 - **Bodies**: :meth:`~newton.viewer.ViewerRTX.set_model` binds each Newton body to the stage prim whose path equals the
@@ -1012,8 +1002,25 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.Viewe
 Contact normals, mode disks, and force arrows are sized relative to the smaller
 shape in each contact pair. Use the ``Contact Relative Scale`` control to adjust
 all contact glyphs while preserving their proportions across differently sized
-contacts. Contact mode coloring and force arrows require the ``"force"``
-extended contact attribute.
+contacts. To infer contact modes and draw force arrows, request the solver's
+``CONTACT_F`` observable, pass it to the solver step, and provide the resulting
+observables to the viewer:
+
+.. code-block:: python
+
+    viewer.log_contacts(contacts, state, observables=observables)
+
+See :ref:`solver_observables` for allocation, contact-buffer identity, and backend
+support. Without force output, mode disks are amber (unknown) and force arrows
+are hidden. With force output, disks are black for open contacts, light gray for
+sticking contacts, and blue for slipping contacts. A measured force magnitude
+at or below ``contact_mode_eps_force`` is open, including zero force when the
+threshold is zero.
+
+Default force-arrow calibration uses the average dynamic mass of populated local
+worlds plus shared global dynamic mass, so replicating identical worlds does not
+change arrow lengths. Set ``viewer.contact_force_scale`` after attaching the
+model to override the calibration.
 
 **Transform gizmos:**
 
@@ -1057,7 +1064,7 @@ the range are clipped).
     # once and reuse it every frame; the RGBA conversion is a zero-copy view.
     camera = SensorCamera(model)
     view_count, width, height = 1, 16, 16
-    color_image = camera.create_color_image_output(view_count, width, height)
+    color_image = camera.allocate_image_color(view_count, width, height)
     # ... in a real pipeline, camera.update(...) fills color_image each frame.
     rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
     viewer.log_image("camera", rgba)
@@ -1085,7 +1092,7 @@ frame capture where the image should replace the 3D scene:
     # once and reuse it every frame; the RGBA conversion is a zero-copy view.
     camera = SensorCamera(model)
     view_count, width, height = 1, 16, 16
-    color_image = camera.create_color_image_output(view_count, width, height)
+    color_image = camera.allocate_image_color(view_count, width, height)
     # ... in a real pipeline, camera.update(...) fills color_image each frame.
     rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
     viewer.log_image("camera", rgba, fullscreen=True)

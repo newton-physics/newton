@@ -90,7 +90,9 @@ def test_revolute_controller(
 
         sim_time += sim_dt
 
-    if not isinstance(solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone):
+    if not isinstance(
+        solver, newton.solvers.SolverMuJoCo | newton.solvers.SolverFeatherstone | newton.solvers.SolverSteel
+    ):
         newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
 
     joint_q = state_0.joint_q.numpy()
@@ -304,7 +306,7 @@ def test_free_plus_revolute_position_target(
         test.skipTest("qfrc_actuator-based check is MuJoCo-specific")
 
     state_0, state_1 = model.state(), model.state()
-    observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     control = model.control()
 
@@ -450,7 +452,7 @@ def test_qfrc_actuator(
 
     state_0 = model.state()
     state_1 = model.state()
-    observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
 
     test.assertIsNotNone(observables.qfrc_actuator)
     test.assertEqual(len(observables.qfrc_actuator), model.joint_dof_count)
@@ -545,7 +547,7 @@ def test_free_joint_qfrc_actuator_frame(
 
     state_0 = model.state()
     state_1 = model.state()
-    observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
 
     control = model.control()
     # Set ctrl: [thrust=10, yaw=10]
@@ -586,7 +588,13 @@ def test_free_joint_qfrc_actuator_frame(
     )
 
 
+def _steel(model):
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    return newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+
+
 devices = get_test_devices()
+# Steel drives act on PRISMATIC, REVOLUTE and D6 DOFs, so it runs the revolute controller tests only.
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
     "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
@@ -594,6 +602,7 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0, iterations=5),
     # "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "kamino": newton.solvers.SolverKamino,
+    "steel": _steel,
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():

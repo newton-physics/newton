@@ -1,20 +1,80 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import inspect
-import sys
 import unittest
 from collections import namedtuple
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest import mock
 
 import numpy as np
 
+from newton._src.viewer.gl.gui import UI
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_null import ViewerNull
+from newton.tests.unittest_utils import patch_sys_module
 
 _Vec3 = namedtuple("_Vec3", ("x", "y", "z"))
+
+
+class TestViewerUI(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            from imgui_bundle import imgui, imguizmo
+        except ImportError as exc:
+            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+
+        context = imgui.create_context()
+        self.addCleanup(imgui.destroy_context, context)
+        # Exercise ImGui state without an OpenGL renderer or window.
+        self.ui = UI.__new__(UI)
+        self.ui.imgui = imgui
+        self.ui.giz = imguizmo.im_guizmo
+        self.ui.io = imgui.get_io()
+        self.ui.io.set_ini_filename("")
+        self.ui.io.display_size = (640, 480)
+        self.ui.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+        self.ui.is_available = True
+        self.ui._frame_time = None
+
+    def test_frame_delta(self) -> None:
+        """Advance ImGui time by elapsed frame durations, including a repeated timestamp."""
+        elapsed = 0.0
+        with mock.patch(
+            "newton._src.viewer.gl.gui.perf_counter",
+            side_effect=[0.0, 0.025, 0.050, 0.060, 0.060],
+        ):
+            for delta in (1.0 / 60.0, 0.025, 0.025, 0.010, 1e-6):
+                with self.subTest(delta=delta):
+                    self.ui.begin_frame()
+                    try:
+                        elapsed += delta
+                        self.assertAlmostEqual(self.ui.io.delta_time, delta)
+                        self.assertAlmostEqual(self.ui.imgui.get_time(), elapsed)
+                    finally:
+                        self.ui.imgui.end_frame()
+
+    def test_dpi_scaling(self) -> None:
+        """Keep style sizes stable on reapplication and restore them at scale one."""
+        imgui = self.ui.imgui
+        font = self.ui.io.fonts.add_font_default()
+        self.ui._setup_dark_style()
+        text_color = tuple(imgui.get_style().color_(imgui.Col_.text))
+        for scale in (1.0, 2.0, 2.0, 1.5, 1.0):
+            with self.subTest(scale=scale):
+                expected_style = imgui.Style()
+                expected_style.scale_all_sizes(scale)
+                self.ui.dpi_scale = scale
+                self.ui._apply_dpi_scaling()
+                style = imgui.get_style()
+                self.assertEqual(tuple(style.window_padding), (12.0 * scale, 12.0 * scale))
+                # This size is not explicitly overridden by the Newton theme.
+                self.assertEqual(tuple(style.separator_text_padding), tuple(expected_style.separator_text_padding))
+                self.assertEqual(style.font_scale_dpi, scale)
+                self.assertEqual(tuple(style.color_(imgui.Col_.text)), text_color)
+                self.assertEqual(self.ui.io.fonts.fonts[0], font)
 
 
 def _make_gl_state(paused: bool = False, step_requested: bool = False) -> "ViewerGL":
@@ -33,6 +93,43 @@ class TestViewerBaseShouldStep(unittest.TestCase):
         viewer = ViewerNull()
         for _ in range(3):
             self.assertTrue(viewer.should_step())
+
+
+@unittest.skipUnless(importlib.util.find_spec("imgui_bundle"), "Requires imgui_bundle")
+class TestViewerGuiRecovery(unittest.TestCase):
+    def test_callback_failure_leaves_next_frame_usable(self):
+        """Unwind real ImGui windows and styles without a renderer or model."""
+        from imgui_bundle import imgui
+
+        context = imgui.create_context()
+        self.addCleanup(imgui.destroy_context, context)
+        io = imgui.get_io()
+        io.set_ini_filename(None)
+        io.display_size = (320, 320)
+        io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+        gui = ViewerGui.__new__(ViewerGui)
+        gui._viewer = SimpleNamespace(show_ui=True)
+        gui._loading_splash_active = False
+        gui.ui = SimpleNamespace(
+            is_available=True, imgui=imgui, io=io, begin_frame=imgui.new_frame, end_frame=imgui.render
+        )
+        error = RuntimeError("GUI callback failed")
+
+        def fail():
+            imgui.begin("Example")
+            imgui.begin_child("Nested")
+            imgui.push_style_color(imgui.Col_.text, (1.0, 0.0, 0.0, 1.0))
+            raise error
+
+        gui._render_ui = fail
+        with self.assertRaises(RuntimeError) as raised:
+            gui.prepare_frame(update_fps=False)
+        self.assertIs(raised.exception, error)
+        self.assertFalse(gui._frame_prepared)
+        self.assertTrue(io.config_error_recovery_enable_assert)
+        gui._render_ui = lambda: imgui.text("Retry")
+        gui.prepare_frame(update_fps=False)
+        self.assertTrue(gui._frame_prepared)
 
 
 class TestViewerCameraSpeed(unittest.TestCase):
@@ -71,7 +168,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
 
         key = SimpleNamespace(W=1, UP=2, S=3, DOWN=4, A=5, LEFT=6, D=7, RIGHT=8, Q=9, E=10)
         pyglet = SimpleNamespace(window=SimpleNamespace(key=key))
-        with patch.dict(sys.modules, {"pyglet": pyglet}):
+        with patch_sys_module("pyglet", pyglet):
             gui.update_camera_from_keys(0.1, lambda code: code == key.W)
 
         self.assertAlmostEqual(camera.pos.x, 0.2)
@@ -96,7 +193,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
 
         key = SimpleNamespace(W=1, UP=2, S=3, DOWN=4, A=5, LEFT=6, D=7, RIGHT=8, Q=9, E=10)
         pyglet = SimpleNamespace(window=SimpleNamespace(key=key))
-        with patch.dict(sys.modules, {"pyglet": pyglet}):
+        with patch_sys_module("pyglet", pyglet):
             gui.update_camera_from_keys(2.0 * gui._cam_damp_tau, lambda _: False)
 
         self.assertGreaterEqual(np.dot(camera.pos, velocity_init), 0.0)

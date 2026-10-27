@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 import unittest
 from itertools import product
 from types import SimpleNamespace
@@ -27,6 +26,7 @@ from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlock
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
+    BILATERAL_FAILED_PIVOT_SHIFT,
     _find_bilateral_factor_row_start,
     _initialize_dvi_status,
     _solve_bilateral_unilateral_response,
@@ -40,14 +40,11 @@ from newton._src.solvers.kamino._src.solvers.dvi.projections import (
     project_contact_tangent_update as _project_contact_tangent_update,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
-    _SPARSE_DELASSUS_ROWS_JOINTS,
-    _SPARSE_DELASSUS_ROWS_UNILATERAL,
-    _can_reuse_sparse_assembly,
     _can_use_cooperative_articulation,
-    _sparse_delassus_matvec_rows,
+    _sparse_bilateral_matvec,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
-    _assemble_compact_unilateral_schur,
+    _assemble_compact_unilateral_schur_blocked,
     _assemble_compact_unilateral_schur_tiled,
     _color_compact_contact_groups,
     _color_mapped_dvi_inequalities,
@@ -71,10 +68,11 @@ from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
 from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIState, convert_config_to_struct
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 from newton.tests.utils import basics, testing
 
 
@@ -333,7 +331,7 @@ def _status_iteration_budget(solver: DVISolver, wid: int) -> int:
     config = solver.config[wid]
     if config.unilateral_solver == "apgd":
         phases = (
-            1 if config.use_schur_complement or solver._bilateral_solver is None else config.max_alternating_iterations
+            1 if solver._use_schur_complement or solver._bilateral_solver is None else config.max_alternating_iterations
         )
         return phases * config.apgd.max_nonlinear_corrections * config.apgd.max_iterations
     return config.max_alternating_iterations * config.inequality_sweeps_per_iteration
@@ -387,11 +385,12 @@ def _evaluate_solution_metrics(test: TestSetup, solver: DVISolver) -> dict[str, 
     }
 
 
-class TestDVISolver(unittest.TestCase):
+class TestDVISolver(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
     def test_00_sparse_projection_is_allocated_only_for_schur(self):
         """Allocate the large sparse response workspace only for Schur solves."""
@@ -431,16 +430,6 @@ class TestDVISolver(unittest.TestCase):
         path.use_schur_complement = False
         self.assertFalse(_can_use_cooperative_articulation(path))
 
-    def test_00_sparse_assembly_reuse_requires_large_constrained_batch(self):
-        """Avoid cached sparse assembly where it regresses ordinary DVI solves."""
-        size = SimpleNamespace(num_worlds=2047, sum_of_num_friction_joint_cts=2047)
-        self.assertFalse(_can_reuse_sparse_assembly(size, has_unilateral_constraints=True))
-        size.num_worlds = 2048
-        self.assertTrue(_can_reuse_sparse_assembly(size, has_unilateral_constraints=False))
-        size.sum_of_num_friction_joint_cts = 0
-        self.assertFalse(_can_reuse_sparse_assembly(size, has_unilateral_constraints=False))
-        self.assertTrue(_can_reuse_sparse_assembly(size, has_unilateral_constraints=True))
-
     def test_00_config_selection(self):
         """Verify default, dense, PADMM, and explicit DVI configuration selection."""
         default_config = SolverKamino.Config(dynamics_solver="dvi")
@@ -452,7 +441,7 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(default_config.dvi.omega, 1.0)
         self.assertEqual(default_config.dvi.max_alternating_iterations, 24)
         self.assertEqual(default_config.dvi.inequality_sweeps_per_iteration, 2)
-        self.assertFalse(default_config.dvi.use_schur_complement)
+        self.assertIsNone(default_config.dvi.use_schur_complement)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
         self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
         self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
@@ -579,6 +568,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_00a2_dvi_contact_capacity_reports_per_world_overflow(self):
         """Report contacts dropped when one world exhausts its capacity."""
+        expect_contact_capacity_warning(self)
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         for world_index in range(50):
@@ -616,7 +606,7 @@ class TestDVISolver(unittest.TestCase):
 
         def make_model(dimensions):
             return SimpleNamespace(
-                size=SimpleNamespace(sum_of_num_bilateral_joint_cts=sum(dimensions)),
+                size=SimpleNamespace(num_worlds=len(dimensions), sum_of_num_bilateral_joint_cts=sum(dimensions)),
                 info=SimpleNamespace(
                     num_joint_bilateral_cts=wp.array(dimensions, dtype=wp.int32, device=self.device),
                     joint_bilateral_cts_offset=wp.array(
@@ -638,6 +628,17 @@ class TestDVISolver(unittest.TestCase):
         self.assertIsInstance(solver._bilateral_solver, LLTBlockedRCMSolver)
         self.assertEqual(solver._bilateral_solver._block_size, 16)
         self.assertTrue(solver._bilateral_solver._reuse_permutation)
+        self.assertEqual(solver._bilateral_solver._failed_pivot_shift, BILATERAL_FAILED_PIVOT_SHIFT)
+
+        # Both bilateral solvers retry failed pivots by default, and an explicit shift still wins.
+        for kwargs, expected_shift in (({}, BILATERAL_FAILED_PIVOT_SHIFT), ({"failed_pivot_shift": 0.0}, 0.0)):
+            with self.subTest(kwargs=kwargs):
+                solver._config = [
+                    kamino_config.DVISolverConfig(bilateral_solver_type="LLTB", bilateral_solver_kwargs=kwargs)
+                ]
+                solver._allocate_bilateral_solver(make_model([3]))
+                self.assertIsInstance(solver._bilateral_solver, LLTBlockedSolver)
+                self.assertEqual(solver._bilateral_solver._failed_pivot_shift, expected_shift)
 
         solver._config = [
             kamino_config.DVISolverConfig(bilateral_solver_type="LLTB"),
@@ -878,11 +879,13 @@ class TestDVISolver(unittest.TestCase):
         negative index.
         """
 
-        def solve_single_inequality(limit_index: int, bounded: bool = False) -> tuple[float, np.ndarray]:
+        def solve_single_inequality(
+            limit_index: int, bounded: bool = False, initial_lambda: float = 0.0, column_major: bool = False
+        ) -> tuple[float, np.ndarray]:
             int32_array = lambda values: wp.array(values, dtype=wp.int32, device=self.device)  # noqa: E731
             float_array = lambda values: wp.array(values, dtype=wp.float32, device=self.device)  # noqa: E731
             jacobian_block = wp.array([vec6f(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=vec6f, device=self.device)
-            lambdas = float_array([0.0])
+            lambdas = float_array([initial_lambda, *([0.0] * 5 if column_major else [])])
             config = wp.array(
                 [
                     convert_config_to_struct(
@@ -899,7 +902,7 @@ class TestDVISolver(unittest.TestCase):
                 device=self.device,
             )
             threads_per_world = 64 if self.device.is_cuda else 1
-            body_space = wp.zeros(6, dtype=wp.float32, device=self.device)
+            body_space = wp.full(6, float("nan"), dtype=wp.float32, device=self.device)
             wp.launch(
                 kernel=_solve_dvi_sparse_inequalities_pgs,
                 dim=threads_per_world,
@@ -957,6 +960,15 @@ class TestDVISolver(unittest.TestCase):
                     config,
                     body_space,
                     lambdas,
+                    int32_array([1]),  # transpose_num_nzb
+                    int32_array([0]),  # transpose_nzb_start
+                    wp.array([[0, 0]], dtype=wp.int32, device=self.device),
+                    jacobian_block,
+                    int32_array([0]),  # transpose_row_start
+                    int32_array([0]),  # transpose_col_start
+                    int32_array([6]),  # transpose_max_cols
+                    column_major,  # transpose_column_major
+                    0,  # world_start
                 ],
                 device=self.device,
                 block_dim=threads_per_world,
@@ -971,6 +983,12 @@ class TestDVISolver(unittest.TestCase):
         lambda_bounded, body_space = solve_single_inequality(-1, bounded=True)
         self.assertAlmostEqual(lambda_bounded, 0.25, places=4)
         self.assertAlmostEqual(body_space[0], 0.25, places=4)
+        # Both layouts reconstruct the initial product, then propagate the
+        # projected impulse delta. Stale NaNs must not enter either product.
+        for column_major in (False, True):
+            impulse, body = solve_single_inequality(0, initial_lambda=0.2, column_major=column_major)
+            self.assertAlmostEqual(impulse, 1.0, places=4)
+            np.testing.assert_allclose(body, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], atol=1.0e-5)
 
     def _make_box_on_plane_setup(self, max_world_contacts: int = 4, sparse: bool = False):
         """Build an inequality-only box-on-plane problem and its containers."""
@@ -1263,7 +1281,7 @@ class TestDVISolver(unittest.TestCase):
     def test_03d_dvi_direct_block_honors_per_world_iteration_counts(self):
         """Honor each world's projected and bilateral iteration schedule."""
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_hinged(), world_count=3)
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -1365,7 +1383,7 @@ class TestDVISolver(unittest.TestCase):
     def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_hinged(), world_count=2)
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -1410,7 +1428,20 @@ class TestDVISolver(unittest.TestCase):
 
         solver._sparse_path.set_bilateral_active_dim = record_bilateral_active_dim
         solver.coldstart()
-        solver.solve(problem)
+        with (
+            mock.patch.object(
+                problem.delassus, "apply_jacobian_transpose", wraps=problem.delassus.apply_jacobian_transpose
+            ) as body_products,
+            mock.patch.object(
+                solver._bilateral_solver, "solve", wraps=solver._bilateral_solver.solve
+            ) as separate_bilateral_solves,
+        ):
+            solver.solve(problem)
+        # Sweeps stay fused; only the final solution matvec applies J^T separately.
+        self.assertEqual(body_products.call_count, 1)
+        self.assertIs(body_products.call_args.args[1], problem.delassus._vec_temp_body_space)
+        # CUDA prepares the RHS and scatters the result in the same solve CTA.
+        self.assertEqual(separate_bilateral_solves.call_count, 0 if self.device.is_cuda else 4)
 
         joint_dims = problem.data.njc.numpy()
         self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, -1])
@@ -1420,6 +1451,45 @@ class TestDVISolver(unittest.TestCase):
         )
         np.testing.assert_array_equal(active_dim_updates[1][1], active_dim_updates[0][1])
         np.testing.assert_array_equal(active_dim_updates[2][1], joint_dims)
+
+        # Force the budget fallback on the same problem and heterogeneous
+        # intervals, without allocating a contact-capacity-sized buffer.
+        expected = solver.data.solution.lambdas.numpy().copy()
+        with mock.patch("newton._src.solvers.kamino._src.solvers.dvi.solver._MAX_CACHED_BILATERAL_COUPLING_ENTRIES", 0):
+            fallback = DVISolver(
+                model=model,
+                data=data,
+                limits=limits,
+                contacts=detector.contacts,
+                jacobians=jacobians,
+                problem=problem,
+                config=configs,
+                warmstart=WarmStartMode.NONE,
+            )
+            fallback.coldstart()
+            launch = wp.launch
+
+            def launch_one_warp(kernel, *args, **kwargs):
+                # Exercise the large-batch schedule on this heterogeneous reference problem.
+                if self.device.is_cuda and kernel is _solve_dvi_sparse_inequalities_pgs:
+                    worlds = kwargs["dim"] // kwargs["block_dim"]
+                    kwargs["dim"] = worlds * 32
+                    kwargs["block_dim"] = 32
+                return launch(kernel, *args, **kwargs)
+
+            with (
+                mock.patch.object(
+                    problem.delassus, "apply_jacobian_transpose", wraps=problem.delassus.apply_jacobian_transpose
+                ) as body_products,
+                mock.patch.object(wp, "launch", side_effect=launch_one_warp),
+            ):
+                fallback.solve(problem)
+        self.assertEqual(fallback.data.state.bilateral_coupling.size, 1)
+        # CUDA fuses RHS construction; CPU adds four products to the final matvec.
+        self.assertEqual(body_products.call_count, 1 if self.device.is_cuda else 5)
+        self.assertIs(body_products.call_args.args[1], problem.delassus._vec_temp_body_space)
+        np.testing.assert_array_equal(fallback.data.state.bilateral_active_dim.numpy(), joint_dims)
+        np.testing.assert_allclose(fallback.data.solution.lambdas.numpy(), expected, atol=2e-5, rtol=2e-5)
 
     def test_03d2_dvi_direct_block_finishes_with_bilateral_solve(self):
         """Recover a consistent bilateral solution after fused inequality iterations."""
@@ -1849,31 +1919,36 @@ class TestDVISolver(unittest.TestCase):
         np.testing.assert_array_equal(np.sort(inequality_ids_by_color.numpy()), np.arange(3))
 
     def test_03g5_dvi_map_bounded_constraints_writes_joint_body_pairs(self):
-        """Map each joint's bounded rows to its body pair and entity slot."""
-        joint_wid = wp.array([0, 0], dtype=wp.int32, device=self.device)
-        joint_bid_f = wp.array([0, 1], dtype=wp.int32, device=self.device)
-        joint_bid_b = wp.array([-1, 2], dtype=wp.int32, device=self.device)
-        joint_bounded_cts_offset = wp.array([0, 1, 2], dtype=wp.int32, device=self.device)
-        problem_bcio = wp.array([0], dtype=wp.int32, device=self.device)
-        problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
-        inequality_bodies = wp.full(shape=2, value=wp.vec2i(-5, -5), dtype=wp.vec2i, device=self.device)
+        """Map mixed friction and effort rows in constraint order across worlds."""
+
+        def ints(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        inequality_bodies = wp.full(shape=14, value=wp.vec2i(-5, -5), dtype=wp.vec2i, device=self.device)
 
         wp.launch(
             kernel=_map_bounded_constraints,
-            dim=2,
+            dim=4,
             inputs=[
-                joint_wid,
-                joint_bid_b,
-                joint_bid_f,
-                joint_bounded_cts_offset,
-                problem_bcio,
-                problem_uio,
+                ints([0, 0, 1, 1]),
+                ints([-1, 0, -1, 2]),
+                ints([0, 1, 2, 3]),
+                ints([1, 1, 2, 0]),
+                ints([1, 1, 0, 1]),
+                ints([15, 16, 107, 109]),
+                ints([17, 18, 109, 109]),
+                ints([10, 100]),
+                ints([5, 7]),
+                ints([2, 9]),
                 inequality_bodies,
             ],
             device=self.device,
         )
 
-        np.testing.assert_array_equal(inequality_bodies.numpy(), [[-1, 0], [2, 1]])
+        expected = np.full((14, 2), -5, dtype=np.int32)
+        expected[2:6] = [[-1, 0], [0, 1], [-1, 0], [0, 1]]
+        expected[9:12] = [[-1, 2], [-1, 2], [2, 3]]
+        np.testing.assert_array_equal(inequality_bodies.numpy(), expected)
 
     def test_03i_dvi_coldstart_is_repeatable(self):
         """Repeat cold starts without clearing overwritten Schur workspace."""
@@ -2103,12 +2178,13 @@ class TestDVISolver(unittest.TestCase):
                 self.assertEqual(config.sparse_dynamics, sparse)
                 self.assertTrue(config.sparse_jacobian)
 
-    def test_03a_sparse_dvi_filtered_matvec_matches_full_rows(self):
-        builder = basics.build_box_on_plane()
+    def test_03a_sparse_dvi_bilateral_matvec_matches_full_rows(self):
+        """Match nonempty bilateral rows and leave contact rows zero."""
+        builder = basics.build_boxes_hinged()
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
-            max_world_contacts=4,
+            max_world_contacts=8,
             sparse=True,
         )
         update_containers(
@@ -2145,19 +2221,19 @@ class TestDVISolver(unittest.TestCase):
         problem.delassus.matvec(solver.data.solution.lambdas, full, solver.all_worlds_mask)
         full_np = full.numpy()
 
-        _sparse_delassus_matvec_rows(solver, problem, _SPARSE_DELASSUS_ROWS_JOINTS)
+        _sparse_bilateral_matvec(solver._sparse_path, problem)
         joint_np = solver.data.state.v_aug.numpy()
-        _sparse_delassus_matvec_rows(solver, problem, _SPARSE_DELASSUS_ROWS_UNILATERAL)
-        unilateral_np = solver.data.state.v_aug.numpy()
 
         dim = int(problem.data.dim.numpy()[0])
         njc = int(problem.data.njc.numpy()[0])
+        self.assertGreater(njc, 0)
+        self.assertGreater(dim, njc)
         np.testing.assert_allclose(joint_np[:njc], full_np[:njc], rtol=1e-5, atol=1e-5)
-        np.testing.assert_allclose(unilateral_np[njc:dim], full_np[njc:dim], rtol=1e-5, atol=1e-5)
+        np.testing.assert_array_equal(joint_np[njc:dim], 0.0)
 
     def test_05_dvi_solve_multi_world_contacts(self):
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=4)
+        builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=4)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -2188,7 +2264,7 @@ class TestDVISolver(unittest.TestCase):
         """Verify dense and sparse DVI map packed contacts to raw topology."""
         for sparse in (False, True):
             builder = newton.ModelBuilder()
-            builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=8)
+            builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=8)
             model = ModelKamino.from_newton(builder.finalize(device=self.device))
             model, data, state, limits, detector, jacobians = make_containers(
                 model=model,
@@ -2243,7 +2319,7 @@ class TestDVISolver(unittest.TestCase):
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 builder = newton.ModelBuilder()
-                builder.replicate(builder=_build_five_box_stack(), world_count=4)
+                builder.replicate(builder=_build_five_box_stack(), copy_count=4)
                 model = ModelKamino.from_newton(builder.finalize(device=self.device))
                 model, data, state, limits, detector, jacobians = make_containers(
                     model=model,
@@ -2593,7 +2669,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_06a_dvi_masked_reset_preserves_unselected_worlds(self):
         builder = newton.ModelBuilder()
-        builder.replicate(basics.build_box_on_plane(ground=True), world_count=3)
+        builder.replicate(basics.build_box_on_plane(ground=True), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -3245,11 +3321,6 @@ class TestDVISolver(unittest.TestCase):
             world_count=1,
             use_kamino_contacts=True,
             dynamics_solver="dvi",
-            # Turning off effort limits isolates DVI contact creep; effort-limit rows have
-            # dedicated coverage in test_kamino_solver_joint_effort_limit.
-            # TODO: Re-enable effort limits once DVI solves their constraints
-            # accurately enough for this contact regression.
-            joint_effort_limit=math.inf,
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3301,11 +3372,6 @@ class TestDVISolver(unittest.TestCase):
             world_count=1,
             use_kamino_contacts=True,
             dynamics_solver="dvi",
-            # Turning off effort limits isolates DVI contact support; effort-limit rows have
-            # dedicated coverage in test_kamino_solver_joint_effort_limit.
-            # TODO: Re-enable effort limits once DVI solves their constraints
-            # accurately enough for this contact regression.
-            joint_effort_limit=math.inf,
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3409,23 +3475,18 @@ class TestDVISolver(unittest.TestCase):
             with self.subTest(kinematic_first=kinematic_first):
                 supports = [0, -1] if kinematic_first else [-1, 0]
                 offsets = []
-                coords = []
                 jacobian = []
                 weighted = []
-                for contact, support in enumerate(supports):
+                for support in supports:
                     offsets.append(len(jacobian))
-                    coords.extend((3 * contact + axis, 6) for axis in range(3))
                     jacobian.extend(rows)
                     weighted.extend(rows)
                     if support >= 0:
-                        coords.extend((3 * contact + axis, 0) for axis in range(3))
                         jacobian.extend(-rows)
                         weighted.extend(np.zeros_like(rows))
-                num_blocks = len(jacobian)
                 # Unused capacity must never affect a contact's three rows.
                 jacobian.extend(np.full((3, 6), np.nan, dtype=np.float32))
                 weighted.extend(np.full((3, 6), np.nan, dtype=np.float32))
-                coords.extend([(-1, -1)] * 3)
                 body_space = wp.zeros(12, dtype=wp.float32, device=self.device)
                 impulses = wp.zeros(6, dtype=wp.float32, device=self.device)
                 config = convert_config_to_struct(kamino_config.DVISolverConfig(max_alternating_iterations=1))
@@ -3433,9 +3494,6 @@ class TestDVISolver(unittest.TestCase):
                     _solve_dvi_sparse_contacts_pgs,
                     dim=1,
                     inputs=[
-                        i32([num_blocks]),
-                        i32([0]),
-                        i32(coords),
                         wp.array(weighted, dtype=vec6f, device=self.device),
                         wp.array(jacobian, dtype=vec6f, device=self.device),
                         i32([0]),
@@ -3562,41 +3620,8 @@ class TestDVISolver(unittest.TestCase):
         np.testing.assert_array_equal(inequality_color_starts.numpy()[:2], [0, 4])
         np.testing.assert_array_equal(inequality_group_starts.numpy()[:5], [0, 1, 3, 4, 6])
 
-    def test_03g3a_dvi_compact_schur_matches_bilateral_correction(self):
-        """Preserve row/column orientation in the compact bilateral correction."""
-        coupling_np = np.array([[2.0, 3.0], [17.0, 19.0]], dtype=np.float32)
-        response_np = np.array([[5.0, 7.0], [11.0, 13.0]], dtype=np.float32)
-        compact_schur = wp.full(4, -1.0, dtype=wp.float32, device=self.device)
-        compact_q = wp.full(4, 9.0, dtype=wp.float32, device=self.device)
-        wp.launch(
-            kernel=_assemble_compact_unilateral_schur,
-            dim=1,
-            inputs=[
-                wp.array([4], dtype=wp.int32, device=self.device),
-                wp.array([2], dtype=wp.int32, device=self.device),
-                wp.array([0], dtype=wp.int32, device=self.device),
-                wp.array([0], dtype=wp.int32, device=self.device),
-                wp.array([2], dtype=wp.int32, device=self.device),
-                wp.array(coupling_np.ravel(), dtype=wp.float32, device=self.device),
-                wp.array(response_np.ravel(), dtype=wp.float32, device=self.device),
-                compact_schur,
-                compact_q,
-                False,
-                1,
-            ],
-            device=self.device,
-            block_dim=1,
-        )
-
-        expected = coupling_np.T @ response_np
-        np.testing.assert_allclose(compact_schur.numpy().reshape(2, 2), expected.T, rtol=1.0e-6)
-        np.testing.assert_array_equal(compact_q.numpy(), [9.0, 9.0, 0.0, 0.0])
-
-        deltas = np.array([0.25, -0.5], dtype=np.float32)
-        recurrence_q = -(expected[:, 0] * deltas[0] + expected[:, 1] * deltas[1])
-        bilateral_delta = -(response_np[:, 0] * deltas[0] + response_np[:, 1] * deltas[1])
-        np.testing.assert_allclose(recurrence_q, coupling_np.T @ bilateral_delta, rtol=1.0e-6)
-
+    def test_03g3a_dvi_compact_correction_selects_component(self):
+        """Select bounded, normal, and paired tangent corrections from compact rows."""
         component_q = wp.array([11.0, 22.0, 33.0], dtype=wp.float32, device=self.device)
         component_corrections = wp.empty(3, dtype=wp.vec2f, device=self.device)
         wp.launch(
@@ -3635,6 +3660,7 @@ class TestDVISolver(unittest.TestCase):
                 i32([4]),
                 i32([2]),
                 i32([0]),
+                i32([2]),
                 i32([0]),
                 wp.array(scaling, dtype=wp.float32, device=self.device),
                 wp.array(factor.ravel(), dtype=wp.float32, device=self.device),
@@ -3678,33 +3704,6 @@ class TestDVISolver(unittest.TestCase):
 
         np.testing.assert_allclose(reconstruct(True), expected_b, rtol=3.0e-6, atol=3.0e-6)
         np.testing.assert_allclose(reconstruct(False), expected_b, rtol=3.0e-6, atol=3.0e-6)
-
-    def test_03g3aa_dvi_compact_schur_skips_unprofitable_world(self):
-        """Leave scratch untouched when unilateral rows outnumber bilateral rows."""
-        compact_schur = wp.full(3, -1.0, dtype=wp.float32, device=self.device)
-        compact_q = wp.full(3, 9.0, dtype=wp.float32, device=self.device)
-        wp.launch(
-            kernel=_assemble_compact_unilateral_schur,
-            dim=1,
-            inputs=[
-                wp.array([3], dtype=wp.int32, device=self.device),
-                wp.array([1], dtype=wp.int32, device=self.device),
-                wp.array([0], dtype=wp.int32, device=self.device),
-                wp.array([0], dtype=wp.int32, device=self.device),
-                wp.array([2], dtype=wp.int32, device=self.device),
-                wp.ones(2, dtype=wp.float32, device=self.device),
-                wp.ones(2, dtype=wp.float32, device=self.device),
-                compact_schur,
-                compact_q,
-                False,
-                1,
-            ],
-            device=self.device,
-            block_dim=1,
-        )
-
-        np.testing.assert_array_equal(compact_schur.numpy(), [-1.0, -1.0, -1.0])
-        np.testing.assert_array_equal(compact_q.numpy(), [9.0, 9.0, 9.0])
 
     def test_03g3b_dvi_groups_contacts_in_private_pair_order(self):
         """Group geometry-pair contacts without changing their constraint indices."""
@@ -4254,8 +4253,10 @@ class TestDVISolver(unittest.TestCase):
 
         self.assertAlmostEqual(slips[0], slips[1], delta=1.0e-6)
 
-    def test_compact_schur_reference_uses_padded_stride(self):
-        """Store reference Schur output with the padded response stride."""
+    def test_compact_schur_preserves_padded_capacity(self):
+        """Pack both Gram implementations densely without overwriting padded capacity."""
+        if not self.device.is_cuda:
+            self.skipTest("Tiled Schur construction requires CUDA")
         njc, nu, stride, offset = 3, 2, 4, 3
         coupling = np.arange(1, njc * nu + 1, dtype=np.float32).reshape(njc, nu)
         lower = np.diag(np.array([1.0, 2.0, 3.0], dtype=np.float32))
@@ -4266,40 +4267,31 @@ class TestDVISolver(unittest.TestCase):
         def i32(values):
             return wp.array(values, dtype=wp.int32, device=self.device)
 
-        padded_coupling = np.zeros(capacity, dtype=np.float32)
-        padded_coupling[offset : offset + njc * stride] = np.pad(coupling, ((0, 0), (0, stride - nu))).ravel()
-        for use_forward_schur in (False, True):
-            with self.subTest(use_forward_schur=use_forward_schur):
-                coupling_input = np.full(capacity, np.nan, dtype=np.float32) if use_forward_schur else padded_coupling
-                response = np.zeros(capacity, dtype=np.float32)
-                if use_forward_schur:
-                    response[offset : offset + njc * nu] = white.ravel()
-                else:
-                    response[offset : offset + njc * stride] = np.pad(full, ((0, 0), (0, stride - nu))).ravel()
+        response = np.full(capacity, np.nan, dtype=np.float32)
+        response[offset : offset + njc * nu] = white.ravel()
+        for blocked in (False, True):
+            with self.subTest(blocked=blocked):
                 schur = wp.full(capacity, -123.0, dtype=wp.float32, device=self.device)
                 correction = wp.full(njc + nu, 99.0, dtype=wp.float32, device=self.device)
+                inputs = [
+                    i32([njc + nu]),
+                    i32([njc]),
+                    i32([0]),
+                    i32([offset]),
+                    i32([stride]),
+                    wp.array(response, dtype=wp.float32, device=self.device),
+                    schur,
+                    correction,
+                ]
                 wp.launch(
-                    _assemble_compact_unilateral_schur,
-                    dim=256,
-                    inputs=[
-                        i32([njc + nu]),
-                        i32([njc]),
-                        i32([0]),
-                        i32([offset]),
-                        i32([stride]),
-                        wp.array(coupling_input, dtype=wp.float32, device=self.device),
-                        wp.array(response, dtype=wp.float32, device=self.device),
-                        schur,
-                        correction,
-                        use_forward_schur,
-                        256,
-                    ],
-                    block_dim=256,
+                    _assemble_compact_unilateral_schur_blocked if blocked else _assemble_compact_unilateral_schur_tiled,
+                    dim=(1, 256) if blocked else (1, 16, 128),
+                    inputs=inputs if blocked else [*inputs, 16, 0],
+                    block_dim=256 if blocked else 128,
                     device=self.device,
                 )
                 expected = np.full(capacity, -123.0, dtype=np.float32)
-                expected_schur = expected[offset : offset + nu * stride].reshape(nu, stride)
-                expected_schur[:, :nu] = (coupling.T @ full).T
+                expected[offset : offset + nu * nu] = (coupling.T @ full).T.ravel()
                 np.testing.assert_allclose(schur.numpy(), expected, atol=1.0e-6, rtol=1.0e-6)
                 np.testing.assert_array_equal(correction.numpy(), [99.0] * njc + [0.0] * nu)
 
@@ -4398,7 +4390,7 @@ class TestDVISolver(unittest.TestCase):
         wp.launch(
             _find_bilateral_factor_row_start,
             dim=(5, max(joint_counts)),
-            inputs=[joints, i32(matrix_offsets), i32(vector_offsets), f32(factors), row_start],
+            inputs=[joints, i32(matrix_offsets), joints, i32(vector_offsets), f32(factors), row_start],
             device=self.device,
         )
         expected_starts = []
@@ -4413,6 +4405,7 @@ class TestDVISolver(unittest.TestCase):
                 dims,
                 joints,
                 i32(matrix_offsets),
+                joints,
                 i32(vector_offsets),
                 f32(scaling),
                 f32(factors),
@@ -4439,20 +4432,17 @@ class TestDVISolver(unittest.TestCase):
         solve_response.launch()
         np.testing.assert_array_equal(response.numpy(), actual_response)
         wp.launch(
-            _assemble_compact_unilateral_schur,
-            dim=5 * 256,
+            _assemble_compact_unilateral_schur_blocked,
+            dim=(5, 256),
             inputs=[
                 dims,
                 joints,
                 i32(problem_offsets),
                 offsets,
                 strides,
-                coupling,
                 response,
                 workspace,
                 wp.zeros(int(totals.sum()), dtype=wp.float32, device=self.device),
-                True,
-                256,
             ],
             block_dim=256,
             device=self.device,
@@ -4486,10 +4476,9 @@ class TestDVISolver(unittest.TestCase):
                 np.testing.assert_allclose(
                     actual_response[offset : offset + n * nu].reshape(n, nu), white, atol=2.0e-6, rtol=2.0e-6
                 )
-                if nu <= n:
-                    np.testing.assert_allclose(
-                        actual_schur[offset : offset + nu * nu].reshape(nu, nu), schur.T, atol=5.0e-6, rtol=5.0e-6
-                    )
+                np.testing.assert_allclose(
+                    actual_schur[offset : offset + nu * nu].reshape(nu, nu), schur.T, atol=5.0e-6, rtol=5.0e-6
+                )
                 np.testing.assert_allclose(
                     tiled_schur[offset : offset + nu * nu].reshape(nu, nu), schur.T, atol=5.0e-6, rtol=5.0e-6
                 )

@@ -9,8 +9,27 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar, cast
 
+from ..exceptions import NewtonDeprecationWarning
+
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
+
+
+def warn_deprecation(message: str) -> None:
+    """Emit a deprecation warning at the caller outside Newton internals.
+
+    Skip internal forwarding frames so proxies such as ModelView preserve the
+    warning's user-code location on Python versions without skip_file_prefixes.
+    """
+    frame = inspect.currentframe()
+    stacklevel = 1
+    try:
+        while frame is not None and frame.f_globals.get("__name__", "").startswith("newton._src."):
+            stacklevel += 1
+            frame = frame.f_back
+    finally:
+        del frame
+    warnings.warn(message, NewtonDeprecationWarning, stacklevel=stacklevel)
 
 
 class RemovedAttribute:
@@ -99,7 +118,7 @@ def deprecate_nonkeyword_arguments(func: Callable[_P, _R]) -> Callable[_P, _R]:
         warnings.warn(
             f"Passing {parameter_list} positionally to {func.__qualname__}() is deprecated. "
             "Pass these arguments as keyword arguments instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         return func(*args[:positional_count], **kwargs)
