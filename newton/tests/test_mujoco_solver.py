@@ -2708,13 +2708,14 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
     def test_opted_out_joint_keeps_other_assets_weld_parent_filter(self):
         """Disabling MuJoCo's native parent filter for one joint must not expose weld-parent pairs elsewhere.
 
-        Asset A: hand (free) > palm (fixed, no shapes) > finger (hinge). MuJoCo filters hand-finger
-        natively through the weld; Newton stores no filter pair for it. Asset B opts out of the parent
-        filter, which switches the native rule off, so hand-finger must be exported as an exclude.
+        Asset A: hand (free) > palm (no shapes, welded by a fixed joint or by a zero-DOF D6) > finger (hinge).
+        MuJoCo filters hand-finger natively through the weld; Newton stores no filter pair for it. Asset B
+        opts out of the parent filter, which switches the native rule off, so hand-finger must be exported
+        as an exclude, which requires the solver to recognise both weld kinds.
         """
         import mujoco
 
-        def add_hand(builder, x):
+        def add_hand(builder, x, weld_type):
             hand = builder.add_link(
                 xform=wp.transform((x, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
             )
@@ -2727,7 +2728,11 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             )
             builder.add_shape_sphere(finger, radius=0.2)
             root = builder.add_joint_free(hand)
-            weld = builder.add_joint_fixed(hand, palm, parent_xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+            weld_xform = wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
+            if weld_type == "fixed":
+                weld = builder.add_joint_fixed(hand, palm, parent_xform=weld_xform)
+            else:
+                weld = builder.add_joint_d6(hand, palm, linear_axes=[], angular_axes=[], parent_xform=weld_xform)
             hinge = builder.add_joint_revolute(
                 palm, finger, axis=newton.Axis.Z, parent_xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
             )
@@ -2754,10 +2759,10 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
             builder.add_articulation([root, hinge])
             return parent, child
 
-        for opt_out in (False, True):
-            with self.subTest(second_asset_opts_out=opt_out):
+        for opt_out, weld_type in ((False, "fixed"), (True, "fixed"), (False, "d6"), (True, "d6")):
+            with self.subTest(second_asset_opts_out=opt_out, weld=weld_type):
                 builder = newton.ModelBuilder()
-                hand, finger = add_hand(builder, 0.0)
+                hand, finger = add_hand(builder, 0.0, weld_type)
                 parent, child = add_pair(builder, 5.0, filter_parent=not opt_out)
                 model = builder.finalize(device="cpu")
 
