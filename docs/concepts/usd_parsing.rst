@@ -527,8 +527,10 @@ they are loaded. Display/sRGB textures stay display-encoded, as do untagged
 textures, whose ``sourceColorSpace`` is ``auto`` or unset and whose file
 attribute has no color-space metadata or ``auto``.
 
-Gaussian splat spherical-harmonics radiance is resolved from the same
-color-space metadata. Untagged radiance is treated as display/sRGB.
+Gaussian splat spherical-harmonics radiance uses the color space of its
+coefficient attribute only (``radiance:sphericalHarmonicsCoefficients``, or its
+half-precision ``h`` variant), without ``UsdColorSpaceAPI`` inheritance.
+Untagged radiance is treated as display/sRGB.
 
 Scalar colors, textures and Gaussian radiance classify color-space names the
 same way. The supported names are:
@@ -545,13 +547,6 @@ such as ``lin_ap1_scene``, ``acescg``, ``srgb_ap1_scene`` or
 ``g22_rec709_scene``, is imported as linear if it looks linear (``lin_*`` or
 ``acescg``) and as sRGB otherwise, and a warning naming the prim or attribute
 is logged. The import itself does not fail.
-
-.. note::
-
-   A ``colorSpace`` fallback that a schema declares on the coefficient attribute
-   takes precedence over a color space inherited from a parent prim or applied
-   with ``ColorSpaceAPI`` on the prim. For such prims, author linear radiance by
-   setting ``colorSpace`` on the coefficient attribute itself.
 
 Mass and Inertia Precedence
 ---------------------------

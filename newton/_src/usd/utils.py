@@ -2494,12 +2494,13 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     """Load Gaussian splat data from a USD prim.
 
     Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and
-    `radiance:sphericalHarmonicsCoefficients`. The (possibly inherited) color-space name of the
-    radiance selects :attr:`Gaussian.sh_color_space`: untagged, `srgb`, `srgb_texture`, `srgb_rec709_scene` and
-    `srgb_rec709_display` radiance is sRGB, and `lin_rec709_scene`, `lin_rec709`, `lin_srgb`, `raw`, `data`, `identity` and `linear`
-    radiance is linear. Any other name is imported as linear if it looks linear (`lin_*` or
-    `acescg`) and as sRGB otherwise, without converting primaries or transfer function, and a
-    warning is logged.
+    `radiance:sphericalHarmonicsCoefficients`, or its half-precision `h` variant when only that one
+    has a value. The color-space name of the coefficient attribute that is read (its own metadata or
+    its schema fallback; inherited color spaces are ignored) selects :attr:`Gaussian.sh_color_space`: untagged, `srgb`,
+    `srgb_texture`, `srgb_rec709_scene` and `srgb_rec709_display` radiance is sRGB, and
+    `lin_rec709_scene`, `lin_rec709`, `lin_srgb`, `raw`, `data`, `identity` and `linear` radiance is
+    linear. Any other name is imported as linear if it looks linear (`lin_*` or `acescg`) and as sRGB
+    otherwise, without converting primaries or transfer function, and a warning is logged.
 
     Args:
         prim: A USD prim containing Gaussian splat data.
@@ -2516,12 +2517,11 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
                 return attr
         return None
 
-    def _get_float_array_attr(name):
-        attr = _get_valued_attr(name)
-        return None if attr is None else np.array(attr.Get(), dtype=np.float32)
-
     def _get_float_array_from(attr):
         return None if attr is None else np.array(attr.Get(), dtype=np.float32)
+
+    def _get_float_array_attr(name):
+        return _get_float_array_from(_get_valued_attr(name))
 
     positions = _get_float_array_attr("positions")
     if positions is None:
@@ -2538,10 +2538,14 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         else:
             raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
 
+    # The color space follows the coefficient attribute that supplies the radiance (single or half precision).
     # Untagged radiance is display-referred (sRGB).
     sh_attr = _get_valued_attr("radiance:sphericalHarmonicsCoefficients")
     sh_color_space = _resolve_color_space(
-        _get_attribute_color_space(sh_attr), ColorSpace.SRGB, "Gaussian SH radiance", prim.GetPath()
+        (sh_attr.GetColorSpace() if sh_attr is not None else None) or "",
+        ColorSpace.SRGB,
+        "Gaussian SH radiance",
+        prim.GetPath(),
     )
 
     return Gaussian(
