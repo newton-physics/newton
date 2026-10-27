@@ -39,6 +39,7 @@ class ViewerGui:
     def __init__(self, viewer, window):
         self._viewer = viewer
         self.ui = UI(window)
+        window.push_handlers(on_deactivate=self.on_window_deactivated)
 
         # UI callback registry. Backend viewers (GL/RTX) register their
         # ``_ui_populate_rendering_panel`` here, examples register their
@@ -57,8 +58,8 @@ class ViewerGui:
         self._camera_dolly_drag_sensitivity = 0.01
         self._camera_drag_buttons = 0
 
-        # Gizmo active-frame tracking (handles snap_to on release)
-        self._gizmo_active = {}
+        # Active operation IDs support release snapping and cancellation.
+        self._gizmo_active: dict[str, int] = {}
         self._gizmo_hovered = False
         self._frame_prepared = False
 
@@ -118,9 +119,32 @@ class ViewerGui:
         return bool(self.ui.io.want_capture_keyboard)
 
     def on_rendering_paused(self) -> None:
-        """Release camera motion and gizmos when the displayed image freezes."""
+        """Cancel interactions, keeping the current pose when the image freezes."""
+        self._cancel_mouse_interaction()
+
+    def on_window_deactivated(self) -> None:
+        """Cancel interactions when the viewer loses focus."""
+        self._cancel_mouse_interaction()
+        if self.is_available:
+            self.ui.io.clear_input_keys()
+
+    def _cancel_mouse_interaction(self) -> None:
+        """Keep the current pose; only a normal gizmo release applies snap_to."""
         self._cam_vel.fill(0.0)
         self._camera_drag_buttons = 0
+        self.release_picking()
+        if self.is_available:
+            giz = self.ui.giz
+            # Recent ImGuizmo versions only cancel under the editing ID.
+            for gid, op in self._gizmo_active.items():
+                if op:
+                    giz.push_id(str(gid))
+                    giz.push_id(op)
+                    giz.enable(False)
+                    giz.enable(True)
+                    giz.pop_id()
+                    giz.pop_id()
+            self.ui.cancel_mouse_interaction()
         self._gizmo_active.clear()
         self._gizmo_hovered = False
         self._viewer.gizmo_is_using = False
@@ -337,10 +361,18 @@ class ViewerGui:
     def handle_mouse_press(self, x: float, y: float, button: int, to_framebuffer_coords) -> None:
         """Handle mouse button press: start camera navigation or right-click picking."""
         self._camera_drag_buttons &= ~button
-        if self.should_ignore_mouse_input():
+        if self._viewer.is_rendering_paused():
             return
         import pyglet
 
+        if self.is_available:
+            mouse_index = {pyglet.window.mouse.LEFT: 0, pyglet.window.mouse.RIGHT: 1, pyglet.window.mouse.MIDDLE: 2}
+            # ImGuizmo's WantCaptureMouse override can describe the previous
+            # frame. ImGui records window ownership at the processed press.
+            if self.ui.io.mouse_down_owned[mouse_index[button]] or (
+                self.show_ui and (self._gizmo_hovered or self._viewer.gizmo_is_using)
+            ):
+                return
         viewer = self._viewer
         if button in (pyglet.window.mouse.LEFT, pyglet.window.mouse.MIDDLE):
             self._camera_drag_buttons |= button
@@ -476,15 +508,63 @@ class ViewerGui:
             self._update_fps()
         if not self.is_available:
             return
-        if not self.show_ui and not self._loading_splash_active:
-            return
+        if not self.show_ui and any(self._gizmo_active.values()):
+            self._cancel_mouse_interaction()
         self.ui.begin_frame()
+        # Advance owned camera drags before drawing/projecting gizmo handles.
+        self._process_mouse_drag()
         if self.show_ui:
             self._render_ui()
         if self._loading_splash_active:
             self._render_loading_splash()
+        self._process_mouse_input()
         self.ui.end_frame()
         self._frame_prepared = True
+
+    def _process_mouse_input(self) -> None:
+        """Route the same processed mouse events used by ImGui and ImGuizmo."""
+        import pyglet
+
+        io = self.ui.io
+        imgui = self.ui.imgui
+        x, y = io.mouse_pos.x, io.display_size.y - io.mouse_pos.y
+        to_framebuffer_coords = self._viewer._to_framebuffer_coords
+        for index, button in enumerate(
+            (pyglet.window.mouse.LEFT, pyglet.window.mouse.RIGHT, pyglet.window.mouse.MIDDLE)
+        ):
+            if imgui.is_mouse_released(index):
+                self.handle_mouse_release(x, y, button)
+            if imgui.is_mouse_clicked(index):
+                self.handle_mouse_press(x, y, button, to_framebuffer_coords)
+        if io.mouse_wheel:
+            self.handle_mouse_scroll(io.mouse_wheel, is_ctrl_down=io.key_ctrl)
+
+    def _process_mouse_drag(self) -> None:
+        """Advance existing drags using the current ImGui input frame."""
+        import pyglet
+
+        io = self.ui.io
+        imgui = self.ui.imgui
+        buttons = 0
+        for index, button in enumerate(
+            (pyglet.window.mouse.LEFT, pyglet.window.mouse.RIGHT, pyglet.window.mouse.MIDDLE)
+        ):
+            if imgui.is_mouse_down(index) and not imgui.is_mouse_clicked(index):
+                # Movement preceding a press is not part of the new drag.
+                buttons |= button
+        if buttons and (io.mouse_delta.x or io.mouse_delta.y):
+            modifiers = (pyglet.window.key.MOD_CTRL if io.key_ctrl else 0) | (
+                pyglet.window.key.MOD_SHIFT if io.key_shift else 0
+            )
+            self.handle_mouse_drag(
+                io.mouse_pos.x,
+                io.display_size.y - io.mouse_pos.y,
+                io.mouse_delta.x,
+                -io.mouse_delta.y,
+                buttons,
+                self._viewer._to_framebuffer_coords,
+                modifiers,
+            )
 
     def render_prepared_frame(self):
         """Draw the prepared UI over the scene without processing actions twice."""
@@ -542,6 +622,9 @@ class ViewerGui:
             return
         if viewer.is_rendering_paused():
             return
+        gizmo_log = getattr(viewer, "_gizmo_log", None) or {}
+        if any(op and gid not in gizmo_log for gid, op in self._gizmo_active.items()):
+            self._cancel_mouse_interaction()
         if not hasattr(viewer, "_gizmo_log") or not viewer._gizmo_log:
             self._gizmo_active.clear()
             if hasattr(viewer, "gizmo_is_using"):
@@ -622,11 +705,12 @@ class ViewerGui:
                 r_ops = tuple(axis_rotate[a] for a in rotate)
 
             ops = t_ops + r_ops
-            was_active = self._gizmo_active.get(gid, False)
+            was_active = self._gizmo_active.get(gid, 0)
+            if was_active and was_active not in ops:
+                self._cancel_mouse_interaction()
+                was_active = 0
             if not ops:
-                if was_active and snap_to is not None:
-                    transform_assign(transform, snap_to)
-                self._gizmo_active[gid] = False
+                self._gizmo_active[gid] = 0
                 continue
 
             giz.push_id(str(gid))
@@ -636,21 +720,24 @@ class ViewerGui:
 
             # The binding requires named operations, so render each separately.
             # Use stable per-operation IDs and retain state before the next call.
-            op_modified = is_active = False
+            active_op = 0
             for op in ops:
                 giz.push_id(int(op))
-                op_modified |= safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None))
+                giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)
                 self._gizmo_hovered |= safe_bool(giz.is_over(op))
-                is_active |= safe_bool(giz.is_using())
+                if giz.is_using():
+                    active_op = int(op)
                 giz.pop_id()
 
-            if was_active and not is_active and snap_to is not None:
+            modified_matrix = M_.values.reshape(4, 4, order="F")
+            if was_active and not active_op and snap_to is not None:
                 transform_assign(transform, snap_to)
-            elif op_modified:
-                M[:] = M_.values.reshape(4, 4, order="F")
-                transform_assign_matrix(transform, M)
+            elif not np.array_equal(M, modified_matrix):
+                # ImGuizmo can return False for repeated translation deltas
+                # even though it updated the matrix.
+                transform_assign_matrix(transform, modified_matrix)
 
-            self._gizmo_active[gid] = is_active
+            self._gizmo_active[gid] = active_op
 
             giz.pop_id()
 
