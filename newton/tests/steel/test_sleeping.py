@@ -866,6 +866,67 @@ def test_masked_reset_wakes_only_selected_worlds(test, device):
     np.testing.assert_array_equal(solver._sleeping.art_awake.numpy(), [1, 0])
 
 
+def test_masked_reset_restarts_only_selected_history(test, device):
+    """Restart the selected world's state-change history from the reset state and keep the other world's."""
+    _model, _pipeline, solver, states = _two_world_boxes(device)
+    sleeping = solver._sleeping
+    for name in _HISTORY:
+        history = getattr(sleeping, name)
+        history.assign(np.full_like(history.numpy(), 7.0))
+    sleeping.asleep_steps.assign(np.array([11, 11], dtype=np.int32))
+    sleeping.quiet_age.assign(np.array([3.0, 3.0], dtype=np.float32))
+    sleeping.art_awake.assign(np.array([0, 0], dtype=np.int32))
+    sleeping.valid.fill_(1)
+    previous_root = sleeping.previous_root.numpy().copy()
+    state = states[0]
+    solver.reset(state, world_mask=wp.array([True, False, False], dtype=wp.bool, device=device))
+    sources = {"last_q": state.joint_q, "last_qd": state.joint_qd, "last_body_q": state.body_q}
+    sources["last_body_qd"] = state.body_qd
+    for name in _HISTORY:
+        history = getattr(sleeping, name).numpy()
+        half = history.shape[0] // 2
+        np.testing.assert_array_equal(history[:half], sources[name].numpy()[:half], err_msg=name)
+        np.testing.assert_array_equal(history[half:], np.full_like(history[half:], 7.0), err_msg=name)
+    np.testing.assert_array_equal(sleeping.asleep_steps.numpy(), [0, 11])
+    np.testing.assert_array_equal(sleeping.quiet_age.numpy(), [0.0, 3.0])
+    np.testing.assert_array_equal(sleeping.art_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(sleeping.valid.numpy(), [1])
+    np.testing.assert_array_equal(sleeping.previous_root.numpy(), previous_root)
+
+
+def test_masked_reset_restarts_state_change_history(test, device):
+    """Continue bitwise like the world whose sleeping state another world was given, after a masked reset of both."""
+    model, pipeline, solver, states = _two_world_boxes(device)
+    q = model.joint_q.numpy()
+    q[model.joint_q_start.numpy()[1] + 2] = 0.3
+    model.joint_q.assign(q)
+    for state in states:
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    control = model.control()
+    _advance(pipeline, solver, states, control, 400)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    # World 1 takes world 0's state; only world 0's history matches it.
+    for state in states:
+        for name in ("body_q", "body_qd", "joint_q", "joint_qd"):
+            values = getattr(state, name).numpy()
+            half = values.shape[0] // 2
+            values[half:] = values[:half]
+            getattr(state, name).assign(values)
+    solver.reset(states[0], world_mask=wp.array([True, True, False], dtype=wp.bool, device=device))
+    force = np.zeros((model.body_count, 6), dtype=np.float32)
+    force[:, 2] = 30.0
+    contacts = pipeline.contacts()
+    for step in range(150):
+        states[0].clear_forces()
+        if step == 60:
+            states[0].body_f.assign(force)
+        pipeline.collide(states[0], contacts)
+        solver.step(states[0], states[1], control, contacts, 0.005)
+        states.reverse()
+    body_q = states[0].body_q.numpy()
+    np.testing.assert_array_equal(body_q[0], body_q[1])
+
+
 def test_property_notification_wakes_only_changed_islands(test, device):
     """Wake the island whose mass changed, and nothing for a notification without a change."""
     model, pipeline, solver, states = _two_world_boxes(device)
@@ -1112,6 +1173,9 @@ def _two_world_boxes(device):
     return model, pipeline, solver, [model.state(), model.state()]
 
 
+_HISTORY = ("last_q", "last_qd", "last_body_q", "last_body_qd")
+
+
 def _expect_one_warning(test, category, pattern, call):
     """Return ``call()``, requiring it to emit exactly one warning, of ``category`` and matching ``pattern``."""
     with warnings.catch_warnings(record=True) as caught:
@@ -1131,6 +1195,8 @@ for _name in (
     "test_anchored_articulations_sleep_and_wake",
     "test_graph_replay_sleeps_and_wakes",
     "test_masked_reset_wakes_only_selected_worlds",
+    "test_masked_reset_restarts_only_selected_history",
+    "test_masked_reset_restarts_state_change_history",
     "test_property_notification_wakes_only_changed_islands",
     "test_frozen_patch_carry_matches_rebuild",
     "test_frozen_patch_carry_matches_rebuild_for_flooded_pairs",

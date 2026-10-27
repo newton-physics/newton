@@ -3044,7 +3044,8 @@ class SolverSteel(SolverBase):
         reset keep the cadence captured into them.
 
         Args:
-            state: Simulation state; left unchanged.
+            state: Simulation state; left unchanged. With ``enable_sleeping``, a masked reset
+                restarts the selected worlds' sleep state-change history from it.
             world_mask: Optional boolean mask of shape ``(world_count + 1,)``. The first
                 ``world_count`` entries select worlds; the final entry selects global
                 articulations (world ``-1``) and the final entry of
@@ -3067,7 +3068,7 @@ class SolverSteel(SolverBase):
             self._device_torsion.clear_status()
         world_mask = self._normalize_reset_world_mask(world_mask)
         if self._sleeping is not None:
-            self._sleeping.wake(world_mask)
+            self._sleeping.wake(world_mask, state)
         if self._world_count == 0:
             return
 
