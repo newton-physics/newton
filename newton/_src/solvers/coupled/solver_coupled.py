@@ -1580,10 +1580,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _compact_deformable_orders(
         self, frequency_orders: dict[Model.AttributeFrequency, list[int]]
     ) -> dict[Model.AttributeFrequency, list[int]]:
-        """Keep whole deformable objects; a partial range cannot describe the same object."""
+        """Keep whole deformable objects whose ranges retain their element order."""
         model = self.model
         frequency = model.AttributeFrequency
         orders = {}
+        range_maps = {}
         for family_frequency in (frequency.CURVE, frequency.SURFACE, frequency.VOLUME):
             count = model._attribute_frequency_count(family_frequency)
             keep = np.ones(count, dtype=bool)
@@ -1593,10 +1594,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
                         continue
                     starts = getattr(model, attribute.name).numpy()
                     ends = getattr(model, attribute.name.removesuffix("_start") + "_end").numpy()
-                    selected = np.asarray(frequency_orders[attribute.references], dtype=np.int32)
-                    # Count retained elements in each range without scanning its contents.
-                    retained = np.searchsorted(selected, ends) - np.searchsorted(selected, starts)
-                    keep &= retained == ends - starts
+                    if attribute.references not in range_maps:
+                        selected = np.asarray(frequency_orders[attribute.references], dtype=np.int32)
+                        inverse = np.full(model._attribute_frequency_count(attribute.references), -1, dtype=np.int32)
+                        # Synthesized FREE roots do not retain the original joint.
+                        original = selected >= 0
+                        inverse[selected[original]] = np.flatnonzero(original)
+                        # Equal run IDs mean a range maps to consecutive rows in its original order.
+                        run_ids = np.zeros_like(inverse)
+                        run_ids[1:] = np.cumsum(np.diff(inverse) != 1)
+                        range_maps[attribute.references] = inverse, run_ids
+                    inverse, run_ids = range_maps[attribute.references]
+                    nonempty = starts != ends
+                    keep[nonempty] &= (inverse[starts[nonempty]] >= 0) & (
+                        run_ids[starts[nonempty]] == run_ids[ends[nonempty] - 1]
+                    )
             orders[family_frequency] = np.flatnonzero(keep).tolist()
         return orders
 
@@ -1972,11 +1984,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         projections_by_frequency = self._compact_projections_by_frequency(compact, shape_order=shape_order)
         self._set_compact_custom_frequency_counts(view, projections_by_frequency)
+        range_attributes = self._project_compact_deformable_ranges(view, projections_by_frequency)
         free_root_joints = compact.free_root_joints
         self._project_compact_attributes(
             view,
             projections_by_frequency,
-            exclude=set(),
+            exclude=range_attributes,
             free_root_joints=free_root_joints,
         )
         self._sync_custom_frequency_namespace_metadata(view)
@@ -2021,6 +2034,42 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._compact_color_groups(view, body_global_to_local)
 
         self._set_world_start_arrays(view, joint_constraint_order)
+
+    def _project_compact_deformable_ranges(
+        self,
+        view: ModelView,
+        projections: dict[Model.AttributeFrequency | str, _CompactIndexProjection],
+    ) -> set[str]:
+        """Map independent ranges by their elements, not by articulation position keys."""
+        projected = set()
+        for attribute in self._attribute_projections:
+            if attribute.compaction_policy != "range_start":
+                continue
+            start_name = attribute.name
+            end_name = start_name.removesuffix("_start") + "_end"
+            rows = projections[attribute.frequency].local_to_global
+            if not rows:
+                continue
+            starts = getattr(self.model, start_name).numpy()[rows]
+            ends = getattr(self.model, end_name).numpy()[rows]
+            reference = projections[attribute.references]
+            inverse = np.asarray(reference.global_to_local, dtype=np.int32)
+            nonempty = starts != ends
+            compact_starts = np.empty_like(starts)
+            compact_ends = np.empty_like(ends)
+            compact_starts[nonempty] = inverse[starts[nonempty]]
+            compact_ends[nonempty] = inverse[ends[nonempty] - 1] + 1
+            if np.any(~nonempty):
+                # Empty ranges own no element to map; keep a bounded insertion position.
+                keys = reference.position_keys if reference.position_keys is not None else reference.local_to_global
+                order = np.asarray(keys, dtype=np.int32)
+                boundaries = np.searchsorted(np.sort(order[order >= 0]), starts[~nonempty])
+                compact_starts[~nonempty] = boundaries
+                compact_ends[~nonempty] = boundaries
+            setattr(view, start_name, wp.array(compact_starts, dtype=wp.int32, device=self.model.device))
+            setattr(view, end_name, wp.array(compact_ends, dtype=wp.int32, device=self.model.device))
+            projected.update((start_name, end_name))
+        return projected
 
     def _compact_projections_by_frequency(
         self,

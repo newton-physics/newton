@@ -1143,6 +1143,38 @@ def test_coupled_model_keeps_reduced_rod(test, device):
         np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_end").numpy(), [1])
 
 
+def test_coupled_model_omits_rod_with_replaced_joint(test, device):
+    """Keep the complete rod when another rod's interior joint becomes a FREE root."""
+    builder = newton.ModelBuilder()
+    for label, y in (("complete", 0.0), ("cut", 1.0)):
+        builder.add_rod(
+            rod=newton.Rod([(0.1 * i, y, 1.0) for i in range(5)], radius=0.01),
+            label=label,
+        )
+    builder.color()
+    model = builder.finalize(device=device)
+    coupled = SolverCoupled(
+        model,
+        entries=[
+            SolverCoupled.Entry(
+                name="rods",
+                solver=SolverVBD,
+                bodies=list(range(8)),
+                joints=[0, 1, 2, 3, 4, 5, 7],
+            )
+        ],
+    )
+    compact = coupled.view("rods")
+    test.assertEqual(compact.curve_label, ["complete"])
+    test.assertEqual(compact.curve_count, 1)
+    for kind in ("body", "joint"):
+        np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_start").numpy(), [0])
+        np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_end").numpy(), [4])
+        np.testing.assert_array_equal(getattr(model, f"curve_{kind}_start").numpy(), [0, 4])
+        np.testing.assert_array_equal(getattr(model, f"curve_{kind}_end").numpy(), [4, 8])
+    test.assertEqual(model.curve_label, ["complete", "cut"])
+
+
 class TestSolverCoupledBasic(unittest.TestCase):
     """Test SolverCoupled with two SemiImplicit solvers (simplest case)."""
 
@@ -1673,7 +1705,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         The ``arms`` entry owns two sibling subtrees of the hub body P. One
         incoming joint is unowned and the other belongs to the ``hub``
-        entry; both leave a rootless subtree in the arms view.
+        entry; both leave a rootless subtree in the arms view. An unrelated
+        rod must keep its ranges when those subtrees reorder the bodies.
         """
         builder = newton.ModelBuilder()
         inertia = wp.mat33(np.eye(3) * 0.01)
@@ -1699,6 +1732,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
             arm_upper, arm_lower, axis=(0.0, 1.0, 0.0), parent_xform=half_x, child_xform=half_x_back
         )
         builder.add_articulation([root, shoulder, side, elbow])
+        rod_root = builder.joint_count
+        rod_bodies, _ = builder.add_rod(rod=newton.Rod([(1.0, 1.0, 0.0), (1.2, 1.0, 0.0)], radius=0.01), label="rod")
         model = builder.finalize(device="cpu")
 
         coupled = SolverCoupled(
@@ -1706,23 +1741,33 @@ class TestSolverCoupledBasic(unittest.TestCase):
             entries=[
                 SolverCoupled.Entry(name="hub", solver=SolverSemiImplicit, bodies=[hub], joints=[root, side]),
                 SolverCoupled.Entry(
-                    name="arms", solver=SolverFeatherstone, bodies=[arm_upper, arm_side, arm_lower], joints=[elbow]
+                    name="arms",
+                    solver=SolverFeatherstone,
+                    bodies=[arm_upper, arm_side, arm_lower, *rod_bodies],
+                    joints=[elbow, rod_root],
                 ),
             ],
         )
 
         free, revolute = int(newton.JointType.FREE), int(newton.JointType.REVOLUTE)
         arms = coupled.view("arms")
-        np.testing.assert_array_equal(arms.joint_type.numpy(), [free, revolute, free])
-        np.testing.assert_array_equal(arms.articulation_start.numpy(), [0, 2, 3])
+        np.testing.assert_array_equal(arms.joint_type.numpy(), [free, revolute, free, free])
+        np.testing.assert_array_equal(arms.articulation_start.numpy(), [0, 2, 3, 4])
+        self.assertEqual(arms.curve_label, ["rod"])
+        self.assertEqual(arms.curve_count, 1)
+        for kind in ("body", "joint"):
+            np.testing.assert_array_equal(getattr(arms, f"curve_{kind}_start").numpy(), [3])
+            np.testing.assert_array_equal(getattr(arms, f"curve_{kind}_end").numpy(), [4])
         _assert_single_root_articulations(self, arms)
         entry = coupled._entries["arms"]
-        np.testing.assert_array_equal(entry.body_local_to_global.numpy(), [arm_upper, arm_lower, arm_side])
+        np.testing.assert_array_equal(entry.body_local_to_global.numpy(), [arm_upper, arm_lower, arm_side, *rod_bodies])
 
         body_q = _step_coupled(model, coupled)
         self.assertLess(body_q[hub, 2], -0.01)
         np.testing.assert_allclose(body_q[:, 2], body_q[hub, 2], atol=1.0e-5)
-        np.testing.assert_allclose(body_q[:, :2], [[0.0, 0.0], [0.3, 0.0], [0.0, 0.3], [0.6, 0.0]], atol=1.0e-5)
+        np.testing.assert_allclose(
+            body_q[:, :2], [[0.0, 0.0], [0.3, 0.0], [0.0, 0.3], [0.6, 0.0], [1.1, 1.0]], atol=1.0e-5
+        )
 
     @staticmethod
     def _split_pair_model():
@@ -2982,6 +3027,13 @@ add_function_test(
     TestSolverCoupledBasic,
     "test_coupled_model_keeps_reduced_rod",
     test_coupled_model_keeps_reduced_rod,
+    devices=get_test_devices(),
+)
+
+add_function_test(
+    TestSolverCoupledBasic,
+    "test_coupled_model_omits_rod_with_replaced_joint",
+    test_coupled_model_omits_rod_with_replaced_joint,
     devices=get_test_devices(),
 )
 

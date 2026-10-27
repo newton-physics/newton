@@ -85,9 +85,11 @@ select matching deformable objects and read or update their state.
 Coupled solver models
 ~~~~~~~~~~~~~~~~~~~~~
 
-Compact coupled-solver models retain only deformable objects whose recorded
-elements are all present. Their ranges refer to the compact model's arrays,
-not the parent model's arrays. Particle-based deformables follow the coupled
+Compact coupled-solver models retain a deformable object only when all its
+recorded elements remain in contiguous ranges in their original order. A range
+may move to a different position in the compact model. A new FREE root does not
+count as the original joint it replaces. The ranges refer to the compact model's
+arrays, not the parent model's arrays. Particle-based deformables follow the coupled
 solver's existing particle layout. Unlike :ref:`builder fixed-joint collapse
 <deformable-objects-collapse>`, a solver partition does not retain partially
 included curves.
