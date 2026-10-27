@@ -144,17 +144,21 @@ def assemble_nz_ell_kernel(
 
 
 def _compute_max_neighbors(num_verts, tri_indices, edge_indices):
-    """Count unique off-diagonal connections from stretch and valid bending stencils."""
-    neighbors = [set() for _ in range(num_verts)]
-    for face in tri_indices:
-        for vertex in face:
-            neighbors[vertex].update(other for other in face if other != vertex)
-    for edge in edge_indices:
-        if edge[0] < 0 or edge[1] < 0:
+    """Count the unique target slots inserted by stretch and valid bending stencils."""
+    pairs = []
+    for indices, width in ((tri_indices, 3), (edge_indices, 4)):
+        stencils = np.asarray(indices, dtype=np.int64).reshape(-1, width)
+        if width == 4:
+            stencils = stencils[(stencils[:, 0] >= 0) & (stencils[:, 1] >= 0)]
+        if len(stencils) == 0:
             continue
-        for vertex in edge:
-            neighbors[vertex].update(other for other in edge if other != vertex)
-    return max((len(row) for row in neighbors), default=0)
+        # Kernels exclude equal stencil positions, not equal vertex IDs.
+        rows, cols = np.nonzero(~np.eye(width, dtype=bool))
+        pairs.append((stencils[:, rows] * num_verts + stencils[:, cols]).ravel())
+    if not pairs:
+        return 0
+    connections = np.unique(np.concatenate(pairs))
+    return int(np.bincount(connections // num_verts).max(initial=0))
 
 
 class _PDMatrixCapacityError(ValueError):

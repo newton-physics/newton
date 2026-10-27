@@ -434,10 +434,10 @@ class SolverStyle3D(SolverBase):
                     "Call SolverStyle3D.register_custom_attributes() before building the model."
                 )
 
-            tri_indices = model.tri_indices.numpy().tolist()
+            tri_indices = model.tri_indices.numpy()
             tri_poses = model.tri_poses.numpy().tolist()
             tri_areas = model.tri_areas.numpy().tolist()
-            edge_indices = model.edge_indices.numpy().tolist()
+            edge_indices = model.edge_indices.numpy()
             edge_bending_properties = model.edge_bending_properties.numpy().tolist()
             tri_aniso_ke = model.style3d.tri_aniso_ke.numpy().tolist()
             edge_rest_area = model.style3d.edge_rest_area.numpy().tolist()

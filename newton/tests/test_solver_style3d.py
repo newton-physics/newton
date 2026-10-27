@@ -8,7 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.style3d.builder import PDMatrixBuilder
+from newton._src.solvers.style3d.builder import PDMatrixBuilder, _compute_max_neighbors
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -104,7 +104,31 @@ def test_high_valence_pd_matrix(test, device):
             _assert_pd_matrix(test, model, solver)
 
 
-class TestPDMatrixCapacity(unittest.TestCase):
+class TestSolverStyle3D(unittest.TestCase):
+    def test_capacity_matches_repeated_vertex_assembly(self):
+        """Count self-target slots from repeated stencil positions as the kernels do."""
+        self.assertEqual(_compute_max_neighbors(0, [], []), 0)
+        self.assertEqual(_compute_max_neighbors(4, [], [[-1, 0, 1, 2]]), 0)
+        for kind in ("stretch", "bend"):
+            with self.subTest(kind=kind):
+                faces = [[0, i, i + 1] for i in range(1, 32)] + [[0, 0, 1]]
+                edges = [[0, i, i + 1, i + 2] for i in range(1, 31)] + [[0, 0, 1, 2]]
+                width = _compute_max_neighbors(33, faces if kind == "stretch" else [], edges if kind == "bend" else [])
+                self.assertEqual(width, 33)
+                matrix = PDMatrixBuilder(33, max_neighbor=width)
+                if kind == "stretch":
+                    matrix.add_stretch_constraints(
+                        faces, [[[1.0, 0.0], [0.0, 1.0]]] * len(faces), [[1.0] * 3] * len(faces), [0.5] * len(faces)
+                    )
+                else:
+                    matrix.add_bend_constraints(
+                        edges, [[1.0, 0.0]] * len(edges), [1.0] * len(edges), [[1.0] * 4] * len(edges)
+                    )
+                diag, counts, entries = matrix.finalize("cpu")
+                self.assertEqual(int(counts.numpy()[0]), 33)
+                self.assertEqual(set(entries.numpy()["column_index"][:, 0]), set(range(33)))
+                self.assertTrue(np.isfinite(diag.numpy()).all())
+
     def test_overflow_rejects_incomplete_matrix(self):
         """Raise for undersized stretch and bending assembly, including later finalization."""
         for kind in ("stretch", "bend"):
@@ -272,10 +296,6 @@ def test_global_particles_use_global_gravity(test, device):
 
 
 devices = get_test_devices()
-
-
-class TestSolverStyle3D(unittest.TestCase):
-    pass
 
 
 add_function_test(
