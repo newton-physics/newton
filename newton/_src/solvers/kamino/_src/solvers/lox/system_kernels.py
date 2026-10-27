@@ -18,6 +18,7 @@ from typing import Any
 import warp as wp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
+from ...core.joints import JointDoFType
 from ...core.math import compute_gyroscopic_torque
 from ...core.types import mat36f, mat66f, vec6f, vec6i
 
@@ -29,6 +30,7 @@ __all__ = [
     "ProjectionWeights",
     "_assemble_body_inertial_systems",
     "_assemble_joint_rows",
+    "_assemble_rod_geometric_stiffness",
     "_build_candidate_right_hand_side",
     "_compute_free_body_blocks",
     "_compute_patch_weights",
@@ -616,6 +618,103 @@ def _assemble_joint_rows(
         other_rows = _body_matrix_rows(vector_offset, inverse_permutation, other_local, dimension)
         for row in range(6):
             wp.atomic_add(matrix, _matrix_index(matrix_offset, dimension, other_rows[row], col), cross_row[row])
+
+
+@wp.func
+def _compute_point_geometric_stiffness(force: wp.vec3f, arm: wp.vec3f) -> wp.mat33f:
+    """Return the rotational geometric stiffness of the tension of a point force.
+
+    A force ``force`` along the arm ``arm`` from the center of mass has the rotational stiffness
+    ``(force . arm) (I - arm arm^T / |arm|^2)``, the stiffness of a pendulum hanging from the point. The
+    component of the force along the arm sets this stiffness, which is positive semidefinite when the
+    force pulls the point away from the center of mass.
+    """
+    tension = wp.max(wp.dot(force, arm), 0.0)
+    length_sq = wp.dot(arm, arm)
+    if tension <= 0.0 or length_sq <= 0.0:
+        return wp.mat33f(0.0)
+    return tension * (wp.identity(n=3, dtype=wp.float32) - wp.outer(arm, arm) / length_sq)
+
+
+@wp.kernel
+def _assemble_rod_geometric_stiffness(
+    # Inputs:
+    dimensions: wp.array[wp.int32],
+    matrix_offsets: wp.array[wp.int32],
+    vector_offsets: wp.array[wp.int32],
+    joint_world: wp.array[wp.int32],
+    joint_dof_type: wp.array[wp.int32],
+    joint_dofs_offset: wp.array[wp.int32],
+    joint_coords_offset: wp.array[wp.int32],
+    joint_body_a: wp.array[wp.int32],
+    joint_body_b: wp.array[wp.int32],
+    joint_q: wp.array[wp.float32],
+    joint_q_ref: wp.array[wp.float32],
+    joint_pose: wp.array[wp.transformf],
+    body_pose: wp.array[wp.transformf],
+    body_block: wp.array[wp.int32],
+    body_local: wp.array[wp.int32],
+    model_time_dt: wp.array[wp.float32],
+    dynamic_offset: wp.array[wp.int32],
+    dynamic_count: wp.array[wp.int32],
+    dynamic_dof: wp.array[wp.int32],
+    dynamic_jacobian_a: wp.array[vec6f],
+    dynamic_jacobian_b: wp.array[vec6f],
+    dynamic_effective_inertia: wp.array[wp.float32],
+    dynamic_free_velocity: wp.array[wp.float32],
+    inverse_permutation: wp.array[wp.int32],
+    # Outputs:
+    matrix: wp.array[wp.float32],
+):
+    """Add the rotational geometric stiffness of the stretch and shear rows of each stretched rod joint.
+
+    The stretch and shear rows of a rod act at the joint point, and their elastic force at the beginning of
+    the step ``effective_inertia * free_velocity / h`` turns with the arm of each body. When the rod is
+    longer than its rest length, each dynamic body adds ``h^2`` times the stiffness of the tension of this
+    force to its angular block, see :func:`_compute_point_geometric_stiffness`. The right-hand side holds
+    the elastic force already, so the matrix term completes the linearization of the rows about the
+    beginning of the step.
+    """
+    jid, side = wp.tid()
+    if joint_dof_type[jid] != JointDoFType.ROD:
+        return
+    stretch_coord = joint_coords_offset[jid] + 2
+    if joint_q[stretch_coord] <= joint_q_ref[stretch_coord]:
+        return
+    bid = wp.where(side == 0, joint_body_a[jid], joint_body_b[jid])
+    if bid < 0 or bid >= body_block.shape[0]:
+        return
+    block = body_block[bid]
+    bid_local = body_local[bid]
+    wid = joint_world[jid]
+    if block < 0 or bid_local < 0 or wid < 0 or block >= dimensions.shape[0]:
+        return
+    dt = model_time_dt[wid]
+    if dt <= 0.0:
+        return
+
+    # Sum the elastic force of the stretch and shear rows on the body
+    force = wp.vec3f(0.0)
+    dofs_offset = joint_dofs_offset[jid]
+    dynamic_start = dynamic_offset[jid]
+    for row in range(dynamic_start, dynamic_start + dynamic_count[jid]):
+        if dynamic_dof[row] - dofs_offset >= 3:
+            continue
+        jacobian = wp.where(side == 0, dynamic_jacobian_a[row], dynamic_jacobian_b[row])
+        row_force = dynamic_effective_inertia[row] * dynamic_free_velocity[row] / dt
+        force += row_force * wp.vec3f(jacobian[0], jacobian[1], jacobian[2])
+
+    arm = wp.transform_get_translation(joint_pose[jid]) - wp.transform_get_translation(body_pose[bid])
+    stiffness = dt * dt * _compute_point_geometric_stiffness(force, arm)
+
+    dimension = dimensions[block]
+    matrix_offset = matrix_offsets[block]
+    rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, bid_local, dimension)
+    for row in range(3):
+        for col in range(3):
+            wp.atomic_add(
+                matrix, _matrix_index(matrix_offset, dimension, rows[3 + row], rows[3 + col]), stiffness[row, col]
+            )
 
 
 @wp.func

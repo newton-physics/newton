@@ -22,6 +22,7 @@ from .llt import LLTBlockedRCMTraversalSolver
 from .system_kernels import (
     _assemble_body_inertial_systems,
     _assemble_joint_rows,
+    _assemble_rod_geometric_stiffness,
     _build_candidate_right_hand_side,
     _invert_single_body_blocks,
     _solve_single_body_blocks,
@@ -354,6 +355,79 @@ class LOXSystem:
                 self._inverse_permutation,
             ],
             outputs=[structural_rows.penalty, structural_rows.body_impulse, self._matrix, self._data.right_hand_side],
+            device=self.device,
+        )
+
+    def add_rod_geometric_stiffness(
+        self,
+        joint_world: wp.array[wp.int32],
+        joint_dof_type: wp.array[wp.int32],
+        joint_dofs_offset: wp.array[wp.int32],
+        joint_coords_offset: wp.array[wp.int32],
+        joint_body_a: wp.array[wp.int32],
+        joint_body_b: wp.array[wp.int32],
+        joint_q: wp.array[wp.float32],
+        joint_q_ref: wp.array[wp.float32],
+        joint_pose: wp.array[wp.transformf],
+        body_pose: wp.array[wp.transformf],
+        dynamic_rows: DynamicRows,
+        time_step: wp.array[wp.float32],
+    ) -> None:
+        """Add the rotational geometric stiffness of the stretch and shear rows of the stretched rod joints.
+
+        :meth:`add_joint_rows` adds the Gauss-Newton term ``effective_inertia J^T J`` of each row. The
+        elastic force of the stretch and shear rows of a rod also turns with the arm from each body's center
+        of mass to the joint point. For each rod longer than its rest length, this adds the stiffness of the
+        tension of that force to the angular block of the body, see
+        :func:`.system_kernels._assemble_rod_geometric_stiffness`.
+
+        Args:
+            joint_world: World of each joint.
+            joint_dof_type: DoF type of each joint.
+            joint_dofs_offset: First DoF of each joint.
+            joint_coords_offset: First coordinate of each joint.
+            joint_body_a: Body A of each joint, or ``-1``.
+            joint_body_b: Body B of each joint.
+            joint_q: Joint coordinates.
+            joint_q_ref: Reference joint coordinates, holding the rest strain of the rods.
+            joint_pose: World pose of each joint frame.
+            body_pose: World pose of each body's center of mass.
+            dynamic_rows: Dynamic rows, with their Jacobians, effective inertias and free velocities.
+            time_step: Time step of each world [s].
+        """
+        joint_count = joint_world.shape[0]
+        if joint_count == 0 or dynamic_rows.count == 0:
+            return
+        wp.launch(
+            _assemble_rod_geometric_stiffness,
+            dim=(joint_count, 2),
+            inputs=[
+                self._data.info.dim,
+                self._data.info.mio,
+                self._data.info.vio,
+                joint_world,
+                joint_dof_type,
+                joint_dofs_offset,
+                joint_coords_offset,
+                joint_body_a,
+                joint_body_b,
+                joint_q,
+                joint_q_ref,
+                joint_pose,
+                body_pose,
+                self._data.body_block,
+                self._data.body_local,
+                time_step,
+                dynamic_rows.joint_offset,
+                dynamic_rows.joint_count,
+                dynamic_rows.dof_index,
+                dynamic_rows.jacobian_a,
+                dynamic_rows.jacobian_b,
+                dynamic_rows.effective_inertia,
+                dynamic_rows.free_velocity,
+                self._inverse_permutation,
+            ],
+            outputs=[self._matrix],
             device=self.device,
         )
 

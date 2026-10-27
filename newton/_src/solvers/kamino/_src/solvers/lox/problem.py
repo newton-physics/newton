@@ -569,6 +569,22 @@ class LOXProblem:
             joint_translation_dead_zone=self._joint_translation_dead_zone,
             joint_rotation_dead_zone=self._joint_rotation_dead_zone,
         )
+        # The tension of stretched rods stiffens the rotation of their bodies
+        if self._data.dynamic_rows.count > 0:
+            self.system.add_rod_geometric_stiffness(
+                self.model.joints.wid,
+                self.model.joints.dof_type,
+                self.model.joints.dofs_offset,
+                self.model.joints.coords_offset,
+                self.model.joints.bid_B,
+                self.model.joints.bid_F,
+                data.joints.q_j,
+                data.joints.q_j_ref,
+                data.joints.p_j,
+                data.bodies.q_i,
+                self._data.dynamic_rows,
+                time_step,
+            )
 
     def prepare_patch_schur(self) -> None:
         """Build the joint neighbors and joint rows of each body for the patch Schur weights.
