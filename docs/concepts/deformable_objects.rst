@@ -180,7 +180,9 @@ Native and USD-created curves use the same model attributes and
 Curve joint ranges
 ~~~~~~~~~~~~~~~~~~
 
-Curve joint ranges include the joints created with the deformable object.
+:attr:`~newton.Model.curve_joint_start` and :attr:`~newton.Model.curve_joint_end`
+store each curve's ``[start, end)`` joint range. The range includes the joints
+created with the deformable object.
 Native rods and USD cables include each generated free root or the
 attachment root created in its place. Earlier rigid-body joints and independent
 attachments added later are outside the range. These complete ranges differ
