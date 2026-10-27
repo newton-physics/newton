@@ -1437,12 +1437,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return angle * (np.pi / 180.0)
             return angle
 
-        def parse_joint_springref_usd(value: Any, context: dict[str, Any]) -> float:
-            """Keep the legacy raw spring reference only when explicitly requested."""
-            if context.get("legacy_springref_units", False):
-                return float(value)
-            return parse_joint_angle_usd(value, context)
-
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
         builder.add_custom_frequency(
@@ -1781,7 +1775,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:springref",
                 mjcf_attribute_name="springref",
-                usd_value_transformer=parse_joint_springref_usd,
+                usd_value_transformer=parse_joint_angle_usd,
                 mjcf_value_transformer=cls._angle_value_transformer,
             )
         )
@@ -4213,34 +4207,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if hasattr(mujoco_attrs, "actuator_biastype"):
                 biastype = int(mujoco_attrs.actuator_biastype.numpy()[mujoco_act_idx])
                 general_args["biastype"] = biastype
-            # Detect position/velocity actuator shortcuts. Use set_to_position/
-            # set_to_velocity after add_actuator so MuJoCo's compiler computes kd
-            # from dampratio via mj_setConst (kd = dampratio * 2 * sqrt(kp * acc0)).
-            shortcut = None  # "position" or "velocity" if detected
-            shortcut_args: dict[str, float] = {}
-            if general_args.get("biastype") == mujoco.mjtBias.mjBIAS_AFFINE and general_args.get("gainprm", [0])[0] > 0:
-                kp = general_args["gainprm"][0]
-                bp = general_args.get("biasprm", [0, 0, 0])
-                # Position shortcut: biasprm = [0, -kp, -kv]
-                # A positive biasprm[2] indicates a dampratio placeholder
-                if bp[0] == 0 and abs(bp[1] + kp) < 1e-8:
-                    shortcut = "position"
-                    shortcut_args["kp"] = kp
-                    if bp[2] < 0.0:
-                        shortcut_args["kv"] = -bp[2]
-                    elif bp[2] > 0.0:
-                        shortcut_args["dampratio"] = bp[2]
-                    for key in ("biasprm", "biastype", "gainprm", "gaintype"):
-                        general_args.pop(key, None)
-                # Velocity shortcut: biasprm = [0, 0, -kv] where kv = gainprm[0]
-                elif bp[0] == 0 and bp[1] == 0 and bp[2] != 0:
-                    kv = general_args["gainprm"][0]
-                    if abs(bp[2] + kv) < 1e-8:
-                        shortcut = "velocity"
-                        shortcut_args["kv"] = kv
-                        for key in ("biasprm", "biastype", "gainprm", "gaintype"):
-                            general_args.pop(key, None)
-
             # Map trntype integer to MuJoCo enum and override default in general_args
             trntype_enum = {
                 int(SolverMuJoCo.TrnType.JOINT): mujoco.mjtTrn.mjTRN_JOINT,
@@ -4253,11 +4219,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             general_args["trntype"] = trntype_enum
             if refsite_name is not None:
                 general_args["refsite"] = refsite_name
-            act = spec.add_actuator(target=target_name, **general_args)
-            if shortcut == "position":
-                act.set_to_position(**shortcut_args)
-            elif shortcut == "velocity":
-                act.set_to_velocity(**shortcut_args)
+            # mj_setConst resolves a positive biasprm[2] as dampratio on position-like general actuators.
+            spec.add_actuator(target=target_name, **general_args)
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
@@ -6843,7 +6806,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if magnetic is not None:
             spec.option.magnetic = np.array(magnetic)
 
-        spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
         if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
             spec.compiler.autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
 
@@ -7788,9 +7750,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             inertia = body_inertia[child]
             mass = body_mass[child]
-            # MuJoCo requires positive-definite inertia. For zero-mass bodies
-            # (sensor frames, reference links), omit mass and inertia entirely
-            # and let MuJoCo handle them natively.
+            # Always pass Newton's inertial: without one MuJoCo re-derives mass
+            # from the geoms at its own default density.
             body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": mocap}
             # The compact simple-body qM layout cannot hold runtime COM or inertia-frame edits.
             body_kwargs["simple"] = 0
@@ -7812,7 +7773,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         inertia[0, 2],
                         inertia[1, 2],
                     ]
-                body_kwargs["explicitinertial"] = True
+            else:
+                # MuJoCo rejects a zero fullinertia but accepts a zero diagonal.
+                body_kwargs["mass"] = 0.0
+                body_kwargs["inertia"] = [0.0, 0.0, 0.0]
+            body_kwargs["explicitinertial"] = True
             body = mj_bodies[body_mapping[parent]].add_body(**body_kwargs)
             mj_bodies.append(body)
             return body, parent, child, child_is_kinematic, j_type, child_xform
