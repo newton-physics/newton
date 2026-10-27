@@ -612,7 +612,7 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 "is_solid": x.is_solid,
                 "has_inertia": x.has_inertia,
                 "maxhullvert": x.maxhullvert,
-                "color": x.color,
+                "color": None if x.color is None else [float(x.color[0]), float(x.color[1]), float(x.color[2])],
                 "opacity": x.opacity,
                 "mass": x.mass,
                 "com": [float(x.com[0]), float(x.com[1]), float(x.com[2])],
@@ -651,6 +651,7 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     user-defined keys, so a namespace target accepts every source key. When the source
     carries a ``Model.AttributeNamespace`` (reconstructed by :func:`deserialize`) that the
     target lacks, it is installed wholesale so namespaces like ``model.mujoco`` roundtrip.
+    Model collision-edge storage also accepts private keys and their legacy public names.
 
     Args:
         source_dict: Mapping-like decoded values to transfer from deserialization.
@@ -681,6 +682,15 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
             "shape_contact_pair_count",
             "_shape_contact_pair_count",
         }:
+            continue
+
+        if target_is_model and attr_name.removeprefix("_") in {
+            "mesh_edge_indices",
+            "mesh_edge_centers",
+            "mesh_edge_halves",
+            "shape_edge_range",
+        }:
+            setattr(target_obj, f"_{attr_name.removeprefix('_')}", source_value)
             continue
 
         if attr_name.startswith("_"):

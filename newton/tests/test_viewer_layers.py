@@ -79,9 +79,6 @@ class _MinimalRTXViewer(ViewerRTX):
         self._render_products = None
         self._displayed_frame = FrameCache()
         self._rtx = None
-        self._use_ovstage = True
-        self._transform_binding = None
-        self._all_instance_paths = []
         self._ovstage = None
         self._ovstage_attached = False
         self._ovstage_paths = None

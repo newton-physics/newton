@@ -616,6 +616,69 @@ class TestMuJoCoSolverMassProperties(_MuJoCoSolverPropertiesFixture, unittest.Te
 
         self.assertGreater(checked_count, 0, "No bodies were checked")
 
+    def test_mujoco_cpu_midphase_follows_inertial_frame(self):
+        """The CPU midphase must not cull overlapping geoms after the inertial frame changes post-compile."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+
+        def offset(x, y, z):
+            return wp.transform(wp.vec3(x, y, z), wp.quat_identity())
+
+        builder = newton.ModelBuilder()
+        # A non-zero gap becomes a geom margin, which hides a midphase miss.
+        builder.rigid_gap = 0.0
+        # Off-axis shapes tilt the principal axes, so MJWarp's frame differs from the compiled one.
+        builder.add_shape_box(body=-1, hx=0.01, hy=0.01, hz=0.01)
+        tilted = builder.add_body(xform=offset(0.049, 0.0, 0.0))
+        builder.add_shape_box(body=tilted, hx=0.04, hy=0.01, hz=0.005)
+        builder.add_shape_box(body=tilted, hx=0.005, hy=0.005, hz=0.005, xform=offset(0.02, 0.02, 0.0))
+        # On-axis shapes keep the compiled frame, so a COM edit and restore returns to it exactly.
+        builder.add_shape_box(body=-1, hx=0.01, hy=0.01, hz=0.01, xform=offset(0.0, 0.5, 0.0))
+        aligned = builder.add_body(xform=offset(0.0145, 0.5, 0.0))
+        builder.add_shape_box(body=aligned, hx=0.005, hy=0.01, hz=0.04)
+        builder.add_shape_box(body=aligned, hx=0.005, hy=0.005, hz=0.005, xform=offset(0.0, 0.0, 0.045))
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, use_mujoco_contacts=True)
+        mj_model, mj_data = solver.mj_model, solver.mj_data
+        midphase_bit = int(mujoco.mjtDisableBit.mjDSBL_MIDPHASE)
+
+        def assert_midphase_matches_narrowphase():
+            ncon = []
+            for disableflags in (mj_model.opt.disableflags & ~midphase_bit, mj_model.opt.disableflags | midphase_bit):
+                mj_model.opt.disableflags = disableflags
+                mujoco.mj_forward(mj_model, mj_data)
+                ncon.append(mj_data.ncon)
+            mj_model.opt.disableflags &= ~midphase_bit
+            self.assertGreater(ncon[1], 0)
+            self.assertEqual(ncon[0], ncon[1])
+
+        with self.subTest("construction"):
+            assert_midphase_matches_narrowphase()
+
+        body_com = model.body_com.numpy().copy()
+        shifted_com = body_com.copy()
+        shifted_com[tilted] += (0.02, 0.02, 0.0)
+        shifted_com[aligned] += (0.0, 0.0, -0.06)
+        for name, com in (("com_shift", shifted_com), ("com_restore", body_com)):
+            with self.subTest(name):
+                model.body_com.assign(com)
+                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+                assert_midphase_matches_narrowphase()
+
+        with self.subTest("inertia_round_trip"):
+            bvh = slice(mj_model.body_bvhadr[1], mj_model.body_bvhadr[1] + mj_model.body_bvhnum[1])
+            extents = mj_model.bvh_aabb[bvh, 3:].copy()
+            body_inertia = model.body_inertia.numpy().copy()
+            rot = np.array(wp.quat_to_matrix(wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5))).reshape(3, 3)
+            rotated = body_inertia.copy()
+            rotated[tilted] = rot @ body_inertia[tilted] @ rot.T
+            for _ in range(3):
+                for inertia in (rotated, body_inertia):
+                    model.body_inertia.assign(inertia)
+                    solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+            # Rotated boxes grow into their enclosing AABB, so refits must not compound.
+            np.testing.assert_allclose(mj_model.bvh_aabb[bvh, 3:], extents, atol=1.0e-9)
+            assert_midphase_matches_narrowphase()
+
     def test_mujoco_cpu_inertia_frame_sync(self):
         """CPU MuJoCo must use the full MJWarp inertia representation."""
         mjcf = """
@@ -8114,7 +8177,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # force the ModelBuilder to correct zero mass/inertia values
         world_builder.bound_inertia = 0.01
         world_builder.bound_mass = 0.01
-        world_builder.replicate(builder, world_count=world_count)
+        world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(solver.mj_model.nv, 3)
@@ -8176,7 +8239,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # force the ModelBuilder to correct zero mass/inertia values
         world_builder.bound_inertia = 0.01
         world_builder.bound_mass = 0.01
-        world_builder.replicate(builder, world_count=world_count)
+        world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(model.joint_count, 4 * world_count)
@@ -8212,7 +8275,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
         world_count = 3
         world_builder = newton.ModelBuilder()
-        world_builder.replicate(builder, world_count=world_count)
+        world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
 
@@ -8475,7 +8538,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         b_free = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(free_pos, free_rot))
 
         world_builder = newton.ModelBuilder()
-        world_builder.replicate(builder, world_count=1)
+        world_builder.replicate(builder, copy_count=1)
         model = world_builder.finalize()
 
         solver = SolverMuJoCo(model)
@@ -8581,7 +8644,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         b_free = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(free_pos, free_rot))
 
         world_builder = newton.ModelBuilder()
-        world_builder.replicate(builder, world_count=1)
+        world_builder.replicate(builder, copy_count=1)
         model = world_builder.finalize()
 
         solver = SolverMuJoCo(model)
@@ -9774,6 +9837,38 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertIsNotNone(solver.mj_model)
 
+    def test_exported_mass_matches_newton(self):
+        """Export Newton's masses, including zero, instead of letting MuJoCo re-derive them from geoms."""
+        builder = newton.ModelBuilder()
+        massless_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+        # Fixed root whose only shape has no density.
+        fixed = builder.add_link(xform=wp.transform((1.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_box(fixed, hx=0.1, hy=0.1, hz=0.1, cfg=massless_cfg)
+        builder.add_articulation([builder.add_joint_fixed(-1, fixed)])
+        # Massless movable dummy carried by a welded child with mass (URDF base-link pattern).
+        dummy = builder.add_link()
+        builder.add_shape_box(dummy, hx=0.05, hy=0.05, hz=0.05, cfg=massless_cfg)
+        link = builder.add_link()
+        builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([builder.add_joint_free(dummy), builder.add_joint_fixed(dummy, link)])
+        model = builder.finalize()
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                mjc_body_to_newton = solver.mjc_body_to_newton.numpy()[0]
+                mapped = mjc_body_to_newton >= 0
+                newton_mass = model.body_mass.numpy()[mjc_body_to_newton[mapped]]
+                np.testing.assert_allclose(solver.mj_model.body_mass[mapped], newton_mass, rtol=1.0e-6)
+                self.assertEqual(float(newton_mass[mjc_body_to_newton[mapped] == fixed][0]), 0.0)
+                self.assertEqual(float(newton_mass[mjc_body_to_newton[mapped] == dummy][0]), 0.0)
+
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                for _ in range(10):
+                    solver.step(state_0, state_1, control, None, 0.002)
+                    state_0, state_1 = state_1, state_0
+                self.assertTrue(np.all(np.isfinite(state_0.body_q.numpy())))
+
 
 class TestMuJoCoSolverQpos0(unittest.TestCase):
     """Tests for qpos0, qpos_spring, ref/springref coordinate conversion, and FK correctness."""
@@ -10683,8 +10778,8 @@ class TestActuatorDampratio(unittest.TestCase):
     """Verify dampratio on position actuator shortcuts produces correct biasprm[2].
 
     MuJoCo's <position kp="K" dampratio="D"/> computes kd = D * 2 * sqrt(K * acc0)
-    during mj_setConst. Newton must use set_to_position on the MjSpec actuator so
-    the compiler resolves dampratio correctly.
+    during mj_setConst. Newton must keep the dampratio in biasprm[2] so the compiler
+    resolves it.
     """
 
     MJCF = """<?xml version="1.0" ?>
@@ -10735,9 +10830,58 @@ class TestActuatorDampratio(unittest.TestCase):
         np.testing.assert_allclose(bp[2], 0.0, atol=1e-6)
 
     def test_dampratio_matches_native_compile(self):
+        """Match native damping on both compiled backends."""
         expected = self.native_model.actuator_biasprm[0, :3]
         np.testing.assert_allclose(self.solver.mj_model.actuator_biasprm[0, :3], expected, atol=1e-6)
         np.testing.assert_allclose(self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, :3], expected, atol=1e-6)
+
+    def test_joint_target_dampratio(self):
+        """Retain imported damping, joint-target control, and explicit gain updates."""
+        # Default control combines position actuators on one DOF, so retain one position drive.
+        xml = self.MJCF.replace('<position name="pos_kv" joint="j1" kp="100" kv="5"/>', "")
+        mujoco = self.solver._mujoco
+        native = mujoco.MjModel.from_xml_string(xml)
+        expected = native.actuator_biasprm[0, 2]
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu), tempfile.TemporaryDirectory() as tmp:
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(xml)
+                builder.joint_qd[-1] = 0.1
+                model = builder.finalize(device="cpu" if cpu else self.model.device)
+                exported = os.path.join(tmp, "model.xml")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True, save_to_mjcf=exported)
+                self.assertEqual(solver.mjc_actuator_ctrl_source.numpy()[0], SolverMuJoCo.CtrlSource.JOINT_TARGET)
+                self.assertAlmostEqual(solver.mj_model.actuator_biasprm[0, 2], expected, places=5)
+                self.assertAlmostEqual(solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2], expected, places=5)
+                self.assertAlmostEqual(model.joint_target_kd.numpy()[-1], -expected, places=5)
+                self.assertAlmostEqual(
+                    mujoco.MjModel.from_xml_path(exported).actuator_biasprm[0, 2], expected, places=5
+                )
+
+                control = model.control()
+                target = control.joint_target_q.numpy()
+                target[-1] = 0.2
+                control.joint_target_q.assign(target)
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                solver.step(state, model.state(), control, None, 0.001)
+                native_data = mujoco.MjData(native)
+                native_data.qvel[-1] = 0.1
+                native_data.ctrl[0] = 0.2
+                mujoco.mj_forward(native, native_data)
+                force = solver.mj_data.actuator_force if cpu else solver.mjw_data.actuator_force.numpy()[0]
+                np.testing.assert_allclose(force, native_data.actuator_force, atol=1e-5)
+
+                # Re-publishing unchanged gains must not discard the resolved damping.
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                actual = solver.mj_model.actuator_biasprm if cpu else solver.mjw_model.actuator_biasprm.numpy()[0]
+                self.assertAlmostEqual(actual[0, 2], expected, places=5)
+                for kd in (3.0, 0.0):
+                    model.joint_target_ke.fill_(50.0)
+                    model.joint_target_kd.fill_(kd)
+                    solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                    actual = solver.mj_model.actuator_biasprm if cpu else solver.mjw_model.actuator_biasprm.numpy()[0]
+                    np.testing.assert_allclose(actual[0, :3], [0.0, -50.0, -kd], atol=1e-6)
 
     def test_dampratio_custom_attribute_parsed(self):
         """dampratio should be encoded as unresolved biasprm[2] > 0."""
@@ -10980,7 +11124,7 @@ class TestActuatorLengthRange(unittest.TestCase):
 
 
 class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
-    """Verify per-world derived quantities after mass randomization."""
+    """Verify damping initialization and runtime updates across backends and worlds."""
 
     MJCF = """<?xml version="1.0" ?>
     <mujoco>
@@ -11007,6 +11151,7 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         cls.solver = SolverMuJoCo(cls.model)
 
     def test_per_world_acc0_and_dampratio(self):
+        """Resolve direct-actuator damping after changing each world's inertia."""
         masses = self.model.body_mass.numpy()
         inertias = self.model.body_inertia.numpy()
         bodies_per_world = self.model.body_count // self.model.world_count
@@ -11033,6 +11178,75 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         self.assertNotAlmostEqual(float(biasprm[0, 0, 2]), float(biasprm[1, 0, 2]), places=6)
         self.assertEqual(meaninertia.shape, (self.model.world_count,))
         np.testing.assert_allclose(meaninertia[1], 2.0 * meaninertia[0], rtol=1e-5)
+
+    def test_joint_target_initial_damping(self):
+        """Resolve each world's gains, armature, and ratio despite skipped metadata."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(self.MJCF)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 3)
+        builder.joint_armature[1] = 0.3
+        builder.joint_target_ke[1] = 25.0
+        builder.joint_target_kd[2] = 5.0
+        skipped_row = {
+            key: attr.default for key, attr in builder.custom_attributes.items() if attr.frequency == "mujoco:actuator"
+        }
+        skipped_row["mujoco:actuator_target_label"] = "/missing"
+        builder.add_custom_values(**skipped_row)
+        model = builder.finalize()
+        worlds = model.mujoco.actuator_world.numpy()
+        biasprm = model.mujoco.actuator_biasprm.numpy()
+        ratios = np.array([0.5, 2.0, 1.0])
+        biasprm[worlds >= 0, 2] = ratios[worlds[worlds >= 0]]
+        biasprm[worlds < 0, 2] = 0.75
+        model.mujoco.actuator_biasprm.assign(biasprm)
+
+        mujoco = self.solver._mujoco
+        native = mujoco.MjModel.from_xml_string(self.MJCF)
+        modified = mujoco.MjModel.from_xml_string(
+            self.MJCF.replace('type="hinge"', 'type="hinge" armature="0.3"').replace('kp="100"', 'kp="25"')
+        )
+        expected = [0.5 * native.actuator_biasprm[0, 2], 2.0 * modified.actuator_biasprm[0, 2], -5.0]
+        with self.assertWarnsRegex(UserWarning, "unresolved target '/missing'"):
+            solver = SolverMuJoCo(model, disable_contacts=True)
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), -np.array(expected), rtol=1e-5)
+        np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
+        np.testing.assert_array_equal(model.mujoco.actuator_biasprm.numpy()[worlds < 0], biasprm[worlds < 0])
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
+
+    def test_joint_target_kinematic_initial_damping(self):
+        """Resolve every ball axis using physical inertia and preserve explicit edits."""
+        xml = self.MJCF.replace('type="hinge" axis="0 0 1"', 'type="ball" armature="0.3"')
+        # The imported ball drive expands into three axis actuators.
+        position = '<position name="pos_dampratio" joint="j1" kp="100" dampratio="1.0"/>'
+        axes = "".join(
+            f'<position joint="j1" kp="100" dampratio="1" gear="{gear} 0 0 0"/>' for gear in ("1 0 0", "0 1 0", "0 0 1")
+        )
+        native = self.solver._mujoco.MjModel.from_xml_string(xml.replace(position, axes))
+        expected = -native.actuator_biasprm[:, 2]
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(xml)
+                builder.body_flags[0] = int(BodyFlags.KINEMATIC)
+                model = builder.finalize(device="cpu" if cpu else self.model.device)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
+                np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)
+                np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), KINEMATIC_ARMATURE)
+                if cpu:
+                    np.testing.assert_allclose(solver.mj_model.dof_armature, KINEMATIC_ARMATURE)
+
+                model.body_flags.fill_(int(BodyFlags.DYNAMIC))
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.3)
+                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[0, :, 2], -expected, rtol=1e-5)
+                # Consuming the shared ratio must preserve an explicit zero on rebuild.
+                model.joint_target_kd.zero_()
+                rebuilt = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                np.testing.assert_array_equal(rebuilt.mj_model.actuator_biasprm[:, 2], 0.0)
+                np.testing.assert_array_equal(rebuilt.mjw_model.actuator_biasprm.numpy()[..., 2], 0.0)
 
 
 class TestActuatorInheritrange(unittest.TestCase):
