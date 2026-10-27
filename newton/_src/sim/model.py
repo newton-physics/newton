@@ -10,7 +10,7 @@ import operator
 import warnings
 from collections.abc import Callable, Iterable, Iterator
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import IntEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, SupportsIndex
 
@@ -242,7 +242,13 @@ class Model:
         """Guides in flattened tendon routes."""
         TENDON_SEGMENT = 22
         """Straight spans between consecutive tendon guides."""
-        CAMERA = 23
+        CURVE = 23
+        """Experimental frequency for recorded deformable curves (see :attr:`~newton.Model.curve_count`)."""
+        SURFACE = 24
+        """Experimental frequency for recorded deformable surfaces (see :attr:`~newton.Model.surface_count`)."""
+        VOLUME = 25
+        """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
+        CAMERA = 26
         """Attribute frequency follows the number of model cameras (see :attr:`~newton.Model.camera_count`).
 
         .. experimental::
@@ -254,8 +260,8 @@ class Model:
 
         .. experimental::
 
-            ``compaction_policy`` is part of the experimental coupled-solver
-            framework and may change without a deprecation period.
+            ``compaction_policy`` and ``default`` are part of the experimental
+            coupled-solver framework and may change without a deprecation period.
         """
 
         frequency: Model.AttributeFrequency | str
@@ -272,15 +278,26 @@ class Model:
         """Whether this is a deprecated compatibility alias that generic consumers should skip."""
         alias_of: str | None = None
         """Canonical name used when explicitly accessing this alias through a model view."""
-        compaction_policy: Literal["generic", "end", "start", "world_start", "color_groups", "passthrough"] = "generic"
+        compaction_policy: Literal[
+            "generic", "end", "start", "range_start", "world_start", "color_groups", "passthrough"
+        ] = "generic"
         """Experimental policy used by coupled model views.
 
         ``"generic"`` selects and remaps rows using this spec; ``"end"``
-        remaps exclusive boundaries in the referenced domain; ``"start"``,
-        ``"world_start"``, and ``"color_groups"`` select their corresponding
+        remaps exclusive boundaries in the referenced domain; ``"range_start"``
+        remaps inclusive boundaries for independent ranges without a sentinel.
+        Deformable ``*_start`` attributes use it with matching ``*_end`` attributes.
+        ``"start"``, ``"world_start"``, and ``"color_groups"`` select their corresponding
         structured handling; and ``"passthrough"`` disables automatic count
         limiting. Non-generic policies may still be overridden by the coupled
         solver when constructing a compact view.
+        """
+        default: Any = field(default=None, compare=False)
+        """Experimental value of one row for entities without authored data, or ``None`` for the dtype's zero.
+
+        :meth:`ModelBuilder.finalize() <newton.ModelBuilder.finalize>` sets it to
+        :attr:`ModelBuilder.CustomAttribute.default <newton.ModelBuilder.CustomAttribute.default>`.
+        Coupled model views use it for the rows they synthesize.
         """
 
         def __post_init__(self) -> None:
@@ -290,13 +307,14 @@ class Model:
                 "generic",
                 "end",
                 "start",
+                "range_start",
                 "world_start",
                 "color_groups",
                 "passthrough",
             }:
                 raise ValueError(f"Unknown attribute compaction policy {self.compaction_policy!r}")
-            if self.compaction_policy == "end" and self.references is None:
-                raise ValueError("Attribute compaction policy 'end' requires a reference domain")
+            if self.compaction_policy in {"end", "range_start"} and self.references is None:
+                raise ValueError(f"Attribute compaction policy {self.compaction_policy!r} requires a reference domain")
 
     _CORE_ATTRIBUTE_SPECS: ClassVar[dict[str, AttributeSpec]] = {
         "camera_label": AttributeSpec(AttributeFrequency.CAMERA),
@@ -585,6 +603,55 @@ class Model:
             AttributeFrequency.ARTICULATION,
             compaction_policy="world_start",
         ),
+        # experimental deformable object identities and independent ranges
+        "curve_label": AttributeSpec(AttributeFrequency.CURVE),
+        "curve_world": AttributeSpec(AttributeFrequency.CURVE, references=AttributeFrequency.WORLD),
+        "curve_body_start": AttributeSpec(
+            AttributeFrequency.CURVE, references=AttributeFrequency.BODY, compaction_policy="range_start"
+        ),
+        "curve_body_end": AttributeSpec(
+            AttributeFrequency.CURVE, references=AttributeFrequency.BODY, compaction_policy="end"
+        ),
+        "curve_joint_start": AttributeSpec(
+            AttributeFrequency.CURVE, references=AttributeFrequency.JOINT, compaction_policy="range_start"
+        ),
+        "curve_joint_end": AttributeSpec(
+            AttributeFrequency.CURVE, references=AttributeFrequency.JOINT, compaction_policy="end"
+        ),
+        "surface_label": AttributeSpec(AttributeFrequency.SURFACE),
+        "surface_world": AttributeSpec(AttributeFrequency.SURFACE, references=AttributeFrequency.WORLD),
+        "surface_particle_start": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.PARTICLE, compaction_policy="range_start"
+        ),
+        "surface_particle_end": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.PARTICLE, compaction_policy="end"
+        ),
+        "surface_tri_start": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.TRIANGLE, compaction_policy="range_start"
+        ),
+        "surface_tri_end": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.TRIANGLE, compaction_policy="end"
+        ),
+        "surface_edge_start": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.EDGE, compaction_policy="range_start"
+        ),
+        "surface_edge_end": AttributeSpec(
+            AttributeFrequency.SURFACE, references=AttributeFrequency.EDGE, compaction_policy="end"
+        ),
+        "volume_label": AttributeSpec(AttributeFrequency.VOLUME),
+        "volume_world": AttributeSpec(AttributeFrequency.VOLUME, references=AttributeFrequency.WORLD),
+        "volume_particle_start": AttributeSpec(
+            AttributeFrequency.VOLUME, references=AttributeFrequency.PARTICLE, compaction_policy="range_start"
+        ),
+        "volume_particle_end": AttributeSpec(
+            AttributeFrequency.VOLUME, references=AttributeFrequency.PARTICLE, compaction_policy="end"
+        ),
+        "volume_tet_start": AttributeSpec(
+            AttributeFrequency.VOLUME, references=AttributeFrequency.TETRAHEDRON, compaction_policy="range_start"
+        ),
+        "volume_tet_end": AttributeSpec(
+            AttributeFrequency.VOLUME, references=AttributeFrequency.TETRAHEDRON, compaction_policy="end"
+        ),
         "constraint_mimic_joint0": AttributeSpec(
             AttributeFrequency.CONSTRAINT_MIMIC,
             references=AttributeFrequency.JOINT,
@@ -626,6 +693,9 @@ class Model:
         AttributeFrequency.CONTACT: "contact_max",
         AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
         AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
+        AttributeFrequency.CURVE: "curve_count",
+        AttributeFrequency.SURFACE: "surface_count",
+        AttributeFrequency.VOLUME: "volume_count",
     }
 
     class AttributeNamespace:
@@ -1357,6 +1427,61 @@ class Model:
         self.max_dofs_per_articulation: int = 0
         """Maximum number of degrees of freedom in any articulation (used for Jacobian/mass matrix computation)."""
 
+        self.curve_label: list[str] = []
+        """Experimental labels of rod-backed deformable objects, shape [curve_count].
+
+        Copied from :attr:`ModelBuilder.curve_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
+        """
+        self.curve_world: wp.array[wp.int32] | None = None
+        """Experimental world indices for :attr:`curve_label`, shape [curve_count]. -1 means global."""
+        self.curve_body_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each curve's body range, shape [curve_count]."""
+        self.curve_body_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each curve's body range, shape [curve_count]."""
+        self.curve_joint_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each curve's joint range, shape [curve_count]."""
+        self.curve_joint_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each curve's joint range, shape [curve_count]."""
+
+        self.surface_label: list[str] = []
+        """Experimental labels of triangle-surface deformable objects, shape [surface_count].
+
+        Copied from :attr:`ModelBuilder.surface_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
+        """
+        self.surface_world: wp.array[wp.int32] | None = None
+        """Experimental world indices for :attr:`surface_label`, shape [surface_count]. -1 means global."""
+        self.surface_particle_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each surface's particle range, shape [surface_count]."""
+        self.surface_particle_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each surface's particle range, shape [surface_count]."""
+        self.surface_tri_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each surface's triangle range, shape [surface_count]."""
+        self.surface_tri_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each surface's triangle range, shape [surface_count]."""
+        self.surface_edge_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each surface's edge range, shape [surface_count]."""
+        self.surface_edge_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each surface's edge range, shape [surface_count]."""
+
+        self.volume_label: list[str] = []
+        """Experimental labels of tetrahedral deformable objects, shape [volume_count].
+
+        Copied from :attr:`ModelBuilder.volume_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
+        """
+        self.volume_world: wp.array[wp.int32] | None = None
+        """Experimental world indices for :attr:`volume_label`, shape [volume_count]. -1 means global."""
+        self.volume_particle_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each volume's particle range, shape [volume_count]."""
+        self.volume_particle_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each volume's particle range, shape [volume_count]."""
+        self.volume_tet_start: wp.array[wp.int32] | None = None
+        """Experimental inclusive start of each volume's tetrahedron range, shape [volume_count]."""
+        self.volume_tet_end: wp.array[wp.int32] | None = None
+        """Experimental exclusive end of each volume's tetrahedron range, shape [volume_count]."""
+
         self.soft_contact_ke: float = 1.0e3
         """Stiffness of soft contacts [N/m] (used by :class:`~newton.solvers.SolverSemiImplicit` and :class:`~newton.solvers.SolverFeatherstone`)."""
         self.soft_contact_kd: float = 10.0
@@ -1448,6 +1573,12 @@ class Model:
         """Total number of muscles in the system."""
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
+        self.curve_count: int = 0
+        """Experimental number of recorded rod-backed deformable objects."""
+        self.surface_count: int = 0
+        """Experimental number of recorded triangle-surface deformable objects."""
+        self.volume_count: int = 0
+        """Experimental number of recorded tetrahedral deformable objects."""
         self.joint_dof_count: int = 0
         """Total number of velocity degrees of freedom of all joints. Equals the number of joint axes."""
         self.joint_coord_count: int = 0
@@ -1666,37 +1797,35 @@ class Model:
         else:
             self.attribute_assignment[name] = spec.assignment
 
-    def _normalize_attribute_reference(self, references: str | None) -> Model.AttributeFrequency | str | None:
-        """Return the frequency domain addressed by a builder reference declaration."""
-        if references is None:
-            return None
-        built_in = {
-            "body": Model.AttributeFrequency.BODY,
-            "shape": Model.AttributeFrequency.SHAPE,
-            "joint": Model.AttributeFrequency.JOINT,
-            "joint_dof": Model.AttributeFrequency.JOINT_DOF,
-            "joint_coord": Model.AttributeFrequency.JOINT_COORD,
-            "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
-            "articulation": Model.AttributeFrequency.ARTICULATION,
-            "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
-            "particle": Model.AttributeFrequency.PARTICLE,
-            "edge": Model.AttributeFrequency.EDGE,
-            "triangle": Model.AttributeFrequency.TRIANGLE,
-            "tetrahedron": Model.AttributeFrequency.TETRAHEDRON,
-            "spring": Model.AttributeFrequency.SPRING,
-            "tendon": Model.AttributeFrequency.TENDON,
-            "camera": Model.AttributeFrequency.CAMERA,
-            "tendon_guide": Model.AttributeFrequency.TENDON_GUIDE,
-            "tendon_segment": Model.AttributeFrequency.TENDON_SEGMENT,
-            "attachment_particle_body": Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
-            "world": Model.AttributeFrequency.WORLD,
-        }
-        frequency = built_in.get(references)
-        if frequency is not None:
-            return frequency
-        if references in self.custom_frequency_counts:
-            return references
-        raise ValueError(f"Unknown custom attribute reference frequency {references!r}")
+    # Keep existing string aliases; new built-in families use enums so their
+    # names remain available to custom frequencies regardless of registration order.
+    _REFERENCE_ALIASES: ClassVar[dict[str, AttributeFrequency]] = {
+        "body": AttributeFrequency.BODY,
+        "shape": AttributeFrequency.SHAPE,
+        "joint": AttributeFrequency.JOINT,
+        "joint_dof": AttributeFrequency.JOINT_DOF,
+        "joint_coord": AttributeFrequency.JOINT_COORD,
+        "joint_constraint": AttributeFrequency.JOINT_CONSTRAINT,
+        "articulation": AttributeFrequency.ARTICULATION,
+        "constraint_mimic": AttributeFrequency.CONSTRAINT_MIMIC,
+        "particle": AttributeFrequency.PARTICLE,
+        "edge": AttributeFrequency.EDGE,
+        "triangle": AttributeFrequency.TRIANGLE,
+        "tetrahedron": AttributeFrequency.TETRAHEDRON,
+        "spring": AttributeFrequency.SPRING,
+        "tendon": AttributeFrequency.TENDON,
+        "tendon_guide": AttributeFrequency.TENDON_GUIDE,
+        "tendon_segment": AttributeFrequency.TENDON_SEGMENT,
+        "attachment_particle_body": AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
+        "world": AttributeFrequency.WORLD,
+    }
+
+    @staticmethod
+    def _normalize_attribute_reference(
+        references: Model.AttributeFrequency | str | None,
+    ) -> Model.AttributeFrequency | str | None:
+        """Resolve existing built-in aliases without changing the supplied declaration."""
+        return Model._REFERENCE_ALIASES.get(references, references)
 
     # ----- Removed joint-target aliases -------------------------------------
     # Tombstones so that assigning the 1.3-era names fails loudly instead of
@@ -2487,7 +2616,7 @@ class Model:
         frequency: Model.AttributeFrequency | str,
         assignment: Model.AttributeAssignment | None = None,
         namespace: str | None = None,
-        references: str | None = None,
+        references: Model.AttributeFrequency | str | None = None,
     ):
         """
         Add a custom attribute to the model.
@@ -2505,6 +2634,11 @@ class Model:
                 If specified, attribute is added to a namespace object (e.g., model.namespace_name.attr_name).
             references: Entity or custom-frequency domain indexed by the
                 attribute values, or ``None`` when values are not references.
+                Use a Model.AttributeFrequency enum for built-in domains or a
+                string for custom frequencies. Existing built-in strings such as
+                ``"body"`` and ``"world"`` are also supported. Use enums for
+                ``CURVE``, ``SURFACE``, and ``VOLUME``; their string names refer
+                to custom frequencies.
 
         Raises:
             AttributeError: If the attribute already exists or is on the wrong device.
@@ -2532,6 +2666,15 @@ class Model:
             full_name = name
 
         reference_frequency = self._normalize_attribute_reference(references)
+        if isinstance(reference_frequency, str) and reference_frequency not in self.custom_frequency_counts:
+            hint = ""
+            enum_name = reference_frequency.upper()
+            if enum_name in Model.AttributeFrequency.__members__:
+                hint = (
+                    f"; to reference the built-in {reference_frequency} domain, "
+                    f"use Model.AttributeFrequency.{enum_name}"
+                )
+            raise ValueError(f"Unknown custom attribute reference frequency {references!r}{hint}")
         if reference_frequency is not None and isinstance(attrib, wp.array):
             integral_dtypes = (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64)
             scalar_dtype = getattr(attrib.dtype, "_wp_scalar_type_", attrib.dtype)

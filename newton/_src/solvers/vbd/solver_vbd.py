@@ -1111,6 +1111,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.particle_q_prev = wp.zeros_like(
             model.particle_q, device=self.device
         )  # per-substep previous q (for velocity)
+        # Particle pose at the start of the coupled entry step, paired with
+        # ``_coupling_body_q_prev_snapshot`` by the coupling harvest hooks.
+        self._coupling_particle_q_prev_snapshot = wp.clone(model.particle_q, device=self.device)
         self.inertia = wp.zeros_like(model.particle_q, device=self.device)  # inertial target positions
 
         # Particle adjacency info: reuse the shared device copy built once at finalize (the VBD
@@ -1555,9 +1558,23 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
-        """Convert input body pose updates into VBD-compatible history updates."""
+        """Convert input body pose updates into VBD-compatible history updates.
+
+        Also snapshots the input particle pose, which the coupling harvest hooks
+        pair with the body pose history over the whole coupled entry step (all substeps).
+        """
         self._apply_module_options()
         flags = int(flags)
+
+        if (
+            flags & StateFlags.PARTICLE_Q
+            and dt > 0.0
+            and not iteration_restart
+            and state.particle_q is not None
+            and self.model.particle_count > 0
+        ):
+            # Restarted iterations restore the same input particle pose, so they keep the pass-0 snapshot.
+            wp.copy(dest=self._coupling_particle_q_prev_snapshot, src=state.particle_q)
 
         if (
             not (flags & StateFlags.BODY_Q)
@@ -1649,6 +1666,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if contacts is None:
             return
 
+        # Both pose histories span the whole coupled entry step, matching the coupled ``dt``;
+        # ``particle_q_prev`` and ``body_q_prev`` cover only the last substep of a sub-stepped entry.
         body_q_prev = self._coupling_body_q_prev_snapshot
 
         if contacts.rigid_contact_max > 0:
@@ -1689,7 +1708,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     float(dt),
                     body_local_to_proxy_global,
                     state_out.particle_q,
-                    self.particle_q_prev,
+                    self._coupling_particle_q_prev_snapshot,
                     self.model.particle_radius,
                     state_out.body_q,
                     body_q_prev,
@@ -1753,14 +1772,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             and contacts.soft_contact_shape is not None
             and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max
         ):
+            # Contacts are evaluated at the solved poses in ``state_out``, with histories at the
+            # coupled entry step start pose, matching the coupled ``dt``.
             if self.integrate_with_external_rigid_solver:
                 body_q_for_particles = state_out.body_q
                 body_q_prev_for_particles = state.body_q
                 body_qd_for_particles = state_out.body_qd
             else:
-                body_q_for_particles = state.body_q
+                body_q_for_particles = state_out.body_q
                 body_q_prev_for_particles = self._coupling_body_q_prev_snapshot if self.model.body_count > 0 else None
-                body_qd_for_particles = state.body_qd
+                body_qd_for_particles = state_out.body_qd
 
             wp.launch(
                 _harvest_vbd_proxy_particle_body_contact_forces_kernel,
@@ -1768,8 +1789,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 inputs=[
                     float(dt),
                     particle_local_to_proxy_global,
-                    state.particle_q,
-                    self.particle_q_prev,
+                    state_out.particle_q,
+                    self._coupling_particle_q_prev_snapshot,
                     self.model.particle_flags,
                     self.model.particle_inv_mass,
                     int(ParticleFlags.ACTIVE),
@@ -1778,7 +1799,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.rigid_soft_contact_use_log_barrier,
                     self.model.particle_radius,
                     contacts.soft_contact_count,
-                    _make_soft_contact_filter_data(self.model, contacts, state.particle_q, body_q_for_particles),
+                    _make_soft_contact_filter_data(self.model, contacts, state_out.particle_q, body_q_for_particles),
                     contacts.soft_contact_particle,
                     self.body_particle_contact_penalty_k,
                     self.body_particle_contact_material_kd,
@@ -1808,8 +1829,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 inputs=[
                     float(dt),
                     particle_local_to_proxy_global,
-                    self.particle_q_prev,
-                    state.particle_q,
+                    self._coupling_particle_q_prev_snapshot,
+                    state_out.particle_q,
                     self.model.particle_flags,
                     self.model.particle_inv_mass,
                     int(ParticleFlags.ACTIVE),
