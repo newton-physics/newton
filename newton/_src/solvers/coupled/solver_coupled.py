@@ -1603,6 +1603,15 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view._fk_level_parent_pos = None
         view._fk_level_capacity = 0
 
+        # Retain parent-first serial traversal in the view's local joint numbering.
+        view._fk_joint_order = None
+        if model._fk_joint_order is not None:
+            joint_global_to_local = np.asarray(compact.projections[frequency.JOINT].global_to_local, dtype=np.int32)
+            fk_joint_order = joint_global_to_local[model._fk_joint_order.numpy()]
+            fk_joint_order = fk_joint_order[fk_joint_order >= 0]
+            if not np.array_equal(fk_joint_order, np.arange(view.joint_count)):
+                view._fk_joint_order = wp.array(fk_joint_order, dtype=wp.int32, device=device)
+
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
 
