@@ -161,10 +161,6 @@ def _compute_max_neighbors(num_verts, tri_indices, edge_indices):
     return int(np.bincount(connections // num_verts).max(initial=0))
 
 
-class _PDMatrixCapacityError(ValueError):
-    """Signal that matrix assembly needs wider ELL storage."""
-
-
 class PDMatrixBuilder:
     """Helper class for building Projective Dynamics (PD) matrix in sparse ELL format."""
 
@@ -181,7 +177,7 @@ class PDMatrixBuilder:
         """Reject incomplete matrices instead of silently dropping connections."""
         vertex = int(self._overflow.numpy()[0]) - 1
         if vertex >= 0:
-            raise _PDMatrixCapacityError(f"PD matrix capacity {self.max_neighbors} exceeded at vertex {vertex}.")
+            raise ValueError(f"PD matrix capacity {self.max_neighbors} exceeded at vertex {vertex}.")
 
     def add_stretch_constraints(
         self,

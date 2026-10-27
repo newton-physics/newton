@@ -8,7 +8,7 @@ import warp as wp
 from ...core.types import override
 from ...sim import Contacts, Control, Model, ModelBuilder, State
 from ..solver import SolverBase
-from .builder import PDMatrixBuilder, _compute_max_neighbors, _PDMatrixCapacityError
+from .builder import PDMatrixBuilder, _compute_max_neighbors
 from .collision import Collision
 from .kernels import (
     accumulate_dragging_pd_diag_kernel,
@@ -452,7 +452,7 @@ class SolverStyle3D(SolverBase):
 
             try:
                 pd_matrix_builder = assemble(32)
-            except _PDMatrixCapacityError:
+            except ValueError:
                 # Only overflowing meshes pay for counting stretch and bending connections.
                 max_neighbors = _compute_max_neighbors(model.particle_count, tri_indices, edge_indices)
                 pd_matrix_builder = assemble(max_neighbors)
