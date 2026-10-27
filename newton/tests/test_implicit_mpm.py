@@ -1598,6 +1598,26 @@ def test_multiworld_global_particles_rejected(test, device):
         SolverImplicitMPM(model, _make_mpm_config())
 
 
+def test_particle_force_input(test, device):
+    """Verify ``state.particle_f`` accelerates active particles like gravity does."""
+    dt = 0.01
+    force = 0.5
+    model = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)).finalize(device=device)
+    config = _make_mpm_config()
+    solver = SolverImplicitMPM(model, config=config)
+
+    state_0 = model.state()
+    state_1 = model.state()
+    solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+    np.testing.assert_allclose(state_1.particle_qd.numpy(), 0.0, atol=1.0e-6)
+
+    state_0.particle_f.fill_(wp.vec3(force, 0.0, 0.0))
+    solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+    expected_vx = dt * force / 0.01
+    np.testing.assert_allclose(state_1.particle_qd.numpy()[:, 0], expected_vx, rtol=5.0e-3)
+    np.testing.assert_allclose(state_1.particle_qd.numpy()[:, 1:], 0.0, atol=1.0e-5)
+
+
 def test_single_world_global_particles_supported(test, device):
     """Verify single world global particles supported."""
     initial_plastic_volume_strain = 0.975
@@ -3109,6 +3129,13 @@ add_function_test(
     TestImplicitMPM,
     "test_multiworld_global_particles_rejected",
     test_multiworld_global_particles_rejected,
+    devices=basic_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_particle_force_input",
+    test_particle_force_input,
     devices=basic_devices,
 )
 

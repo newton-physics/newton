@@ -2121,7 +2121,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         velocities, and stress.
 
         Args:
-            state_in: Input state at the start of the step.
+            state_in: Input state at the start of the step. If
+                ``state_in.particle_f`` is allocated, it is applied as an
+                external force [N] on each active, dynamic particle, in
+                addition to gravity.
             state_out: Output state written with updated particle data.
                 May be the same object as ``state_in`` for in-place stepping.
             control: Control input (unused; material parameters come from the model).
@@ -2319,6 +2322,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self.model.particle_flags,
                 self._mpm_model.particle_flags,
                 particle_gravity_acceleration,
+                state.particle_f,
                 coupling_forces,
                 self.model.particle_inv_mass,
                 state.particle_qd,
@@ -3320,6 +3324,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     "dt": dt,
                     "gravity": model.gravity,
                     "particle_world": model.particle_world,
+                    "particle_f": state_in.particle_f,
+                    "particle_inv_mass": model.particle_inv_mass,
                     "particle_density": mpm_model.particle_density,
                     "particle_flags": mpm_model.particle_flags,
                     "inv_cell_volume": inv_cell_volume,
@@ -4611,6 +4617,7 @@ def _rewind_mpm_proxy_particles_kernel(
     particle_flags: wp.array[wp.int32],
     transfer_flags: wp.array[wp.int32],
     particle_gravity_acceleration: wp.array[wp.vec3],
+    particle_f: wp.array[wp.vec3],
     coupling_forces: wp.array[wp.vec3],
     particle_inv_mass: wp.array[float],
     particle_qd: wp.array[wp.vec3],
@@ -4620,8 +4627,14 @@ def _rewind_mpm_proxy_particles_kernel(
     if proxy_global < 0 or (particle_flags[local_particle] & proxy_flag) == 0:
         return
 
-    delta_v = dt * particle_inv_mass[local_particle] * coupling_forces[proxy_global]
-    if (transfer_flags[local_particle] & active_flag) != 0:
+    # The source velocity already includes these forces. Gravity and particle_f are
+    # applied by the solver on active particles only, and are removed likewise.
+    force = coupling_forces[proxy_global]
+    is_active = (transfer_flags[local_particle] & active_flag) != 0
+    if particle_f and is_active:
+        force += particle_f[local_particle]
+    delta_v = dt * particle_inv_mass[local_particle] * force
+    if is_active:
         delta_v = delta_v + dt * particle_gravity_acceleration[local_particle]
 
     particle_qd[local_particle] = particle_qd[local_particle] - delta_v
