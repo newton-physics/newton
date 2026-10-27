@@ -1582,6 +1582,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
 CTRL_SOURCE_JOINT_TARGET = wp.constant(0)
 CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
+CTRL_TYPE_DCMOTOR = wp.constant(3)
 
 
 @wp.func
@@ -2151,6 +2152,7 @@ def update_axis_properties_kernel(
 def update_actuator_properties_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_actuator_idx: wp.array[wp.int32],
+    newton_actuator_ctrl_type: wp.array[wp.int32],
     newton_actuator_gainprm: wp.array[vec10],
     newton_actuator_biasprm: wp.array[vec10],
     newton_actuator_dynprm: wp.array[vec10],
@@ -2160,6 +2162,7 @@ def update_actuator_properties_kernel(
     newton_actuator_gear: wp.array[wp.spatial_vector],
     newton_actuator_cranklength: wp.array[float],
     actuators_per_world: wp.int32,
+    actuator_gear_fixed: wp.array[wp.bool],
     # outputs
     actuator_gain: wp.array2d[vec10],
     actuator_bias: wp.array2d[vec10],
@@ -2178,6 +2181,7 @@ def update_actuator_properties_kernel(
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
         mjc_actuator_to_newton_actuator_idx: Index into Newton's mujoco:actuator arrays
+        newton_actuator_ctrl_type: Intrinsic actuator shortcut type
         newton_actuator_gainprm: Newton's model.mujoco.actuator_gainprm
         newton_actuator_biasprm: Newton's model.mujoco.actuator_biasprm
         newton_actuator_dynprm: Newton's model.mujoco.actuator_dynprm
@@ -2187,6 +2191,7 @@ def update_actuator_properties_kernel(
         newton_actuator_gear: Newton's model.mujoco.actuator_gear
         newton_actuator_cranklength: Newton's model.mujoco.actuator_cranklength
         actuators_per_world: Number of actuators per world in Newton model
+        actuator_gear_fixed: Actuators whose damping was folded using their compiled gear
     """
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
@@ -2201,12 +2206,17 @@ def update_actuator_properties_kernel(
     if source != CTRL_SOURCE_CTRL_DIRECT:
         return
 
-    actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
-    actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
-    actuator_dynprm[world, actuator] = newton_actuator_dynprm[world_newton_idx]
-    actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
+    # High-level DC-motor parameters and force ranges are resolved together
+    # by native MuJoCo; preserve them as construction-time properties.
+    if newton_actuator_ctrl_type[world_newton_idx] != CTRL_TYPE_DCMOTOR:
+        actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
+        actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
+        actuator_dynprm[world, actuator] = newton_actuator_dynprm[world_newton_idx]
+        actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
+
     actuator_actrange[world, actuator] = newton_actuator_actrange[world_newton_idx]
-    actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
+    if not actuator_gear_fixed or not actuator_gear_fixed[actuator]:
+        actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
     actuator_cranklength[world, actuator] = newton_actuator_cranklength[world_newton_idx]
 
 
@@ -2215,6 +2225,7 @@ def update_dof_force_properties_kernel(
     mjc_dof_to_newton_dof: wp.array2d[wp.int32],
     joint_friction: wp.array[float],
     joint_damping: wp.array[float],
+    actuator_dof_damping: wp.array[float],
     dof_solimp: wp.array[vec5],
     dof_solref: wp.array[wp.vec2],
     # outputs
@@ -2236,6 +2247,8 @@ def update_dof_force_properties_kernel(
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
         dof_damping[world, mjc_dof] = joint_damping[newton_dof]
+        if actuator_dof_damping:
+            dof_damping[world, mjc_dof] += actuator_dof_damping[mjc_dof]
     if dof_solimp:
         dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
     if dof_solref:
@@ -2909,6 +2922,7 @@ def update_tendon_properties_kernel(
     # Newton tendon properties (inputs)
     tendon_stiffness: wp.array[wp.float32],
     tendon_damping: wp.array[wp.float32],
+    actuator_tendon_damping: wp.array[float],
     tendon_frictionloss: wp.array[wp.float32],
     tendon_range: wp.array[wp.vec2],
     tendon_margin: wp.array[wp.float32],
@@ -2948,6 +2962,8 @@ def update_tendon_properties_kernel(
         tendon_stiffness_out[world, mjc_tendon] = tendon_stiffness[newton_tendon]
     if tendon_damping:
         tendon_damping_out[world, mjc_tendon] = tendon_damping[newton_tendon]
+        if actuator_tendon_damping:
+            tendon_damping_out[world, mjc_tendon] += actuator_tendon_damping[mjc_tendon]
     if tendon_frictionloss:
         tendon_frictionloss_out[world, mjc_tendon] = tendon_frictionloss[newton_tendon]
     if tendon_range:

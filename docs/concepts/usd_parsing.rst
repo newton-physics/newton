@@ -523,25 +523,28 @@ colors such as ``srgb_rec709_scene`` are kept as authored.
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on
 the file attribute, and converts linear/raw color textures to display/sRGB when
-they are loaded. Display/sRGB textures stay display-encoded.
+they are loaded. Display/sRGB textures stay display-encoded, as do untagged
+textures, whose ``sourceColorSpace`` is ``auto`` or unset and whose file
+attribute has no color-space metadata or ``auto``.
 
 Gaussian splat spherical-harmonics radiance is resolved from the same
-color-space metadata but with the opposite default: untagged radiance is treated
-as display/sRGB. The supported color-space names are:
+color-space metadata. Untagged radiance is treated as display/sRGB.
 
-* ``srgb``, ``srgb_texture``, ``srgb_rec709_scene``, ``srgb_rec709_display``
-  (and untagged): imported as :attr:`~newton.utils.ColorSpace.SRGB`.
+Scalar colors, textures and Gaussian radiance classify color-space names the
+same way. The supported names are:
+
+* ``srgb``, ``srgb_texture``, ``srgb_rec709_scene``, ``srgb_rec709_display``:
+  display/sRGB (:attr:`~newton.utils.ColorSpace.SRGB`).
   ``srgb_rec709_display`` is a display-referred marker that renderers without
   special handling treat like ``srgb_rec709_scene``.
 * ``lin_rec709_scene``, ``lin_rec709``, ``lin_srgb``, ``raw``, ``data``,
-  ``identity`` and ``linear``: imported as
-  :attr:`~newton.utils.ColorSpace.LINEAR`.
+  ``identity`` and ``linear``: linear (:attr:`~newton.utils.ColorSpace.LINEAR`).
 
 Newton does not convert color primaries or transfer functions. Any other name,
 such as ``lin_ap1_scene``, ``acescg``, ``srgb_ap1_scene`` or
 ``g22_rec709_scene``, is imported as linear if it looks linear (``lin_*`` or
-``acescg``) and as sRGB otherwise, and a warning naming the prim is logged. The
-import itself does not fail.
+``acescg``) and as sRGB otherwise, and a warning naming the prim or attribute
+is logged. The import itself does not fail.
 
 .. note::
 
