@@ -14352,6 +14352,107 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
             atol=1e-6,
         )
 
+    @staticmethod
+    def _define_material_mesh(stage, name: str, color_space: str, *, texture_asset: str | None = None):
+        """Define a mesh bound to a preview surface whose color or texture file is tagged with ``color_space``."""
+        from pxr import Gf, Sdf, UsdGeom, UsdShade
+
+        mesh = UsdGeom.Mesh.Define(stage, f"/World/{name}")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0.0, 0.0, 0.0), Gf.Vec3f(1.0, 0.0, 0.0), Gf.Vec3f(0.0, 1.0, 0.0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        material = UsdShade.Material.Define(stage, f"/World/Looks/{name}")
+        shader = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        color_input = shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+        if texture_asset is None:
+            color_input.Set(Gf.Vec3f(0.25, 0.5, 0.75))
+            color_input.GetAttr().SetColorSpace(color_space)
+        else:
+            texture = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/Albedo")
+            texture.CreateIdAttr("UsdUVTexture")
+            file_input = texture.CreateInput("file", Sdf.ValueTypeNames.Asset)
+            file_input.Set(Sdf.AssetPath(texture_asset))
+            file_input.GetAttr().SetColorSpace(color_space)
+            color_input.ConnectToSource(texture.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+        return mesh.GetPrim()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_acescg_color_and_texture_are_converted_from_linear(self):
+        """Treat ``acescg`` scalar colors and textures as linear and convert them to display/sRGB."""
+        from PIL import Image
+        from pxr import Usd
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        for token in ("acescg", "ACEScg"):
+            with self.subTest(token=token):
+                prim = self._define_material_mesh(stage, f"Color_{token}", token)
+                with self.assertLogs("newton._src.usd.utils", level="WARNING"):
+                    material_props = resolve_material_properties_for_prim(prim)
+                np.testing.assert_allclose(material_props["color"], color_linear_to_srgb((0.25, 0.5, 0.75)), atol=1e-6)
+
+        source_rgba = np.array([[[64, 128, 255, 200]]], dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            texture_path = os.path.join(tmpdir, "acescg.png")
+            Image.fromarray(source_rgba).save(texture_path)
+            prim = self._define_material_mesh(stage, "Texture", "acescg", texture_asset=texture_path)
+            with self.assertLogs("newton._src.usd.utils", level="WARNING"):
+                mesh = usd.get_mesh(prim)
+
+        self.assertIsInstance(mesh.texture, np.ndarray)
+        expected_rgb = np.round(np.asarray(color_linear_to_srgb(source_rgba[0, 0, :3] / 255.0)) * 255.0)
+        np.testing.assert_array_equal(np.asarray(mesh.texture)[0, 0, :3], expected_rgb.astype(np.uint8))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_non_rec709_color_spaces_warn_for_colors_textures_and_gaussians(self):
+        """Log the same warning for scalar colors, textures and Gaussians in spaces Newton does not convert."""
+        from PIL import Image
+        from pxr import Sdf, Usd
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        texture_path = os.path.join(tmpdir.name, "texture.png")
+        Image.fromarray(np.zeros((1, 1, 4), dtype=np.uint8)).save(texture_path)
+
+        stage = Usd.Stage.CreateInMemory()
+        for token in ("lin_ap1_scene", "srgb_ap1_scene"):
+            color_prim = self._define_material_mesh(stage, f"Color_{token}", token)
+            texture_prim = self._define_material_mesh(stage, f"Texture_{token}", token, texture_asset=texture_path)
+            gaussian_prim = stage.DefinePrim(f"/World/Gaussian_{token}", "ParticleField3DGaussianSplat")
+            gaussian_prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+            sh = gaussian_prim.CreateAttribute(
+                "radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array
+            )
+            sh.Set([(0.0, 0.0, 0.0)])
+            sh.SetColorSpace(token)
+
+            for what, load in (
+                ("Color", lambda prim=color_prim: resolve_material_properties_for_prim(prim)),
+                ("Color texture", lambda prim=texture_prim: usd.get_mesh(prim)),
+                ("Gaussian SH radiance", lambda prim=gaussian_prim: newton.Gaussian.create_from_usd(prim)),
+            ):
+                with self.subTest(token=token, what=what):
+                    with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
+                        load()
+                    self.assertEqual(len(logs.output), 1)
+                    self.assertIn(f"{what} of ", logs.output[0])
+                    self.assertIn(f"unsupported color space '{token}'", logs.output[0])
+
+        prim = self._define_material_mesh(stage, "Supported", "lin_rec709_scene")
+        with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+            resolve_material_properties_for_prim(prim)
+        # Omniverse assets tag texture files with ``auto``, which means untagged.
+        prim = self._define_material_mesh(stage, "Auto", "auto", texture_asset=texture_path)
+        with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+            self.assertEqual(usd.get_mesh(prim).texture, texture_path)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=False)
