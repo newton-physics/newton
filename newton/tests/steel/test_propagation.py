@@ -2135,17 +2135,23 @@ def test_kinematic_free_body_is_recorded_as_static(test, device):
 
 
 def test_colored_result_matches_the_immediate_response(test, device):
-    """Settle the heap like the immediate response."""
+    """Settle the heap like the immediate response in either color order."""
+    variants = {
+        "immediate": {"articulated_contact_response": "immediate"},
+        "contact": {"propagation_color_order": "contact"},
+        "longest_first": {"propagation_color_order": "longest_first"},
+    }
     finals = {}
-    for response in ("propagation_colored", "immediate"):
+    for name, options in variants.items():
         model = _heap(device, nx=4, ny=4, nz=2)
-        solver = _colored_solver(model, articulated_contact_response=response, row_watermark=True)
+        solver = _colored_solver(model, row_watermark=True, **options)
         state, _ = _settle(model, solver, steps=24)
         test.assertEqual(solver.constraint_row_watermarks()["free_body_dropped_contact_rows_high_water"], 0)
-        finals[response] = state.body_q.numpy()[:, :3]
+        finals[name] = state.body_q.numpy()[:, :3]
     test.assertTrue(np.isfinite(finals["immediate"]).all())
     # A different sweep order, so the heights agree only to a tolerance.
-    test.assertLess(float(np.max(np.abs(finals["propagation_colored"][:, 2] - finals["immediate"][:, 2]))), 0.01)
+    for name in ("contact", "longest_first"):
+        test.assertLess(float(np.max(np.abs(finals[name][:, 2] - finals["immediate"][:, 2]))), 0.01, name)
 
 
 def test_coloring_is_deterministic_for_a_fixed_contact_set(test, device):
