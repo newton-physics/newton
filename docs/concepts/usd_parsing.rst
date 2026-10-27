@@ -237,7 +237,8 @@ The first release deliberately supports a narrow, predictable set of inputs:
   A cable's ``restShapePoints`` may affect material-gain discretization but never establishes an
   initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any
-  geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
+  geometry: hard cable-to-xform attachments, hard, coincident cable-to-cable junctions, and
+  finite-stiffness cloth/volume ``point`` to rigid-body ``xform`` attachments.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
   of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
   an empty counts array selects all elements). Cloth and volume element sources warn and are
@@ -257,7 +258,7 @@ Anything outside this set warns and is skipped, or is recorded as unsupported in
 attributes. It never silently becomes a different physical model. In particular: disabled
 (``physics:bodyEnabled = false``) and kinematic (``physics:kinematicEnabled = true``)
 deformables are skipped, malformed topology or curves are skipped, and compliant
-(finite-stiffness) attachments and non-coincident cable junctions are kept as data but not
+(finite-stiffness) cable attachments and non-coincident cable junctions are kept as data but not
 imported. Dynamic and static friction belong to collision geometry and are not mapped onto
 the deformable collision approximation yet.
 
@@ -277,10 +278,16 @@ Known gaps of the experimental importer, tracked as follow-ups:
   is still built relaxed at the default-time ``points`` pose, and mass distribution also uses
   that geometry. A body saved in a deformed pose therefore resumes relaxed at that pose instead
   of springing back.
-* **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
-  preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
-  hardening them would change the authored physics); only hard attachments (unauthored or
-  infinite stiffness; damping does not affect hardness) become joints.
+* **Springy cable attachments** -- cable attachments with a finite stiffness are not simulated.
+  They are preserved in ``path_attachment_attrs`` with their authored stiffness and damping
+  (silently hardening them would change the authored physics); only hard cable attachments
+  (unauthored or infinite stiffness; damping does not affect hardness) become joints.
+* **Hard cloth/volume attachments** -- Newton's body-particle attachments are compliant.
+  Cloth or volume attachments with unauthored or infinite stiffness warn and are preserved in
+  ``path_attachment_attrs`` with an ``unsupported_reason``; no attachment is created. Author a
+  finite stiffness to request a compliant attachment. Only ``point`` sites attached to an
+  ``xform`` under an imported rigid body are imported; other site types and targets with no
+  rigid body (static xforms, the world) also warn and are preserved.
 * **Body state** -- ``startsAsleep`` and ``simulationOwner`` are not read. Kinematic
   deformables are skipped rather than simulated.
 * **Per-element materials** -- ``GeomSubset`` physics material bindings warn and are
@@ -354,9 +361,24 @@ The joint connects the cable segment body (for an interior cable point, one flan
 body -- each site is a single point-point constraint) to the target: an xform, a rigid body
 (kinematic bodies included), or the world frame. The created joints are returned in
 ``path_attachment_map``. Every parsed attachment, including unsupported ones, is described in
-``path_attachment_attrs``. A finite attachment stiffness cannot be represented yet, so
-compliant attachments warn and are preserved as metadata instead of becoming joints. Attachments on cloth or volume sites warn and are kept in
-``path_attachment_attrs`` until Newton has a constraint for them.
+``path_attachment_attrs``. A finite cable attachment stiffness cannot be represented yet, so
+compliant cable attachments warn and are preserved as metadata instead of becoming joints.
+
+When ``src0`` is an imported cloth or volume deformable, ``type0`` is ``point``, ``type1`` is
+``xform`` under an imported rigid body, and stiffness is finite, each ``indices0`` simulation
+point becomes one body-particle attachment (see
+:meth:`~newton.ModelBuilder.add_attachment_body_particle`) to the ``coords1`` anchor in the
+``src1`` xform frame. The authored stiffness, damping, and ``attachmentEnabled`` state are kept,
+including disabled attachments and zero stiffness. The created attachment indices are listed
+under ``attachment_body_particle_indices`` in that prim's ``path_attachment_attrs`` entry.
+Hard attachments (unauthored or infinite stiffness) warn and are preserved as unsupported
+metadata instead of becoming compliant springs.
+
+For these experimental cloth/volume attachments, Newton interprets finite
+``physics:stiffness`` as a point-spring stiffness [N/m] and ``physics:damping`` as an absolute
+damping coefficient [N·s/m], matching the builder API. The pinned proposal describes attachment
+stiffness in force/area units; that dimensional discrepancy remains unresolved. The importer
+preserves the authored numeric values and does not derive an area-dependent conversion.
 
 A ``point``->``point`` attachment between two imported cables can be a weld. Welding happens
 only when the attachment is **hard** (no authored stiffness, or infinite; authored damping

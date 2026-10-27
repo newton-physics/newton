@@ -4,6 +4,7 @@
 """USD attachment / element-collision-filter import passes.
 
 Lowers ``PhysicsAttachment`` prims onto imported cables (as ball joints to xform targets) and
+cloth/volume particles (as body-particle attachments to rigid bodies), and lowers
 ``PhysicsElementCollisionFilter`` prims to shape collision-filter pairs, plus the post-collapse
 index remap. Driven by :func:`.import_usd.parse_usd` via a
 :class:`.import_usd_deformable_utils._DeformableImportContext`.
@@ -33,9 +34,11 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
     """Lower supported AOUSD ``PhysicsAttachment`` prims onto the imported cables.
 
     Cable ``point`` / ``segment`` sites with ``type1 = "xform"`` become hard ball joints to the
-    target xform / rigid body / world frame (``path_attachment_map``); curve-to-curve junctions
-    already consumed as rod-graph topology are skipped, and unsupported sites (cloth/volume source,
-    non-xform target, ...) are warned and preserved in ``path_attachment_attrs``.
+    target xform / rigid body / world frame (``path_attachment_map``); cloth/volume
+    ``point`` sites on a rigid-body ``xform`` become body-particle attachments; curve-to-curve
+    junctions already consumed as rod-graph topology are skipped, and unsupported sites (non-xform
+    target, cloth/volume attachment to the world, ...) are warned and preserved in
+    ``path_attachment_attrs``.
     """
     from ..usd import utils as usd  # noqa: PLC0415
 
@@ -110,7 +113,8 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
                 f"invalid PhysicsAttachment scalar {details} (expected a numeric scalar); preserved as metadata.",
             )
             continue
-        if not enabled:
+        is_particle_source = src0 in path_cloth_map or src0 in path_soft_map
+        if not enabled and not is_particle_source:
             continue
         # The proposal gives attachment stiffness the range [0, inf] with +inf meaning hard
         # (the -inf sentinel belongs to deformable materials) and damping the range [0, inf).
@@ -123,20 +127,30 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
                 f"expected stiffness in [0, inf] and finite damping >= 0; preserved as metadata.",
             )
             continue
+        if is_particle_source:
+            particle_range = (path_cloth_map.get(src0) or path_soft_map[src0])["particle"]
+            _import_particle_attachment(
+                ctx,
+                path,
+                attrs,
+                src1,
+                type0,
+                type1,
+                indices0,
+                indices1,
+                coords1,
+                particle_range,
+                stiffness,
+                damping,
+                enabled,
+            )
+            continue
         if src0 not in path_cable_segments:
-            if src0 in path_cloth_map or src0 in path_soft_map:
-                _mark_attachment_unsupported(
-                    attrs,
-                    path,
-                    "PhysicsAttachment on cloth/volume deformables is parsed but not imported yet; "
-                    "Newton needs a deformable-site attachment constraint for this source type.",
-                )
-            else:
-                _mark_attachment_unsupported(
-                    attrs,
-                    path,
-                    f"physics:src0 target '{src0}' is not an imported cable deformable; skipping.",
-                )
+            _mark_attachment_unsupported(
+                attrs,
+                path,
+                f"physics:src0 target '{src0}' is not an imported cable deformable; skipping.",
+            )
             continue
         if type0 not in ("point", "segment"):
             _mark_attachment_unsupported(
@@ -237,6 +251,115 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
             attrs["joint_indices"] = list(joints)
             if verbose:
                 print(f"Added PhysicsAttachment {path} with {len(joints)} joint(s).")
+
+
+def _import_particle_attachment(
+    ctx: _DeformableImportContext,
+    path: str,
+    attrs: dict[str, Any],
+    src1: str,
+    type0: str,
+    type1: str,
+    indices0: list[int],
+    indices1: list[int],
+    coords1: list[wp.vec3],
+    particle_range: tuple[int, int],
+    stiffness: float,
+    damping: float,
+    enabled: bool,
+) -> None:
+    """Lower a cloth/volume ``point`` -> rigid-body ``xform`` attachment to body-particle attachments.
+
+    Each ``indices0`` simulation point becomes one compliant attachment, with the authored enabled
+    state, from its particle to the ``coords1`` anchor in the ``src1`` xform frame. Hard
+    (infinite-stiffness) attachments, other site types, and targets without a rigid body are
+    preserved in ``attrs`` as unsupported.
+    """
+    if type0 != "point":
+        _mark_attachment_unsupported(
+            attrs,
+            path,
+            f"PhysicsAttachment type0='{type0}' is not supported for cloth/volume deformables; "
+            "only 'point' sites are imported.",
+        )
+        return
+    if type1 != "xform":
+        _mark_attachment_unsupported(
+            attrs,
+            path,
+            f"PhysicsAttachment type1='{type1}' is not supported for cloth/volume deformables; "
+            "only rigid-body 'xform' targets are imported.",
+        )
+        return
+    if indices1:
+        _mark_attachment_unsupported(attrs, path, "PhysicsAttachment type1='xform' must not author indices1; skipping.")
+        return
+    if not indices0:
+        _mark_attachment_unsupported(attrs, path, "PhysicsAttachment has no indices0 attachment sites; skipping.")
+        return
+    if coords1 and len(coords1) != len(indices0):
+        _mark_attachment_unsupported(
+            attrs,
+            path,
+            f"PhysicsAttachment coords1 length {len(coords1)} does not match indices0 length "
+            f"{len(indices0)} for xform sites; skipping.",
+        )
+        return
+    p0, p1 = particle_range
+    bad_indices = [i for i in indices0 if i < 0 or i >= p1 - p0]
+    if bad_indices:
+        _mark_attachment_unsupported(
+            attrs,
+            path,
+            f"PhysicsAttachment indices0 {bad_indices} are out of range for {p1 - p0} simulation points; skipping.",
+        )
+        return
+    if not coords1:
+        coords1 = [wp.vec3(0.0, 0.0, 0.0) for _ in indices0]
+
+    targets = []
+    for coord1 in coords1:
+        target_info = _resolve_attachment_target(ctx, src1, coord1)
+        if target_info is None or target_info[0] < 0:
+            _mark_attachment_unsupported(
+                attrs,
+                path,
+                f"physics:src1 target '{src1}' is not an imported rigid body; cloth/volume attachments "
+                "to static xforms or the world are not supported.",
+            )
+            return
+        if not all(math.isfinite(c) for c in target_info[1]):
+            _mark_attachment_unsupported(
+                attrs,
+                path,
+                "PhysicsAttachment anchor coordinates must be finite; preserved as metadata, no attachment created.",
+            )
+            return
+        targets.append(target_info)
+
+    if not math.isfinite(stiffness):
+        _mark_attachment_unsupported(
+            attrs,
+            path,
+            "hard (infinite-stiffness) PhysicsAttachment is not supported for cloth/volume deformables; "
+            "only finite stiffness is imported. Preserved as metadata, no attachment created.",
+        )
+        return
+
+    attachments = [
+        ctx.builder.add_attachment_body_particle(
+            body,
+            p0 + src_index,
+            body_point=body_point,
+            stiffness=stiffness,
+            damping=damping,
+            enabled=enabled,
+        )
+        for src_index, (body, body_point) in zip(indices0, targets, strict=True)
+    ]
+    attrs["attachment_body_particle_indices"] = attachments
+    if ctx.verbose:
+        print(f"Added PhysicsAttachment {path} with {len(attachments)} body-particle attachment(s).")
 
 
 def _deformable_remap_collapsed(

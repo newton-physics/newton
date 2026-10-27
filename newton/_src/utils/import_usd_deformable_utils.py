@@ -664,15 +664,6 @@ def _deformable_body_skip_reason(prim: Usd.Prim, read_attr: Callable) -> str | N
     return None
 
 
-def _builder_body_xform(builder: ModelBuilder, body_id: int) -> wp.transform:
-    """Return body ``body_id``'s current world transform from the builder's ``body_q``."""
-    body_q = builder.body_q[body_id]
-    return wp.transform(
-        wp.vec3(float(body_q[0]), float(body_q[1]), float(body_q[2])),
-        wp.quat(float(body_q[3]), float(body_q[4]), float(body_q[5]), float(body_q[6])),
-    )
-
-
 def _resolve_attachment_target(
     ctx: _DeformableImportContext, target_path: str, local_point: wp.vec3
 ) -> tuple[int, wp.vec3] | None:
@@ -694,7 +685,8 @@ def _resolve_attachment_target(
     body = ctx.path_body_map.get(body_path)
     if body is None:
         return None
-    body_point = wp.transform_point(wp.transform_inverse(_builder_body_xform(ctx.builder, body)), world_point)
+    # The source body pose shares the target's USD world frame; the builder pose may be rebased.
+    body_point = wp.transform_point(wp.transform_inverse(ctx.body_source_xforms[body_path]), world_point)
     return body, body_point
 
 
@@ -1397,6 +1389,8 @@ class _DeformableImportContext:
     ignore_paths: Sequence[str]
     verbose: bool
     path_body_map: dict
+    body_source_xforms: dict[str, wp.transform]
+    """USD physics body poses after the import transform, before articulation-root rebasing."""
     path_shape_map: dict
     path_cable_map: dict
     path_cable_attrs: dict

@@ -412,7 +412,7 @@ def parse_usd(
             * - ``"path_attachment_map"``
               - Mapping from prim path (str) of a supported ``PhysicsAttachment`` prim to the created joint indices. Curve-to-curve ``point``->``point`` junctions are consumed as rod-graph topology and are absent from this mapping. Present only with ``return_deformable_results=True``.
             * - ``"path_attachment_attrs"``
-              - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
+              - Mapping from prim path (str) of a ``PhysicsAttachment`` prim to its parsed, solver-neutral attributes and any unsupported reason. Imported cloth/volume attachments list their body-particle attachment indices under ``"attachment_body_particle_indices"``. Junctions consumed as rod-graph topology are absent here as well. Present only with ``return_deformable_results=True``.
             * - ``"mass_unit"``
               - The stage's Kilograms Per Unit (KGPU) definition (1.0 by default)
             * - ``"linear_unit"``
@@ -1631,6 +1631,12 @@ def parse_usd(
         ignore_paths=ignore_paths,
         verbose=verbose,
         path_body_map=path_body_map,
+        body_source_xforms={
+            path: incoming_world_xform * wp.transform(desc.position, usd.value_to_warp(desc.rotation))
+            for path, desc in body_specs.items()
+        }
+        if _deformable_prims.attachments
+        else {},
         path_shape_map=path_shape_map,
         path_cable_map=path_cable_map,
         path_cable_attrs=path_cable_attrs,
