@@ -332,7 +332,10 @@ The picking behind right-click dragging is a :class:`~newton.viewer.Picking` con
 ``viewer.picking``. Applications with their own input handling or renderer can create one directly,
 call :meth:`~newton.viewer.Picking.pick`, :meth:`~newton.viewer.Picking.update`, and
 :meth:`~newton.viewer.Picking.release` from their cursor events, and call
-:meth:`~newton.viewer.Picking.apply_force` before each solver step.
+:meth:`~newton.viewer.Picking.apply_force` before each solver step. To drive the target from a 3D input
+such as a gizmo, assign :attr:`~newton.viewer.Picking.pick_target` instead of calling ``update()``.
+Tune the spring through :attr:`~newton.viewer.Picking.pick_stiffness` and
+:attr:`~newton.viewer.Picking.pick_damping`, for example ``viewer.picking.pick_stiffness = 200.0``.
 
 :meth:`~newton.viewer.ViewerGL.is_key_down` queries whether a key is currently pressed.
 Keys can be specified as single-character strings (``'w'``), special key names (``'space'``, ``'escape'``), or pyglet key constants:

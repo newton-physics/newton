@@ -15,6 +15,13 @@ from ..sim.articulation import eval_articulation_jacobian
 from .kernels import PickingState, apply_picking_force_kernel, compute_pick_state_kernel, update_pick_target_kernel
 
 
+def _validate_max_acceleration(value: float) -> float:
+    value = float(value)
+    if not math.isfinite(value) or value < 0.0:
+        raise ValueError("Picking maximum acceleration must be finite and nonnegative.")
+    return value
+
+
 def _rotation_matrix(X: np.ndarray) -> np.ndarray:
     """Return the rotation of a transform stored as ``(px, py, pz, qx, qy, qz, qw)``."""
     return np.array(wp.quat_to_matrix(wp.quat(*X[3:])), dtype=np.float64).reshape(3, 3)
@@ -49,24 +56,26 @@ class Picking:
         picking.apply_force(state)
         solver.step(state, state_next, control, contacts, dt)
 
-    Kinematic bodies cannot be picked.
+    To drive the target from a 3D input such as a gizmo, assign :attr:`pick_target`
+    instead of calling :meth:`update`. Read :attr:`pick_point` and :attr:`pick_target`
+    to draw the spring. Kinematic bodies cannot be picked.
     """
 
     def __init__(
         self,
-        model: newton.Model | None,
+        model: newton.Model,
         *,
         pick_stiffness: float = 500.0,
         pick_damping: float = 45.0,
         pick_max_acceleration: float = 5.0,
         world_offsets: wp.array[wp.vec3] | None = None,
+        visible_worlds_mask: wp.array[int] | None = None,
     ) -> None:
         r"""
-        Initializes the picking system. All parameters are fixed at construction.
+        Initializes the picking system.
 
         Args:
-            model: The model to pick from. ``None`` creates an inactive controller whose
-                methods do nothing.
+            model: The model to pick from.
             pick_stiffness: Stiffness of the picking spring, in acceleration per unit
                 displacement [1/s^2]. The commanded acceleration is mapped to a force
                 through the operational-space inertia at the pick point, so gains are
@@ -81,51 +90,111 @@ class Picking:
             world_offsets: Per-world visual offsets [m], shape [world_count]. Rays are
                 given in the offset (rendered) space, and the offsets are removed before
                 the spring is applied in simulation space. ``None`` means no offsets.
+            visible_worlds_mask: Per-world mask, shape [world_count]; rays only hit shapes in
+                worlds whose entry is nonzero. ``None`` makes every world pickable.
 
         Raises:
             ValueError: If ``pick_max_acceleration`` is negative or non-finite.
         """
-        pick_max_acceleration = float(pick_max_acceleration)
-        if not math.isfinite(pick_max_acceleration) or pick_max_acceleration < 0.0:
-            raise ValueError("Picking maximum acceleration must be finite and nonnegative.")
+        pick_max_acceleration = _validate_max_acceleration(pick_max_acceleration)
 
         self.model = model
         """The model whose bodies are picked."""
         self.world_offsets = world_offsets
         """Per-world visual offsets [m], shape [world_count], or ``None``; see the constructor."""
-        self.visible_worlds_mask: wp.array[int] | None = None
-        """Optional per-world mask, shape [world_count]; rays only hit shapes in worlds whose entry is
-        nonzero. ``None`` makes every world pickable."""
+        self.visible_worlds_mask = visible_worlds_mask
+        """Per-world pick mask, shape [world_count], or ``None``; see the constructor."""
 
         self._min_dist = None
         self._min_index = None
         self._min_body_index = None
         self._lock = None
 
-        # picking state
-        if model and model.device.is_cuda:
-            self.pick_body = wp.array([-1], dtype=int, pinned=True, device=model.device)
-        else:
-            self.pick_body = wp.array([-1], dtype=int, device="cpu")
-        """Index of the picked body, shape [1], or -1 when nothing is picked."""
+        # Device-side sentinel read by apply_force(), so captured graphs see pick changes.
+        self._pick_body = wp.array([-1], dtype=int, device=model.device)
 
         pick_state_np = np.empty(1, dtype=PickingState.numpy_dtype())
         pick_state_np[0]["pick_stiffness"] = pick_stiffness
         pick_state_np[0]["pick_damping"] = pick_damping
         pick_state_np[0]["pick_max_acceleration"] = pick_max_acceleration
-        self._pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
+        self._pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device, ndim=1)
 
         self._picking_active = False
 
         # Operational-space inertia at the pick point in the picked body's frame, set on every pick.
-        self._pick_os_inertia = wp.zeros(1, dtype=wp.mat33, device=model.device if model else "cpu")
+        self._pick_os_inertia = wp.zeros(1, dtype=wp.mat33, device=model.device)
         # Single-articulation Jacobian scratch, allocated on the first articulated pick.
         self._jacobian = None
         self._joint_S_s = None
-        if model is not None:
-            self._init_topology(model)
-        else:
-            self._pick_effective_mass = wp.zeros(1, dtype=float)
+        self._init_topology(model)
+
+    @property
+    def pick_stiffness(self) -> float:
+        """Stiffness of the picking spring [1/s^2]; see the constructor."""
+        return float(self._pick_state.numpy()[0]["pick_stiffness"])
+
+    @pick_stiffness.setter
+    def pick_stiffness(self, value: float) -> None:
+        self._set_pick_state_field("pick_stiffness", float(value))
+
+    @property
+    def pick_damping(self) -> float:
+        """Damping of the picking spring [1/s]; see the constructor."""
+        return float(self._pick_state.numpy()[0]["pick_damping"])
+
+    @pick_damping.setter
+    def pick_damping(self, value: float) -> None:
+        self._set_pick_state_field("pick_damping", float(value))
+
+    @property
+    def pick_max_acceleration(self) -> float:
+        """Picking limit in multiples of g; see the constructor.
+
+        Raises:
+            ValueError: If set to a negative or non-finite value.
+        """
+        return float(self._pick_state.numpy()[0]["pick_max_acceleration"])
+
+    @pick_max_acceleration.setter
+    def pick_max_acceleration(self, value: float) -> None:
+        self._set_pick_state_field("pick_max_acceleration", _validate_max_acceleration(value))
+
+    @property
+    def pick_body(self) -> int:
+        """Index of the picked body, or -1 when nothing is picked."""
+        return int(self._pick_body.numpy()[0])
+
+    @property
+    def pick_point(self) -> wp.vec3 | None:
+        """Attachment point on the picked body as of the last :meth:`apply_force`, in simulation space [m].
+
+        ``None`` when nothing is picked.
+        """
+        if not self.is_picking():
+            return None
+        return wp.vec3(*self._pick_state.numpy()[0]["picked_point_world"])
+
+    @property
+    def pick_target(self) -> wp.vec3 | None:
+        """Point the spring pulls toward, in simulation space [m], or ``None`` when nothing is picked.
+
+        Assign it to drive the target from a 3D input instead of :meth:`update`; the assignment is
+        ignored when nothing is picked.
+        """
+        if not self.is_picking():
+            return None
+        return wp.vec3(*self._pick_state.numpy()[0]["picking_target_world"])
+
+    @pick_target.setter
+    def pick_target(self, target: wp.vec3) -> None:
+        if self.is_picking():
+            self._set_pick_state_field("picking_target_world", target)
+
+    def _set_pick_state_field(self, name: str, value) -> None:
+        # Writes in place, so CUDA graphs that captured apply_force() see the change.
+        pick_state = self._pick_state.numpy()
+        pick_state[0][name] = value
+        self._pick_state.assign(pick_state)
 
     def apply_force(self, state: newton.State) -> None:
         """Add the picking spring's force and torque to the picked body.
@@ -139,13 +208,7 @@ class Picking:
             state: The simulation state to read the picked body's pose and
                 velocity from and add the force to.
         """
-        if (
-            self.model is None
-            or self.model.body_count == 0
-            or state.body_q is None
-            or state.body_qd is None
-            or state.body_f is None
-        ):
+        if self.model.body_count == 0 or state.body_q is None or state.body_qd is None or state.body_f is None:
             return
 
         # Launch kernel always because of graph capture
@@ -156,7 +219,7 @@ class Picking:
                 state.body_q,
                 state.body_qd,
                 state.body_f,
-                self.pick_body,
+                self._pick_body,
                 self._pick_state,
                 self.model.body_flags,
                 self.model.body_com,
@@ -302,8 +365,6 @@ class Picking:
 
     def _load_kernels(self) -> None:
         """Compile every Warp module picking launches, so the first pick does not stall."""
-        if self.model is None:
-            return
         device = self.model.device
         wp.load_module(module=raycast, device=device)
         wp.load_module(module="newton._src.viewer.kernels", device=device)
@@ -321,7 +382,7 @@ class Picking:
 
     def release(self) -> None:
         """Release the picked body so :meth:`apply_force` stops applying a force."""
-        self.pick_body.fill_(-1)
+        self._pick_body.fill_(-1)
         self._picking_active = False
 
     def update(self, ray_start: wp.vec3f, ray_dir: wp.vec3f) -> None:
@@ -340,7 +401,7 @@ class Picking:
         world_offset = wp.vec3(0.0, 0.0, 0.0)
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
             # Get the picked body index
-            picked_body_idx = self.pick_body.numpy()[0]
+            picked_body_idx = self._pick_body.numpy()[0]
             if picked_body_idx >= 0 and self.model.body_world is not None:
                 # Find which world this body belongs to
                 body_world_idx = self.model.body_world.numpy()[picked_body_idx]
@@ -374,8 +435,6 @@ class Picking:
             ray_dir: Unit ray direction in the offset (rendered) space.
         """
         self.release()
-        if self.model is None:
-            return
 
         p, d = ray_start, ray_dir
 
@@ -458,12 +517,12 @@ class Picking:
                 kernel=compute_pick_state_kernel,
                 dim=1,
                 inputs=[state.body_q, self.model.body_flags, body_index, hit_point_world],
-                outputs=[self.pick_body, self._pick_state],
+                outputs=[self._pick_body, self._pick_state],
                 device=self.model.device,
             )
 
-            picked = int(self.pick_body.numpy()[0])
+            picked = int(self._pick_body.numpy()[0])
             if picked >= 0:
                 self._update_os_inertia(state, picked, hit_point_world)
 
-        self._picking_active = self.pick_body.numpy()[0] >= 0
+        self._picking_active = self._pick_body.numpy()[0] >= 0

@@ -1259,7 +1259,7 @@ void main() {
             else:
                 self.camera.pos = PyVec3(0.0, 2.0, 10.0)
 
-        self.picking = Picking(model, world_offsets=self.world_offsets)
+        self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
         self.wind = Wind(model)
 
         if model is not None:
@@ -1611,22 +1611,16 @@ void main() {
                 self._hide_picking_line()
             return
 
-        pick_body_idx = self.picking.pick_body.numpy()[0]
-        if pick_body_idx < 0:
-            if self._phase == self._PHASE_RENDER:
-                self._hide_picking_line()
-            return
-
-        pick_state = self.picking._pick_state.numpy()
-        pick_target = pick_state[0]["picking_target_world"]
-        picked_point = pick_state[0]["picked_point_world"]
+        pick_body_idx = self.picking.pick_body
+        pick_target = self.picking.pick_target
+        picked_point = self.picking.pick_point
 
         body_world = self.model.body_world if self.model is not None else None
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
             if body_world is not None:
                 body_world_idx = body_world.numpy()[pick_body_idx]
                 if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
-                    world_offset = self.world_offsets.numpy()[body_world_idx]
+                    world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
                     pick_target = pick_target + world_offset
                     picked_point = picked_point + world_offset
 
