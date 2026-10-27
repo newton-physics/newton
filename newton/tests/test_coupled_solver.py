@@ -1659,22 +1659,36 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(solver_b.joint_target_q[0], np.array([13.0], dtype=np.float32))
 
     def test_compacted_joint_targets_use_local_layout(self):
-        """Joint targets and their derived starts should use compact layout."""
+        """Keep joint targets and FK traversal in the compact joint layout."""
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                self._check_compacted_joint_layout(device)
+
+    def _check_compacted_joint_layout(self, device):
+        """Check compact properties and FK using a child-first articulation."""
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         free_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         free_joint = builder.add_joint_free(child=free_body)
-        builder.add_articulation([free_joint])
+        fixed_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        fixed_joint = builder.add_joint_fixed(parent=free_body, child=fixed_body)
+        builder.add_articulation([free_joint, fixed_joint])
         first_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        first_joint = builder.add_joint_revolute(parent=-1, child=first_body, axis=(0.0, 0.0, 1.0))
         second_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         second_joint = builder.add_joint_revolute(
             parent=first_body,
             child=second_body,
             axis=(0.0, 1.0, 0.0),
+            parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([first_joint, second_joint])
-        model = builder.finalize(device="cpu")
+        first_joint = builder.add_joint_revolute(
+            parent=-1,
+            child=first_body,
+            axis=(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([second_joint, first_joint])
+        model = builder.finalize(device=device)
         model.joint_target_q.assign(np.arange(model.joint_coord_count, dtype=np.float32))
 
         coupled = SolverCoupled(
@@ -1690,7 +1704,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         view = coupled.view("revolute")
 
-        np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
+        np.testing.assert_array_equal(view.joint_ancestor.numpy(), [1, -1])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [7.0, 8.0])
         self.assertIsNotNone(model._fk_articulation_level_start)
@@ -1700,6 +1714,19 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertIsNone(view._fk_level_joints)
         self.assertIsNone(view._fk_level_parent_pos)
         self.assertEqual(view._fk_level_capacity, 0)
+
+        state = view.state()
+        state.joint_q.zero_()
+        state.joint_qd.assign([2.0, 1.0])
+        expected_q = [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], [1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0]]
+        expected_qd = [[0.0, 0.0, 0.0, 0.0, 0.0, 1.0], [-2.0, 0.0, 0.0, 0.0, 2.0, 1.0]]
+        for joint_mask in (None, wp.array([True, True], dtype=wp.bool, device=device)):
+            with self.subTest(masked=joint_mask is not None):
+                state.body_q.assign(view.body_q)
+                state.body_qd.zero_()
+                newton.eval_fk(view, state.joint_q, state.joint_qd, state, joint_mask=joint_mask)
+                np.testing.assert_allclose(state.body_q.numpy(), expected_q, atol=1.0e-6)
+                np.testing.assert_allclose(state.body_qd.numpy(), expected_qd, atol=1.0e-6)
 
         model.joint_target_q.assign(10.0 + np.arange(model.joint_coord_count, dtype=np.float32))
         model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))
