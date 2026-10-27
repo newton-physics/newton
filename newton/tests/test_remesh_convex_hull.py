@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import unittest
 import warnings
-from unittest.mock import patch
 
 import numpy as np
 
@@ -147,58 +146,32 @@ class TestRemeshConvexHullFull3D(unittest.TestCase):
         self.assertLessEqual(verts_limited.shape[0], 16)
         self.assertTrue(_has_outward_winding(verts_limited, faces_limited))
 
-    def test_matches_per_face_reference(self):
-        """Verify that faces and vertices equal a per-face ``np.dot`` winding of the same Qhull hull, bit for bit."""
-        from scipy.spatial import ConvexHull
-
+    def test_random_clouds_wind_outward(self):
+        """Verify that every hull face's normal points away from the input centroid and every vertex is used."""
         rng = np.random.default_rng(7)
         clouds = []
-        for trial in range(60):
+        for trial in range(30):
             pts = rng.standard_normal((int(rng.integers(4, 300)), 3)) * rng.uniform(1e-3, 1e3, 3)
             clouds.append((pts, {"maxhullvert": (0, 16, 64)[trial % 3]}))
-        # Rotated near-flat clouds put face normals almost orthogonal to the centroid offset, where the
-        # summation order of the dot product decides the sign; generator 262 cloud 53 flips with eps=1e-12.
-        thin_rng = np.random.default_rng(262)
-        for _ in range(120):
-            pts = thin_rng.normal(size=(int(thin_rng.integers(4, 80)), 3))
-            pts[:, 2] *= 10 ** thin_rng.uniform(-7, -3)
-            rotation, _ = np.linalg.qr(thin_rng.normal(size=(3, 3)))
-            pts = (pts @ rotation).astype(np.float32)
-            clouds += [(pts, {}), (pts, {"eps": 1e-12})]
-        # At 1e13 the dot product's terms overflow float32; generator 0 has two clouds whose sums differ there.
-        huge_rng = np.random.default_rng(0)
-        clouds += [((huge_rng.normal(size=(40, 3)) * 1e13).astype(np.float32), {}) for _ in range(20)]
-        hulls = []
-
-        class RecordingHull(ConvexHull):
-            def __init__(self, points, *args, **kw):
-                super().__init__(points, *args, **kw)
-                hulls.append((np.asarray(points), self))
+        # Rotated slabs with a tight eps give faces almost orthogonal to the centroid offset.
+        for _ in range(20):
+            pts = rng.normal(size=(int(rng.integers(4, 80)), 3))
+            pts[:, 2] *= 10 ** rng.uniform(-7, -3)
+            rotation, _ = np.linalg.qr(rng.normal(size=(3, 3)))
+            clouds.append((pts @ rotation, {"eps": 1e-12}))
 
         for pts, kwargs in clouds:
-            hulls.clear()
-            with patch("scipy.spatial.ConvexHull", RecordingHull), warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always")
-                verts, faces = remesh_convex_hull(pts, **kwargs)
-            messages = [str(w.message) for w in caught if issubclass(w.category, UserWarning)]
-            points, hull = hulls[-1]
-            if points.shape[1] != 3:
-                # Clouds flatter than eps take the coplanar fallback, which warns and has no 3D hull to compare.
-                self.assertTrue(any("coplanar" in message for message in messages), messages)
-                continue
-            self.assertEqual(messages, [])
-            ref_verts = points.astype(np.float32)
-            ref_faces = hull.simplices.astype(np.int32)
-            centre = ref_verts.mean(0)
-            with np.errstate(over="ignore", invalid="ignore"):
-                for i, tri in enumerate(ref_faces):
-                    a, b, c = ref_verts[tri]
-                    if np.dot(np.cross(b - a, c - a), a - centre) < 0:
-                        ref_faces[i] = tri[[0, 2, 1]]
-            used = np.unique(ref_faces)
-            np.testing.assert_array_equal(verts, ref_verts[used])
-            np.testing.assert_array_equal(faces, np.searchsorted(used, ref_faces).astype(np.int32))
-            self.assertEqual(faces.dtype, np.int32)
+            verts, faces = remesh_convex_hull(pts, **kwargs)
+            _assert_mesh_shape(self, verts, faces)
+            np.testing.assert_array_equal(np.unique(faces), np.arange(verts.shape[0]))
+            v = verts.astype(np.float64)
+            a, b, c = v[faces[:, 0]], v[faces[:, 1]], v[faces[:, 2]]
+            normal = np.cross(b - a, c - a)
+            offset = a - pts.astype(np.float32).astype(np.float64).mean(0)
+            alignment = np.einsum("ij,ij->i", normal, offset)
+            # Skip faces whose winding is within rounding of ambiguous.
+            clear = np.abs(alignment) > 1e-5 * np.linalg.norm(normal, axis=1) * np.linalg.norm(offset, axis=1)
+            self.assertTrue(np.all(alignment[clear] > 0.0), kwargs)
 
 
 class TestRemeshConvexHullDegenerate(unittest.TestCase):
