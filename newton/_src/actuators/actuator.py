@@ -508,7 +508,7 @@ class Actuator:
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
         if motor is not None:
-            motor.finalize(self.device, self.num_actuators)
+            motor.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
 
         self._effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
 
@@ -693,7 +693,11 @@ class Actuator:
 
     def is_graphable(self) -> bool:
         """Return True if all components can be captured in a CUDA graph."""
-        return all(p.is_graphable() for p in self.input_processors) and self._effort_mode.is_graphable()
+        return (
+            all(p.is_graphable() for p in self.input_processors)
+            and (self.motor is None or self.motor.is_graphable())
+            and self._effort_mode.is_graphable()
+        )
 
     def state(self) -> Actuator.State | None:
         """Return a new composed state, or None if fully stateless."""

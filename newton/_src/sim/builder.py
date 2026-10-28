@@ -3384,6 +3384,14 @@ class ModelBuilder:
         if motor is not None:
             motor_class, motor_kwargs = motor
             resolved_motor = motor_class.resolve_arguments(motor_kwargs)
+            unrecognized = set(motor_kwargs) - set(resolved_motor)
+            if unrecognized:
+                warnings.warn(
+                    f"add_actuator: {motor_class.__name__} ignoring "
+                    f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
             motor_shared_names = getattr(motor_class, "SHARED_PARAMS", set())
             motor_shared = {k: resolved_motor[k] for k in motor_shared_names if k in resolved_motor}
             motor_array_params = {k: v for k, v in resolved_motor.items() if k not in motor_shared_names}

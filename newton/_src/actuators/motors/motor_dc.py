@@ -98,8 +98,16 @@ class MotorDC(MotorBase):
             k_d = \\frac{k_t^2}{R}
 
         where :math:`k_d` cancels the back-EMF term of :math:`d_0`. The rest
-        of a BAM fit is modeled outside the actuator: its armature on the
-        joint and its friction with ``Model.joint_friction``.
+        of a BAM fit is modeled outside the motor: its armature on the joint
+        and its command delay with an
+        :class:`~newton.actuators.InputProcessorDelay`. Its friction is not
+        modeled.
+
+    .. note::
+
+        This motor models the back-EMF itself, so do not combine it with a
+        :class:`~newton.actuators.ClampingDCMotor`, which would apply the
+        effort-speed limit a second time.
     """
 
     @classmethod
@@ -118,9 +126,10 @@ class MotorDC(MotorBase):
         for name in ("kt", "resistance", "vin"):
             if resolved[name] <= 0.0:
                 raise ValueError(f"{name} must be positive, got {resolved[name]}")
-        for name in ("max_pwm", "max_current"):
-            if resolved[name] < 0.0:
-                raise ValueError(f"{name} must be non-negative, got {resolved[name]}")
+        if not 0.0 <= resolved["max_pwm"] <= 1.0:
+            raise ValueError(f"max_pwm must be in [0, 1], got {resolved['max_pwm']}")
+        if resolved["max_current"] < 0.0:
+            raise ValueError(f"max_current must be non-negative, got {resolved['max_current']}")
         return resolved
 
     def __init__(

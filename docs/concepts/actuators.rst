@@ -653,9 +653,8 @@ Motors
 ^^^^^^
 
 * :class:`MotorDC` — PWM-driven DC motor as in BAM (Better Actuator Models):
-  duty cycle, PWM and current limits, back-EMF, optionally on a battery
-  (stateless).  Behind a :class:`DrivePD` with matching gains it reproduces a
-  BAM servo; BAM's gearbox friction is not included.
+  duty cycle, PWM and current limits, back-EMF, optionally on a battery.  It
+  models the back-EMF itself, so do not combine it with :class:`ClampingDCMotor`.
 
 .. _actuator-battery:
 

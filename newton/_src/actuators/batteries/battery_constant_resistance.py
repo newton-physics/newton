@@ -71,10 +71,11 @@ class BatteryConstantResistance(BatteryBase):
     its actuators in a fixed order, so the voltage is deterministic.
 
     The supply and the motors form an explicit feedback loop. For
-    :class:`~newton.actuators.MotorDC` it settles only while
-    ``resistance * sum(max_pwm**2 / motor resistance) < 1`` over the
-    actuators sharing a battery; above that the voltage oscillates instead
-    of converging.
+    :class:`~newton.actuators.MotorDC` without an active current limit it
+    settles while ``resistance * sum(max_pwm**2 / motor resistance) < 1``
+    over the actuators sharing a battery; above that bound, or while a
+    current limit is active, the voltage may oscillate instead of
+    converging.
     """
 
     @classmethod

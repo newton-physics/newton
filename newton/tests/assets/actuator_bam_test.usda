@@ -58,7 +58,7 @@ def Xform "World"
             uniform token physics:axis = "Z"
         }
 
-        # Passive hinge in series with the knee servo, read by its backlash processor
+        # Passive hinge in series with the knee servo, read by its encoder
         def PhysicsRevoluteJoint "knee_backlash"
         {
             rel physics:body0 = </World/Robot/Thigh>
@@ -82,7 +82,7 @@ def Xform "World"
             uniform token physics:axis = "Z"
         }
 
-        # Knee servo: PD + max effort + DC motor + delay + backlash, on the battery
+        # Knee servo: PD + max effort + DC motor + delay + encoder, on the battery
         def NewtonActuator "knee_actuator" (
             prepend apiSchemas = [
                 "NewtonPDControlAPI",

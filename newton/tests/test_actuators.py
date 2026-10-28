@@ -2722,7 +2722,7 @@ class TestMotorDC(unittest.TestCase):
     def test_battery_supply(self):
         """Each servo reads the voltage its battery dropped to under the previous step's current.
 
-        Per world, the knee servo, which has a backlash processor, and an
+        Per world, the knee servo, which has an encoder, and an
         ankle servo share battery 0, and a second ankle servo draws from
         battery 1. The knee is its own actuator group and the ankle servos
         share one, so a battery spans groups and two servos of one group act
@@ -5061,7 +5061,7 @@ class TestActuatorBuilder(unittest.TestCase):
           toe_actuator: fixed supply vin = 5 V
         The motor, processor and battery tokens may have no registered USD
         schema, so they must be found next to the registered schemas. The
-        knee is its own actuator group because of its backlash processor and
+        knee is its own actuator group because of its encoder and
         reads ``q_knee + q_backlash``. Battery has no ``newton:minVoltage``,
         and SpareBattery has no actuators, so it is not imported.
         """

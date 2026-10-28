@@ -41,13 +41,18 @@ class MotorBase:
         """
         raise NotImplementedError(f"{cls.__name__} must implement resolve_arguments")
 
-    def finalize(self, device: wp.Device, num_actuators: int) -> None:
+    def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
         """Called by :class:`~newton.actuators.Actuator` after construction to set up device-specific resources.
 
         Args:
             device: Warp device to use.
             num_actuators: Number of actuators (DOFs) this motor manages.
+            requires_grad: Whether to allocate internal buffers with gradient support.
         """
+
+    def is_graphable(self) -> bool:
+        """Return True if :meth:`compute` can be captured in a CUDA graph."""
+        return True
 
     def compute(
         self,
