@@ -178,6 +178,8 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
+    _supports_deformable_visual_meshes = True
+
     class CudaInterop(enum.IntFlag):
         """Render-geometry categories eligible for CUDA-OpenGL interoperability."""
 
@@ -185,10 +187,10 @@ class ViewerGL(ViewerBase):
         """Disable CUDA-OpenGL interoperability for render geometry."""
 
         DYNAMIC_MESH = enum.auto()
-        """Meshes logged with ``dynamic=True`` and model-owned skinned meshes."""
+        """Meshes logged with ``dynamic=True``. Either mesh flag also enables model-owned skinned meshes."""
 
         STATIC_MESH = enum.auto()
-        """Meshes logged with ``dynamic=False``, including model-owned skinned meshes."""
+        """Meshes logged with ``dynamic=False``. Either mesh flag also enables model-owned skinned meshes."""
 
         POINTS = enum.auto()
         """Point instance-transform buffers."""

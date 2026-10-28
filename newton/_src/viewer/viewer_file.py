@@ -1381,7 +1381,8 @@ class ViewerFile(ViewerBase):
 
     @override
     def _log_deformable_visual_meshes(self, state: State):
-        # Only simulation data is recorded; playback skins the meshes when it renders.
+        # A recording holds simulation data only; display options are no-ops here, as for
+        # the other show_* flags, and playback skins the meshes when it renders them.
         return
 
     @override
