@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 import math
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -35,7 +36,11 @@ def _assert_vec_close(test, actual, expected, tol=1.0e-6):
 
 class TestViewerCameraOrbit(unittest.TestCase):
     def test_follow_selection_hold_toggle_and_orbit(self) -> None:
-        from pyglet.window import key, mouse
+        import pyglet
+
+        # Input constants do not need a GL context or an available display.
+        with patch.object(pyglet.options, "shadow_window", False):
+            from pyglet.window import key, mouse
 
         camera = Camera(pos=(0, -5, 3))
         camera.look_at((0, 0, 0))
