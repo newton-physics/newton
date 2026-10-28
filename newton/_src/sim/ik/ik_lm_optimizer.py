@@ -14,7 +14,14 @@ import warp as wp
 
 from ..enums import JointType
 from ..model import Model
-from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
+from .ik_common import (
+    IKJacobianType,
+    _initialize_body_q,
+    _validate_articulation_tree,
+    compute_costs,
+    eval_fk_batched,
+    fk_accum,
+)
 from .ik_objectives import IKObjective
 
 
@@ -151,7 +158,14 @@ class IKOptimizerLM:
 
     Raises:
         ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
-            joint, which is not supported by this optimizer.
+            joint or a body with multiple incoming articulation joints,
+            which are not supported by this optimizer.
+
+    Note:
+        Forward kinematics follows articulation tree joints and ignores
+        loop-closing joints; loop-closure constraints are not enforced.
+        External root-parent poses are copied from :attr:`Model.body_q` at
+        construction. Rebuild the optimizer after changing those poses.
     """
 
     TILE_N_DOFS = None
@@ -168,6 +182,7 @@ class IKOptimizerLM:
     ) -> IKOptimizerLM:
         if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
             raise ValueError("IKOptimizerLM does not support JointType.ROD joints.")
+        _validate_articulation_tree(model)
 
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
@@ -278,11 +293,15 @@ class IKOptimizerLM:
                 fn(obj, offset, *extra)
 
     def _alloc_solver_buffers(self, grad: bool) -> None:
+        """Allocate solver storage and seed FK with the model's body poses."""
         device = self.device
         model = self.model
 
         self.qd_zero = wp.zeros((self.n_batch, self.n_dofs), dtype=wp.float32, device=device)
-        self.body_q = wp.zeros((self.n_batch, model.body_count), dtype=wp.transform, requires_grad=grad, device=device)
+        self.body_q = wp.empty((self.n_batch, model.body_count), dtype=wp.transform, requires_grad=grad, device=device)
+        wp.launch(
+            _initialize_body_q, dim=self.body_q.shape, inputs=[model.body_q], outputs=[self.body_q], device=device
+        )
         self.body_qd = (
             wp.zeros((self.n_batch, model.body_count), dtype=wp.spatial_vector, device=device) if grad else None
         )
@@ -931,6 +950,7 @@ class IKOptimizerLM:
         @wp.kernel(module="unique")
         def _fk_local(
             joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_articulation: wp.array[wp.int32],
             joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
             joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
@@ -941,7 +961,10 @@ class IKOptimizerLM:
             # outputs
             X_local_out: wp.array2d[wp.transform],  # (n_batch, n_joints)
         ):
+            """Evaluate local transforms only for articulation-tree joints."""
             row, local_joint_idx = wp.tid()
+            if joint_articulation[local_joint_idx] < 0:
+                return
 
             t = joint_type[local_joint_idx]
             q_start = joint_q_start[local_joint_idx]
@@ -977,6 +1000,7 @@ class IKOptimizerLM:
                 dim=[n_batch, model.joint_count],
                 inputs=[
                     model.joint_type,
+                    model.joint_articulation,
                     joint_q,
                     model.joint_q_start,
                     model.joint_qd_start,
@@ -996,6 +1020,9 @@ class IKOptimizerLM:
                 dim=[n_batch, model.joint_count],
                 inputs=[
                     model.joint_parent,
+                    model.joint_child,
+                    model.joint_ancestor,
+                    model.joint_articulation,
                     X_local,
                 ],
                 outputs=[

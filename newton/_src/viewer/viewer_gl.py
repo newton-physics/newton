@@ -455,7 +455,9 @@ class ViewerGL(ViewerBase):
                 to hide all rotation rings.
             snap_to: Optional world transform with translation [m] and a
                 unitless rotation quaternion to apply when this gizmo is
-                released by the user.
+                released by the user. Cancelling a drag by removing its handle,
+                hiding the UI, pausing rendering, or losing window focus keeps
+                the current pose instead.
         """
         axis_order = (Axis.X, Axis.Y, Axis.Z)
 
@@ -2274,7 +2276,9 @@ class ViewerGL(ViewerBase):
             scroll_x: Horizontal scroll delta.
             scroll_y: Vertical scroll delta.
         """
-        if self.gui:
+        # With ImGui, mouse input is routed during prepare_frame() so the
+        # camera and gizmos see the same processed events and hover state.
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_scroll(scroll_y, is_ctrl_down=self._is_ctrl_down())
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
@@ -2297,7 +2301,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
     def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
@@ -2310,7 +2314,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button released.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_release(x, y, button)
 
     def on_mouse_drag(
@@ -2333,7 +2337,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords, modifiers)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
@@ -2446,13 +2450,13 @@ class ViewerGL(ViewerBase):
     def _ui_populate_rendering_panel(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""
         # Sky rendering
-        _changed, self.renderer.draw_sky = imgui.checkbox("Sky", self.renderer.draw_sky)
+        self._edit_display_option(self.renderer, "draw_sky", imgui.checkbox, "Sky")
 
         # Shadow rendering
-        _changed, self.renderer.draw_shadows = imgui.checkbox("Shadows", self.renderer.draw_shadows)
+        self._edit_display_option(self.renderer, "draw_shadows", imgui.checkbox, "Shadows")
 
         # Wireframe mode
-        _changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
+        self._edit_display_option(self.renderer, "draw_wireframe", imgui.checkbox, "Wireframe")
 
         def _edit_color3(label: str, color: tuple[float, float, float]) -> tuple[bool, tuple[float, float, float]]:
             """Normalize color_edit3 input/output across imgui_bundle versions."""
@@ -2464,11 +2468,11 @@ class ViewerGL(ViewerBase):
             return changed, (updated_color[0], updated_color[1], updated_color[2])
 
         # Light color
-        _changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
+        self._edit_display_option(self.renderer, "_light_color", _edit_color3, "Light Color")
         # Sky color
-        _changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
+        self._edit_display_option(self.renderer, "sky_upper", _edit_color3, "Sky Color")
         # Ground color
-        _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
+        self._edit_display_option(self.renderer, "sky_lower", _edit_color3, "Ground Color")
 
     def _ui_populate_layers_panel(self, imgui):
         """Top-level Layers panel — toggle visibility of overlaid solvers/models.

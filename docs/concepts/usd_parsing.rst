@@ -301,6 +301,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
   collision filtering is per-pair only (the standard ``physics:filteredPairs`` and
   ``PhysicsElementCollisionFilter`` support above).
 * Every imported deformable can be found by prim path in the import results (see below).
+  After ``finalize()``, selection views use the recorded deformable object labels.
+  A welded graph is selected by its graph label, not by each source curve's prim path;
+  see :ref:`deformable-objects-welded-usd-graphs`.
 
 Anything outside this set warns and is skipped, or is recorded as unsupported in the returned
 attributes. It never silently becomes a different physical model. In particular: disabled
@@ -427,6 +430,15 @@ The corresponding ``path_*_attrs`` entry preserves valid authored ``masses`` and
 values with their resolved element type under ``simulation``; a legacy untyped mass entry is also
 marked ``legacy_implicit_type``.
 
+After finalization, use the recorded labels to select deformable objects with
+:class:`~newton.selection.DeformableCurveView`,
+:class:`~newton.selection.DeformableSurfaceView`, or
+:class:`~newton.selection.DeformableVolumeView`. Each view selects only its family
+and provides state access and simulation-element ranges. Native and USD-created
+deformable objects use the same view API. See :ref:`deformable-selection` for
+world layout, masked resets, and getter buffers. See :ref:`deformable-objects`
+for how replication and fixed-joint collapse affect the recorded ranges.
+
 Imported deformables also populate the experimental builder identity lists
 described in :ref:`deformable-objects`. These lists are separate from the
 import result mappings above.
@@ -479,10 +491,15 @@ a rigid body's articulation follows that articulation's setting.
 
 .. code-block:: python
 
+    from newton.selection import DeformableCurveView
+
     result = builder.add_usd("cables.usda", return_deformable_results=True)
-    # Look up an imported cable by prim path:
+    # Find a cable's segments while building the scene.
     cable_bodies, cable_joints = result["path_cable_map"]["/World/Cable"]
     model = builder.finalize()  # cables are already wrapped and finalize-ready
+    # Inspect the finalized body range by label.
+    cable = DeformableCurveView(model, "/World/Cable")
+    ((body_start, body_end),) = cable.ranges("body")
 
 The :meth:`~newton.ModelBuilder.add_usd` return dict carries ``path_cable_attrs``,
 ``path_cloth_attrs`` and ``path_soft_attrs``, mapping each prim path to validated import metadata,
@@ -523,32 +540,30 @@ colors such as ``srgb_rec709_scene`` are kept as authored.
 Texture inputs are handled similarly at the color-texture boundary. Newton reads
 ``UsdUVTexture.sourceColorSpace`` first, falls back to color-space metadata on
 the file attribute, and converts linear/raw color textures to display/sRGB when
-they are loaded. Display/sRGB textures stay display-encoded.
+they are loaded. Display/sRGB textures stay display-encoded, as do untagged
+textures, whose ``sourceColorSpace`` is ``auto`` or unset and whose file
+attribute has no color-space metadata or ``auto``.
 
-Gaussian splat spherical-harmonics radiance is resolved from the same
-color-space metadata but with the opposite default: untagged radiance is treated
-as display/sRGB. The supported color-space names are:
+Gaussian splat spherical-harmonics radiance uses the color space of its
+coefficient attribute only (``radiance:sphericalHarmonicsCoefficients``, or its
+half-precision ``h`` variant), without ``UsdColorSpaceAPI`` inheritance.
+Untagged radiance is treated as display/sRGB.
 
-* ``srgb``, ``srgb_texture``, ``srgb_rec709_scene``, ``srgb_rec709_display``
-  (and untagged): imported as :attr:`~newton.utils.ColorSpace.SRGB`.
+Scalar colors, textures and Gaussian radiance classify color-space names the
+same way. The supported names are:
+
+* ``srgb``, ``srgb_texture``, ``srgb_rec709_scene``, ``srgb_rec709_display``:
+  display/sRGB (:attr:`~newton.utils.ColorSpace.SRGB`).
   ``srgb_rec709_display`` is a display-referred marker that renderers without
   special handling treat like ``srgb_rec709_scene``.
 * ``lin_rec709_scene``, ``lin_rec709``, ``lin_srgb``, ``raw``, ``data``,
-  ``identity`` and ``linear``: imported as
-  :attr:`~newton.utils.ColorSpace.LINEAR`.
+  ``identity`` and ``linear``: linear (:attr:`~newton.utils.ColorSpace.LINEAR`).
 
 Newton does not convert color primaries or transfer functions. Any other name,
 such as ``lin_ap1_scene``, ``acescg``, ``srgb_ap1_scene`` or
 ``g22_rec709_scene``, is imported as linear if it looks linear (``lin_*`` or
-``acescg``) and as sRGB otherwise, and a warning naming the prim is logged. The
-import itself does not fail.
-
-.. note::
-
-   A ``colorSpace`` fallback that a schema declares on the coefficient attribute
-   takes precedence over a color space inherited from a parent prim or applied
-   with ``ColorSpaceAPI`` on the prim. For such prims, author linear radiance by
-   setting ``colorSpace`` on the coefficient attribute itself.
+``acescg``) and as sRGB otherwise, and a warning naming the prim or attribute
+is logged. The import itself does not fail.
 
 Mass and Inertia Precedence
 ---------------------------
@@ -916,6 +931,10 @@ Custom Attributes from USD
 
 USD assets can define custom attributes that become part of the model/state/control attributes, see :ref:`custom_attributes` for more information.
 Besides the programmatic way of defining custom attributes through the :meth:`newton.ModelBuilder.add_custom_attribute` method, Newton's USD importer also supports declaring custom attributes from within a USD stage.
+
+Custom values at ``CURVE``, ``SURFACE``, or ``VOLUME`` frequency are not imported
+automatically yet. See :ref:`usd_deformable_custom_values` for a builder
+assignment example after import.
 
 **Overview:**
 
