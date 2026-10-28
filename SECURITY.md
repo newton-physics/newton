@@ -148,8 +148,9 @@ applies to the project.
     code on infrastructure the project controls.
   - Opt-in maintainer delegated approval handles PR comments with a dedicated
     GitHub App credential. It allows an active maintainer other than the PR
-    author to attest to an exact head in place of independent review. Automation
-    and review-policy changes are excluded. This workflow runs trusted
+    author to attest to an exact head in place of independent review. Changes to
+    the workflow and explicitly listed tooling/policy paths are excluded; other
+    configuration changes remain eligible at maintainer discretion. It runs trusted
     default-branch code with the runner's isolated system Python; repository
     environments, configuration, and imports must not control its execution.
     The App key belongs in a branch-restricted Actions environment, and every

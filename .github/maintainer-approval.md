@@ -10,6 +10,14 @@ This is an exception to independent review: one human explicitly takes
 responsibility for both the review and their fixes. It does not represent a
 second human review. Normal contributors cannot invoke the exception.
 
+A separate review-only ruleset bypass was considered, but public reproductions
+report that bypassing that rule still leaves the required approval unmet for
+native queue entry, even with review and queue rules in separate rulesets
+([Renovate discussion](https://github.com/renovatebot/renovate/discussions/28156)).
+This is reported behavior, not a Newton sandbox result. The App supplies an
+actual approval and also rejects requests from the PR author, unlike a general
+maintainer bypass. Queue integration still requires the rollout validation below.
+
 ## How to use it
 
 1. Review the PR, push any small fixes, and inspect the final diff.
@@ -47,6 +55,12 @@ GitHub caps comparison file results at 300; this workflow never approves a
 potentially truncated file list. Base changes during validation require a fresh
 command. Required CODEOWNER reviews and other review requirements remain
 GitHub's responsibility and can still block queue entry.
+
+The exclusions above are intentionally limited; they do not mirror CODEOWNERS
+or prohibit every root configuration change. Other files, including dependency,
+pre-commit, and review-bot configuration, remain eligible at the maintainer's
+discretion. Maintainers accept responsibility for those changes through the
+explicit command, consistent with their existing authority to bypass review.
 
 ## Manual setup and rollout
 
