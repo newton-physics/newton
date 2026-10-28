@@ -463,25 +463,27 @@ void main() {
         gl.glGenVertexArrays(1, vao)
         self._gl_vao = vao[0]
 
+        # With ImGui, mouse input is routed during prepare_frame() so the
+        # camera and gizmos see the same processed events and hover state.
         # ---- input callbacks ------------------------------------------------
         @self._window.event
         def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords, modifiers)
 
         @self._window.event
         def on_mouse_press(x, y, button, modifiers):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
         @self._window.event
         def on_mouse_release(x, y, button, modifiers):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_release(x, y, button)
 
         @self._window.event
         def on_mouse_scroll(x, y, scroll_x, scroll_y):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_scroll(scroll_y)
 
         @self._window.event
@@ -494,6 +496,10 @@ void main() {
         @self._window.event
         def on_key_release(symbol, modifiers):
             self._keys_down.discard(symbol)
+
+        @self._window.event
+        def on_deactivate():
+            self._keys_down.clear()
 
         @self._window.event
         def on_resize(width, height):
@@ -1600,7 +1606,9 @@ void main() {
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
             snap_to: Optional world transform to snap to when this gizmo is
-                released by the user.
+                released by the user. Cancelling a drag by removing its handle,
+                hiding the UI, pausing rendering, or losing window focus keeps
+                the current pose instead.
         """
         self._gizmo_log[name] = {
             "transform": transform,
