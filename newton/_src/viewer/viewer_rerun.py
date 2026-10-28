@@ -112,6 +112,8 @@ class ViewerRerun(ViewerBase):
             return True
         return field_name in self._mesh3d_params
 
+    _supports_deformable_visual_meshes = True
+
     def __init__(
         self,
         *,
@@ -255,7 +257,7 @@ class ViewerRerun(ViewerBase):
                 rr.log(name, rr.Clear(recursive=False))
                 mesh["visible"] = False
             return
-        self.log_mesh(name, points, indices, texture=self._deformable_visual_texture(name, texture), **kwargs)
+        self.log_mesh(name, points, indices, texture=self._deformable_visual_texture(texture), **kwargs)
 
     @override
     def log_mesh(

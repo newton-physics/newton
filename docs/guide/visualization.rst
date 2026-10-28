@@ -138,7 +138,7 @@ path. Without interoperability, GL uses its existing host upload path.
 
 USD, RTX and Rerun also display skinned meshes. Hidden meshes do not keep
 uploading geometry; showing them restores the latest evaluated points. Rerun
-decodes a texture path once per skin and then, as for any updated
+decodes each texture path once per model layer and then, as for any updated
 mesh, re-logs a visible skin with its texture every frame. USD-based viewers
 write one texture per skin.
 

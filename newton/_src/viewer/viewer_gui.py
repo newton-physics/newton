@@ -1028,7 +1028,7 @@ class ViewerGui:
                             viewer._edit_display_option(
                                 renderer, "wireframe_line_width", imgui.slider_float, "Wireframe Width (px)", 0.5, 5.0
                             )
-                    if getattr(viewer.model, "deformable_visual_mesh_count", 0) > 0:
+                    if viewer.model is not None and viewer.model.deformable_visual_mesh_count > 0:
                         viewer._edit_display_option(
                             viewer, "show_deformable_visual_meshes", imgui.checkbox, "Show Skinned Meshes"
                         )

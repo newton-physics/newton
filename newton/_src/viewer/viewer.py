@@ -135,6 +135,8 @@ class ViewerBase(ABC):
         MARGIN_GAP = 2
         """Wireframe at ``shape_margin`` + ``shape_gap`` (outer contact threshold), not gap alone."""
 
+    _supports_deformable_visual_meshes = False
+
     def __init__(self):
         """Initialize shared viewer state and rendering caches."""
         self.time = 0.0
@@ -737,9 +739,10 @@ class ViewerBase(ABC):
         # Deformable visual data and transformed viewer buffers.
         layer._deformable_visuals: newton.geometry.DeformableVisuals | None = None
         layer._deformable_visuals_explicit = False
+        layer._deformable_visual_mesh_names: dict[int, str] = {}
+        layer._deformable_visual_textures: dict[str, np.ndarray | None] = {}
         layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array]] = {}
         layer._deformable_visual_mesh_null_offsets: wp.array | None = None
-        layer._deformable_visual_textures: dict[str, tuple[str, np.ndarray | None]] = {}
         layer._user_spacing: tuple[float, float, float] | None = None
         layer._visible_worlds: set[int] | None = None
         layer._visible_worlds_mask: wp.array | None = None
@@ -760,7 +763,7 @@ class ViewerBase(ABC):
         layer.show_contact_forces = True  # Force arrows require CONTACT_F solver observable.
         layer.show_springs = False
         layer.show_triangles = True
-        layer.show_deformable_visual_meshes = True
+        layer.show_deformable_visual_meshes = self._supports_deformable_visual_meshes
         layer.show_gaussians = False
         layer.show_collision = False
         layer.show_visual = True
@@ -863,6 +866,8 @@ class ViewerBase(ABC):
         ``None`` to restore automatic evaluation during :meth:`log_state`.
         Update or replay before logging the corresponding state. The viewer waits
         for the output but does not check which State produced it or its freshness.
+        Backends that do not draw skinned meshes keep the reference and never
+        read it.
 
         Args:
             visuals: Updated visual data for the current model, or ``None``.
@@ -873,9 +878,6 @@ class ViewerBase(ABC):
             ValueError: If ``visuals`` belongs to another model.
 
         .. experimental::
-
-            This API may change without a formal deprecation cycle while
-            deformable visual support is experimental.
         """
         if visuals is None:
             self._deformable_visuals = None
@@ -3568,59 +3570,67 @@ class ViewerBase(ABC):
                         opacity=opacity,
                     )
 
-    def _deformable_visual_texture(self, name, texture):
-        """Decode immutable path textures once per visual mesh and model layer."""
+    def _deformable_visual_texture(self, texture):
+        """Decode an immutable path texture once per model layer; image arrays pass through."""
         if not isinstance(texture, str):
-            self._deformable_visual_textures.pop(name, None)
             return texture
-        cached = self._deformable_visual_textures.get(name)
-        if cached is None or cached[0] != texture:
+        if texture not in self._deformable_visual_textures:
             from .utils import prepare_viewer_texture  # noqa: PLC0415
 
-            cached = (texture, prepare_viewer_texture(texture))
-            self._deformable_visual_textures[name] = cached
-        return cached[1]
+            self._deformable_visual_textures[texture] = prepare_viewer_texture(texture)
+        return self._deformable_visual_textures[texture]
 
     def _log_deformable_visual_mesh(self, name, points, indices, **kwargs):
-        """Let backends reuse the immutable texture while geometry changes."""
+        """Send evaluated geometry to the selected backend."""
         self.log_mesh(name, points, indices, **kwargs)
 
     def _log_deformable_visual_meshes(self, state: newton.State):
         """Skin and draw the visual meshes embedded in deformables.
 
-        Skinning and normal recomputation run on-device through the shared
-        :meth:`newton.geometry.DeformableVisuals.update`;
-        backends receive the deformed geometry through the visual-mesh hook.
+        Skinning and normal recomputation run on-device through
+        :meth:`newton.geometry.DeformableVisuals.update`; backends receive the
+        deformed geometry through the visual-mesh hook.
         Skinned meshes draw in
         addition to the raw simulation triangles; toggle ``show_triangles`` and
         ``show_deformable_visual_meshes`` independently from regular visual
         shapes.
         """
-        meshes = getattr(self.model, "deformable_visual_meshes", None)
+        meshes = self.model.deformable_visual_meshes
         if not meshes:
+            return
+        show = self.show_deformable_visual_meshes and not self._layer_force_hidden()
+        visible = show and any(self._should_render_world(mesh.world) for mesh in meshes)
+        if not self._supports_deformable_visual_meshes:
+            # Rendering backends without skin support reject the option instead of
+            # silently showing nothing; non-rendering backends override this hook.
+            if visible:
+                raise NotImplementedError(
+                    f"{type(self).__name__} does not draw deformable visual meshes yet; set "
+                    "show_deformable_visual_meshes to False to display the simulation geometry."
+                )
             return
 
         from .kernels import apply_world_offset_and_layer_transform_normals  # noqa: PLC0415
 
-        show = self.show_deformable_visual_meshes and not self._layer_force_hidden()
         visuals = self._deformable_visuals
-        if show and any(self._should_render_world(mesh.world) for mesh in meshes):
+        if visible:
             if visuals is None:
                 visuals = newton.geometry.DeformableVisuals(self.model)
                 self._deformable_visuals = visuals
-            if self._deformable_visuals_explicit:
-                if visuals.model is not self.model:
-                    raise ValueError("DeformableVisuals was created for another model.")
-            else:
+            if not self._deformable_visuals_explicit:
                 visuals.update(state)
             visuals.wait()
 
         for rm in meshes:
-            # The invariant index keeps replicated worlds' duplicate labels distinct.
-            # Prefix the component with "mesh" so USD-backed viewers do not
-            # receive prim names that start with a digit.
-            suffix = f"_{_viewer_path_component(rm.label)}" if rm.label else ""
-            name = self._qualify(f"/model/deformable_visual_meshes/mesh_{rm.index}{suffix}")
+            name = self._deformable_visual_mesh_names.get(rm.index)
+            if name is None:
+                # The invariant index keeps replicated worlds' duplicate labels distinct, and the
+                # name is fixed at first use so a later label edit does not strand a stale object.
+                # Prefix the component with "mesh" so USD-backed viewers do not receive prim
+                # names that start with a digit.
+                suffix = f"_{_viewer_path_component(rm.label)}" if rm.label else ""
+                name = self._qualify(f"/model/deformable_visual_meshes/mesh_{rm.index}{suffix}")
+                self._deformable_visual_mesh_names[rm.index] = name
             if not (show and self._should_render_world(rm.world)):
                 # Keep valid geometry registered so visibility can toggle back on.
                 self._log_deformable_visual_mesh(

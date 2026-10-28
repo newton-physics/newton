@@ -83,6 +83,7 @@ class ViewerUSD(ViewerBase):
     """
 
     _root_path = "/root"
+    _supports_deformable_visual_meshes = True
 
     def __init__(
         self,
