@@ -27,6 +27,28 @@ OVSTAGE_AVAILABLE = importlib.util.find_spec("ovstage") is not None
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
 class TestViewerRTXConstruction(unittest.TestCase):
+    @unittest.skipUnless(USD_AVAILABLE and OVSTAGE_AVAILABLE, "Requires USD and ovstage")
+    def test_texture_files_belong_to_one_viewer(self):
+        """Close one viewer without removing another viewer's identical texture."""
+        from pxr import UsdShade
+
+        points = wp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=wp.vec3, device="cpu")
+        indices = wp.array([0, 1, 2], dtype=wp.int32, device="cpu")
+        uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2, device="cpu")
+        image = np.full((2, 2, 3), 255, dtype=np.uint8)
+        viewers = [ViewerRTX(headless=True), ViewerRTX(headless=True)]
+        for viewer in viewers:
+            self.addCleanup(viewer.close)
+        paths = []
+        for viewer in viewers:
+            viewer.log_mesh("/mesh", points, indices, uvs=uvs, texture=image)
+            material, _ = UsdShade.MaterialBindingAPI(viewer.stage.GetPrimAtPath("/root/mesh")).ComputeBoundMaterial()
+            paths.append(UsdShade.Shader(material.GetPrim().GetChild("DiffuseTexture")).GetInput("file").Get().path)
+        self.assertTrue(all(os.path.isfile(path) for path in paths))
+        viewers[0].close()
+        self.assertFalse(os.path.exists(paths[0]))
+        self.assertTrue(os.path.isfile(paths[1]))
+
     def test_requires_ovstage(self):
         """Require OVStage when constructing ViewerRTX."""
         original_import = builtins.__import__
@@ -546,7 +568,24 @@ class TestViewerRTXRendering(unittest.TestCase):
                                     viewer.set_rendering_paused(True)
                                     frozen = viewer.get_frame().numpy().copy()
                                 viewer.begin_frame(frame / 60.0)
-                                viewer.log_mesh("/left", left, indices, uvs=uvs, texture=texture)
+                                viewer.log_mesh(
+                                    "/left",
+                                    left,
+                                    indices,
+                                    uvs=uvs,
+                                    texture=texture,
+                                    hidden=asynchronous,
+                                    roughness=0.1 if frame == 0 else None,
+                                )
+                                if asynchronous:
+                                    viewer.log_instances(
+                                        "/left_copy",
+                                        "/left",
+                                        wp.array([wp.transform_identity()], dtype=wp.transform),
+                                        None,
+                                        wp.array([[1, 1, 1]], dtype=wp.vec3) if frame == 0 else None,
+                                        None,
+                                    )
                                 viewer.log_mesh("/right", right, indices, uvs=uvs, texture=red_path)
                                 viewer.end_frame()
                                 if frame == 0:

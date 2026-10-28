@@ -1147,16 +1147,38 @@ class TestDeformableVisualUSD(unittest.TestCase):
             # and a new array with the same pixels reuses the exported file.
             image = np.full((2, 2, 3), (0, 0, 255), dtype=np.uint8)
             uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
-            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices, uvs=uvs, texture=image)
+            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices, uvs=uvs, texture=image, roughness=0.1)
+            viewer.log_instances(
+                "/copies",
+                "/plain",
+                wp.array([wp.transform_identity()], dtype=wp.transform),
+                None,
+                wp.array([[1, 1, 1]], dtype=wp.vec3),
+                None,
+            )
+            instance = viewer.stage.GetPrimAtPath("/root/copies/instance_0")
             plain = viewer.stage.GetPrimAtPath("/root/plain")
             first, _ = UsdShade.MaterialBindingAPI(plain).ComputeBoundMaterial()
             viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices, uvs=uvs, texture=image.copy())
             second, _ = UsdShade.MaterialBindingAPI(plain).ComputeBoundMaterial()
             self.assertEqual(first.GetPath(), second.GetPath())
+            replacement = np.full((2, 2, 3), (255, 0, 0), dtype=np.uint8)
+            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices, uvs=uvs, texture=replacement)
+            instance_material, _ = UsdShade.MaterialBindingAPI(instance).ComputeBoundMaterial()
+            instance_texture = UsdShade.Shader(instance_material.GetPrim().GetChild("DiffuseTexture"))
+            with Image.open(instance_texture.GetInput("file").Get().path) as image:
+                np.testing.assert_array_equal(np.asarray(image), replacement)
             viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices)
             material, _ = UsdShade.MaterialBindingAPI(plain).ComputeBoundMaterial()
             surface = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
             self.assertFalse(surface.GetInput("diffuseColor").HasConnectedSource())
+            self.assertAlmostEqual(surface.GetInput("roughness").Get(), 0.1)
+            instance_material, _ = UsdShade.MaterialBindingAPI(instance).ComputeBoundMaterial()
+            self.assertFalse(
+                UsdShade.Shader(instance_material.GetPrim().GetChild("PreviewSurface"))
+                .GetInput("diffuseColor")
+                .HasConnectedSource()
+            )
 
 
 if __name__ == "__main__":

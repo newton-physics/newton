@@ -341,9 +341,9 @@ class ViewerRTX(ViewerUSD):
         # ``(name, fullscreen)``.
         self._pending_images: dict[tuple[str, bool], Any] = {}
 
-        # Generate a temporary USD path to share with OVRTX renderer
-        fd, output_path = tempfile.mkstemp(suffix=".usd")
-        os.close(fd)
+        # Keep content-addressed textures private to this viewer's lifetime.
+        self._stage_directory = tempfile.TemporaryDirectory(prefix="newton-rtx-")
+        output_path = os.path.join(self._stage_directory.name, "scene.usd")
 
         # Initializing the base class calls clear_model(), which
         # is used to initialize/reset model-specific state.
@@ -1789,6 +1789,7 @@ void main() {
         self._pending_mesh_topology.clear()
         self._pending_mesh_visibility.clear()
         self._pending_mesh_materials.clear()
+        self._pending_instance_materials.clear()
         self._pending_point_batches.clear()
 
     # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
@@ -1893,18 +1894,32 @@ void main() {
                 isinstance(next_texture, str) and isinstance(previous_texture, str) and next_texture == previous_texture
             )
             if not same_texture:
-                material = self._get_preview_surface_material(
-                    name, texture=next_texture, color=color, roughness=roughness, metallic=metallic, opacity=opacity
-                )
                 appearance = self._mesh_appearance.setdefault(name, {})
+                for key, value in (
+                    ("color", color),
+                    ("roughness", roughness),
+                    ("metallic", metallic),
+                    ("opacity", opacity),
+                ):
+                    if value is not None:
+                        appearance[key] = value
+                material = self._get_preview_surface_material(
+                    name,
+                    texture=next_texture,
+                    color=appearance.get("color"),
+                    roughness=appearance.get("roughness"),
+                    metallic=appearance.get("metallic"),
+                    opacity=appearance.get("opacity"),
+                )
                 appearance["texture"] = next_texture
                 material_path = str(material.GetPath())
-                # A new array object with unchanged pixels resolves to the bound material; skip the rebind.
+                # Equal pixels reuse the material, but supplied UVs may still differ.
                 if material_path != appearance.get("material_path"):
                     self._bind_material(self._meshes[name].GetPrim(), material)
                     appearance["material_path"] = material_path
-                    uv_values = uvs.numpy() if isinstance(uvs, wp.array) else uvs
-                    self._pending_mesh_materials[name] = (material_path, uv_values)
+                    self._refresh_mesh_instance_materials(name)
+                uv_values = uvs.numpy() if isinstance(uvs, wp.array) else uvs
+                self._pending_mesh_materials[name] = (material_path, uv_values)
             pts = (
                 points.numpy().astype(np.float32)
                 if isinstance(points, wp.array)
@@ -2480,18 +2495,32 @@ void main() {
         """
         return self._make_laned_array_dltensor(np.asarray(points_np, dtype=np.float32), lanes=3)
 
+    def _refresh_mesh_instance_materials(self, mesh: str) -> list[tuple[str, int, str]]:
+        updated = super()._refresh_mesh_instance_materials(mesh)
+        if self._phase == self._PHASE_RENDER:
+            for name, index, material_path in updated:
+                self._pending_instance_materials[(name, index)] = material_path
+        return updated
+
     def _update_ovrtx_mesh_materials(self):
         """Publish changed materials without replacing their mesh geometry."""
-        if not self._pending_mesh_materials:
+        if not self._pending_mesh_materials and not self._pending_instance_materials:
             return
         import ovstage
 
-        for material_path, _ in self._pending_mesh_materials.values():
+        updates = [
+            (self._mesh_prim_paths[name], material_path, uvs)
+            for name, (material_path, uvs) in self._pending_mesh_materials.items()
+        ]
+        updates.extend(
+            (self._instance_prim_paths[name][index], material_path, None)
+            for (name, index), material_path in self._pending_instance_materials.items()
+        )
+        for _, material_path, _ in updates:
             if material_path not in self._runtime_prim_paths:
                 self._replace_runtime_prim(material_path)
         self._apply_ovstage_population_changes()
-        for name, (material_path, uvs) in self._pending_mesh_materials.items():
-            mesh_path = self._mesh_prim_paths[name]
+        for mesh_path, material_path, uvs in updates:
             target = self._runtime_prim_paths[material_path]
             self._ovstage.write_attribute(
                 self._get_ovstage_query([mesh_path]),
@@ -2994,6 +3023,7 @@ void main() {
         self._pending_mesh_topology = {}
         self._pending_mesh_visibility = {}
         self._pending_mesh_materials = {}
+        self._pending_instance_materials = {}
         self._pending_point_batches = {}
         self._point_batch_frame_defaults = {}
         self._deferred_prims = set()
@@ -3197,9 +3227,5 @@ void main() {
                 os.unlink(self.output_path)
             except OSError:
                 pass
-        # The stage is a temporary file, so the textures exported next to it are temporary too.
-        for path in getattr(self, "_exported_texture_files", ()):
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
+        if hasattr(self, "_stage_directory"):
+            self._stage_directory.cleanup()

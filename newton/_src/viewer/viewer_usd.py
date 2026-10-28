@@ -117,8 +117,6 @@ class ViewerUSD(ViewerBase):
         super().__init__()
 
         self.output_path = os.path.abspath(output_path)
-        self._exported_texture_files: set[str] = set()
-        """Image files this viewer wrote next to its USD file; a temporary stage removes them on close."""
         self.fps = fps
         self.up_axis = up_axis
         self.scaling = scaling
@@ -172,7 +170,7 @@ class ViewerUSD(ViewerBase):
         layer._preview_materials: dict[tuple, Any] = {}  # material key -> UsdShade.Material
         layer._texture_paths: dict[str, tuple[Any, str, str]] = {}  # mesh -> (texture object, digest, file)
         layer._mesh_appearance: dict[str, dict[str, Any]] = {}
-        layer._instance_appearance: dict[str, dict[str, np.ndarray]] = {}
+        layer._instance_appearance: dict[str, dict[str, Any]] = {}
 
     def _reset_stage(self):
         self.stage.GetRootLayer().Clear()
@@ -329,8 +327,9 @@ class ViewerUSD(ViewerBase):
         control surfaces are not reconstructed from the triangles.
 
         Texture arrays are cached by object identity; a new array with the same
-        pixels reuses the exported file. Pass a new array or path to replace an
-        image; in-place edits are not detected. A call that omits ``texture`` or
+        pixels reuses the exported file after decoding and hashing it. Reuse the
+        same array for unchanged frames to avoid that work. Pass a new array or
+        path to replace an image; in-place edits are not detected. A call that omits ``texture`` or
         ``uvs`` removes a texture bound by an earlier call, as in ViewerGL, while
         omitted colors and material values persist. Material bindings are not
         time-sampled, so a replacement applies to the whole export.
@@ -382,13 +381,14 @@ class ViewerUSD(ViewerBase):
 
         valid_texture = texture is not None and uvs is not None
         previous_texture = self._mesh_appearance.get(name, {}).get("texture")
-        self._mesh_appearance[name] = {
-            "texture": texture if valid_texture else None,
-            "color": color,
-            "roughness": roughness,
-            "metallic": metallic,
-            "opacity": opacity,
-        }
+        appearance = self._mesh_appearance.setdefault(name, {})
+        for key, value in (("color", color), ("roughness", roughness), ("metallic", metallic), ("opacity", opacity)):
+            if value is not None:
+                appearance[key] = value
+        appearance["texture"] = texture if valid_texture else None
+        color, roughness, metallic, opacity = (
+            appearance.get(key) for key in ("color", "roughness", "metallic", "opacity")
+        )
 
         normals_np = (
             normals.numpy().astype(np.float32) if normals is not None else compute_vertex_normals(points_np, indices_np)
@@ -431,6 +431,10 @@ class ViewerUSD(ViewerBase):
 
         if material is not None:
             self._bind_material(mesh_prim.GetPrim(), material)
+            material_path = str(material.GetPath())
+            if material_path != appearance.get("material_path"):
+                appearance["material_path"] = material_path
+                self._refresh_mesh_instance_materials(name)
 
         # how to hide the prototype mesh but not the instances in USD?
         mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
@@ -476,7 +480,6 @@ class ViewerUSD(ViewerBase):
                     stacklevel=2,
                 )
                 return None
-            self._exported_texture_files.add(tex_path)
 
         # A new array object with the same pixels keeps its export.
         self._texture_paths[mesh_name] = (texture, digest, tex_path)
@@ -657,6 +660,8 @@ class ViewerUSD(ViewerBase):
 
         appearance_changed = colors is not None or materials is not None or opacities is not None
         appearance = self._instance_appearance.setdefault(name, {})
+        appearance["mesh"] = mesh
+        appearance["count"] = len(xforms)
         if colors is not None:
             appearance["colors"] = np.asarray(colors, dtype=np.float32)
         if materials is not None:
@@ -746,6 +751,35 @@ class ViewerUSD(ViewerBase):
                     metallic=metallic,
                 )
                 self._bind_material(instance, material)
+
+    def _refresh_mesh_instance_materials(self, mesh: str) -> list[tuple[str, int, str]]:
+        """Refresh local instance overrides after the prototype material changes."""
+        updated = []
+        base = self._mesh_appearance[mesh]
+        for name, appearance in self._instance_appearance.items():
+            if appearance.get("mesh") != mesh:
+                continue
+            for i in range(appearance["count"]):
+                instance = self.stage.GetPrimAtPath(self._get_path(name) + f"/instance_{i}")
+                if not instance or not instance.GetRelationship("material:binding").HasAuthoredTargets():
+                    continue
+                colors = appearance.get("colors")
+                params = appearance.get("materials")
+                opacities = appearance.get("opacities")
+                color = colors[i] if colors is not None else base.get("color")
+                material_params = params[i] if params is not None else None
+                use_texture = base.get("texture") is not None and (material_params is None or material_params[3] > 0.5)
+                material = self._get_preview_surface_material(
+                    mesh,
+                    texture=base.get("texture") if use_texture else None,
+                    color=None if use_texture else color,
+                    roughness=float(material_params[0]) if material_params is not None else base.get("roughness"),
+                    metallic=float(material_params[1]) if material_params is not None else base.get("metallic"),
+                    opacity=float(opacities[i]) if opacities is not None else base.get("opacity"),
+                )
+                self._bind_material(instance, material)
+                updated.append((name, i, str(material.GetPath())))
+        return updated
 
     # log a set of instances as a point instancer, faster but less flexible
     def log_instances_point_instancer(
