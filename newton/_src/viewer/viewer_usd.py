@@ -498,6 +498,7 @@ class ViewerUSD(ViewerBase):
             warnings.warn(
                 f"ViewerUSD: prototype '{name}' changed from {existing.GetPrim().GetTypeName()} to "
                 f"{prim_type.__name__}; replacing it discards its earlier time samples.",
+                NewtonWarning,
                 stacklevel=3,
             )
             self.stage.RemovePrim(existing.GetPath())

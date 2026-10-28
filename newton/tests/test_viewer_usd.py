@@ -14,6 +14,7 @@ import warp as wp
 
 import newton
 import newton.usd
+from newton.exceptions import NewtonWarning
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX, ViewerUSD
 
@@ -691,19 +692,19 @@ class TestViewerUSD(unittest.TestCase):
         bound = UsdGeom.Sphere.Get(stage, "/root/shape/geom").ComputeLocalBound(0, UsdGeom.Tokens.default_)
         np.testing.assert_allclose(bound.ComputeAlignedRange().GetMax(), [1.0, 1.0, 1.0], rtol=1e-6)
 
-        with self.assertWarns(UserWarning):
+        with self.assertWarns(NewtonWarning):
             viewer.log_geo("/shape", newton.GeoType.SPHERE, (0.5,), 0.0, True)
         self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Sphere))
         self.assertFalse(stage.GetPrimAtPath("/root/shape/geom"))
 
-        with self.assertWarns(UserWarning):
+        with self.assertWarns(NewtonWarning):
             viewer.log_geo("/shape", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
         self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Mesh))
 
         viewer.log_geo("/gprim", newton.GeoType.SPHERE, (0.5,), 0.0, True)
         points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
         indices = wp.array([0, 1, 2], dtype=wp.int32)
-        with self.assertWarns(UserWarning):
+        with self.assertWarns(NewtonWarning):
             viewer.log_mesh("/gprim", points, indices)
         self.assertTrue(stage.GetPrimAtPath("/root/gprim").IsA(UsdGeom.Mesh))
 
