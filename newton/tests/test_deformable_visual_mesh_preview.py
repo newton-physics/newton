@@ -360,7 +360,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            with self.assertRaisesRegex(ValueError, "invalid_bind_pose_count.*4 points.*3 particles"):
+            with self.assertRaisesRegex(ValueError, "/World/Tire/Sim: bind pose has 4 points.*3 particles"):
                 _sim_bind_positions(ctx, "/World/Tire/Sim", (0, 3))
 
     def test_degenerate_simulation_bind_tet_skips_visual_binding(self):

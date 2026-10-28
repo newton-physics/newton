@@ -117,6 +117,8 @@ class ViewerUSD(ViewerBase):
         super().__init__()
 
         self.output_path = os.path.abspath(output_path)
+        self._exported_texture_files: set[str] = set()
+        """Image files this viewer wrote next to its USD file; a temporary stage removes them on close."""
         self.fps = fps
         self.up_axis = up_axis
         self.scaling = scaling
@@ -168,7 +170,7 @@ class ViewerUSD(ViewerBase):
         layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
         layer._points = {}  # point_name -> UsdGeom.Points
         layer._preview_materials: dict[tuple, Any] = {}  # material key -> UsdShade.Material
-        layer._texture_paths: dict[str, str] = {}
+        layer._texture_paths: dict[str, tuple[Any, str, str]] = {}  # mesh -> (texture object, digest, file)
         layer._mesh_appearance: dict[str, dict[str, Any]] = {}
         layer._instance_appearance: dict[str, dict[str, np.ndarray]] = {}
 
@@ -326,6 +328,13 @@ class ViewerUSD(ViewerBase):
         matching the smooth default of the OpenGL viewer. Source subdivision
         control surfaces are not reconstructed from the triangles.
 
+        Texture arrays are cached by object identity; a new array with the same
+        pixels reuses the exported file. Pass a new array or path to replace an
+        image; in-place edits are not detected. A call that omits ``texture`` or
+        ``uvs`` removes a texture bound by an earlier call, as in ViewerGL, while
+        omitted colors and material values persist. Material bindings are not
+        time-sampled, so a replacement applies to the whole export.
+
         Args:
             name: Mesh name or Sdf.Path string.
             points: Vertex positions as a warp array of wp.vec3.
@@ -372,6 +381,7 @@ class ViewerUSD(ViewerBase):
         mesh_prim.GetExtentAttr().Set(UsdGeom.Mesh.ComputeExtent(points_np), self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
+        previous_texture = self._mesh_appearance.get(name, {}).get("texture")
         self._mesh_appearance[name] = {
             "texture": texture if valid_texture else None,
             "color": color,
@@ -402,7 +412,13 @@ class ViewerUSD(ViewerBase):
                 roughness=roughness,
                 metallic=metallic,
             )
-        elif color is not None or roughness is not None or metallic is not None or opacity is not None:
+        elif (
+            color is not None
+            or roughness is not None
+            or metallic is not None
+            or opacity is not None
+            or previous_texture is not None
+        ):
             material = self._get_preview_surface_material(
                 name,
                 color=color,
@@ -433,8 +449,9 @@ class ViewerUSD(ViewerBase):
         if isinstance(texture, str):
             return os.path.abspath(texture)
 
-        if mesh_name in self._texture_paths:
-            return self._texture_paths[mesh_name]
+        cached = self._texture_paths.get(mesh_name)
+        if cached is not None and cached[0] is texture:
+            return cached[2]
 
         from ..utils.texture import load_texture  # noqa: PLC0415
 
@@ -444,18 +461,25 @@ class ViewerUSD(ViewerBase):
 
         tex_dir = os.path.dirname(self.output_path)
         safe_name = mesh_name.replace("/", "_").replace("\\", "_")
-        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}.png")
-        try:
-            self._save_texture_atomic(tex_array, tex_path)
-        except Exception as exc:
-            warnings.warn(
-                f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. Mesh will render without texture.",
-                NewtonWarning,
-                stacklevel=2,
-            )
-            return None
+        # Renderers cache images by path. Do not overwrite an earlier texture
+        # when its replacement needs to be loaded by an already-open scene.
+        digest = hashlib.blake2s(str(tex_array.shape).encode() + tex_array.tobytes(), digest_size=8).hexdigest()
+        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}_{digest}.png")
+        if (cached is None or cached[1] != digest) and not os.path.exists(tex_path):
+            try:
+                self._save_texture_atomic(tex_array, tex_path)
+            except Exception as exc:
+                warnings.warn(
+                    f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. "
+                    "Mesh will render without texture.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                return None
+            self._exported_texture_files.add(tex_path)
 
-        self._texture_paths[mesh_name] = tex_path
+        # A new array object with the same pixels keeps its export.
+        self._texture_paths[mesh_name] = (texture, digest, tex_path)
         return tex_path
 
     @staticmethod

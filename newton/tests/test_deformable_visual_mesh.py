@@ -1095,19 +1095,18 @@ class TestDeformableVisualGLTextures(unittest.TestCase):
 
 @unittest.skipUnless(importlib.util.find_spec("pxr"), "USD is not installed")
 class TestDeformableVisualUSD(unittest.TestCase):
-    def test_viewer_usd_accepts_deformable_visual_mesh_name(self):
-        """Export deformed points and bounds without hidden geometry updates."""
-        from pxr import UsdGeom
+    def test_viewer_usd_exports_skinned_mesh_and_textures(self):
+        """Export deformed geometry and replacement textures, skipping hidden updates."""
+        from PIL import Image
+        from pxr import UsdGeom, UsdShade
 
         builder = _particle_mesh()
-        _attach(builder, label="123 bad/skin!")
+        _attach(builder, label="123 bad/skin!", uvs=[[0, 0], [1, 0], [0, 1]])
         model = builder.finalize("cpu")
-
-        with tempfile.NamedTemporaryFile(suffix=".usd", delete=False) as tmp:
-            file_path = tmp.name
-
-        try:
-            viewer = ViewerUSD(file_path, num_frames=4)
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            contextlib.closing(ViewerUSD(os.path.join(directory, "scene.usda"), num_frames=6)) as viewer,
+        ):
             viewer.set_model(model)
             state = model.state()
             mesh = model.deformable_visual_meshes[0]
@@ -1133,10 +1132,41 @@ class TestDeformableVisualUSD(unittest.TestCase):
             np.testing.assert_allclose(
                 np.asarray(prim.GetPointsAttr().Get(3)), state.particle_q.numpy()[mesh.parent.numpy()]
             )
-            viewer.close()
-        finally:
-            if os.path.exists(file_path):
-                os.remove(file_path)
+            for color in ((255, 0, 0), (0, 255, 0)):
+                mesh.texture = np.full((2, 2, 3), color, dtype=np.uint8)
+                exported = None
+                for _ in range(2):
+                    viewer.begin_frame(1.0)
+                    viewer.log_state(state)
+                    viewer.end_frame()
+                    material, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+                    shader = UsdShade.Shader(material.GetPrim().GetChild("DiffuseTexture"))
+                    texture_path = shader.GetInput("file").Get().path
+                    with Image.open(texture_path) as image:
+                        np.testing.assert_array_equal(np.asarray(image)[0, 0], color)
+                    stat = os.stat(texture_path)
+                    if exported is not None:
+                        self.assertEqual((stat.st_ino, stat.st_mtime_ns), exported)
+                    exported = (stat.st_ino, stat.st_mtime_ns)
+            mesh.texture = None
+            viewer.log_state(state)
+            material, _ = UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()
+            surface = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
+            self.assertFalse(surface.GetInput("diffuseColor").HasConnectedSource())
+            # An ordinary mesh follows the same rule: omitting the texture on a later call removes it,
+            # and a new array with the same pixels reuses the exported file.
+            image = np.full((2, 2, 3), (0, 0, 255), dtype=np.uint8)
+            uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
+            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices, uvs=uvs, texture=image)
+            plain = viewer.stage.GetPrimAtPath("/root/plain")
+            first, _ = UsdShade.MaterialBindingAPI(plain).ComputeBoundMaterial()
+            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices, uvs=uvs, texture=image.copy())
+            second, _ = UsdShade.MaterialBindingAPI(plain).ComputeBoundMaterial()
+            self.assertEqual(first.GetPath(), second.GetPath())
+            viewer.log_mesh("/plain", mesh.rest_vertices, mesh.indices)
+            material, _ = UsdShade.MaterialBindingAPI(plain).ComputeBoundMaterial()
+            surface = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
+            self.assertFalse(surface.GetInput("diffuseColor").HasConnectedSource())
 
 
 if __name__ == "__main__":

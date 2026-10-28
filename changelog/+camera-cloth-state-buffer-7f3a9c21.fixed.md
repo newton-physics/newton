@@ -1,1 +1,0 @@
-Fix `SensorCamera` rebuilding its cloth BVH whenever `update()` received a different `State`: the camera now copies the particle positions into its own buffer and refits, so alternating states cost a refit and each state can be captured in its own CUDA graph.
