@@ -13,6 +13,10 @@ written to disk until ``viewer.start_clip(...)`` is called, or the
 ``start_clip=True`` is passed to ``enable_recording``. Each call to
 ``viewer.start_clip()`` clears the target folder, resets counters, and records
 up to ``max_frames`` frames before automatically writing the video file.
+Passing ``max_frames=None`` (the default) runs the clip until the viewer is
+closed; the auto-wrapped ``viewer.close()`` then finishes the clip and writes
+the video file as post-processing, so interactive sessions produce a video of
+the full session without needing a predetermined length.
 
 Example usage: (multi-clip mode, one video file per backend triggered by the UI):
 
@@ -35,11 +39,14 @@ when the render loop runs faster than the simulation.
 
 from __future__ import annotations
 
+import argparse
 import glob
 import os
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MethodType
 
 import warp as wp
@@ -47,7 +54,25 @@ import warp as wp
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.viewer import ViewerBase
 
-__all__ = ["enable_recording"]
+__all__ = ["add_recording_args", "enable_recording", "enable_recording_from_args"]
+
+# Bounded async PNG save. ``_SAVE_WORKERS`` caps concurrent encoder threads;
+# ``_SAVE_MAX_PENDING`` caps in-flight + queued saves (and therefore the
+# backlog of buffered pixel data). When saturated, ``_capture_frame`` blocks on
+# the semaphore, applying backpressure to the viewer render loop.
+_SAVE_WORKERS = 4
+_SAVE_MAX_PENDING = 16
+
+
+def _positive_int(value: str) -> int:
+    """argparse ``type`` validator for a strictly positive integer."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {parsed}")
+    return parsed
 
 
 @dataclass
@@ -59,7 +84,6 @@ class _VideoRecording:
     ###
     record_video: bool = True
     default_video_folder: str = "./video"
-    async_save: bool = False
     num_skipped_frames: int = 0
 
     ###
@@ -80,13 +104,16 @@ class _VideoRecording:
     recording_stopped: bool = False
     capture_pending: bool = False
     created_video_folder: bool = False
-    save_threads: list[threading.Thread] = field(default_factory=list)
+    save_executor: ThreadPoolExecutor | None = None
+    save_pending: threading.Semaphore | None = None
+    save_futures: list[Future] = field(default_factory=list)
 
     ###
     # Original viewer function refs
     ###
     original_should_step: Callable | None = None
     original_end_frame: Callable | None = None
+    original_close: Callable | None = None
 
 
 def enable_recording(
@@ -94,7 +121,6 @@ def enable_recording(
     record_video: bool = True,
     default_video_folder: str = "./video",
     num_skipped_frames: int = 0,
-    async_save: bool = False,
     start_clip: bool = False,
     **kwargs,
 ) -> bool:
@@ -102,7 +128,9 @@ def enable_recording(
 
     Wires the recording machinery onto ``viewer`` but does **not** start
     recording. Call ``viewer.start_clip(...)`` to actually capture frames.
-    No directories are created until then.
+    No directories are created until then. Each captured PNG is written on a
+    background thread so the viewer render loop is not blocked by disk I/O;
+    pending saves are flushed before the video file is encoded.
 
     Args:
         viewer: A Newton viewer instance (typically a ``ViewerGL`` returned by
@@ -113,7 +141,6 @@ def enable_recording(
             pass an explicit ``video_folder`` to ``start_clip``. Not created
             on disk until a clip starts.
         num_skipped_frames: Number of leading captured frames to drop before saving.
-        async_save: If True, save each PNG on a background thread.
         start_clip: If True, will directly start a new clip.
 
     Returns:
@@ -135,8 +162,9 @@ def enable_recording(
 
     viewer._recording = _VideoRecording(
         default_video_folder=default_video_folder,
-        async_save=async_save,
         num_skipped_frames=num_skipped_frames,
+        save_executor=ThreadPoolExecutor(max_workers=_SAVE_WORKERS, thread_name_prefix="kamino-recording-save"),
+        save_pending=threading.Semaphore(_SAVE_MAX_PENDING),
     )
 
     # Recording is inactive until start_clip() is called; this keeps the
@@ -146,8 +174,10 @@ def enable_recording(
     # Wrap viewer functions
     viewer._recording.original_should_step = viewer.should_step
     viewer._recording.original_end_frame = viewer.end_frame
+    viewer._recording.original_close = viewer.close
     viewer.should_step = MethodType(_should_step_with_record, viewer)
     viewer.end_frame = MethodType(_end_frame_with_record, viewer)
+    viewer.close = MethodType(_close_with_record, viewer)
 
     # Monkey-patch recording functions into object
     viewer.generate_video = MethodType(_generate_video, viewer)
@@ -218,9 +248,7 @@ def _finish_clip(self):
     recording.recording_stopped = True
     msg.notif(f"Clip captured: {captured} frames")
 
-    for t in recording.save_threads:
-        t.join()
-    recording.save_threads.clear()
+    _flush_save_futures(recording)
 
     out_path = recording.clip_output_path
     if self.generate_video(
@@ -250,9 +278,7 @@ def _reset_recording(self, video_folder: str | None = None) -> None:
     """
     recording = self._recording
 
-    for t in recording.save_threads:
-        t.join()
-    recording.save_threads.clear()
+    _flush_save_futures(recording)
 
     if video_folder is not None and video_folder != recording.default_video_folder:
         recording.default_video_folder = video_folder
@@ -274,22 +300,24 @@ def _reset_recording(self, video_folder: str | None = None) -> None:
 def _start_clip(
     self,
     output_path: str,
-    max_frames: int,
+    max_frames: int | None = None,
     video_folder: str | None = None,
     fps: int = 60,
     keep_frames: bool = False,
     on_done: Callable[[], None] | None = None,
 ) -> None:
-    """Begin a finite-length recording clip with automatic video file generation.
+    """Begin a recording clip with automatic video file generation.
 
     Clears any existing PNGs in the output folder, resets the frame counter,
-    and arms an auto-stop trigger at ``max_frames`` captured frames. When the
-    target is hit, the video file is written, frames are optionally deleted, and
-    ``on_done`` (if provided) is called.
+    and optionally arms an auto-stop trigger at ``max_frames`` captured frames.
+    When the target is hit, or when the viewer is closed in open-ended mode,
+    the video file is written, frames are optionally deleted, and ``on_done``
+    is called if provided.
 
     Args:
         output_path: Destination video file path.
-        max_frames: Number of frames to capture before auto-stopping.
+        max_frames: Number of frames to capture before auto-stopping. If
+            not provided, the clip runs until the viewer is closed.
         video_folder: Optional override for the PNG output directory.
         fps: Frame rate to embed in the video file (should match ``viewer_fps``).
         keep_frames: If False, delete the per-frame PNGs after the video file is
@@ -305,7 +333,30 @@ def _start_clip(
     recording.clip_on_done = on_done
     recording.clip_fps = fps
     recording.recording_active = True
-    msg.notif(f"Recording started: {output_path} ({max_frames} frames -> {recording.default_video_folder})")
+    frame_limit = f"{max_frames} frames" if max_frames is not None else "until viewer close"
+    msg.notif(f"Recording started: {output_path} ({frame_limit} -> {recording.default_video_folder})")
+
+
+def _close_with_record(self):
+    """Flush an active clip, shut down the save pool, then close the viewer.
+
+    Ensures open-ended clips (started with ``max_frames=None``) finish and
+    write their video file as post-processing when the viewer window closes.
+    Finite clips that reached their frame budget are already inactive, so
+    the extra ``finish_clip`` call is a no-op. ``original_close`` is called
+    unconditionally so the viewer window is always torn down even if
+    ``finish_clip`` or the executor shutdown raises.
+    """
+    recording: _VideoRecording = self._recording
+    try:
+        try:
+            if recording.recording_active:
+                self.finish_clip()
+        finally:
+            if recording.save_executor is not None:
+                recording.save_executor.shutdown()
+    finally:
+        recording.original_close()
 
 
 def _capture_frame(viewer, recording: _VideoRecording) -> bool:
@@ -318,31 +369,54 @@ def _capture_frame(viewer, recording: _VideoRecording) -> bool:
         return False
 
     if recording.img_idx >= recording.num_skipped_frames:
-        frame = viewer.get_frame(target_image=recording.frame_buffer)
+        # ``get_frame`` reuses ``frame_buffer`` across frames and ``.numpy()`` may
+        # share its backing storage (e.g. on a CPU-device viewer). Copy before
+        # handing the array off so the background saver owns its pixels and the
+        # next frame can overwrite ``frame_buffer`` safely.
+        frame = viewer.get_frame(output=recording.frame_buffer)
         if recording.frame_buffer is None:
             recording.frame_buffer = frame
-
-        frame_np = frame.numpy()
-        image = Image.fromarray(frame_np, mode="RGB")
+        image = Image.fromarray(frame.numpy().copy(), mode="RGB")
 
         filename = os.path.join(
             recording.default_video_folder, f"{recording.img_idx - recording.num_skipped_frames:05d}.png"
         )
 
-        if recording.async_save:
-            t = threading.Thread(
-                target=image.save,
-                args=(filename,),
-                daemon=False,
-            )
-            t.start()
-            recording.save_threads.append(t)
-            recording.save_threads = [s for s in recording.save_threads if s.is_alive()]
-        else:
-            image.save(filename)
+        # Submit to the bounded save pool. The acquire caps in-flight work
+        # (including queued tasks still holding image references), so the render
+        # loop blocks here if encoders can't keep up instead of growing an
+        # unbounded backlog. Pending futures are drained before the video file
+        # is encoded (see ``_flush_save_futures``).
+        recording.save_pending.acquire()
+        recording.save_futures.append(
+            recording.save_executor.submit(_save_image, recording.save_pending, image, filename)
+        )
+        # Drop completed futures to free image refs and surface any late save errors.
+        still_pending = []
+        for fut in recording.save_futures:
+            if fut.done():
+                fut.result()
+            else:
+                still_pending.append(fut)
+        recording.save_futures = still_pending
 
     recording.img_idx += 1
     return True
+
+
+def _save_image(sem: threading.Semaphore, image, filename: str) -> None:
+    """Encode and write ``image`` to ``filename``, releasing ``sem`` on completion."""
+    try:
+        image.save(filename)
+    finally:
+        sem.release()
+
+
+def _flush_save_futures(recording: _VideoRecording) -> None:
+    """Wait for all pending PNG saves and surface any encoder exceptions."""
+    for fut in recording.save_futures:
+        fut.result()
+    recording.save_futures.clear()
 
 
 def _generate_video(
@@ -374,16 +448,20 @@ def _generate_video(
         msg.warning("No frames recorded, cannot generate video")
         return False
 
-    for t in recording.save_threads:
-        t.join()
-    recording.save_threads.clear()
+    _flush_save_futures(recording)
 
-    frame_files = sorted(glob.glob(os.path.join(recording.default_video_folder, "*.png")))
-    if not frame_files:
-        msg.warning(f"No png frames found in {recording.default_video_folder}")
+    # Enumerate exactly the PNGs this clip wrote (for robustness to stale frames in the folder).
+    num_captured = recording.img_idx - recording.num_skipped_frames
+    frame_files = [os.path.join(recording.default_video_folder, f"{i:05d}.png") for i in range(num_captured)]
+    missing = [f for f in frame_files if not os.path.exists(f)]
+    if missing:
+        msg.warning(
+            f"Expected {num_captured} PNG frames in {recording.default_video_folder} "
+            f"but {len(missing)} are missing (first missing: {os.path.basename(missing[0])})"
+        )
         return False
 
-    msg.info(f"Generating video from {len(frame_files)} frames...")
+    msg.info(f"Generating video from {num_captured} frames...")
     try:
         with Image.open(frame_files[0]) as first_frame:
             size = first_frame.size
@@ -421,3 +499,127 @@ def _generate_video(
     except Exception as e:
         msg.warning(f"Failed to generate video: {e}")
         return False
+
+
+def add_recording_args(
+    parser: argparse.ArgumentParser,
+    *,
+    example_name: str,
+    default_video_num_frames: int | None = None,
+    record_video_help: str | None = None,
+    video_path_help: str | None = None,
+    video_num_frames_help: str | None = None,
+) -> None:
+    """Add the common video-recording CLI args to ``parser``.
+
+    Registers ``--record-video`` / ``--video-path`` / ``--keep-frames`` /
+    ``--video-num-frames`` with consistent defaults. Pair with
+    :func:`enable_recording_from_args` to wire the recording machinery in a
+    single call at example-startup time.
+
+    Args:
+        parser: Target argparse parser.
+        example_name: Short example identifier used in the default ``--video-path``
+            help text (``<examples_output>/<example_name>/<example_name>.mp4``).
+        default_video_num_frames: Default for ``--video-num-frames``.
+        record_video_help, video_path_help, video_num_frames_help: Per-example
+            overrides for the help text of the respective arguments. Leave
+            unset to use the generic default wording.
+    """
+    parser.add_argument(
+        "--record-video",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            record_video_help
+            if record_video_help is not None
+            else (
+                "Record a video of the viewer. By default, records until the viewer is closed; "
+                "use --video-num-frames to cap the recording length."
+            )
+        ),
+    )
+    parser.add_argument(
+        "--video-path",
+        type=str,
+        default=None,
+        help=(
+            video_path_help
+            if video_path_help is not None
+            else f"Output path for the video file. Defaults to <examples_output>/{example_name}/{example_name}.mp4."
+        ),
+    )
+    parser.add_argument(
+        "--keep-frames",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If set, keep the per-frame PNGs captured during recording after the video file is generated.",
+    )
+    parser.add_argument(
+        "--video-num-frames",
+        type=_positive_int,
+        default=default_video_num_frames,
+        help=(
+            video_num_frames_help
+            if video_num_frames_help is not None
+            else (
+                "Stop recording and write the video after this many frames. "
+                "If omitted, recording stops when the viewer closes (manually in windowed "
+                "mode, or after --num-frames in headless mode)."
+            )
+        ),
+    )
+
+
+def enable_recording_from_args(
+    viewer,
+    args: argparse.Namespace,
+    *,
+    name: str,
+    output_root: str | Path,
+    fps: int,
+    filename: str | None = None,
+    start_clip: bool = True,
+) -> bool:
+    """Wire ``viewer`` for video recording from CLI args added by :func:`add_recording_args`.
+
+    No-op when ``--record-video`` is unset. Otherwise resolves the output video
+    path (``--video-path`` or ``<output_root>/<name>/<filename>.mp4``), creates its
+    parent folder, and calls :func:`enable_recording` (optionally starting a
+    clip immediately with the per-arg settings).
+
+    Args:
+        viewer: Target viewer, as returned by ``newton.examples.init``.
+        args: Parsed ``argparse.Namespace`` carrying ``record_video``,
+            ``video_path``, ``video_num_frames``, and ``keep_frames``.
+        name: Short example identifier used as the per-example subfolder.
+        output_root: Root directory holding per-example subfolders.
+        fps: Video framerate (should match the viewer FPS).
+        filename: Optional stem for the output video file (``.mp4`` is appended).
+            Defaults to ``name``; override to disambiguate multiple runs of the
+            same example (e.g. per-solver suffix).
+        start_clip: If True (default), start a clip immediately; otherwise just
+            wire the machinery (used by GUI-driven flows that start clips on
+            demand).
+
+    Returns:
+        Whether recording was successfully enabled.
+    """
+    if not getattr(args, "record_video", False):
+        return False
+    user_video_path = getattr(args, "video_path", None)
+    if user_video_path is not None:
+        video_path = Path(user_video_path)
+    else:
+        video_path = Path(output_root) / name / f"{filename or name}.mp4"
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    return enable_recording(
+        viewer=viewer,
+        record_video=True,
+        default_video_folder=str(video_path.parent / f"{video_path.stem}_frames"),
+        start_clip=start_clip,
+        output_path=str(video_path),
+        max_frames=getattr(args, "video_num_frames", None),
+        fps=fps,
+        keep_frames=getattr(args, "keep_frames", False),
+    )

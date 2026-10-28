@@ -134,8 +134,8 @@ def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, 
     """Load ONNX policy and setup device buffers for the policy step."""
     print("[INFO] Loading policy from:", policy_path)
     example.policy = OnnxRuntime(policy_path, device=example.device)
-    example.policy_input_name = example.policy.input_names[0]
-    example.policy_output_name = example.policy.output_names[0]
+    example.policy_input_name = example.policy.inputs[0].name
+    example.policy_output_name = example.policy.outputs[0].name
 
     if example.state_0.joint_q is not None:
         example._joint_pos_initial_wp = wp.clone(example.state_0.joint_q[joint_pos_slice])
@@ -159,6 +159,7 @@ def load_policy_and_setup_arrays(example: Any, policy_path: str, num_dofs: int, 
     )
     example._obs_wp = wp.zeros((1, obs_dim), dtype=wp.float32, device=example.device)
     example._prev_act_wp = wp.zeros((1, num_dofs), dtype=wp.float32, device=example.device)
+    example.policy.prepare({example.policy_input_name: example._obs_wp})
 
     example._physx_to_mjc_wp = wp.array(
         np.asarray(example.physx_to_mjc_indices, dtype=np.int32), dtype=wp.int32, device=example.device
@@ -296,7 +297,9 @@ class Example:
             self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         self.viewer.set_model(self.model)
         self.viewer.vsync = True

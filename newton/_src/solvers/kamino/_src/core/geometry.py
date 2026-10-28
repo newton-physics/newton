@@ -142,6 +142,12 @@ class GeometriesModel:
     Shape of ``(num_geoms,)``.
     """
 
+    torsional_friction: wp.array[wp.float32] | None = None
+    """Per-geometry torsional friction coefficient [m]; ``None`` means zero."""
+
+    rolling_friction: wp.array[wp.float32] | None = None
+    """Per-geometry rolling friction coefficient [m]; ``None`` means zero."""
+
     group: wp.array[wp.int32] | None = None
     """
     Collision group assigned to each collision geometry. These groups are based
@@ -202,6 +208,15 @@ class GeometriesModel:
 
     collision_aabb_upper: wp.array[wp.vec3f] | None = None
     """Per-shape local-space collision AABB upper bounds."""
+
+    interior_point: wp.array[wp.vec3f] | None = None
+    """Per-shape local-space point inside the shape, used for mesh-triangle contacts."""
+
+    mesh_boundary_flags: wp.array[wp.uint8] | None = None
+    """Packed per-face open-boundary bits for mesh signed-distance queries."""
+
+    mesh_boundary_start: wp.array[wp.int32] | None = None
+    """Per-shape start into :attr:`mesh_boundary_flags`, or ``-1`` without boundary bits."""
 
     collision_radius: wp.array[wp.float32] | None = None
     """Per-shape bounding-sphere radius for broadphase AABB computation."""

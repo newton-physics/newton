@@ -96,7 +96,62 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
 - :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
+- :meth:`~newton.viewer.ViewerBase.set_rendering_paused` / :meth:`~newton.viewer.ViewerBase.is_rendering_paused` — freeze or resume the displayed image independently of simulation stepping in GL and RTX
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
+
+**Rendering pause (GL and RTX):**
+
+Click **Pause Rendering**, or call ``viewer.set_rendering_paused(True)``, to
+freeze the last displayed image while simulation may continue. UI controls,
+plots, window resize, and close events remain active. Camera navigation and
+scene picking/gizmos are disabled while the image is frozen. The ordinary
+**Pause** and **Step** controls still govern simulation independently.
+
+Continue calling ``begin_frame()``, logging updates, and ``end_frame()`` during
+rendering pause. The viewer retains the latest scene updates, including
+transforms, visibility, debug geometry, and programmatic camera changes.
+Resuming renders the current state without replaying intervening frames.
+Frame-scoped UI annotations and fullscreen-image requests keep their normal
+per-frame lifetime. A fullscreen image already displayed stays frozen too.
+
+.. code-block:: python
+
+    viewer.set_rendering_paused(True)
+    while viewer.is_running():
+        if viewer.should_step():
+            simulation.step()
+        viewer.begin_frame(simulation.time)
+        viewer.log_state(simulation.state)
+        viewer.end_frame()  # Keep servicing the window and Resume control.
+
+Rendering pause also works programmatically in headless mode. ``num_frames``
+continues to count viewer-loop frames during pause; windowed viewers continue
+to ignore that budget. GL frame capture and RTX screenshots return the frozen
+image while paused. With no previously displayed image, the background is
+empty and capture raises ``RuntimeError``; headless RTX uses the last image
+accepted by the viewer. Clearing or replacing the model invalidates the image
+but preserves the rendering-pause setting. Other backends report ``False``
+and ignore requests to enable rendering pause.
+
+RTX retains its existing rendering modes: the default ``async_rendering=True``
+submits one frame asynchronously and waits for it on the next unpaused
+``end_frame()``; ``False`` renders synchronously. Rendering pause neither
+waits for nor submits a renderer frame. Any outstanding async result is held
+and discarded on resume, so it cannot replace the frozen image. Resume
+publishes the latest retained scene updates and follows the selected mode's
+usual presentation cadence; async mode displays that new result on the
+following frame. Scene updates remain bounded to the latest values per object.
+Initial renderer/model loading, explicit cleanup, and an unpaused render can
+still wait for GPU work. Rendering pause does not interrupt those operations.
+
+Windowed RTX and GL retain a separate RGBA image texture so changes to the
+scene, camera, or fullscreen images cannot overwrite the frozen image. This
+requires four extra bytes per pixel (about 33 MB at 3840 x 2160), plus a GPU
+image copy on every unpaused frame, even if rendering pause is never used.
+The copy preserves the displayed image if a logged fullscreen texture is
+updated or the render target is resized before pause is requested. Headless
+RTX likewise keeps a GPU copy of the last accepted image, independent of any
+outstanding async render.
 
 **Camera and layout:**
 
@@ -197,7 +252,7 @@ windowed mode:
     rgb = frame.numpy()  # NumPy uint8 array with shape (height, width, 3)
 
     # Reuse the output buffer after rendering subsequent frames.
-    viewer.get_frame(target_image=frame)
+    viewer.get_frame(output=frame)
 
 Use an image library to save the captured pixels, for example:
 
@@ -352,9 +407,8 @@ RTX Viewer
 ~~~~~~~~~~
 
 :class:`~newton.viewer.ViewerRTX` provides real-time path-traced rendering using the NVIDIA OVRTX renderer.
-It builds a USD scene on the first frame and updates rigid-body transforms each frame via the renderer's runtime
-scene interface, presenting the result in a pyglet/OpenGL window. ViewerRTX selects the legacy OVRTX attribute
-interface for OVRTX versions before 0.4 and the OVStage interface for OVRTX 0.4 and newer.
+It builds a USD scene on the first frame and updates rigid-body transforms each frame through OVStage,
+presenting the result in a pyglet/OpenGL window.
 
 Debug geometry can be added before or after the first rendered frame using
 :meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
@@ -378,24 +432,15 @@ and cone heads; their ``width`` specifies the shaft radius in meters.
 
     uv sync --extra rtx
 
-This installs ``ovrtx`` (the NVIDIA OVRTX renderer), ``ovstage`` for runtime scene management, and
-``usd-core``, in addition to ``pyglet`` for the window.
+This installs ``ovrtx`` 0.5.1.385782 or newer (the NVIDIA OVRTX renderer), ``ovstage`` 0.2.1.385922 or newer
+for runtime scene management, and ``usd-core``, in addition to ``pyglet`` for the window.
 
-ViewerRTX has been validated with the following renderer configurations:
+ViewerRTX has been validated with the following renderer configuration:
 
-- ``ovrtx==0.3.0.312915`` (local compatibility testing)
-- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349`` (GPU CI)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (minimum-dependency and GPU CI; Isaac Lab 3.0)
 
-OVRTX 0.4 and newer select the same OVStage interface, but only the exact configurations above are part of
-Newton's validated matrix. The minimum-dependency CI workflow does not install the optional ``rtx`` dependency
-group and therefore does not exercise the OVRTX 0.3 integration.
-
-.. warning::
-    With ``ovrtx==0.5.0.377615`` and ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave
-    ViewerRTX showing a uniform gray image, commonly after switching examples in the same process. Until this is
-    resolved, use the validated OVRTX 0.3 configuration for reliable interactive switching. CPU staging avoids
-    the symptom but is not enabled because it introduces a per-frame GPU-to-CPU synchronization and copy. See
-    `issue #4283 <https://github.com/newton-physics/newton/issues/4283>`__.
+Only the exact configuration above is part of Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage``
+together; OVRTX 0.5.1 fails to start with OVStage 0.2.0.
 
 .. code-block:: python
 
@@ -428,7 +473,7 @@ lights, e.g. an HDR ``DomeLight``, via :meth:`~newton.viewer.ViewerRTX.add_backg
 Rendering an existing USD scene
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-With OVStage 0.2 or newer, ``ViewerRTX(ovstage=stage)`` renders a populated ``ovstage.Stage`` with its authored
+``ViewerRTX(ovstage=stage)`` renders a populated ``ovstage.Stage`` with its authored
 materials and lights instead of building a scene from the model. The stage presents the scene; Newton only moves it:
 
 - **Bodies**: :meth:`~newton.viewer.ViewerRTX.set_model` binds each Newton body to the stage prim whose path equals the
@@ -957,8 +1002,25 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.Viewe
 Contact normals, mode disks, and force arrows are sized relative to the smaller
 shape in each contact pair. Use the ``Contact Relative Scale`` control to adjust
 all contact glyphs while preserving their proportions across differently sized
-contacts. Contact mode coloring and force arrows require the ``"force"``
-extended contact attribute.
+contacts. To infer contact modes and draw force arrows, request the solver's
+``CONTACT_F`` observable, pass it to the solver step, and provide the resulting
+observables to the viewer:
+
+.. code-block:: python
+
+    viewer.log_contacts(contacts, state, observables=observables)
+
+See :ref:`solver_observables` for allocation, contact-buffer identity, and backend
+support. Without force output, mode disks are amber (unknown) and force arrows
+are hidden. With force output, disks are black for open contacts, light gray for
+sticking contacts, and blue for slipping contacts. A measured force magnitude
+at or below ``contact_mode_eps_force`` is open, including zero force when the
+threshold is zero.
+
+Default force-arrow calibration uses the average dynamic mass of populated local
+worlds plus shared global dynamic mass, so replicating identical worlds does not
+change arrow lengths. Set ``viewer.contact_force_scale`` after attaching the
+model to override the calibration.
 
 **Transform gizmos:**
 
@@ -1002,7 +1064,7 @@ the range are clipped).
     # once and reuse it every frame; the RGBA conversion is a zero-copy view.
     camera = SensorCamera(model)
     view_count, width, height = 1, 16, 16
-    color_image = camera.create_color_image_output(view_count, width, height)
+    color_image = camera.allocate_image_color(view_count, width, height)
     # ... in a real pipeline, camera.update(...) fills color_image each frame.
     rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
     viewer.log_image("camera", rgba)
@@ -1030,7 +1092,7 @@ frame capture where the image should replace the 3D scene:
     # once and reuse it every frame; the RGBA conversion is a zero-copy view.
     camera = SensorCamera(model)
     view_count, width, height = 1, 16, 16
-    color_image = camera.create_color_image_output(view_count, width, height)
+    color_image = camera.allocate_image_color(view_count, width, height)
     # ... in a real pipeline, camera.update(...) fills color_image each frame.
     rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
     viewer.log_image("camera", rgba, fullscreen=True)

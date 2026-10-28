@@ -595,7 +595,7 @@ class TestRandomPoses(unittest.TestCase):
         builder_single.add_usd(source=asset_file)
         builder_single.end_world()
         builder = newton.ModelBuilder()
-        builder.replicate(builder=builder_single, world_count=10)
+        builder.replicate(builder=builder_single, copy_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Solve and check FK on random poses, on both dense and sparse paths
@@ -615,7 +615,7 @@ class TestRandomPoses(unittest.TestCase):
         builder_single.add_usd(source=asset_file)
         builder_single.end_world()
         builder = newton.ModelBuilder()
-        builder.replicate(builder=builder_single, world_count=10)
+        builder.replicate(builder=builder_single, copy_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Solve and check FK on random poses, on both dense and sparse paths
@@ -675,11 +675,24 @@ class TestRandomPoses(unittest.TestCase):
         with self.assertLogs(level="WARNING"):
             self.assertTrue(solve_and_check_fn(use_sparsity=True))
 
+        # Validate also the jacobi_diagonal preconditioner on the sparse path
+        solve_and_check_fn = self._make_solve_and_check(
+            model,
+            num_poses=3,
+            rng=rng,
+            max_angle=np.radians(5.0),
+            max_ang_vel=np.radians(20.0),
+            randomize_base=True,
+            preconditioner="jacobi_diagonal",
+        )
+        with self.assertLogs(level="WARNING"):
+            self.assertTrue(solve_and_check_fn(use_sparsity=True))
+
     def test_four_bar_tie_rod_axis_joints_random_poses(self):
         """Validate FK on random poses for a four-bar with a tie rod, using axis joints"""
         rng = np.random.default_rng(rng_seed_from_string("Four-bar with tie rod FK random poses check (axis joints)"))
         builder = newton.ModelBuilder()
-        builder.replicate(builder=create_four_bar_tie_rod(), world_count=10)
+        builder.replicate(builder=create_four_bar_tie_rod(), copy_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device, requires_grad=False))
 
         # Solve and check FK on random poses, on both dense and sparse paths
@@ -698,7 +711,7 @@ class TestRandomPoses(unittest.TestCase):
             rng_seed_from_string("Four-bar with tie rod FK random poses check (regularization)")
         )
         builder = newton.ModelBuilder()
-        builder.replicate(builder=create_four_bar_tie_rod(), world_count=10)
+        builder.replicate(builder=create_four_bar_tie_rod(), copy_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device, requires_grad=False))
 
         # Solve and check FK on random poses, on both dense and sparse paths

@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import collections
+import copy
 import inspect
 import logging
 import os
 import queue
+import re
 import time
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
@@ -23,7 +26,15 @@ import newton
 if TYPE_CHECKING:
     import viser
 
+from ..core.host_transform import (
+    transform_assign_position_wxyz,
+    transform_inverse,
+    transform_point,
+    transform_to_position_wxyz,
+    transform_vector,
+)
 from ..core.types import Axis, override
+from ..exceptions import NewtonWarning
 from .camera import Camera
 from .image_logger import (
     _atlas_layout,
@@ -33,14 +44,7 @@ from .image_logger import (
     _validate,
 )
 from .picking import Picking
-from .transform import (
-    transform_assign_position_wxyz,
-    transform_inverse,
-    transform_point,
-    transform_to_position_wxyz,
-    transform_vector,
-)
-from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
+from .utils import gaussian_display_colors, prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
 # ViewerGL uses 0.07 clip-space units; 56 px matches that at an 800 px viewport.
@@ -72,7 +76,6 @@ class ViewerViser(ViewerBase):
 
     _viser_module = None
     _IMAGE_JPEG_QUALITY = 90
-    _SH_C0 = 0.28209479177387814
 
     class _ImmediateGuiAdapter:
         """Translate the examples' immediate-mode controls to native Viser GUI handles."""
@@ -205,7 +208,8 @@ class ViewerViser(ViewerBase):
             return max(abs(float(maximum) - float(minimum)) / 100.0, 1.0e-6)
 
         def text(self, value: Any) -> None:
-            content = str(value)
+            # ImGui text is literal; retain that behavior in Markdown widgets.
+            content = re.sub(r"([\\`*_{}\[\]<>()#+.!|~-])", r"\\\1", str(value)).replace("\n", "  \n")
 
             def create(_key):
                 return self._add(lambda: self._viewer._server.gui.add_markdown(content))
@@ -389,6 +393,7 @@ class ViewerViser(ViewerBase):
                 warnings.warn(
                     "Viser textured mesh batches do not support varying per-instance opacity; "
                     "the mesh material opacity is used. Use separate batches for different opacities.",
+                    NewtonWarning,
                     stacklevel=3,
                 )
         return mesh.export(file_type="glb")
@@ -396,6 +401,7 @@ class ViewerViser(ViewerBase):
     def __init__(
         self,
         *,
+        host: str = "0.0.0.0",
         port: int = 8080,
         paused: bool = False,
         label: str | None = None,
@@ -411,10 +417,14 @@ class ViewerViser(ViewerBase):
         It launches a web server that serves an interactive 3D visualization.
 
         Args:
+            host: Address the web server binds to. Defaults to ``"0.0.0.0"``
+                (every interface); use ``"127.0.0.1"`` to keep the viewer local
+                to this machine. Must be an address of this machine; viser
+                does not report bind failures and blocks instead.
             port: Port number for the web server. Defaults to 8080.
             paused: Whether simulation stepping starts paused.
             label: Optional label for the viser server window title.
-            verbose: If True, print the server URL when starting. Defaults to True.
+            verbose: If True, log the server URL when starting. Defaults to True.
             share: If True, create a publicly accessible URL via viser's share feature.
             record_to_viser: Path to record the viewer to a ``*.viser`` recording file
                 (e.g. "my_recording.viser"). If None, the viewer will not record to a file.
@@ -494,7 +504,7 @@ class ViewerViser(ViewerBase):
         self._line_versions = {}
 
         # Initialize viser server
-        self._server = viser.ViserServer(port=port, label=label or "Newton Viewer", verbose=verbose)
+        self._server = viser.ViserServer(host=host, port=port, label=label or "Newton Viewer", verbose=verbose)
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._camera_fov_radians: float | None = None
         self._camera_up_axis = 2
@@ -511,12 +521,12 @@ class ViewerViser(ViewerBase):
         if share:
             self._share_url = self._server.request_share_url()
             if verbose:
-                print(f"Viser share URL: {self._share_url}")
+                _logger.info("Viser share URL: %s", self._share_url)
         else:
             self._share_url = None
 
         if verbose:
-            print(f"Viser server running at: {self.url}")
+            _logger.info("Viser server running at: %s", self.url)
 
         # Recording state
         self._frame_dt = 0.0
@@ -528,7 +538,7 @@ class ViewerViser(ViewerBase):
         self._setup_gui()
 
         if self._serializer is not None and verbose:
-            print(f"Recording to: {record_to_viser}")
+            _logger.info("Recording to: %s", record_to_viser)
 
     @override
     def clear_model(self):
@@ -609,6 +619,41 @@ class ViewerViser(ViewerBase):
         self._reset_camera_to_default(self._get_camera_up_axis())
 
     @override
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Preserve native wireframe choices and each client's view on reset."""
+        wireframe = self._display_options_user.get("wireframe") if switching else self._wireframe
+        if not switching:
+            camera_request = copy.deepcopy(self._camera_request)
+            camera_fov = self._camera_fov_radians
+            camera_pitch, camera_yaw = self._camera_pitch, self._camera_yaw
+            client_cameras = {
+                client_id: {
+                    name: copy.deepcopy(getattr(client.camera, name))
+                    for name in ("position", "look_at", "up_direction", "fov", "near", "far")
+                }
+                for client_id, client in self._server.get_clients().items()
+            }
+        try:
+            with super()._preserve_display_options(switching=switching):
+                yield
+        finally:
+            if wireframe is not None:
+                self._set_wireframe(wireframe)
+            if not switching:
+                self._camera_fov_radians = camera_fov
+                self._camera_pitch, self._camera_yaw = camera_pitch, camera_yaw
+                if camera_request is not None:
+                    self._set_camera_request(*camera_request)
+                # Client navigation is independent of the cached request used
+                # for new connections. Restore each connected view separately.
+                for client_id, client in self._server.get_clients().items():
+                    if client_id in client_cameras:
+                        with client.atomic():
+                            self._apply_attrs(client.camera, client_cameras[client_id])
+            self._sync_gui_controls()
+
+    @override
     def _init_extra_layer_state(self, layer):
         """Initialize Viser-specific per-layer interaction state."""
         super()._init_extra_layer_state(layer)
@@ -637,13 +682,8 @@ class ViewerViser(ViewerBase):
         self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
         if self.picking is not None:
             self.picking.visible_worlds_mask = self._visible_worlds_mask
-
-        if model is not None:
             try:
-                from ..geometry import raycast as _raycast_module  # noqa: PLC0415
-
-                wp.load_module(module=_raycast_module, device=model.device)
-                wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+                self.picking._load_kernels()
             except Exception:
                 pass
 
@@ -1399,6 +1439,7 @@ class ViewerViser(ViewerBase):
                         self._end_gizmo_drag(name)
             elif event_type == "viewer_option":
                 _, attribute, value = event
+                self._display_options_user[attribute] = value
                 if attribute == "wireframe":
                     self._set_wireframe(value)
                 else:
@@ -1439,9 +1480,13 @@ class ViewerViser(ViewerBase):
         Returns:
             str: Browser URL for the running viser server.
         """
+        # Match viser's startup URL: a wildcard bind is reachable on localhost.
+        host = self._server.get_host()
+        if host == "0.0.0.0":
+            host = "localhost"
         if self.is_jupyter_notebook:
-            return self._build_browser_url(self._port)
-        return f"http://localhost:{self._port}"
+            return self._build_browser_url(self._port, local_host=host)
+        return f"http://{host}:{self._port}"
 
     @staticmethod
     def _normalize_jupyter_base_url(base_url: str) -> str:
@@ -1858,11 +1903,14 @@ class ViewerViser(ViewerBase):
         texture_image = prepare_viewer_texture(texture)
 
         if texture_image is not None and uvs_np is None:
-            warnings.warn(f"Mesh {name} has a texture but no UVs; texture will be ignored.", stacklevel=2)
+            warnings.warn(
+                f"Mesh {name} has a texture but no UVs; texture will be ignored.", NewtonWarning, stacklevel=2
+            )
             texture_image = None
         if texture_image is not None and uvs_np is not None and len(uvs_np) != len(points_np):
             warnings.warn(
                 f"Mesh {name} has {len(uvs_np)} UVs for {len(points_np)} vertices; texture will be ignored.",
+                NewtonWarning,
                 stacklevel=2,
             )
             texture_image = None
@@ -1877,6 +1925,7 @@ class ViewerViser(ViewerBase):
             if trimesh_mesh is None:
                 warnings.warn(
                     "Viser textured meshes require trimesh; falling back to untextured rendering.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -2623,7 +2672,7 @@ class ViewerViser(ViewerBase):
         self._serializer = None
 
         if self.verbose:
-            print(f"Recording saved to: {self._record_to_viser}")
+            _logger.info("Recording saved to: %s", self._record_to_viser)
 
     @override
     def log_lines(
@@ -3076,7 +3125,7 @@ class ViewerViser(ViewerBase):
 
             sh_coeffs = to_numpy(gaussian.sh_coeffs)
             if sh_coeffs is not None and sh_coeffs.shape[1] >= 3:
-                rgbs = np.clip(self._SH_C0 * sh_coeffs[:, :3] + 0.5, 0.0, 1.0).astype(np.float32)
+                rgbs = gaussian_display_colors(sh_coeffs, gaussian.sh_color_space)
             else:
                 rgbs = np.ones((gaussian.count, 3), dtype=np.float32)
 

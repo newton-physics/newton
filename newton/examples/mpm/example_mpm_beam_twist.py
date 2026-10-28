@@ -283,6 +283,12 @@ class Example:
 
         parser.add_argument("--max-iterations", "-it", type=int, default=250)
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
+        parser.add_argument(
+            "--carry-residual-strain",
+            choices=["none", "unconverged", "sampled"],
+            default="unconverged",
+            help="Keep the strain an unconverged solve leaves; suited to compliant elastic materials.",
+        )
         parser.add_argument("--voxel-size", "-dx", type=float, default=0.25)
 
         return parser

@@ -9,7 +9,6 @@ without instantiating ``ImageLogger`` itself.
 """
 
 import contextlib
-import sys
 import types
 import unittest
 import warnings
@@ -17,6 +16,8 @@ from unittest import mock
 
 import numpy as np
 import warp as wp
+
+from newton.tests.unittest_utils import patch_sys_module
 
 
 class _GLuintArray(list):
@@ -125,17 +126,14 @@ class _FakeGL:
         self.calls.append(("glDeleteBuffers", (n,)))
 
 
-def _install_fake_pyglet(fake_gl: _FakeGL) -> None:
-    """Make ``from pyglet import gl`` resolve to *fake_gl* for this test."""
+def _install_fake_pyglet(test: unittest.TestCase, fake_gl: _FakeGL) -> None:
+    """Make ``from pyglet import gl`` resolve to *fake_gl* until *test* is cleaned up."""
     fake_pyglet = types.ModuleType("pyglet")
     fake_pyglet.gl = fake_gl  # type: ignore[attr-defined]
-    sys.modules["pyglet"] = fake_pyglet
-    sys.modules["pyglet.gl"] = fake_gl  # type: ignore[assignment]
-
-
-def _uninstall_fake_pyglet() -> None:
-    sys.modules.pop("pyglet", None)
-    sys.modules.pop("pyglet.gl", None)
+    stack = contextlib.ExitStack()
+    test.addCleanup(stack.close)
+    stack.enter_context(patch_sys_module("pyglet", fake_pyglet))
+    stack.enter_context(patch_sys_module("pyglet.gl", fake_gl))
 
 
 class _ImageLoggerFixture(unittest.TestCase):
@@ -143,17 +141,13 @@ class _ImageLoggerFixture(unittest.TestCase):
 
     def setUp(self):
         self.fake_gl = _FakeGL()
-        _install_fake_pyglet(self.fake_gl)
+        _install_fake_pyglet(self, self.fake_gl)
 
         from newton._src.viewer.image_logger import ImageLogger  # noqa: PLC0415
 
         self.ImageLogger = ImageLogger
         self.cpu_device = wp.get_device("cpu")
         self.logger = ImageLogger(device=self.cpu_device)
-
-    def tearDown(self):
-        # Avoid leaking the fake module into other tests.
-        _uninstall_fake_pyglet()
 
 
 class TestImageLoggerOrchestration(_ImageLoggerFixture):
@@ -344,6 +338,9 @@ class TestImageLoggerCleanup(_ImageLoggerFixture):
 
 class _FakeRenderer:
     def __init__(self):
+        self._frame_texture = 1
+        self._screen_width = 64
+        self._screen_height = 48
         self.render_calls = []
         self.render_texture_calls = []
         self.present_count = 0
@@ -386,6 +383,8 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
         from newton._src.viewer import viewer_gl  # noqa: PLC0415
 
         viewer = viewer_gl.ViewerGL.__new__(viewer_gl.ViewerGL)
+        viewer._rendering_paused = False
+        viewer._displayed_frame = mock.Mock()
         viewer.renderer = _FakeRenderer()
         viewer._image_logger = _FakeFullscreenImageLogger(texture)
         viewer._last_time = 0.0
@@ -481,7 +480,8 @@ class TestViewerRTXLogImage(unittest.TestCase):
         # Neither OVRTX nor the window is created before the first rendered frame.
         with (
             wp.ScopedDevice("cpu"),
-            mock.patch.dict("sys.modules", {"ovrtx": types.SimpleNamespace(__version__="0.3.0")}),
+            patch_sys_module("ovrtx", types.SimpleNamespace()),
+            patch_sys_module("ovstage", types.SimpleNamespace()),
         ):
             viewer = ViewerRTX(headless=headless)
         self.addCleanup(viewer.close)
@@ -524,13 +524,21 @@ class TestViewerRTXLogImage(unittest.TestCase):
                 viewer._image_logger.get_texture.return_value = texture
                 viewer._rtx = mock.Mock()
                 viewer._should_close = False
-                viewer._window = object()
+                viewer._async = True
+                viewer._window = mock.Mock()
+                viewer._headless = False
+                viewer._rendering_paused = False
+                viewer._displayed_frame = mock.Mock(texture=expected[0], width=expected[1], height=expected[2])
                 viewer._present = mock.Mock()
 
                 ViewerRTX._render_and_display(viewer)
 
                 viewer._image_logger.get_texture.assert_called_once_with("color", fullscreen=True)
                 viewer._present.assert_called_once_with(*expected)
+                if texture is not None:
+                    viewer._displayed_frame.store.assert_called_once_with(*texture)
+                else:
+                    viewer._displayed_frame.clear.assert_called_once()
                 viewer._rtx.step.assert_not_called()
                 viewer._rtx.step_async.assert_not_called()
 
@@ -543,7 +551,7 @@ class TestImageLoggerEnsurePboRollback(unittest.TestCase):
 
     def setUp(self):
         self.fake_gl = _FakeGL()
-        _install_fake_pyglet(self.fake_gl)
+        _install_fake_pyglet(self, self.fake_gl)
 
         from newton._src.viewer.image_logger import ImageLogger, LoggedImage  # noqa: PLC0415
 
@@ -551,9 +559,6 @@ class TestImageLoggerEnsurePboRollback(unittest.TestCase):
         self.LoggedImage = LoggedImage
         self.cuda_device = wp.get_device("cuda:0")
         self.logger = ImageLogger(device=self.cuda_device)
-
-    def tearDown(self):
-        _uninstall_fake_pyglet()
 
     def test_registered_gl_buffer_failure_rolls_back_pbo(self):
         entry = self.LoggedImage(name="cam0")

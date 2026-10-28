@@ -26,7 +26,7 @@ Minimum Requirements
      - Notes
    * - Python
      - 3.10
-     - 3.11+ recommended
+     - 3.10 support is deprecated; removal planned for Newton 1.9. Use 3.11+.
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
      - macOS has no GPU acceleration
@@ -65,6 +65,12 @@ See :ref:`cuda-compatibility` for version-specific notes.
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+**Linux**
+
+On Linux, the ``importers`` and ``remesh`` extras (and extras that include them,
+such as ``examples`` and ``dev``) require GLIBC 2.35 or newer, e.g. Ubuntu
+22.04+. RHEL 9 and Amazon Linux 2023 can install only the base package.
+
 **Linux aarch64 (ARM64)**
 
 The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
@@ -72,13 +78,6 @@ The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
 enable these GPUs. They need a Warp wheel built with an earlier CUDA 12
 toolkit; see `Warp's CUDA 12.9 ARM64 limitation
 <https://nvidia.github.io/warp/v1.17/user_guide/installation.html#cuda-12-9-limitation-on-linux-arm-platforms>`__.
-
-On ARM64 Linux, the ``importers`` extra requires GLIBC 2.35 or newer because
-`usd-exchange <https://pypi.org/project/usd-exchange/>`__ publishes its Linux
-ARM64 wheels for ``manylinux_2_35``. This also applies to extras that include
-``importers``, such as ``examples`` and ``dev``. Distributions with an older
-GLIBC, including RHEL 9 with GLIBC 2.34, can install the base Newton package but
-cannot install these extras from the published wheels.
 
 Installing the ``examples`` extra on ARM64 Linux systems such as NVIDIA Jetson
 Thor and DGX Spark also requires X11 development libraries to build
@@ -143,8 +142,8 @@ with other packages:
 .. note::
 
     Users on Python 3.10 may experience issues when installing ``imgui_bundle`` (a dependency of the
-    ``examples`` extra). If you encounter installation errors, we recommend upgrading to a later
-    Python version, or follow the :doc:`development` guide to install Newton using ``uv``.
+    ``examples`` extra). If you encounter installation errors, we recommend upgrading to
+    Python 3.11 or newer, or follow the :doc:`development` guide to install Newton using ``uv``.
 
 .. _running-examples:
 
@@ -230,7 +229,7 @@ simultaneously on the GPU:
 
     # Replicate into parallel worlds
     builder = newton.ModelBuilder()
-    builder.replicate(template, world_count=1024)
+    builder.replicate(template, copy_count=1024)
     builder.add_ground_plane()
     model = builder.finalize()
 

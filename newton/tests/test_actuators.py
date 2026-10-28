@@ -11,8 +11,10 @@ import shutil
 import tempfile
 import types
 import unittest
+import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -20,6 +22,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.actuators import effort_mode_implicit
 from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
@@ -328,25 +331,42 @@ def _write_dof_values(
     wp.copy(array, wp.array(arr_np, dtype=float, device=model.device))
 
 
-def _build_pendulum(device: wp.Device, worlds: int = 1) -> newton.Model:
-    """Single revolute joint with an offset COM and no gravity — one scalar DOF.
+@wp.kernel
+def _bias_force_kernel(
+    gravity_force: wp.array[float],
+    coriolis_force: wp.array[float],
+    bias_force: wp.array[float],
+):
+    """Bias force ``g + C qd`` from the two outputs of :func:`newton.eval_inverse_dynamics_passive`."""
+    i = wp.tid()
+    bias_force[i] = gravity_force[i] + coriolis_force[i]
+
+
+_IN_PLANE_GRAVITY = (0.0, -9.81, 0.0)
+_NO_GRAVITY = (0.0, 0.0, 0.0)
+
+
+def _build_pendulum(device: wp.Device, worlds: int = 1, gravity: bool = False) -> newton.Model:
+    """Single revolute joint with an offset COM — one scalar DOF.
 
     Args:
         device: Device to finalize the model on.
         worlds: Number of identical worlds to replicate the pendulum into.
+        gravity: Pull along -Y, in the plane the hinge turns in. Off by default.
     """
-    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    g = _IN_PLANE_GRAVITY if gravity else _NO_GRAVITY
+    template = newton.ModelBuilder(gravity=g)
     body = template.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
     joint = template.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
     template.add_articulation([joint])
     if worlds == 1:
         return template.finalize(device=device)
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder = newton.ModelBuilder(gravity=g)
     builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
     return builder.finalize(device=device)
 
 
-def _two_link_builder(armature: float = 0.0, dummy_body: bool = False) -> newton.ModelBuilder:
+def _two_link_builder(armature: float = 0.0, dummy_body: bool = False, gravity: bool = False) -> newton.ModelBuilder:
     """Builder for a two-link revolute chain — one articulation, two coupled DOFs.
 
     Args:
@@ -354,8 +374,9 @@ def _two_link_builder(armature: float = 0.0, dummy_body: bool = False) -> newton
         dummy_body: Add a hinged body before the chain, outside the articulation.
             MuJoCo orders articulated bodies first, so ``mjc_dof_to_newton_dof``
             becomes a permutation rather than the identity.
+        gravity: Pull along -Y, in the plane the hinges turn in. Off by default.
     """
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder = newton.ModelBuilder(gravity=_IN_PLANE_GRAVITY if gravity else _NO_GRAVITY)
     if dummy_body:
         dummy = builder.add_link(inertia=_POINT_MASS_INERTIA, mass=1.0)
         builder.add_joint_revolute(parent=-1, child=dummy, axis=newton.Axis.Z)
@@ -373,18 +394,43 @@ def _two_link_builder(armature: float = 0.0, dummy_body: bool = False) -> newton
     return builder
 
 
-def _build_two_link(device: wp.Device, dummy_body: bool = False, worlds: int = 1) -> newton.Model:
+def _build_two_link(
+    device: wp.Device, dummy_body: bool = False, worlds: int = 1, gravity: bool = False
+) -> newton.Model:
     """Two-link revolute chain — one articulation, two inertially coupled DOFs.
 
     Args:
         device: Device to finalize the model on.
         dummy_body: See :func:`_two_link_builder`.
         worlds: Number of identical worlds to replicate the chain into.
+        gravity: See :func:`_two_link_builder`.
     """
-    template = _two_link_builder(dummy_body=dummy_body)
+    template = _two_link_builder(dummy_body=dummy_body, gravity=gravity)
     if worlds == 1:
         return template.finalize(device=device)
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder = newton.ModelBuilder(gravity=_IN_PLANE_GRAVITY if gravity else _NO_GRAVITY)
+    builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
+    return builder.finalize(device=device)
+
+
+def _build_chain(device: wp.Device, links: int = 8, worlds: int = 2) -> newton.Model:
+    """Revolute chain with alternating axes, large enough for the CUDA tile inverse and block solve."""
+    template = newton.ModelBuilder(gravity=_NO_GRAVITY)
+    parent = -1
+    joints = []
+    for i in range(links):
+        body = template.add_link(com=wp.vec3(0.0, 0.0, -0.05), inertia=_POINT_MASS_INERTIA, mass=0.2 + 0.05 * i)
+        joints.append(
+            template.add_joint_revolute(
+                parent=parent,
+                child=body,
+                axis=(newton.Axis.X, newton.Axis.Y, newton.Axis.Z)[i % 3],
+                parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.1 if parent >= 0 else 0.0), wp.quat_identity()),
+            )
+        )
+        parent = body
+    template.add_articulation(joints)
+    builder = newton.ModelBuilder(gravity=_NO_GRAVITY)
     builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
     return builder.finalize(device=device)
 
@@ -1786,35 +1832,74 @@ class TestDriveNeuralMLP(unittest.TestCase):
             DriveNeuralMLP(model_path=path)
 
     def test_finalize_fixed_batch_onnx_with_multiple_actuators(self):
-        """Fixed-batch ONNX exports can still run one scalar per actuator."""
+        """Preserve inference when fixed export and actuator batch sizes differ."""
         weights = np.array([[2.0, 0.0]], dtype=np.float32)
         bias = np.array([1.0], dtype=np.float32)
-        path = self._save_mlp(weights, bias, filename="fixed_batch_mlp.onnx", batch_dim=1)
+        for batch_dim in (1, 3):
+            for n in (1, 3):
+                with self.subTest(batch_dim=batch_dim, num_actuators=n):
+                    path = self._save_mlp(weights, bias, filename="fixed_batch_mlp.onnx", batch_dim=batch_dim)
 
-        n = 3
-        ctrl = DriveNeuralMLP(model_path=path)
-        ctrl.finalize(self.device, n)
-        self.assertEqual(ctrl._network._shapes[ctrl._net_input_name], (n, 2))
-        self.assertEqual(ctrl._network._shapes[ctrl._net_output_name], (n, 1))
+                    ctrl = DriveNeuralMLP(model_path=path)
+                    ctrl.finalize(self.device, n)
+                    self.assertEqual(ctrl._net_input.shape, (n, 2))
+                    self.assertEqual(
+                        ctrl._network({ctrl._net_input_name: ctrl._net_input})[ctrl._net_output_name].shape, (n, 1)
+                    )
 
-        indices = wp.array([0, 1, 2], dtype=wp.uint32, device=self.device)
-        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
-        ctrl.compute(
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            ctrl.state(n, self.device),
-            0.01,
-            self.device,
+                    indices = wp.array(np.arange(n, dtype=np.uint32), dtype=wp.uint32, device=self.device)
+                    forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+                    ctrl.compute(
+                        wp.zeros(n, dtype=wp.float32, device=self.device),
+                        wp.zeros(n, dtype=wp.float32, device=self.device),
+                        wp.array(np.arange(1, n + 1, dtype=np.float32), dtype=wp.float32, device=self.device),
+                        wp.zeros(n, dtype=wp.float32, device=self.device),
+                        None,
+                        indices,
+                        indices,
+                        indices,
+                        indices,
+                        forces,
+                        ctrl.state(n, self.device),
+                        0.01,
+                        self.device,
+                    )
+                    np.testing.assert_allclose(
+                        forces.numpy(), 2.0 * np.arange(1, n + 1, dtype=np.float32) + 1.0, rtol=1e-5
+                    )
+
+    def test_fixed_batch_external_weights_preserve_checkpoint(self):
+        """Rebatch external ONNX weights without editing files or breaking capture."""
+        onnx, _, _, _ = _onnx_modules()
+        weights = np.array([[2.0, 3.0]], dtype=np.float32)
+        bias = np.array([1.0], dtype=np.float32)
+        path = self._save_mlp(weights, bias, batch_dim=1)
+        model = onnx.load(path)
+        onnx.save_model(
+            model,
+            path,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location="weights.bin",
+            size_threshold=0,
         )
-        np.testing.assert_allclose(forces.numpy(), np.array([3.0, 5.0, 7.0], dtype=np.float32), rtol=1e-5)
+        files = (Path(path), Path(self._tmp_dir) / "weights.bin")
+        original = [file.read_bytes() for file in files]
+
+        drive = DriveNeuralMLP(model_path=path)
+        drive.finalize(self.device, 3)
+        inputs = np.array([[1.0, 2.0], [-1.0, 0.5], [0.0, 4.0]], dtype=np.float32)
+        drive._net_input.assign(inputs)
+        arguments = {drive._net_input_name: drive._net_input}
+        if self.device.is_cuda:
+            with wp.ScopedCapture(device=self.device) as capture:
+                outputs = drive._network(arguments)
+            wp.capture_launch(capture.graph)
+        else:
+            outputs = drive._network(arguments)
+        np.testing.assert_allclose(outputs[drive._net_output_name].numpy(), inputs @ weights.T + bias)
+        self.assertEqual([file.read_bytes() for file in files], original)
+        self.assertEqual(onnx.load(path).graph.input[0].type.tensor_type.shape.dim[0].dim_value, 1)
 
     def test_neural_mlp_implicit_linear_net(self):
         """A 1-layer (linear) neural drive solves implicitly, exact.
@@ -2018,6 +2103,64 @@ class TestDriveNeuralLSTM(unittest.TestCase):
         path = os.path.join(self._tmp_dir, filename)
         _build_lstm_onnx(path, hidden_size=hidden, num_layers=1, metadata=metadata)
         return path
+
+    def test_finalize_fixed_batch_onnx(self):
+        """Preserve LSTM inference with individually fixed input batch axes."""
+        onnx_mod, _, _, _ = _onnx_modules()
+        dynamic_path = self._save_lstm(filename="dynamic_lstm.onnx")
+        for input_names in (("input",), ("h_in",), ("c_in",), ("input", "h_in", "c_in")):
+            path = self._save_lstm()
+            model = onnx_mod.load(path)
+            for value in model.graph.input:
+                if value.name in input_names:
+                    value.type.tensor_type.shape.dim[1].dim_value = 1
+            onnx_mod.save(model, path)
+            for n in (1, 3):
+                with self.subTest(input_names=input_names, num_actuators=n):
+                    ctrl = DriveNeuralLSTM(model_path=path)
+                    ctrl.finalize(self.device, n)
+                    reference = DriveNeuralLSTM(model_path=dynamic_path)
+                    reference.finalize(self.device, n)
+                    inputs = {
+                        "input": wp.ones((1, n, 2), dtype=wp.float32, device=self.device),
+                        "h_in": wp.zeros((1, n, 8), dtype=wp.float32, device=self.device),
+                        "c_in": wp.zeros((1, n, 8), dtype=wp.float32, device=self.device),
+                    }
+                    outputs = ctrl._network(inputs)
+                    expected = reference._network(inputs)
+                    self.assertEqual(outputs["output"].shape, (n, 1))
+                    self.assertEqual(outputs["h_out"].shape, (1, n, 8))
+                    self.assertEqual(outputs["c_out"].shape, (1, n, 8))
+                    for name in outputs:
+                        np.testing.assert_allclose(outputs[name].numpy(), expected[name].numpy(), rtol=1e-5, atol=1e-6)
+
+    def test_finalize_preserves_symbolic_sequence_length(self):
+        """Keep a symbolic LSTM sequence axis independent of the actuator batch."""
+        onnx_mod, _, _, _ = _onnx_modules()
+        path = self._save_lstm()
+        model = onnx_mod.load(path)
+        model.graph.input[0].type.tensor_type.shape.dim[0].dim_param = "sequence"
+        # Exercise adaptation of a fixed state batch alongside a symbolic sequence.
+        model.graph.input[1].type.tensor_type.shape.dim[1].dim_value = 1
+        onnx_mod.save(model, path)
+        original = Path(path).read_bytes()
+
+        ctrl = DriveNeuralLSTM(model_path=path)
+        ctrl.finalize(self.device, 3)
+        inputs = {
+            "input": wp.ones((1, 3, 2), dtype=wp.float32, device=self.device),
+            "h_in": wp.zeros((1, 3, 8), dtype=wp.float32, device=self.device),
+            "c_in": wp.zeros((1, 3, 8), dtype=wp.float32, device=self.device),
+        }
+        if self.device.is_cuda:
+            with wp.ScopedCapture(device=self.device) as capture:
+                outputs = ctrl._network(inputs)
+            wp.capture_launch(capture.graph)
+        else:
+            outputs = ctrl._network(inputs)
+        self.assertEqual(outputs["output"].shape, (3, 1))
+        self.assertTrue(np.all(np.isfinite(outputs["output"].numpy())))
+        self.assertEqual(Path(path).read_bytes(), original)
 
     def _run_lstm_compute(self, ctrl: DriveNeuralLSTM) -> None:
         n = 1
@@ -2234,12 +2377,10 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
 
         Regression test for a bug where the Torch path fell back to sequential indices
         into target_pos whenever target_pos_indices was not literally the same array
-        object as pos_indices. This matters in practice for a floating-base robot: the
-        free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
-        ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
-        (legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
-        differently for the two actuated joints that follow it, and neither equals a plain
-        ``arange(n)``.
+        object as pos_indices. Custom target buffers may use offsets different
+        from both the position coordinates and sequential actuator indices.
+        Exercise those independent mappings with two actuated joints following
+        a floating base.
         """
         self.torch.manual_seed(0)
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
@@ -2252,7 +2393,7 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         # joint_q layout: 7 free-joint DOFs, then the 2 actuated revolute joints at 7, 8.
         positions = wp.array([0.0] * 7 + [0.3, -0.2], dtype=wp.float32, device=self.device)
         pos_indices = wp.array([7, 8], dtype=wp.uint32, device=self.device)
-        # joint_qd / legacy target layout: 6 free-joint DOFs, then the actuated joints at 6, 7.
+        # Velocity indices follow 6 free-joint DOFs; the custom target buffer uses the same offsets.
         velocities = wp.zeros(8, dtype=wp.float32, device=self.device)
         vel_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
         target_pos = wp.array([0.0] * 6 + [1.0, 2.0], dtype=wp.float32, device=self.device)
@@ -2391,12 +2532,10 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
 
         Regression test for a bug where the Torch path fell back to sequential indices
         into target_pos whenever target_pos_indices was not literally the same array
-        object as pos_indices. This matters in practice for a floating-base robot: the
-        free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
-        ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
-        (legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
-        differently for the two actuated joints that follow it, and neither equals a plain
-        ``arange(n)``.
+        object as pos_indices. Custom target buffers may use offsets different
+        from both the position coordinates and sequential actuator indices.
+        Exercise those independent mappings with two actuated joints following
+        a floating base.
         """
         net = self._make_lstm(hidden=4, layers=1)
         path = self._save_pt2(net, metadata={"effort_scale": 1.0, "num_layers": 1, "hidden_size": 4})
@@ -2408,7 +2547,7 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         # joint_q layout: 7 free-joint DOFs, then the 2 actuated revolute joints at 7, 8.
         positions = wp.array([0.0] * 7 + [0.3, -0.2], dtype=wp.float32, device=self.device)
         pos_indices = wp.array([7, 8], dtype=wp.uint32, device=self.device)
-        # joint_qd / legacy target layout: 6 free-joint DOFs, then the actuated joints at 6, 7.
+        # Velocity indices follow 6 free-joint DOFs; the custom target buffer uses the same offsets.
         velocities = wp.zeros(8, dtype=wp.float32, device=self.device)
         vel_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
         target_pos = wp.array([0.0] * 6 + [1.0, 2.0], dtype=wp.float32, device=self.device)
@@ -2880,6 +3019,7 @@ class TestActuatorStep(unittest.TestCase):
         expect_integral_saturated: bool = False,
         worlds: int = 1,
         actuated: Sequence[int] | None = None,
+        bias_force: bool = False,
     ) -> None:
         """Run the actuator pipeline for one drive / clamp / effort-mode combination.
 
@@ -2924,8 +3064,16 @@ class TestActuatorStep(unittest.TestCase):
                 reference is computed once and compared against every world.
             actuated: Per-world DOF indices the actuator drives; ``None`` drives
                 all of them. Undriven DOFs must end up with exactly zero effort.
+            bias_force: Turn on gravity in the hinge plane and pass gravity plus
+                Coriolis from :func:`newton.eval_inverse_dynamics_passive` as
+                the bias force each step. Implicit mode without a clamp only.
         """
-        model = _build_pendulum(device, worlds=worlds) if dofs == 1 else _build_two_link(device, worlds=worlds)
+        if bias_force and (not implicit or clamp is not None):
+            raise ValueError("the bias-force reference covers implicit mode without a clamp")
+        if dofs == 1:
+            model = _build_pendulum(device, worlds=worlds, gravity=bias_force)
+        else:
+            model = _build_two_link(device, worlds=worlds, gravity=bias_force)
         n = dofs
         total = n * worlds
         self.assertEqual(model.joint_dof_count, total)
@@ -2977,8 +3125,9 @@ class TestActuatorStep(unittest.TestCase):
             integral: np.ndarray,
             kp_now: np.ndarray,
             kd_now: np.ndarray,
+            bias: np.ndarray,
         ) -> np.ndarray:
-            """The effort the actuator should produce from state (q, qd).
+            """The effort the actuator should produce from state (q, qd) and bias force.
 
             Returns one value per model DOF; undriven DOFs are zero, since the
             actuator never writes them.
@@ -2993,11 +3142,14 @@ class TestActuatorStep(unittest.TestCase):
 
             # Only the driven DOFs are solved, coupled through their submatrix of
             # inv(H). Inverting first leaves the undriven DOFs free to move.
-            response_matrix = _response_at(model, _tiled(q), _tiled(qd))[np.ix_(act, act)]
+            full_response = _response_at(model, _tiled(q), _tiled(qd))
+            response_matrix = full_response[np.ix_(act, act)]
             if clamp is None:
                 gain = dt * kp_now[act] + kd_now[act]
                 jacobian = np.eye(driven) + dt * np.diag(gain) @ response_matrix
                 rhs = kp_now[act] * (target[act] - q[act] - dt * qd[act]) - kd_now[act] * qd[act] + feedforward[act]
+                # The bias force moves the predicted velocity by -dt (A b) on every driven row.
+                rhs += dt * gain * (full_response[act, :] @ bias)
                 out[act] = np.linalg.solve(jacobian, rhs)
                 return out
 
@@ -3022,6 +3174,9 @@ class TestActuatorStep(unittest.TestCase):
         control.joint_target_q.assign(_tiled(target))
         solver = newton.solvers.SolverFeatherstone(model)
         act_a, act_b = actuator.state(), actuator.state()
+        gravity_force = wp.zeros(total, dtype=float, device=device)
+        coriolis_force = wp.zeros(total, dtype=float, device=device)
+        bias = wp.zeros(total, dtype=float, device=device)
 
         integral = np.zeros(n, dtype=np.float64)
         kp_now, kd_now = kp, kd
@@ -3029,33 +3184,44 @@ class TestActuatorStep(unittest.TestCase):
         use_graph = device.is_cuda and wp.is_mempool_enabled(device)
         graphs = {}
 
-        if use_graph:
-            # Module loading and lazy allocation have to happen before a capture.
+        def step_actuator():
+            """Zero the efforts, refresh the response, build the bias force, and step the actuator."""
             control.joint_f.zero_()
             response.refresh(state_in)
-            actuator.step(state_in, control, act_a, act_b, dt=dt)
+            if bias_force:
+                newton.eval_inverse_dynamics_passive(
+                    model, state_in, gravity_force=gravity_force, coriolis_force=coriolis_force
+                )
+                wp.launch(
+                    _bias_force_kernel,
+                    dim=total,
+                    inputs=[gravity_force, coriolis_force],
+                    outputs=[bias],
+                    device=device,
+                )
+            actuator.step(state_in, control, act_a, act_b, dt=dt, bias_force=bias if bias_force else None)
+
+        if use_graph:
+            # Module loading and lazy allocation have to happen before a capture.
+            step_actuator()
             if stateful:
                 act_a.drive_state.integral.zero_()
                 act_b.drive_state.integral.zero_()
 
         def actuate():
-            """Zero the efforts, refresh the response, and step the actuator.
+            """Step the actuator, from a captured graph when possible.
 
             The state and actuator buffers alternate with period two, so keying
             the graphs on them builds at most two and replays them thereafter.
             Parameter writes still land because a graph reads the live arrays.
             """
             if not use_graph:
-                control.joint_f.zero_()
-                response.refresh(state_in)
-                actuator.step(state_in, control, act_a, act_b, dt=dt)
+                step_actuator()
                 return
             key = (id(state_in), id(act_a))
             if key not in graphs:
                 with wp.ScopedCapture(device) as capture:
-                    control.joint_f.zero_()
-                    response.refresh(state_in)
-                    actuator.step(state_in, control, act_a, act_b, dt=dt)
+                    step_actuator()
                 graphs[key] = capture.graph
             wp.capture_launch(graphs[key])
 
@@ -3075,7 +3241,7 @@ class TestActuatorStep(unittest.TestCase):
             effort = control.joint_f.numpy().astype(np.float64)
 
             if check_forces:
-                expected = reference(q, qd, integral, kp_now, kd_now)
+                expected = reference(q, qd, integral, kp_now, kd_now, bias.numpy().astype(np.float64)[:n])
                 self.assertTrue(np.all(np.isfinite(effort)), msg=f"{step_label}: effort must stay finite")
                 np.testing.assert_allclose(
                     effort[:n],
@@ -3097,10 +3263,19 @@ class TestActuatorStep(unittest.TestCase):
             return effort
 
         for step_i in range(steps):
-            check_effort(f"step {step_i}", kp_now, kd_now, integral)
+            effort = check_effort(f"step {step_i}", kp_now, kd_now, integral)
             act_a, act_b = act_b, act_a
             solver.step(state_in, state_out, control, None, dt=dt)
             state_in, state_out = state_out, state_in
+            if bias_force:
+                # With gravity and Coriolis in the prediction, the predicted end-of-step
+                # state is the one the solver reached, so the PD law there gives the effort.
+                q_end = state_in.joint_q.numpy().astype(np.float64)[:n]
+                qd_end = state_in.joint_qd.numpy().astype(np.float64)[:n]
+                law = kp_now * (target - q_end) - kd_now * qd_end
+                np.testing.assert_allclose(
+                    effort[:n][act], law[act], rtol=2.0e-3, atol=1.0e-3, err_msg=f"step {step_i}: law at end state"
+                )
 
         if retune:
             kp_now, kd_now = (4.0 * kp).astype(np.float32), (4.0 * kd).astype(np.float32)
@@ -3250,6 +3425,83 @@ class TestActuatorStep(unittest.TestCase):
         self.assertFalse(
             np.allclose(together, apart, rtol=1e-3), "the coupled solve must differ from two scalar solves"
         )
+
+    def test_pipeline_pd_bias_force_implicit(self):
+        """Verify the implicit solve includes gravity and Coriolis passed as the bias force.
+
+        The partially actuated case puts bias on a DOF the actuator does not
+        drive, which still moves the driven one through the coupled response.
+        """
+        chain = {"dofs": 2, "kp": [4000.0, 3000.0], "kd": [40.0, 30.0]}
+        cases = {"pendulum": {}, "chain": chain, "chain_tip_only_two_worlds": {**chain, "actuated": [1], "worlds": 2}}
+        for name, config in cases.items():
+            with self.subTest(case=name):
+                self.run_test_actuator_pipeline(
+                    drive="pd", q0=0.3, qd0=1.5, target=0.6, steps=3, bias_force=True, **config
+                )
+
+        device = wp.get_device()
+        model = _build_pendulum(device)
+        actuator, response = _make_implicit_actuator(
+            model, device, wp.array([500.0], dtype=float, device=device), wp.array([5.0], dtype=float, device=device)
+        )
+        state, control = model.state(), model.control()
+        response.refresh(state)
+        for bad in (wp.zeros(2, dtype=float, device=device), wp.zeros(1, dtype=wp.float64, device=device)):
+            with self.assertRaises(ValueError):
+                actuator.step(state, control, dt=0.01, bias_force=bad)
+
+    def test_pipeline_pd_bias_force_free_base_implicit(self):
+        """Verify a free joint's world-frame bias force is rotated into its parent frame.
+
+        The base hangs from a rotated parent frame and falls freely, so gravity
+        does not move the driven hinge relative to it. Its bias force must then
+        leave the effort unchanged.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        inertia = wp.mat33(0.2, 0.01, 0.0, 0.01, 0.3, 0.02, 0.0, 0.02, 0.25)
+        base = builder.add_link(com=wp.vec3(0.1, -0.05, 0.08), inertia=inertia, mass=2.0)
+        parent_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.3, 0.2)), 0.9)
+        root = builder.add_joint_free(
+            parent=-1, child=base, parent_xform=wp.transform(wp.vec3(0.3, -0.2, 0.5), parent_rot)
+        )
+        link = builder.add_link(com=wp.vec3(0.4, 0.0, 0.05), inertia=_POINT_MASS_INERTIA, mass=1.0)
+        hinge = builder.add_joint_revolute(
+            parent=base,
+            child=link,
+            axis=newton.Axis.Y,
+            parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([root, hinge])
+        builder.joint_q[7] = 0.6
+        model = builder.finalize(device=device)
+        n = model.joint_dof_count
+
+        response = JointSpaceResponse(model)
+        actuator = Actuator(
+            indices=wp.array([6], dtype=wp.uint32, device=device),
+            drive=DrivePD(
+                kp=wp.array([500.0], dtype=float, device=device), kd=wp.array([5.0], dtype=float, device=device)
+            ),
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        actuator.set_effort_mode_implicit(response=response)
+
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        response.refresh(state)
+        gravity_force = wp.zeros(n, dtype=float, device=device)
+        newton.eval_inverse_dynamics_passive(model, state, gravity_force=gravity_force)
+
+        efforts = []
+        for bias in (None, gravity_force):
+            control = model.control()
+            actuator.step(state, control, dt=0.01, bias_force=bias)
+            efforts.append(control.joint_f.numpy()[6])
+        self.assertGreater(abs(efforts[0]), 1.0)
+        np.testing.assert_allclose(efforts[1], efforts[0], rtol=1e-4)
 
     def test_pipeline_pd_partially_actuated_implicit(self):
         """Drive only the tip joint of the two-link chain."""
@@ -3458,6 +3710,52 @@ class TestActuatorImplicit(unittest.TestCase):
     to the implicit solve.
     """
 
+    def test_block_solve_matches_per_thread_solve(self):
+        """The CUDA block solve gives the per-thread solve's efforts on a clamped 8-DOF chain."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("the block solve runs on CUDA only")
+        h = 0.004
+        model = _build_chain(device)
+        n = model.joint_dof_count
+        rng = np.random.default_rng(0)
+        state = model.state()
+        state.joint_q.assign(rng.uniform(-0.4, 0.4, n).astype(np.float32))
+        state.joint_qd.assign(rng.uniform(-2.0, 2.0, n).astype(np.float32))
+        control = model.control()
+        control.joint_target_q.assign(rng.uniform(-0.5, 0.5, n).astype(np.float32))
+
+        def run() -> tuple[np.ndarray, bool]:
+            response = JointSpaceResponse(model)
+            actuator = Actuator(
+                indices=wp.array(_arm_dofs(model), dtype=wp.uint32, device=device),
+                drive=DrivePD(
+                    kp=wp.full(n, 500.0, dtype=float, device=device),
+                    kd=wp.full(n, 10.0, dtype=float, device=device),
+                ),
+                clamping=[
+                    ClampingDCMotor(
+                        saturation_effort=wp.full(n, 40.0, dtype=float, device=device),
+                        velocity_limit=wp.full(n, 3.0, dtype=float, device=device),
+                        max_motor_effort=wp.full(n, 30.0, dtype=float, device=device),
+                    )
+                ],
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            actuator.set_effort_mode_implicit(response)
+            control.joint_f.zero_()
+            _refresh_and_step(actuator, response, state, control, h)
+            return control.joint_f.numpy().copy(), actuator._effort_mode._block_kernel is not None
+
+        block, used_block = run()
+        with patch.object(effort_mode_implicit, "_BLOCK_SOLVE_MAX_ROWS", 0):
+            per_thread, used_block_after_patch = run()
+        self.assertTrue(used_block)
+        self.assertFalse(used_block_after_patch)
+        self.assertGreater(np.max(np.abs(per_thread)), 1.0)
+        np.testing.assert_allclose(block, per_thread, rtol=1e-3, atol=1e-3)
+
     def test_unsupported_drive_raises(self):
         """A drive without evaluate_force is rejected at construction."""
         device = wp.get_device()
@@ -3502,7 +3800,7 @@ class TestActuatorImplicit(unittest.TestCase):
             actuator.step(model.state(), model.control())
 
     def test_validation_rejects_bad_options(self):
-        """dt, warm_start and fd_epsilon are validated rather than silently misbehaving."""
+        """dt, warm_start, fd_epsilon and ls_iterations are validated rather than silently misbehaving."""
         device = wp.get_device()
         model = _build_pendulum(device)
         kp = wp.array([100.0], dtype=float, device=device)
@@ -3516,6 +3814,11 @@ class TestActuatorImplicit(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fd_epsilon"):
             _make_implicit_actuator(
                 model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(fd_epsilon=0.0)
+            )
+
+        with self.assertRaisesRegex(ValueError, "ls_iterations"):
+            _make_implicit_actuator(
+                model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(ls_iterations=-1)
             )
 
         actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
@@ -3746,6 +4049,85 @@ class TestActuatorImplicit(unittest.TestCase):
         self.assertGreater(np.max(np.abs(single - converged)), 0.5 * np.max(np.abs(converged)))
         np.testing.assert_allclose(run(2)[0], converged, rtol=1e-6, atol=1e-6)
 
+    def test_dc_motor_solve_converges_where_full_newton_steps_oscillate(self):
+        """The line search lets the solve converge where full Newton steps jump between the DC-motor limits."""
+        device = wp.get_device()
+        h = 0.01
+        kp, kd, sat, vel_lim, max_e = 12.3365, 0.209173, 3.24316, 0.373749, 4.52314
+        q0 = np.array([0.144578, -0.0894171])
+        qd0 = np.array([-1.10118, 0.0430172])
+        target = np.array([-0.747263, -0.989789])
+
+        model = _build_two_link(device)
+        state = model.state()
+        state.joint_q.assign(q0.astype(np.float32))
+        state.joint_qd.assign(qd0.astype(np.float32))
+        control = model.control()
+        control.joint_target_q.assign(target.astype(np.float32))
+        response = JointSpaceResponse(model)
+        response_matrix = _response_at_state(model, state).astype(np.float64)
+
+        def solve(ls_iterations: int) -> tuple[np.ndarray, np.ndarray]:
+            actuator = Actuator(
+                indices=wp.array([0, 1], dtype=wp.uint32, device=device),
+                drive=DrivePD(
+                    kp=wp.full(2, kp, dtype=float, device=device),
+                    kd=wp.full(2, kd, dtype=float, device=device),
+                ),
+                clamping=[
+                    ClampingDCMotor(
+                        saturation_effort=wp.full(2, sat, dtype=float, device=device),
+                        velocity_limit=wp.full(2, vel_lim, dtype=float, device=device),
+                        max_motor_effort=wp.full(2, max_e, dtype=float, device=device),
+                    )
+                ],
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            actuator.set_effort_mode_implicit(
+                response=response, options=Actuator.ImplicitOptions(ls_iterations=ls_iterations)
+            )
+            control.joint_f.zero_()
+            _refresh_and_step(actuator, response, state, control, h)
+
+            effort = control.joint_f.numpy().astype(np.float64)
+            qd_p = qd0 + response_matrix @ (h * effort)
+            q_p = q0 + h * qd_p
+            bounds = np.array([_dc_bounds(sat, vel_lim, max_e, v) for v in qd_p])
+            expected = np.clip(kp * (target - q_p) - kd * qd_p, bounds[:, 0], bounds[:, 1])
+            return effort, expected
+
+        effort, expected = solve(ls_iterations=8)
+        np.testing.assert_allclose(effort, expected, rtol=1e-3, atol=1e-3)
+
+        # Same iteration budget without backtracking: full steps keep jumping between the limits.
+        effort, expected = solve(ls_iterations=0)
+        self.assertGreater(np.max(np.abs(effort - expected)), 1e-2)
+
+    def test_small_efforts_still_take_a_newton_step(self):
+        """Efforts below the residual tolerance are solved implicitly, not returned as the explicit warm start."""
+        device = wp.get_device()
+        h = 0.01
+        model = _build_pendulum(device)
+        state = model.state()
+        alpha = float(_response_at_state(model, state)[0, 0])
+        # kd makes the implicit effort half the explicit one; kp keeps the explicit impulse below residual_tol.
+        kp, kd, target = 1.0, 1.0 / (alpha * h), 1.0e-4
+        control = model.control()
+        control.joint_target_q.assign([target])
+        actuator, response = _make_implicit_actuator(
+            model,
+            device,
+            kp=wp.array([kp], dtype=float, device=device),
+            kd=wp.array([kd], dtype=float, device=device),
+        )
+        control.joint_f.zero_()
+        _refresh_and_step(actuator, response, state, control, h)
+
+        expected = _expected_implicit_pd(model, state, kp, kd, target, h)
+        self.assertLess(h * kp * target, Actuator.ImplicitOptions().residual_tol)
+        np.testing.assert_allclose(control.joint_f.numpy()[0], expected, rtol=1e-3)
+
     def test_warm_start_zero_reaches_the_same_solution(self):
         """``warm_start="zero"`` converges to the same effort as the explicit start.
 
@@ -3828,6 +4210,33 @@ class TestJointSpaceResponse(unittest.TestCase):
         expected = 1.0 / np.finfo(np.float32).eps
         self.assertAlmostEqual(float(response.inverse_blocks.numpy()[0, 0, 0]), expected)
 
+    def test_tile_inverse_matches_dense_inverse(self):
+        """The CUDA tile inverse matches a dense inverse, and a singular block falls back to the floored kernel."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("the tile inverse runs on CUDA only")
+        model = _build_chain(device)
+        n = model.joint_dof_count // model.world_count
+        state = model.state()
+        state.joint_q.assign(np.random.default_rng(1).uniform(-0.6, 0.6, model.joint_dof_count).astype(np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        response = JointSpaceResponse(model)
+        self.assertIsNotNone(response._tile)
+
+        response.refresh(state)
+
+        H = newton.eval_mass_matrix(model, state).numpy()
+        blocks = response.inverse_blocks.numpy()
+        for art in range(model.articulation_count):
+            expected = np.linalg.inv(H[art, :n, :n].astype(np.float64))
+            np.testing.assert_allclose(blocks[art, :n, :n], expected, rtol=1e-3, atol=1e-3 * np.abs(expected).max())
+
+        # A zero block makes the tile Cholesky fail; the repair redoes it with floored pivots.
+        response._H.zero_()
+        response._invert_blocks()
+        expected = np.eye(n) / np.finfo(np.float32).eps
+        np.testing.assert_allclose(response.inverse_blocks.numpy()[0, :n, :n], expected, rtol=1e-5)
+
     def test_inverse_blocks_match_dense_inverse(self):
         """refresh() fills the full per-articulation inverse mass block.
 
@@ -3868,12 +4277,12 @@ class TestJointSpaceResponse(unittest.TestCase):
         with_armature = alpha_for(0.5)
         self.assertTrue(np.all(with_armature < bare))
 
-        # alpha must match a dense inverse of (H + diag(armature)).
+        # alpha must match a dense inverse of H, which already includes the armature.
         m = _two_link_builder(armature=0.5).finalize(device=device)
         st = m.state()
         st.joint_q.assign(q0)
         newton.eval_fk(m, st.joint_q, st.joint_qd, st)
-        H = newton.eval_mass_matrix(m, st).numpy()[0, :2, :2] + np.diag([0.5, 0.5])
+        H = newton.eval_mass_matrix(m, st).numpy()[0, :2, :2]
         np.testing.assert_allclose(with_armature, np.diag(np.linalg.inv(H)), rtol=1e-4)
 
     def test_refresh_does_not_mutate_state(self):
@@ -4036,6 +4445,57 @@ class TestJointSpaceResponse(unittest.TestCase):
         expected = np.linalg.solve(jacobian, h * f0) / h
         np.testing.assert_allclose(_arm_values(model, control.joint_f)[:n], expected, rtol=1e-3, atol=1e-3)
         _assert_worlds_match(self, model, control.joint_f, rtol=1e-4, atol=1e-4)
+
+    def test_response_from_mujoco_free_and_ball_joints(self):
+        """Verify refresh_from_solve converts MuJoCo's free and ball joint coordinates.
+
+        The base hangs from a rotated parent frame with an offset CoM, so the
+        frame rotation and the origin-to-CoM shift both matter.
+        """
+        device = wp.get_device()
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        base = template.add_link(
+            com=wp.vec3(0.3, -0.2, 0.25), inertia=wp.mat33(0.2, 0.01, 0.0, 0.01, 0.3, 0.02, 0.0, 0.02, 0.25), mass=2.0
+        )
+        parent_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.3, 0.2)), 0.9)
+        root = template.add_joint_free(
+            parent=-1, child=base, parent_xform=wp.transform(wp.vec3(0.4, -0.7, 1.1), parent_rot)
+        )
+        arm = template.add_link(
+            com=wp.vec3(0.4, 0.0, 0.05), inertia=wp.mat33(0.05, 0.0, 0.0, 0.0, 0.06, 0.0, 0.0, 0.0, 0.04), mass=1.0
+        )
+        hinge = template.add_joint_revolute(
+            parent=base, child=arm, axis=newton.Axis.Y, parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0))
+        )
+        tip = template.add_link(
+            com=wp.vec3(0.1, 0.2, 0.0), inertia=wp.mat33(0.03, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.04), mass=0.7
+        )
+        ball = template.add_joint_ball(
+            parent=arm,
+            child=tip,
+            parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5)),
+            child_xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.4)),
+        )
+        template.add_articulation([root, hinge, ball])
+        template.joint_q[3:7] = list(wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, 1.0, -0.4)), 0.7))
+        template.joint_q[7] = 0.6
+        template.joint_q[8:12] = list(wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.5, -0.3, 1.0)), 0.8))
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        builder.replicate(template, 2)
+        model = builder.finalize(device=device)
+
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        solver = _mujoco_solver(self, model)
+        solver.step(state, model.state(), model.control(), None, 1.0e-6)
+
+        response = JointSpaceResponse(model)
+        response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof, state=state)
+        reference = JointSpaceResponse(model)
+        reference.refresh(state)
+        np.testing.assert_allclose(
+            response.inverse_blocks.numpy(), reference.inverse_blocks.numpy(), rtol=1e-4, atol=1e-5
+        )
 
     def test_full_loop_response_from_mujoco_matches_refresh(self):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
@@ -5076,6 +5536,11 @@ class TestActuatorStateAssign(unittest.TestCase):
             Actuator.State(drive_state=state).assign(Actuator.State())
 
 
+@wp.kernel
+def _noop_kernel():
+    pass
+
+
 @unittest.skipUnless(
     wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
     "CUDA graph capture requires CUDA device with memory pools",
@@ -5148,6 +5613,8 @@ class TestDriveStateGraphCapture(unittest.TestCase):
                 key = id(s0) if parity_graphs else None
                 if key not in graphs:
                     with wp.ScopedCapture(device) as capture:
+                        # Graphs rooted at a memset can start before prior stream work on R570 Ada GPUs (#4786).
+                        wp.launch(_noop_kernel, dim=1, device=device)
                         after = run(s0, s1, steps_per_graph, boundary_assign=not parity_graphs)
                     graphs[key] = (capture.graph, after)
                 graph, (s0, s1) = graphs[key]
@@ -5178,7 +5645,7 @@ class TestDriveStateGraphCapture(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD and _HAS_ONNX, "pxr or onnx not installed")
+@unittest.skipUnless(HAS_USD, "pxr not installed")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural drive
     prims with asset-typed ``newton:modelPath`` attributes.
@@ -5262,6 +5729,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         return stage
 
+    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
     def test_parse_mlp_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""
         model_path = self._make_mlp_checkpoint(metadata={"model_type": "mlp"})
@@ -5279,6 +5747,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(cls, ClampingDCMotor)
         self.assertAlmostEqual(kwargs["saturation_effort"], 100.0)
 
+    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
     def test_parse_lstm_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for LSTM checkpoint."""
         model_path = self._make_lstm_checkpoint(metadata={"model_type": "lstm"})
@@ -5290,6 +5759,40 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(parsed.drive_class, DriveNeuralLSTM)
         self.assertEqual(parsed.drive_kwargs["model_path"], model_path)
 
+    def test_usd_torch_checkpoint_requires_opt_in(self):
+        """Require a valid model path and trust before importing a Torch checkpoint."""
+        from pxr import Sdf
+
+        model_path = os.path.join(self._tmp_dir, "mlp.pt2")
+        with zipfile.ZipFile(model_path, "w") as archive:
+            archive.writestr("archive/archive_format", "pt2")
+            archive.writestr("archive/extra/metadata.json", json.dumps({"model_type": "mlp"}))
+
+        stage_path = os.path.join(self._tmp_dir, "robot.usda")
+        stage = self._build_neural_stage("mlp.pt2")
+        stage.GetRootLayer().Export(stage_path)
+
+        with self.assertRaisesRegex(ValueError, "allow_unsafe_torch_checkpoints"):
+            newton.ModelBuilder().add_usd(stage_path)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage_path, allow_unsafe_torch_checkpoints=True)
+        self.assertEqual(result["actuator_count"], 1)
+        self.assertEqual(next(iter(builder.actuator_entries.values())).drive_shared_kwargs["model_path"], model_path)
+
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+        prim.GetAttribute("newton:modelPath").Set(Sdf.AssetPath(""))
+        message = (
+            "Actuator prim '/World/Robot/NeuralActuator': "
+            "NewtonNeuralControlAPI requires a non-empty newton:modelPath attribute"
+        )
+        for allow_unsafe in (False, True):
+            with self.subTest(allow_unsafe_torch_checkpoints=allow_unsafe):
+                with self.assertRaisesRegex(ValueError, message):
+                    parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe)
+                with self.assertRaisesRegex(ValueError, message):
+                    newton.ModelBuilder().add_usd(stage, allow_unsafe_torch_checkpoints=allow_unsafe)
+
 
 # ---------------------------------------------------------------------------
 # 12. target_pos_indices separation from pos_indices
@@ -5299,7 +5802,8 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 class TestTargetPosIndicesSeparation(unittest.TestCase):
     """Actuator must read joint_target_q via target_pos_indices, not pos_indices."""
 
-    def test_target_pos_read_from_dof_index_not_coord_index(self):
+    def test_target_pos_read_from_custom_index(self):
+        """Read a custom target buffer through its explicit index mapping."""
         device = wp.get_device()
 
         def _a(vals: Sequence[float], dtype: type = wp.float32) -> wp.array[Any]:
@@ -5312,7 +5816,7 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (legacy DOF target layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # index 1 in a custom target buffer
 
         ctrl = DrivePD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
         actuator = Actuator(
@@ -5358,10 +5862,8 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 class TestControlTargetAttrDefaults(unittest.TestCase):
     """``control_target_pos_attr`` / ``control_target_vel_attr`` accept ``None``.
 
-    Both parameters used to default to ``None``, meaning "resolve against the
-    active target layout". The layout switch removed that resolution step, but
-    callers may still pass ``None`` explicitly; it must keep selecting the
-    canonical names instead of reaching ``getattr()`` with a non-string.
+    Explicit ``None`` must select the canonical target attribute names
+    instead of reaching ``getattr()`` with a non-string.
     """
 
     def _actuator(self, **kwargs):

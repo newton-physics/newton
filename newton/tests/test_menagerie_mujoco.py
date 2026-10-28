@@ -440,6 +440,9 @@ DEFAULT_MODEL_SKIP_FIELDS: set[str] = {
     # biasprm[2]; M_eff is joint-space inertia which differs when inertia representation
     # differs. Backfilled instead.
     "actuator_biasprm",
+    # Records which MJCF shortcut built the actuator (<position> vs <general>), which Newton
+    # does not preserve. Only read for DC motor, SO3, and PID gains, which Newton doesn't create.
+    "actuator_ctrlspec",
     "stat",  # meaninertia derived from invweight0
     # Meshes: Newton / trimesh may create a different number of meshes (nmesh differs),
     # so ALL per-mesh fields have incompatible shapes. Skip everything mesh-related.
@@ -1650,9 +1653,11 @@ class TestMenagerieBase(unittest.TestCase):
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
 
-        mjw_data = _mujoco_warp.put_data(
-            mj_model, mj_data, nworld=self.num_worlds, njmax=self.njmax, nconmax=self.nconmax
-        )
+        # Unallocated efm_* arrays are uninitialized memory; see SolverMuJoCo.
+        with np.errstate(over="ignore"):
+            mjw_data = _mujoco_warp.put_data(
+                mj_model, mj_data, nworld=self.num_worlds, njmax=self.njmax, nconmax=self.nconmax
+            )
 
         return mj_model, mj_data, mjw_model, mjw_data
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Iterable, Mapping
 from collections.abc import Set as AbstractSet
@@ -17,6 +18,7 @@ from warp._src import types as warp_types
 from ..core.types import override
 from ..geometry import Mesh
 from ..sim import Model, State
+from ..sim.shape_contact_pairs import _ShapeContactPairs
 from .viewer import ViewerBase
 
 # Optional CBOR2 support
@@ -26,6 +28,8 @@ try:
     HAS_CBOR2 = True
 except ImportError:
     HAS_CBOR2 = False
+
+logger = logging.getLogger(__name__)
 
 
 T = TypeVar("T")
@@ -467,6 +471,14 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
 
         # Custom object — serialize attributes
         if hasattr(obj, "__dict__"):
+            attributes = vars(obj)
+            if isinstance(obj, Model):
+                attributes = dict(attributes)
+                attributes["shape_contact_pairs"] = attributes.pop("_shape_contact_pairs", None)
+                pair_count = attributes.pop("_shape_contact_pair_count", None)
+                if pair_count is not None:
+                    attributes["shape_contact_pair_count"] = pair_count
+                attributes.pop("_shape_contact_pair_counts", None)
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,
@@ -474,7 +486,7 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                     attr: serialize(
                         value, callback, _visited, f"{_path}.{attr}" if _path else attr, format_type, cache=cache
                     )
-                    for attr, value in vars(obj).items()
+                    for attr, value in attributes.items()
                 },
             }
 
@@ -600,7 +612,7 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 "is_solid": x.is_solid,
                 "has_inertia": x.has_inertia,
                 "maxhullvert": x.maxhullvert,
-                "color": x.color,
+                "color": None if x.color is None else [float(x.color[0]), float(x.color[1]), float(x.color[2])],
                 "opacity": x.opacity,
                 "mass": x.mass,
                 "com": [float(x.com[0]), float(x.com[1]), float(x.com[2])],
@@ -639,6 +651,7 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     user-defined keys, so a namespace target accepts every source key. When the source
     carries a ``Model.AttributeNamespace`` (reconstructed by :func:`deserialize`) that the
     target lacks, it is installed wholesale so namespaces like ``model.mujoco`` roundtrip.
+    Model collision-edge storage also accepts private keys and their legacy public names.
 
     Args:
         source_dict: Mapping-like decoded values to transfer from deserialization.
@@ -653,13 +666,31 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
         return
 
     target_is_namespace = isinstance(target_obj, Model.AttributeNamespace)
+    target_is_model = isinstance(target_obj, Model)
 
     for attr_name, source_value in source_dict.items():
-        if isinstance(target_obj, Model) and attr_name in {
+        if target_is_model and attr_name in {
             "_shape_collision_filter_pairs",
             "shape_collision_filter_pairs",
         }:
             target_obj._set_shape_collision_filter_pairs(source_value)  # pyright: ignore[reportPrivateUsage]
+            continue
+
+        if target_is_model and attr_name in {
+            "shape_contact_pairs",
+            "_shape_contact_pairs",
+            "shape_contact_pair_count",
+            "_shape_contact_pair_count",
+        }:
+            continue
+
+        if target_is_model and attr_name.removeprefix("_") in {
+            "mesh_edge_indices",
+            "mesh_edge_centers",
+            "mesh_edge_halves",
+            "shape_edge_range",
+        }:
+            setattr(target_obj, f"_{attr_name.removeprefix('_')}", source_value)
             continue
 
         if attr_name.startswith("_"):
@@ -709,6 +740,23 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
             setattr(target_obj, attr_name, source_value)
         except (AttributeError, TypeError):
             pass
+
+    if target_is_model:
+        # Restore pair storage and topology; the count is derived from their contents.
+        pairs = source_dict.get("shape_contact_pairs", source_dict.get("_shape_contact_pairs", _MISSING))
+        if pairs is not _MISSING:
+            target_obj.shape_contact_pairs = pairs
+        data = source_dict.get("_shape_contact_pair_data")
+        if isinstance(data, Mapping):
+            target_obj._shape_contact_pair_data = _ShapeContactPairs(  # pyright: ignore[reportPrivateUsage]
+                data["shape_body"],
+                data["shape_world"],
+                data["shape_group"],
+                data["shape_flags"],
+                data["filter_pairs"],
+                data["world_count"],
+            )
+            target_obj._shape_contact_pair_count = int(target_obj._shape_contact_pair_data.counts.sum())  # pyright: ignore[reportPrivateUsage]
 
     if post_load_init_callback is not None:
         post_load_init_callback(target_obj, _path)
@@ -953,11 +1001,11 @@ def _resolve_warp_dtype(
         suffix = _NUMPY_DTYPE_TO_SUFFIX.get(np_arr.dtype.type, "f")
         inferred = f"vec{vec_len}{suffix}"
         if hasattr(wp, inferred):
-            print(f"[Recorder] Info: Inferred dtype '{inferred}' from data shape for generic 'vec_t'")
+            logger.info("[Recorder] Inferred dtype '%s' from data shape for generic 'vec_t'", inferred)
             return getattr(wp, inferred)
         # For non-standard vector lengths (e.g., vec5), create dynamically
         scalar_type = _NUMPY_TO_WARP_SCALAR.get(np_arr.dtype.type, wp.float32)
-        print(f"[Recorder] Info: Creating dynamic vector type vec{vec_len} with {scalar_type.__name__}")
+        logger.info("[Recorder] Creating dynamic vector type vec%s with %s", vec_len, scalar_type.__name__)
         return wp.types.vector(vec_len, scalar_type)
 
     if dtype_str == "mat_t" and np_arr is not None and np_arr.ndim >= 2:
@@ -966,11 +1014,11 @@ def _resolve_warp_dtype(
         suffix = _NUMPY_DTYPE_TO_SUFFIX.get(np_arr.dtype.type, "f")
         inferred = f"mat{rows}{cols}{suffix}"
         if hasattr(wp, inferred):
-            print(f"[Recorder] Info: Inferred dtype '{inferred}' from data shape for generic 'mat_t'")
+            logger.info("[Recorder] Inferred dtype '%s' from data shape for generic 'mat_t'", inferred)
             return getattr(wp, inferred)
         # For non-standard matrix shapes, create dynamically
         scalar_type = _NUMPY_TO_WARP_SCALAR.get(np_arr.dtype.type, wp.float32)
-        print(f"[Recorder] Info: Creating dynamic matrix type mat{rows}x{cols} with {scalar_type.__name__}")
+        logger.info("[Recorder] Creating dynamic matrix type mat%sx%s with %s", rows, cols, scalar_type.__name__)
         return wp.types.matrix((rows, cols), scalar_type)
 
     # If dtype ends with 'f' or 'd', try without suffix (e.g., vec3f -> vec3)
@@ -1022,7 +1070,7 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
                     cache.try_register_pointer_and_value_and_index(key, result, int(cache_index))
                 return result
             except Exception as e:
-                print(f"[Recorder] Warning: Failed to deserialize warp.array at '{path}': {e}")
+                logger.warning("[Recorder] Failed to deserialize warp.array at '%s': %s", path, e)
                 return None
 
         elif x_type == "warp.HashGrid":
@@ -1077,7 +1125,7 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
                     cache.try_register_pointer_and_value_and_index(mesh_key, mesh, int(cache_index))
                 return mesh
             except Exception as e:
-                print(f"[Recorder] Warning: Failed to deserialize Mesh at '{path}': {e}")
+                logger.warning("[Recorder] Failed to deserialize Mesh at '%s': %s", path, e)
                 return None
 
         elif x_type == "callable":
@@ -1205,7 +1253,7 @@ class ViewerFile(ViewerBase):
         Args:
             file_path: Optional override for the output path. If omitted, uses
                 the ``output_path`` from construction.
-            verbose: If True, print status output on success/failure.
+            verbose: If True, log status output on success/failure.
         """
         effective_path = file_path if file_path is not None else str(self.output_path)
         self._save_recording(effective_path, verbose=verbose)
@@ -1216,10 +1264,10 @@ class ViewerFile(ViewerBase):
             effective_path = file_path if file_path is not None else str(self.output_path)
             self._save_to_file(effective_path)
             if verbose:
-                print(f"Recording saved to {effective_path} ({self._frame_count} frames)")
+                logger.info("Recording saved to %s (%s frames)", effective_path, self._frame_count)
         except Exception as e:
             if verbose:
-                print(f"Error saving recording: {e}")
+                logger.error("Failed to save recording: %s", e)
 
     def record(self, state: State):
         """Record a snapshot of the provided simulation state.
@@ -1241,7 +1289,7 @@ class ViewerFile(ViewerBase):
             frame_id: Frame index to load from history.
         """
         if not (0 <= frame_id < len(self.history)):
-            print(f"Warning: frame_id {frame_id} is out of bounds. Playback skipped.")
+            logger.warning("frame_id %s is out of bounds. Playback skipped.", frame_id)
             return
 
         state_data = self.history[frame_id]
@@ -1264,7 +1312,7 @@ class ViewerFile(ViewerBase):
             model: Destination model object to populate.
         """
         if not self.deserialized_model:
-            print("Warning: No model data to playback.")
+            logger.warning("No model data to playback.")
             return
 
         def post_load_init_callback(target_obj, path):
@@ -1481,7 +1529,7 @@ class ViewerFile(ViewerBase):
         if self._frame_count > 0:
             self._save_recording()
         self._running = False
-        print(f"ViewerFile closed. Total frames recorded: {self._frame_count}")
+        logger.info("ViewerFile closed. Total frames recorded: %s", self._frame_count)
 
     def load_recording(self, file_path: str | None = None, verbose: bool = False):
         """Load a previously recorded file for playback.
@@ -1492,13 +1540,13 @@ class ViewerFile(ViewerBase):
         Args:
             file_path: Optional override for the file path. If omitted, uses
                 the ``output_path`` from construction.
-            verbose: If True, print status output after loading.
+            verbose: If True, log status output after loading.
         """
         effective_path = file_path if file_path is not None else str(self.output_path)
         self._load_from_file(effective_path)
         self._frame_count = len(self.history)
         if verbose:
-            print(f"Loaded recording with {self._frame_count} frames from {effective_path}")
+            logger.info("Loaded recording with %s frames from %s", self._frame_count, effective_path)
 
     def get_frame_count(self) -> int:
         """Return the number of frames in the loaded or recorded session.

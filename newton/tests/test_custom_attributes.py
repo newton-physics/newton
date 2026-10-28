@@ -1960,6 +1960,78 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # World 1: refs should be offset by 2 (entity count from world 0), so 2, 3
         np.testing.assert_array_equal(refs, [0, 1, 2, 3])
 
+    def test_custom_frequency_reference_value_transformer(self):
+        """Remap row-dependent references with one batch transformer call per copied builder."""
+        calls = []
+
+        def remap(values, context):
+            calls.append((list(values), list(context["row_indices"]), context["world"]))
+            kinds = context["builder"].custom_attributes["test:target_kind"].values
+            offsets = {0: context["entity_offsets"]["body"], 1: context["entity_offsets"]["shape"]}
+            return [None if value is None else value + offsets[kinds[row]] for row, value in enumerate(values)]
+
+        sub_builder = ModelBuilder()
+        sub_builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="target", namespace="test"))
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(name="target_kind", frequency="test:target", dtype=wp.int32, namespace="test")
+        )
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="target_index",
+                frequency="test:target",
+                dtype=wp.int32,
+                default=-1,
+                namespace="test",
+                reference_value_transformer=remap,
+            )
+        )
+        body = sub_builder.add_body(mass=1.0)
+        shape0 = sub_builder.add_shape_sphere(body, radius=0.1)
+        shape1 = sub_builder.add_shape_sphere(body, radius=0.1)
+        sub_builder.add_custom_values(**{"test:target_kind": 1})
+        sub_builder.add_custom_values(**{"test:target_kind": 0, "test:target_index": body})
+        sub_builder.add_custom_values(**{"test:target_kind": 1, "test:target_index": shape1})
+
+        main_builder = ModelBuilder()
+        main_builder.add_world(sub_builder)
+        main_builder.add_world(sub_builder)
+        model = main_builder.finalize(device=self.device)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], ([None, body, shape1], [0, 1, 2], 0))
+        self.assertEqual(calls[1][2], 1)
+        np.testing.assert_array_equal(model.test.target_index.numpy(), [-1, body, shape1, -1, body + 1, shape1 + 2])
+        self.assertEqual((body, shape0, shape1), (0, 0, 1))
+
+    def test_custom_frequency_reference_value_transformer_length_mismatch(self):
+        """Reject a reference transformer that drops rows."""
+        sub_builder = ModelBuilder()
+        sub_builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="target", namespace="test"))
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="target_index",
+                frequency="test:target",
+                dtype=wp.int32,
+                namespace="test",
+                reference_value_transformer=lambda values, _context: values[:-1],
+            )
+        )
+        sub_builder.add_custom_values(**{"test:target_index": 0})
+
+        with self.assertRaisesRegex(ValueError, "returned 0 values, expected 1"):
+            ModelBuilder().add_builder(sub_builder)
+
+    def test_reference_transformer_rejects_builtin_references(self):
+        """A transformer must not silently override a declared reference type."""
+        with self.assertRaisesRegex(ValueError, "references.*reference_value_transformer"):
+            ModelBuilder.CustomAttribute(
+                name="target",
+                frequency=AttributeFrequency.BODY,
+                dtype=wp.int32,
+                references="body",
+                reference_value_transformer=lambda values, _context: values,
+            )
+
     def test_custom_frequency_unknown_references_raises_error(self):
         """Test that unknown references value raises ValueError during add_world."""
         sub_builder = ModelBuilder()
@@ -2046,6 +2118,91 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # Empty frequency shouldn't create a namespace or attribute
         self.assertFalse(hasattr(model, "test"))
         self.assertEqual(model.get_custom_frequency_count("test:empty"), 0)
+
+    def test_merge_empty_reference_frequency(self):
+        """Keep empty reference declarations without adding rows or losing populated defaults."""
+        sources = []
+        for tags in ((), (10, 20)):
+            source = ModelBuilder()
+            source.add_body(mass=1.0)
+            source.add_custom_frequency(ModelBuilder.CustomFrequency(name="sensor"))
+            source.add_custom_attribute(
+                ModelBuilder.CustomAttribute(name="sensor_tag", frequency="sensor", dtype=wp.int32)
+            )
+            for tag in tags:
+                source.add_custom_values(sensor_tag=tag)
+            # Both sources have no explicit references; only one has sensor rows.
+            source.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="sensor_body",
+                    frequency="sensor",
+                    dtype=wp.int32,
+                    references=AttributeFrequency.BODY,
+                    default=0,
+                )
+            )
+            sources.append(source)
+        empty, populated = sources
+
+        for method in ("add_builder", "replicate"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                for source in (empty, populated, empty, populated):
+                    if method == "add_builder":
+                        builder.add_builder(source)
+                    else:
+                        builder.replicate(source, 1)
+                    self.assertIn("sensor", builder.custom_frequencies)
+                    self.assertIn("sensor_body", builder.custom_attributes)
+                    if builder.body_count == 1:
+                        self.assertEqual(builder.custom_attributes["sensor_body"].values, [])
+                model = builder.finalize(device=self.device)
+                self.assertEqual(model.get_custom_frequency_count("sensor"), 4)
+                np.testing.assert_array_equal(model.sensor_tag.numpy(), [10, 20, 10, 20])
+                np.testing.assert_array_equal(model.sensor_body.numpy(), [1, 1, 3, 3])
+        for source in sources:
+            self.assertEqual(source.custom_attributes["sensor_body"].values, [])
+
+    def test_merge_unused_reference_registered_later(self):
+        """Allow unused reference declarations, then validate and offset their rows."""
+        for method in ("add_builder", "replicate"):
+            with self.subTest(method=method):
+                source = ModelBuilder()
+                source.add_custom_frequency(ModelBuilder.CustomFrequency(name="sensor"))
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(name="sensor_tag", frequency="sensor", dtype=wp.int32)
+                )
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(
+                        name="sensor_target", frequency="sensor", dtype=wp.int32, references="marker", default=0
+                    )
+                )
+                builder = ModelBuilder()
+                merge = getattr(builder, method)
+                args = (source,) if method == "add_builder" else (source, 1)
+                for _ in range(3):
+                    merge(*args)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.get_custom_frequency_count("sensor"), 0)
+                self.assertFalse(hasattr(model, "sensor_target"))
+
+                # Adding a row must invalidate the deferred check, even when
+                # the reference itself still has only a default value.
+                source.add_custom_values(sensor_tag=10)
+                with self.assertRaisesRegex(ValueError, "Unknown references value 'marker'"):
+                    merge(*args)
+
+                source.add_custom_frequency(ModelBuilder.CustomFrequency(name="marker"))
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(name="marker_tag", frequency="marker", dtype=wp.int32)
+                )
+                source.add_custom_values(marker_tag=20)
+                merge(*args)
+                merge(*args)
+                model = builder.finalize(device="cpu")
+                np.testing.assert_array_equal(model.sensor_target.numpy(), [0, 1])
+                np.testing.assert_array_equal(model.sensor_tag.numpy(), [10, 10])
+                np.testing.assert_array_equal(model.marker_tag.numpy(), [20, 20])
 
     def test_custom_frequency_unknown_raises_keyerror(self):
         """Test that get_custom_frequency_count raises KeyError for unknown frequencies."""
@@ -2180,7 +2337,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         world.add_builder(robot, label_prefix="left")
         world.add_builder(robot, label_prefix="right")
         scene = ModelBuilder()
-        scene.replicate(world, world_count=2)
+        scene.replicate(world, copy_count=2)
         model = scene.finalize(device=self.device)
         control = model.control()
 
@@ -2249,9 +2406,50 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         view.set_attribute("test.item_value", model, np.array([[[11.0, 31.0]]], dtype=np.float32))
         np.testing.assert_allclose(model.test.item_value.numpy(), [11.0, 20.0, 31.0])
 
+    def test_once_reference_defaults_preserve_destination(self):
+        """Keep a global reference unless the source explicitly overrides it."""
+        source = ModelBuilder()
+        source.add_body()
+        source.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="root_body",
+                dtype=wp.int32,
+                frequency=AttributeFrequency.ONCE,
+                references="body",
+                default=0,
+            )
+        )
+        self.assertEqual(source.custom_attributes["root_body"].references, "body")
+        for values, expected in ((None, 2), ({}, 0), ({0: 1}, 1)):
+            with self.subTest(destination_values=values):
+                scene = ModelBuilder()
+                scene.add_body()
+                scene.add_body()
+                if values is not None:
+                    scene.add_custom_attribute(
+                        ModelBuilder.CustomAttribute(
+                            name="root_body",
+                            dtype=wp.int32,
+                            frequency=AttributeFrequency.ONCE,
+                            references=AttributeFrequency.BODY,
+                            default=0,
+                            values=values.copy(),
+                        )
+                    )
+                scene.add_builder(source)
+                scene.replicate(source, 2)
+                model = scene.finalize(device=self.device)
+                np.testing.assert_array_equal(model.root_body.numpy(), [expected])
+
+        source.custom_attributes["root_body"].values[0] = 0
+        scene.add_builder(source)
+        np.testing.assert_array_equal(scene.finalize(device=self.device).root_body.numpy(), [5])
+
     def test_world_frequency_merge_add_world(self):
-        """Test that WORLD-frequency attributes are correctly indexed when using add_world()."""
+        """Copy world rows without letting a global merge overwrite their reference defaults."""
         sub = ModelBuilder()
+        sub.add_body()
+        sub.add_body()
         sub.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="world_data",
@@ -2264,17 +2462,31 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # Manually set value at index 0 for the sub-builder's world
         sub.custom_attributes["test:world_data"].values = {0: 42}
 
-        main = ModelBuilder()
-        main.add_world(sub)
-        main.add_world(sub)
-
-        model = main.finalize(device=self.device)
-        arr = model.test.world_data.numpy()
-
-        self.assertEqual(model.world_count, 2)
-        self.assertEqual(len(arr), 2)
-        self.assertEqual(arr[0], 42)
-        self.assertEqual(arr[1], 42)
+        ground = ModelBuilder()
+        ground.add_body()
+        for builder in (sub, ground):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="world_root_body",
+                    dtype=wp.int32,
+                    frequency=AttributeFrequency.WORLD,
+                    references="body",
+                    default=0,
+                )
+            )
+        for method in ("add_world", "replicate"):
+            with self.subTest(method=method):
+                main = ModelBuilder()
+                if method == "add_world":
+                    main.add_world(sub)
+                    main.add_world(sub)
+                else:
+                    main.replicate(sub, 2)
+                main.add_builder(ground)
+                model = main.finalize(device=self.device)
+                self.assertEqual(model.world_count, 2)
+                np.testing.assert_array_equal(model.test.world_data.numpy(), [42, 42])
+                np.testing.assert_array_equal(model.world_root_body.numpy(), [0, 2])
 
     def test_custom_attribute_model_finalizer_rejects_conflicting_registration(self):
         builder = ModelBuilder()
@@ -2308,7 +2520,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
             main.add_builder(sub)
 
     def test_transform_value_list_and_sentinel_shape_refs(self):
-        """Test that transform_value handles lists with negative sentinel values correctly."""
+        """Preserve negative shape references across supported integer-vector inputs."""
         main = ModelBuilder()
 
         # Register custom frequency before adding attributes
@@ -2340,8 +2552,8 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         )
         body = sub.add_body(mass=1.0)
         sub.add_shape_sphere(body, radius=0.1)  # shape 0
-        # Add pair with value [0, -1] where -1 is sentinel for "no geom"
-        sub.add_custom_values(**{"test:pair_geoms": [0, -1]})
+        for value in ([0, -1], (0, -1), wp.vec2i(0, -1), np.array([0, -1], dtype=np.int32)):
+            sub.add_custom_values(**{"test:pair_geoms": value})
 
         # Add main's own shape first
         main_body = main.add_body(mass=1.0)
@@ -2353,11 +2565,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         model = main.finalize(device=self.device)
         arr = model.test.pair_geoms.numpy()
 
-        # Should have 1 pair entry
-        self.assertEqual(len(arr), 1)
-        # First element should be offset by 1 (shape_offset), second (-1) preserved
-        self.assertEqual(arr[0][0], 1)  # 0 + 1 = 1
-        self.assertEqual(arr[0][1], -1)  # sentinel preserved
+        np.testing.assert_array_equal(arr, [[1, -1], [1, -1], [1, -1], [1, -1]])
 
     def test_merge_custom_attribute_default_only_no_crash(self):
         """Test add_builder does not crash when sub-builder has default-only attribute (no overrides)."""

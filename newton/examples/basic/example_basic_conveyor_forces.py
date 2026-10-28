@@ -484,7 +484,7 @@ class ConveyorForceModel:
             threshold,
         )
 
-    def finalize(self, contacts, solver_observables: newton.solvers.SolverObservables | None = None) -> None:
+    def finalize(self, contacts, solver_observables: newton.solvers.SolverBase.Observables | None = None) -> None:
         """Allocate device buffers. Call once after registering all belts.
 
         Args:
@@ -499,7 +499,7 @@ class ConveyorForceModel:
         if contacts.rigid_contact_max <= 0:
             raise ValueError("Contacts must have nonzero rigid-contact capacity.")
         if solver_observables is None or solver_observables.contact_f is None:
-            raise ValueError("Request SolverObservableFlags.CONTACT_F before finalizing the conveyor force model.")
+            raise ValueError("Request SolverBase.ObservableKind.CONTACT_F before finalizing the conveyor force model.")
 
         d = self.device
         self.conv_field_type = wp.array(self._field_type, dtype=wp.int32, device=d)
@@ -738,7 +738,6 @@ class Example:
     """Conveyor circuit whose static belts carry rigid boxes with contact forces."""
 
     def __init__(self, viewer, args=None):
-        newton.use_coord_layout_targets = True
         self.solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
 
         self.fps = 60
@@ -802,7 +801,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=VBD_ITERATIONS,
-                rigid_compliant_alm=True,
                 rigid_joint_linear_ke=1.0e2,
                 rigid_joint_angular_ke=1.0e2,
                 rigid_body_contact_buffer_size=64,
@@ -826,7 +824,9 @@ class Example:
             rigid_contact_max=self.solver.get_max_contact_count() if self.solver_type == "mujoco" else None,
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
