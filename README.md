@@ -17,9 +17,11 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 ## Requirements
 
-- **Python** 3.10+
+- **Python** 3.10+ (3.10 support is deprecated; removal planned for Newton 1.9; use 3.11+)
 - **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-- **GPU:** NVIDIA GPU (Maxwell or newer), driver 545 or newer (CUDA 12). No local CUDA Toolkit installation required. macOS runs on CPU.
+- **GPU:** Fresh installs currently select Warp 1.18, which requires an NVIDIA Turing GPU (compute capability 7.5+) and driver R580+ for CUDA acceleration.
+  On an R545–R579 driver or an older supported GPU, install with `warp-lang==1.17.0` (see the installation guide).
+  No local CUDA Toolkit is required; macOS runs on CPU.
 
 For detailed system requirements, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html). For tested configurations and Newton's versioning and deprecation policies, see the [compatibility guide](https://newton-physics.github.io/newton/latest/guide/compatibility.html).
 
@@ -31,6 +33,14 @@ python -m newton.examples
 ```
 
 To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
+
+## Community Projects
+
+Explore community solvers, integrations, and applications through the [`newton-physics` topic on GitHub](https://github.com/topics/newton-physics).
+
+To share your own project, add the `newton-physics` topic to your public repository's **About** section. See [GitHub's guide to repository topics](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics) for instructions.
+
+Projects opt in by adding the topic; inclusion does not imply endorsement or support by the Newton maintainers. External solvers and extensions are maintained separately from Newton. Check each project's documentation for maturity, compatibility, and support.
 
 ## Examples
 
@@ -305,10 +315,10 @@ If you run the examples from a source checkout with uv, use
   </tr>
   <tr>
     <td align="center" width="33%">
-      <code>python -m newton.examples controller_joint_impedance_heterogeneous</code>
+      <a href="#joint-impedance-heterogeneous">Run joint impedance heterogeneous</a>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples controller_operational_space_hybrid_force_motion</code>
+      <a href="#operational-space-hybrid-force-and-motion">Run operational space hybrid force/motion</a>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples controller_differential_ik</code>
@@ -372,6 +382,71 @@ If you run the examples from a source checkout with uv, use
     <td align="center" width="33%">
       <code>python -m newton.examples cable_plectoneme</code>
     </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_initial_rest_pose.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_initial_rest_pose.jpg" alt="Cable Initial and Rest Poses">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_initial_rest_pose</code>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="3"><h3>Tendon Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_pulley.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_pulley.jpg" alt="Tendon Pulley">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_pinhole.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_pinhole.jpg" alt="Tendon Pinhole">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_capstan_friction.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_capstan_friction.jpg" alt="Tendon Capstan Friction">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_pulley</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_pinhole</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_capstan_friction</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_mujoco_switch.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_mujoco_switch.jpg" alt="Tendon Dynamic Routing">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_3d_routing.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_3d_routing.jpg" alt="Tendon 3D Routing">
+      </a>
+    </td>
+    <td align="center" width="33%"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_mujoco_switch</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_3d_routing</code>
+    </td>
+    <td align="center" width="33%"></td>
   </tr>
   <tr>
     <td colspan="3"><h3>Cloth Examples</h3></td>
@@ -596,6 +671,26 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/mpm/example_mpm_pinch_carry.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_mpm_pinch_carry.jpg" alt="MPM Pinch and Carry">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples mpm_pinch_carry</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Sensor Examples</h3></td>
   </tr>
   <tr>
@@ -605,8 +700,8 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_tiled_camera.py">
-        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_tiled_camera.jpg" alt="Sensor Tiled Camera">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/sensors/example_sensor_camera.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_sensor_camera.jpg" alt="Sensor Camera">
       </a>
     </td>
     <td align="center" width="33%">
@@ -620,7 +715,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples sensor_contact</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples sensor_tiled_camera</code>
+      <code>python -m newton.examples sensor_camera</code>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples sensor_imu</code>
@@ -789,7 +884,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples franka_cable_ik_pick_place</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples mujoco_franka_vbd_cable_admm_solver</code>
+      <a href="#mujoco-franka-vbd-cable-admm">Run MuJoCo Franka VBD cable ADMM</a>
     </td>
     <td align="center" width="33%">
       <code>python -m newton.examples vbd_dat_rigid_soft</code>
@@ -866,6 +961,9 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_adaptive_collision.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_adaptive_collision.jpg" alt="Adaptive Collision Scheduling">
+      </a>
     </td>
   </tr>
   <tr>
@@ -876,6 +974,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples domino_spiral</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples adaptive_collision</code>
     </td>
   </tr>
   <tr>
@@ -948,6 +1047,9 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/kamino/example_kamino_earworm_flowers.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_kamino_earworm_flowers.jpg" alt="Kamino Stewart platform garden with Hoberman flowers">
+      </a>
     </td>
   </tr>
   <tr>
@@ -958,9 +1060,66 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples kamino_robot_dr_legs</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples kamino_earworm_flowers</code>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="3"><h3>Steel Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/steel/example_steel_sleeping.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_steel_sleeping.jpg" alt="Steel Sleeping">
+      </a>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples steel_sleeping</code>
+    </td>
+    <td align="center" width="33%">
+    </td>
+    <td align="center" width="33%">
     </td>
   </tr>
 </table>
+
+#### Joint impedance heterogeneous
+
+<details>
+<summary>Show command</summary>
+
+```sh
+python -m newton.examples controller_joint_impedance_heterogeneous
+```
+
+</details>
+
+#### Operational space hybrid force and motion
+
+<details>
+<summary>Show command</summary>
+
+```sh
+python -m newton.examples controller_operational_space_hybrid_force_motion
+```
+
+</details>
+
+#### MuJoCo Franka VBD cable ADMM
+
+<details>
+<summary>Show command</summary>
+
+```sh
+python -m newton.examples mujoco_franka_vbd_cable_admm_solver
+```
+
+</details>
 
 ### Example Options
 
@@ -994,6 +1153,10 @@ python -m newton.examples basic_urdf --device cuda:0
 # Combine options
 python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 ```
+
+## Research using Newton
+
+See [PUBLICATIONS.md](https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md) for research using Newton, inclusion criteria, and instructions for adding your publication.
 
 ## Contributing and Development
 
