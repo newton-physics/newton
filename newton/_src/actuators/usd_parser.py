@@ -13,10 +13,10 @@ from typing import Any
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
-from .batteries import BatteryBase, BatteryInternalResistance
+from .batteries import BatteryBase, BatteryConstantResistance
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
-from .input_processors import InputProcessorBacklash, InputProcessorBase
+from .input_processors import InputProcessorBase, InputProcessorEncoder
 from .input_processors.input_processor_delay import InputProcessorDelay
 from .motors import MotorBase, MotorDC
 from .utils import _looks_like_torch_checkpoint, load_metadata
@@ -279,7 +279,7 @@ class SchemaNames:
 
     ACTUATOR = "NewtonActuator"
     BATTERY = "NewtonBattery"
-    INTERNAL_RESISTANCE_BATTERY = "NewtonInternalResistanceBattery"
+    CONSTANT_RESISTANCE_BATTERY = "NewtonConstantResistanceBattery"
 
     PD_CONTROL = "NewtonPDControlAPI"
     PID_CONTROL = "NewtonPIDControlAPI"
@@ -292,7 +292,7 @@ class SchemaNames:
     DC_MOTOR = "NewtonDCMotorAPI"
 
     DELAY = "NewtonActuatorDelayAPI"
-    BACKLASH = "NewtonActuatorBacklashAPI"
+    ENCODER = "NewtonActuatorEncoderAPI"
 
 
 _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
@@ -304,7 +304,7 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR: _SchemaEntry(MotorDC, ComponentKind.MOTOR),
     SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
-    SchemaNames.BACKLASH: _SchemaEntry(InputProcessorBacklash, ComponentKind.INPUT_PROCESSOR),
+    SchemaNames.ENCODER: _SchemaEntry(InputProcessorEncoder, ComponentKind.INPUT_PROCESSOR),
 }
 
 _BASE_SCHEMAS = {
@@ -347,7 +347,7 @@ def register_actuator_component(
 
 
 _BATTERY_REGISTRY: dict[str, type[BatteryBase]] = {
-    SchemaNames.INTERNAL_RESISTANCE_BATTERY: BatteryInternalResistance,
+    SchemaNames.CONSTANT_RESISTANCE_BATTERY: BatteryConstantResistance,
 }
 
 
@@ -356,7 +356,7 @@ class BatteryParsed:
     """Result of parsing a USD battery prim."""
 
     battery_class: type[BatteryBase]
-    """Battery class of the prim's type, e.g. :class:`~newton.actuators.BatteryInternalResistance`."""
+    """Battery class of the prim's type, e.g. :class:`~newton.actuators.BatteryConstantResistance`."""
     battery_kwargs: dict[str, Any] = field(default_factory=dict)
     """Authored battery parameters as :meth:`~newton.ModelBuilder.add_battery` keyword arguments."""
 
@@ -364,8 +364,8 @@ class BatteryParsed:
 def parse_battery_prim(prim) -> BatteryParsed | None:
     """Parse a USD battery prim into a battery class and its parameters.
 
-    The prim type selects the battery class, e.g. ``NewtonInternalResistanceBattery``
-    selects :class:`~newton.actuators.BatteryInternalResistance`, and the authored
+    The prim type selects the battery class, e.g. ``NewtonConstantResistanceBattery``
+    selects :class:`~newton.actuators.BatteryConstantResistance`, and the authored
     ``newton:`` attributes become its keyword arguments; the class fills in
     defaults when the battery is added. The actuators that draw from the
     battery name it in their ``newton:battery`` relationship;
@@ -395,7 +395,7 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
     Each detected schema directly maps to a component class with its
     extracted params. A joint parameter of an input processor (see
     :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`) is read from
-    the relationship of the same name, e.g. ``newton:backlashJoint``.
+    the relationship of the same name, e.g. ``newton:outputJoint``.
     Returns ``None`` if the prim is not a ``NewtonActuator``.
 
     Args:

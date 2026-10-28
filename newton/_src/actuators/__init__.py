@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
-from .batteries import BatteryBase, BatteryInternalResistance
+from .batteries import BatteryBase, BatteryConstantResistance
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .input_processors import (
-    InputProcessorBacklash,
     InputProcessorBase,
     InputProcessorDelay,
+    InputProcessorEncoder,
 )
 from .joint_space_response import JointSpaceResponse
 from .motors import MotorBase, MotorDC
@@ -26,7 +26,7 @@ __all__ = [
     "Actuator",
     "ActuatorParsed",
     "BatteryBase",
-    "BatteryInternalResistance",
+    "BatteryConstantResistance",
     "BatteryParsed",
     "ClampingBase",
     "ClampingDCMotor",
@@ -39,9 +39,9 @@ __all__ = [
     "DriveNeuralMLP",
     "DrivePD",
     "DrivePID",
-    "InputProcessorBacklash",
     "InputProcessorBase",
     "InputProcessorDelay",
+    "InputProcessorEncoder",
     "JointSpaceResponse",
     "MotorBase",
     "MotorDC",

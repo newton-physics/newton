@@ -29,7 +29,7 @@ from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
     ActuatorParsed,
-    BatteryInternalResistance,
+    BatteryConstantResistance,
     ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -40,9 +40,9 @@ from newton.actuators import (
     DriveNeuralMLP,
     DrivePD,
     DrivePID,
-    InputProcessorBacklash,
     InputProcessorBase,
     InputProcessorDelay,
+    InputProcessorEncoder,
     JointSpaceResponse,
     MotorDC,
     parse_actuator_prim,
@@ -2761,14 +2761,14 @@ class TestMotorDC(unittest.TestCase):
             ),
         }
         knee_servo = template.add_actuator(
-            DrivePD, index=knee, input_processors=[(InputProcessorBacklash, {"backlash_joint": "backlash"})], **servo
+            DrivePD, index=knee, input_processors=[(InputProcessorEncoder, {"output_joint": "backlash"})], **servo
         )
         ankle_servos = [template.add_actuator(DrivePD, index=ankle, **servo) for _ in range(2)]
         for servos, nominal, minimum in zip(
             ([knee_servo, ankle_servos[0]], [ankle_servos[1]]), nominal_voltage, min_voltage, strict=True
         ):
             template.add_battery(
-                BatteryInternalResistance,
+                BatteryConstantResistance,
                 servos,
                 nominal_voltage=nominal,
                 resistance=battery_resistance,
@@ -2975,20 +2975,18 @@ class TestInputProcessors(unittest.TestCase):
         builder.add_world(template)
         builder.begin_world()
         builder.add_builder(template)
-        builder.add_actuator(
-            DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorBacklash, {"backlash_joint": 1})]
-        )
+        builder.add_actuator(DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": 1})])
 
         with self.assertRaisesRegex(ValueError, "DOF index 0 belongs to world 0"):
             builder.add_actuator(DrivePD, index=0, kp=1.0)
         with self.assertRaisesRegex(ValueError, "joint index 0 belongs to world 0"):
             builder.add_actuator(
-                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorBacklash, {"backlash_joint": 0})]
+                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": 0})]
             )
         slider = builder.add_joint_prismatic(parent=-1, child=builder.add_link(), axis=newton.Axis.Z)
         with self.assertRaisesRegex(ValueError, "must have the type of the actuated joint"):
             builder.add_actuator(
-                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorBacklash, {"backlash_joint": slider})]
+                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorEncoder, {"output_joint": slider})]
             )
 
     def test_processor_must_keep_vel_indices(self):
@@ -3031,7 +3029,7 @@ class TestInputProcessors(unittest.TestCase):
             kd=kd,
             input_processors=[
                 (_OffsetPositions, {"offset": offset}),
-                (InputProcessorBacklash, {"backlash_joint": "backlash"}),
+                (InputProcessorEncoder, {"output_joint": "backlash"}),
             ],
         )
 
@@ -4974,7 +4972,7 @@ class TestActuatorBuilder(unittest.TestCase):
         builder.begin_world()
         builder.add_builder(template)
         builder.add_actuator(DrivePD, index=builder.joint_qd_start[-1], kp=1.0)
-        builder.add_battery(BatteryInternalResistance, [1], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
+        builder.add_battery(BatteryConstantResistance, [1], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
 
         cases = {
             "at least one": ([], 12.0, 0.5, 9.0),
@@ -4988,7 +4986,7 @@ class TestActuatorBuilder(unittest.TestCase):
         for message, (actuators, nominal_voltage, resistance, min_voltage) in cases.items():
             with self.subTest(message), self.assertRaisesRegex(ValueError, message):
                 builder.add_battery(
-                    BatteryInternalResistance,
+                    BatteryConstantResistance,
                     actuators,
                     nominal_voltage=nominal_voltage,
                     resistance=resistance,
@@ -5019,7 +5017,7 @@ class TestActuatorBuilder(unittest.TestCase):
             kp=1.0,
             motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "vin": 12.0, "supply_from_battery": True}),
         )
-        template.add_battery(BatteryInternalResistance, [servo], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
+        template.add_battery(BatteryConstantResistance, [servo], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
         builder = newton.ModelBuilder()
         builder.replicate(template, 3)
         model = builder.finalize()
@@ -5070,7 +5068,7 @@ class TestActuatorBuilder(unittest.TestCase):
         usd_path = os.path.join(os.path.dirname(__file__), "assets", "actuator_bam_test.usda")
         stage = Usd.Stage.Open(usd_path)
         battery = parse_battery_prim(stage.GetPrimAtPath("/World/Robot/Battery"))
-        self.assertIs(battery.battery_class, BatteryInternalResistance)
+        self.assertIs(battery.battery_class, BatteryConstantResistance)
         self.assertEqual(battery.battery_kwargs, {"nominal_voltage": 6.0, "resistance": 0.5})
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parse_usd(template, stage)

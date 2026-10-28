@@ -903,7 +903,7 @@ class ModelBuilder:
     class BatteryEntry:
         """Stores accumulated specs for the batteries of one battery class."""
 
-        battery_class: type  # BatteryBase subclass (e.g. BatteryInternalResistance)
+        battery_class: type  # BatteryBase subclass (e.g. BatteryConstantResistance)
         args: list[dict[str, Any]] = field(default_factory=list)  # Per-battery array params
         actuators: list[list[int]] = field(default_factory=list)  # Per-battery actuators
         world: list[int] = field(default_factory=list)  # Per-battery world
@@ -3449,7 +3449,7 @@ class ModelBuilder:
         such as the nominal voltage, may differ within the same group.
 
         Args:
-            battery_class: Battery class (e.g. :class:`~newton.actuators.BatteryInternalResistance`).
+            battery_class: Battery class (e.g. :class:`~newton.actuators.BatteryConstantResistance`).
             actuators: Actuator indices returned by :meth:`add_actuator`. At
                 least one is required, and each must belong to the current
                 world and have a motor that draws from a battery (e.g.

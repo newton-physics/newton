@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .base import BatteryBase
-from .battery_internal_resistance import BatteryInternalResistance
+from .battery_constant_resistance import BatteryConstantResistance
 
 __all__ = [
     "BatteryBase",
-    "BatteryInternalResistance",
+    "BatteryConstantResistance",
 ]

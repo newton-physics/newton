@@ -29,7 +29,7 @@ construction.
    Actuator
    ActuatorParsed
    BatteryBase
-   BatteryInternalResistance
+   BatteryConstantResistance
    BatteryParsed
    ClampingBase
    ClampingDCMotor
@@ -42,9 +42,9 @@ construction.
    DriveNeuralMLP
    DrivePD
    DrivePID
-   InputProcessorBacklash
    InputProcessorBase
    InputProcessorDelay
+   InputProcessorEncoder
    JointSpaceResponse
    MotorBase
    MotorDC

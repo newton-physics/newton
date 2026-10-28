@@ -36,7 +36,7 @@ An actuator is composed of four building blocks, applied in this order:
    Actuator
    ├── InputProcessor[]  (optional: transforms state and command inputs)
    │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
-   │   └── InputProcessorBacklash   (reads position on the link side of a backlash joint)
+   │   └── InputProcessorEncoder     (position encoder, e.g. behind a backlash joint)
    ├── Drive      (control law that computes raw effort)
    ├── Clamping[]  (clamps raw effort to model actuator limits)
    │   ├── ClampingMaxEffort        (±max_effort symmetric clamp)
@@ -48,8 +48,8 @@ An actuator is composed of four building blocks, applied in this order:
 **Input processor**
    Transforms the inputs to the drive: the simulation state (positions,
    velocities) and the control targets (positions, velocities, feedforward
-   effort).  Examples include a command delay and an encoder on the link side
-   of a backlash joint.  Multiple input processors can be combined on a single
+   effort).  Examples include a command delay and a position encoder, e.g.
+   behind a backlash joint.  Multiple input processors can be combined on a single
    actuator.  See the individual input processor class
    documentation for details.
 
@@ -585,9 +585,9 @@ Limitations of the implicit mode.  In the cases marked *error*,
   :attr:`~newton.actuators.DriveBase.custom_inputs` must pass them to the
   solve, or the solve would ignore them.
 * **Backlash is not modeled** (warning): an actuator with an
-  :class:`~newton.actuators.InputProcessorBacklash` is accepted with a
+  :class:`~newton.actuators.InputProcessorEncoder` is accepted with a
   :class:`~newton.exceptions.NewtonWarning`, because the result is only
-  approximate.  The drive reads the link side of the backlash joint, while the
+  approximate.  The drive reads the encoder behind the output joint, while the
   solve predicts the end-of-step state from the response of the actuated joint
   alone.  While the backlash gap is open, the motor's effort does not reach
   the link, yet the solve assumes it does, so it applies less effort than
@@ -616,7 +616,7 @@ Input processors
 ^^^^^^^^^^^^^^^^
 
 * :class:`InputProcessorDelay` — circular-buffer delay for control targets (stateful).
-* :class:`InputProcessorBacklash` — position on the link side of a backlash
+* :class:`InputProcessorEncoder` — position encoder, e.g. behind a backlash
   joint (stateless).
 
 Multiple input processors can be stacked on a single actuator; they are applied
@@ -698,7 +698,7 @@ Below, the hip and knee share one battery and the ankle draws from another:
 .. testcode:: actuator-battery
 
    import newton
-   from newton.actuators import BatteryInternalResistance, DrivePD, MotorDC
+   from newton.actuators import BatteryConstantResistance, DrivePD, MotorDC
 
    builder = newton.ModelBuilder()
    actuators = []
@@ -715,8 +715,8 @@ Below, the hip and knee share one battery and the ankle draws from another:
            motor=(MotorDC, {"kt": 0.5, "resistance": 2.0, "vin": 12.0, "supply_from_battery": True}),
        )
        actuators.append(actuator)
-   builder.add_battery(BatteryInternalResistance, actuators[:2], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
-   builder.add_battery(BatteryInternalResistance, actuators[2:], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
+   builder.add_battery(BatteryConstantResistance, actuators[:2], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
+   builder.add_battery(BatteryConstantResistance, actuators[2:], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
    model = builder.finalize()
 
    solver = newton.solvers.SolverFeatherstone(model)

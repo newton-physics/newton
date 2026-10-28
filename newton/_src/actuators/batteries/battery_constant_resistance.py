@@ -54,8 +54,8 @@ def _battery_reset_kernel(
         supply_voltage[battery_actuators[k]] = nominal_voltage[b]
 
 
-class BatteryInternalResistance(BatteryBase):
-    """Battery from BAM (Better Actuator Models): an ideal voltage source behind an internal resistance.
+class BatteryConstantResistance(BatteryBase):
+    """Battery from BAM (Better Actuator Models): an ideal voltage source behind a constant internal resistance.
 
     As in `BAM <https://github.com/Rhoban/bam>`_, the voltage of a battery is
 
@@ -95,7 +95,7 @@ class BatteryInternalResistance(BatteryBase):
                 negative.
         """
         if "nominal_voltage" not in args:
-            raise ValueError("BatteryInternalResistance requires 'nominal_voltage' argument")
+            raise ValueError("BatteryConstantResistance requires 'nominal_voltage' argument")
         nominal_voltage, resistance = args["nominal_voltage"], args.get("resistance", 0.0)
         min_voltage = args.get("min_voltage", 0.0)
         if not 0.0 <= min_voltage <= nominal_voltage:
