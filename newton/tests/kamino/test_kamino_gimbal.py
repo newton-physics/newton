@@ -149,7 +149,7 @@ def _build_fixture(
     )
 
 
-def _make_solver(backend: str, model: newton.Model) -> SolverKamino | SolverMuJoCo:
+def _make_solver(backend: str, model: newton.Model, *, limit_compliance: bool = False) -> SolverKamino | SolverMuJoCo:
     """Create a configured collision-free conformance solver."""
     if backend == "kamino":
         config = SolverKamino.Config(
@@ -158,8 +158,11 @@ def _make_solver(backend: str, model: newton.Model) -> SolverKamino | SolverMuJo
             use_fk_solver=False,
             sparse_jacobian=True,
         )
-        config.constraints.alpha = 0.0
-        config.constraints.beta = 0.1
+        # Match alpha=0 and beta=0.1 at the rollout's 240 Hz timestep.
+        config.constraints.joint_recovery_time = 0.0
+        config.constraints.joint_recovery_speed = 0.0
+        config.constraints.limit_recovery_time = (1.0 / 240.0) * (1.0 / 0.1 - 1.0)
+        config.constraints.limit_compliance = limit_compliance
         config.padmm.max_iterations = 200
         config.padmm.primal_tolerance = 1.0e-6
         config.padmm.dual_tolerance = 1.0e-6
@@ -185,6 +188,7 @@ def _run(
     velocity_target: np.ndarray | None = None,
     steps: int = 1,
     record_trajectory: bool = True,
+    limit_compliance: bool = False,
     **fixture_kwargs,
 ) -> _Probe:
     """Run a D6 rollout and optionally retain each coordinate sample."""
@@ -212,7 +216,7 @@ def _run(
         values[fixture.qd_start : fixture.qd_start + 3] = velocity_target
         control.joint_target_qd.assign(values)
     newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
-    solver = _make_solver(backend, model)
+    solver = _make_solver(backend, model, limit_compliance=limit_compliance)
     contacts = Contacts(rigid_contact_max=0, soft_contact_max=0, device=model.device) if backend == "mjwarp" else None
     q_slice = slice(fixture.q_start, fixture.q_start + 3)
     qd_slice = slice(fixture.qd_start, fixture.qd_start + 3)
@@ -459,6 +463,7 @@ class TestGimbal(unittest.TestCase):
                         drive_damping=15.0,
                         lower=lower,
                         upper=upper,
+                        limit_compliance=True,
                         steps=50,
                         record_trajectory=False,
                     )

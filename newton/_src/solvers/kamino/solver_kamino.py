@@ -482,6 +482,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             if self.fk is not None:
                 self.fk.validate()
             self.constraints.validate()
+            if self.dynamics_solver == "lox" and self.constraints._has_recovery_settings():
+                raise ValueError(
+                    "Shared constraint recovery/compliance settings require PADMM or DVI. "
+                    "LOX retains its existing constraint and contact_compliance settings."
+                )
             self.dynamics.validate()
             self.padmm.validate()
             self.dvi.validate()

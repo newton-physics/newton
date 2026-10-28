@@ -292,7 +292,8 @@ def _build_sphere_on_ground(
     builder = ModelBuilder()
     builder.begin_world(label="sphere_on_ground")
 
-    cfg = ModelBuilder.ShapeConfig(margin=margin, gap=gap)
+    # Keep spring support above gravity even at the smallest tested overlap.
+    cfg = ModelBuilder.ShapeConfig(margin=margin, gap=gap, ke=2.0e5)
 
     bid = builder.add_body(
         label="sphere",
@@ -319,10 +320,12 @@ def _build_sphere_on_ground(
     return builder
 
 
-def _fast_solver_config() -> SolverKaminoImpl.Config:
+def _fast_solver_config(dt: float) -> SolverKaminoImpl.Config:
     """Relaxed solver config suitable for fast unit tests."""
     config = SolverKaminoImpl.Config()
-    config.constraints.alpha = 0.1
+    config.constraints.joint_recovery_time = dt * (1.0 / 0.1 - 1.0)
+    config.constraints.contact_recovery_time = dt * (1.0 / 0.01 - 1.0)
+    config.constraints.contact_compliance = True
     config.padmm.primal_tolerance = 1e-3
     config.padmm.dual_tolerance = 1e-3
     config.padmm.compl_tolerance = 1e-3
@@ -348,7 +351,7 @@ def _step_solver(builder: ModelBuilder, device, num_steps: int = 5, dt: float = 
         config=CollisionDetector.Config(pipeline="primitive", default_gap=0.0),
     )
     contacts = detector.contacts
-    solver = SolverKaminoImpl(model=model, contacts=contacts, config=_fast_solver_config())
+    solver = SolverKaminoImpl(model=model, contacts=contacts, config=_fast_solver_config(dt))
 
     for _ in range(num_steps):
         solver.step(

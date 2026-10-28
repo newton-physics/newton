@@ -402,6 +402,23 @@ def _regularize_delassus_diagonal_dense(
 
 
 @wp.kernel
+def _add_physical_compliance(
+    dimensions: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    compliance: wp.array[wp.float32],
+    preconditioner: wp.array[wp.float32],
+    diagonal: wp.array[wp.float32],
+):
+    world, row = wp.tid()
+    if row < dimensions[world]:
+        index = offsets[world] + row
+        scale = wp.float32(1.0)
+        if preconditioner:
+            scale = preconditioner[index]
+        diagonal[index] += scale * scale * compliance[index]
+
+
+@wp.kernel
 def _merge_inv_mass_matrix_kernel(
     model_info_bodies_offset: wp.array[wp.int32],
     model_bodies_inv_m_i: wp.array[wp.float32],
@@ -1358,8 +1375,9 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
     Jacobian and M is the mass matrix. It supports diagonal regularization and diagonal
     preconditioning.
 
-    For a given diagonal regularization matrix R and a diagonal preconditioning matrix P, the
-    final operator is defined by the matrix P @ D @ P + R.
+    With physical diagonal compliance E, numerical regularization R, and diagonal
+    preconditioning P, the final operator is P @ (D + E) @ P + R. Physical
+    compliance persists when numerical regularization is removed.
 
     Typical usage example:
 
@@ -1440,6 +1458,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         self._contacts: ContactsKamino | None = None
         self._preconditioner: wp.array[wp.float32] | None = None
         self._eta: wp.array[wp.float32] | None = None
+        self._compliance: wp.array[wp.float32] | None = None
 
         self._jacobians: SparseSystemJacobians | None = None
 
@@ -1651,6 +1670,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
 
         # When assembly is disabled (raw-Jacobian solver), there are no derived copies to refresh.
         if not self._assemble_preconditioned_jacobians:
+            self._refresh_combined_regularization()
             self._needs_update = False
             return
 
@@ -1701,6 +1721,12 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                     device=self._transpose_op_matrix.device,
                 )
 
+        self._refresh_combined_regularization()
+
+        self._needs_update = False
+
+    def _refresh_combined_regularization(self) -> wp.array[wp.float32] | None:
+        """Combine physical diagonal terms and solver penalties for every sparse execution path."""
         # Update combined regularization term, which includes the regular regularization (eta) as
         # well as the terms of the armature regularization. Since the armature regularization is
         # applied to the original Delassus matrix, preconditioning has to be applied to it if
@@ -1724,7 +1750,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             # Inputs:
                             self._model.info.num_joint_dynamic_cts,
                             self._model.info.joint_dynamic_cts_offset,
-                            self.bsm.row_start,
+                            self.constraint_jacobian.row_start,
                             self._data.joints.inv_m_j,
                             # Outputs:
                             self._combined_regularization,
@@ -1740,7 +1766,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             self._model.info.joint_effort_cts_offset,
                             self._model.info.joint_bounded_cts_group_offset,
                             self._model.info.num_joint_friction_cts,
-                            self.bsm.row_start,
+                            self.constraint_jacobian.row_start,
                             self._data.joints.inv_m_a,
                             self._combined_regularization,
                         ],
@@ -1759,7 +1785,7 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             self._model.info.num_joint_dynamic_cts,
                             self._model.info.joint_dynamic_cts_offset,
                             self._data.joints.inv_m_j,
-                            self.bsm.row_start,
+                            self.constraint_jacobian.row_start,
                             self._preconditioner,
                             # Outputs:
                             self._combined_regularization,
@@ -1776,21 +1802,42 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                             self._model.info.joint_bounded_cts_group_offset,
                             self._model.info.num_joint_friction_cts,
                             self._data.joints.inv_m_a,
-                            self.bsm.row_start,
+                            self.constraint_jacobian.row_start,
                             self._preconditioner,
                             self._combined_regularization,
                         ],
                         device=self._device,
                     )
 
-        self._needs_update = False
+        if self._compliance is not None:
+            wp.launch(
+                _add_physical_compliance,
+                dim=(self.num_matrices, self._model.size.max_of_max_total_cts),
+                inputs=[
+                    self.info.dim,
+                    self.info.vio,
+                    self._compliance,
+                    self._preconditioner,
+                    self._combined_regularization,
+                ],
+                device=self._device,
+            )
+        return self._combined_regularization if self._combined_regularization is not None else self._eta
+
+    def set_compliance(self, compliance: wp.array[wp.float32]):
+        """Attach physical row compliance before preconditioning, independently of proximal penalties."""
+        self._compliance = compliance
+        if self._combined_regularization is None:
+            self._combined_regularization = wp.empty_like(compliance)
+        self.set_regularization_needs_update()
 
     def set_regularization(self, eta: wp.array[wp.float32] | None):
         """
         Adds diagonal regularization to each matrix block of the Delassus operator, replacing any
         previously set regularization.
 
-        The regularized Delassus matrix is defined as D = J @ M^-1 @ J^T + diag(eta)
+        The effective matrix is P @ (J @ M^-1 @ J^T + E) @ P + diag(eta),
+        where E includes physical diagonal terms. Passing None removes only eta.
 
         Args:
             eta: The regularization values to add to the diagonal of each matrix block,
@@ -1824,8 +1871,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
         """Stores the diagonal of the Delassus matrix in the given array.
 
         Note:
-            Returns the diagonal of the pure Delassus matrix. Armature and
-            effort-compliance diagonal terms are included; proximal
+            Returns the diagonal of the physical Delassus matrix. Armature,
+            effort and material compliance terms are included; proximal
             regularization (``eta``) and preconditioning are not.
 
         Args:
@@ -1858,7 +1905,14 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
             device=self._device,
         )
 
-        # Add armature and effort regularization
+        # Add physical material, armature, and effort diagonal terms.
+        if self._compliance is not None:
+            wp.launch(
+                _add_physical_compliance,
+                dim=(self.num_matrices, self._model.size.max_of_max_total_cts),
+                inputs=[self.info.dim, self.info.vio, self._compliance, None, diag],
+                device=self._device,
+            )
         if self._model.size.sum_of_num_dynamic_joint_cts > 0:
             wp.launch(
                 kernel=_add_armature_regularization_sparse,

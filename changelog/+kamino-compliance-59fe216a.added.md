@@ -1,0 +1,1 @@
+Add shared constraint recovery times and per-group recovery-speed caps to Kamino's PADMM and DVI backends, with opt-in implicit contact-normal and joint-limit compliance from model stiffness/damping and USD PhysicsScene authoring support. Use one bilateral recovery-speed cap for linear and angular rows. Preserve existing hard-constraint defaults and legacy recovery fractions.
