@@ -192,6 +192,7 @@ For example, bind a triangle to a small cloth and evaluate its current points:
 
    import newton
    import newton.geometry
+   import numpy as np
    import warp as wp
 
    builder = newton.ModelBuilder()
@@ -205,8 +206,109 @@ For example, bind a triangle to a small cloth and evaluate its current points:
    )
    model = builder.finalize()
    visuals = newton.geometry.DeformableVisuals(model)
-   visuals.update(model.state())
+   state = model.state()
+   visuals.update(state)
    assert visuals.get_points(mesh_index).shape == (3,)
+
+.. _deformable-visual-camera-output:
+
+Camera sensor output
+~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   The camera's ``deformable_surface_mode`` option and its ``deformable_visuals=``
+   argument may change without a formal deprecation cycle.
+
+:class:`~newton.sensors.SensorCamera` evaluates visual meshes automatically during
+``update()``. It uses the current mesh for RGB, depth, normals, and albedo output.
+In ``shape_index_image`` a visual mesh reports the same triangle-mesh value as a
+simulation cloth; per-mesh ids are not available yet. Visual meshes follow
+``RenderConfig.enable_backface_culling`` like the simulation surface, so their back
+faces are hidden by default, whereas the viewers draw them from both sides. Both
+surfaces share one ray-traced mesh that keeps only the closest hit, so a culled
+back face also hides the deformable surfaces behind it, as for a folded cloth. All
+native binding types are supported: particles, triangles, tetrahedra, and rigid
+segments. Physics and collision geometry remain unchanged.
+
+Visual meshes can overlap the simulation surface or lie inside it. Drawing both
+may hide parts of the visual mesh. With culling on, a skin wound opposite to its
+cloth can leave a hole where its back face is the closest hit. The camera
+renders both by default, as the viewers do, and does not guess which simulation
+triangles a visual mesh covers. ``deformable_surface_mode`` selects the surfaces at
+construction: ``SensorCamera.DeformableSurfaceMode.VISUAL_ONLY`` leaves every
+simulation triangle out and ``SIMULATION_ONLY`` leaves the visual meshes out.
+Both surfaces share one ray-traced mesh, so this is a constructor argument
+rather than a render setting; construct a second camera for another view. Rigid
+shapes and standalone particles are unaffected, particles belonging to a
+left-out surface do not reappear as spheres, and
+``RenderConfig.enable_particles=False`` hides standalone particles too.
+
+By default, the camera skins visual points directly into its own buffer, in at
+most four launches however many worlds were replicated. It does not compute
+unused vertex normals. Create the camera once:
+
+.. testcode:: deformable-visual-mesh
+
+    from newton.sensors import SensorCamera
+
+    camera = SensorCamera(
+        model,
+        default_render_config=SensorCamera.RenderConfig(enable_textures=True),
+        deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
+    )
+
+Allocate the camera inputs once as well. Then render each frame from the current
+state:
+
+.. testcode:: deformable-visual-mesh
+
+    rays = camera.compute_camera_rays_pinhole(32, 32, camera_fov=np.deg2rad(45), device=model.device)
+    poses = wp.array([wp.transform(wp.vec3(0.5, 0.5, 3.0), wp.quat_identity())], dtype=wp.transform, device=model.device)
+    color = camera.allocate_image_color(1, 32, 32)
+    depth = camera.allocate_image_depth(1, 32, 32)
+
+    camera.update(state, poses, rays, color_image=color, depth_image=depth)
+
+If a viewer already needs evaluated visuals, both can reuse the result
+(:class:`~newton.viewer.ViewerNull` only stands in for a rendering viewer here):
+
+.. testcode:: deformable-visual-mesh
+
+    from newton.viewer import ViewerNull
+    viewer = ViewerNull()
+    viewer.set_model(model)
+
+    visuals = newton.geometry.DeformableVisuals(model)  # Allocate once.
+    viewer.set_deformable_visuals(visuals)
+
+    visuals.update(state)  # After each simulation step.
+    viewer.begin_frame(0.0)
+    viewer.log_state(state)
+    viewer.end_frame()
+    camera.update(state, poses, rays, color_image=color, depth_image=depth, deformable_visuals=visuals)
+
+Supplied output is consumed as-is. Update or replay it before rendering; the
+camera does not check its source state or freshness. It waits for the submitted
+visual update, then copies the points into its own buffer on the model device.
+On CUDA this is a GPU-to-GPU copy, not a CPU transfer. The camera does not repeat
+skinning. Finish consumption before overwriting shared output.
+
+The camera uploads topology, UVs, and textures during setup. After that it skins
+or copies visual points into its vertex buffer on the model device and
+refits the triangle BVH. CUDA models do not copy those vertices through the CPU.
+Warm up skinning and rendering before capturing them in a CUDA graph. Each mesh
+keeps its model world; viewer-only world offsets do not affect camera images.
+
+When no visual meshes are selected, simulation triangles keep using the
+supplied State's particle buffer. Switching to a different buffer rebuilds
+that mesh's BVH.
+
+UV textures can come from a file or an in-memory image. Configure them before
+creating the sensor; later texture changes require a new sensor, and
+``load_textures=False`` leaves visual meshes untextured like shape meshes. Texture alpha
+does not make the surface transparent. Untextured skins are white before
+lighting. The camera uses triangle normals, not the smooth normals used by some
+viewers. Cubic and triplanar texture projection are not supported for skinned meshes.
 
 .. _choosing-a-viewer:
 
