@@ -33,6 +33,7 @@ from newton._src.viewer.gui.properties import (
     joint_editor_options,
 )
 from newton._src.viewer.gui.viewer_gui import ViewerGui
+from newton._src.viewer.gui.widgets import PhysicsWidgets
 from newton._src.viewer.gui.workspace import ViewerWorkspace
 from newton._src.viewer.viewer_bindings import InspectionBindings
 from newton._src.viewer.viewer_bvh import _bounds_lines, _query_bounds
@@ -99,6 +100,74 @@ class TestViewerUI(unittest.TestCase):
                 self.assertEqual(style.font_scale_dpi, scale)
                 self.assertEqual([tuple(style.color_(i)) for i in range(imgui.Col_.count)], colors)
                 self.assertEqual(self.ui.io.fonts.fonts[0], font)
+
+    def test_clipped_property_widgets(self) -> None:
+        """Keep scroll layout and native editors while omitting offscreen decoration."""
+        ui = self.ui.imgui
+        self.ui.dpi_scale = 1.0
+        widgets = PhysicsWidgets(SimpleNamespace(ui=self.ui))
+        values = [float(i) for i in range(30)]
+
+        def draw(*, editable: bool = False, scroll: float | None = None) -> tuple[list[tuple], float]:
+            self.ui.begin_frame()
+            ui.set_next_window_pos((20, 20))
+            ui.set_next_window_size((300, 150))
+            ui.begin("##clipped_properties", flags=ui.WindowFlags_.no_title_bar | ui.WindowFlags_.no_saved_settings)
+            if scroll is not None:
+                ui.set_scroll_y(scroll)
+            rows = []
+            draw_list = ui.get_window_draw_list()
+            for i, value in enumerate(values):
+                vertices = draw_list.vtx_buffer.size()
+                edit = widgets.number(f"Field {i}", value, editable=editable, speed=1.0)
+                values[i] = edit.value
+                rows.append(
+                    (
+                        ui.is_item_visible(),
+                        ui.is_item_active(),
+                        draw_list.vtx_buffer.size() - vertices,
+                        tuple(ui.get_item_rect_min()),
+                        tuple(ui.get_item_rect_max()),
+                    )
+                )
+            extent = ui.get_scroll_max_y()
+            ui.end()
+            ui.end_frame()
+            return rows, extent
+
+        draw()
+        rows, extent = draw()
+        self.assertGreater(extent, 0)
+        self.assertTrue(rows[0][0])
+        self.assertFalse(rows[-1][0])
+        self.assertTrue(all(vertices == 0 for visible, _, vertices, _, _ in rows if not visible))
+        # Scrolling changes clipping, not row spacing or total content height.
+        draw(scroll=extent)
+        scrolled, scrolled_extent = draw()
+        self.assertAlmostEqual(extent, scrolled_extent)
+        self.assertFalse(scrolled[0][0])
+        self.assertTrue(scrolled[-1][0])
+        self.assertAlmostEqual(rows[-1][3][1] - scrolled[-1][3][1], extent)
+        self.assertTrue(all(vertices == 0 for visible, _, vertices, _, _ in scrolled if not visible))
+
+        # A live drag must still update when scrolling moves its row offscreen.
+        draw(editable=True, scroll=0)
+        rows, _ = draw(editable=True)
+        lo, hi = rows[0][3:]
+        x, y = (lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2
+        self.ui.io.add_mouse_pos_event(x, y)
+        draw(editable=True)
+        self.ui.io.add_mouse_button_event(0, True)
+        rows, _ = draw(editable=True)
+        self.assertTrue(rows[0][1])
+        draw(editable=True, scroll=extent)
+        self.ui.io.add_mouse_pos_event(x + 20, y)
+        rows, _ = draw(editable=True)
+        self.assertFalse(rows[0][0])
+        self.assertTrue(rows[0][1])
+        self.assertGreater(values[0], 0)
+        self.ui.io.add_mouse_button_event(0, False)
+        draw(editable=True)
 
     def test_orientation_projection_reuse(self) -> None:
         """Reuse idle geometry, but reproject immediately after orbit, layout, or font changes."""

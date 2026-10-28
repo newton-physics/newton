@@ -263,6 +263,11 @@ class PhysicsWidgets:
         ui, scale = self.ui, self.scale
         pos = ui.get_cursor_screen_pos()
         height = ui.get_frame_height()
+        # Reserve the same layout even outside the scroll region, but avoid
+        # emitting text and icon quads that would only be discarded by clipping.
+        ui.dummy(ui.ImVec2(width, height))
+        if not ui.is_item_visible():
+            return
         lock_width = 15 * scale if locked or unit else 0
         unit_width = ui.calc_text_size(unit).x + 5 * scale if unit else 0
         draw = ui.get_window_draw_list()
@@ -284,7 +289,6 @@ class PhysicsWidgets:
             )
         if locked:
             self.icon("lock", (pos.x + width - 13 * scale, pos.y + (height - 11 * scale) / 2), 11 * scale)
-        ui.dummy(ui.ImVec2(width, height))
         if ui.is_item_hovered(ui.HoveredFlags_.delay_normal):
             details = []
             if ui.calc_text_size(text).x > width - lock_width - unit_width:
@@ -493,31 +497,33 @@ class PhysicsWidgets:
             changed, result = ui.drag_float(
                 "##value", float(value), speed, float(low), float(high), "%" + format_spec, flags
             )
-        # Just a soft inset top edge; no bevel or bright outline around fields.
-        lo, hi = ui.get_item_rect_min(), ui.get_item_rect_max()
-        draw, scale = ui.get_window_draw_list(), self.scale
-        inset = 3 * scale
-        for offset, alpha in ((0.5, 0.15), (1.5, 0.05)):
-            draw.add_line(
-                ui.ImVec2(lo.x + inset, lo.y + offset * scale),
-                ui.ImVec2(hi.x - inset, lo.y + offset * scale),
-                self.color((0, 0, 0, alpha)),
-                scale,
-            )
+        # Submit the native control even offscreen to preserve active edits and
+        # keyboard navigation. Only its custom decoration/text can be skipped.
+        visible = ui.is_item_visible()
+        if visible:
+            lo, hi = ui.get_item_rect_min(), ui.get_item_rect_max()
+            draw, scale = ui.get_window_draw_list(), self.scale
+            inset = 3 * scale
+            for offset, alpha in ((0.5, 0.15), (1.5, 0.05)):
+                draw.add_line(
+                    ui.ImVec2(lo.x + inset, lo.y + offset * scale),
+                    ui.ImVec2(hi.x - inset, lo.y + offset * scale),
+                    self.color((0, 0, 0, alpha)),
+                    scale,
+                )
         if not typing:
             ui.pop_style_color()
-            if not ui.internal.temp_input_is_active(item_id):
-                lo, hi = ui.get_item_rect_min(), ui.get_item_rect_max()
+            if visible and not ui.internal.temp_input_is_active(item_id):
                 padding = ui.get_style().frame_padding
-                draw = ui.get_window_draw_list()
-                draw.push_clip_rect(lo, hi, True)
                 text = str(int(result)) if integer else format(float(result), format_spec)
                 draw.add_text(
+                    ui.get_font(),
+                    ui.get_font_size(),
                     ui.ImVec2(lo.x + padding.x, self.text_top(lo.y, hi.y - lo.y, numeric=True)),
                     self.color((0.92, 0.92, 0.92, 1) if editable else (0.65, 0.65, 0.65, 1)),
                     text,
+                    cpu_fine_clip_rect=ui.ImVec4(lo.x, lo.y, hi.x, hi.y),
                 )
-                draw.pop_clip_rect()
         edit = PropertyEdit(result, changed and editable, ui.is_item_activated(), ui.is_item_deactivated_after_edit())
         if ui.is_item_hovered(ui.HoveredFlags_.allow_when_disabled):
             if editable and not ui.is_item_active():
