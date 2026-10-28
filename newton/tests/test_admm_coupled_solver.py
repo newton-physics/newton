@@ -1206,6 +1206,13 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
 
         self.assertLess(final_gap, 0.5 * initial_gap)
 
+        model.attachment_particle_body_stiffness.fill_(math.inf)
+        with self.assertRaisesRegex(ValueError, "Hard particle-body attachments require both endpoints.*SolverVBD"):
+            _make_semi_body_particle_solver(model)
+        model.attachment_particle_body_enabled.fill_(False)
+        disabled = _make_semi_body_particle_solver(model)
+        self.assertEqual(disabled._admm_rp_groups, [])
+
     def test_deprecated_helper_preserves_legacy_attachment_row(self):
         """Keep the deprecated ADMM helper compatible with its custom-row layout."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))

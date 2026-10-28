@@ -1,0 +1,1 @@
+Solve particle-body attachments in `SolverVBD` as compliant augmented-Lagrangian rows, like structural joints, so very stiff attachments hold their anchors closely without ill-conditioned penalties. Results for soft attachments change slightly within the iteration budget.

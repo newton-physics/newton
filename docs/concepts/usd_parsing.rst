@@ -287,7 +287,7 @@ The first release deliberately supports a narrow, predictable set of inputs:
 * Hard cable-to-xform point attachments, and hard cable-to-cable junctions whose initial
   points coincide. See cable attachment positions below for cases where initial and rest
   segment lengths differ.
-* Finite-stiffness cloth/volume ``point`` to rigid-body ``xform`` attachments.
+* Cloth/volume ``point`` to rigid-body ``xform`` attachments, including hard constraints in VBD.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
   of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
   an empty counts array selects all elements). Cloth and volume element sources warn and are
@@ -353,12 +353,10 @@ Known gaps of the experimental importer, tracked as follow-ups:
   They are preserved in ``path_attachment_attrs`` with their authored stiffness and damping
   (silently hardening them would change the authored physics); only hard cable attachments
   (unauthored or infinite stiffness; damping does not affect hardness) become joints.
-* **Hard cloth/volume attachments** -- Newton's particle-body attachments are compliant.
-  Cloth or volume attachments with unauthored or infinite stiffness warn and are preserved in
-  ``path_attachment_attrs`` with an ``unsupported_reason``; no attachment is created. Author a
-  finite stiffness to request a compliant attachment. Only ``point`` sites attached to an
-  ``xform`` under an imported rigid body are imported; other site types and targets with no
-  rigid body (static xforms, the world) also warn and are preserved.
+* **Cloth/volume attachment targets** -- only ``point`` sites attached to an ``xform`` under an
+  imported rigid body are imported. Other site types and targets with no rigid body (static
+  xforms, the world) warn and are preserved in ``path_attachment_attrs`` with an
+  ``unsupported_reason``. Hard attachments require both endpoints in :class:`~newton.solvers.SolverVBD`.
 * **Body state** -- ``startsAsleep`` and ``simulationOwner`` are not read. Kinematic
   deformables are skipped rather than simulated.
 * **Per-element materials** -- ``GeomSubset`` physics material bindings warn and are
@@ -454,14 +452,15 @@ body -- each site is a single point-point constraint) to the target: an xform, a
 compliant cable attachments warn and are preserved as metadata instead of becoming joints.
 
 When ``src0`` is an imported cloth or volume deformable, ``type0`` is ``point``, ``type1`` is
-``xform`` under an imported rigid body, and stiffness is finite, each ``indices0`` simulation
+``xform`` under an imported rigid body, each ``indices0`` simulation
 point becomes one particle-body attachment (see
 :meth:`~newton.ModelBuilder.add_attachment_particle_body`) to the ``coords1`` anchor in the
 ``src1`` xform frame. The authored stiffness, damping, and ``attachmentEnabled`` state are kept,
 including disabled attachments and zero stiffness. The created attachment indices are listed
 under ``attachment_particle_body_indices`` in that prim's ``path_attachment_attrs`` entry.
-Hard attachments (unauthored or infinite stiffness) warn and are preserved as unsupported
-metadata instead of becoming compliant springs.
+Unauthored or infinite stiffness creates a hard point constraint in
+:class:`~newton.solvers.SolverVBD`, with damping ignored. Finite stiffness creates a compliant
+attachment. See :ref:`Particle-body attachments` for solver support and convergence limits.
 
 For these experimental cloth/volume attachments, Newton interprets finite
 ``physics:stiffness`` as a point-spring stiffness [N/m] and ``physics:damping`` as an absolute

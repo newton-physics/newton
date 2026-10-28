@@ -102,8 +102,10 @@ def _evaluate_body_particle_attachment_kernel(
         body_pose,
         body_pose,
         body_point,
+        wp.inf,
         stiffness,
         0.0,
+        wp.vec3(0.0),
         1.0,
     )
     f_body = -f_particle
@@ -4920,10 +4922,14 @@ def _body_particle_attachment_validates_inputs(test, device):
         builder.add_attachment_particle_body(particle, body + 1)
     with test.assertRaises(IndexError):
         builder.add_attachment_particle_body(particle + 1, body)
-    with test.assertRaises(ValueError):
-        builder.add_attachment_particle_body(particle, body, stiffness=-1.0)
-    with test.assertRaises(ValueError):
-        builder.add_attachment_particle_body(particle, body, damping=-1.0)
+    for stiffness in (-1.0, -math.inf, math.nan, 2.0 * float(np.finfo(np.float32).max)):
+        with test.subTest(stiffness=stiffness), test.assertRaises(ValueError):
+            builder.add_attachment_particle_body(particle, body, stiffness=stiffness)
+    for damping in (-1.0, math.inf, math.nan, 2.0 * float(np.finfo(np.float32).max)):
+        with test.subTest(damping=damping), test.assertRaises(ValueError):
+            builder.add_attachment_particle_body(particle, body, damping=damping)
+    attachment = builder.add_attachment_particle_body(particle, body, stiffness=math.inf)
+    test.assertEqual(builder.attachment_particle_body_stiffness[attachment], math.inf)
 
     body_world = newton.ModelBuilder()
     body_world.add_body()
@@ -4950,13 +4956,13 @@ def _body_particle_attachment_rejects_external_rigid_solver(test, device):
 
 
 def _body_particle_attachment_composes_with_worlds(test, device):
-    """Remap native attachment endpoints when composing builder worlds."""
-    template = newton.ModelBuilder()
+    """Remap hard attachment endpoints and isolate reset and enabled histories by world."""
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = template.add_body()
-    particle = template.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
-    template.add_attachment_particle_body(particle, body)
+    particle = template.add_particle(pos=wp.vec3(), vel=wp.vec3(1.0, 0.0, 0.0), mass=1.0, radius=0.0)
+    template.add_attachment_particle_body(particle, body, stiffness=math.inf)
 
-    builder = newton.ModelBuilder()
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_world(template)
     builder.add_world(template, xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
@@ -4966,6 +4972,151 @@ def _body_particle_attachment_composes_with_worlds(test, device):
     np.testing.assert_array_equal(model.attachment_particle_body_body.numpy(), [0, 1])
     np.testing.assert_array_equal(model.attachment_particle_body_particle.numpy(), [0, 1])
     np.testing.assert_array_equal(model.attachment_particle_body_world.numpy(), [0, 1])
+
+    solver = newton.solvers.SolverVBD(model, iterations=30)
+    state_in, state_out = model.state(), model.state()
+    solver.step(state_in, state_out, None, None, 2.0e-3)
+    np.testing.assert_allclose(state_out.particle_q.numpy(), model.particle_q.numpy(), atol=2.0e-6)
+    reactions = solver.attachment_particle_body_lambda.numpy().copy()
+    test.assertGreater(np.linalg.norm(reactions[0]), 1.0)
+    test.assertGreater(np.linalg.norm(reactions[1]), 1.0)
+    solver.reset(state_out, world_mask=wp.array([True, False, False], dtype=wp.bool, device=device), flags=0)
+    reset_reactions = solver.attachment_particle_body_lambda.numpy()
+    np.testing.assert_array_equal(reset_reactions[0], np.zeros(3))
+    np.testing.assert_array_equal(reset_reactions[1], reactions[1])
+
+    # A disabled loaded row must release its particle and discard the previous reaction.
+    model.attachment_particle_body_enabled.assign([True, False])
+    velocities = np.zeros((2, 3), dtype=np.float32)
+    velocities[1, 0] = 1.0
+    state_out.particle_qd.assign(velocities)
+    state_out.clear_forces()
+    solver.step(state_out, state_in, None, None, 2.0e-3)
+    np.testing.assert_allclose(state_in.particle_q.numpy()[1], [1.002, 0.0, 0.0], atol=2.0e-6)
+    np.testing.assert_array_equal(solver.attachment_particle_body_lambda.numpy()[1], np.zeros(3))
+    model.attachment_particle_body_enabled.fill_(True)
+    state_in.clear_forces()
+    solver.step(state_in, state_out, None, None, 2.0e-3)
+    np.testing.assert_allclose(state_out.particle_q.numpy()[1], [1.0, 0.0, 0.0], atol=2.0e-6)
+
+
+def _hard_particle_body_attachment_preserves_free_pair_momentum(test, device):
+    """Constrain free pairs at two mass scales without creating linear momentum."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    masses = (1.0e-3, 1.0)
+    for index, mass in enumerate(masses):
+        builder.begin_world()
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(float(index), 0.0, 0.0), wp.quat_identity()),
+            mass=mass,
+            inertia=wp.mat33(np.eye(3) * mass),
+            lock_inertia=True,
+        )
+        particle = builder.add_particle(
+            pos=wp.vec3(float(index), 0.0, 0.0), vel=wp.vec3(1.0, 0.0, 0.0), mass=mass, radius=0.0
+        )
+        builder.add_attachment_particle_body(particle, body, stiffness=math.inf, damping=100.0)
+        builder.end_world()
+    builder.color()
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    dt = 1.0 / 60.0
+    newton.solvers.SolverVBD(model, iterations=50).step(state_in, state_out, None, None, dt)
+
+    particle_q = state_out.particle_q.numpy()
+    body_q = state_out.body_q.numpy()
+    particle_v = state_out.particle_qd.numpy()
+    body_v = state_out.body_qd.numpy()
+    np.testing.assert_allclose(particle_q, body_q[:, :3], atol=2.0e-5)
+    np.testing.assert_allclose(particle_v[:, 0], [0.5, 0.5], atol=2.0e-4)
+    np.testing.assert_allclose(body_v[:, 0], [0.5, 0.5], atol=2.0e-4)
+    np.testing.assert_allclose(particle_v[:, 0] + body_v[:, 0], [1.0, 1.0], atol=2.0e-4)
+
+
+def _hard_particle_body_attachment_supports_load(test, device):
+    """Support a static load with zero hard offset while preserving finite spring compliance."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for offset, stiffness in ((0.0, math.inf), (1.0, 1.0e4)):
+        body = builder.add_body(xform=wp.transform(wp.vec3(offset, 0.0, 0.0), wp.quat_identity()))
+        particle = builder.add_particle(pos=wp.vec3(offset, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+        builder.add_attachment_particle_body(particle, body, stiffness=stiffness)
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, iterations=30)
+    state_in, state_out = model.state(), model.state()
+    loads = wp.array([[0.0, 0.0, -100.0], [0.0, 0.0, -100.0]], dtype=wp.vec3, device=device)
+    for _ in range(20):
+        state_in.clear_forces()
+        state_in.particle_f.assign(loads)
+        solver.step(state_in, state_out, None, None, 1.0e-2)
+        state_in, state_out = state_out, state_in
+
+    positions = state_in.particle_q.numpy()
+    np.testing.assert_allclose(positions[0], [0.0, 0.0, 0.0], atol=2.0e-6)
+    test.assertAlmostEqual(float(positions[1, 2]), -1.0e-2, delta=2.0e-5)
+    # Lambda is the body-side reaction: the particle receives its opposite.
+    np.testing.assert_allclose(solver.attachment_particle_body_lambda.numpy()[0], [0.0, 0.0, -100.0], atol=1.0e-2)
+
+
+def _hard_particle_body_attachment_preserves_elastic_motion(test, device):
+    """Preserve translating cloth momentum when its small anchor gap stops decreasing."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1), lock_inertia=True)
+    builder.body_qd[body] = wp.spatial_vector(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    particles = [
+        builder.add_particle(pos=wp.vec3(i * 0.1, j * 0.1, 0.0), vel=wp.vec3(), mass=0.25, radius=0.0)
+        for i in range(2)
+        for j in range(2)
+    ]
+    # The four points form a spring square with both diagonals. Distinct colors
+    # keep each material solve independent of simultaneous neighboring updates.
+    for i, particle in enumerate(particles):
+        for other in particles[i + 1 :]:
+            builder.add_spring(particle, other, 1.0e4, 0.0, 0.0)
+    for j in range(2):
+        builder.add_attachment_particle_body(particles[j], body, body_point=(0.0, j * 0.1, 0.0), stiffness=math.inf)
+    builder.color()
+    builder.set_coloring([[particle] for particle in particles])
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    newton.solvers.SolverVBD(model, iterations=100).step(state_in, state_out, None, None, 1.0 / 60.0)
+
+    particle_q = state_out.particle_q.numpy()
+    body_q = state_out.body_q.numpy()[body]
+    momentum = 0.25 * state_out.particle_qd.numpy().sum(axis=0) + state_out.body_qd.numpy()[body, :3]
+    np.testing.assert_allclose(momentum, [1.0, 0.0, 0.0], atol=1.0e-3)
+    for j in range(2):
+        anchor = _transform_point_np(body_q, np.array([0.0, j * 0.1, 0.0]))
+        np.testing.assert_allclose(particle_q[particles[j]], anchor, atol=2.0e-5)
+
+
+def _hard_particle_body_attachment_transfers_offset_torque(test, device):
+    """Transfer hard attachment reactions through an offset COM and rotate the rigid body."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_body(
+        com=wp.vec3(0.2, 0.0, 0.0),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3) * 0.5),
+        lock_inertia=True,
+    )
+    anchor = wp.vec3(0.2, 1.0, 0.0)
+    particle = builder.add_particle(pos=anchor, vel=wp.vec3(1.0, 0.0, 0.0), mass=1.0, radius=0.0)
+    builder.add_attachment_particle_body(particle, body, body_point=anchor, stiffness=math.inf)
+    builder.color()
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    newton.solvers.SolverVBD(model, iterations=50).step(state_in, state_out, None, None, 2.0e-3)
+
+    p = state_out.particle_q.numpy()[particle]
+    v_particle = state_out.particle_qd.numpy()[particle]
+    pose = state_out.body_q.numpy()[body]
+    velocity = state_out.body_qd.numpy()[body]
+    np.testing.assert_allclose(p, _transform_point_np(pose, np.asarray(anchor)), atol=2.0e-5)
+    np.testing.assert_allclose(v_particle + velocity[:3], [1.0, 0.0, 0.0], atol=2.0e-3)
+    test.assertLess(float(velocity[5]), -0.1)
+    com_world = _transform_point_np(pose, np.array([0.2, 0.0, 0.0]))
+    angular_momentum = np.cross(p, v_particle) + np.cross(com_world, velocity[:3]) + 0.5 * velocity[3:]
+    np.testing.assert_allclose(angular_momentum, [0.0, 0.0, -1.0], atol=2.0e-3)
 
 
 def _body_particle_attachment_force_balance(test, device):
@@ -5035,6 +5186,8 @@ def _body_particle_attachment_accumulates_body_csr(test, device):
             model.attachment_particle_body_stiffness,
             model.attachment_particle_body_damping,
             model.attachment_particle_body_enabled,
+            wp.full(model.attachment_particle_body_count, math.inf, dtype=float, device=device),
+            solver.attachment_particle_body_lambda,
             solver.body_particle_attachment_offsets,
             solver.body_particle_attachment_indices,
         ],
@@ -5115,6 +5268,25 @@ def _body_particle_attachment_deformable_under_load(test, device, deformable_kin
     anchor_pos = _transform_point_np(body_q[body], np.zeros(3))
     test.assertTrue(np.isfinite(particle_q).all())
     test.assertLess(np.linalg.norm(particle_q[particle] - anchor_pos), 2.0e-2)
+    test.assertLess(np.mean(particle_q[1:, 2]), np.mean(initial_q[1:, 2]))
+
+    # Reuse the geometry to exercise hard constraints against much stiffer material,
+    # with a longer step that makes an arbitrary fixed penalty insufficient.
+    model.attachment_particle_body_stiffness.fill_(math.inf)
+    material = model.tri_materials if deformable_kind == "cloth" else model.tet_materials
+    coefficients = material.numpy()
+    coefficients[:, :2] = 1.0e6
+    material.assign(coefficients)
+    state_in, state_out = model.state(), model.state()
+    solver = newton.solvers.SolverVBD(model, iterations=30)
+    for _ in range(3):
+        state_in.clear_forces()
+        solver.step(state_in, state_out, None, None, 1.0 / 60.0)
+        state_in, state_out = state_out, state_in
+    particle_q = state_in.particle_q.numpy()
+    anchor_pos = _transform_point_np(state_in.body_q.numpy()[body], np.zeros(3))
+    test.assertTrue(np.isfinite(particle_q).all())
+    test.assertLess(np.linalg.norm(particle_q[particle] - anchor_pos), 2.0e-5)
     test.assertLess(np.mean(particle_q[1:, 2]), np.mean(initial_q[1:, 2]))
 
 
@@ -5954,6 +6126,30 @@ add_function_test(
     TestSolverVBD,
     "test_body_particle_attachment_composes_with_worlds",
     _body_particle_attachment_composes_with_worlds,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_hard_particle_body_attachment_preserves_free_pair_momentum",
+    _hard_particle_body_attachment_preserves_free_pair_momentum,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_hard_particle_body_attachment_supports_load",
+    _hard_particle_body_attachment_supports_load,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_hard_particle_body_attachment_preserves_elastic_motion",
+    _hard_particle_body_attachment_preserves_elastic_motion,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_hard_particle_body_attachment_transfers_offset_torque",
+    _hard_particle_body_attachment_transfers_offset_torque,
     devices=devices,
 )
 add_function_test(

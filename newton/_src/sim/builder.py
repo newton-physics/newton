@@ -10679,11 +10679,11 @@ class ModelBuilder:
     ) -> int:
         """Adds an attachment between a rigid body and a particle.
 
-        The compliant attachment pulls the particle toward a body-local anchor and
+        The attachment pulls the particle toward a body-local anchor and
         transfers equal-and-opposite forces between both endpoints in
         :class:`~newton.solvers.SolverVBD`. The constraint is translational;
-        a single particle does not define an orientation. When the endpoints are
-        owned by different solvers of a coupled simulation, the attachment is
+        a single particle does not define an orientation. Finite-stiffness
+        attachments whose endpoints are owned by different solvers are
         coupled by
         :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
         See :ref:`Particle-body attachments`.
@@ -10693,8 +10693,9 @@ class ModelBuilder:
             body: Index of the rigid body.
             body_point: Attachment point in the body's local frame [m]. If
                 ``None``, the body origin is used.
-            stiffness: Attachment stiffness [N/m].
-            damping: Attachment damping [N·s/m].
+            stiffness: Attachment stiffness [N/m]. Use ``math.inf`` for a hard
+                point constraint in :class:`~newton.solvers.SolverVBD`.
+            damping: Attachment damping [N·s/m]. Ignored for hard attachments.
             enabled: Whether the attachment is active.
             custom_attributes: Dictionary of custom attribute names to values.
 
@@ -10704,17 +10705,22 @@ class ModelBuilder:
         Raises:
             IndexError: If ``particle`` or ``body`` is out of range.
             ValueError: If the endpoints belong to different worlds, a
-                coefficient is negative, or a coefficient or ``body_point``
-                is not finite.
+                coefficient is negative or NaN, a finite coefficient cannot be
+                represented in float32, or ``damping`` or ``body_point`` is not
+                finite.
         """
         if body < 0 or body >= self.body_count:
             raise IndexError(f"Body index {body} is out of range for {self.body_count} bodies")
         if particle < 0 or particle >= self.particle_count:
             raise IndexError(f"Particle index {particle} is out of range for {self.particle_count} particles")
-        if not math.isfinite(stiffness) or stiffness < 0.0:
-            raise ValueError("Attachment stiffness must be finite and nonnegative")
+        if math.isnan(stiffness) or stiffness < 0.0:
+            raise ValueError("Attachment stiffness must be nonnegative or positive infinity")
+        if math.isfinite(stiffness) and stiffness > float(np.finfo(np.float32).max):
+            raise ValueError("Finite attachment stiffness must be representable in float32")
         if not math.isfinite(damping) or damping < 0.0:
             raise ValueError("Attachment damping must be finite and nonnegative")
+        if damping > float(np.finfo(np.float32).max):
+            raise ValueError("Attachment damping must be representable in float32")
         resolved_body_point = wp.vec3() if body_point is None else axis_to_vec3(body_point)
         if not all(math.isfinite(c) for c in resolved_body_point):
             raise ValueError(f"Attachment body_point must be finite, got {tuple(resolved_body_point)}")

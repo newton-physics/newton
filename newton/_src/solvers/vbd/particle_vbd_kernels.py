@@ -42,9 +42,11 @@ from ...utils.mesh import (
     MeshAdjacencyData,
     get_vertex_adjacent_edge_id_order,
     get_vertex_adjacent_face_id_order,
+    get_vertex_adjacent_spring_id,
     get_vertex_adjacent_tet_id_order,
     get_vertex_num_adjacent_edges,
     get_vertex_num_adjacent_faces,
+    get_vertex_num_adjacent_springs,
     get_vertex_num_adjacent_tets,
 )
 
@@ -1846,6 +1848,150 @@ def accumulate_spring_force_and_hessian(
 
 
 @wp.kernel
+def step_particle_body_attachment_lambda_rho(
+    dt: float,
+    lambda_retention: float,
+    attachment_body: wp.array[int],
+    attachment_particle: wp.array[int],
+    attachment_stiffness: wp.array[float],
+    attachment_enabled: wp.array[bool],
+    pos: wp.array[wp.vec3],
+    pos_prev: wp.array[wp.vec3],
+    particle_inv_mass: wp.array[float],
+    particle_flags: wp.array[int],
+    body_inv_mass: wp.array[float],
+    adjacency: MeshAdjacencyData,
+    tri_indices: wp.array2d[int],
+    tri_poses: wp.array[wp.mat22],
+    tri_areas: wp.array[float],
+    tri_materials: wp.array2d[float],
+    edge_indices: wp.array2d[int],
+    edge_rest_angles: wp.array[float],
+    edge_rest_lengths: wp.array[float],
+    edge_materials: wp.array2d[float],
+    tet_indices: wp.array2d[int],
+    tet_poses: wp.array[wp.mat33],
+    tet_materials: wp.array2d[float],
+    spring_indices: wp.array[int],
+    spring_rest_length: wp.array[float],
+    spring_stiffness: wp.array[float],
+    spring_damping: wp.array[float],
+    rho: wp.array[float],
+    attachment_lambda: wp.array[wp.vec3],
+):
+    """Once-per-step attachment setup: auto-``rho`` refresh and multiplier retention.
+
+    Like structural joint rows, the support is the endpoints' reduced inverse mass over
+    ``dt^2``, excluding anchor-arm mobility. The particle block also carries its incident
+    material Hessian, so a particle held by stiff material supports a larger ``rho``.
+    Like limit rows, the support is used directly as ``rho`` for finite and infinite
+    stiffness, so a stiff attachment does not dominate its endpoints' local solves.
+    """
+    i = wp.tid()
+    stiffness = attachment_stiffness[i]
+    if not attachment_enabled[i] or stiffness <= 0.0:
+        rho[i] = 0.0
+        attachment_lambda[i] = wp.vec3(0.0)
+        return
+    attachment_lambda[i] = lambda_retention * attachment_lambda[i]
+    p = attachment_particle[i]
+    w_p = particle_inv_mass[p]
+    if not particle_flags[p] & ParticleFlags.ACTIVE:
+        w_p = 0.0
+    material_h = wp.mat33(0.0)
+    if w_p > 0.0:
+        face_count = int(0)
+        edge_count = int(0)
+        tet_count = int(0)
+        spring_count = int(0)
+        if tri_indices.shape[0] > 0:
+            face_count = get_vertex_num_adjacent_faces(adjacency, p)
+        if edge_indices.shape[0] > 0:
+            edge_count = get_vertex_num_adjacent_edges(adjacency, p)
+        if tet_indices.shape[0] > 0:
+            tet_count = get_vertex_num_adjacent_tets(adjacency, p)
+        if spring_indices.shape[0] > 0:
+            spring_count = get_vertex_num_adjacent_springs(adjacency, p)
+        for j in range(face_count):
+            tri, order = get_vertex_adjacent_face_id_order(adjacency, p, j)
+            if tri_materials[tri, 0] > 0.0 or tri_materials[tri, 1] > 0.0:
+                _f, h = evaluate_neo_hookean_membrane_force_hessian(
+                    tri,
+                    order,
+                    pos,
+                    pos_prev,
+                    tri_indices,
+                    tri_poses[tri],
+                    tri_areas[tri],
+                    tri_materials[tri, 0],
+                    tri_materials[tri, 1],
+                    tri_materials[tri, 2],
+                    dt,
+                )
+                material_h += h
+        for j in range(edge_count):
+            edge, order = get_vertex_adjacent_edge_id_order(adjacency, p, j)
+            if edge_materials[edge, 0] > 0.0:
+                _f, h = evaluate_dihedral_angle_based_bending_force_hessian(
+                    edge,
+                    order,
+                    pos,
+                    pos_prev,
+                    edge_indices,
+                    edge_rest_angles,
+                    edge_rest_lengths,
+                    edge_materials[edge, 0],
+                    edge_materials[edge, 1],
+                    dt,
+                )
+                material_h += h
+        for j in range(tet_count):
+            tet, order = get_vertex_adjacent_tet_id_order(adjacency, p, j)
+            if tet_materials[tet, 0] > 0.0 or tet_materials[tet, 1] > 0.0:
+                _f, h = evaluate_volumetric_neo_hookean_force_and_hessian(
+                    tet,
+                    order,
+                    pos_prev,
+                    pos,
+                    tet_indices,
+                    tet_poses[tet],
+                    tet_materials[tet, 0],
+                    tet_materials[tet, 1],
+                    tet_materials[tet, 2],
+                    dt,
+                )
+                material_h += h
+        for j in range(spring_count):
+            spring = get_vertex_adjacent_spring_id(adjacency, p, j)
+            _f, h = evaluate_spring_force_and_hessian(
+                p,
+                spring,
+                dt,
+                pos,
+                pos_prev,
+                spring_indices,
+                spring_rest_length,
+                spring_stiffness,
+                spring_damping,
+            )
+            material_h += h
+        # Row-sum norm: an upper bound on the material block's stiffness [N/m].
+        material_support = wp.max(
+            wp.abs(material_h[0, 0]) + wp.abs(material_h[0, 1]) + wp.abs(material_h[0, 2]),
+            wp.max(
+                wp.abs(material_h[1, 0]) + wp.abs(material_h[1, 1]) + wp.abs(material_h[1, 2]),
+                wp.abs(material_h[2, 0]) + wp.abs(material_h[2, 1]) + wp.abs(material_h[2, 2]),
+            ),
+        )
+        w_p = w_p / (1.0 + dt * dt * w_p * material_support)
+    inv_m_eff = w_p + body_inv_mass[attachment_body[i]]
+    support = float(0.0)
+    if inv_m_eff > 0.0:
+        support = 1.0 / (dt * dt * inv_m_eff)
+    rho[i] = support
+
+
+@wp.kernel
 def accumulate_body_particle_attachment_force_and_hessian(
     dt: float,
     current_color: int,
@@ -1860,6 +2006,8 @@ def accumulate_body_particle_attachment_force_and_hessian(
     attachment_stiffness: wp.array[float],
     attachment_damping: wp.array[float],
     attachment_enabled: wp.array[bool],
+    attachment_rho: wp.array[float],
+    attachment_lambda: wp.array[wp.vec3],
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
 ):
@@ -1879,8 +2027,10 @@ def accumulate_body_particle_attachment_force_and_hessian(
         body_q[body],
         body_q_prev[body],
         attachment_body_point[attachment],
+        attachment_rho[attachment],
         attachment_stiffness[attachment],
         attachment_damping[attachment],
+        attachment_lambda[attachment],
         dt,
     )
     wp.atomic_add(particle_forces, particle, force)

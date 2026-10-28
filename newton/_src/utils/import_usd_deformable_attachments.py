@@ -298,10 +298,10 @@ def _import_particle_attachment(
 ) -> None:
     """Lower a cloth/volume ``point`` -> rigid-body ``xform`` attachment to particle-body attachments.
 
-    Each ``indices0`` simulation point becomes one compliant attachment, with the authored enabled
-    state, from its particle to the ``coords1`` anchor in the ``src1`` xform frame. Hard
-    (infinite-stiffness) attachments and targets without a rigid body are preserved in ``attrs``
-    as unsupported. ``coords1`` holds one validated anchor per site.
+    Each ``indices0`` simulation point becomes one attachment, with the authored gains and enabled
+    state, from its particle to the ``coords1`` anchor in the ``src1`` xform frame. Unauthored or
+    infinite stiffness requests a hard VBD constraint. Targets without a rigid body are preserved in
+    ``attrs`` as unsupported. ``coords1`` holds one validated anchor per site.
     """
     p0, p1 = particle_range
     bad_indices = [i for i in indices0 if i < 0 or i >= p1 - p0]
@@ -331,15 +331,6 @@ def _import_particle_attachment(
             )
             return
         targets.append(target_info)
-
-    if not math.isfinite(stiffness):
-        _mark_attachment_unsupported(
-            attrs,
-            path,
-            "hard (infinite-stiffness) PhysicsAttachment is not supported for cloth/volume deformables; "
-            "only finite stiffness is imported. Preserved as metadata, no attachment created.",
-        )
-        return
 
     attachments = [
         ctx.builder.add_attachment_particle_body(
