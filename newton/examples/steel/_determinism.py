@@ -119,10 +119,7 @@ class DeterminismExample:
                 self.viewer.activate(copy.layer_id)
                 self.viewer.log_state(copy.state_0)
             # The plot is named under the active layer, one of this mode's copies.
-            self.viewer.log_scalar(
-                f"{mode.capitalize()} ({side}): magenta vs. green, max body divergence [mm]",
-                1.0e3 * self.max_divergence[mode],
-            )
+            self.viewer.log_scalar(f"Max divergence [mm], {mode} ({side})", 1.0e3 * self.max_divergence[mode])
         self.viewer.end_frame()
 
     def gui(self, ui):
