@@ -80,6 +80,7 @@ class StructuralUpdateViolation(IntEnum):
     IMMOVABILITY_FLIP = 6
     FRICTION_CTS = 7
     EFFORT_CTS = 8
+    CARTESIAN_HANDEDNESS = 9
 
 
 ###
@@ -381,15 +382,21 @@ def validate_joint_axes_kernel(
     # Outputs:
     violations: wp.array[wp.int32],
 ):
-    """Find the first universal or gimbal joint with invalid axis configuration."""
+    """Find the first universal, gimbal, or Cartesian joint with invalid axis configuration."""
     joint = wp.tid()
     dof_type = joint_dof_type[joint]
     is_universal = dof_type == JointDoFType.UNIVERSAL
     is_gimbal = dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED
-    if not is_universal and not is_gimbal:
+    is_cartesian = dof_type == JointDoFType.CARTESIAN
+    if not is_universal and not is_gimbal and not is_cartesian:
         return
 
     dof_start = joint_qd_start[joint]
+    if is_cartesian:
+        # The Cartesian joint frame is built from the three axes, so they must form a rotation.
+        if wp.dot(wp.cross(joint_axis[dof_start], joint_axis[dof_start + 1]), joint_axis[dof_start + 2]) < 0.0:
+            wp.atomic_min(violations, StructuralUpdateViolation.CARTESIAN_HANDEDNESS, joint)
+        return
     axis_0 = joint_axis[dof_start]
     axis_1 = joint_axis[dof_start + 1]
     valid = (
@@ -1126,6 +1133,7 @@ def validate_model_structural_updates(
     - :attr:`StructuralUpdateViolation.IMMOVABILITY_FLIP`: a body's Kamino immovability status changed
     - :attr:`StructuralUpdateViolation.FRICTION_CTS`: joint friction constraint topology changed
     - :attr:`StructuralUpdateViolation.EFFORT_CTS`: effort-row topology changed
+    - :attr:`StructuralUpdateViolation.CARTESIAN_HANDEDNESS`: left-handed Cartesian axes
 
     An entry equal to the maximum of the body, joint, and DoF counts indicates that no
     violation of that type was found.
@@ -1264,7 +1272,7 @@ def _validate_joint_axes(
     joint_dof_type: wp.array[wp.int32],
     violations: wp.array[wp.int32],
 ) -> None:
-    """Validate universal and gimbal axes before Warp frame conversion."""
+    """Validate universal, gimbal, and Cartesian axes before Warp frame conversion."""
     violations.fill_(model.joint_count)
     if model.joint_count > 0:
         wp.launch(
@@ -1294,6 +1302,14 @@ def _validate_joint_axes(
             f"Invalid joint configuration for SolverKamino:\n"
             f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
             "gimbal axes must preserve the solver's original handedness"
+        )
+    invalid_joint = int(violations_np[StructuralUpdateViolation.CARTESIAN_HANDEDNESS])
+    if invalid_joint < model.joint_count:
+        raise ValueError(
+            f"Invalid joint configuration for SolverKamino:\n"
+            f"  - joint {invalid_joint} ({model.joint_label[invalid_joint]!r}): "
+            "three translational axes must form a right-handed set, unlike those of a USD D6 joint "
+            "whose physics:body1 is the world"
         )
 
 

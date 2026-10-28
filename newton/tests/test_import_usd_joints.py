@@ -1373,8 +1373,10 @@ def Xform "Articulation" (
         reversible = (
             (False, ("rotX",)),
             (False, ("transX", "transY")),
+            (False, ("transX", "transY", "transZ")),
             (False, ("transX", "rotX")),
             (True, ("transX", "transY")),
+            (True, ("transX", "transY", "transZ")),
             (True, ("transX", "rotX")),
         )
         for body1 in (None, "/World/Ground"):

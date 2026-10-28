@@ -57,15 +57,17 @@ joint state, and other per-joint values keep their authored signs, and
 
 The importer reverses a swapped D6 joint, or single-axis joints merged into one
 D6 joint, the same way when the joint has no rotational axis, or one rotational
-axis with every translational axis parallel to it. Any other swapped D6 or merged
-joint keeps its authored axes, so its limits, drives, and initial state may act in
-the mirrored direction. Importing such a joint is deprecated: it emits a
+axis with every translational axis parallel to it. Negating three translational
+axes flips their handedness, so a swapped D6 joint with X, Y, and Z translational
+axes gets a left-handed axis set, which :class:`~newton.solvers.SolverKamino`
+rejects. Any other swapped D6 or merged joint keeps its authored axes, so its
+limits, drives, and initial state may act in the mirrored direction. Importing
+such a joint is deprecated: it emits a
 :class:`~newton.exceptions.NewtonDeprecationWarning`, and a future release will
 raise an error. Author the joint with the rigid body as ``physics:body1``
-instead. A swapped spherical joint keeps its axes, so its
-``joint_q`` holds the inverse of the authored joint rotation. This does not
-change its motion, because Newton imports no limits or drives for spherical
-joints.
+instead. A swapped spherical joint keeps its axes, so its ``joint_q`` holds the
+inverse of the authored joint rotation. This does not change its motion, because
+Newton imports no limits or drives for spherical joints.
 
 Particle Simulation Geometry
 ----------------------------

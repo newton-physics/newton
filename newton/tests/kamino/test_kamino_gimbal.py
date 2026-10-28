@@ -299,6 +299,32 @@ class TestGimbal(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "universal and gimbal axes must be unit length and orthogonal"):
             SolverKamino(model)
 
+    def test_cartesian_rejects_left_handed_axes(self):
+        """Reject three translational axes that form a left-handed set, such as (-X, -Y, -Z)."""
+        for sign, accepted in ((1.0, True), (-1.0, False)):
+            with self.subTest(sign=sign):
+                builder = newton.ModelBuilder()
+                inertia = wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+                parent = builder.add_link(mass=1.0, inertia=inertia)
+                child = builder.add_link(mass=1.0, inertia=inertia)
+                root = builder.add_joint_fixed(-1, parent)
+                cartesian = builder.add_joint_d6(
+                    parent,
+                    child,
+                    linear_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=tuple(sign * c for c in axis))
+                        for axis in ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+                    ],
+                )
+                builder.add_articulation([root, cartesian])
+                model = builder.finalize(device=self.default_device)
+                if accepted:
+                    solver = SolverKamino(model)
+                    self.assertEqual(solver._model_kamino.joints.dof_type.numpy()[cartesian], JointDoFType.CARTESIAN)
+                else:
+                    with self.assertRaisesRegex(ValueError, "three translational axes must form a right-handed set"):
+                        SolverKamino(model)
+
     def test_from_newton_derives_gimbal_handedness(self):
         """Derive the gimbal type from the orientation of its three axes."""
         limits = np.zeros(3, dtype=np.float32)
