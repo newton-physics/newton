@@ -1619,11 +1619,11 @@ def test_particle_force_input(test, device):
 
 
 def test_shape_adhesion_attribute(test, device):
-    """Verify per-shape ``mpm:adhesion`` reaches the collider material table."""
+    """Verify per-shape ``mpm:collider_adhesion`` reaches the collider material table."""
     builder = _make_mpm_particle_builder()
     shape_attributes = (
-        (-1.0, {"mpm:adhesion": 0.0}),
-        (1.0, {"mpm:adhesion": 250.0, "mpm:projection_threshold": 0.02}),
+        (-1.0, {"mpm:collider_adhesion": 0.0}),
+        (1.0, {"mpm:collider_adhesion": 250.0, "mpm:collider_projection_threshold": 0.02}),
     )
     for x, attributes in shape_attributes:
         builder.add_shape_box(
@@ -1637,10 +1637,7 @@ def test_shape_adhesion_attribute(test, device):
     model = builder.finalize(device=device)
     solver = SolverImplicitMPM(model, _make_mpm_config())
 
-    first, count = solver.collider_material_range(0)
-    test.assertEqual(count, 2)
     np.testing.assert_allclose(solver.collider_materials(0)["adhesion"].numpy(), [0.0, 250.0])
-    test.assertEqual(first, 1)
 
     # a negative (default) threshold keeps the solver default, a set one is used as is
     threshold = solver.collider_materials(0)["projection_threshold"].numpy()
@@ -1663,7 +1660,7 @@ def test_shape_adhesion_attribute(test, device):
             hx=0.5,
             hy=0.5,
             hz=0.5,
-            custom_attributes={"mpm:adhesion": adhesion},
+            custom_attributes={"mpm:collider_adhesion": adhesion},
         )
         model = builder.finalize(device=device)
         solver = SolverImplicitMPM(model, config)
@@ -1687,38 +1684,49 @@ def test_collider_face_materials(test, device):
         collider_material_counts=[2],
     )
 
-    first, count = solver.collider_material_range(0)
-    test.assertEqual(count, 2)
+    first = solver._mpm_model.collider_material_ranges[0][0]
     faces = solver.collider_face_materials(0)
     test.assertEqual(faces.shape[0], mesh.indices.shape[0] // 3)
-    np.testing.assert_array_equal(faces.numpy(), first)
+    np.testing.assert_array_equal(faces.numpy(), 0)
 
     materials = solver.collider_materials(0)
     np.testing.assert_allclose(materials["friction"].numpy(), [0.3, 0.3])
-    test.assertEqual(materials["thickness"].shape[0], 2)
+    test.assertEqual(materials["margin"].shape[0], 2)
     materials["adhesion"].assign(np.array([5.0, 90.0], dtype=np.float32))
 
-    # move every face onto the second material, then query a point above the box
-    faces.fill_(first + 1)
     solver._mpm_model.collider.query_max_dist = 1.0
     positions = wp.array([wp.vec3(0.0, 0.55, 0.0)], dtype=wp.vec3, device=device)
-    outputs = [wp.zeros(1, dtype=dtype, device=device) for dtype in (int, int, float, float, float)]
-    wp.launch(
-        _query_collision_sdf,
-        dim=1,
-        inputs=[
-            positions,
-            wp.array([_ALL_COLLIDER_WORLDS], dtype=int, device=device),
-            solver._mpm_model.collider,
-            None,
-            None,
-            None,
-            *outputs,
-        ],
-        device=device,
-    )
-    test.assertEqual(outputs[1].numpy()[0], first + 1)
-    test.assertAlmostEqual(outputs[3].numpy()[0], 90.0, places=4)
+
+    def query_material():
+        outputs = [wp.zeros(1, dtype=dtype, device=device) for dtype in (int, int, float, float, float)]
+        wp.launch(
+            _query_collision_sdf,
+            dim=1,
+            inputs=[
+                positions,
+                wp.array([_ALL_COLLIDER_WORLDS], dtype=int, device=device),
+                solver._mpm_model.collider,
+                None,
+                None,
+                None,
+                *outputs,
+            ],
+            device=device,
+        )
+        return outputs[1].numpy()[0], outputs[3].numpy()[0]
+
+    # a point above the box sees the material of the face below it
+    test.assertEqual(query_material(), (first, 5.0))
+    faces.fill_(1)
+    material_id, adhesion = query_material()
+    test.assertEqual(material_id, first + 1)
+    test.assertAlmostEqual(adhesion, 90.0, places=4)
+
+    # out-of-range indices are clamped to the collider's own materials
+    faces.fill_(99)
+    test.assertEqual(query_material()[0], first + 1)
+    faces.fill_(-3)
+    test.assertEqual(query_material()[0], first)
 
     with test.assertRaises(ValueError):
         solver.setup_collider(collider_meshes=[mesh], collider_material_counts=[0])
@@ -1730,14 +1738,13 @@ def test_collider_face_materials(test, device):
             -1, xform=wp.transform(wp.vec3(x, -1.0, 0.0), wp.quat_identity()), hx=0.5, hy=0.5, hz=0.5
         )
     shape_solver = SolverImplicitMPM(shape_model.finalize(device=device), _make_mpm_config())
-    test.assertEqual(shape_solver.collider_material_range(0)[1], 2)
+    test.assertEqual(shape_solver.collider_materials(0)["adhesion"].shape[0], 2)
     shape_solver.setup_collider(collider_body_ids=[-1], collider_adhesion=[7.0], collider_material_counts=[1])
-    test.assertEqual(shape_solver.collider_material_range(0)[1], 2)
+    test.assertEqual(shape_solver.collider_materials(0)["adhesion"].shape[0], 2)
     shape_solver.setup_collider(collider_body_ids=[-1], collider_adhesion=[7.0], collider_material_counts=[4])
-    first, count = shape_solver.collider_material_range(0)
-    test.assertEqual(count, 4)
+    test.assertEqual(shape_solver.collider_materials(0)["adhesion"].shape[0], 4)
     face_ids = np.unique(shape_solver.collider_face_materials(0).numpy())
-    np.testing.assert_array_equal(face_ids, [first, first + 1])
+    np.testing.assert_array_equal(face_ids, [0, 1])
     np.testing.assert_allclose(shape_solver.collider_materials(0)["adhesion"].numpy(), 7.0)
 
 

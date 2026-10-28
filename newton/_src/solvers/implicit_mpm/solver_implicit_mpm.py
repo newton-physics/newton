@@ -1367,9 +1367,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             - ``mpm:viscosity``: Viscosity for plasticity [Pa·s]
 
         Attributes registered on Model (per-shape):
-            - ``mpm:adhesion``: Collider adhesion in Pa, used when the shape is a collider
+            - ``mpm:collider_adhesion``: Collider adhesion in Pa, used when the shape is a collider
               (see :meth:`setup_collider`)
-            - ``mpm:projection_threshold``: Collider projection threshold in m; a negative value (default)
+            - ``mpm:collider_projection_threshold``: Collider projection threshold in m; a negative value (default)
               selects the solver default, which scales with the voxel size
 
         Attributes registered on State (per-particle):
@@ -1504,7 +1504,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         # Per-shape collider material
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
-                name="adhesion",
+                name="collider_adhesion",
                 frequency=newton.Model.AttributeFrequency.SHAPE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1514,7 +1514,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
-                name="projection_threshold",
+                name="collider_projection_threshold",
                 frequency=newton.Model.AttributeFrequency.SHAPE,
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
@@ -1803,10 +1803,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def collider_face_materials(self, collider_id: int) -> wp.array[int]:
         """Return a writable view of the per-face material ids of a collider.
 
-        Entries are global material ids, i.e. ``first_id + k`` selects material ``k`` of the collider, where
-        ``first_id`` comes from :meth:`collider_material_range`. Writing to the view takes effect on the next step
-        and is safe inside captured graphs. Face order follows the collider mesh; for body colliders, faces of
-        successive shapes are concatenated.
+        Entries are collider-local material indices, i.e. ``k`` selects the material at index ``k`` of the views
+        returned by :meth:`collider_materials`. Values outside ``[0, count)`` are clamped to that range. Writing to
+        the view takes effect on the next step and is safe inside captured graphs. Face order follows the collider
+        mesh; for body colliders, faces of successive shapes are concatenated.
 
         Args:
             collider_id: Collider index, in the order the colliders were discovered or passed to
@@ -1818,32 +1818,26 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         offset, count = self._mpm_model.collider_face_ranges[collider_id]
         return self._mpm_model.collider.face_material_index[offset : offset + count]
 
-    def collider_material_range(self, collider_id: int) -> tuple[int, int]:
-        """Return ``(first_id, count)``, the global material ids owned by a collider.
-
-        Body colliders own one material per collision shape, in shape order, followed by any extra materials
-        requested through ``collider_material_counts``. Mesh colliders own ``collider_material_counts[collider_id]``
-        materials (1 by default).
-        """
-        return self._mpm_model.collider_material_ranges[collider_id]
-
     def collider_materials(self, collider_id: int) -> dict[str, wp.array[float]]:
         """Return writable views of the material values of a collider.
 
-        The views are indexed by the collider's local material index ``k``, i.e. global id ``first_id + k``.
+        The views are indexed by the collider-local material index ``k``, as in :meth:`collider_face_materials`.
+        Body colliders own one material per collision shape, in shape order, followed by any extra materials
+        requested through ``collider_material_counts``. Mesh colliders own ``collider_material_counts[collider_id]``
+        materials (1 by default).
 
         Args:
             collider_id: Collider index, see :meth:`collider_face_materials`.
 
         Returns:
             Dictionary with keys ``"friction"`` (Coulomb coefficient), ``"adhesion"`` [Pa],
-            ``"projection_threshold"`` [m] and ``"thickness"`` [m].
+            ``"projection_threshold"`` [m] and ``"margin"`` [m].
             The views are invalidated by the next :meth:`setup_collider` call.
 
         Warning:
-            The collider's query range is derived at setup from the largest thickness among its materials.
-            Setting a thickness above that construction-time maximum can lead to unexpected failures,
-            such as missed contacts; call :meth:`setup_collider` again with a larger thickness instead.
+            The collider's query range is derived at setup from the largest margin among its materials.
+            Setting a margin above that construction-time maximum can lead to unexpected failures,
+            such as missed contacts; call :meth:`setup_collider` again with larger ``collider_margins`` instead.
         """
         first, count = self._mpm_model.collider_material_ranges[collider_id]
         collider = self._mpm_model.collider
@@ -1851,7 +1845,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             "friction": collider.material_friction[first : first + count],
             "adhesion": collider.material_adhesion[first : first + count],
             "projection_threshold": collider.material_projection_threshold[first : first + count],
-            "thickness": collider.material_thickness[first : first + count],
+            "margin": collider.material_thickness[first : first + count],
         }
 
     @property

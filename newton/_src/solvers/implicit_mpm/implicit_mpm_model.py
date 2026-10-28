@@ -214,14 +214,14 @@ def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
 
     # Adhesion and projection threshold are optional ``mpm:*`` shape attributes
     mpm_attributes = getattr(model, "mpm", None)
-    shape_adhesion = getattr(mpm_attributes, "adhesion", None)
+    shape_adhesion = getattr(mpm_attributes, "collider_adhesion", None)
     if shape_adhesion is None:
         adhesion = np.full(len(shape_ids), _DEFAULT_ADHESION)
     else:
         adhesion = shape_adhesion.numpy()[shape_ids]
 
     # A negative value selects the solver default, which scales with the voxel size
-    shape_projection_threshold = getattr(mpm_attributes, "projection_threshold", None)
+    shape_projection_threshold = getattr(mpm_attributes, "collider_projection_threshold", None)
     if shape_projection_threshold is None:
         projection_threshold = np.full(len(shape_ids), -1.0)
     else:
@@ -893,14 +893,13 @@ class ImplicitMPMModel:
                     # are concerned, it does not matter.
 
                     packed_body_ids.append(-1)
-                    material_id = collider_material_ids[collider_id][0]
                     face_count = collider_meshes[collider_id].indices.shape[0] // 3
-                    mesh_face_material_ids = np.full(face_count, material_id, dtype=int)
+                    mesh_face_material_ids = np.zeros(face_count, dtype=int)
                 else:
                     collider_meshes[collider_id], mesh_face_material_ids = _create_body_collider_mesh(
                         model,
                         collider_shapes[collider_id],
-                        collider_material_ids[collider_id][: len(collider_shapes[collider_id])],
+                        list(range(len(collider_shapes[collider_id]))),
                     )
                     packed_body_ids.append(body_index)
                     face_count = collider_meshes[collider_id].indices.shape[0] // 3
@@ -936,6 +935,8 @@ class ImplicitMPMModel:
 
             all_face_material_ids = np.concatenate(face_material_ids) if face_material_ids else np.empty(0, dtype=int)
             self.collider.face_material_index = wp.array(all_face_material_ids, dtype=int)
+            self.collider.collider_material_offset = wp.array([ids[0] for ids in collider_material_ids], dtype=int)
+            self.collider.collider_material_count = wp.array([len(ids) for ids in collider_material_ids], dtype=int)
 
             self.collider.material_thickness = wp.array(material_thickness, dtype=float)
             self.collider.material_friction = wp.array(material_friction, dtype=float)
