@@ -896,12 +896,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
                 self._apply_global_shape_metadata(view, cfg, visible_bodies)
                 self._apply_noncompact_body_particle_attachment_visibility(view, cfg)
-            self._customize_compact_view(
-                view,
-                self._global_indices_to_local_array(
-                    sorted(proxy_body_keep), index_lists, model.AttributeFrequency.BODY
-                ),
+            proxy_body_local_indices = self._global_indices_to_local_array(
+                sorted(proxy_body_keep),
+                index_lists,
+                model.AttributeFrequency.BODY,
             )
+            if index_lists is not None and index_lists.free_root_joints is not None:
+                copy_body_local = index_lists.free_root_joints.copy_body_local
+                if copy_body_local:
+                    proxy_body_local_indices = wp.array(
+                        [*proxy_body_local_indices.numpy().tolist(), *copy_body_local], dtype=int, device=device
+                    )
+            self._customize_compact_view(view, proxy_body_local_indices)
             if cfg.configure_view is not None:
                 cfg.configure_view(view)
             self._filter_shape_contact_pairs(view)
@@ -922,17 +928,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 index_lists,
                 model.AttributeFrequency.JOINT,
             )
-            proxy_body_local_indices = self._global_indices_to_local_array(
-                sorted(proxy_body_keep),
-                index_lists,
-                model.AttributeFrequency.BODY,
-            )
-            if index_lists is not None and index_lists.free_root_joints is not None:
-                copy_body_local = index_lists.free_root_joints.copy_body_local
-                if copy_body_local:
-                    proxy_body_local_indices = wp.array(
-                        [*proxy_body_local_indices.numpy().tolist(), *copy_body_local], dtype=int, device=device
-                    )
             proxy_particle_local_indices = self._global_indices_to_local_array(
                 sorted(proxy_particle_keep),
                 index_lists,
@@ -1112,7 +1107,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 continue
             values = current.numpy()
             values[indices] = value
-            setattr(view, name, wp.array(values, dtype=current.dtype, device=current.device))
+            if object.__getattribute__(view, "_overrides").get(name) is current:
+                # Solvers may alias the view's override, so write into it.
+                current.assign(values)
+            else:
+                setattr(view, name, wp.array(values, dtype=current.dtype, device=current.device))
 
     def _entry_proxy_joint_keep_indices(self, name: str) -> set[int]:
         """Return joint indices that should remain enabled as proxies in one view."""
@@ -4135,7 +4134,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 entry.view.mark_proxy_bodies(entry.proxy_body_local_indices)
 
             if flags & int(
-                ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                ModelFlags.JOINT_PROPERTIES
+                | ModelFlags.JOINT_DOF_PROPERTIES
+                | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
             ):
                 entry.view.disable_joints(entry.joint_dynamics_disabled_local_indices)
                 self._clear_proxy_joint_forces(entry.view, entry.proxy_joint_dof_local_indices)

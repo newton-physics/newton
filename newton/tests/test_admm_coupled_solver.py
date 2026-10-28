@@ -1423,7 +1423,7 @@ def _build_split_four_bar(world_count: int) -> tuple[newton.Model, list[tuple[st
     ]
 
 
-def _build_loop_before_tree_joint() -> tuple[newton.Model, list[SolverCoupled.Entry]]:
+def _build_loop_before_tree_joint(device: str = "cpu") -> tuple[newton.Model, list[SolverCoupled.Entry]]:
     """Build a body proxied by a loop joint whose index precedes its tree joint into the same entry."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
     inertia = wp.mat33(np.eye(3) * 0.01)
@@ -1441,7 +1441,7 @@ def _build_loop_before_tree_joint() -> tuple[newton.Model, list[SolverCoupled.En
     builder.add_articulation([root, builder.add_joint_revolute(a0, b0, **hinge)])
     root1 = builder.add_joint_free(a1)
     builder.add_articulation([root1])
-    model = builder.finalize(device="cpu")
+    model = builder.finalize(device=device)
     return model, [
         SolverCoupled.Entry(name="a", solver=SolverFeatherstone, bodies=[a0, a1], joints=[root, root1]),
         SolverCoupled.Entry(name="b", solver=SolverFeatherstone, bodies=[b0], joints=[]),
@@ -1523,6 +1523,29 @@ class TestAdmmJointProxies(unittest.TestCase):
             with self.subTest(solver=name):
                 np.testing.assert_allclose(body_q, expected_q, atol=2.0e-4)
                 np.testing.assert_allclose(body_qd, expected_qd, atol=2.0e-3)
+
+    def test_model_notifications_keep_proxy_joint_dofs_cleared(self):
+        """Keep drives and armature of proxy joints cleared in the view arrays solvers hold."""
+        # Host copies of CUDA arrays share no memory with the view arrays.
+        devices = ["cpu", *([str(wp.get_cuda_device())] if wp.is_cuda_available() else [])]
+        for device in devices:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model, entries = _build_loop_before_tree_joint(device)
+                solver = SolverCoupledADMM(model, entries, SolverCoupledADMM.Config())
+            entries = [entry for entry in solver._entries.values() if entry.proxy_joint_dof_local_indices is not None]
+            self.assertTrue(entries)
+            held = {entry.name: (entry.view.joint_target_ke, entry.view.joint_armature) for entry in entries}
+            model.joint_target_ke.fill_(50.0)
+            model.joint_armature.fill_(0.1)
+
+            for flag in (newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES, newton.ModelFlags.JOINT_DOF_PROPERTIES):
+                solver.notify_model_changed(flag)
+                for entry in entries:
+                    dofs = entry.proxy_joint_dof_local_indices.numpy()
+                    for name, array in zip(("joint_target_ke", "joint_armature"), held[entry.name], strict=True):
+                        with self.subTest(device=device, flag=flag, entry=entry.name, attribute=name):
+                            np.testing.assert_array_equal(array.numpy()[dofs], 0.0)
 
     def test_proxy_is_a_single_free_rooted_link(self):
         """Keep one proxy body per cross-solver joint; a reduced view roots it with a FREE joint."""
