@@ -45,6 +45,11 @@ _YUP_TO_ZUP_QUAT = np.array([0.70710678, 0.0, 0.0, 0.70710678], dtype=np.float32
 # Reject tracked positions further than this from the origin (network input).
 _MAX_TRACKED_POS = 100.0
 
+# Hand proxy and cloth particle radii, kept as named constants so the scene
+# geometry is documented in one place.
+_HAND_PROXY_RADIUS = 0.05
+_PARTICLE_RADIUS = 0.02
+
 _WEBXR_CLIENT_HTML = r"""<!doctype html>
 <html>
 <head>
@@ -309,6 +314,8 @@ def _as_pos(entry):
         p = np.asarray(p, dtype=np.float32)
     except (ValueError, TypeError, OverflowError):
         return None
+    if p.shape != (3,):
+        return None
     if not np.all(np.isfinite(p)) or np.linalg.norm(p) > _MAX_TRACKED_POS:
         return None
     return p
@@ -324,6 +331,8 @@ def _as_quat(entry):
     try:
         q = np.asarray(q, dtype=np.float32)
     except (ValueError, TypeError, OverflowError):
+        return identity
+    if q.shape != (4,):
         return identity
     norm = float(np.linalg.norm(q))
     if not math.isfinite(norm) or norm < 1e-6:
@@ -400,9 +409,6 @@ class XRPoseSource:
 class ProceduralPoseSource:
     """Deterministic head/hand choreography used when no client is connected."""
 
-    def __init__(self, half_extent_y):
-        self.half_extent_y = half_extent_y
-
     def next(self, frame_idx):
         t = frame_idx * (1.0 / 60.0)
         head_p = np.array(
@@ -416,10 +422,15 @@ class ProceduralPoseSource:
         # local forward direction at (0, 0, -1) (same convention as WebXR).
         head_q = _quat_between(np.array([0.0, 0.0, -1.0], dtype=np.float32), direction.astype(np.float32))
 
-        # Hand waypoints in model space; x is mirrored for the left hand.
+        # Hand waypoints in model space, anchored to the table edge rather
+        # than the cloth size: after settling, the overhang hangs as a curtain
+        # down the table side (at the 20x20 and 40x40 test sizes the cloth at
+        # y~0.6 spans roughly z 0.05-0.74), so a fixed grab point at mid-
+        # curtain height reaches it at any cloth resolution. x is mirrored
+        # for the left hand.
         home = np.array([0.55, -0.10, 1.30], dtype=np.float32)
-        touch = np.array([0.45, 0.75 * self.half_extent_y, 0.86], dtype=np.float32)
-        drag = np.array([0.70, 1.15 * self.half_extent_y, 0.45], dtype=np.float32)
+        touch = np.array([0.45, 0.60, 0.55], dtype=np.float32)
+        drag = np.array([0.70, 0.95, 0.30], dtype=np.float32)
 
         def sweep(phase):
             # 0.0-0.4s approach, 0.4-1.4s drag, 1.4-1.8s hold, 1.8-2.4s return
@@ -525,7 +536,9 @@ class Example:
 
         self.cell = 0.08
         self.table_top = 0.72
-        half_y = args.height * self.cell * 0.5
+        # Sanity bound for the test: a dragged sheet may legitimately end up
+        # stretched out on the floor, so allow its full span plus a margin.
+        self._drift_bound = max(args.width, args.height) * self.cell + 1.0
 
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
@@ -547,7 +560,7 @@ class Example:
             cell_x=self.cell,
             cell_y=self.cell,
             mass=0.1,
-            particle_radius=0.02,
+            particle_radius=_PARTICLE_RADIUS,
             add_springs=True,
             spring_ke=1.0e3,
             spring_kd=1.0,
@@ -557,11 +570,11 @@ class Example:
         self.left_body = builder.add_body(
             xform=wp.transform(wp.vec3(-0.55, -0.10, 1.30), wp.quat_identity()), label="hand_left"
         )
-        builder.add_shape_sphere(self.left_body, radius=0.05)
+        self.left_shape = builder.add_shape_sphere(self.left_body, radius=_HAND_PROXY_RADIUS)
         self.right_body = builder.add_body(
             xform=wp.transform(wp.vec3(0.55, -0.10, 1.30), wp.quat_identity()), label="hand_right"
         )
-        builder.add_shape_sphere(self.right_body, radius=0.05)
+        self.right_shape = builder.add_shape_sphere(self.right_body, radius=_HAND_PROXY_RADIUS)
 
         self.model = builder.finalize()
         self.model.soft_contact_ke = 1.0e2
@@ -605,11 +618,11 @@ class Example:
             server = _ACTIVE_SERVER
             if server is not None:
                 self._source = XRPoseSource(server, origin_yup)
-                self._fallback_source = ProceduralPoseSource(half_y)
+                self._fallback_source = ProceduralPoseSource()
                 self._server = server
                 self._mode_name = "vr (procedural until client connects)"
             else:
-                self._source = ProceduralPoseSource(half_y)
+                self._source = ProceduralPoseSource()
                 self._mode_name = "procedural"
 
         self._record_path = args.record
@@ -745,17 +758,18 @@ class Example:
         self.viewer.set_camera(wp.vec3(float(p[0]), float(p[1]), float(p[2])), pitch, yaw)
 
     def test_post_step(self):
-        # Witness that a hand proxy actually reached the cloth; combined with
-        # the lateral-displacement check in test_final this proves the drag.
+        # Witness that the engine reported a contact involving a hand proxy
+        # shape. Reading the solver's own contact records avoids guessing a
+        # distance threshold: soft contacts hold a few centimeters of
+        # compliance while pushing, so closest approach under-reports contact.
         if self._cloth_touched:
             return
-        particle_q = self.state_0.particle_q.numpy()
-        body_q = self.state_0.body_q.numpy()
-        for body in (self.left_body, self.right_body):
-            center = body_q[body][:3]
-            if float(np.linalg.norm(particle_q - center, axis=1).min()) < 0.15:
-                self._cloth_touched = True
-                return
+        count = int(self.contacts.soft_contact_count.numpy()[0])
+        if count == 0:
+            return
+        shapes = self.contacts.soft_contact_shape.numpy()[:count]
+        if int(np.isin(shapes, (self.left_shape, self.right_shape)).sum()) > 0:
+            self._cloth_touched = True
 
     def test_final(self):
         self._flush_record()
@@ -765,8 +779,9 @@ class Example:
             "particles are above the ground",
             lambda q, qd: q[2] > -0.05,
         )
-        lower = wp.vec3(-3.0, -3.0, -0.05)
-        upper = wp.vec3(3.0, 3.0, 2.5)
+        bound = self._drift_bound
+        lower = wp.vec3(-bound, -bound, -0.05)
+        upper = wp.vec3(bound, bound, 2.5)
         newton.examples.test_particle_state(
             self.state_0,
             "particles are within a reasonable volume",
