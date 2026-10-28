@@ -1952,15 +1952,17 @@ class TestSensorCameraDeformable(unittest.TestCase):
             with self.subTest(device=device):
                 model = self._mixed_builder().finalize(device=device)
                 state_a, state_b = model.state(), model.state()
-                visuals = newton.geometry.DeformableVisuals(model)
-                visuals.update(state_a)
-                moved = state_a.body_q.numpy().copy()
-                moved[:, 2] += 1
-                state_a.body_q.assign(moved)
                 camera = SensorCamera(
                     model,
                     deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
                 )
+                visuals = newton.geometry.DeformableVisuals(model)
+                with self.assertRaisesRegex(RuntimeError, "not been updated"):
+                    camera.sync_deformable_meshes(state_a, deformable_visuals=visuals)
+                visuals.update(state_a)
+                moved = state_a.body_q.numpy().copy()
+                moved[:, 2] += 1
+                state_a.body_q.assign(moved)
                 rays, transforms = self._camera_arrays(model)
                 depth = camera.allocate_image_depth(1, 16, 16)
                 albedo = camera.allocate_image_albedo(1, 16, 16)

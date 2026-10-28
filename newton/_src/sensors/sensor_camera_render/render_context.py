@@ -825,8 +825,7 @@ class RenderContext:
 
         # The batches already hold every mesh's triangles indexed by destination vertex; those
         # vertices follow the simulation particles in the camera's buffer.
-        if deformable_visual_meshes:
-            triangle_indices.append(self._skin_batches.face_indices.numpy() + self._triangle_particle_count)
+        triangle_indices.append(self._skin_batches.face_indices.numpy() + self._triangle_particle_count)
         for mesh_index, mesh in enumerate(deformable_visual_meshes):
             start, end = self._skin_batches.mesh_ranges[mesh_index]
             if textured:
@@ -838,7 +837,7 @@ class RenderContext:
             triangle_texture_ids.append(np.full(face_count, skin_texture_ids[mesh_index], dtype=np.int32))
             vertex_worlds.append(np.full(end - start, mesh.world, dtype=np.int32))
 
-        self._skinned_vertex_count = self._skin_batches.vertex_count if deformable_visual_meshes else 0
+        self._skinned_vertex_count = self._skin_batches.vertex_count
         self._triangle_points = wp.empty(
             self._triangle_particle_count + self._skinned_vertex_count, dtype=wp.vec3f, device=self.device
         )
