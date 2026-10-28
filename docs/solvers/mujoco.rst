@@ -705,9 +705,10 @@ limitation.
 When ``use_mujoco_cpu=True``, only the template world is simulated when
 ``separate_worlds=True``.
 
-With ``use_mujoco_cpu=True``, Newton contacts require Euler, implicit, or implicitfast integration.
-Unsupported modes and insufficient contact storage
-raise an error. Request ``CONTACT_F`` through ``step``; ``update_contacts`` is
+With ``use_mujoco_cpu=True``, Newton contacts require a single-world model and
+Euler, implicit, or implicitfast integration.
+Unsupported integration modes raise an error. Excess contacts are truncated with a warning.
+Request ``CONTACT_F`` through ``step``; ``update_contacts`` is
 unavailable in this mode. When MuJoCo's autoreset is enabled, invalid dynamics
 reset the simulation and abort the current step without integration or collision
 detection. Contact-force outputs are zeroed; generate fresh Newton contacts

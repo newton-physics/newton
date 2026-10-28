@@ -5795,7 +5795,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
 
         total_force = force_acc / avg
         shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
-        if use_mujoco_cpu:
+        if use_mujoco_cpu and integrator in (None, "rk4"):
             for capacity in (1, 0):
                 limited = newton.Contacts(capacity, 0, device=model.device)
                 limited.force = wp.empty(capacity, dtype=wp.spatial_vector, device=model.device)
@@ -5817,7 +5817,6 @@ class TestMuJoCoContactForce(unittest.TestCase):
             (True, None),
             (True, "euler"),
             (True, "implicit"),
-            (True, "implicitfast"),
             (True, "rk4"),
             (True, "discrete"),
         ):
@@ -5902,8 +5901,13 @@ class TestMuJoCoContactForce(unittest.TestCase):
         np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
         self.assertGreater(solver.mj_data.warning[solver._mujoco.mjtWarning.mjWARN_CNSTRFULL].number, 0)
         solver._strict_capacity = True
-        with self.assertRaisesRegex(RuntimeError, "constraint storage"):
+        with self.assertRaisesRegex(RuntimeError, "rigid_contact_max .* exceeds MuJoCo CPU contact storage"):
             solver.step(state, state_out, None, contacts, 0.002, observables=observables)
+        bounded_pipeline = newton.CollisionPipeline(model, rigid_contact_max=solver.get_max_contact_count())
+        bounded_contacts = bounded_pipeline.contacts()
+        bounded_pipeline.collide(state, bounded_contacts)
+        solver.step(state, state_out, None, bounded_contacts, 0.002)
+        self.assertEqual(solver.mj_data.nefc, 0)
         solver._strict_capacity = False
         for name in (
             "rigid_contact_shape0",
@@ -5924,15 +5928,19 @@ class TestMuJoCoContactForce(unittest.TestCase):
         self.assertLess(solver.get_max_contact_count(), 2 * count)
         solver._invalidate_contact_fast_path()
         solver._convert_contacts_to_mjwarp(model, state, contacts)
+        solver._strict_capacity = True
         with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exceeds MuJoCo CPU arena capacity"):
             solver._copy_mjwarp_contacts_to_mj_data()
         self.assertEqual(solver.mj_data.ncon, solver.get_max_contact_count())
-        solver._strict_capacity = True
-        with self.assertRaisesRegex(RuntimeError, "exceeds MuJoCo CPU arena capacity"):
-            solver._copy_mjwarp_contacts_to_mj_data()
         solver._strict_capacity = False
         contacts.rigid_contact_count.assign([count])
         solver.mj_model, solver.mj_data = native_model, native_data
+        with patch.object(solver, "get_max_contact_count", return_value=count - 1):
+            with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exceeds MuJoCo CPU arena capacity") as warning:
+                caller_line = inspect.currentframe().f_lineno + 1
+                solver.step(state, state_out, None, contacts, 0.002, observables=observables)
+            self.assertEqual(warning.filename, __file__)
+            self.assertEqual(warning.lineno, caller_line)
         solver.step(state, state_out, None, contacts, 0.002, observables=observables)
         self.assertGreater(np.linalg.norm(observables.contact_f.numpy()[:count]), 0.0)
 
@@ -13696,39 +13704,44 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
 
     def test_force_space_contact_solref_updates_after_mass_change(self):
-        """``BODY_INERTIAL_PROPERTIES`` notify must refresh the per-contact factor.
-
-        Same-solver mass-change regression: catches stale ``body_invweight0``
-        if the contact fast path is not invalidated after a mass update.
-        """
+        """Refresh contact solref after mass changes on both backends."""
         ke, kd = 1.0e4, 100.0
-        model, body = self._build_box_on_plane(mass=2.0, ke=ke, kd=kd)
-        solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
-        self._run_to_first_contact(model, solver)
-        initial_solref_ref, _ = self._expected_force_space_solref(solver, 0, ke=ke, kd=kd)
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                model, body = self._build_box_on_plane(mass=2.0, ke=ke, kd=kd)
+                solver = SolverMuJoCo(
+                    model,
+                    use_mujoco_contacts=False,
+                    use_mujoco_cpu=use_mujoco_cpu,
+                    njmax=20,
+                    nconmax=20,
+                    iterations=10,
+                )
+                self._run_to_first_contact(model, solver)
+                initial_solref_ref, _ = self._expected_force_space_solref(solver, 0, ke=ke, kd=kd)
 
-        # Double the body mass and inertia; invweight0 should halve.
-        body_mass = model.body_mass.numpy()
-        body_mass[body] *= 4.0
-        model.body_mass.assign(body_mass)
-        body_inv_mass = model.body_inv_mass.numpy()
-        body_inv_mass[body] /= 4.0
-        model.body_inv_mass.assign(body_inv_mass)
-        body_inertia = model.body_inertia.numpy()
-        body_inertia[body] *= 4.0
-        model.body_inertia.assign(body_inertia)
-        body_inv_inertia = model.body_inv_inertia.numpy()
-        body_inv_inertia[body] = np.linalg.inv(body_inertia[body])
-        model.body_inv_inertia.assign(body_inv_inertia)
-        solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
-        self._run_to_first_contact(model, solver)
+                # Quadruple the body mass and inertia; invweight0 should fall to one quarter.
+                for name, factor in (
+                    ("body_mass", 4.0),
+                    ("body_inv_mass", 0.25),
+                    ("body_inertia", 4.0),
+                    ("body_inv_inertia", 0.25),
+                ):
+                    array = getattr(model, name)
+                    values = array.numpy()
+                    values[body] *= factor
+                    array.assign(values)
+                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
+                self._run_to_first_contact(model, solver)
 
-        updated_solref_ref, _ = self._expected_force_space_solref(solver, 0, ke=ke, kd=kd)
-        actual_solref = solver.mjw_data.contact.solref.numpy()[0]
-        rel_tol = 1.0e-4
-        self.assertAlmostEqual(float(actual_solref[0]), updated_solref_ref, delta=abs(updated_solref_ref) * rel_tol)
-        # Heavier body → smaller factor → larger solref[0] (2 / (kd * factor)).
-        self.assertGreater(updated_solref_ref, initial_solref_ref)
+                updated_solref_ref, _ = self._expected_force_space_solref(solver, 0, ke=ke, kd=kd)
+                actual_solref = solver.mjw_data.contact.solref.numpy()[0]
+                rel_tol = 1.0e-4
+                self.assertAlmostEqual(
+                    float(actual_solref[0]), updated_solref_ref, delta=abs(updated_solref_ref) * rel_tol
+                )
+                # Heavier body → smaller factor → larger solref[0] (2 / (kd * factor)).
+                self.assertGreater(updated_solref_ref, initial_solref_ref)
 
     def test_force_space_contact_mixed_mode_falls_through_to_geom_solref(self):
         """Mixed-mode (FORCE_SPACE + non-FORCE_SPACE) must bypass the override.

@@ -4500,19 +4500,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
                 ``wp.config.deterministic``.
-            strict_capacity: If ``True``, raise a ``RuntimeError`` when the
-                Newton contact pipeline buffer *capacity*
-                (``contacts.rigid_contact_max``) exceeds MuJoCo Warp's buffer
-                *capacity* (``nconmax``); the check runs at the start of every
-                step and requires no GPU sync.  This is a capacity mismatch,
-                not evidence that contacts were actually dropped — the two
-                buffers are sized by independent heuristics and routinely
-                disagree even on scenes that never overflow — so it is not
-                reported by default (``False``).  Runtime overflow (contacts
-                actually dropped during a step) is always reported GPU-side
-                via a ``wp.printf`` message; to detect it in Python without a
-                GPU sync, request ``ObservableKind.OVERFLOW`` via
-                :meth:`observables` and check the bitmask after each step.
+            strict_capacity: If ``True``, raise ``RuntimeError`` when
+                ``contacts.rigid_contact_max`` exceeds ``nconmax`` or, with
+                ``use_mujoco_cpu=True``, the arena's contact-storage upper bound.
+                A capacity mismatch can raise even without actual overflow.
+                Defaults to ``False``; capacity mismatches are otherwise silent.
         """
         if update_data_interval is not None:
             warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -5604,6 +5596,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"than {naconmax} contacts are actually generated. "
                 f"Pass nconmax>={contacts.rigid_contact_max} to SolverMuJoCo to size for the worst case."
             )
+        if self._strict_capacity and self.use_mujoco_cpu:
+            native_capacity = self.get_max_contact_count()
+            if contacts.rigid_contact_max > native_capacity:
+                raise RuntimeError(
+                    f"contacts.rigid_contact_max ({contacts.rigid_contact_max}) exceeds MuJoCo CPU contact storage "
+                    f"capacity ({native_capacity}). Reduce rigid_contact_max or increase the native arena allocation."
+                )
         launch_dim = min(contacts.rigid_contact_max, naconmax)
 
         # Invalidate the cached tid_to_cid mapping whenever any of the
@@ -5862,6 +5861,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     getattr(self.mj_model, name)[ctrl_direct] = getattr(self.mjw_model, name).numpy()[0, ctrl_direct]
             if need_const_fixed or need_const_0:
                 self._set_const_0_with_physical_meaninertia()
+                if not self._use_mujoco_contacts:
+                    # Newton contact conversion reads the Warp copy of the native inverse weights.
+                    self.mjw_model.body_invweight0.assign(self.mj_model.body_invweight0[None])
             if need_solref_update:
                 self._update_solref_from_invweight0()
             if need_const_0:
@@ -6298,7 +6300,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mujoco.mj_checkVel, mujoco.mjtWarning.mjWARN_BADQVEL
         ):
             return
-        constraint_warning = data.warning[mujoco.mjtWarning.mjWARN_CNSTRFULL].number
         disable_contact_flag = mujoco.mjtDisableBit.mjDSBL_CONTACT
         disableflags = model.opt.disableflags
         model.opt.disableflags |= disable_contact_flag
@@ -6318,8 +6319,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mujoco.mj_makeConstraint(model, data)
         mujoco.mj_island(model, data)
         mujoco.mj_projectConstraint(model, data)
-        if self._strict_capacity and data.warning[mujoco.mjtWarning.mjWARN_CNSTRFULL].number > constraint_warning:
-            raise RuntimeError("MuJoCo CPU arena exhausted its constraint storage with Newton contacts.")
         mujoco.mj_transmission(model, data)
         mujoco.mj_sensorPos(model, data)
         if model.opt.enableflags & mujoco.mjtEnableBit.mjENBL_ENERGY:
@@ -6353,9 +6352,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 f"({native_capacity}); copying only the first {native_capacity} contacts. "
                 "Reduce the contact count or increase the native arena allocation."
             )
-            if self._strict_capacity:
-                raise RuntimeError(message)
-            warnings.warn(message, NewtonWarning, stacklevel=4)
+            warnings.warn(message, NewtonWarning, stacklevel=5)
             count = native_capacity
         data.ncon = count
         if count == 0:
