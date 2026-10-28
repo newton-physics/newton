@@ -179,57 +179,53 @@ class TestAdmmJointProximal(unittest.TestCase):
         forces = np.array([[1, 3, 2, 0.5, -0.2, 0.4], [-2, 1, 4, -0.4, 0.3, 0.2]], dtype=np.float32)
         jacobians = [np.hstack((np.eye(3), -_cross(anchor))), np.hstack((np.eye(3), np.zeros((3, 3))))]
         dt, stiffness = 0.02, 5000.0
+        # The replay checks the answer itself, so one high-rho case with gamma covers each backend.
+        rho, gamma = 2.0, 1.0
         for backend, factory in factories.items():
-            reference = None
-            for rho, gamma in ((0.4, 0.0), (0.4, 1.0), (2.0, 1.0)):
-                with self.subTest(backend=backend, rho=rho, gamma=gamma):
-                    model, solver = self._make_solver(
-                        factory=factory,
-                        free_bodies=True,
-                        anchor=anchor,
-                        gravity=(0, -9.81, 0),
-                        iterations=48 if rho > 0.4 else 32,
-                        rho=rho,
-                        gamma=gamma,
-                        joint_stiffness=stiffness,
+            with self.subTest(backend=backend):
+                model, solver = self._make_solver(
+                    factory=factory,
+                    free_bodies=True,
+                    anchor=anchor,
+                    gravity=(0, -9.81, 0),
+                    iterations=48,
+                    rho=rho,
+                    gamma=gamma,
+                    joint_stiffness=stiffness,
+                )
+                self.assertEqual(len(solver._admm_joint_proxies), 2)
+                state, out = model.state(), model.state()
+                state.body_qd.assign(initial)
+                joint_velocity = state.joint_qd.numpy()
+                joint_velocity[:12] = initial.ravel()
+                state.joint_qd.assign(joint_velocity)
+                state.body_f.assign(forces)
+                solver.step(state, out, None, None, dt)
+                velocity = out.body_qd.numpy()
+                self.assertTrue(np.all(np.isfinite(velocity)))
+                group = solver._admm_rr_groups[0]
+                np.testing.assert_allclose(group.u.numpy(), group.Jv.numpy(), atol=2e-5)
+                jv = jacobians[1] @ velocity[1] - jacobians[0] @ velocity[0]
+                _, replay_solver = self._make_solver(
+                    factory=factory,
+                    anchor=anchor,
+                    gravity=(0, -9.81, 0),
+                    gamma=0.0,
+                    joint_proximal_bodies=False,
+                )
+                for body in range(2):
+                    entry = replay_solver._entries[str(body)]
+                    physical, replay = entry.view.state(), entry.view.state()
+                    physical.body_qd.assign(initial[body : body + 1])
+                    physical.joint_qd.assign(initial[body])
+                    physical.body_f.assign(
+                        [forces[body] + (1 if body == 0 else -1) * dt * stiffness * jacobians[body].T @ jv]
                     )
-                    self.assertEqual(len(solver._admm_joint_proxies), 2)
-                    state, out = model.state(), model.state()
-                    state.body_qd.assign(initial)
-                    joint_velocity = state.joint_qd.numpy()
-                    joint_velocity[:12] = initial.ravel()
-                    state.joint_qd.assign(joint_velocity)
-                    state.body_f.assign(forces)
-                    solver.step(state, out, None, None, dt)
-                    velocity = out.body_qd.numpy()
-                    self.assertTrue(np.all(np.isfinite(velocity)))
-                    group = solver._admm_rr_groups[0]
-                    np.testing.assert_allclose(group.u.numpy(), group.Jv.numpy(), atol=2e-5)
-                    jv = jacobians[1] @ velocity[1] - jacobians[0] @ velocity[0]
-                    _, replay_solver = self._make_solver(
-                        factory=factory,
-                        anchor=anchor,
-                        gravity=(0, -9.81, 0),
-                        gamma=0.0,
-                        joint_proximal_bodies=False,
-                    )
-                    for body in range(2):
-                        entry = replay_solver._entries[str(body)]
-                        physical, replay = entry.view.state(), entry.view.state()
-                        physical.body_qd.assign(initial[body : body + 1])
-                        physical.joint_qd.assign(initial[body])
-                        physical.body_f.assign(
-                            [forces[body] + (1 if body == 0 else -1) * dt * stiffness * jacobians[body].T @ jv]
-                        )
-                        if backend == "vbd":
-                            entry.solver.coupling_notify_input_state_update(physical, newton.StateFlags.BODY, dt=0.0)
-                        entry.solver.step(physical, replay, None, None, dt)
-                        np.testing.assert_allclose(velocity[body], replay.body_qd.numpy()[0], atol=4e-5, rtol=3e-5)
-                        np.testing.assert_allclose(out.body_q.numpy()[body], replay.body_q.numpy()[0], atol=2e-6)
-                    if reference is None:
-                        reference = velocity
-                    else:
-                        np.testing.assert_allclose(velocity, reference, atol=4e-5, rtol=3e-5)
+                    if backend == "vbd":
+                        entry.solver.coupling_notify_input_state_update(physical, newton.StateFlags.BODY, dt=0.0)
+                    entry.solver.step(physical, replay, None, None, dt)
+                    np.testing.assert_allclose(velocity[body], replay.body_qd.numpy()[0], atol=4e-5, rtol=3e-5)
+                    np.testing.assert_allclose(out.body_q.numpy()[body], replay.body_q.numpy()[0], atol=2e-6)
 
     def test_gamma_preserves_native_fixed_point_without_all_proxies(self):
         """Cancel gamma for spinning anisotropic bodies with optional proxy destinations."""
@@ -289,11 +285,8 @@ class TestAdmmJointProximal(unittest.TestCase):
 
     def test_gamma_preserves_articulated_fixed_point(self):
         """Match gamma and proxies to the plain answer on moving fixed and floating chains."""
-        # Each backend uses a rho at which it converges in a few dozen coupling iterations.
-        factories = {
-            "featherstone": (SolverFeatherstone, 1.0),
-            "mujoco": (lambda view: SolverMuJoCo(view, use_mujoco_cpu=True, integrator="euler"), 0.1),
-        }
+        # The backend-specific fixed point is covered by test_proxies_preserve_native_fixed_point.
+        factories = {"featherstone": (SolverFeatherstone, 1.0)}
         for backend, (factory, rho) in factories.items():
             for floating in (False, True):
                 reference = None
