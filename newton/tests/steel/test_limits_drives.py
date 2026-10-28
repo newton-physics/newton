@@ -19,7 +19,11 @@ from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
+    ROW_SLOTS_ATOMIC,
+    ROW_SLOTS_COUNT,
+    ROW_SLOTS_WRITE,
     allocate_joint_velocity_limit_slots,
+    allocate_physx_drive_slots,
     allocate_rigid_velocity_limit_slots,
     build_joint_limit_rows,
     prescale_joint_velocity_limits,
@@ -61,10 +65,23 @@ def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: flo
         wp.zeros((1, max_constraints), dtype=wp.float32, device=device),
     ]
     if scalar_builder:
-        wp.launch(build_joint_limit_rows, dim=1, inputs=[*inputs, 1], outputs=outputs, device=device)
+        wp.launch(
+            build_joint_limit_rows,
+            dim=1,
+            inputs=[*inputs, 1],
+            outputs=[*outputs, ROW_SLOTS_ATOMIC, wp.zeros(1, dtype=wp.int32, device=device)],
+            device=device,
+        )
     else:
         kernel = _get_joint_limit_warp_kernel(1, wp.get_device(device).arch, 1)
-        wp.launch_tiled(kernel, dim=[1], inputs=[1, *inputs], outputs=outputs, block_dim=32, device=device)
+        wp.launch_tiled(
+            kernel,
+            dim=[1],
+            inputs=[1, *inputs],
+            outputs=[*outputs, ROW_SLOTS_ATOMIC, wp.zeros(1, dtype=wp.int32, device=device)],
+            block_dim=32,
+            device=device,
+        )
     count = int(world_slot_counter.numpy()[0])
     return J_group.numpy()[0, :count, 0].tolist(), world_phi.numpy()[0, :count].tolist()
 
@@ -344,13 +361,16 @@ def _run_layout_trajectory(device, response, iterations):
         solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
         dense_count = int(solver._constraint_count.numpy()[0])
         mf_count = int(solver._mf_constraint_count.numpy()[0])
+        propagation_count = int(solver._propagation_constraint_count.numpy()[0])
         samples.append(
             {
                 "dense_count": dense_count,
                 "row_type": solver._row_type.numpy()[0, :dense_count].copy(),
                 "impulses": solver._impulses.numpy()[0, :dense_count].copy(),
                 "mf_row_type": solver._mf_row_type.numpy()[0, :mf_count].copy(),
-                "propagation_count": int(solver._propagation_constraint_count.numpy()[0]),
+                "mf_impulses": solver._mf_impulses.numpy()[0, :mf_count].copy(),
+                "propagation_count": propagation_count,
+                "propagation_impulses": solver._propagation_impulses.numpy()[0, :propagation_count].copy(),
                 "joint_q": state_1.joint_q.numpy().copy(),
                 "joint_qd": state_1.joint_qd.numpy().copy(),
             }
@@ -359,48 +379,41 @@ def _run_layout_trajectory(device, response, iterations):
     return samples
 
 
-def test_fused_propagation_matches_phased_trajectory(test, device):
-    """Solve every row family in the propagation schedule; the fused kernel matches the phased launches.
+def test_propagation_solves_every_row_family(test, device):
+    """Solve every row family in the propagation schedule and route every contact to propagation rows.
 
     Each propagation iteration solves the dense joint-limit rows, the contact rows, the
     propagation rows and their tree propagation, then the velocity-limit rows. The scene's
-    articulated link (on its limit, against the ground) and free body (with velocity limits)
-    do not interact, so the separately launched phases and the fused kernel, which keeps the
-    free body's contacts on free-body rows, must give the same trajectory. A single iteration
-    pins the order of the row families within an iteration.
+    articulated link sits on its limit against the ground and its free body has velocity limits.
     """
-    for iterations in (1, 8):
-        with test.subTest(iterations=iterations):
-            _check_fused_matches_phased(test, device, iterations)
-
-
-def _check_fused_matches_phased(test, device, iterations):
-    phased = _run_layout_trajectory(device, "propagation", iterations)
-    fused = _run_layout_trajectory(device, "propagation_fused", iterations)
-    for step, (expected, observed) in enumerate(zip(phased, fused, strict=True)):
-        for label, sample in (("propagation", expected), ("propagation_fused", observed)):
-            with test.subTest(step=step, response=label):
-                types = sample["row_type"]
-                # Dense rows hold only the joint rows; every contact touching the link is a propagation row.
-                test.assertGreater(int(np.sum(types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)), 0)
-                test.assertTrue(
-                    np.all(
-                        (types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT) | (types == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)
+    for response in ("propagation", "propagation_colored"):
+        for iterations in (1, 8):
+            with test.subTest(response=response, iterations=iterations):
+                samples = _run_layout_trajectory(device, response, iterations)
+                for step, sample in enumerate(samples):
+                    types = sample["row_type"]
+                    # Dense rows hold only the joint rows; every contact touching the link is a propagation row.
+                    test.assertGreater(int(np.sum(types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)), 0, f"step {step}")
+                    test.assertTrue(
+                        np.all(
+                            (types == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
+                            | (types == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)
+                        )
                     )
-                )
-                test.assertGreater(sample["propagation_count"], 0)
-                test.assertGreater(int(np.sum(sample["mf_row_type"] == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)), 0)
-        np.testing.assert_array_equal(observed["row_type"], expected["row_type"], err_msg=f"step {step}")
-        # The free body's contacts are propagation rows in the phased response and free-body rows when fused.
-        test.assertEqual(int(np.sum(expected["mf_row_type"] == PGS_CONSTRAINT_TYPE_CONTACT)), 0)
-        test.assertGreater(int(np.sum(observed["mf_row_type"] == PGS_CONSTRAINT_TYPE_CONTACT)), 0)
-        # The fused kernel solves the free body's contacts as free-body rows, which rounds differently.
-        for label in ("impulses", "joint_q", "joint_qd"):
-            np.testing.assert_allclose(
-                observed[label], expected[label], rtol=1.0e-5, atol=1.0e-5, err_msg=f"{label} differed at step {step}"
-            )
-    limit_rows = np.flatnonzero(phased[0]["row_type"] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
-    test.assertGreater(float(np.max(np.abs(phased[0]["impulses"][limit_rows]))), 0.0)
+                    test.assertGreater(sample["propagation_count"], 0)
+                    test.assertGreater(
+                        int(np.sum(sample["mf_row_type"] == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT)), 0
+                    )
+                    # The free body's contacts are propagation rows too.
+                    test.assertEqual(int(np.sum(sample["mf_row_type"] == PGS_CONSTRAINT_TYPE_CONTACT)), 0)
+                limit_rows = np.flatnonzero(samples[0]["row_type"] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
+                test.assertGreater(float(np.max(np.abs(samples[0]["impulses"][limit_rows]))), 0.0)
+                # The propagation and velocity-limit solves apply impulses too.
+                test.assertGreater(max(float(np.max(np.abs(s["propagation_impulses"]))) for s in samples), 0.0)
+                velocity_limit_impulses = [
+                    s["mf_impulses"][s["mf_row_type"] == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT] for s in samples
+                ]
+                test.assertGreater(max(float(np.max(np.abs(i))) for i in velocity_limit_impulses), 0.0)
 
 
 class TestSteelJointLimitActivationGap(unittest.TestCase):
@@ -429,7 +442,7 @@ for _name, _func in (
         "test_default_finite_limits_keep_rows_and_warn_at_capacity",
         test_default_finite_limits_keep_rows_and_warn_at_capacity,
     ),
-    ("test_fused_propagation_matches_phased_trajectory", test_fused_propagation_matches_phased_trajectory),
+    ("test_propagation_solves_every_row_family", test_propagation_solves_every_row_family),
 ):
     add_function_test(TestSteelJointLimitActivationGap, _name, _func, devices=devices)
 
@@ -516,7 +529,7 @@ def test_warp_builder_matches_reference_row_order_and_values(test, device, scala
             build_joint_limit_rows,
             dim=articulation_count,
             inputs=[*inputs, size],
-            outputs=list(outputs),
+            outputs=[*outputs, ROW_SLOTS_ATOMIC, wp.zeros(1, dtype=wp.int32, device=device)],
             device=device,
         )
     else:
@@ -526,7 +539,7 @@ def test_warp_builder_matches_reference_row_order_and_values(test, device, scala
             kernel,
             dim=[(articulation_count + warps_per_block - 1) // warps_per_block],
             inputs=[articulation_count, *inputs],
-            outputs=list(outputs),
+            outputs=[*outputs, ROW_SLOTS_ATOMIC, wp.zeros(1, dtype=wp.int32, device=device)],
             block_dim=32 * warps_per_block,
             device=device,
         )
@@ -605,7 +618,13 @@ def _allocated_joint_velocity_slots(device, qd: float, *, fraction: float, qdot_
             8,
             wp.ones(1, dtype=wp.int32, device=device),
         ],
-        outputs=[velocity_limit_slot, velocity_limit_sign, world_slot_counter],
+        outputs=[
+            velocity_limit_slot,
+            velocity_limit_sign,
+            world_slot_counter,
+            ROW_SLOTS_ATOMIC,
+            wp.zeros(1, dtype=wp.int32, device=device),
+        ],
         device=device,
     )
     return (
@@ -637,7 +656,13 @@ def _allocated_rigid_velocity_slots(device, qd6, *, fraction: float, lin_limit: 
             64,
             wp.ones(1, dtype=wp.int32, device=device),
         ],
-        outputs=[rigid_velocity_limit_slot, rigid_velocity_limit_sign, mf_slot_counter],
+        outputs=[
+            rigid_velocity_limit_slot,
+            rigid_velocity_limit_sign,
+            mf_slot_counter,
+            ROW_SLOTS_ATOMIC,
+            wp.zeros(1, dtype=wp.int32, device=device),
+        ],
         device=device,
     )
     return (
@@ -1091,6 +1116,46 @@ def test_pgs_drive_impulse_is_clamped_to_the_effort_limit(test, device):
     test.assertGreater(float(np.max(np.abs(drive_force))), 0.99 * effort_limit)
 
 
+def test_count_pass_assigns_no_drive_slot_above_the_sentinel(test, device):
+    """Leave a drive slot unassigned on the COUNT pass even when the row capacity exceeds the pass's sentinel."""
+    max_constraints = (1 << 30) + 1
+
+    def ints(values):
+        return wp.array(values, dtype=wp.int32, device=device)
+
+    # (drive_slot, world_slot_counter, element_row_cursor) after one driven prismatic DOF.
+    expected = {
+        int(ROW_SLOTS_ATOMIC): ([0], [1], [0]),
+        int(ROW_SLOTS_COUNT): ([-1], [0], [1]),
+        int(ROW_SLOTS_WRITE): ([0], [0], [1]),
+    }
+    for mode, result in expected.items():
+        drive_slot, world_slot_counter, element_row_cursor = ints([-7]), ints([0]), ints([0])
+        wp.launch(
+            allocate_physx_drive_slots,
+            dim=1,
+            inputs=[
+                ints([0, 1]),
+                ints([0]),
+                ints([1]),
+                ints([int(JointType.PRISMATIC)]),
+                ints([0]),
+                wp.array([[1, 0]], dtype=wp.int32, device=device),
+                wp.array([1.0], dtype=wp.float32, device=device),
+                wp.array([0.0], dtype=wp.float32, device=device),
+                ints([0]),
+                max_constraints,
+            ],
+            outputs=[drive_slot, world_slot_counter, mode, element_row_cursor],
+            device=device,
+        )
+        with test.subTest(mode=mode):
+            test.assertEqual(
+                (drive_slot.numpy().tolist(), world_slot_counter.numpy().tolist(), element_row_cursor.numpy().tolist()),
+                result,
+            )
+
+
 def test_saturated_pgs_drive_differs_from_the_augmented_drive(test, device):
     """Differ from the implicit drive when the effort limit saturates, at any iteration count.
 
@@ -1331,6 +1396,12 @@ for _name, _func in (
     ("test_streamed_drive_metadata_matches_resident", test_streamed_drive_metadata_matches_resident),
 ):
     add_function_test(TestSteelPGSDrives, _name, _func, devices=devices)
+add_function_test(
+    TestSteelPGSDrives,
+    "test_count_pass_assigns_no_drive_slot_above_the_sentinel",
+    test_count_pass_assigns_no_drive_slot_above_the_sentinel,
+    devices=split_devices,
+)
 
 
 _HAS_DRIVE_ROWS = "drive_mode" in inspect.signature(SolverSteel.__init__).parameters
@@ -1915,13 +1986,10 @@ class TestSteelJointFriction(unittest.TestCase):
             {"drive_mode": "rows"},
             {"articulated_contact_response": "propagation"},
             {"articulated_contact_response": "propagation_colored"},
-            {"articulated_contact_response": "propagation_fused"},
         )
         for kwargs in options:
             with self.subTest(**kwargs):
                 solver = _friction_solver(model, **kwargs)
-                if kwargs.get("articulated_contact_response") == "propagation_fused":
-                    self.assertTrue(solver._propagation_fused)
                 if kwargs.get("articulated_contact_response") == "propagation_colored":
                     self.assertTrue(solver._propagation_colored)
                 states, control = [model.state(), model.state()], model.control()

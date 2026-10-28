@@ -3,6 +3,7 @@
 
 import gc
 import itertools
+import math
 import unittest
 import warnings
 from collections import Counter
@@ -1927,6 +1928,158 @@ class TestRigidContactNormal(unittest.TestCase):
     pass
 
 
+def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
+    """Collide each probe kind against each target at known gaps; return (probe, target, placement, gap, separation)
+    per contact and the list of cases.
+
+    The box, convex hull and triangle mesh targets share one box shape. A ``("face", gap)`` placement puts the probe
+    ``gap`` from its +y face; an ``("edge", gap)`` placement puts it ``gap`` from its +x/+y edge along the diagonal,
+    where the AABBs overlap even beyond the summed contact gap, so the narrow phase decides whether the pair is
+    admitted. A ``"heightfield"`` target is a flat heightfield with the probe ``gap`` above it (face placements only),
+    the capsule lying flat on it.
+    """
+    with wp.ScopedDevice(device):
+        half = (0.05, 0.01, 0.05)
+        hull = newton.Mesh.create_box(*half, duplicate_vertices=False, compute_inertia=False)
+        flat = newton.Heightfield(
+            data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=0.1, hy=0.1, min_z=0.0, max_z=0.0
+        )
+        lying = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * math.pi)  # capsule axis along y
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.rigid_gap = rigid_gap
+        cases = []
+        for i, (probe, target, (placement, gap)) in enumerate(itertools.product(probes, targets, placements)):
+            x = 0.25 * i
+            radius = 0.01
+            on_heightfield = target == "heightfield"
+            rotation = lying if on_heightfield else wp.quat_identity()
+            body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0), rotation))
+            if probe == "sphere":
+                builder.add_shape_sphere(body, radius=radius)
+            else:
+                builder.add_shape_capsule(body, radius=radius, half_height=0.02)
+            if on_heightfield:
+                # shift the heightfield (0.05 m cells, split along a diagonal) so the sphere's lowest point is at the
+                # incenter of a triangle, 14.6 mm from its edges: no neighbouring triangle is within the summed gap
+                inset = 0.05 * (1.0 - math.sqrt(0.5))
+                offset = wp.vec3(inset, 0.05 - inset, -(radius + gap))
+            elif placement == "face":
+                offset = wp.vec3(0.0, -(radius + gap + half[1]), 0.0)
+            else:
+                diagonal = (radius + gap) / math.sqrt(2.0)
+                offset = wp.vec3(-(diagonal + half[0]), -(diagonal + half[1]), 0.0)
+            xform = wp.transform(wp.vec3(x, 0.0, 0.0) + offset, wp.quat_identity())
+            if on_heightfield:
+                builder.add_shape_heightfield(xform=xform, heightfield=flat)
+            else:
+                other = builder.add_body(xform=xform)
+                if target == "box":
+                    builder.add_shape_box(other, hx=half[0], hy=half[1], hz=half[2])
+                elif target == "hull":
+                    builder.add_shape_convex_hull(other, mesh=hull)
+                else:
+                    builder.add_shape_mesh(other, mesh=hull)
+            cases.append((probe, target, placement, gap))
+        with warnings.catch_warnings():
+            # the builder warns for any two heightfields, even static ones that never need to collide
+            warnings.filterwarnings(
+                "ignore", "Heightfield-vs-heightfield collision is not supported", newton.exceptions.NewtonWarning
+            )
+            model = builder.finalize()
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        distance = wp.empty(contacts.rigid_contact_max, dtype=float)
+        newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
+
+        n = int(contacts.rigid_contact_count.numpy()[0])
+        shape0 = contacts.rigid_contact_shape0.numpy()[:n]
+        shape1 = contacts.rigid_contact_shape1.numpy()[:n]
+        # each case adds exactly two shapes, the probe then its target, so shape // 2 is the case index
+        rows = [
+            (*cases[min(shape0[k], shape1[k]) // 2], float(separation))
+            for k, separation in enumerate(distance.numpy()[:n])
+        ]
+        return rows, cases
+
+
+def test_rounded_convex_contact_separation(test, device):
+    """Report the true surface separation for spheres and capsules against a box, a convex hull and a triangle mesh.
+
+    The GJK/MPR path shrinks a sphere or capsule to its core plus a small inflation radius and restores the rest of
+    the radius afterwards, so the written separation must equal the geometric surface gap. Each probe sits at a known
+    gap from a box face, and from a convex hull and a triangle mesh of the same box: deep enough that its core
+    overlaps the target (MPR), penetrating, touching, and separated within the contact gap. Off a box edge, a probe
+    just inside the summed contact gap must be admitted and one just beyond it rejected. The tolerance is far below
+    the inflation radius, so restoring the whole radius instead of the remainder fails. A sphere-only model runs the
+    lean post-processor (``post_process_minkowski_only``); a capsule selects the full one.
+    """
+    rigid_gap = 0.002
+    summed_gap = 2.0 * rigid_gap
+    outside = ("edge", summed_gap + 5.0e-5)
+    placements = (
+        ("face", -1.05e-2),  # 0.6 mm of core overlap for the 10 mm probe radius
+        ("face", -2.0e-4),
+        ("face", 0.0),
+        ("face", 3.0e-4),
+        ("edge", summed_gap - 1.0e-4),
+        outside,
+    )
+    solids = (("box", "hull"), placements)
+    surface = (("mesh",), placements[1:])  # a triangle mesh has no interior to hold the deep probe's centre
+    for probes, (targets, at) in itertools.product((("sphere",), ("sphere", "capsule")), (solids, surface)):
+        with test.subTest(probes=probes, targets=targets):
+            rows, cases = _rounded_convex_separations(probes, at, device, rigid_gap, targets)
+            for probe, target, placement, gap, separation in rows:
+                msg = f"{probe} vs {target} {placement} at gap {gap}"
+                test.assertNotEqual((placement, gap), outside, f"{msg}: admitted beyond the summed contact gap")
+                # MPR's own error reaches about 2 um (a sphere deep in the hull): a tenth of the inflation radius
+                # still separates it from the radius-restore error
+                test.assertAlmostEqual(separation, gap, delta=1.0e-5, msg=msg)
+            seen = {row[:4] for row in rows}
+            test.assertEqual(seen, {case for case in cases if case[2:] != outside}, "every admitted probe must contact")
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_rounded_convex_contact_separation",
+    test_rounded_convex_contact_separation,
+    devices=get_test_devices(),
+)
+
+
+def test_rounded_heightfield_contact_separation(test, device):
+    """Report the true surface separation for spheres and capsules on heightfield triangles.
+
+    The same GJK/MPR radius restore as against convex shapes: a sphere and a capsule lying flat sit penetrating,
+    touching, and separated within and beyond the summed contact gap above a flat heightfield.
+    Every admitted contact must report the geometric gap to well below the inflation radius, and the probe beyond
+    the summed gap must be rejected.
+    """
+    rigid_gap = 0.002
+    summed_gap = 2.0 * rigid_gap
+    outside = ("face", summed_gap + 5.0e-5)
+    placements = (("face", -2.0e-4), ("face", 0.0), ("face", 3.0e-4), ("face", summed_gap - 1.0e-4), outside)
+    rows, cases = _rounded_convex_separations(("sphere", "capsule"), placements, device, rigid_gap, ("heightfield",))
+    for probe, target, placement, gap, separation in rows:
+        msg = f"{probe} vs {target} at gap {gap}"
+        test.assertNotEqual((placement, gap), outside, f"{msg}: admitted beyond the summed contact gap")
+        # MPR lands about 13 um short on one penetrating capsule-triangle pair (with or without this fix); still a
+        # fifth of the inflation radius
+        test.assertAlmostEqual(separation, gap, delta=2.0e-5, msg=msg)
+    seen = {row[:4] for row in rows}
+    test.assertEqual(seen, {case for case in cases if case[2:] != outside}, "every admitted probe must contact")
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_rounded_heightfield_contact_separation",
+    test_rounded_heightfield_contact_separation,
+    devices=get_test_devices(),
+)
+
+
 def test_rigid_contact_normal_sphere_sphere(test, device, broad_phase: str):
     """Verify rigid_contact_normal on four sphere-pair scenarios.
 
@@ -3562,6 +3715,7 @@ class TestCurvedPrimitiveSDFExclusion(unittest.TestCase):
 
 class TestPlanarSDFOptIn(unittest.TestCase):
     def test_default_box_does_not_build_general_sdf(self):
+        """Keep default boxes on the analytic path without SDF edge data."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
         box = builder.add_shape_box(body=body, hx=0.5, hy=0.5, hz=0.5)
@@ -3569,7 +3723,7 @@ class TestPlanarSDFOptIn(unittest.TestCase):
         model = builder.finalize()
 
         self.assertEqual(int(model._shape_sdf_index.numpy()[box]), -1)
-        self.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 0)
+        self.assertEqual(int(model._shape_edge_range.numpy()[box][1]), 0)
 
     def test_default_convex_hull_does_not_build_general_sdf(self):
         builder = newton.ModelBuilder()
@@ -3874,7 +4028,7 @@ def test_deferred_convex_sdf_edges_use_deduplicated_topology(test, device):
 
     model = builder.finalize(device=device)
 
-    test.assertGreater(int(model.shape_edge_range.numpy()[shape][1]), 0)
+    test.assertGreater(int(model._shape_edge_range.numpy()[shape][1]), 0)
     test.assertEqual(model._mesh_keep_alive[0].points.shape[0], 8)
 
 
@@ -3990,7 +4144,7 @@ def test_mesh_box_with_sdf_routes_to_sdf_contact(test, device):
 
     model = builder.finalize(device=device)
     test.assertGreaterEqual(int(model._shape_sdf_index.numpy()[box]), 0)
-    test.assertEqual(int(model.shape_edge_range.numpy()[box][1]), 12)
+    test.assertEqual(int(model._shape_edge_range.numpy()[box][1]), 12)
 
     pipeline = newton.CollisionPipeline(model, broad_phase="sap", rigid_contact_max=256)
     contacts = pipeline.contacts()
@@ -4506,7 +4660,7 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
         builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25)
 
     replicated_builder = newton.ModelBuilder()
-    replicated_builder.replicate(builder, world_count=768)
+    replicated_builder.replicate(builder, copy_count=768)
     model = replicated_builder.finalize(device=device)
     split = newton.CollisionPipeline(
         model,
@@ -4875,15 +5029,15 @@ def test_packed_mesh_edges_use_mesh_coordinates(test, device):
     model = builder.finalize(device=device)
 
     # Ownership code zero allows both endpoints, as edges read from the mesh do.
-    edges = model.mesh_edge_indices.numpy()
+    edges = model._mesh_edge_indices.numpy()
     vertices = np.asarray(cube.vertices, dtype=np.float32)
     edge_v0, edge_v1 = vertices[edges[:, 0]], vertices[edges[:, 1]]
     halves = (edge_v1 - edge_v0) * 0.5
     radii = np.linalg.norm(halves, axis=1, keepdims=True)
     centers = np.concatenate(((edge_v0 + edge_v1) * 0.5, radii), axis=1)
     halves = np.concatenate((halves, np.zeros_like(radii)), axis=1)
-    np.testing.assert_allclose(model.mesh_edge_centers.numpy(), centers, rtol=1e-6)
-    np.testing.assert_allclose(model.mesh_edge_halves.numpy()[:, :3], halves[:, :3], rtol=1e-6)
+    np.testing.assert_allclose(model._mesh_edge_centers.numpy(), centers, rtol=1e-6)
+    np.testing.assert_allclose(model._mesh_edge_halves.numpy()[:, :3], halves[:, :3], rtol=1e-6)
 
     class PackedEdgeNarrowPhase(NarrowPhase):
         def __init__(self, wrapped, edge_centers, edge_halves):
