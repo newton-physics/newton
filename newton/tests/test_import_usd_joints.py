@@ -15,7 +15,7 @@ from newton._src.solvers.mujoco.constants import (
     SOLREF_MODE_MJCF_DEFAULT,
     SOLREF_MODE_RAW,
 )
-from newton.exceptions import NewtonDeprecationWarning
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
 from newton.usd import SchemaResolverNewton, SchemaResolverPhysx
@@ -1331,7 +1331,7 @@ def Xform "Articulation" (
 
         Negating every axis reverses the joint motion only when the DOF motions commute:
         translations alone, or one rotation with translations along its axis. Other swapped
-        joints keep their authored axes, which is deprecated.
+        joints keep their authored axes and warn.
         """
         from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -1392,8 +1392,7 @@ def Xform "Articulation" (
                         self.assertAlmostEqual(builder.joint_limit_lower[dof], -1.0 * scale, places=6)
                         self.assertAlmostEqual(builder.joint_limit_upper[dof], 2.0 * scale, places=6)
 
-            # Other joints keep their authored axes and warn that this is deprecated, even when
-            # every axis is free.
+            # Newton cannot reverse other joints. They keep their authored axes and warn.
             free = (-math.inf, math.inf)
             for merged in (False, True):
                 for axes, limits in (
@@ -1403,9 +1402,7 @@ def Xform "Articulation" (
                 ):
                     with self.subTest(merged=merged, axes=axes, body1=body1, limits=limits):
                         builder = newton.ModelBuilder()
-                        with self.assertWarnsRegex(
-                            NewtonDeprecationWarning, "physics:body1 is not an imported rigid body"
-                        ):
+                        with self.assertWarnsRegex(NewtonWarning, "physics:body1 is not an imported rigid body"):
                             builder.add_usd(create_stage(axes, merged, body1, limits))
                         self.assertEqual(builder.joint_type, [newton.JointType.D6])
                         self.assertEqual(builder.joint_parent, [-1])

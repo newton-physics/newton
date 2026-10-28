@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..exceptions import NewtonWarning
 from ..sim.builder import ModelBuilder
 from ..sim.enums import JointTargetMode
 from ..sim.model import Model
@@ -98,18 +98,18 @@ def _can_reverse_joint_axes(
 
 
 def _warn_irreversible_joint(description: str) -> None:
-    """Warn that a swapped joint keeps its authored axes, which is deprecated.
+    """Warn that a swapped joint keeps its authored axes because Newton cannot reverse it.
 
     Args:
         description: The joint prim path, or the merged joint prim paths.
     """
     warnings.warn(
-        f"Importing {description} with its authored axes is deprecated and will raise an error in a future "
-        "release. Newton reverses a joint whose physics:body1 is not an imported rigid body, but it can only "
-        "reverse a joint with no rotational axis, or one rotational axis with every translational axis "
-        "parallel to it. The limits, drives, and initial state of this joint may act in the mirrored "
-        "direction. Author the joint with the rigid body as physics:body1 instead.",
-        NewtonDeprecationWarning,
+        f"Newton cannot reverse {description}, so it keeps the authored axes. Newton reverses a joint whose "
+        "physics:body1 is not an imported rigid body, but it can only reverse a joint with no rotational axis, "
+        "or one rotational axis with every translational axis parallel to it. Any limits, drives, or initial "
+        "state of this joint may act in the mirrored direction. To avoid this, author the joint with the rigid "
+        "body as physics:body1.",
+        NewtonWarning,
         stacklevel=2,
     )
 
