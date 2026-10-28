@@ -594,6 +594,12 @@ def solve_tetrahedra(
     compliance = float(0.0)
     stiffness = float(0.0)
 
+    correction0 = wp.vec3(0.0)
+    correction1 = wp.vec3(0.0)
+    correction2 = wp.vec3(0.0)
+    correction3 = wp.vec3(0.0)
+    any_active = False
+
     num_terms = 2
     for term in range(0, num_terms):
         if term == 0:
@@ -635,10 +641,17 @@ def solve_tetrahedra(
             dlambda *= relaxation
             lambda_out[lambda_index] = lambda_prev + dlambda
 
-            wp.atomic_add(delta, i, w0 * dlambda * grad0)
-            wp.atomic_add(delta, j, w1 * dlambda * grad1)
-            wp.atomic_add(delta, k, w2 * dlambda * grad2)
-            wp.atomic_add(delta, l, w3 * dlambda * grad3)
+            correction0 += w0 * dlambda * grad0
+            correction1 += w1 * dlambda * grad1
+            correction2 += w2 * dlambda * grad2
+            correction3 += w3 * dlambda * grad3
+            any_active = True
+
+    if any_active:
+        wp.atomic_add(delta, i, correction0)
+        wp.atomic_add(delta, j, correction1)
+        wp.atomic_add(delta, k, correction2)
+        wp.atomic_add(delta, l, correction3)
 
     # C_Spherical
     # r_s = wp.sqrt(wp.dot(f1, f1) + wp.dot(f2, f2) + wp.dot(f3, f3))
