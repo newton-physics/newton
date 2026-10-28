@@ -310,6 +310,7 @@ class TendonStateMixin:
             self.tendon_guide_cone_seg_l = None
             self.tendon_guide_cone_seg_r = None
             self.tendon_guide_cap_ratio = None
+            self._tendon_guide_material_transfer = None
             self.tendon_total_cable = None
             return
 
@@ -345,6 +346,8 @@ class TendonStateMixin:
             self.tendon_guide_cone_seg_l = wp.full(model.tendon_guide_count, -1, dtype=wp.int32)
             self.tendon_guide_cone_seg_r = wp.full(model.tendon_guide_count, -1, dtype=wp.int32)
             self.tendon_guide_cap_ratio = wp.ones(model.tendon_guide_count, dtype=float)
+            # Per-call scratch, reset by solve_tendon_material; not trajectory history.
+            self._tendon_guide_material_transfer = wp.zeros(model.tendon_guide_count, dtype=float)
             self.tendon_total_cable = wp.zeros(model.tendon_count, dtype=float)
 
             tendon_start_np = model.tendon_start.numpy()
@@ -743,6 +746,7 @@ class TendonStateMixin:
                 0,
                 self.tendon_max_sweeps,
                 self.tendon_settle_tol,
+                self._tendon_guide_material_transfer,
             ],
             device=model.device,
         )

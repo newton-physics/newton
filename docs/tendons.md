@@ -136,9 +136,16 @@ the same routed material state as body force and positive-semidefinite local
 Hessian contributions. VBD approximates zero segment compliance with
 `1.0e-8 m/N`.
 
-XPBD applies `joint_linear_relaxation` to tendon stretch and rolling-slip
-corrections. As with other parallel XPBD constraints, the value may need
-adjustment for strongly coupled routes.
+Material sweeps first apply the roller's no-slip displacement, then project
+the adjacent span tensions into the capstan bounds. Each guide reprojects
+its net transfer, allowing later sweeps to undo excessive slip caused by
+earlier neighbor updates. A taut cable can stick inside the bounds; an
+unloaded cable does not gain grip solely from a high friction coefficient.
+
+XPBD applies `joint_linear_relaxation` to tendon stretch corrections.
+Rolling slip bounds the accumulated spin reaction and applies its change,
+including retraction when tension falls. As with other parallel XPBD
+constraints, relaxation may need adjustment for strongly coupled routes.
 
 ### Reading tension (experimental diagnostics)
 
