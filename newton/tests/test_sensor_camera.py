@@ -1936,8 +1936,8 @@ class TestSensorCameraDeformable(unittest.TestCase):
             with self.subTest(device=device):
                 model = self._mixed_builder().finalize(device=device)
                 state_a, state_b = model.state(), model.state()
-                visuals = model.deformable_visuals()
-                model.update_deformable_visuals(state_a, visuals)
+                visuals = newton.geometry.DeformableVisuals(model)
+                visuals.update(state_a)
                 moved = state_a.body_q.numpy().copy()
                 moved[:, 2] += 1
                 state_a.body_q.assign(moved)
@@ -1963,12 +1963,12 @@ class TestSensorCameraDeformable(unittest.TestCase):
                     # Warm both evaluation and rendering before capturing the full path.
                     graphs = []
                     for state in (state_a, state_b):
-                        model.update_deformable_visuals(state, visuals)
+                        visuals.update(state)
                         camera.update(
                             state, transforms, rays, depth_image=depth, albedo_image=albedo, deformable_visuals=visuals
                         )
                         with wp.ScopedCapture(device) as capture:
-                            model.update_deformable_visuals(state, visuals)
+                            visuals.update(state)
                             camera.update(
                                 state,
                                 transforms,
@@ -1994,7 +1994,7 @@ class TestSensorCameraDeformable(unittest.TestCase):
                     )
                 with self.assertRaisesRegex(ValueError, "another model"):
                     other = self._builder().finalize(device=device)
-                    camera.sync_deformable_meshes(state_a, deformable_visuals=other.deformable_visuals())
+                    camera.sync_deformable_meshes(state_a, deformable_visuals=newton.geometry.DeformableVisuals(other))
 
     def test_textures_and_checkerboard(self):
         """Sample UVs outside the unit square, and keep skin textures while another shape shows its checkerboard."""

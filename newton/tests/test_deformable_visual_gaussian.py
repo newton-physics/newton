@@ -84,9 +84,9 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         self.assertEqual(index, 0)
         self.assertEqual(model.deformable_visual_gaussian_count, 1)
         visual = model.deformable_visual_gaussians[index]
-        self.assertIsInstance(visual, newton.DeformableVisualGaussian)
+        self.assertIsInstance(visual, newton.geometry.DeformableVisualGaussian)
         self.assertIs(visual.gaussian, gaussian)
-        self.assertEqual(visual.kind, newton.DeformableVisualMesh.Kind.TETRAHEDRON)
+        self.assertEqual(visual.kind, newton.geometry.DeformableVisualMesh.Kind.TETRAHEDRON)
         self.assertEqual(visual.count, 4)
         self.assertEqual(visual.label, "soft_splats")
         self.assertEqual(visual.index, index)
@@ -443,11 +443,11 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         builder.add_usd(stage)
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.tet_poses.numpy()[0], 2.0 * np.eye(3))
-        visuals = model.deformable_visuals()
+        visuals = newton.geometry.DeformableVisuals(model)
         state = model.state()
         for stretch in (1.0, 1.5):
             state.particle_q.assign(model.particle_q.numpy() * stretch)
-            model.update_deformable_visuals(state, visuals)
+            visuals.update(state)
             transform = visuals.get_gaussian_transforms(0).numpy()[0]
             scales = visuals.get_gaussian_scales(0).numpy()[0]
             np.testing.assert_allclose(transform[:3], np.full(3, 0.2 * stretch), atol=1.0e-6)
@@ -498,8 +498,8 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                 builder.add_world(template)
                 builder.add_world(template, xform=wp.transform(wp.vec3(4, 0, 0), wp.quat_identity()))
                 model = builder.finalize()
-                visuals = model.deformable_visuals()
-                model.update_deformable_visuals(model.state(), visuals)
+                visuals = newton.geometry.DeformableVisuals(model)
+                visuals.update(model.state())
                 for i in range(2):
                     transform = visuals.get_gaussian_transforms(i).numpy()[0]
                     scales = visuals.get_gaussian_scales(i).numpy()[0]
@@ -540,8 +540,8 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         model = builder.finalize()
         state = model.state()
         state.particle_q.assign(state.particle_q.numpy() + np.array([0, 0, 0.2]))
-        expected = model.deformable_visuals()
-        model.update_deformable_visuals(state, expected)
+        expected = newton.geometry.DeformableVisuals(model)
+        expected.update(state)
 
         def camera_images(render_model, render_state):
             sensor = SensorCamera(
@@ -578,7 +578,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                 playback.load_recording()
                 restored = newton.Model(device=model.device)
                 playback.load_model(restored)
-                self.assertIsInstance(restored.deformable_visual_gaussians[0], newton.DeformableVisualGaussian)
+                self.assertIsInstance(restored.deformable_visual_gaussians[0], newton.geometry.DeformableVisualGaussian)
                 self.assertEqual(restored.deformable_visual_gaussians[0].graphics_path, "/World/Soft/Gaussian")
                 self.assertEqual(
                     [visual.gaussian.sh_color_space for visual in restored.deformable_visual_gaussians],
@@ -587,8 +587,8 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                 restored_state = restored.state()
                 playback.load_state(restored_state, 0)
                 ViewerNull().set_model(restored)
-                actual = restored.deformable_visuals()
-                restored.update_deformable_visuals(restored_state, actual)
+                actual = newton.geometry.DeformableVisuals(restored)
+                actual.update(restored_state)
                 np.testing.assert_allclose(
                     actual.gaussian_transforms.numpy(), expected.gaussian_transforms.numpy(), atol=1.0e-6
                 )
@@ -641,9 +641,9 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         )
         model = builder.finalize()
         state = model.state()
-        visuals = model.deformable_visuals()
+        visuals = newton.geometry.DeformableVisuals(model)
 
-        returned = model.update_deformable_visuals(state, visuals)
+        returned = visuals.update(state)
 
         self.assertIs(returned, visuals)
         transforms = visuals.get_gaussian_transforms(0).numpy()
@@ -670,9 +670,9 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         state = model.state()
         shear = np.array([[1.0, 0.35, 0.0], [0.0, 1.0, 0.2], [0.0, 0.0, 0.7]], dtype=np.float32)
         state.particle_q.assign(rest_particles @ shear.T)
-        visuals = model.deformable_visuals()
+        visuals = newton.geometry.DeformableVisuals(model)
 
-        model.update_deformable_visuals(state, visuals)
+        visuals.update(state)
 
         transform = visuals.get_gaussian_transforms(0).numpy()[0]
         scales = visuals.get_gaussian_scales(0).numpy()[0]
@@ -701,15 +701,15 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
         state = model.state()
         other_state = model.state()
         other_state.particle_q.assign(rest_particles * 2.0)
-        visuals = model.deformable_visuals()
-        model.update_deformable_visuals(state, visuals)
+        visuals = newton.geometry.DeformableVisuals(model)
+        visuals.update(state)
         transforms_ptr = visuals.gaussian_transforms.ptr
         scales_ptr = visuals.gaussian_scales.ptr
 
         with wp.ScopedCapture(model.device) as capture:
-            model.update_deformable_visuals(state, visuals)
+            visuals.update(state)
         with wp.ScopedCapture(model.device) as other_capture:
-            model.update_deformable_visuals(other_state, visuals)
+            visuals.update(other_state)
 
         moved = rest_particles.copy()
         moved[:, 2] += 0.4
@@ -840,8 +840,8 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         self.assertAlmostEqual(rest_depth - moved_depth, 0.4, delta=0.1)
 
         direct_depth = depth_image.numpy().copy()
-        visuals = model.deformable_visuals()
-        model.update_deformable_visuals(state, visuals)
+        visuals = newton.geometry.DeformableVisuals(model)
+        visuals.update(state)
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image, deformable_visuals=visuals)
         np.testing.assert_allclose(depth_image.numpy(), direct_depth, atol=1e-6)
 

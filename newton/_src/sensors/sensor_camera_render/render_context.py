@@ -215,6 +215,8 @@ class RenderContext:
         skin_texture_ids = self._load_texture_and_mesh_data(model, load_textures, deformable_visual_meshes)
         if has_simulation_triangles or deformable_visual_meshes:
             self._init_triangle_mesh(model, deformable_visual_meshes, skin_texture_ids)
+            if self._skinned_vertex_count:
+                self._skinned_points = self._triangle_points[self._triangle_particle_count :]
 
     @property
     def model(self) -> Model:
@@ -282,11 +284,9 @@ class RenderContext:
                 )
             if self._skinned_vertex_count:
                 if deformable_visuals is None:
-                    model._validate_deformable_visual_state(state, self._skin_batches)
+                    self._skin_batches.validate_state(state, model)
                     # The camera uses face normals, so the direct path only evaluates points.
-                    self._skin_batches.skin(
-                        state, model, self._triangle_points, out_offset=self._triangle_particle_count
-                    )
+                    self._skin_batches.skin(state, model, self._skinned_points)
                 else:
                     wp.copy(
                         self._triangle_points,
@@ -298,7 +298,7 @@ class RenderContext:
 
         if self._deformable_gaussian_entries:
             if deformable_visuals is None:
-                model._validate_deformable_visual_state(state, self._skin_batches)
+                self._skin_batches.validate_state(state, model)
             for (
                 visual,
                 gaussian_data,

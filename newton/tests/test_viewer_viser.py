@@ -507,7 +507,7 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertIsNone(self.viewer._deformable_visuals)
 
             # Supplying evaluated output must not bypass the backend limitation.
-            self.viewer.set_deformable_visuals(model.deformable_visuals())
+            self.viewer.set_deformable_visuals(newton.geometry.DeformableVisuals(model))
             with self.assertRaisesRegex(NotImplementedError, "Viser.*skinned meshes"):
                 self.viewer.log_state(state)
             self.viewer.set_deformable_visuals(None)

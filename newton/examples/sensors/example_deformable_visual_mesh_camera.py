@@ -170,7 +170,7 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
-        self.visuals = self.model.deformable_visuals()
+        self.visuals = newton.geometry.DeformableVisuals(self.model)
 
         self.viewer.set_model(self.model)
         self.viewer.set_deformable_visuals(self.visuals)
@@ -523,7 +523,7 @@ class Example:
 
     def render(self):
         # Evaluate once so the interactive viewer and camera see the same surface.
-        self.model.update_deformable_visuals(self.state_0, self.visuals)
+        self.visuals.update(self.state_0)
         self._render_camera_sensor()
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)

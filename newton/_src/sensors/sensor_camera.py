@@ -935,7 +935,8 @@ class SensorCamera:
                 raise TypeError(
                     f"deformable_visuals must be DeformableVisuals, got {type(deformable_visuals).__name__}"
                 )
-            deformable_visuals._validate_model(self._render_context.model)
+            if deformable_visuals.model is not self._render_context.model:
+                raise ValueError("DeformableVisuals was created for another model.")
             deformable_visuals.wait()
         self._render_context.update(state, deformable_visuals)
 

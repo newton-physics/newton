@@ -151,7 +151,7 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
-        self.visuals = self.model.deformable_visuals()
+        self.visuals = newton.geometry.DeformableVisuals(self.model)
         self.initial_center_height = float(np.mean(self.state_0.particle_q.numpy()[:, 2]))
 
         self.viewer.set_model(self.model)
@@ -222,7 +222,7 @@ class Example:
         self.sim_time += self.frame_dt
 
     def _render_camera(self):
-        self.model.update_deformable_visuals(self.state_0, self.visuals)
+        self.visuals.update(self.state_0)
         self.model.bvh_refit_shapes(self.state_0)
         self.model.bvh_refit_particles(self.state_0)
         self.sensor.update(

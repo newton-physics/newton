@@ -2063,13 +2063,12 @@ class ModelBuilder:
         self.tet_materials: list[tuple[float, float, float]] = []
         """Tetrahedral material rows accumulated for :attr:`Model.tet_materials`."""
 
-        # Visual meshes follow simulation state without entering physics or collision.
         self._deformable_visual_meshes: list[dict] = []
         """Raw visual-mesh specs accumulated for :attr:`Model.deformable_visual_meshes`.
         Each entry stores numpy asset data and per-vertex embedding; converted to
-        :class:`~newton.DeformableVisualMesh` objects in :meth:`finalize`."""
+        :class:`~newton.geometry.DeformableVisualMesh` objects in :meth:`finalize`."""
         self._deformable_visual_gaussians: list[dict] = []
-        """Gaussian visual specs converted to :class:`~newton.DeformableVisualGaussian`."""
+        """Gaussian visual specs converted to :class:`~newton.geometry.DeformableVisualGaussian`."""
 
         # muscles
         self.muscle_start: list[int] = []
@@ -3905,13 +3904,13 @@ class ModelBuilder:
             for copy_index in range(copy_count):
                 for spec in source_specs:
                     merged = dict(spec)
-                    parent_start = int(starts(visual_parent_kinds[spec["kind"]])[copy_index])
                     parents = np.asarray(spec["parent"], dtype=np.int32)
+                    parent_start = int(starts(visual_parent_kinds[spec["kind"]])[copy_index])
                     merged["parent"] = np.where(parents >= 0, parents + parent_start, parents)
                     if "_body_worlds" in spec:
                         merged["_body_worlds"] = np.full(len(parents), worlds[copy_index], dtype=np.int32)
                     if spec["kind"] == DeformableVisualMesh.Kind.BODY and np.any(parents < 0):
-                        # World-fixed offsets need the same placement as static shapes.
+                        # World-fixed vertices need the same placement as static shapes.
                         local = np.array(spec["local_offsets"], dtype=np.float32, copy=True)
                         if xforms[copy_index] is not None:
                             xform = np.asarray(xforms[copy_index], dtype=np.float32)
@@ -12415,540 +12414,6 @@ class ModelBuilder:
 
         self._record_volume_deformable_object(label, (start_vertex, len(self.particle_q)), (start_tet, self.tet_count))
 
-    def add_deformable_visual_mesh(
-        self,
-        vertices: list[Vec3] | np.ndarray,
-        indices: list[int] | np.ndarray,
-        *,
-        kind: DeformableVisualMesh.Kind | str,
-        tri_range: tuple[int, int] | None = None,
-        tet_range: tuple[int, int] | None = None,
-        bodies: list[int] | np.ndarray | None = None,
-        parent: list[int] | np.ndarray | None = None,
-        weights: np.ndarray | None = None,
-        uvs: list[Vec2] | np.ndarray | None = None,
-        texture: np.ndarray | str | PathLike[str] | None = None,
-        label: str | None = None,
-    ) -> int:
-        """Attach a high-resolution visual mesh to a deformable for visualization.
-
-        The visual mesh is embedded in the coarse simulation deformable and
-        skinned from the simulation state each frame; it never participates in
-        the solve or in collision. Vertices must be given in the same frame as
-        the simulation elements at bind time so the embedding lines up.
-
-        ``parent`` names the simulation element each visual vertex follows, one
-        index per vertex: a particle, a triangle or tetrahedron (with
-        ``weights``), or a body. Each :class:`~newton.DeformableVisualMesh.Kind`
-        uses exactly the arguments listed for it; passing another kind's
-        arguments raises:
-
-        - ``Kind.PARTICLE`` -- ``parent`` maps each visual vertex to one
-          simulation particle (shared or 1:1-remapped topology).
-        - ``Kind.TRIANGLE`` -- ``tri_range`` gives the owning ``[start, end)``
-          simulation triangles; each vertex is projected onto its closest owning
-          triangle in bind pose (normal offsets are dropped) and follows it by
-          barycentric weights. Pass precomputed ``parent`` / ``weights``
-          (shape [vertex_count, 3]) to skip the projection.
-        - ``Kind.TETRAHEDRON`` -- ``tet_range`` gives the owning ``[start, end)``
-          tetrahedra; each vertex stores its containing tet and four barycentric
-          weights. A vertex outside every owning tet is clamped to the nearest
-          one by centroid distance with a warning-level log; it never binds outside
-          ``tet_range``. Pass precomputed ``parent`` / ``weights``
-          (shape [vertex_count, 4]) to skip the search.
-        - ``Kind.BODY`` -- ``bodies`` lists the candidate rigid bodies (e.g. a
-          cable's segment bodies); each vertex binds to the body whose center of
-          mass is nearest, by a body-local offset. Pass ``parent`` instead to
-          choose each vertex's body yourself. Single-segment binding: seams can
-          show at segment boundaries.
-
-        Automatic ``TRIANGLE`` / ``TET`` binding uses CPU spatial queries.
-        Outside-tet vertices still search all owning tet centroids. Pass
-        precomputed ``parent`` / ``weights`` to reuse a binding or avoid setup
-        work. Barycentric weights must be nonnegative and each row must sum to
-        one. Accepted roundoff is clamped and normalized during binding.
-
-        Args:
-            vertices: Visual vertex positions [m], shape [vertex_count, 3].
-            indices: Flattened triangle indices into ``vertices``, length
-                ``tri_count * 3``.
-            kind: The embedding kind, a :class:`~newton.DeformableVisualMesh.Kind`
-                or its lowercase name (``"particle"``, ``"triangle"``,
-                ``"tetrahedron"``, ``"body"``).
-            tri_range: Owning ``[start, end)`` triangle range (``Kind.TRIANGLE``).
-            tet_range: Owning ``[start, end)`` tetrahedron range (``Kind.TETRAHEDRON``).
-            bodies: Candidate rigid body indices (``Kind.BODY``).
-            parent: Per-visual-vertex simulation element index, shape
-                [vertex_count]: the particle (``Kind.PARTICLE``), the owning
-                triangle or tetrahedron within the range (``Kind.TRIANGLE`` /
-                ``Kind.TETRAHEDRON``, with ``weights``), or the body (``Kind.BODY``).
-            weights: Precomputed barycentric weights matching ``parent``
-                (``Kind.TRIANGLE`` / ``Kind.TETRAHEDRON``).
-            uvs: Per-render-vertex texture coordinates, shape [vertex_count, 2].
-            texture: Albedo texture image array (H, W, C) or path. Requires ``uvs``.
-            label: Display label used to build a readable viewer object name.
-
-        Returns:
-            The invariant index of the new visual mesh in
-            :attr:`~newton.Model.deformable_visual_meshes`.
-
-        Raises:
-            ValueError: If geometry, drivers, or weights are invalid, binding
-                arguments do not match ``kind``, or a texture has no UVs.
-
-        .. experimental::
-
-            This API may change without a formal deprecation cycle.
-        """
-        vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
-        indices = Mesh._normalize_indices(indices)
-        vertex_count = len(vertices)
-        if vertex_count == 0 or len(indices) == 0:
-            raise ValueError("add_deformable_visual_mesh: requires non-empty vertices and indices")
-        if not np.all(np.isfinite(vertices)):
-            raise ValueError("add_deformable_visual_mesh: vertices must be finite")
-        if len(indices) % 3 != 0:
-            raise ValueError("add_deformable_visual_mesh: indices length must be a multiple of 3")
-        if int(indices.max()) >= vertex_count or int(indices.min()) < 0:
-            raise ValueError("add_deformable_visual_mesh: indices reference vertices outside the vertex array")
-
-        if uvs is not None:
-            uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2)
-            if len(uvs) != vertex_count:
-                raise ValueError("add_deformable_visual_mesh: uvs length must match the number of visual vertices")
-            if not np.all(np.isfinite(uvs)):
-                raise ValueError("add_deformable_visual_mesh: uvs must be finite")
-
-        if texture is not None and uvs is None:
-            raise ValueError("add_deformable_visual_mesh: texture requires uvs")
-
-        binding = self._prepare_deformable_visual_binding(
-            vertices,
-            kind=kind,
-            tri_range=tri_range,
-            tet_range=tet_range,
-            bodies=bodies,
-            parent=parent,
-            weights=weights,
-            operation="add_deformable_visual_mesh",
-        )
-        spec: dict = {
-            **binding,
-            "rest_vertices": vertices,
-            "indices": indices,
-            "uvs": uvs,
-            "texture": _normalize_texture_input(texture),
-            "label": label or "",
-            "body_path": None,
-            "sim_path": None,
-            "graphics_path": None,
-        }
-
-        self._deformable_visual_meshes.append(spec)
-        return len(self._deformable_visual_meshes) - 1
-
-    def add_deformable_visual_gaussian(
-        self,
-        gaussian: Gaussian,
-        *,
-        kind: DeformableVisualMesh.Kind | str,
-        tet_range: tuple[int, int],
-        parent: list[int] | np.ndarray | None = None,
-        weights: np.ndarray | None = None,
-        label: str = "",
-    ) -> int:
-        """Attach a Gaussian field to a volumetric deformable for rendering.
-
-        Gaussian centers are embedded in the owning tetrahedra. A render-only
-        Gaussian shape is created automatically; it adds no collision geometry,
-        mass, or constraints.
-
-        Add the visual in the same world scope as its driving tetrahedra,
-        before :meth:`end_world`. For replication, attach visuals to the
-        prototype before calling :meth:`replicate` or :meth:`add_world`.
-        Global drivers are supported when :attr:`current_world` is ``-1``.
-
-        Args:
-            gaussian: Rest Gaussian appearance and center positions [m].
-            kind: Binding kind. The initial implementation supports only
-                :attr:`~newton.DeformableVisualMesh.Kind.TETRAHEDRON`.
-            tet_range: Owning ``[start, end)`` tetrahedron range.
-            parent: Optional precomputed parent tetrahedron per Gaussian.
-            weights: Optional four barycentric weights per Gaussian.
-            label: Display label.
-
-        Returns:
-            Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
-
-        Raises:
-            ValueError: If the binding or Gaussian data is invalid, or the
-                driving particles do not all belong to :attr:`current_world`.
-
-        .. experimental::
-
-            This API may change without a formal deprecation cycle while
-            deformable visual support is experimental.
-        """
-        if not isinstance(gaussian, Gaussian):
-            raise TypeError(f"gaussian must be Gaussian, got {type(gaussian).__name__}")
-        if gaussian.count == 0:
-            raise ValueError("add_deformable_visual_gaussian: gaussian must contain at least one sample")
-        if not all(
-            np.all(np.isfinite(values))
-            for values in (
-                gaussian.positions,
-                gaussian.rotations,
-                gaussian.scales,
-                gaussian.opacities,
-                gaussian.sh_coeffs,
-            )
-        ):
-            raise ValueError("add_deformable_visual_gaussian: Gaussian data must be finite")
-        if np.any(gaussian.scales <= 0.0):
-            raise ValueError("add_deformable_visual_gaussian: Gaussian scales must be positive")
-
-        kind = self._resolve_deformable_visual_kind(kind, "add_deformable_visual_gaussian")
-        if kind != DeformableVisualMesh.Kind.TETRAHEDRON:
-            raise ValueError("add_deformable_visual_gaussian currently supports only kind='tetrahedron'")
-        binding = self._prepare_deformable_visual_binding(
-            gaussian.positions,
-            kind=kind,
-            tet_range=tet_range,
-            parent=parent,
-            weights=weights,
-            operation="add_deformable_visual_gaussian",
-        )
-        # The backing shape uses current_world; its drivers must have the same ownership.
-        worlds = {
-            self.particle_world[particle] for tet in np.unique(binding["parent"]) for particle in self.tet_indices[tet]
-        }
-        if worlds != {self.current_world}:
-            raise ValueError(
-                f"add_deformable_visual_gaussian: drivers belong to worlds {sorted(worlds)}, "
-                f"but current world is {self.current_world}. "
-                "Add the visual in the same world scope as its tetrahedra."
-            )
-        shape = self.add_shape_gaussian(-1, gaussian=gaussian, label=label or None)
-        self._deformable_visual_gaussians.append(
-            {
-                **binding,
-                "gaussian": gaussian,
-                "shape": shape,
-                "label": label,
-                "body_path": None,
-                "sim_path": None,
-                "graphics_path": None,
-            }
-        )
-        return len(self._deformable_visual_gaussians) - 1
-
-    def _prepare_deformable_visual_binding(
-        self,
-        points: np.ndarray,
-        *,
-        kind: DeformableVisualMesh.Kind | str,
-        tri_range: tuple[int, int] | None = None,
-        tet_range: tuple[int, int] | None = None,
-        bodies: list[int] | np.ndarray | None = None,
-        parent: list[int] | np.ndarray | None = None,
-        weights: np.ndarray | None = None,
-        operation: str,
-    ) -> dict:
-        """Build one validated binding shared by deformable visual payloads."""
-        kind = self._resolve_deformable_visual_kind(kind, operation)
-
-        mode_args = {
-            DeformableVisualMesh.Kind.PARTICLE: ("parent",),
-            DeformableVisualMesh.Kind.TRIANGLE: ("tri_range", "parent", "weights"),
-            DeformableVisualMesh.Kind.TETRAHEDRON: ("tet_range", "parent", "weights"),
-            DeformableVisualMesh.Kind.BODY: ("bodies", "parent"),
-        }
-        provided = {
-            "tri_range": tri_range,
-            "tet_range": tet_range,
-            "bodies": bodies,
-            "parent": parent,
-            "weights": weights,
-        }
-        allowed = mode_args[kind]
-        conflicting = [name for name, value in provided.items() if value is not None and name not in allowed]
-        if conflicting:
-            raise ValueError(
-                f"{operation}(kind={kind.name.lower()!r}): arguments {conflicting} do not apply to this kind"
-            )
-        if "weights" in allowed and (parent is None) != (weights is None):
-            raise ValueError(f"{operation}: parent and weights must be passed together")
-
-        point_count = len(points)
-        binding = {"kind": kind, "weights": None, "local_offsets": None}
-        if kind == DeformableVisualMesh.Kind.PARTICLE:
-            if parent is None:
-                raise ValueError(f"{operation}(kind='particle'): requires parent")
-            binding["parent"] = self._validate_visual_parent(parent, point_count, self.particle_count, "particles")
-        elif kind == DeformableVisualMesh.Kind.TRIANGLE:
-            if tri_range is None:
-                raise ValueError(f"{operation}(kind='triangle'): requires tri_range")
-            lo, hi = self._validate_visual_range(tri_range, self.tri_count, "tri_range", operation)
-            if parent is not None:
-                binding["parent"], binding["weights"] = self._validate_visual_embedding(
-                    parent, weights, point_count, (lo, hi), 3, operation
-                )
-            else:
-                binding["parent"], binding["weights"] = self._embed_visual_vertices_in_triangles(points, (lo, hi))
-        elif kind == DeformableVisualMesh.Kind.TETRAHEDRON:
-            if tet_range is None:
-                raise ValueError(f"{operation}(kind='tetrahedron'): requires tet_range")
-            lo, hi = self._validate_visual_range(tet_range, self.tet_count, "tet_range", operation)
-            if parent is not None:
-                binding["parent"], binding["weights"] = self._validate_visual_embedding(
-                    parent, weights, point_count, (lo, hi), 4, operation
-                )
-            else:
-                binding["parent"], binding["weights"] = self._embed_visual_vertices_in_tets(
-                    points, (lo, hi), operation=operation
-                )
-        else:
-            if (bodies is None) == (parent is None):
-                raise ValueError("add_deformable_visual_mesh(kind='body'): requires bodies or parent")
-            if parent is not None:
-                drivers = self._validate_visual_parent(parent, point_count, self.body_count, "bodies")
-                binding["parent"], binding["local_offsets"] = self._bind_visual_vertices_to_bodies(points, drivers)
-            else:
-                binding["parent"], binding["local_offsets"] = self._bind_visual_vertices_to_bodies(
-                    points, bodies, nearest=True
-                )
-        return binding
-
-    @staticmethod
-    def _validate_visual_parent(parent, point_count: int, element_count: int, elements: str) -> np.ndarray:
-        """Check a per-vertex driver index array against the builder's element count."""
-        drivers = Mesh._normalize_indices(parent)
-        if len(drivers) != point_count:
-            raise ValueError("add_deformable_visual_mesh: parent must have one index per visual point")
-        if int(drivers.min()) < 0 or int(drivers.max()) >= element_count:
-            raise ValueError(f"add_deformable_visual_mesh: parent references {elements} outside the current builder")
-        return drivers
-
-    @staticmethod
-    def _resolve_deformable_visual_kind(
-        kind: DeformableVisualMesh.Kind | str, operation: str
-    ) -> DeformableVisualMesh.Kind:
-        """Resolve a public binding kind with an operation-specific error."""
-        if isinstance(kind, str):
-            try:
-                kind = DeformableVisualMesh.Kind[kind.upper()]
-            except KeyError:
-                names = ", ".join(item.name.lower() for item in DeformableVisualMesh.Kind)
-                raise ValueError(f"{operation}: unknown kind {kind!r}; expected one of {names}") from None
-        return DeformableVisualMesh.Kind(kind)
-
-    def _validate_visual_range(
-        self, rng: tuple[int, int], count: int, name: str, operation: str = "add_deformable_visual_mesh"
-    ) -> tuple[int, int]:
-        """Validate a [start, end) owning-element range against a builder count."""
-        lo, hi = map(int, Mesh._normalize_indices(rng))
-        if not (0 <= lo < hi <= count):
-            raise ValueError(
-                f"{operation}: {name} [{lo}, {hi}) is not a valid non-empty range within the current {count} elements"
-            )
-        return lo, hi
-
-    @staticmethod
-    def _validate_visual_embedding(
-        parent,
-        weights,
-        point_count: int,
-        owning_range: tuple[int, int],
-        arity: int,
-        operation: str = "add_deformable_visual_mesh",
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Validate precomputed per-vertex parents and barycentric weights."""
-        parent = Mesh._normalize_indices(parent)
-        weights = np.array(weights, dtype=np.float32)
-        if len(parent) != point_count:
-            raise ValueError(f"{operation}: parent must have one index per visual point")
-        if weights.shape != (point_count, arity):
-            raise ValueError(f"{operation}: weights must have shape ({point_count}, {arity})")
-        lo, hi = owning_range
-        if int(parent.min()) < lo or int(parent.max()) >= hi:
-            raise ValueError(f"{operation}: parent indices must lie within the owning range [{lo}, {hi})")
-        if not np.all(np.isfinite(weights)) or np.any(weights < -1.0e-4):
-            raise ValueError(f"{operation}: weights must be finite and non-negative")
-        if not np.allclose(weights.sum(axis=1), 1.0, rtol=0.0, atol=1.0e-4):
-            raise ValueError(f"{operation}: barycentric weights must sum to one")
-        # Accepted roundoff must not scale translations or extrapolate points.
-        np.maximum(weights, 0.0, out=weights)
-        weights /= weights.sum(axis=1, keepdims=True)
-        return parent, weights
-
-    def _embed_visual_vertices_in_tets(
-        self,
-        vertices: np.ndarray,
-        tet_range: tuple[int, int],
-        positions: np.ndarray | None = None,
-        *,
-        operation: str = "add_deformable_visual_mesh",
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Compute the containing owning tet and barycentric weights per visual vertex.
-
-        Build-time, host-side embedding restricted to the owning ``[start, end)``
-        tet range, so a clamp can never cross deformable bodies. A vertex outside
-        every owning tet (gaps, surface overhang) is clamped to the nearest owning
-        tet by centroid distance and a warning-level log is emitted. The USD importer
-        can pass an authored bind pose through ``positions``.
-        """
-        from ..geometry.deformable_visual_binding import embed_tetrahedra  # noqa: PLC0415
-
-        lo, hi = tet_range
-        tet_idx = np.asarray(self.tet_indices, dtype=np.int64).reshape(-1, 4)[lo:hi]
-        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
-
-        v0, v1, v2, v3 = (particles[tet_idx[:, i]] for i in range(4))
-        # Columns are the tet edge vectors; bary123 = T^-1 (p - v0), bary0 = 1 - sum.
-        edge_mats = np.stack([v1 - v0, v2 - v0, v3 - v0], axis=2)
-        det = np.linalg.det(edge_mats)
-        nonsingular = np.abs(det) > 1.0e-20
-        if not np.any(nonsingular):
-            raise ValueError(f"{operation}: owning tet range contains no non-degenerate tetrahedron")
-        valid = np.flatnonzero(nonsingular)
-        corners = particles[tet_idx[valid]]
-        lower, upper = corners.min(axis=1), corners.max(axis=1)
-        # Expand bounds for the barycentric tolerance and float32 BVH rounding.
-        padding = 4.0e-6 * (upper - lower) + 1.0e-5 * (1.0 + np.maximum(np.abs(lower), np.abs(upper)))
-        bvh = wp.Bvh(
-            wp.array(lower - padding, dtype=wp.vec3, device="cpu"),
-            wp.array(upper + padding, dtype=wp.vec3, device="cpu"),
-        )
-        parent = wp.empty(len(vertices), dtype=wp.int32, device="cpu")
-        weights = wp.empty(len(vertices), dtype=wp.vec4, device="cpu")
-        outside = wp.zeros(len(vertices), dtype=wp.int32, device="cpu")
-        wp.launch(
-            embed_tetrahedra,
-            dim=len(vertices),
-            inputs=[
-                bvh.id,
-                wp.array(vertices, dtype=wp.vec3, device="cpu"),
-                wp.array(v0[valid], dtype=wp.vec3d, device="cpu"),
-                wp.array(np.linalg.inv(edge_mats[valid]), dtype=wp.mat33d, device="cpu"),
-                wp.array(corners.mean(axis=1), dtype=wp.vec3d, device="cpu"),
-                wp.array(lo + valid, dtype=wp.int32, device="cpu"),
-            ],
-            outputs=[parent, weights, outside],
-            device="cpu",
-        )
-        clamped = int(outside.numpy().sum())
-        if clamped:
-            logger.warning(
-                "%s: %d of %d visual vertices fell outside "
-                "the owning tet range and were clamped to the nearest owning tetrahedron.",
-                operation,
-                clamped,
-                len(vertices),
-            )
-        return parent.numpy().copy(), weights.numpy().copy()
-
-    def _embed_visual_vertices_in_triangles(
-        self, vertices: np.ndarray, tri_range: tuple[int, int], positions: np.ndarray | None = None
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Project each visual vertex onto its closest owning simulation triangle.
-
-        Build-time, host-side embedding restricted to the owning ``[start, end)``
-        triangle range. The barycentric coordinates of the closest point are
-        stored; the normal offset from the surface is dropped by design (the
-        skinned vertex lies on the simulation surface). The USD importer can
-        pass an authored bind pose through ``positions``.
-        """
-        from ..geometry.deformable_visual_binding import embed_triangles  # noqa: PLC0415
-
-        lo, hi = tri_range
-        tri_idx = np.asarray(self.tri_indices, dtype=np.int64).reshape(-1, 3)[lo:hi]
-        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
-        a, b, c = (particles[tri_idx[:, i]] for i in range(3))
-        ab = b - a
-        ac = c - a
-
-        d00 = np.einsum("ij,ij->i", ab, ab)
-        d01 = np.einsum("ij,ij->i", ab, ac)
-        d11 = np.einsum("ij,ij->i", ac, ac)
-        denom = d00 * d11 - d01 * d01
-        nonsingular = np.abs(denom) > 1.0e-20
-        if not np.any(nonsingular):
-            raise ValueError("add_deformable_visual_mesh: owning triangle range contains no non-degenerate triangle")
-        valid = np.flatnonzero(nonsingular)
-        mesh = wp.Mesh(
-            wp.array(particles, dtype=wp.vec3, device="cpu"),
-            wp.array(tri_idx[valid].reshape(-1), dtype=wp.int32, device="cpu"),
-        )
-        parent = wp.empty(len(vertices), dtype=wp.int32, device="cpu")
-        weights = wp.empty(len(vertices), dtype=wp.vec3, device="cpu")
-        wp.launch(
-            embed_triangles,
-            dim=len(vertices),
-            inputs=[
-                mesh.id,
-                wp.array(vertices, dtype=wp.vec3, device="cpu"),
-                wp.array(lo + valid, dtype=wp.int32, device="cpu"),
-            ],
-            outputs=[parent, weights],
-            device="cpu",
-        )
-        return parent.numpy().copy(), weights.numpy().copy()
-
-    def _bind_visual_vertices_to_bodies(
-        self,
-        vertices: np.ndarray,
-        bodies: list[int] | np.ndarray,
-        *,
-        nearest: bool = False,
-        poses: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Bind visual vertices to rigid bodies.
-
-        With ``nearest``, ``bodies`` are candidates and each vertex binds to the
-        one whose center of mass is nearest; otherwise ``bodies`` already names
-        each vertex's body. Returns ``(parent, local_offsets)`` where ``parent``
-        is the per-vertex body index and ``local_offsets`` is the bind-pose
-        visual vertex expressed in that body's frame, so skinning can
-        reconstruct the world position from the body's current pose each frame.
-        ``poses`` may provide authored reference frames in candidate-body order
-        for USD imports.
-        """
-        body_q = np.asarray(self.body_q, dtype=np.float64).reshape(-1, 7).copy()
-        if poses is not None:
-            body_q[np.asarray(bodies, dtype=np.int32)] = np.asarray(poses, dtype=np.float64).reshape(len(bodies), 7)
-        verts = np.asarray(vertices, dtype=np.float64)
-
-        def rotate(quat: np.ndarray, v: np.ndarray) -> np.ndarray:
-            t = 2.0 * np.cross(quat[:, :3], v)
-            return v + quat[:, 3:4] * t + np.cross(quat[:, :3], t)
-
-        if nearest:
-            bodies = Mesh._normalize_indices(bodies)
-            if len(bodies) == 0:
-                raise ValueError("add_deformable_visual_mesh(kind='body'): requires at least one body")
-            if int(bodies.min()) < 0 or int(bodies.max()) >= self.body_count:
-                raise ValueError("add_deformable_visual_mesh: bodies reference bodies outside the current builder")
-            # The center of mass sits inside a segment whatever its frame origin, so a rod binds
-            # each vertex to the segment around it. Temporary memory is bound by the vertex count.
-            com = body_q[bodies, :3] + rotate(body_q[bodies, 3:7], np.asarray(self.body_com, dtype=np.float64)[bodies])
-            chosen = np.zeros(len(verts), dtype=np.int32)
-            best_distance = np.full(len(verts), np.inf)
-            for index, center in enumerate(com):
-                delta = verts - center
-                distance = np.einsum("ij,ij->i", delta, delta)
-                closer = distance < best_distance  # Equal distances keep the first candidate.
-                chosen[closer] = index
-                best_distance[closer] = distance[closer]
-            parent = bodies[chosen].astype(np.int32)
-        else:
-            parent = np.asarray(bodies, dtype=np.int32)
-
-        # local_offset = conjugate(q) rotated (vertex - body_pos)
-        quat = body_q[parent, 3:7].copy()  # (x, y, z, w)
-        quat[:, :3] *= -1.0
-        local = rotate(quat, verts - body_q[parent, :3])
-        return parent, local.astype(np.float32)
-
     # incrementally updates rigid body mass with additional mass and inertia expressed at a local to the body
     def _update_body_mass(self, i: int, m: float, inertia: Mat33, p: Vec3, q: Quat):
         if i == -1:
@@ -14464,64 +13929,556 @@ class ModelBuilder:
                     f"expected final index {total_count}, found {world_start_array[-1]}."
                 )
 
+    def add_deformable_visual_mesh(
+        self,
+        vertices: list[Vec3] | np.ndarray,
+        indices: list[int] | np.ndarray,
+        *,
+        kind: DeformableVisualMesh.Kind | str,
+        parent: list[int] | np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+        tri_range: tuple[int, int] | None = None,
+        tet_range: tuple[int, int] | None = None,
+        surface: int | None = None,
+        volume: int | None = None,
+        curve: int | None = None,
+        bodies: list[int] | np.ndarray | None = None,
+        uvs: list[Vec2] | np.ndarray | None = None,
+        texture: np.ndarray | str | PathLike[str] | None = None,
+        label: str | None = None,
+    ) -> int:
+        """Store a visual triangle mesh bound to particles, triangles, tetrahedra, or rigid bodies.
+
+        Each visual vertex follows the element selected by ``parent``;
+        ``vertices`` only records the bind pose. Triangle and tetrahedron
+        bindings take the owning elements, named either by a recorded surface
+        or volume deformable object or by a raw ``tri_range``/``tet_range``,
+        and barycentric ``weights`` that must be finite, nonnegative, and sum
+        to one (accepted roundoff is normalized). Omit both ``parent`` and
+        ``weights`` for automatic binding: a triangle binding projects each
+        vertex onto the nearest non-degenerate owning triangle without keeping
+        the normal offset, and a tetrahedron binding finds the containing
+        non-degenerate owning tetrahedron, clamping an outside vertex into the
+        one with the nearest centroid and logging the count. Body bindings
+        follow one rigid body per vertex, named through ``parent`` or found by
+        nearest center of mass among ``bodies`` or a recorded curve object's
+        bodies; the bind pose is kept as body-local offsets, so separate body
+        bindings can show seams. Geometry adds no mass or collision. After
+        finalization, evaluate it with
+        :class:`~newton.geometry.DeformableVisuals`.
+
+        Args:
+            vertices: Bind-pose visual positions [m], shape [vertex_count, 3].
+            indices: Flattened triangle indices into ``vertices``.
+            kind: Particle, triangle, tetrahedron or body binding, as
+                :class:`~newton.geometry.DeformableVisualMesh.Kind` or its lowercase name.
+            parent: One global simulation element index per visual vertex, inside
+                the owning elements for triangle and tetrahedron bindings. Omit it
+                together with ``weights`` for automatic triangle or tetrahedron
+                binding. Body bindings take this, ``bodies`` or ``curve``.
+            weights: Three or four barycentric weights per vertex, for triangles
+                or tetrahedra respectively; not accepted for particle bindings.
+            tri_range: Owning [start, end) triangle range for triangle bindings
+                built without a deformable object record.
+            tet_range: Owning [start, end) tetrahedron range for tetrahedron
+                bindings built without a deformable object record.
+            surface: Index of a recorded surface deformable object (its position in
+                :attr:`surface_label`) whose triangles own a triangle binding.
+            volume: Index of a recorded volume deformable object (its position in
+                :attr:`volume_label`) whose tetrahedra own a tetrahedron binding.
+            curve: Index of a recorded curve deformable object (its position in
+                :attr:`curve_label`) whose rigid bodies are the candidates of a
+                nearest-body binding.
+            bodies: Candidate rigid bodies, such as rod segments, for a
+                nearest-center-of-mass binding; equal distances use candidate order.
+            uvs: Per-vertex texture coordinates, shape [vertex_count, 2].
+            texture: Albedo image as an array of shape (H, W, 3) or (H, W, 4), or an
+                image path that the viewer decodes. Requires uvs.
+            label: Display label, which need not be unique.
+
+        Returns:
+            Index in :attr:`Model.deformable_visual_meshes`.
+
+        Raises:
+            ValueError: If the geometry, kind, owning elements or bodies, parent
+                indices, or weights are invalid.
+
+        .. experimental::
+        """
+        vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
+        indices = Mesh._normalize_indices(indices)
+        vertex_count = len(vertices)
+        if vertex_count == 0 or len(indices) == 0:
+            raise ValueError("add_deformable_visual_mesh: requires non-empty vertices and indices")
+        if not np.all(np.isfinite(vertices)):
+            raise ValueError("add_deformable_visual_mesh: vertices must be finite")
+        Mesh._validate_indices(vertices, indices)
+        if uvs is not None:
+            uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2)
+            if len(uvs) != vertex_count or not np.all(np.isfinite(uvs)):
+                raise ValueError("add_deformable_visual_mesh: uvs must be finite and match the visual vertices")
+        if texture is not None and uvs is None:
+            raise ValueError("add_deformable_visual_mesh: texture requires uvs")
+        texture = _normalize_texture_input(texture)
+        if isinstance(texture, np.ndarray) and (
+            texture.ndim != 3 or texture.shape[2] not in (3, 4) or texture.size == 0
+        ):
+            raise ValueError("add_deformable_visual_mesh: texture arrays must have shape (H, W, 3) or (H, W, 4)")
+        binding = self._prepare_deformable_visual_binding(
+            vertices,
+            kind=kind,
+            parent=parent,
+            weights=weights,
+            tri_range=tri_range,
+            tet_range=tet_range,
+            surface=surface,
+            volume=volume,
+            curve=curve,
+            bodies=bodies,
+        )
+        self._deformable_visual_meshes.append(
+            {
+                **binding,
+                "rest_vertices": vertices,
+                "indices": indices,
+                "label": label or "",
+                "body_path": None,
+                "sim_path": None,
+                "graphics_path": None,
+                "uvs": uvs,
+                "texture": texture,
+            }
+        )
+        return len(self._deformable_visual_meshes) - 1
+
+    def add_deformable_visual_gaussian(
+        self,
+        gaussian: Gaussian,
+        *,
+        kind: DeformableVisualMesh.Kind | str,
+        tet_range: tuple[int, int],
+        parent: list[int] | np.ndarray | None = None,
+        weights: np.ndarray | None = None,
+        label: str = "",
+    ) -> int:
+        """Attach a Gaussian field to a volumetric deformable for rendering.
+
+        Gaussian centers are embedded in the owning tetrahedra. A render-only
+        Gaussian shape is created automatically; it adds no collision geometry,
+        mass, or constraints.
+
+        Add the visual in the same world scope as its driving tetrahedra,
+        before :meth:`end_world`. For replication, attach visuals to the
+        prototype before calling :meth:`replicate` or :meth:`add_world`.
+        Global drivers are supported when :attr:`current_world` is ``-1``.
+
+        Args:
+            gaussian: Rest Gaussian appearance and center positions [m].
+            kind: Binding kind. The initial implementation supports only
+                :attr:`~newton.geometry.DeformableVisualMesh.Kind.TETRAHEDRON`.
+            tet_range: Owning ``[start, end)`` tetrahedron range.
+            parent: Optional precomputed parent tetrahedron per Gaussian.
+            weights: Optional four barycentric weights per Gaussian.
+            label: Display label.
+
+        Returns:
+            Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
+
+        Raises:
+            ValueError: If the binding or Gaussian data is invalid, or the
+                driving particles do not all belong to :attr:`current_world`.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        if not isinstance(gaussian, Gaussian):
+            raise TypeError(f"gaussian must be Gaussian, got {type(gaussian).__name__}")
+        if gaussian.count == 0:
+            raise ValueError("add_deformable_visual_gaussian: gaussian must contain at least one sample")
+        if not all(
+            np.all(np.isfinite(values))
+            for values in (
+                gaussian.positions,
+                gaussian.rotations,
+                gaussian.scales,
+                gaussian.opacities,
+                gaussian.sh_coeffs,
+            )
+        ):
+            raise ValueError("add_deformable_visual_gaussian: Gaussian data must be finite")
+        if np.any(gaussian.scales <= 0.0):
+            raise ValueError("add_deformable_visual_gaussian: Gaussian scales must be positive")
+
+        kind = self._resolve_deformable_visual_kind(kind)
+        if kind != DeformableVisualMesh.Kind.TETRAHEDRON:
+            raise ValueError("add_deformable_visual_gaussian currently supports only kind='tetrahedron'")
+        binding = self._prepare_deformable_visual_binding(
+            gaussian.positions,
+            kind=kind,
+            tet_range=tet_range,
+            parent=parent,
+            weights=weights,
+        )
+        # The backing shape uses current_world; its drivers must have the same ownership.
+        worlds = {
+            self.particle_world[particle] for tet in np.unique(binding["parent"]) for particle in self.tet_indices[tet]
+        }
+        if worlds != {self.current_world}:
+            raise ValueError(
+                f"add_deformable_visual_gaussian: drivers belong to worlds {sorted(worlds)}, "
+                f"but current world is {self.current_world}. "
+                "Add the visual in the same world scope as its tetrahedra."
+            )
+        shape = self.add_shape_gaussian(-1, gaussian=gaussian, label=label or None)
+        self._deformable_visual_gaussians.append(
+            {
+                **binding,
+                "gaussian": gaussian,
+                "shape": shape,
+                "label": label,
+                "body_path": None,
+                "sim_path": None,
+                "graphics_path": None,
+            }
+        )
+        return len(self._deformable_visual_gaussians) - 1
+
+    def _prepare_deformable_visual_binding(
+        self,
+        points: np.ndarray,
+        *,
+        kind: DeformableVisualMesh.Kind | str,
+        parent=None,
+        weights=None,
+        tri_range=None,
+        tet_range=None,
+        surface=None,
+        volume=None,
+        curve=None,
+        bodies=None,
+    ) -> dict:
+        """Build one binding shared by mesh and Gaussian visuals."""
+        point_count = len(points)
+        kind = self._resolve_deformable_visual_kind(kind)
+        local_offsets = None
+        if kind == DeformableVisualMesh.Kind.BODY:
+            if any(option is not None for option in (weights, tri_range, tet_range, surface, volume)):
+                raise ValueError(
+                    "add_deformable_visual_mesh: weights, ranges, surface and volume do not apply to body bindings"
+                )
+            candidates = self._resolve_visual_body_candidates(parent, bodies, curve)
+            if parent is not None:
+                parent = self._validate_visual_parent(parent, point_count, self.body_count, "bodies")
+                parent, local_offsets = self._bind_visual_vertices_to_bodies(points, parent)
+            else:
+                parent, local_offsets = self._bind_visual_vertices_to_bodies(points, candidates, nearest=True)
+        else:
+            if bodies is not None or curve is not None:
+                raise ValueError("add_deformable_visual_mesh: bodies and curve only apply to body bindings")
+            if kind == DeformableVisualMesh.Kind.PARTICLE:
+                if any(option is not None for option in (weights, tri_range, tet_range, surface, volume)):
+                    raise ValueError(
+                        "add_deformable_visual_mesh: weights, ranges and objects do not apply to particle bindings"
+                    )
+                if parent is None:
+                    raise ValueError("add_deformable_visual_mesh: particle bindings require parent")
+                parent = self._validate_visual_parent(parent, point_count, self.particle_count, "particles")
+            else:
+                triangle = kind == DeformableVisualMesh.Kind.TRIANGLE
+                owning_range = self._resolve_visual_owning_range(triangle, tri_range, tet_range, surface, volume)
+                if parent is None and weights is None:
+                    if triangle:
+                        parent, weights = self._embed_visual_vertices_in_triangles(points, owning_range)
+                    else:
+                        parent, weights = self._embed_visual_vertices_in_tets(points, owning_range)
+                elif parent is None or weights is None:
+                    raise ValueError("add_deformable_visual_mesh: parent and weights must be passed together")
+                parent, weights = self._validate_visual_embedding(
+                    parent, weights, point_count, owning_range, 3 if triangle else 4
+                )
+        return {"kind": kind, "parent": parent, "weights": weights, "local_offsets": local_offsets}
+
+    @staticmethod
+    def _validate_visual_parent(parent, point_count: int, element_count: int, elements: str) -> np.ndarray:
+        """Check a per-vertex driver index array against the builder's element count."""
+        drivers = Mesh._normalize_indices(parent)
+        if len(drivers) != point_count:
+            raise ValueError("add_deformable_visual_mesh: parent must have one index per visual point")
+        if int(drivers.min()) < 0 or int(drivers.max()) >= element_count:
+            raise ValueError(f"add_deformable_visual_mesh: parent references {elements} outside the current builder")
+        return drivers
+
+    @staticmethod
+    def _resolve_deformable_visual_kind(kind: DeformableVisualMesh.Kind | str) -> DeformableVisualMesh.Kind:
+        """Resolve the binding kind from its enum or name."""
+        if isinstance(kind, str):
+            try:
+                kind = DeformableVisualMesh.Kind[kind.upper()]
+            except KeyError:
+                names = ", ".join(item.name.lower() for item in DeformableVisualMesh.Kind)
+                raise ValueError(
+                    f"add_deformable_visual_mesh: unknown kind {kind!r}; expected one of {names}"
+                ) from None
+        return DeformableVisualMesh.Kind(kind)
+
+    def _resolve_visual_owning_range(
+        self,
+        triangle: bool,
+        tri_range: tuple[int, int] | None,
+        tet_range: tuple[int, int] | None,
+        surface: int | None,
+        volume: int | None,
+    ) -> tuple[int, int]:
+        """Return the owning element range from a raw range or a recorded deformable object."""
+        if triangle:
+            raw, obj, others = tri_range, surface, (tet_range, volume)
+            raw_name, obj_name, count = "tri_range", "surface", self.tri_count
+            labels, starts, ends = self.surface_label, self._surface_tri_start, self._surface_tri_end
+        else:
+            raw, obj, others = tet_range, volume, (tri_range, surface)
+            raw_name, obj_name, count = "tet_range", "volume", self.tet_count
+            labels, starts, ends = self.volume_label, self._volume_tet_start, self._volume_tet_end
+        if any(option is not None for option in others):
+            raise ValueError(f"add_deformable_visual_mesh: only {raw_name} or {obj_name} applies to this binding kind")
+        if (raw is None) == (obj is None):
+            raise ValueError(f"add_deformable_visual_mesh: pass exactly one of {raw_name} or {obj_name}")
+        if obj is not None:
+            index = int(obj)
+            if index < 0 or index >= len(labels):
+                raise ValueError(
+                    f"add_deformable_visual_mesh: {obj_name} {index} is not one of the {len(labels)} recorded objects"
+                )
+            raw = (starts[index], ends[index])
+        return self._validate_visual_range(raw, count, raw_name if obj is None else obj_name)
+
+    def _validate_visual_range(self, rng: tuple[int, int], count: int, name: str) -> tuple[int, int]:
+        """Validate a [start, end) owning-element range against a builder count."""
+        lo, hi = map(int, Mesh._normalize_indices(rng))
+        if not (0 <= lo < hi <= count):
+            raise ValueError(
+                f"add_deformable_visual_mesh: {name} [{lo}, {hi}) is not a valid non-empty range within the current {count} elements"
+            )
+        return lo, hi
+
+    @staticmethod
+    def _validate_visual_embedding(
+        parent,
+        weights,
+        point_count: int,
+        owning_range: tuple[int, int],
+        arity: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Validate precomputed per-vertex parents and barycentric weights."""
+        parent = Mesh._normalize_indices(parent)
+        weights = np.array(weights, dtype=np.float32)
+        if len(parent) != point_count:
+            raise ValueError("add_deformable_visual_mesh: parent must have one index per visual point")
+        if weights.shape != (point_count, arity):
+            raise ValueError(f"add_deformable_visual_mesh: weights must have shape ({point_count}, {arity})")
+        lo, hi = owning_range
+        if int(parent.min()) < lo or int(parent.max()) >= hi:
+            raise ValueError(
+                f"add_deformable_visual_mesh: parent indices must lie within the owning range [{lo}, {hi})"
+            )
+        if not np.all(np.isfinite(weights)) or np.any(weights < -1.0e-4):
+            raise ValueError("add_deformable_visual_mesh: weights must be finite and non-negative")
+        if not np.allclose(weights.sum(axis=1), 1.0, rtol=0.0, atol=1.0e-4):
+            raise ValueError("add_deformable_visual_mesh: barycentric weights must sum to one")
+        # Accepted roundoff must not scale translations or extrapolate points.
+        np.maximum(weights, 0.0, out=weights)
+        weights /= weights.sum(axis=1, keepdims=True)
+        return parent, weights
+
+    def _resolve_visual_body_candidates(self, parent, bodies, curve) -> np.ndarray | None:
+        """Return the candidate bodies of a body binding, or None when ``parent`` names them directly."""
+        if sum(option is not None for option in (parent, bodies, curve)) != 1:
+            raise ValueError("add_deformable_visual_mesh: body bindings take exactly one of parent, bodies, or curve")
+        if curve is None:
+            return bodies
+        index = int(curve)
+        if index < 0 or index >= len(self.curve_label):
+            raise ValueError(
+                f"add_deformable_visual_mesh: curve {index} is not one of the {len(self.curve_label)} recorded objects"
+            )
+        return np.arange(self._curve_body_start[index], self._curve_body_end[index], dtype=np.int32)
+
+    def _bind_visual_vertices_to_bodies(
+        self, vertices: np.ndarray, bodies: np.ndarray, *, nearest: bool = False, poses: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Bind visual vertices to rigid bodies.
+
+        With ``nearest``, ``bodies`` are candidates and each vertex binds to the
+        one whose center of mass is nearest; otherwise ``bodies`` already names
+        each vertex's body. Returns ``(parent, local_offsets)`` where ``parent``
+        is the per-vertex body index and ``local_offsets`` is the bind-pose
+        visual vertex expressed in that body's frame, so skinning can
+        reconstruct the world position from the body's current pose each frame.
+        """
+        body_q = np.asarray(self.body_q, dtype=np.float64).reshape(-1, 7)
+        if poses is not None:
+            body_q = body_q.copy()
+            body_q[np.asarray(bodies, dtype=np.int32)] = np.asarray(poses, dtype=np.float64).reshape(len(bodies), 7)
+        verts = np.asarray(vertices, dtype=np.float64)
+
+        if nearest:
+            bodies = Mesh._normalize_indices(bodies)
+            if len(bodies) == 0:
+                raise ValueError("add_deformable_visual_mesh(kind='body'): requires at least one body")
+            if int(bodies.min()) < 0 or int(bodies.max()) >= self.body_count:
+                raise ValueError("add_deformable_visual_mesh: bodies reference bodies outside the current builder")
+            # The center of mass sits inside a segment whatever its frame origin, so a rod binds
+            # each vertex to the segment around it. Temporary memory is bound by the vertex count.
+            com = body_q[bodies, :3] + quat_rotate_rows(
+                body_q[bodies, 3:7], np.asarray(self.body_com, dtype=np.float64)[bodies]
+            )
+            chosen = np.zeros(len(verts), dtype=np.int32)
+            best_distance = np.full(len(verts), np.inf)
+            for index, center in enumerate(com):
+                delta = verts - center
+                distance = np.einsum("ij,ij->i", delta, delta)
+                closer = distance < best_distance  # Equal distances keep the first candidate.
+                chosen[closer] = index
+                best_distance[closer] = distance[closer]
+            parent = bodies[chosen].astype(np.int32)
+        else:
+            parent = np.asarray(bodies, dtype=np.int32)
+
+        # local_offset = conjugate(q) rotated (vertex - body_pos)
+        quat = body_q[parent, 3:7].copy()  # (x, y, z, w)
+        quat[:, :3] *= -1.0
+        local = quat_rotate_rows(quat, verts - body_q[parent, :3])
+        return parent, local.astype(np.float32)
+
+    def _embed_visual_vertices_in_triangles(
+        self, vertices: np.ndarray, tri_range: tuple[int, int], positions: np.ndarray | None = None
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Project each visual vertex onto its closest owning simulation triangle.
+
+        Build-time, host-side embedding restricted to the owning ``[start, end)``
+        triangle range. The barycentric coordinates of the closest point are
+        stored; the normal offset from the surface is dropped by design (the
+        skinned vertex lies on the simulation surface).
+        """
+        from ..geometry.deformable_visual_binding import embed_triangles  # noqa: PLC0415
+
+        lo, hi = tri_range
+        tri_idx = np.asarray(self.tri_indices, dtype=np.int64).reshape(-1, 3)[lo:hi]
+        # USD binding can use an authored reference pose instead of the initial state.
+        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
+        a, b, c = (particles[tri_idx[:, i]] for i in range(3))
+        ab = b - a
+        ac = c - a
+
+        d00 = np.einsum("ij,ij->i", ab, ab)
+        d01 = np.einsum("ij,ij->i", ab, ac)
+        d11 = np.einsum("ij,ij->i", ac, ac)
+        denom = d00 * d11 - d01 * d01
+        nonsingular = np.abs(denom) > 1.0e-20
+        if not np.any(nonsingular):
+            raise ValueError("add_deformable_visual_mesh: owning triangle range contains no non-degenerate triangle")
+        valid = np.flatnonzero(nonsingular)
+        mesh = wp.Mesh(
+            wp.array(particles, dtype=wp.vec3, device="cpu"),
+            wp.array(tri_idx[valid].reshape(-1), dtype=wp.int32, device="cpu"),
+        )
+        parent = wp.empty(len(vertices), dtype=wp.int32, device="cpu")
+        weights = wp.empty(len(vertices), dtype=wp.vec3, device="cpu")
+        wp.launch(
+            embed_triangles,
+            dim=len(vertices),
+            inputs=[
+                mesh.id,
+                wp.array(vertices, dtype=wp.vec3, device="cpu"),
+                wp.array(lo + valid, dtype=wp.int32, device="cpu"),
+            ],
+            outputs=[parent, weights],
+            device="cpu",
+        )
+        return parent.numpy().copy(), weights.numpy().copy()
+
+    def _embed_visual_vertices_in_tets(
+        self,
+        vertices: np.ndarray,
+        tet_range: tuple[int, int],
+        positions: np.ndarray | None = None,
+        operation: str = "add_deformable_visual_mesh",
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Compute the containing owning tet and barycentric weights per visual vertex.
+
+        Build-time, host-side embedding restricted to the owning ``[start, end)``
+        tet range, so a clamp can never cross deformable bodies. A vertex outside
+        every owning tet (gaps, surface overhang) is clamped to the nearest owning
+        tet by centroid distance and a warning-level log is emitted.
+        """
+        from ..geometry.deformable_visual_binding import embed_tetrahedra  # noqa: PLC0415
+
+        lo, hi = tet_range
+        tet_idx = np.asarray(self.tet_indices, dtype=np.int64).reshape(-1, 4)[lo:hi]
+        # USD binding can use an authored reference pose instead of the initial state.
+        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
+
+        v0, v1, v2, v3 = (particles[tet_idx[:, i]] for i in range(4))
+        # Columns are the tet edge vectors; bary123 = T^-1 (p - v0), bary0 = 1 - sum.
+        edge_mats = np.stack([v1 - v0, v2 - v0, v3 - v0], axis=2)
+        det = np.linalg.det(edge_mats)
+        nonsingular = np.abs(det) > 1.0e-20
+        if not np.any(nonsingular):
+            raise ValueError(f"{operation}: owning tet range contains no non-degenerate tetrahedron")
+        valid = np.flatnonzero(nonsingular)
+        corners = particles[tet_idx[valid]]
+        lower, upper = corners.min(axis=1), corners.max(axis=1)
+        # Expand bounds for the barycentric tolerance and float32 BVH rounding.
+        padding = 4.0e-6 * (upper - lower) + 1.0e-5 * (1.0 + np.maximum(np.abs(lower), np.abs(upper)))
+        bvh = wp.Bvh(
+            wp.array(lower - padding, dtype=wp.vec3, device="cpu"),
+            wp.array(upper + padding, dtype=wp.vec3, device="cpu"),
+        )
+        parent = wp.empty(len(vertices), dtype=wp.int32, device="cpu")
+        weights = wp.empty(len(vertices), dtype=wp.vec4, device="cpu")
+        outside = wp.zeros(len(vertices), dtype=wp.int32, device="cpu")
+        wp.launch(
+            embed_tetrahedra,
+            dim=len(vertices),
+            inputs=[
+                bvh.id,
+                wp.array(vertices, dtype=wp.vec3, device="cpu"),
+                wp.array(v0[valid], dtype=wp.vec3d, device="cpu"),
+                wp.array(np.linalg.inv(edge_mats[valid]), dtype=wp.mat33d, device="cpu"),
+                wp.array(corners.mean(axis=1), dtype=wp.vec3d, device="cpu"),
+                wp.array(lo + valid, dtype=wp.int32, device="cpu"),
+            ],
+            outputs=[parent, weights, outside],
+            device="cpu",
+        )
+        clamped = int(outside.numpy().sum())
+        if clamped:
+            logger.warning(
+                "%s: %d of %d visual vertices fell outside "
+                "the owning tetrahedra and were clamped into the one with the nearest centroid.",
+                operation,
+                clamped,
+                len(vertices),
+            )
+        return parent.numpy().copy(), weights.numpy().copy()
+
     def _finalize_deformable_visual_meshes(
         self,
     ) -> tuple[tuple[DeformableVisualMesh, ...], _DeformableVisualSkinBatches]:
-        """Convert accumulated visual-mesh specs to device-resident objects and skinning batches.
-
-        Runs inside the :meth:`finalize` ``wp.ScopedDevice`` block so the created
-        :class:`warp.array` buffers land on the simulation device. The bindings of
-        all meshes of one kind are uploaded once, as the batches the skinning
-        kernels read, and each mesh gets views into them. The owning world is
-        derived here, after :meth:`add_builder` re-basing, by checking every
-        driver element; mixed-world drivers are an error.
-        """
+        """Upload visual assets on the finalize device and derive their owning worlds."""
         specs = self._deformable_visual_meshes
-        kinds = [DeformableVisualMesh.Kind(spec["kind"]) for spec in specs]
-        parents = [np.asarray(spec["parent"], dtype=np.int32) for spec in specs]
-        # Particle bindings have no driver array; the batches ignore the value for that kind.
-        drivers = [
-            spec.get("local_offsets" if kind == DeformableVisualMesh.Kind.BODY else "weights")
-            for kind, spec in zip(kinds, specs, strict=True)
-        ]
-        indices = [np.asarray(spec["indices"], dtype=np.int32).reshape(-1) for spec in specs]
-        batches = _DeformableVisualSkinBatches(kinds, parents, drivers, indices, wp.get_device())
-        if not specs:
-            return (), batches
-
-        particle_world = np.array(self.particle_world, dtype=np.int32) if len(self.particle_world) else None
-        tri_indices = np.array(self.tri_indices, dtype=np.int32).reshape(-1, 3) if len(self.tri_indices) else None
-        tet_indices = np.array(self.tet_indices, dtype=np.int32).reshape(-1, 4) if len(self.tet_indices) else None
-        body_world = np.array(self.body_world, dtype=np.int32) if len(self.body_world) else None
-
-        def _world_of(spec: dict, parent: np.ndarray) -> int:
-            kind = spec["kind"]
-            if len(parent) == 0:
-                return -1
-            if kind == DeformableVisualMesh.Kind.BODY:
-                worlds = spec.get("_body_worlds")
-                if worlds is None:
-                    worlds = body_world[parent] if body_world is not None else None
-            else:
-                if particle_world is None:
-                    return -1
-                if kind == DeformableVisualMesh.Kind.TETRAHEDRON:
-                    drivers = tet_indices[parent].reshape(-1)
-                elif kind == DeformableVisualMesh.Kind.TRIANGLE:
-                    drivers = tri_indices[parent].reshape(-1)
-                else:
-                    drivers = parent
-                worlds = particle_world[drivers]
-            if worlds is None:
-                return -1
-            unique = np.unique(worlds)
-            if len(unique) > 1:
-                raise ValueError(
-                    f"deformable visual mesh {spec.get('label') or ''!r}: drivers span worlds "
-                    f"{unique.tolist()}; a visual mesh must be driven by a single world"
-                )
-            return int(unique[0])
-
+        batches = _DeformableVisualSkinBatches(
+            [spec["kind"] for spec in specs],
+            [spec["parent"] for spec in specs],
+            [
+                spec.get("local_offsets" if spec["kind"] == DeformableVisualMesh.Kind.BODY else "weights")
+                for spec in specs
+            ],
+            [spec["indices"] for spec in specs],
+            wp.get_device(),
+        )
+        particle_world = np.asarray(self.particle_world, dtype=np.int32)
         # Replicated copies of a mesh carry the same host arrays (add_builder copies the spec
         # shallowly) and equal meshes added separately have the same bytes, so the device holds
         # one copy of each distinct rest mesh however many worlds there are.
@@ -14531,11 +14488,7 @@ class ModelBuilder:
         def shared_asset(value, np_dtype, wp_dtype, columns: int) -> wp.array:
             array = shared_by_identity.get(id(value))
             if array is None:
-                host = (
-                    np.asarray(value, dtype=np_dtype).reshape(-1, columns)
-                    if columns > 1
-                    else np.asarray(value, dtype=np_dtype).reshape(-1)
-                )
+                host = np.asarray(value, dtype=np_dtype).reshape((-1, columns) if columns > 1 else -1)
                 host = np.ascontiguousarray(host)
                 digest = (host.shape, hashlib.blake2b(host.tobytes(), digest_size=16).digest())
                 array = shared_by_content.get(digest)
@@ -14545,26 +14498,42 @@ class ModelBuilder:
                 shared_by_identity[id(value)] = array
             return array
 
-        # Each mesh's binding arrays are views into its kind's batch arrays, so the model holds
-        # one copy of the binding data, the one the skinning kernels read.
-        meshes: list[DeformableVisualMesh] = []
-        for index, (kind, spec, parent) in enumerate(zip(kinds, specs, parents, strict=True)):
-            uvs = spec.get("uvs")
-            parent_view, driver_view = batches.mesh_bindings(index)
+        tri_indices = np.asarray(self.tri_indices, dtype=np.int32).reshape(-1, 3)
+        tet_indices = np.asarray(self.tet_indices, dtype=np.int32).reshape(-1, 4)
+        body_world = np.asarray(self.body_world, dtype=np.int32)
+        meshes = []
+        for index, spec in enumerate(self._deformable_visual_meshes):
+            drivers = spec["parent"]
+            if spec["kind"] == DeformableVisualMesh.Kind.TRIANGLE:
+                drivers = tri_indices[drivers].reshape(-1)
+            elif spec["kind"] == DeformableVisualMesh.Kind.TETRAHEDRON:
+                drivers = tet_indices[drivers].reshape(-1)
+            if spec["kind"] == DeformableVisualMesh.Kind.BODY:
+                world_values = spec.get("_body_worlds")
+                if world_values is None:
+                    world_values = body_world[drivers]
+            else:
+                world_values = particle_world[drivers]
+            worlds = np.unique(world_values)
+            if len(worlds) != 1:
+                raise ValueError(
+                    f"deformable visual mesh {spec['label']!r}: drivers span worlds "
+                    f"{worlds.tolist()}; a visual mesh must be driven by a single world"
+                )
             meshes.append(
                 DeformableVisualMesh(
-                    kind=kind,
+                    kind=spec["kind"],
                     rest_vertices=shared_asset(spec["rest_vertices"], np.float32, wp.vec3, 3),
                     indices=shared_asset(spec["indices"], np.int32, wp.int32, 1),
-                    parent=parent_view,
-                    weights=driver_view
-                    if kind in (DeformableVisualMesh.Kind.TRIANGLE, DeformableVisualMesh.Kind.TETRAHEDRON)
+                    parent=batches.mesh_bindings(index)[0],
+                    weights=batches.mesh_bindings(index)[1] if spec["kind"] != DeformableVisualMesh.Kind.BODY else None,
+                    local_offsets=batches.mesh_bindings(index)[1]
+                    if spec["kind"] == DeformableVisualMesh.Kind.BODY
                     else None,
-                    local_offsets=driver_view if kind == DeformableVisualMesh.Kind.BODY else None,
-                    uvs=shared_asset(uvs, np.float32, wp.vec2, 2) if uvs is not None else None,
+                    uvs=shared_asset(spec["uvs"], np.float32, wp.vec2, 2) if spec.get("uvs") is not None else None,
                     texture=spec.get("texture"),
-                    world=_world_of(spec, parent),
-                    label=spec.get("label", ""),
+                    world=int(worlds[0]),
+                    label=spec["label"],
                     index=index,
                     body_path=spec.get("body_path"),
                     sim_path=spec.get("sim_path"),
@@ -14726,6 +14695,7 @@ class ModelBuilder:
             # construct Model (non-time varying) data
 
             m = Model(device)
+            m._deformable_visual_meshes, m._deformable_visual_skin_batches = self._finalize_deformable_visual_meshes()
             m._sdf_texture_paired_samples = sdf_texture_paired_samples
             m._set_shape_collision_filter_packed(shape_collision_filter_packed)  # pyright: ignore[reportPrivateUsage]
             # Preserve deprecated extended-attribute requests without emitting a
@@ -15835,7 +15805,6 @@ class ModelBuilder:
 
             # ---------------------
             # deformable visual meshes
-            m._deformable_visual_meshes, m._deformable_visual_skin_batches = self._finalize_deformable_visual_meshes()
             m.deformable_visual_gaussians = self._finalize_deformable_visual_gaussians()
             m.deformable_visual_gaussian_count = len(m.deformable_visual_gaussians)
 
