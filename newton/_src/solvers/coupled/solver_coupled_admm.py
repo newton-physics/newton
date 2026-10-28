@@ -2869,6 +2869,11 @@ class SolverCoupledADMM(SolverCoupled):
                 stiffness = float(stiffness_np[row])
                 if stiffness < 0.0:
                     raise ValueError(f"ADMM particle-body attachment {name} has negative stiffness")
+                if math.isinf(stiffness) and not is_model_source:
+                    raise ValueError(
+                        f"ADMM particle-body attachment {name} is hard; use "
+                        "ModelBuilder.add_attachment_particle_body() for hard attachments"
+                    )
                 damping = float(damping_np[row])
                 if damping < 0.0:
                     raise ValueError(f"ADMM particle-body attachment {name} has negative damping")

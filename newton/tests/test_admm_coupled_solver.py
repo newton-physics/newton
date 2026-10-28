@@ -1237,6 +1237,16 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
             model.custom_frequency_counts,
         )
 
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        particle = builder.add_particle(pos=(0.3, 0.0, 0.0), vel=wp.vec3(), mass=1.0, radius=0.0)
+        with self.assertWarns(DeprecationWarning):
+            SolverCoupledADMM.add_body_particle_attachment(builder, body, particle, stiffness=math.inf)
+        builder.color()
+        model = builder.finalize(device="cpu")
+        with self.assertRaisesRegex(ValueError, "is hard; use ModelBuilder.add_attachment_particle_body"):
+            _make_semi_body_particle_solver(model)
+
     def test_single_unsupported_entry_attachment_is_reported(self):
         """Warn when a same-entry solver cannot apply a model attachment."""
         model = _build_body_particle_attachment_scene()
