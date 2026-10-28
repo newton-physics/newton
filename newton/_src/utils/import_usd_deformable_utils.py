@@ -1435,7 +1435,7 @@ def _scout_deformable_prims(
                 buckets.cloth.append(prim)
                 claim_body(prim)
 
-    # Claim visuals before the rigid loader can create a frozen duplicate.
+    # Claim graphics before the rigid loader can create a frozen duplicate.
     # Only discovered body subtrees are visited, not the whole stage again.
     if buckets.body_owner:
         stage = root_prim.GetStage()
@@ -1492,7 +1492,7 @@ class _DeformableImportContext:
     get_rigid_body_ancestor_path: Callable
     get_first_target: Callable
     get_tetmesh_cached: Callable
-    get_mesh_cached: Callable
+    is_viewport_drawn: Callable
     load_visual_shapes: bool
     incoming_world_xform: wp.transform
     linear_unit: float
@@ -1514,4 +1514,7 @@ class _DeformableImportContext:
     articulation_has_self_collision: dict[int, bool]
     # Filled by _scout_deformable_prims so the passes iterate buckets instead of the stage.
     prims: _DeformablePrimBuckets = field(default_factory=_DeformablePrimBuckets)
-    cable_visual_bind_poses: dict[int, wp.transform | ValueError] = field(default_factory=dict)
+    # Reference poses of imported cable bodies for visual binding, and per-body reasons when
+    # a curve's bind pose could not be used; both filled by the cable pass.
+    cable_visual_bind_poses: dict[int, wp.transform] = field(default_factory=dict)
+    cable_visual_bind_errors: dict[int, str] = field(default_factory=dict)

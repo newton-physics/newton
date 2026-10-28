@@ -1649,7 +1649,7 @@ def parse_usd(
         get_rigid_body_ancestor_path=_get_rigid_body_ancestor_path,
         get_first_target=_get_first_target,
         get_tetmesh_cached=_get_tetmesh_cached,
-        get_mesh_cached=visuals.get_mesh_cached,
+        is_viewport_drawn=visuals.is_viewport_drawn,
         load_visual_shapes=load_visual_shapes,
         incoming_world_xform=incoming_world_xform,
         linear_unit=linear_unit,

@@ -686,6 +686,10 @@ class TestDeformableVisualRecording(unittest.TestCase):
         _attach(builder, uvs=[[0, 0], [1, 0], [0, 1]], texture=image)
         scene = newton.ModelBuilder()
         scene.replicate(builder, 2)
+        # Source paths are set by the USD importer; stand in for it on the first spec.
+        scene._deformable_visual_meshes[0].update(
+            body_path="/World/Cloth", sim_path="/World/Cloth/Sim", graphics_path="/World/Cloth/Skin"
+        )
         model = scene.finalize("cpu")
         state = model.state()
         state.particle_q.assign(state.particle_q.numpy().copy() + 2)
@@ -694,6 +698,10 @@ class TestDeformableVisualRecording(unittest.TestCase):
         state.body_q.assign(poses)
         expected = newton.geometry.DeformableVisuals(model)
         expected.update(state)
+        mesh = model.deformable_visual_meshes[0]
+        self.assertEqual((mesh.body_path, mesh.sim_path), ("/World/Cloth", "/World/Cloth/Sim"))
+        with self.assertRaises(AttributeError):
+            mesh.graphics_path = "/elsewhere"
         with wp.ScopedDevice("cpu"), tempfile.TemporaryDirectory() as directory:
             for suffix in ("json", "bin") if HAS_CBOR2 else ("json",):
                 with self.subTest(format=suffix):
@@ -720,6 +728,8 @@ class TestDeformableVisualRecording(unittest.TestCase):
                         ):
                             self.assertEqual(mesh.kind, original.kind)
                             self.assertEqual(mesh.world, original.world)
+                            for path in ("body_path", "sim_path", "graphics_path"):
+                                self.assertEqual(getattr(mesh, path), getattr(original, path))
                             np.testing.assert_array_equal(mesh.parent.numpy(), original.parent.numpy())
                             np.testing.assert_allclose(
                                 output.get_points(mesh).numpy(), expected.get_points(original).numpy()

@@ -1361,17 +1361,15 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertEqual(len(approximations), 1)
             self.assertIn("/World/Body/Col", approximations[0])
 
-    def test_unembedded_graphics_geometry_becomes_visual_mesh(self):
-        """An untagged Mesh under a deformable body is graphics geometry: it imports as a
-        skinned deformable visual mesh, never as a native static shape (which would leave
-        a frozen copy behind while the deformable moves away)."""
+    def test_graphics_mesh_is_skinned_not_rigid(self):
+        """Import a graphics mesh as a skin without leaving a frozen rigid copy."""
         from pxr import UsdGeom
 
         stage = _deformable_stage()
         body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
         _apply_deformable_body_api(body)
-        cloth = _add_cloth_mesh(stage, "/World/Body/Sim", collision=True)
-        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
+        sim = _add_cloth_mesh(stage, "/World/Body/Sim", collision=True)
+        _author_deformable_element_array(sim.GetPrim(), "thicknesses", [0.001], "constant")
         self._add_triangle_mesh(stage, "/World/Body/Graphics", collision=False)
 
         builder = newton.ModelBuilder()
@@ -1380,9 +1378,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         # The graphics mesh is excluded from the native loader: no shape imports for it.
         self.assertEqual(builder.shape_count, 0)
         self.assertNotIn("/World/Body/Graphics", result["path_shape_map"])
-        # It imports as a visual mesh skinned from the cloth instead.
-        model = builder.finalize()
-        self.assertEqual(model.deformable_visual_mesh_count, 1)
+        self.assertEqual(builder.finalize(device="cpu").deformable_visual_mesh_count, 1)
 
     def test_dedicated_mesh_collider_owned_by_deformable_pass(self):
         """A dedicated UsdGeom.Mesh collider under a deformable body belongs to the

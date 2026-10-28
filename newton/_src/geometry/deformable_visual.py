@@ -39,7 +39,9 @@ class DeformableVisualMesh:
     Properties are read-only; do not edit their arrays in place. Meshes with
     equal rest vertices and triangle indices share device storage, while
     bindings stay per mesh. The label can be changed for display, and the
-    texture can be replaced.
+    texture can be replaced. Meshes imported from USD also keep the paths of
+    their body, simulation geometry, and graphics prim. Composition and recording
+    retain these paths; replication can explicitly rebase their namespaces.
 
     .. experimental::
     """
@@ -111,18 +113,28 @@ class DeformableVisualMesh:
         self.label = label
         """Display label. Imported path labels follow requested namespace rebasing.
         Not unique; use :attr:`index` for a stable identity."""
-        self.body_path = body_path
-        """USD path of the owning ``PhysicsDeformableBodyAPI`` prim, or ``None``
-        when created programmatically. Replicated imported meshes use the
-        destination path when namespace rebasing is requested."""
-        self.sim_path = sim_path
-        """USD path of the owning simulation geometry prim, or ``None`` when
-        created programmatically. Replicated imported meshes use the
-        destination path when namespace rebasing is requested."""
-        self.graphics_path = graphics_path
-        """USD path of the graphics geometry prim, or ``None`` when
-        created programmatically. Replicated imported meshes use the
-        destination path when namespace rebasing is requested."""
+        self._body_path = body_path
+        self._sim_path = sim_path
+        self._graphics_path = graphics_path
+
+    @property
+    def body_path(self) -> str | None:
+        """Owning USD deformable body path, or ``None`` for native meshes. Read-only."""
+        return self._body_path
+
+    @property
+    def sim_path(self) -> str | None:
+        """Simulation geometry USD path, or ``None`` for native meshes. Read-only."""
+        return self._sim_path
+
+    @property
+    def graphics_path(self) -> str | None:
+        """Graphics mesh USD path, or ``None`` for native meshes. Read-only.
+
+        Imported meshes start with this path as their :attr:`label`. All three paths
+        follow destination namespaces when replication explicitly requests rebasing.
+        """
+        return self._graphics_path
 
     @property
     def kind(self) -> Kind:

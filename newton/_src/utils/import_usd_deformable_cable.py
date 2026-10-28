@@ -1457,12 +1457,7 @@ def _deformable_import_cable(
             point_sources = [[(path, start + i)] for i in range(n)]
             if closed:
                 point_sources.append([(path, start)])
-            bind_normals = (
-                [wp.transform_vector(world_mat, wp.vec3(*normal)) for normal in curve_normals]
-                if curve_normals is not None
-                else None
-            )
-            _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources, bind_normals)
+            _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources)
             # A cable rooted on a rigid articulation keeps that articulation's flag instead.
             if self_collision is not None and (articulation_root is None or articulation_root.parent_body == -1):
                 ctx.articulation_has_self_collision[builder.articulation_count - 1] = self_collision

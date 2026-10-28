@@ -17,9 +17,8 @@ the body's simulation geometry via
 - surface bodies embed into the owning triangle range;
 - cable bodies bind to the curve's imported segment bodies.
 
-``UsdGeom.Mesh`` graphics become visual meshes. Experimental
-``ParticleField3DGaussianSplat`` graphics become Gaussian visuals when they
-belong to a volume deformable.
+Experimental ``ParticleField3DGaussianSplat`` graphics become Gaussian visuals
+when they belong to a volume deformable.
 """
 
 from __future__ import annotations
@@ -29,15 +28,9 @@ import logging
 import numpy as np
 import warp as wp
 
-from .import_usd_deformable_utils import _DeformableImportContext
+from .import_usd_deformable_utils import _DeformableImportContext, _world_matrix_reflects, _world_points
 
 logger = logging.getLogger(__name__)
-
-
-def _transform_points_np(world_mat, points: np.ndarray) -> np.ndarray:
-    """Apply a warp 4x4 world matrix to an [N, 3] point array (full affine)."""
-    m = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)
-    return points @ m[:3, :3].T + m[:3, 3]
 
 
 def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_range) -> np.ndarray | None:
@@ -56,14 +49,78 @@ def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_r
     p0, p1 = particle_range
     if len(bind) != p1 - p0:
         raise ValueError(
-            f"invalid_bind_pose_count: {sim_path} bind pose has {len(bind)} points but the imported geometry has {p1 - p0} particles"
+            f"{sim_path}: bind pose has {len(bind)} points but the imported geometry has {p1 - p0} particles"
         )
     if np.array_equal(bind, sim_prim.GetAttribute("points").Get()):
         return None
     world_mat = ctx.get_prim_world_mat(sim_prim, None, ctx.incoming_world_xform)
     positions = np.array(ctx.builder.particle_q, dtype=np.float64)
-    positions[p0:p1] = _transform_points_np(world_mat, bind)
+    positions[p0:p1] = _world_points(bind, world_mat, translate=True)
     return positions
+
+
+def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
+    """Pair imported segment bodies with their bind-pose frames without changing physics.
+
+    Each body's imported frame is transported from its initial tangent to its bind
+    tangent, so graph cables, cables rooted on rigid bodies, and rotated bind poses
+    keep the roll the cable was built with. Failures are recorded per body and
+    reported by the visual pass instead of stopping the simulation import.
+    """
+    if not ctx.load_visual_shapes:
+        return
+    from ..sim.builder import ModelBuilder  # noqa: PLC0415
+    from ..usd import utils as usd  # noqa: PLC0415
+
+    try:
+        authored = {}
+        for path, _point in (source for sources in point_sources for source in sources):
+            if path in authored:
+                continue
+            prim = ctx.stage.GetPrimAtPath(path)
+            bind = usd.get_deformable_bind_pose(prim)
+            # Keep the imported rod frames when the visual reference is the initial geometry.
+            if np.array_equal(bind, prim.GetAttribute("points").Get()):
+                bind = None
+            else:
+                matrix = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
+                bind = _world_points(bind, matrix, translate=True)
+            authored[path] = bind
+        if all(points is None for points in authored.values()):
+            return
+        initial = np.asarray(rod.points, dtype=np.float64).reshape(-1, 3)
+        points = initial.copy()
+        # Welds accept gaps up to a tenth of the radius, so authored bind poses may differ by that much.
+        tolerance = 0.1 * float(rod.radius) if rod.radius else 1.0e-6
+        for index, sources in enumerate(point_sources):
+            candidates = [authored[path][point] for path, point in sources if authored[path] is not None]
+            if candidates:
+                if not np.allclose(candidates, candidates[0], atol=tolerance, rtol=0.0):
+                    raise ValueError("welded cable points have inconsistent bind poses")
+                points[index] = candidates[0]
+        body_q = np.asarray(ctx.builder.body_q, dtype=np.float64).reshape(-1, 7)
+        for body, (start, end) in zip(bodies, rod.edges, strict=True):
+            initial_direction = initial[end] - initial[start]
+            bind_direction = points[end] - points[start]
+            # The body origin sits somewhere along its segment (the middle for rods); keep that spot.
+            along = float(
+                np.dot(body_q[body, :3] - initial[start], initial_direction)
+                / max(float(np.dot(initial_direction, initial_direction)), 1.0e-30)
+            )
+            frame = ModelBuilder._transport_rod_frame(
+                "add_usd",
+                "bindPose",
+                wp.quat(*body_q[body, 3:7]),
+                wp.vec3(*initial_direction),
+                wp.vec3(*bind_direction),
+            )
+            origin = points[start] + along * bind_direction
+            ctx.cable_visual_bind_poses[body] = wp.transform(wp.vec3(*origin), frame)
+    except ValueError as exc:
+        # Invalid graphics references must not prevent the simulation from importing;
+        # the visual pass reports them when it reaches the affected bodies.
+        for body in bodies:
+            ctx.cable_visual_bind_errors[body] = str(exc)
 
 
 def _read_gaussian_embedding(prim, tet_range: tuple[int, int], count: int):
@@ -87,55 +144,10 @@ def _read_gaussian_embedding(prim, tet_range: tuple[int, int], count: int):
     return parent, weights
 
 
-def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources, normals=None):
-    """Pair imported segment bodies with reference frames without changing physics."""
-    if not ctx.load_visual_shapes:
-        return
-    from ..sim.rod import Rod  # noqa: PLC0415
-    from ..usd import utils as usd  # noqa: PLC0415
-    from .import_usd_deformable_utils import _cable_segment_quaternions  # noqa: PLC0415
-
-    try:
-        authored = {}
-        for path, _point in (source for sources in point_sources for source in sources):
-            if path in authored:
-                continue
-            prim = ctx.stage.GetPrimAtPath(path)
-            bind = usd.get_deformable_bind_pose(prim)
-            # Keep the imported rod frames, including graph normals, when the
-            # visual reference is already the initial geometry.
-            if np.array_equal(bind, prim.GetAttribute("points").Get()):
-                bind = None
-            else:
-                matrix = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
-                bind = _transform_points_np(matrix, bind)
-            authored[path] = bind
-        if all(points is None for points in authored.values()):
-            return
-        points = np.asarray(rod.points, dtype=np.float32).copy()
-        for index, sources in enumerate(point_sources):
-            candidates = [authored[path][point] for path, point in sources if authored[path] is not None]
-            if candidates:
-                if not np.allclose(candidates, candidates[0], atol=1.0e-6, rtol=1.0e-6):
-                    raise ValueError("welded cable points have inconsistent bind poses")
-                points[index] = candidates[0]
-        quaternions = None
-        if normals is not None:
-            quaternions = _cable_segment_quaternions([wp.vec3(*point) for point in points], normals)
-        reference = Rod(points, edges=rod.edges, quaternions=quaternions)
-        for body, (start, end), quat in zip(bodies, reference.edges, reference.quaternions, strict=True):
-            center = 0.5 * (points[start] + points[end])
-            ctx.cable_visual_bind_poses[body] = wp.transform(wp.vec3(*center), wp.quat(*quat))
-    except ValueError as exc:
-        # Invalid graphics references must not prevent the simulation from importing.
-        for body in bodies:
-            ctx.cable_visual_bind_poses[body] = exc
-
-
 def _gaussian_in_world(ctx: _DeformableImportContext, prim, gaussian):
     """Bake the prim placement into Gaussian centers, orientations, and scales."""
     world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
-    positions = _transform_points_np(world_mat, gaussian.positions).astype(np.float32)
+    positions = _world_points(gaussian.positions, world_mat, translate=True).astype(np.float32)
     linear = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)[:3, :3]
     rotations = np.empty_like(gaussian.rotations)
     scales = np.empty_like(gaussian.scales)
@@ -167,12 +179,14 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
     from ..usd import utils as usd  # noqa: PLC0415
 
     builder = ctx.builder
+    # The simulation bind pose is read once per body, however many skins it carries.
+    sim_positions: dict[str, np.ndarray | None] = {}
     for body_path, sim_path in ctx.prims.body_owner.items():
         if sim_path in ctx.path_soft_map:
             family = "soft"
         elif sim_path in ctx.path_cloth_map:
             family = "cloth"
-        elif sim_path in ctx.path_cable_map or any(key.startswith(f"{sim_path}_curve") for key in ctx.path_cable_map):
+        elif sim_path in ctx.path_cable_map:
             family = "cable"
         else:
             continue  # the governing simulation geometry did not import
@@ -181,7 +195,8 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             continue
 
         for prim in ctx.prims.visual_meshes.get(body_path, ()):
-            if UsdGeom.Imageable(prim).ComputeVisibility() == UsdGeom.Tokens.invisible:
+            # Viewport semantics, as for rigid visual shapes: visible, and purpose default or proxy.
+            if not ctx.is_viewport_drawn(prim):
                 continue
             path = str(prim.GetPath())
             # Proposal bind pose (or the mesh points), in the common world frame the
@@ -189,34 +204,42 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             try:
                 mesh, _, source_point_indices = usd.get_mesh(prim, load_uvs=True, return_source_point_indices=True)
                 points = usd.get_deformable_bind_pose(prim)[source_point_indices]
-            except ValueError as exc:
+            except (ValueError, IndexError) as exc:
+                # get_mesh indexes authored topology before checking it, hence IndexError.
                 logger.warning("%s: invalid visual mesh, material, or bind pose; skipping (%s)", path, exc)
                 continue
             if len(mesh.vertices) == 0 or len(mesh.indices) == 0:
                 logger.warning("%s: graphics mesh has no geometry; skipping visual mesh.", path)
                 continue
             world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
-            world_verts = _transform_points_np(world_mat, points).astype(np.float32)
-            uvs = mesh._uvs if mesh._uvs is not None and len(mesh._uvs) == len(world_verts) else None
+            world_verts = _world_points(points, world_mat, translate=True).astype(np.float32)
+            indices = np.asarray(mesh.indices, dtype=np.int32)
+            if _world_matrix_reflects(world_mat):
+                # A reflecting transform flips the winding, as the cloth and volume passes handle it.
+                indices = indices.reshape(-1, 3)[:, ::-1].reshape(-1)
+            uvs = mesh.uvs if mesh.uvs is not None and len(mesh.uvs) == len(world_verts) else None
             texture = mesh.texture
             if texture is not None and uvs is None:
                 logger.warning("%s: visual texture requires UVs; importing the visual mesh without its texture.", path)
                 texture = None
-            indices = np.asarray(mesh.indices, dtype=np.int32)
+            if texture is not None:
+                # Skinned meshes store final UVs, not a separate material transform.
+                transform = np.asarray(mesh.texture_transform, dtype=uvs.dtype)
+                uvs = uvs @ transform[:, :2].T + transform[:, 2]
 
             try:
                 if family == "soft":
                     ranges = ctx.path_soft_map[sim_path]
-                    tet_range = ranges["tet"]
-                    positions = _sim_bind_positions(ctx, sim_path, ranges["particle"])
+                    if sim_path not in sim_positions:
+                        sim_positions[sim_path] = _sim_bind_positions(ctx, sim_path, ranges["particle"])
                     parent, weights = builder._embed_visual_vertices_in_tets(
-                        world_verts, tet_range, positions=positions
+                        world_verts, ranges["tet"], positions=sim_positions[sim_path]
                     )
                     index = builder.add_deformable_visual_mesh(
                         world_verts,
                         indices,
                         kind="tetrahedron",
-                        tet_range=tet_range,
+                        tet_range=ranges["tet"],
                         parent=parent,
                         weights=weights,
                         uvs=uvs,
@@ -225,16 +248,16 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     )
                 elif family == "cloth":
                     ranges = ctx.path_cloth_map[sim_path]
-                    tri_range = ranges["tri"]
-                    positions = _sim_bind_positions(ctx, sim_path, ranges["particle"])
+                    if sim_path not in sim_positions:
+                        sim_positions[sim_path] = _sim_bind_positions(ctx, sim_path, ranges["particle"])
                     parent, weights = builder._embed_visual_vertices_in_triangles(
-                        world_verts, tri_range, positions=positions
+                        world_verts, ranges["tri"], positions=sim_positions[sim_path]
                     )
                     index = builder.add_deformable_visual_mesh(
                         world_verts,
                         indices,
                         kind="triangle",
-                        tri_range=tri_range,
+                        tri_range=ranges["tri"],
                         parent=parent,
                         weights=weights,
                         uvs=uvs,
@@ -242,18 +265,15 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                         label=path,
                     )
                 else:
-                    # A multi-curve prim records per-curve entries; a welded graph curve
-                    # keeps its exact (possibly non-contiguous) body list.
-                    bodies: list[int] = []
-                    for key, (curve_bodies, _joints) in ctx.path_cable_map.items():
-                        if key == sim_path or key.startswith(f"{sim_path}_curve"):
-                            bodies.extend(int(b) for b in curve_bodies)
+                    bodies = [int(b) for b in ctx.path_cable_map[sim_path][0]]
+                    failed = [
+                        ctx.cable_visual_bind_errors[body] for body in bodies if body in ctx.cable_visual_bind_errors
+                    ]
+                    if failed:
+                        raise ValueError(failed[0])
                     reference_binding = None
                     if any(body in ctx.cable_visual_bind_poses for body in bodies):
                         poses = [ctx.cable_visual_bind_poses.get(body, builder.body_q[body]) for body in bodies]
-                        for pose in poses:
-                            if isinstance(pose, ValueError):
-                                raise pose
                         reference_binding = builder._bind_visual_vertices_to_bodies(
                             world_verts, bodies, nearest=True, poses=np.asarray(poses)
                         )
@@ -292,7 +312,9 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 gaussian = _gaussian_in_world(ctx, prim, usd.get_gaussian(prim))
                 ranges = ctx.path_soft_map[sim_path]
                 tet_range = ranges["tet"]
-                positions = _sim_bind_positions(ctx, sim_path, ranges["particle"])
+                if sim_path not in sim_positions:
+                    sim_positions[sim_path] = _sim_bind_positions(ctx, sim_path, ranges["particle"])
+                positions = sim_positions[sim_path]
                 parent, weights = _read_gaussian_embedding(prim, tet_range, gaussian.count)
                 if positions is None:
                     # Physics restShapePoints may differ from the initial visual reference.
