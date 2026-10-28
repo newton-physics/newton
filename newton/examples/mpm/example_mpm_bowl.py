@@ -97,12 +97,6 @@ class Example:
             raise ValueError("particle-radius must be between 0 and 0.1 m and voxel-size must be positive.")
         if args.iterations < 1:
             raise ValueError("Solver iteration counts must be positive.")
-        if args.friction < 0.0 or args.density <= 0.0:
-            raise ValueError("Friction must be nonnegative and density must be positive.")
-        if args.yield_pressure < 0.0 or args.tensile_yield_ratio < 0.0 or not 0.0 <= args.critical_fraction <= 1.0:
-            raise ValueError(
-                "Yield pressure and tensile ratio must be nonnegative; critical fraction must be in [0, 1]."
-            )
         if args.max_active_cell_count < 128:
             raise ValueError("max-active-cell-count must be at least 128 for the bowl's reserved grid hierarchy.")
 
@@ -128,21 +122,14 @@ class Example:
         builder.add_shape_mesh(
             bowl,
             mesh=_make_bowl_mesh(self.bowl_radius, 0.04),
-            cfg=newton.ModelBuilder.ShapeConfig(mu=args.friction, density=0.0, margin=0.002),
+            cfg=newton.ModelBuilder.ShapeConfig(mu=0.5, density=0.0, margin=0.002),
             color=(0.25, 0.5, 0.65),
             label="bowl_shell",
         )
-        self._emit_particles(builder, args.density)
+        self._emit_particles(builder)
         self.model = builder.finalize()
         if not self.model.device.is_cuda:
             raise RuntimeError("The moving-bowl example requires CUDA for its sparse MPM grid.")
-        self.model.mpm.friction.fill_(args.friction)
-        self.model.mpm.young_modulus.fill_(args.young_modulus)
-        self.model.mpm.yield_pressure.fill_(args.yield_pressure)
-        self.model.mpm.tensile_yield_ratio.fill_(args.tensile_yield_ratio)
-        self.model.mpm.yield_stress.fill_(args.yield_stress)
-        self.model.mpm.viscosity.fill_(args.viscosity)
-
         config = SolverImplicitMPM.Config(
             grid_type="sparse",
             voxel_size=args.voxel_size,
@@ -151,11 +138,9 @@ class Example:
             max_lower_node_count=64,
             max_upper_node_count=16,
             collider_basis="S2",
-            solver=tuple(args.rheology_solver),
-            warmstart_mode=args.warmstart_mode,
-            critical_fraction=args.critical_fraction,
+            solver="gs",
+            warmstart_mode="particles",
             max_iterations=args.iterations,
-            tolerance=args.tolerance,
         )
         self.mpm_solver = SolverImplicitMPM(self.model, config=config)
         self.state_0 = self.model.state()
@@ -175,7 +160,7 @@ class Example:
         self.graph = None
         self.capture()
 
-    def _emit_particles(self, builder, density):
+    def _emit_particles(self, builder):
         spacing = 2.0 * self.particle_radius
         axis = np.arange(-self.bowl_radius, self.bowl_radius, spacing)
         x, y, z = np.meshgrid(axis, axis, axis, indexing="ij")
@@ -189,7 +174,7 @@ class Example:
         builder.add_particles(
             pos=points.tolist(),
             vel=np.zeros_like(points).tolist(),
-            mass=[density * spacing**3] * len(points),
+            mass=[1500.0 * spacing**3] * len(points),
             radius=[self.particle_radius] * len(points),
         )
 
@@ -285,10 +270,6 @@ class Example:
             "Particles are outside the bowl below its rim"
         )
 
-    def test_final(self):
-        """Check final particle state and containment below the bowl rim."""
-        self.test_post_step()
-
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
@@ -318,33 +299,7 @@ class Example:
         parser.add_argument("--voxel-size", type=float, default=0.08)
         parser.add_argument("--max-active-cell-count", type=int, default=8192)
         parser.add_argument("--particle-radius", type=float, default=0.016)
-        parser.add_argument("--density", type=float, default=1500.0)
-        parser.add_argument("--friction", type=float, default=0.5)
-        parser.add_argument("--young-modulus", type=float, default=1.0e15)
-        parser.add_argument("--yield-pressure", type=float, default=1.0e15, help="MPM compressive yield pressure [Pa].")
-        parser.add_argument(
-            "--tensile-yield-ratio",
-            type=float,
-            default=0.0,
-            help="MPM tensile yield pressure / compressive yield pressure.",
-        )
-        parser.add_argument("--yield-stress", type=float, default=0.0, help="MPM deviatoric yield offset [Pa].")
-        parser.add_argument("--viscosity", type=float, default=0.0, help="MPM viscosity [Pa s].")
         parser.add_argument("--iterations", type=int, default=100, help="Maximum MPM rheology iterations.")
-        parser.add_argument(
-            "--rheology-solver",
-            nargs="+",
-            default=["gs"],
-            help="MPM rheology solver or warm-start chain, e.g. jacobi gs or cr gs.",
-        )
-        parser.add_argument("--warmstart-mode", choices=("particles", "none"), default="particles")
-        parser.add_argument(
-            "--critical-fraction",
-            type=float,
-            default=0.0,
-            help="MPM maximum packing fraction; zero disables the void law.",
-        )
-        parser.add_argument("--tolerance", type=float, default=1.0e-4)
         parser.add_argument("--motion-frequency", type=float, default=0.3, help="Bowl motion frequency [Hz].")
         parser.add_argument("--motion-amplitude", type=float, default=0.1, help="Bowl translation amplitude [m].")
         parser.add_argument("--motion-tilt", type=float, default=0.1, help="Bowl tilt amplitude [rad].")

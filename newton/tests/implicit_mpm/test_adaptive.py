@@ -63,8 +63,9 @@ def _assert_particle_snapshot(model, state, expected):
 
 
 def test_swept_projection_thin_wall(test, device):
-    """Stop a particle whose complete trajectory crosses a thin wall."""
-    model, solver = _make_solver(device)
+    """Stop a tunneling particle at the earliest wall, independent of collider order."""
+    # Separate stationary bodies keep the farther wall first in the collider list.
+    model, solver = _make_solver(device, moving_wall=True, wall_positions=(0.0, 0.2))
     previous, current = model.state(), model.state()
     previous.particle_q.fill_(wp.vec3(0.5, 0.0, 0.0))
     current.particle_q.fill_(wp.vec3(-0.5, 0.0, 0.0))
@@ -75,18 +76,8 @@ def test_swept_projection_thin_wall(test, device):
     test.assertLess(current.particle_q.numpy()[0, 0], -0.4)
 
     solver.project_outside(current, current, 0.1, state_prev=previous)
-    test.assertGreaterEqual(current.particle_q.numpy()[0, 0], 0.009)
-    test.assertAlmostEqual(float(current.particle_qd.numpy()[0, 0]), 0.0, places=5)
-
-
-def test_swept_projection_first_wall(test, device):
-    """Select the earliest collision independently of collider ordering."""
-    model, solver = _make_solver(device, wall_positions=(0.0, 0.2))
-    previous, current = model.state(), model.state()
-    current.particle_q.fill_(wp.vec3(-0.5, 0.0, 0.0))
-    current.particle_qd.fill_(wp.vec3(-10.0, 0.0, 0.0))
-    solver.project_outside(current, current, 0.1, state_prev=previous)
-    test.assertGreaterEqual(current.particle_q.numpy()[0, 0], 0.209)
+    np.testing.assert_allclose(current.particle_q.numpy()[0], (0.210001, 0.0, 0.0), atol=2.0e-6)
+    np.testing.assert_allclose(current.particle_qd.numpy()[0], 0.0, atol=1.0e-6)
 
 
 def test_swept_projection_corner(test, device):
@@ -160,6 +151,15 @@ def test_resize_preserves_particle_state(test, device):
             current.particle_qd.fill_(wp.vec3(0.1, 0.2, 0.3))
             current.mpm.particle_stress.fill_(wp.mat33(0.1, 0.0, 0.0, 0.0, 0.1, 0.0, 0.0, 0.0, 0.1))
             current.mpm.particle_Jp.fill_(0.9)
+            if integration_scheme == "pic":
+                grid = solver._scratchpad.grid
+                for value in (0.0, -0.1, np.inf, np.nan):
+                    with test.subTest(value=value), test.assertRaises(ValueError):
+                        solver.set_voxel_size(value, state=current)
+                    test.assertEqual(solver.voxel_size, 0.1)
+                    test.assertIs(solver._scratchpad.grid, grid)
+                solver.set_voxel_size(0.1, state=current)
+                test.assertIs(solver._scratchpad.grid, grid)
             for voxel_size in (0.05, 0.15, 0.1):
                 with test.subTest(voxel_size=voxel_size):
                     before = _particle_snapshot(model, current)
@@ -173,20 +173,6 @@ def test_resize_preserves_particle_state(test, device):
                     test.assertTrue(np.isfinite(next_state.particle_q.numpy()).all())
                     test.assertGreater(next_state.particle_q.numpy()[0, 0], 0.5)
                     current, next_state = next_state, current
-
-
-def test_resize_validation(test, device):
-    """Reject invalid resolution changes before changing solver resources."""
-    model, solver = _make_solver(device)
-    current = model.state()
-    grid = solver._scratchpad.grid
-    for value in (0.0, -0.1, np.inf, np.nan):
-        with test.subTest(value=value), test.assertRaises(ValueError):
-            solver.set_voxel_size(value, state=current)
-        test.assertEqual(solver.voxel_size, 0.1)
-        test.assertIs(solver._scratchpad.grid, grid)
-    solver.set_voxel_size(0.1, state=current)
-    test.assertIs(solver._scratchpad.grid, grid)
 
 
 def test_radius_preserves_particle_state(test, device):
@@ -358,12 +344,10 @@ class TestImplicitMPMAdaptive(unittest.TestCase):
 for _device in get_test_devices():
     for _test in (
         test_swept_projection_thin_wall,
-        test_swept_projection_first_wall,
         test_swept_projection_corner,
         test_swept_projection_moving_wall,
         test_swept_projection_inactive,
         test_resize_preserves_particle_state,
-        test_resize_validation,
         test_radius_preserves_particle_state,
         test_resize_fixed_grid,
         test_swept_projection_world_isolation,
