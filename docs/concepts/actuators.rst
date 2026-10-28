@@ -29,7 +29,7 @@ customize and extend for specific actuator models.
 Architecture
 ------------
 
-An actuator is composed of three building blocks, applied in this order:
+An actuator is composed of four building blocks, applied in this order:
 
 .. code-block:: text
 
@@ -38,10 +38,12 @@ An actuator is composed of three building blocks, applied in this order:
    │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
    │   └── InputProcessorBacklash   (reads position on the link side of a backlash joint)
    ├── Drive      (control law that computes raw effort)
-   └── Clamping[]  (clamps raw effort to model actuator limits)
-       ├── ClampingMaxEffort        (±max_effort symmetric clamp)
-       ├── ClampingDCMotor         (velocity-dependent saturation)
-       └── ClampingPositionBased   (position-dependent lookup table)
+   ├── Clamping[]  (clamps raw effort to model actuator limits)
+   │   ├── ClampingMaxEffort        (±max_effort symmetric clamp)
+   │   ├── ClampingDCMotor         (velocity-dependent saturation)
+   │   └── ClampingPositionBased   (position-dependent lookup table)
+   └── Motor       (optional: turns the effort into the effort of a motor)
+       └── MotorDC                 (PWM-driven DC motor, optionally on a battery)
 
 **Input processor**
    Transforms the inputs to the drive: the simulation state (positions,
@@ -64,18 +66,24 @@ An actuator is composed of three building blocks, applied in this order:
    on a single actuator.
 
    A clamp limits the effort the actuator outputs.  Limits that act on a quantity inside the
-   control law, e.g. the PWM duty cycle of a voltage-controlled servo, belong
-   in the drive instead, as in :class:`DriveBAM`.
+   motor, e.g. the PWM duty cycle of a voltage-controlled servo, belong
+   in the motor instead, as in :class:`MotorDC`.
+
+**Motor**
+   Turns the clamped effort into the effort a motor produces at the joint
+   velocity and its supply voltage, e.g. with PWM and current limits and
+   back-EMF.  A motor may draw from a battery (see :ref:`actuator-battery`).
+   At most one motor per actuator; it always runs last.
 
 The per-step pipeline is:
 
 .. code-block:: text
 
-   Input processors → Drive → Clamping → Scatter-add → Drive state update
+   Input processors → Drive → Clamping → Motor → Scatter-add → Drive state update
 
-Drives, clamping objects, and input processors are pluggable: implement the
-:class:`DriveBase`, :class:`ClampingBase`, or :class:`InputProcessorBase`
-class to add new models.
+Drives, clamping objects, input processors and motors are pluggable: implement the
+:class:`DriveBase`, :class:`ClampingBase`, :class:`InputProcessorBase` or
+:class:`MotorBase` class to add new models.
 
 .. deprecated:: 1.8
 
@@ -297,19 +305,9 @@ Custom Drive Inputs
 -------------------
 
 A drive can read extra arrays from ``sim_control`` beyond the positions,
-velocities and targets the actuator already reads, e.g. an estimated load.  It declares
-them in :attr:`DriveBase.custom_inputs`, which maps each array name to its
-frequency, i.e. what the array has one entry for:
-
-* :attr:`Model.AttributeFrequency.JOINT_DOF <newton.Model.AttributeFrequency.JOINT_DOF>`,
-  one entry per DOF;
-* :attr:`Model.AttributeFrequency.ACTUATOR <newton.Model.AttributeFrequency.ACTUATOR>`,
-  one entry per actuator. :meth:`~newton.ModelBuilder.add_actuator`
-  returns the index of each actuator, and :attr:`Actuator.actuator_indices`
-  gives the index of each slot of an actuator.
-  Every actuator built by the builder also writes its effort before clamping
-  to ``control.actuator_computed_effort`` and the effort it applies to the
-  simulation to ``control.actuator_applied_effort``.
+velocities and targets the actuator already reads, e.g. an estimated load.  It lists
+the array names in :attr:`DriveBase.custom_inputs`; each array has one entry
+per DOF.
 
 For actuators created by :class:`~newton.ModelBuilder`, the declared arrays are
 registered on :class:`~newton.Control` automatically.  The caller writes them
@@ -569,9 +567,11 @@ Limitations of the implicit mode.  In the cases marked *error*,
 :meth:`~newton.actuators.Actuator.set_effort_mode_implicit` raises
 ``NotImplementedError`` instead of falling back silently:
 
-* **Other drives** (error), e.g. :class:`~newton.actuators.DriveBAM` and
-  :class:`~newton.actuators.DriveNeuralGRU`: they define no
-  :attr:`~newton.actuators.DriveBase.evaluate_force` law for the solve.
+* **Other drives** (error), e.g. :class:`~newton.actuators.DriveNeuralGRU`:
+  they define no :attr:`~newton.actuators.DriveBase.evaluate_force` law for
+  the solve.
+* **Motors** (error): the solve does not model the motor stage, e.g.
+  :class:`~newton.actuators.MotorDC`.
 * **Torch neural checkpoints** (error): the linearization needs Warp autodiff
   over the network, which only the ONNX backend provides (see
   :ref:`neural-network-checkpoints`).
@@ -634,9 +634,6 @@ Drives
   (stateful: position/velocity history buffers).
 * :class:`DriveNeuralLSTM` — LSTM neural-network drive
   (stateful: hidden/cell state).
-* :class:`DriveBAM` — BAM servo model: firmware gain, PWM and current
-  limits, DC motor with back-EMF (stateless).  BAM's gearbox friction is not
-  included.
 
 See the API documentation for each drive's control-law equations.
 
@@ -652,12 +649,31 @@ Clamping
 Multiple clamping objects can be stacked on a single actuator; they are applied
 in sequence.
 
+Motors
+^^^^^^
+
+* :class:`MotorDC` — PWM-driven DC motor as in BAM (Better Actuator Models):
+  duty cycle, PWM and current limits, back-EMF, optionally on a battery
+  (stateless).  Behind a :class:`DrivePD` with matching gains it reproduces a
+  BAM servo; BAM's gearbox friction is not included.
+
+.. _actuator-battery:
+
 Battery
 -------
 
-A battery powers one or more actuators.  Battery models subclass
+A battery powers the motors of one or more actuators.  Battery models subclass
 :class:`BatteryBase`.  See the individual battery class documentation for the
 model equations.
+
+A battery reads one array and writes one array on ``control``, each with one
+entry per actuator of the model
+(:attr:`Model.AttributeFrequency.ACTUATOR <newton.Model.AttributeFrequency.ACTUATOR>`):
+
+* input ``control.actuator_supply_current``: the current each motor draws
+  from its battery, written by the motor in :meth:`Actuator.step`;
+* output ``control.actuator_supply_voltage``: the supply voltage of each
+  motor, read by the motor in the next :meth:`Actuator.step`.
 
 * :meth:`~newton.ModelBuilder.add_actuator` returns the index of the actuator
   in per-actuator arrays.  :meth:`~newton.ModelBuilder.add_battery` takes a
@@ -670,8 +686,8 @@ model equations.
   maps each battery to its world, e.g. to randomize the parameters per world.
   :attr:`BatteryBase.actuators` and :attr:`BatteryBase.actuator_start` give
   the actuators of each battery.
-* :meth:`BatteryBase.step` advances the batteries by one step.  Call it once
-  per step after the actuators.
+* :meth:`BatteryBase.step` updates the supply voltage from the current.  Call
+  it once per step after the actuators.
 * :meth:`BatteryBase.reset` resets all batteries or the batteries in the worlds
   of a mask.  Call it after resetting worlds.  As in :meth:`SolverBase.reset() <newton.solvers.SolverBase.reset>`,
   the mask has ``world_count + 1`` entries, and the last one selects batteries
@@ -682,7 +698,7 @@ Below, the hip and knee share one battery and the ankle draws from another:
 .. testcode:: actuator-battery
 
    import newton
-   from newton.actuators import BatteryInternalResistance, DriveBAM
+   from newton.actuators import BatteryInternalResistance, DrivePD, MotorDC
 
    builder = newton.ModelBuilder()
    actuators = []
@@ -692,13 +708,11 @@ Below, the hip and knee share one battery and the ankle draws from another:
        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z, label=name)
        builder.add_articulation([joint])
        actuator = builder.add_actuator(
-           DriveBAM,
+           DrivePD,
            index=builder.joint_qd_start[joint],
-           kp=5.0,
-           kt=0.5,
-           resistance=2.0,
-           max_pwm=1.0,
-           supply_from_battery=True,
+           kp=15.0,
+           kd=0.125,
+           motor=(MotorDC, {"kt": 0.5, "resistance": 2.0, "vin": 12.0, "supply_from_battery": True}),
        )
        actuators.append(actuator)
    builder.add_battery(BatteryInternalResistance, actuators[:2], nominal_voltage=12.0, resistance=0.2, min_voltage=9.0)
@@ -724,10 +738,10 @@ Customization
 -------------
 
 Any actuator can be assembled from the existing building blocks — mix and
-match drives, clamping stages, and input processors to fit a specific use case.
+match drives, clamping stages, input processors and motors to fit a specific use case.
 When the built-in components are not sufficient, implement new ones by
-subclassing :class:`DriveBase`, :class:`ClampingBase`, or
-:class:`InputProcessorBase`.
+subclassing :class:`DriveBase`, :class:`ClampingBase`,
+:class:`InputProcessorBase` or :class:`MotorBase`.
 
 For example, a custom drive needs to implement
 :meth:`~DriveBase.compute`, :meth:`~DriveBase.resolve_arguments`,

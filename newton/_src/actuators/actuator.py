@@ -19,6 +19,7 @@ from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortMo
 from .input_processors.base import InputProcessorBase
 from .input_processors.input_processor_backlash import InputProcessorBacklash
 from .input_processors.input_processor_delay import InputProcessorDelay
+from .motors.base import MotorBase
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -40,10 +41,6 @@ _DELAY_STATE_DEPRECATION_MSG = (
 _CONTROLLER_KEYWORD_DEPRECATION_MSG = (
     "Actuator(controller=...) is deprecated in Newton 1.6; use Actuator(drive=...) instead."
 )
-_CUSTOM_INPUTS_TUPLE_DEPRECATION_MSG = (
-    "{name}.custom_inputs as a tuple of names is deprecated in Newton 1.8; "
-    "map each name to its frequency, e.g. {{name: Model.AttributeFrequency.JOINT_DOF}}."
-)
 _CONTROLLER_ATTRIBUTE_DEPRECATION_MSG = "Actuator.controller is deprecated in Newton 1.6; use Actuator.drive instead."
 _CONTROLLER_STATE_DEPRECATION_MSG = (
     "Actuator.State.controller_state is deprecated in Newton 1.6; use drive_state instead."
@@ -55,45 +52,15 @@ def _scatter_add_kernel(
     forces: wp.array[float],
     computed_forces: wp.array[float],
     indices: wp.array[wp.uint32],
-    computed_indices: wp.array[wp.uint32],
-    accumulate_computed: bool,
     output: wp.array[float],
     computed_output: wp.array[float],
-    actuator_output: wp.array[float],
 ):
-    """Scatter-add effort into output; optionally scatter computed effort too, added per DOF or written per actuator,
-    and write effort per actuator."""
+    """Scatter-add effort into output; optionally scatter computed effort too."""
     i = wp.tid()
     idx = indices[i]
     wp.atomic_add(output, idx, forces[i])
-    j = computed_indices[i]
-    if actuator_output:
-        actuator_output[j] = forces[i]
     if computed_output:
-        if accumulate_computed:
-            wp.atomic_add(computed_output, j, computed_forces[i])
-        else:
-            computed_output[j] = computed_forces[i]
-
-
-@wp.kernel
-def _scatter_kernel(
-    source: wp.array[float],
-    indices: wp.array[wp.uint32],
-    output: wp.array[float],
-):
-    i = wp.tid()
-    output[indices[i]] = source[i]
-
-
-@wp.kernel
-def _gather_kernel(
-    source: wp.array[float],
-    indices: wp.array[wp.uint32],
-    output: wp.array[float],
-):
-    i = wp.tid()
-    output[i] = source[indices[i]]
+        wp.atomic_add(computed_output, idx, computed_forces[i])
 
 
 def _assign_state_value(dst: Any, src: Any, name: str) -> None:
@@ -204,58 +171,12 @@ def _require_array(source: Any, name: str) -> Any:
     return value
 
 
-def _custom_input_frequencies(drive: DriveBase) -> dict[str, Model.AttributeFrequency | str]:
-    """Return the drive's custom inputs as ``{name: frequency}``, accepting the deprecated tuple of names."""
-    from ..sim.model import Model  # noqa: PLC0415
-
-    declared = drive.custom_inputs
-    if not isinstance(declared, Mapping):
-        warnings.warn(
-            _CUSTOM_INPUTS_TUPLE_DEPRECATION_MSG.format(name=type(drive).__name__),
-            NewtonDeprecationWarning,
-            stacklevel=3,
-        )
-        declared = dict.fromkeys(declared, Model.AttributeFrequency.JOINT_DOF)
-    frequencies = {}
-    for name, declared_frequency in declared.items():
-        frequency = Model.AttributeFrequency.JOINT_DOF if declared_frequency == "joint_dof" else declared_frequency
-        if frequency not in (Model.AttributeFrequency.JOINT_DOF, Model.AttributeFrequency.ACTUATOR):
-            raise ValueError(
-                f"{type(drive).__name__} custom input '{name}' has unsupported frequency {frequency!r}; "
-                "use Model.AttributeFrequency.JOINT_DOF or Model.AttributeFrequency.ACTUATOR"
-            )
-        frequencies[name] = frequency
-    return frequencies
-
-
 def _collect_custom_inputs(
     sim_control: Any,
     declared: tuple[str, ...],
-    gathered: dict[str, wp.array[float]],
-    actuator_indices: wp.array[wp.uint32] | None,
-    device: wp.Device,
 ) -> dict[str, Any]:
-    """Read declared Control values without validating them, keyed by attribute.
-
-    A value with a buffer in *gathered* is a per-actuator array: its entries
-    for the actuator's slots are gathered through *actuator_indices* into that
-    buffer, which is passed on instead.
-    """
-    inputs = {}
-    for attribute in declared:
-        value = _get_attribute(sim_control, attribute, None)
-        buffer = gathered.get(attribute)
-        if value is not None and buffer is not None:
-            wp.launch(
-                _gather_kernel,
-                dim=len(buffer),
-                inputs=[value, actuator_indices],
-                outputs=[buffer],
-                device=device,
-            )
-            value = buffer
-        inputs[attribute] = value
-    return inputs
+    """Read declared Control values without validating them, keyed by attribute."""
+    return {attribute: _get_attribute(sim_control, attribute, None) for attribute in declared}
 
 
 @functools.cache
@@ -290,13 +211,14 @@ def _input_container_class(name: str, frequencies: tuple[tuple[str, Model.Attrib
 
 
 class Actuator:
-    """Composed actuator: input processors → drive → clamping.
+    """Composed actuator: input processors → drive → clamping → motor.
 
     An actuator reads from simulation state/control arrays, optionally
     transforms them with input processors (e.g. a command delay), computes
     effort via a drive, applies clamping (effort limits, saturation, etc.),
-    and **accumulates** the result into the output array (scatter-add).  The
-    caller must zero the output array before stepping actuators.
+    optionally turns it into the effort of a motor, and **accumulates** the
+    result into the output array (scatter-add).  The caller must zero the
+    output array before stepping actuators.
 
     Usage::
 
@@ -463,8 +385,10 @@ class Actuator:
         requires_grad: bool = False,
         *,
         input_processors: list[InputProcessorBase] | None = None,
+        motor: MotorBase | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
-        control_applied_output_attr: str | None = None,
+        control_supply_voltage_attr: str = "actuator_supply_voltage",
+        control_supply_current_attr: str = "actuator_supply_current",
         controller: DriveBase | object | None = _DEPRECATED_UNSET,
     ):
         """Initialize actuator.
@@ -495,26 +419,21 @@ class Actuator:
             control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
             control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
-                effort. None to skip writing computed effort. Without
-                *actuator_indices* the effort is added per DOF like the
-                output; with *actuator_indices* it is written per actuator
-                at :attr:`actuator_indices`. Skipped while *sim_control* has
-                no such array or it is ``None``.
+                effort. None to skip writing computed effort.
             requires_grad: Allocate intermediate arrays with gradient support
                 for differentiable simulation.
             input_processors: Input processors applied in list order to the
                 state and command inputs before the drive (e.g.
                 :class:`InputProcessorDelay`).
+            motor: Optional motor, applied after the clamping (e.g.
+                :class:`~newton.actuators.MotorDC`).
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
-                than per DOF. Required when the drive declares per-actuator
-                :attr:`~DriveBase.custom_inputs` or any
-                :attr:`~DriveBase.custom_outputs`, or
-                *control_applied_output_attr*.
-            control_applied_output_attr: Attribute on sim_control for the
-                effort each actuator applies to the simulation, written at
-                :attr:`actuator_indices`. None to skip. Skipped while
-                *sim_control* has no such array or it is ``None``.
+                than per DOF. Required when the motor draws from a battery.
+            control_supply_voltage_attr: Attribute on sim_control for the
+                per-actuator supply voltage the motor reads from its battery.
+            control_supply_current_attr: Attribute on sim_control for the
+                per-actuator current the motor draws from its battery.
             controller: Deprecated in Newton 1.6; use ``drive`` instead.
         """
         if controller is not _DEPRECATED_UNSET:
@@ -566,25 +485,13 @@ class Actuator:
         self.control_feedforward_attr = control_feedforward_attr
         self.control_output_attr = control_output_attr
         self.control_computed_output_attr = control_computed_output_attr
-        self.control_applied_output_attr = control_applied_output_attr
-        from ..sim.model import Model  # noqa: PLC0415
-
-        self._custom_inputs = _custom_input_frequencies(drive)
-        actuator_inputs = [
-            name for name, frequency in self._custom_inputs.items() if frequency == Model.AttributeFrequency.ACTUATOR
-        ]
-        if actuator_inputs and actuator_indices is None:
-            raise ValueError(
-                f"{type(drive).__name__} declares per-actuator custom inputs, which require actuator_indices"
-            )
-        if control_applied_output_attr is not None and actuator_indices is None:
-            raise ValueError("control_applied_output_attr requires actuator_indices")
-        if drive.custom_outputs and actuator_indices is None:
-            raise ValueError(f"{type(drive).__name__} declares custom outputs, which require actuator_indices")
-        self._actuator_inputs = {
-            name: wp.zeros(len(indices), dtype=wp.float32, device=indices.device, requires_grad=requires_grad)
-            for name in actuator_inputs
-        }
+        self.motor = motor
+        """Motor applied after the clamping, or ``None``."""
+        self.control_supply_voltage_attr = control_supply_voltage_attr
+        self.control_supply_current_attr = control_supply_current_attr
+        self._uses_battery = motor is not None and motor.uses_battery
+        if self._uses_battery and actuator_indices is None:
+            raise ValueError(f"{type(motor).__name__} draws from a battery, which requires actuator_indices")
 
         self.device = indices.device
         self.requires_grad = requires_grad
@@ -600,6 +507,8 @@ class Actuator:
             processor.finalize(self.device, self.num_actuators, requires_grad=requires_grad)
         for clamp in self.clamping:
             clamp.finalize(self.device, self.num_actuators)
+        if motor is not None:
+            motor.finalize(self.device, self.num_actuators)
 
         self._effort_mode = _EffortModeExplicit(drive, self.clamping, self.device)
 
@@ -635,29 +544,23 @@ class Actuator:
             :meth:`Control.get_attribute_frequency() <newton.Control.get_attribute_frequency>`.
 
         Note:
-            Leaving the feedforward field unassigned means no feedforward term,
-            and leaving the computed output field unassigned skips it.
+            Leaving the feedforward field unassigned means no feedforward term.
         """
         frequencies = self._required_attributes.get("sim_control", {})
         return _input_container_class("sim_control", tuple(frequencies.items()))()
 
     def register_custom_attributes(self, builder: ModelBuilder) -> None:
-        """Register drive inputs and per-actuator outputs as custom Newton Control attributes.
+        """Register drive inputs and battery arrays as custom Newton Control attributes.
 
         :class:`~newton.ModelBuilder` calls this method automatically while
-        finalizing its actuators. Every input declared by the drive in
-        :attr:`~DriveBase.custom_inputs` is registered as a ``wp.float32``
-        array on :class:`~newton.Control` with its declared frequency.
-
-        The following outputs are registered as per-actuator arrays
-        (:attr:`~newton.Model.AttributeFrequency.ACTUATOR` frequency):
-
-        * the drive's :attr:`~DriveBase.custom_outputs`;
-        * :attr:`control_applied_output_attr`;
-        * :attr:`control_computed_output_attr`.
-
-        Registration allocates the arrays but does not populate or clear
-        them; the caller must update the declared inputs before each actuator
+        finalizing its actuators. Every input declared by the drive is
+        registered as a ``wp.float32`` joint-DOF array on
+        :class:`~newton.Control`. When the motor draws from a battery,
+        :attr:`control_supply_voltage_attr` and
+        :attr:`control_supply_current_attr` are registered as per-actuator
+        arrays (:attr:`~newton.Model.AttributeFrequency.ACTUATOR` frequency).
+        Registration allocates the arrays but does not populate or clear them;
+        the caller must update the declared inputs before each actuator
         evaluation.
 
         This method is a Newton convenience. Other simulation engines should
@@ -669,12 +572,10 @@ class Actuator:
         """
         from ..sim.model import Model  # noqa: PLC0415
 
-        frequencies = dict(self._custom_inputs)
-        frequencies.update(dict.fromkeys(self.drive.custom_outputs, Model.AttributeFrequency.ACTUATOR))
-        if self.control_applied_output_attr is not None:
-            frequencies[self.control_applied_output_attr] = Model.AttributeFrequency.ACTUATOR
-        if self.actuator_indices is not None and self.control_computed_output_attr is not None:
-            frequencies[self.control_computed_output_attr] = Model.AttributeFrequency.ACTUATOR
+        frequencies = dict.fromkeys(self.drive.custom_inputs, Model.AttributeFrequency.JOINT_DOF)
+        if self._uses_battery:
+            frequencies[self.control_supply_voltage_attr] = Model.AttributeFrequency.ACTUATOR
+            frequencies[self.control_supply_current_attr] = Model.AttributeFrequency.ACTUATOR
         for name, frequency in frequencies.items():
             builder.add_custom_attribute(
                 builder.CustomAttribute(
@@ -743,8 +644,9 @@ class Actuator:
             options: Solver options; defaults to :class:`Actuator.ImplicitOptions`.
 
         Raises:
-            NotImplementedError: The actuator was built with ``requires_grad=True``.
-                The implicit solve is not differentiable.
+            NotImplementedError: The actuator was built with ``requires_grad=True``,
+                as the implicit solve is not differentiable, or has a motor,
+                which the implicit solve does not model.
 
         Warns:
             NewtonWarning: The actuator has an :class:`~newton.actuators.InputProcessorBacklash`.
@@ -757,6 +659,8 @@ class Actuator:
                 "and the neural drives open their own wp.Tape, which cannot nest inside "
                 "an outer tape. Build the Actuator with requires_grad=False."
             )
+        if self.motor is not None:
+            raise NotImplementedError(f"Implicit actuation does not support the motor {type(self.motor).__name__}.")
         if self.drive.custom_inputs and type(self.drive).prepare_implicit is DriveBase.prepare_implicit:
             raise NotImplementedError(
                 f"{type(self.drive).__name__} declares custom inputs but does not override prepare_implicit, "
@@ -807,22 +711,28 @@ class Actuator:
     def _required_attributes(self) -> dict[str, dict[str, Model.AttributeFrequency | str]]:
         """Attributes this actuator reads with their frequencies, keyed by ``sim_state`` or ``sim_control``.
 
-        Covers the standard arrays and the drive's custom inputs and outputs.
+        Covers the standard arrays, the drive's custom inputs and the battery arrays of the motor.
         """
         from ..sim.model import Model  # noqa: PLC0415
 
         frequency = Model.AttributeFrequency
-        computed_frequency = frequency.ACTUATOR if self.actuator_indices is not None else frequency.JOINT_DOF
+        battery_attrs = (
+            [
+                (self.control_supply_voltage_attr, frequency.ACTUATOR),
+                (self.control_supply_current_attr, frequency.ACTUATOR),
+            ]
+            if self._uses_battery
+            else []
+        )
         state_attrs = [(self.state_pos_attr, frequency.JOINT_COORD), (self.state_vel_attr, frequency.JOINT_DOF)]
         control_attrs = [
             (self.control_target_pos_attr, frequency.JOINT_COORD),
             (self.control_target_vel_attr, frequency.JOINT_DOF),
             (self.control_feedforward_attr, frequency.JOINT_DOF),
             (self.control_output_attr, frequency.JOINT_DOF),
-            (self.control_computed_output_attr, computed_frequency),
-            (self.control_applied_output_attr, frequency.ACTUATOR),
-            *self._custom_inputs.items(),
-            *((name, frequency.ACTUATOR) for name in self.drive.custom_outputs),
+            (self.control_computed_output_attr, frequency.JOINT_DOF),
+            *((name, frequency.JOINT_DOF) for name in self.drive.custom_inputs),
+            *battery_attrs,
         ]
         required = {"sim_state": state_attrs, "sim_control": [(a, f) for a, f in control_attrs if a is not None]}
         return {source: dict(attrs) for source, attrs in required.items() if attrs}
@@ -848,19 +758,21 @@ class Actuator:
         3. **Clamping** — bounded effort into ``_applied_forces``. Explicit
            clamps after the drive law; implicit enforces them inside the
            solve.
-        4. **Scatter-add** — *accumulate* applied (and optionally computed)
+        4. **Motor** — motor effort into ``_applied_forces``. A motor that
+           draws from a battery reads its supply voltage and writes the
+           current it draws.
+        5. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
-           The effort applied to the simulation and the drive's
-           :attr:`~DriveBase.custom_outputs` are written per actuator.
-        5. **Drive state update** — write the drive's ``next_state``.
+        6. **Drive state update** — write the drive's ``next_state``.
 
         Args:
             sim_state: Object or mapping carrying the arrays named by
                 :attr:`state_pos_attr` and :attr:`state_vel_attr`. Build one
                 with :meth:`sim_state`.
             sim_control: Object or mapping carrying the target and output
-                arrays, plus the drive's custom inputs. Build one
+                arrays, plus the drive's custom inputs and the battery arrays
+                of the motor. Build one
                 with :meth:`sim_control`.
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
@@ -932,9 +844,7 @@ class Actuator:
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
-        custom_inputs = _collect_custom_inputs(
-            sim_control, tuple(self._custom_inputs), self._actuator_inputs, self.actuator_indices, self.device
-        )
+        custom_inputs = _collect_custom_inputs(sim_control, self.drive.custom_inputs)
         output_forces = self._effort_mode.compute_force(
             sim_state,
             inputs.positions,
@@ -954,43 +864,41 @@ class Actuator:
             bias_force,
         )
 
-        # --- 4. Scatter-add to output ---
+        # --- 4. Motor ---
+        if self.motor is not None:
+            supply_voltage = supply_current = None
+            if self._uses_battery:
+                supply_voltage = _require_array(sim_control, self.control_supply_voltage_attr)
+                supply_current = _require_array(sim_control, self.control_supply_current_attr)
+            self.motor.compute(
+                output_forces,
+                self._applied_forces,
+                inputs.velocities,
+                inputs.vel_indices,
+                self.actuator_indices,
+                supply_voltage,
+                supply_current,
+                device=self.device,
+            )
+            output_forces = self._applied_forces
+
+        # --- 5. Scatter-add to output ---
         applied_output = _require_array(sim_control, self.control_output_attr)
         computed_output = None
         if (
             self.control_computed_output_attr is not None
             and self.control_computed_output_attr != self.control_output_attr
         ):
-            computed_output = _get_attribute(sim_control, self.control_computed_output_attr, None)
-        actuator_output = None
-        if self.control_applied_output_attr is not None:
-            actuator_output = _get_attribute(sim_control, self.control_applied_output_attr, None)
-        per_actuator = self.actuator_indices is not None
+            computed_output = _require_array(sim_control, self.control_computed_output_attr)
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=self.num_actuators,
-            inputs=[
-                output_forces,
-                self._computed_forces,
-                self.effort_indices,
-                self.actuator_indices if per_actuator else self.effort_indices,
-                not per_actuator,
-            ],
-            outputs=[applied_output, computed_output, actuator_output],
+            inputs=[output_forces, self._computed_forces, self.effort_indices],
+            outputs=[applied_output, computed_output],
             device=self.device,
         )
-        for name, source in self.drive.custom_outputs.items():
-            output = _get_attribute(sim_control, name, None)
-            if output is not None:
-                wp.launch(
-                    kernel=_scatter_kernel,
-                    dim=self.num_actuators,
-                    inputs=[source, self.actuator_indices],
-                    outputs=[output],
-                    device=self.device,
-                )
 
-        # --- 5. State updates (write to next_state) ---
+        # --- 6. State updates (write to next_state) ---
         if self.drive.is_stateful():
             self.drive.update_state(
                 current_act_state.drive_state,

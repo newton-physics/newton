@@ -34,7 +34,6 @@ from newton.actuators import (
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
-    DriveBAM,
     DriveBase,
     DriveNeuralGRU,
     DriveNeuralLSTM,
@@ -45,6 +44,7 @@ from newton.actuators import (
     InputProcessorBase,
     InputProcessorDelay,
     JointSpaceResponse,
+    MotorDC,
     parse_actuator_prim,
     parse_battery_prim,
 )
@@ -1081,7 +1081,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         metadata = self._metadata(self.FEATURES[:-1])
         path = self._save_gru("no_bias.onnx", metadata, input_size=3)
         case = self._make_case(path, 2)
-        self.assertEqual(case.actuator.drive.custom_inputs, {})
+        self.assertEqual(case.actuator.drive.custom_inputs, ())
 
         effort, _ = self._step(case)
 
@@ -1368,7 +1368,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         """Hand a drive's declared inputs to prepare_implicit, as the explicit path does."""
 
         class _RecordingDrive(DrivePD):
-            custom_inputs = {"bias_force": newton.Model.AttributeFrequency.JOINT_DOF}  # noqa: RUF012
+            custom_inputs = ("bias_force",)
             seen = None
 
             def prepare_implicit(self, *args, custom_inputs=None, **kwargs):
@@ -1437,7 +1437,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         metadata["normalization"]["inputs"]["mean"]["qfrc_bias"] = -2.0
         metadata["normalization"]["inputs"]["std"]["qfrc_bias"] = 5.0
         case = self._make_case(self._save_gru("named_custom.onnx", metadata, input_size=2), 2)
-        self.assertEqual(case.actuator.drive.custom_inputs, {"qfrc_bias": newton.Model.AttributeFrequency.JOINT_DOF})
+        self.assertEqual(case.actuator.drive.custom_inputs, ("qfrc_bias",))
 
         # The array is read under the name the checkpoint chose, not "bias_force".
         case.control.qfrc_bias = case.control.bias_force
@@ -1590,7 +1590,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         model = build_model(self._save_gru("declared_only.onnx"))
         actuator = model.actuators[0]
-        self.assertEqual(actuator.drive.custom_inputs, {"bias_force": newton.Model.AttributeFrequency.JOINT_DOF})
+        self.assertEqual(actuator.drive.custom_inputs, ("bias_force",))
         self.assertEqual(actuator.control_feedforward_attr, "joint_act")
 
         control = model.control()
@@ -1609,7 +1609,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
 
         metadata = self._metadata(("position", "target_velocity"))
         without_bias = build_model(self._save_gru("declared_none.onnx", metadata))
-        self.assertEqual(without_bias.actuators[0].drive.custom_inputs, {})
+        self.assertEqual(without_bias.actuators[0].drive.custom_inputs, ())
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
     def test_model_builder_constructs_relative_onnx_usd_actuator(self):
@@ -1627,9 +1627,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
         model = builder.finalize(device=self.device)
         self.assertIsInstance(model.actuators[0].drive, DriveNeuralGRU)
         self.assertEqual(model.actuators[0].control_feedforward_attr, "joint_act")
-        self.assertEqual(
-            model.actuators[0].drive.custom_inputs, {"bias_force": newton.Model.AttributeFrequency.JOINT_DOF}
-        )
+        self.assertEqual(model.actuators[0].drive.custom_inputs, ("bias_force",))
         self.assertTrue(hasattr(model.control(), "bias_force"))
         self.assertFalse(hasattr(model.state(), "bias_force"))
 
@@ -2672,31 +2670,29 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
                 )
 
 
-class TestDriveBAM(unittest.TestCase):
-    """BAM servo drive, alone and with batteries."""
+class TestMotorDC(unittest.TestCase):
+    """DC motor, alone and with batteries."""
 
     def test_compute(self):
-        """Construct the drive directly and call compute() with each duty-cycle limit.
+        """Construct the motor directly and call compute() with each duty-cycle limit.
 
         Slot 0 is within all limits, slot 1 is narrowed by the current limit,
         slot 2 is clamped by ``max_pwm``, and slot 3 reads its supply from
-        ``actuator_supply_voltage`` instead of ``vin``.
+        the battery voltage instead of ``vin`` and writes the current it draws.
         """
-        kp = [2.0, 2.0, 8.0, 2.0]
         kt, resistance, vin, max_pwm = 0.5, 1.0, 10.0, 0.9
+        requested = [1.0, 6.0, 20.0, 1.0]
         max_current = [0.0, 1.0, 0.0, 0.0]
         supply_from_battery = [0.0, 0.0, 0.0, 1.0]
-        supply_voltage = [0.0, 0.0, 0.0, 7.0]
-        q = [0.6, 0.2, 0.0, 0.6]
         qd = [0.5, -1.0, 2.0, 0.3]
-        n = len(kp)
+        n = len(requested)
 
         def _f(vals: Sequence[float]) -> wp.array[float]:
             return wp.array(vals, dtype=wp.float32)
 
         indices = wp.array(list(range(n)), dtype=wp.uint32)
-        drive = DriveBAM(
-            kp=_f(kp),
+        actuator_indices = wp.array([3, 2, 1, 0], dtype=wp.uint32)
+        motor = MotorDC(
             kt=_f([kt] * n),
             resistance=_f([resistance] * n),
             vin=_f([vin] * n),
@@ -2704,33 +2700,24 @@ class TestDriveBAM(unittest.TestCase):
             max_current=_f(max_current),
             supply_from_battery=_f(supply_from_battery),
         )
+        self.assertTrue(motor.uses_battery)
+        supply_voltage = _f([7.0, 0.0, 0.0, 0.0])
+        supply_current = wp.zeros(n, dtype=wp.float32)
         forces = wp.zeros(n, dtype=wp.float32)
 
-        drive.compute(
-            positions=_f(q),
-            velocities=_f(qd),
-            target_pos=_f([1.0] * n),
-            target_vel=_f([0.0] * n),
-            feedforward=None,
-            pos_indices=indices,
-            vel_indices=indices,
-            target_pos_indices=indices,
-            target_vel_indices=indices,
-            forces=forces,
-            state=None,
-            dt=0.01,
-            custom_inputs={"actuator_supply_voltage": _f(supply_voltage)},
-        )
+        motor.compute(_f(requested), forces, _f(qd), indices, actuator_indices, supply_voltage, supply_current)
 
         qd = np.array(qd)
-        supply = np.where(supply_from_battery, supply_voltage, vin)
-        duty = np.array(kp) * (1.0 - np.array(q))
+        supply = np.where(supply_from_battery, 7.0, vin)
+        duty = (np.array(requested) * resistance / kt + kt * qd) / vin
         limited = np.array(max_current) > 0.0
         center, span = kt * qd / supply, resistance * np.array(max_current) / supply
         duty[limited] = np.clip(duty[limited], (center - span)[limited], (center + span)[limited])
         duty = np.clip(duty, -max_pwm, max_pwm)
-        expected = kt * (supply * duty - kt * qd) / resistance
-        np.testing.assert_allclose(forces.numpy(), expected, rtol=1e-5)
+        current = (supply * duty - kt * qd) / resistance
+        np.testing.assert_allclose(forces.numpy(), kt * current, rtol=1e-5)
+        np.testing.assert_allclose(forces.numpy()[0], requested[0], rtol=1e-5)
+        np.testing.assert_allclose(supply_current.numpy(), (duty * current)[::-1], rtol=1e-5)
 
     def test_battery_supply(self):
         """Each servo reads the voltage its battery dropped to under the previous step's current.
@@ -2739,14 +2726,15 @@ class TestDriveBAM(unittest.TestCase):
         ankle servo share battery 0, and a second ankle servo draws from
         battery 1. The knee is its own actuator group and the ankle servos
         share one, so a battery spans groups and two servos of one group act
-        on one DOF. A servo draws ``duty * effort / kt`` with the effort
-        it applies to the simulation, which also goes to ``joint_f``. In world 0
-        the ankle regenerates: it offsets the knee's current on battery 0 and
-        leaves battery 1 at its nominal voltage. In world 1 battery 0 reaches
-        its minimum voltage. ``replicate`` gives each world its own batteries,
-        and a masked reset restores the nominal voltage of world 0 only.
+        on one DOF. The PD gains reproduce the duty cycle ``kp * error`` of a
+        BAM servo, and a servo draws ``duty * current`` from its battery. In
+        world 0 the ankle regenerates: it offsets the knee's current on
+        battery 0 and leaves battery 1 at its nominal voltage. In world 1
+        battery 0 reaches its minimum voltage. ``replicate`` gives each world
+        its own batteries, and a masked reset restores the nominal voltage of
+        world 0 only.
         """
-        kp, kt, resistance, max_pwm, max_effort, target, dt = 0.5, 0.6, 2.0, 0.9, 0.8, 1.0, 0.01
+        kp, kt, resistance, vin, max_pwm, target, dt = 0.5, 0.6, 2.0, 6.0, 0.9, 1.0, 0.01
         nominal_voltage, min_voltage, battery_resistance = np.array([6.0, 4.0]), np.array([5.4, 3.0]), 1.0
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         links = [template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3)]
@@ -2764,18 +2752,18 @@ class TestDriveBAM(unittest.TestCase):
         ]
         template.add_articulation(joints)
         knee, ankle = template.joint_qd_start[joints[0]], template.joint_qd_start[joints[2]]
-        bam = {
-            "kp": kp,
-            "kt": kt,
-            "resistance": resistance,
-            "max_pwm": max_pwm,
-            "supply_from_battery": True,
-            "clamping": [(ClampingMaxEffort, {"max_effort": max_effort})],
+        servo = {
+            "kp": kt * vin * kp / resistance,
+            "kd": kt * kt / resistance,
+            "motor": (
+                MotorDC,
+                {"kt": kt, "resistance": resistance, "vin": vin, "max_pwm": max_pwm, "supply_from_battery": True},
+            ),
         }
         knee_servo = template.add_actuator(
-            DriveBAM, index=knee, input_processors=[(InputProcessorBacklash, {"backlash_joint": "backlash"})], **bam
+            DrivePD, index=knee, input_processors=[(InputProcessorBacklash, {"backlash_joint": "backlash"})], **servo
         )
-        ankle_servos = [template.add_actuator(DriveBAM, index=ankle, **bam) for _ in range(2)]
+        ankle_servos = [template.add_actuator(DrivePD, index=ankle, **servo) for _ in range(2)]
         for servos, nominal, minimum in zip(
             ([knee_servo, ankle_servos[0]], [ankle_servos[1]]), nominal_voltage, min_voltage, strict=True
         ):
@@ -2817,18 +2805,15 @@ class TestDriveBAM(unittest.TestCase):
 
             voltage = np.maximum(nominal - battery_resistance * np.maximum(drawn, 0.0), minimum)[battery]
             np.testing.assert_allclose(control.actuator_supply_voltage.numpy(), voltage, rtol=1e-5)
-            computed = kt * (voltage * duty - kt * qd[dof]) / resistance
-            np.testing.assert_allclose(control.actuator_computed_effort.numpy(), computed, rtol=1e-5)
-            np.testing.assert_allclose(control.actuator_supply_current_per_effort.numpy(), duty / kt, rtol=1e-5)
-            clamped = np.clip(computed, -max_effort, max_effort)
-            np.testing.assert_allclose(control.actuator_applied_effort.numpy(), clamped, rtol=1e-5)
+            current = (voltage * duty - kt * qd[dof]) / resistance
+            np.testing.assert_allclose(control.actuator_supply_current.numpy(), duty * current, rtol=1e-4)
             applied = np.zeros(model.joint_dof_count)
-            np.add.at(applied, dof, clamped)
-            np.testing.assert_allclose(control.joint_f.numpy(), applied, rtol=1e-5)
+            np.add.at(applied, dof, kt * current)
+            np.testing.assert_allclose(control.joint_f.numpy(), applied, rtol=1e-4)
             batteries.step(control)
-            drawn = np.bincount(battery, duty * clamped / kt, minlength=4)
+            drawn = np.bincount(battery, duty * current, minlength=4)
             if step == 0:
-                self.assertTrue(0.0 < drawn[0] < duty[0] * clamped[0] / kt and drawn[1] < 0.0)
+                self.assertTrue(0.0 < drawn[0] < duty[0] * current[0] and drawn[1] < 0.0)
         self.assertAlmostEqual(control.actuator_supply_voltage.numpy()[3], min_voltage[0], places=5)
 
         batteries.reset(control, world_mask=wp.array([True, False, False], dtype=wp.bool))
@@ -4974,18 +4959,15 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_equal(_delay_state_of(act_state).num_pushes.numpy(), [0] * n)
 
     def test_battery_validation(self):
-        """add_battery rejects invalid input, and finalize warns about BAM servos without their battery."""
+        """add_battery rejects invalid input, and finalize warns about motors without their battery."""
         template = newton.ModelBuilder()
         link = template.add_link()
         joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
         template.add_actuator(
-            DriveBAM,
+            DrivePD,
             index=template.joint_qd_start[joint],
             kp=1.0,
-            kt=1.0,
-            resistance=1.0,
-            max_pwm=1.0,
-            supply_from_battery=True,
+            motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "vin": 12.0, "supply_from_battery": True}),
         )
         builder = newton.ModelBuilder()
         builder.add_world(template)
@@ -5032,13 +5014,10 @@ class TestActuatorBuilder(unittest.TestCase):
             clamping=[(ClampingMaxEffort, {"max_effort": 1.0})],
         )
         servo = template.add_actuator(
-            DriveBAM,
+            DrivePD,
             index=template.joint_qd_start[joints[1]],
             kp=1.0,
-            kt=1.0,
-            resistance=1.0,
-            max_pwm=1.0,
-            supply_from_battery=True,
+            motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "vin": 12.0, "supply_from_battery": True}),
         )
         template.add_battery(BatteryInternalResistance, [servo], nominal_voltage=12.0, resistance=0.5, min_voltage=9.0)
         builder = newton.ModelBuilder()
@@ -5054,19 +5033,18 @@ class TestActuatorBuilder(unittest.TestCase):
         np.testing.assert_array_equal(batteries.actuators.numpy(), [1, 3, 5])
         np.testing.assert_array_equal(batteries.world.numpy(), [0, 1, 2])
         for name, frequency in {
-            "actuator_applied_effort": actuator,
+            "actuator_supply_current": actuator,
             "actuator_supply_voltage": actuator,
             "joint_target_q": newton.Model.AttributeFrequency.JOINT_COORD,
         }.items():
             self.assertEqual(control.get_attribute_frequency(name), frequency)
-        bam = next(a for a in model.actuators if isinstance(a.drive, DriveBAM))
-        sim_state, sim_control = bam.sim_state(), bam.sim_control()
+        motor = next(a for a in model.actuators if a.motor is not None)
+        sim_state, sim_control = motor.sim_state(), motor.sim_control()
         for source, name, frequency in (
             (sim_state, "joint_q", newton.Model.AttributeFrequency.JOINT_COORD),
             (sim_control, "joint_f", newton.Model.AttributeFrequency.JOINT_DOF),
-            (sim_control, "actuator_applied_effort", actuator),
             (sim_control, "actuator_supply_voltage", actuator),
-            (sim_control, "actuator_supply_current_per_effort", actuator),
+            (sim_control, "actuator_supply_current", actuator),
         ):
             self.assertEqual(source.get_attribute_frequency(name), frequency)
         for source, name in ((control, "kp"), (sim_control, "kp")):
@@ -5074,15 +5052,17 @@ class TestActuatorBuilder(unittest.TestCase):
                 source.get_attribute_frequency(name)
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
-    def test_bam_from_usd(self):
-        """BAM servos with a delay, backlash and a battery, loaded from USD and replicated.
+    def test_motor_from_usd(self):
+        """Servos with a DC motor, a delay, backlash and a battery, loaded from USD and replicated.
 
-        The asset has three servos with BAM, max effort and a 2-step delay:
+        The asset has three servos with PD, max effort, a DC motor and a
+        2-step delay, with PD gains that reproduce a BAM duty cycle of
+        ``0.5 * error``:
           knee_actuator: backlash hinge in series, draws from Battery
           ankle_actuator: draws from Battery
           toe_actuator: fixed supply vin = 5 V
-        The BAM, processor and battery tokens have no registered USD schema,
-        so they must be found next to the registered clamping schema. The
+        The motor, processor and battery tokens may have no registered USD
+        schema, so they must be found next to the registered schemas. The
         knee is its own actuator group because of its backlash processor and
         reads ``q_knee + q_backlash``. Battery has no ``newton:minVoltage``,
         and SpareBattery has no actuators, so it is not imported.
@@ -5128,8 +5108,9 @@ class TestActuatorBuilder(unittest.TestCase):
                 actuator.step(state, control, current, nxt, dt=0.01)
             states = [(actuator, nxt, current) for actuator, current, nxt in states]
 
-            duty = np.clip(0.5 * (targets[max(step - 2, 0)] - measured), -0.9, 0.9)
-            expected = np.clip(0.6 * supply * duty / 2.0, -0.8, 0.8)
+            requested = np.clip(0.6 * supply * 0.5 * (targets[max(step - 2, 0)] - measured) / 2.0, -0.8, 0.8)
+            duty = np.clip(requested * 2.0 / (0.6 * supply), -0.9, 0.9)
+            expected = 0.6 * supply * duty / 2.0
             np.testing.assert_allclose(control.joint_f.numpy()[dof], expected, rtol=1e-5, err_msg=f"step {step}")
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")

@@ -100,6 +100,7 @@ if TYPE_CHECKING:
     from ..actuators.clamping.base import ClampingBase
     from ..actuators.drives.base import DriveBase
     from ..actuators.input_processors.base import InputProcessorBase
+    from ..actuators.motors.base import MotorBase
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -912,7 +913,7 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(drive_class, input_processor_key, clamping_key, drive_shared_key)``
+        ``(drive_class, input_processor_key, clamping_key, drive_shared_key, motor_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
         be identical across all actuators in a group.  Per-actuator params
         such as delay step values may differ within a group.
@@ -930,6 +931,9 @@ class ModelBuilder:
         input_processor_shared_kwargs: tuple = ()  # Tuple of dicts: shared kwargs per input processor class
         input_processor_args: list[list[dict[str, Any]]] = field(default_factory=list)  # Per-actuator params
         actuator_indices: list[int] = field(default_factory=list)  # Per-actuator rows of per-actuator arrays
+        motor_class: type | None = None  # MotorBase subclass (e.g. MotorDC), or None
+        motor_shared_kwargs: dict = field(default_factory=dict)  # Shared motor kwargs
+        motor_args: list[dict[str, Any]] = field(default_factory=list)  # Per-actuator motor array params
 
         def __init__(
             self,
@@ -946,6 +950,9 @@ class ModelBuilder:
             input_processor_shared_kwargs: tuple = (),
             input_processor_args: list[list[dict[str, Any]]] | None = None,
             actuator_indices: list[int] | None = None,
+            motor_class: type | None = None,
+            motor_shared_kwargs: dict | None = None,
+            motor_args: list[dict[str, Any]] | None = None,
         ):
             """Initialize an actuator entry.
 
@@ -971,6 +978,9 @@ class ModelBuilder:
             self.input_processor_shared_kwargs = input_processor_shared_kwargs
             self.input_processor_args = input_processor_args if input_processor_args is not None else []
             self.actuator_indices = actuator_indices if actuator_indices is not None else []
+            self.motor_class = motor_class
+            self.motor_shared_kwargs = motor_shared_kwargs if motor_shared_kwargs is not None else {}
+            self.motor_args = motor_args if motor_args is not None else []
             if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
                 return
             warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -3236,14 +3246,16 @@ class ModelBuilder:
         pos_index: int | None = None,
         *,
         input_processors: list[tuple[type[InputProcessorBase], dict[str, Any]]] | None = None,
+        motor: tuple[type[MotorBase], dict[str, Any]] | None = None,
         controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> int:
         """Add an external actuator for a single DOF.
 
         External actuators apply forces computed outside the physics engine.
-        Multiple calls with the same *drive_class*, *clamping*
-        types, and identical shared parameters are accumulated into one
+        Multiple calls with the same *drive_class*, *clamping*, input
+        processor and *motor* types, and identical shared parameters are
+        accumulated into one
         :class:`~newton.actuators.Actuator` instance during
         :meth:`finalize <ModelBuilder.finalize>`.  Per-actuator parameters,
         such as delay step values, may differ within the same group.
@@ -3266,6 +3278,8 @@ class ModelBuilder:
                 class's :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`
                 take a joint index or a joint label; ``None`` selects the
                 actuated joint.
+            motor: Optional ``(MotorClass, kwargs)`` tuple applied after the
+                clamping. E.g. ``(MotorDC, {"kt": 1.0, "resistance": 2.0, "vin": 12.0})``.
             controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
 
@@ -3363,9 +3377,21 @@ class ModelBuilder:
 
         input_processor_shared_kwargs = tuple(input_processor_shared_list)
 
+        # --- Resolve motor kwargs and separate shared from per-DOF ---
+        motor_class = None
+        motor_shared = {}
+        motor_array_params = {}
+        if motor is not None:
+            motor_class, motor_kwargs = motor
+            resolved_motor = motor_class.resolve_arguments(motor_kwargs)
+            motor_shared_names = getattr(motor_class, "SHARED_PARAMS", set())
+            motor_shared = {k: resolved_motor[k] for k in motor_shared_names if k in resolved_motor}
+            motor_array_params = {k: v for k, v in resolved_motor.items() if k not in motor_shared_names}
+
         # --- Build entry key: identifies a group of compatible actuators ---
         # Groups differ when drive class, input processor types/shared-params,
-        # clamping types/shared-params, or drive shared params differ.
+        # clamping types/shared-params, drive shared params, or motor
+        # type/shared-params differ.
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
@@ -3380,7 +3406,8 @@ class ModelBuilder:
             (pc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for pc, shared in zip(input_processor_classes, input_processor_shared_list, strict=True)
         )
-        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key)
+        motor_key = (motor_class, tuple(sorted((k, _make_hashable(v)) for k, v in motor_shared.items())))
+        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key, motor_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
@@ -3396,6 +3423,8 @@ class ModelBuilder:
                 input_processor_classes=input_processor_classes,
                 input_processor_shared_kwargs=input_processor_shared_kwargs,
                 input_processor_args=[],
+                motor_class=motor_class,
+                motor_shared_kwargs=motor_shared,
             ),
         )
 
@@ -3407,6 +3436,8 @@ class ModelBuilder:
         entry.clamping_args.append(clamping_array_params_list)
         entry.input_processor_args.append(input_processor_array_params_list)
         entry.actuator_indices.append(actuator)
+        if motor_class is not None:
+            entry.motor_args.append(motor_array_params)
         return actuator
 
     def add_battery(self, battery_class: type[BatteryBase], actuators: Sequence[int], **kwargs: Any) -> None:
@@ -3421,8 +3452,8 @@ class ModelBuilder:
             battery_class: Battery class (e.g. :class:`~newton.actuators.BatteryInternalResistance`).
             actuators: Actuator indices returned by :meth:`add_actuator`. At
                 least one is required, and each must belong to the current
-                world and draw from a battery (e.g.
-                :class:`~newton.actuators.DriveBAM` with ``supply_from_battery=True``).
+                world and have a motor that draws from a battery (e.g.
+                :class:`~newton.actuators.MotorDC` with ``supply_from_battery=True``).
             **kwargs: Per-battery parameters (e.g. ``nominal_voltage``, ``resistance``).
 
         Raises:
@@ -3438,11 +3469,11 @@ class ModelBuilder:
         for actuator in actuators:
             if not 0 <= actuator < self.actuator_count:
                 raise ValueError(f"add_battery: actuator {actuator} does not exist")
-            dof, drive_args = next(
+            dof, motor_args = next(
                 (
-                    (dof, args)
+                    (dof, entry.motor_args[i] if entry.motor_args else {})
                     for entry in self.actuator_entries.values()
-                    for row, dof, args in zip(entry.actuator_indices, entry.indices, entry.drive_args, strict=False)
+                    for i, (row, dof) in enumerate(zip(entry.actuator_indices, entry.indices, strict=False))
                     if row == actuator
                 ),
                 (None, {}),
@@ -3451,9 +3482,10 @@ class ModelBuilder:
                 world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
                 if world != self.current_world:
                     raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
-            if not drive_args.get("supply_from_battery"):
+            if not motor_args.get("supply_from_battery"):
                 raise ValueError(
-                    f"add_battery: actuator {actuator} does not draw from a battery; add it with supply_from_battery=True"
+                    f"add_battery: actuator {actuator} does not draw from a battery; "
+                    "add it with a motor with supply_from_battery=True"
                 )
             if actuator in with_battery:
                 raise ValueError(f"add_battery: actuator {actuator} already draws from a battery")
@@ -5772,6 +5804,8 @@ class ModelBuilder:
                     input_processor_classes=sub_entry.input_processor_classes,
                     input_processor_shared_kwargs=sub_entry.input_processor_shared_kwargs,
                     input_processor_args=[],
+                    motor_class=sub_entry.motor_class,
+                    motor_shared_kwargs=sub_entry.motor_shared_kwargs,
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
@@ -5779,6 +5813,7 @@ class ModelBuilder:
             entry.pos_indices.extend(idx + joint_coord_offset for idx in sub_entry.pos_indices)
             entry.drive_args.extend(sub_entry.drive_args)
             entry.clamping_args.extend(sub_entry.clamping_args)
+            entry.motor_args.extend(sub_entry.motor_args)
             for per_actuator in sub_entry.input_processor_args:
                 offset_args = []
                 for proc_class, sub_args in zip(sub_entry.input_processor_classes, per_actuator, strict=True):
@@ -15708,6 +15743,25 @@ class ModelBuilder:
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
+                motor_obj = None
+                if entry.motor_class is not None:
+                    motor_arrays = self._stack_args_to_arrays(
+                        entry.motor_args, device=device, requires_grad=requires_grad
+                    )
+                    motor_obj = entry.motor_class(**motor_arrays, **entry.motor_shared_kwargs)
+                    missing = [
+                        row
+                        for row, args in zip(entry.actuator_indices, entry.motor_args, strict=False)
+                        if args.get("supply_from_battery") and row not in with_battery
+                    ]
+                    if missing:
+                        warnings.warn(
+                            f"{entry.motor_class.__name__} draws from a battery, but actuator(s) {missing} "
+                            "have no battery; their supply voltage stays 0 V",
+                            NewtonWarning,
+                            stacklevel=2,
+                        )
+
                 has_rows = len(entry.actuator_indices) == len(entry.indices)
                 actuator = Actuator(
                     indices=indices,
@@ -15716,24 +15770,9 @@ class ModelBuilder:
                     pos_indices=pos_indices_arg,
                     requires_grad=requires_grad,
                     input_processors=input_processor_objs,
+                    motor=motor_obj,
                     actuator_indices=self._build_index_array(entry.actuator_indices, device) if has_rows else None,
-                    control_computed_output_attr="actuator_computed_effort" if has_rows else None,
-                    control_applied_output_attr="actuator_applied_effort" if has_rows else None,
                 )
-
-                if "actuator_supply_voltage" in drive.custom_inputs:
-                    missing = [
-                        row
-                        for row, args in zip(entry.actuator_indices, entry.drive_args, strict=True)
-                        if args.get("supply_from_battery") and row not in with_battery
-                    ]
-                    if missing:
-                        warnings.warn(
-                            f"{type(drive).__name__} reads actuator_supply_voltage, but actuator(s) {missing} "
-                            "have no battery; their supply voltage stays 0 V",
-                            NewtonWarning,
-                            stacklevel=2,
-                        )
 
                 actuator.register_custom_attributes(self)
                 m.actuators.append(actuator)

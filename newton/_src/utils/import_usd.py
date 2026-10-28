@@ -2834,6 +2834,7 @@ def parse_usd(
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.input_processors.base import InputProcessorBase  # noqa: PLC0415
+    from ..actuators.motors.base import MotorBase  # noqa: PLC0415
     from ..actuators.usd_parser import parse_actuator_prim, parse_battery_prim  # noqa: PLC0415
 
     batteries: dict[str, dict[str, float]] = {}
@@ -2884,6 +2885,7 @@ def parse_usd(
 
         input_processor_specs = []
         clamping_specs = []
+        motor_spec = None
         for comp_class, comp_kwargs in parsed.component_specs:
             if issubclass(comp_class, InputProcessorBase):
                 proc_kwargs = dict(comp_kwargs)
@@ -2897,19 +2899,22 @@ def parse_usd(
                             )
                         proc_kwargs[name] = path_joint_map[path]
                 input_processor_specs.append((comp_class, proc_kwargs))
+            elif issubclass(comp_class, MotorBase):
+                motor_spec = (comp_class, dict(comp_kwargs))
             else:
                 clamping_specs.append((comp_class, comp_kwargs))
 
         drive_kwargs = {name: value for name, value in parsed.drive_kwargs.items() if name not in add_actuator_params}
         battery_path = parsed.battery_path
-        if battery_path is not None and "supply_from_battery" in inspect.signature(parsed.drive_class).parameters:
-            drive_kwargs["supply_from_battery"] = True
+        if battery_path is not None and motor_spec is not None:
+            motor_spec[1]["supply_from_battery"] = True
         actuator = builder.add_actuator(
             parsed.drive_class,
             index=dof_index,
             clamping=clamping_specs if clamping_specs else None,
             pos_index=pos_index,
             input_processors=input_processor_specs,
+            motor=motor_spec,
             **drive_kwargs,
         )
         if battery_path is not None:

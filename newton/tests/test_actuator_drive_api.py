@@ -97,10 +97,7 @@ class TestActuatorDriveAPI(unittest.TestCase):
         """Let drives validate or provide fallbacks for declared inputs."""
 
         class _RecordingDrive(actuators.DrivePD):
-            custom_inputs = {  # noqa: RUF012
-                "custom_control_input": newton.Model.AttributeFrequency.JOINT_DOF,
-                "missing_control_input": newton.Model.AttributeFrequency.JOINT_DOF,
-            }
+            custom_inputs = ("custom_control_input", "missing_control_input")
 
             def compute(self, *args, custom_inputs=None, **kwargs):
                 self.seen_custom_inputs = custom_inputs
@@ -162,11 +159,7 @@ class TestActuatorDriveAPI(unittest.TestCase):
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), 1.0)
 
     def test_actuator_registers_drive_inputs_only(self):
-        """Ignore undeclared input conventions on delay and clamping components.
-
-        The drive declares its input as a deprecated tuple of names, which is
-        still read as a joint-DOF input.
-        """
+        """Ignore undeclared input conventions on delay and clamping components."""
         drive = actuators.DrivePD(
             kp=wp.array([0.0], dtype=wp.float32),
             kd=wp.array([0.0], dtype=wp.float32),
@@ -176,13 +169,12 @@ class TestActuatorDriveAPI(unittest.TestCase):
         delay.custom_inputs = ("delay_input",)
         clamping = actuators.ClampingMaxEffort(max_effort=wp.array([1.0], dtype=wp.float32))
         clamping.custom_inputs = ("clamping_input",)
-        with self.assertWarns(NewtonDeprecationWarning):
-            actuator = actuators.Actuator(
-                indices=wp.array([0], dtype=wp.uint32),
-                drive=drive,
-                input_processors=[delay],
-                clamping=[clamping],
-            )
+        actuator = actuators.Actuator(
+            indices=wp.array([0], dtype=wp.uint32),
+            drive=drive,
+            input_processors=[delay],
+            clamping=[clamping],
+        )
         builder = newton.ModelBuilder()
 
         actuator.register_custom_attributes(builder)
@@ -204,7 +196,7 @@ class TestActuatorDriveAPI(unittest.TestCase):
         """Register actuator inputs on Control during model finalization."""
 
         class _CustomDrive(actuators.DrivePD):
-            custom_inputs = {"estimated_load": newton.Model.AttributeFrequency.JOINT_DOF}  # noqa: RUF012
+            custom_inputs = ("estimated_load",)
 
         builder = newton.ModelBuilder()
         link = builder.add_link()

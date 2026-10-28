@@ -39,7 +39,7 @@ class InputProcessorBacklash(InputProcessorBase):
 
     instead of the actuated joint alone. The velocity stays that of the
     actuated joint: it is motor physics, e.g. the back-EMF of
-    :class:`~newton.actuators.DriveBAM`, not an encoder reading.
+    :class:`~newton.actuators.MotorDC`, not an encoder reading.
 
     The sum is written into one entry per actuator slot, and
     :attr:`~newton.actuators.InputProcessorBase.Inputs.pos_indices` is

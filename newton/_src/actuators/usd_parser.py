@@ -15,9 +15,10 @@ from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .batteries import BatteryBase, BatteryInternalResistance
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .drives import DriveBAM, DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
+from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .input_processors import InputProcessorBacklash, InputProcessorBase
 from .input_processors.input_processor_delay import InputProcessorDelay
+from .motors import MotorBase, MotorDC
 from .utils import _looks_like_torch_checkpoint, load_metadata
 
 _DEPRECATED_UNSET = object()
@@ -63,6 +64,7 @@ class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
     DRIVE = "drive"
     CLAMPING = "clamping"
     INPUT_PROCESSOR = "input_processor"
+    MOTOR = "motor"
 
     @classmethod
     def _missing_(cls, value: object):
@@ -81,12 +83,14 @@ class ActuatorParsed:
 
     Each detected API schema produces a (class, kwargs) entry.
     The drive is separated out; everything else goes into
-    component_specs (input processors, clamping, etc.).
+    component_specs (input processors, clamping, motor, etc.).
     """
 
     drive_class: type[DriveBase]
     drive_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[ClampingBase | InputProcessorBase], dict[str, Any]]] = field(default_factory=list)
+    component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorBase], dict[str, Any]]] = field(
+        default_factory=list
+    )
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
     battery_path: str | None = None
@@ -96,7 +100,7 @@ class ActuatorParsed:
         self,
         drive_class: type[DriveBase] | object = _DEPRECATED_UNSET,
         drive_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
-        component_specs: list[tuple[type[ClampingBase | InputProcessorBase], dict[str, Any]]] | None = None,
+        component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorBase], dict[str, Any]]] | None = None,
         target_path: str = "",
         *,
         battery_path: str | None = None,
@@ -108,7 +112,7 @@ class ActuatorParsed:
         Args:
             drive_class: Parsed drive class.
             drive_kwargs: Parsed drive constructor arguments.
-            component_specs: Parsed input processor and clamping specifications.
+            component_specs: Parsed input processor, clamping and motor specifications.
             target_path: USD prim path of the driven joint.
             battery_path: USD prim path of the battery the actuator draws
                 from, or ``None``.
@@ -280,11 +284,12 @@ class SchemaNames:
     PD_CONTROL = "NewtonPDControlAPI"
     PID_CONTROL = "NewtonPIDControlAPI"
     NEURAL_CONTROL = "NewtonNeuralControlAPI"
-    BAM_CONTROL = "NewtonBAMControlAPI"
 
     MAX_EFFORT_CLAMPING = "NewtonMaxEffortClampingAPI"
     DC_MOTOR_CLAMPING = "NewtonDCMotorClampingAPI"
     POSITION_BASED_CLAMPING = "NewtonPositionBasedClampingAPI"
+
+    DC_MOTOR = "NewtonDCMotorAPI"
 
     DELAY = "NewtonActuatorDelayAPI"
     BACKLASH = "NewtonActuatorBacklashAPI"
@@ -294,10 +299,10 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.PD_CONTROL: _SchemaEntry(DrivePD, ComponentKind.DRIVE),
     SchemaNames.PID_CONTROL: _SchemaEntry(DrivePID, ComponentKind.DRIVE),
     SchemaNames.NEURAL_CONTROL: _SchemaEntry(_resolve_neural_drive, ComponentKind.DRIVE),
-    SchemaNames.BAM_CONTROL: _SchemaEntry(DriveBAM, ComponentKind.DRIVE),
     SchemaNames.MAX_EFFORT_CLAMPING: _SchemaEntry(ClampingMaxEffort, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR_CLAMPING: _SchemaEntry(ClampingDCMotor, ComponentKind.CLAMPING),
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
+    SchemaNames.DC_MOTOR: _SchemaEntry(MotorDC, ComponentKind.MOTOR),
     SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
     SchemaNames.BACKLASH: _SchemaEntry(InputProcessorBacklash, ComponentKind.INPUT_PROCESSOR),
 }
@@ -306,6 +311,7 @@ _BASE_SCHEMAS = {
     "NewtonActuatorControlBaseAPI",
     "NewtonActuatorClampingBaseAPI",
     "NewtonActuatorInputProcessorBaseAPI",
+    "NewtonActuatorMotorBaseAPI",
 }
 
 
@@ -404,7 +410,7 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             - has no authored ``newton:targets`` relationship,
             - the target prim does not exist or is not a
               ``PhysicsRevoluteJoint`` / ``PhysicsPrismaticJoint``,
-            - has multiple drive schemas applied,
+            - has multiple drive or motor schemas applied,
             - has no drive schema, or
             - has a ``NewtonNeuralControlAPI`` with an unsupported model or an
               unapproved Torch checkpoint.
@@ -494,6 +500,12 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             drive_kwargs = kwargs
             drive_schema_registered = _is_registered_schema(schema_name)
         else:
+            if entry.kind is ComponentKind.MOTOR:
+                motor = next((c for c, _ in component_specs if issubclass(c, MotorBase)), None)
+                if motor is not None:
+                    raise ValueError(
+                        f"Actuator prim '{prim.GetPath()}' has multiple motors: {motor.__name__} and {cls.__name__}"
+                    )
             component_specs.append((cls, kwargs))
 
     if drive_class is None:

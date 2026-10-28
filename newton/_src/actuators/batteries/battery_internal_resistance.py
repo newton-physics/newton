@@ -19,8 +19,7 @@ def _battery_update_kernel(
     nominal_voltage: wp.array[float],
     resistance: wp.array[float],
     min_voltage: wp.array[float],
-    current_per_effort: wp.array[float],
-    effort: wp.array[float],
+    actuator_current: wp.array[float],
     current: wp.array[float],
     supply_voltage: wp.array[float],
 ):
@@ -28,8 +27,7 @@ def _battery_update_kernel(
     start = battery_actuator_start[b]
     end = battery_actuator_start[b + 1]
     for k in range(start, end):
-        a = battery_actuators[k]
-        current[b] += current_per_effort[a] * effort[a]
+        current[b] += actuator_current[battery_actuators[k]]
     voltage = wp.max(nominal_voltage[b] - resistance[b] * wp.max(current[b], 0.0), min_voltage[b])
     for k in range(start, end):
         supply_voltage[battery_actuators[k]] = voltage
@@ -63,21 +61,18 @@ class BatteryInternalResistance(BatteryBase):
 
     .. math::
 
-        V = \\max\\big(V_{\\text{nominal}} - R \\max(0, \\textstyle\\sum g\\, \\tau),\\;
+        V = \\max\\big(V_{\\text{nominal}} - R \\max(0, \\textstyle\\sum I),\\;
         V_{\\min}\\big)
 
-    over the actuators assigned to it, where :math:`g \\tau` is the current an
-    actuator draws from the battery: :math:`g` is
-    ``actuator_supply_current_per_effort``, written by the drive, e.g.
-    :math:`d / k_t` for :class:`~newton.actuators.DriveBAM`, and :math:`\\tau`
-    is ``actuator_applied_effort``. The sum is signed, so a regenerating
-    actuator offsets a driving one, and regeneration does not raise the
-    voltage above nominal. Each battery sums its actuators in a fixed order,
-    so the voltage is deterministic.
+    over the currents :math:`I` the actuators assigned to it draw, e.g.
+    :math:`d\\, I_{\\text{motor}}` for :class:`~newton.actuators.MotorDC`. The
+    sum is signed, so a regenerating actuator offsets a driving one, and
+    regeneration does not raise the voltage above nominal. Each battery sums
+    its actuators in a fixed order, so the voltage is deterministic.
 
-    The supply and the drives form an explicit feedback loop. For
-    :class:`~newton.actuators.DriveBAM` it settles only while
-    ``resistance * sum(max_pwm**2 / drive resistance) < 1`` over the
+    The supply and the motors form an explicit feedback loop. For
+    :class:`~newton.actuators.MotorDC` it settles only while
+    ``resistance * sum(max_pwm**2 / motor resistance) < 1`` over the
     actuators sharing a battery; above that the voltage oscillates instead
     of converging.
     """
@@ -150,30 +145,16 @@ class BatteryInternalResistance(BatteryBase):
             if shape != (self.num_batteries,):
                 raise ValueError(f"{name} shape {shape} must be ({self.num_batteries},)")
 
-    def step(self, sim_control: Any, *, effort: wp.array[float] | None = None) -> None:
+    def step(self, sim_control: Any) -> None:
         """Drop each battery's voltage with the current of its actuators.
 
-        Writes ``actuator_supply_voltage`` for the actuators of the batteries.
-        Drives that read the supply voltage, e.g.
-        :class:`~newton.actuators.DriveBAM` with ``supply_from_battery=True``,
-        use it on their next step. Call once per step, after the actuators
-        have stepped.
-
-        Args:
-            sim_control: Object carrying ``actuator_supply_voltage`` and
-                ``actuator_supply_current_per_effort``, and ``actuator_applied_effort``
-                when *effort* is ``None``, e.g. :class:`~newton.Control`.
-            effort: Effort of each actuator of the scene [N or N·m]. ``None``
-                reads ``actuator_applied_effort``.
-
         Raises:
-            AttributeError: *sim_control* has no ``actuator_supply_voltage``
-                or ``actuator_supply_current_per_effort``, or no
-                ``actuator_applied_effort`` when *effort* is ``None``.
+            AttributeError: *sim_control* has no ``actuator_supply_current``
+                or ``actuator_supply_voltage``.
             ValueError: One of these arrays is ``None``.
+
+        See :meth:`BatteryBase.step` for the arguments.
         """
-        if effort is None:
-            effort = _require_array(sim_control, "actuator_applied_effort")
         self._current.zero_()
         wp.launch(
             _battery_update_kernel,
@@ -184,30 +165,21 @@ class BatteryInternalResistance(BatteryBase):
                 self.nominal_voltage,
                 self.resistance,
                 self.min_voltage,
-                _require_array(sim_control, "actuator_supply_current_per_effort"),
-                effort,
+                _require_array(sim_control, "actuator_supply_current"),
             ],
             outputs=[self._current, _require_array(sim_control, "actuator_supply_voltage")],
             device=self.device,
         )
 
     def reset(self, sim_control: Any, *, world_mask: wp.array[wp.bool] | None = None) -> None:
-        """Restore the nominal voltage in ``actuator_supply_voltage``.
-
-        Call after resetting worlds, so their drives start from a full battery.
-
-        Args:
-            sim_control: Object carrying ``actuator_supply_voltage``, e.g.
-                :class:`~newton.Control`.
-            world_mask: Optional boolean mask of shape ``(world_count + 1,)``
-                specifying which worlds to reset. Entries before the last select
-                local worlds by index, and the final entry selects batteries
-                whose world is ``-1``. If ``None``, all batteries are reset.
+        """Restore the nominal voltage of the reset batteries.
 
         Raises:
             AttributeError: *sim_control* has no ``actuator_supply_voltage``.
             ValueError: ``actuator_supply_voltage`` is ``None``, or
                 *world_mask* does not have shape ``(world_count + 1,)``.
+
+        See :meth:`BatteryBase.reset` for the arguments.
         """
         world_mask = normalize_reset_world_mask(world_mask, world_count=self.world_count, device=self.device)
         wp.launch(
