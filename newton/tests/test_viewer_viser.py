@@ -607,7 +607,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     modifier=None,
                 )
                 self.wait_for(self.viewer.picking.is_picking)
-                self.assertEqual(int(self.viewer.picking.pick_body.numpy()[0]), 0)
+                self.assertEqual(self.viewer.picking.pick_body, 0)
                 handle = self.viewer._picking_controls[self.viewer.layer.layer_id]
                 self.send(
                     "TransformControlsUpdateMessage",
@@ -615,9 +615,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     position=(0.0, -1.0, 1.0),
                     wxyz=(1.0, 0.0, 0.0, 0.0),
                 )
-                self.wait_for(
-                    lambda: np.isclose(self.viewer.picking.pick_state.numpy()[0]["picking_target_world"][1], -1.0)
-                )
+                self.wait_for(lambda: np.isclose(self.viewer.picking.pick_target[1], -1.0))
                 state.clear_forces()
                 if graph is None:
                     self.viewer.apply_forces(state)

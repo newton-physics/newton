@@ -11631,7 +11631,7 @@ class ModelBuilder:
             pos: The position of the cloth in world space
             rot: The orientation of the cloth in world space
             vel: The velocity of the cloth in world space
-            dim_x_: The number of rectangular cells along the x-axis
+            dim_x: The number of rectangular cells along the x-axis
             dim_y: The number of rectangular cells along the y-axis
             cell_x: The width of each cell in the x-direction
             cell_y: The width of each cell in the y-direction
@@ -12038,7 +12038,7 @@ class ModelBuilder:
             pos: The position of the solid in world space
             rot: The orientation of the solid in world space
             vel: The velocity of the solid in world space
-            dim_x_: The number of rectangular cells along the x-axis
+            dim_x: The number of rectangular cells along the x-axis
             dim_y: The number of rectangular cells along the y-axis
             dim_z: The number of rectangular cells along the z-axis
             cell_x: The width of each cell in the x-direction
@@ -14852,11 +14852,16 @@ class ModelBuilder:
                     # Transpose: create_heightfield uses ij-indexing (i=X, j=Y)
                     # while Heightfield stores row-major data (row=Y, col=X).
                     actual_heights = geo.min_z + geo.data * (geo.max_z - geo.min_z)
+                    # Keep the bottom cap strictly below the lowest terrain height: a cap
+                    # coplanar with flat terrain lets ray queries return its downward-facing
+                    # triangles instead of the surface. The gap scales with the field size
+                    # to stay clear of float32 rounding.
+                    cap_gap = 1.0e-3 * max(1.0, geo.hx, geo.hy, abs(geo.max_z - geo.min_z))
                     hf_geo = Mesh.create_heightfield(
                         heightfield=actual_heights.T,
                         extent_x=geo.hx * 2.0,
                         extent_y=geo.hy * 2.0,
-                        ground_z=geo.min_z,
+                        ground_z=min(geo.min_z, geo.max_z) - cap_gap,
                         compute_inertia=False,
                     )
                     finalized_geos[geo_cache_key] = hf_geo.finalize(
