@@ -1224,18 +1224,32 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             atol=1e-6,
         )
 
-    def test_hard_cloth_and_solid_attachments_are_preserved_not_imported(self):
-        """Warn and preserve hard cloth/volume attachments without creating a finite spring."""
+    def test_hard_cloth_and_solid_attachments_match_builder_api(self):
+        """Import hard USD defaults and explicit infinity with the builder's hard-constraint behavior."""
+        from pxr import UsdPhysics
+
+        def geometry(source):
+            stage = _deformable_stage()
+            UsdPhysics.Scene.Get(stage, "/PhysicsScene").CreateGravityMagnitudeAttr(10.0)
+            body = _add_rigid_cube(stage, "/World/Body", (0.0, 0.0, 1.0))
+            UsdPhysics.RigidBodyAPI(body.GetPrim()).CreateKinematicEnabledAttr(True)
+            if source == "Cloth":
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+            else:
+                _author_unit_tet(stage, "/World/Solid", sim_api=True)
+            return stage
+
         for source in ("Cloth", "Solid"):
+            expected = newton.ModelBuilder()
+            reference = expected.add_usd(geometry(source), return_deformable_results=True)
+            body = reference["path_body_map"]["/World/Body"]
+            ranges = reference["path_cloth_map"] if source == "Cloth" else reference["path_soft_map"]
+            particle = ranges[f"/World/{source}"]["particle"][0]
             for stiffness in (None, math.inf):
                 for enabled in (True, False):
                     with self.subTest(source=source, stiffness=stiffness, enabled=enabled):
-                        stage = _deformable_stage()
-                        _add_rigid_cube(stage, "/World/Body", (0.0, 0.0, 2.0))
-                        if source == "Cloth":
-                            _add_cloth_mesh(stage, "/World/Cloth")
-                        else:
-                            _author_unit_tet(stage, "/World/Solid", sim_api=True)
+                        stage = geometry(source)
                         _add_physics_attachment(
                             stage,
                             "/World/Attach",
@@ -1248,17 +1262,31 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                             enabled=enabled,
                         )
                         builder = newton.ModelBuilder()
-                        with self.assertWarnsRegex(UserWarning, "hard.*not supported"):
-                            result = builder.add_usd(stage, return_deformable_results=True)
-                        self.assertEqual(builder.attachment_particle_body_count, 0)
+                        result = builder.add_usd(stage, return_deformable_results=True)
+                        row = expected.add_attachment_particle_body(
+                            particle, body, stiffness=math.inf, damping=2.0, enabled=enabled
+                        )
+                        self.assertEqual(builder.attachment_particle_body_count, 1)
                         self.assertNotIn("/World/Attach", result["path_attachment_map"])
                         attrs = result["path_attachment_attrs"]["/World/Attach"]
+                        self.assertEqual(attrs["attachment_particle_body_indices"], [0])
                         self.assertEqual(attrs["stiffness"], math.inf)
                         self.assertEqual(attrs["damping"], 2.0)
                         self.assertEqual(attrs["enabled"], enabled)
-                        self.assertIn("unsupported_reason", attrs)
-                        self.assertNotIn("attachment_particle_body_indices", attrs)
+                        self.assertNotIn("unsupported_reason", attrs)
                         self.assertNotIn("approximated_stiffness", attrs)
+                        for name in ("particle", "body", "body_point", "stiffness", "damping", "enabled", "world"):
+                            attr = f"attachment_particle_body_{name}"
+                            np.testing.assert_array_equal(getattr(builder, attr)[0], getattr(expected, attr)[row])
+                        if stiffness is None and enabled:
+                            builder.color()
+                            model = builder.finalize()
+                            initial = model.particle_q.numpy().copy()
+                            state_in, state_out = model.state(), model.state()
+                            newton.solvers.SolverVBD(model, iterations=30).step(state_in, state_out, None, None, 2.0e-3)
+                            positions = state_out.particle_q.numpy()
+                            np.testing.assert_allclose(positions[particle], initial[particle], atol=2.0e-6)
+                            self.assertLess(float(positions[particle + 1, 2]), float(initial[particle + 1, 2]))
 
     def test_attachment_anchors_survive_root_override(self):
         """Preserve body-local particle and cable attachment anchors when rebasing an articulation root."""
