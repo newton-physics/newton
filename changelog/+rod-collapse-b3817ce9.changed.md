@@ -1,0 +1,1 @@
+Retain experimental deformable curve records after partial fixed-joint collapse, with ranges describing the surviving bodies and joints. Use `collapse_fixed_joints(joints_to_keep=...)` when the original segment layout must be preserved.
