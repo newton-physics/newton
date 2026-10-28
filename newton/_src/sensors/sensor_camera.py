@@ -931,6 +931,7 @@ class SensorCamera:
             ValueError: If the buffers belong to another model, or if this camera
                 was constructed with :attr:`DeformableSurfaceMode.SIMULATION_ONLY`
                 and cannot render them.
+            RuntimeError: If supplied visual buffers have never been updated.
 
         .. experimental::
 
@@ -1035,6 +1036,9 @@ class SensorCamera:
             ValueError: If ``deformable_visuals`` is given with
                 ``sync_deformables=False``, plus the :meth:`sync_deformable_meshes`
                 errors when it syncs.
+            TypeError: If supplied visual buffers have the wrong type.
+            RuntimeError: If supplied visual buffers have never been updated.
+
         .. experimental::
 
             The ``deformable_visuals`` argument is experimental. Other camera

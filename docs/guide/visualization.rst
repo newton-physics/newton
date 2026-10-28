@@ -256,6 +256,17 @@ shapes and standalone particles are unaffected, particles belonging to a
 left-out surface do not reappear as spheres, and
 ``RenderConfig.enable_particles=False`` hides standalone particles too.
 
+The viewer switches ``show_triangles=True, show_deformable_visual_meshes=True``
+correspond to ``BOTH``; ``True, False`` corresponds to ``SIMULATION_ONLY``;
+and ``False, True`` corresponds to ``VISUAL_ONLY``. Unlike a viewer, the camera
+does not offer a mode that hides both surfaces.
+
+Texture files are loaded when the camera is constructed, including textures on
+visual meshes. A missing file can therefore fail construction even for depth-only
+output or when ``RenderConfig.enable_textures=False``. Pass
+``SensorCamera(model, load_textures=False)`` to skip loading all textures, for
+example when replaying a recording without its image files.
+
 By default, the camera skins visual points directly into its own buffer, in at
 most four launches however many worlds were replicated. It does not compute
 unused vertex normals. Create the camera once:
