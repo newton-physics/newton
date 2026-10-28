@@ -9,6 +9,205 @@ Viewers and Debugging
 Newton provides multiple viewer backends for live visualization, debugging,
 historical inspection, persistent recording, and external integrations.
 
+Deformable visual meshes
+------------------------
+
+.. experimental::
+
+A deformable visual mesh is a triangle mesh that follows simulation elements
+without adding mass or collision geometry
+(:class:`~newton.geometry.DeformableVisualMesh`). It is separate from the
+deformable object records in :doc:`/concepts/deformable_objects`. Attach one
+to simulation particles with explicit particle indices:
+
+.. code-block:: python
+
+   visual_index = builder.add_deformable_visual_mesh(
+       vertices, indices, kind="particle", parent=particle_indices, label="skin"
+   )
+   model = builder.finalize()
+   mesh = model.deformable_visual_meshes[visual_index]
+
+Each visual vertex is placed at its particle's current position; ``vertices``
+only records the bind pose. Every driving particle must belong to one world.
+Builder composition and replication offset the particle indices and keep the
+authored rest geometry. Meshes with equal rest vertices and indices share
+device storage, including replicated copies, while their bindings stay
+independent. Do not edit the finalized arrays in place.
+
+Evaluate the current positions and normals for a state:
+
+.. code-block:: python
+
+   visuals = newton.geometry.DeformableVisuals(model)
+   visuals.update(state)
+   points = visuals.get_points(visual_index)
+
+Allocate once and reuse the output. Update it before reading; it does not track
+which state is current. Allocate the output before CUDA capture and replay
+before consuming the result. Call ``visuals.wait()`` when consuming on another
+stream. Finish reads before the next update overwrites the buffers. Allocate
+separate outputs for simultaneous snapshots. Skinning is not differentiable.
+
+A warm-up update is recommended to load kernels before capture. Newton does
+not warn when it is skipped: Warp can also load kernels during capture on
+supported drivers. See :func:`~warp.capture_begin` for kernel-loading options.
+Capture records the update but does not execute it:
+
+.. code-block:: python
+
+   visuals = newton.geometry.DeformableVisuals(model)
+   visuals.update(state)  # Recommended: load kernels before capture.
+   with wp.ScopedCapture(model.device) as capture:
+       visuals.update(state)
+   wp.capture_launch(capture.graph)  # Run before a viewer or camera reads the output.
+
+Keep captured input and output arrays alive without replacing their storage.
+
+Triangle and tetrahedron bindings take explicit parent elements and
+barycentric weights. Name the owning elements either through a recorded
+deformable object or through a raw element range:
+
+.. code-block:: python
+
+   # Cloth from add_cloth_mesh(): the surface's index in builder.surface_label.
+   visual_index = builder.add_deformable_visual_mesh(
+       vertices, indices, kind="triangle", surface=0, parent=parent_tris, weights=weights
+   )
+   # Geometry built without a record: pass its [start, end) element range.
+   visual_index = builder.add_deformable_visual_mesh(
+       vertices, indices, kind="tetrahedron", tet_range=(tet_start, tet_end),
+       parent=parent_tets, weights=barycentric_weights,
+   )
+
+Each triangle uses three weights; each tetrahedron uses four. Weights must be
+nonnegative and sum to one. ``parent`` holds global element indices inside the
+owning object or range. These bindings follow the weighted particle positions;
+there is no surface-normal offset.
+
+For automatic triangle binding, omit both ``parent`` and ``weights``:
+
+.. code-block:: python
+
+   visual_index = builder.add_deformable_visual_mesh(vertices, indices, kind="triangle", surface=0)
+
+Each vertex projects onto the nearest non-degenerate triangle of the owning
+object or range. The normal offset is discarded. Equal-distance ties choose
+the first triangle.
+
+For automatic tetrahedron binding, omit both ``parent`` and ``weights``:
+
+.. code-block:: python
+
+   visual_index = builder.add_deformable_visual_mesh(vertices, indices, kind="tetrahedron", volume=0)
+
+Each vertex follows a containing non-degenerate tetrahedron of the owning
+object or range; among several, the one it lies deepest inside wins, then the
+lowest index. An outside vertex is clamped into the owning tetrahedron with
+the nearest centroid, which can move it sideways, and Newton logs how many
+were clamped. The fallback never leaves the owning object or range.
+
+Rigid bodies, such as rod segments, can drive a mesh without simulation
+particles:
+
+.. code-block:: python
+
+   # Rod from add_rod(): the curve's index in builder.curve_label.
+   visual_index = builder.add_deformable_visual_mesh(vertices, indices, kind="body", curve=0)
+   # Any rigid bodies: pass the candidates, or name one body per vertex through parent.
+   visual_index = builder.add_deformable_visual_mesh(vertices, indices, kind="body", bodies=rod_bodies)
+
+Each vertex binds to the candidate whose center of mass is nearest and then
+follows that body's full pose; equal distances use candidate order. The bind
+pose is stored as body-local offsets, so separate body bindings can show
+seams. Fixed-joint collapse remaps these offsets, including vertices fixed to
+the world. Composition preserves the placement and owning world.
+
+Supported viewers draw skinned meshes through
+:meth:`~newton.viewer.ViewerBase.log_state`. The **Show Skinned Meshes** option
+is independent of **Show Visual** and the simulation triangle display. World
+spacing and layer placement also apply to skinned meshes.
+
+.. code-block:: python
+
+   viewer.set_model(model)
+   viewer.set_deformable_visuals(visuals)  # Optional; the viewer otherwise evaluates.
+   viewer.log_state(state)
+
+Update shared output before logging. Hidden meshes stop uploading geometry;
+showing them restores the latest evaluated points. Backend differences are
+listed below. :meth:`ModelBuilder.add_usd` does not import deformable visual
+bindings yet.
+
+Pass per-vertex ``uvs`` and an image array or path as ``texture`` when adding a
+visual mesh. Replace the texture value to change it; editing pixels in place
+is not supported for these cached assets. Ordinary ``log_mesh()`` image updates
+keep their existing behavior. Skinned meshes keep their topology fixed.
+
+:class:`~newton.viewer.ViewerFile` records deformable visual meshes and
+simulation state without evaluating them. JSON and binary recordings rebuild
+their skinning batches on first use. Load into an empty Model to restore the
+recorded meshes. A finalized Model that already has meshes keeps them; the
+recording's driver counts and mesh layout must then match. Older physics-only
+recordings still load into a compatible model with meshes.
+
+.. list-table:: Skinned mesh support
+   :header-rows: 1
+   :widths: 15 15 70
+
+   * - Viewer
+     - Support
+     - Backend differences
+   * - GL
+     - Draws
+     - Uploads topology once and reuses textures. Either mesh CUDA interop flag
+       enables device-side vertex updates; otherwise it uses host uploads.
+       Each mesh copy uploads its own texture.
+   * - USD
+     - Exports
+     - Writes time-sampled meshes and one texture per mesh.
+   * - RTX
+     - Draws
+     - Uses USD meshes and textures. When borrowing a stage, overlays start
+       hidden and do not replace authored prims; enable them explicitly.
+   * - Rerun
+     - Draws
+     - Decodes each texture path once per model layer, but re-logs each visible
+       mesh with its texture every frame.
+   * - File
+     - Records
+     - Saves mesh data and simulation state for playback. Does not evaluate
+       skins and ignores the display option.
+   * - Null
+     - No drawing
+     - Does not evaluate skins and ignores the display option.
+   * - Viser
+     - No drawing
+     - Skinned meshes are off by default; enabling them raises an error.
+       Simulation geometry remains available.
+
+For example, bind a triangle to a small cloth and evaluate its current points:
+
+.. testcode:: deformable-visual-mesh
+
+   import newton
+   import newton.geometry
+   import warp as wp
+
+   builder = newton.ModelBuilder()
+   builder.add_cloth_grid(
+       pos=(0.0, 0.0, 1.0), rot=wp.quat_identity(), vel=(0.0, 0.0, 0.0),
+       dim_x=2, dim_y=2, cell_x=0.5, cell_y=0.5, mass=0.1, label="cloth",
+   )
+   mesh_index = builder.add_deformable_visual_mesh(
+       vertices=[(0.1, 0.1, 1.0), (0.4, 0.1, 1.0), (0.1, 0.4, 1.0)],
+       indices=[0, 1, 2], kind="triangle", surface=0,
+   )
+   model = builder.finalize()
+   visuals = newton.geometry.DeformableVisuals(model)
+   visuals.update(model.state())
+   assert visuals.get_points(mesh_index).shape == (3,)
+
 .. _choosing-a-viewer:
 
 Choosing a Viewer
@@ -487,9 +686,9 @@ materials and lights instead of building a scene from the model. The stage prese
   :meth:`~newton.viewer.ViewerRTX.set_model` infers the model-to-stage transform from the root bodies, whose poses must
   still match the stage's. Bodies then stay at their authored poses, and the camera and debug geometry follow the
   model's frame. Without bound root bodies, the viewer assumes both frames coincide.
-- **Other geometry**: The viewer generates no geometry for the model's shapes, cloth, or particles, and does not
-  update the stage's deformable prims. ``show_triangles``, which is off by default here, and ``show_particles`` draw
-  the simulated cloth and particles as debug overlays.
+- **Other geometry**: Model shapes come from the supplied stage. The viewer does not update its authored
+  deformable prims. ``show_triangles``, ``show_deformable_visual_meshes``, and ``show_particles`` enable separate
+  overlays, all off by default here. Hidden overlay geometry may still be registered in the viewer's subtree.
 - **Stage ownership**: The viewer keeps its camera, render product, and debug geometry under ``/__newton_viewer`` and
   never clears the stage. :meth:`~newton.viewer.ViewerRTX.set_model` and each
   :meth:`~newton.viewer.ViewerRTX.end_frame` write above the stage's current write floor and then advance it, so finish
