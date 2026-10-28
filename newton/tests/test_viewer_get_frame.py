@@ -4,6 +4,7 @@
 import ctypes
 import sys
 import unittest
+from importlib import import_module
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 
@@ -13,8 +14,10 @@ import warp as wp
 import newton
 import newton.viewer
 from newton._src.viewer.gl.opengl import RendererGL
+from newton._src.viewer.kernels import compact
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_joint_selection import _JointDrawList
+from newton._src.viewer.viewer_navigation import SelectionNavigation
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -180,6 +183,97 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    def test_gui_preloads_interaction_kernels(self) -> None:
+        """First selection and particle filtering reuse startup-compiled CPU/CUDA modules."""
+        try:
+            __import__("imgui_bundle")
+        except ImportError as exc:
+            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+        _viewer_gl_unavailable_error_types(self)
+        modules = [
+            wp.get_module(import_module(f"newton._src.viewer.{name}").__name__)
+            for name in (
+                "viewer_navigation",
+                "viewer_joint_selection",
+                "viewer_deformables",
+                "viewer_bvh",
+                "viewer_history",
+                "gui.collision",
+                "gui.workspace",
+                "kernels",
+            )
+        ]
+        # Earlier tests may have launched these kernels. Discard only their
+        # in-process executables so this test cannot pass because of test order.
+        for module in modules:
+            module.unload()
+        initialize_renderer = RendererGL.__init__
+
+        def initialize_offscreen(renderer: RendererGL, **kwargs: object) -> None:
+            kwargs["headless"] = True
+            initialize_renderer(renderer, **kwargs)
+
+        try:
+            with wp.ScopedDevice("cpu"), mock.patch.object(RendererGL, "__init__", initialize_offscreen):
+                viewer = ViewerGL(width=800, height=600)
+        except Exception as exc:
+            if _is_viewer_gl_unavailable_error(self, exc):
+                self.skipTest(f"ViewerGL display/backend not available: {exc}")
+            raise
+        self.addCleanup(viewer.close)
+        self.assertTrue(viewer.gui.is_available)
+        self.assertIsNone(viewer.gui.workspace)
+        for name in (
+            "_selection_outline",
+            "_selection_surface_shader",
+            "_joint_shader",
+            "_contact_label_shader",
+            "_physics_contact_shader",
+            "_surface_grid_shader",
+            "_physics_collision_shader",
+            "_physics_shell_shader",
+            "_oit_resolve_shader",
+            "_shape_transparent_shader",
+        ):
+            self.assertIsNotNone(getattr(viewer.renderer, name, None), f"{name} was not preloaded")
+        self.assertIsNone(viewer.renderer._selection_outline.size)
+        self.assertIsNone(viewer.renderer._oit_fbo)
+
+        devices = [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]
+        for device in devices:
+            with self.subTest(device=device):
+                # CPU compilation must finish in the constructor, before a
+                # model or the first GUI frame. A model switch warms its device.
+                if device.is_cuda:
+                    viewer.set_model(_make_box_model(device))
+                for module in modules:
+                    self.assertTrue(
+                        any(executable.device == device for executable in module.execs.values()),
+                        f"{module.name} was not preloaded on {device}",
+                    )
+                executables = [dict(module.execs) for module in modules]
+                if device.is_cpu:
+                    viewer.set_model(_make_box_model(device))
+                # Exercise navigation independently of draw-buffer creation.
+                viewer._last_state = viewer.model.state()
+                navigation = SelectionNavigation(
+                    SimpleNamespace(viewer=viewer, model=viewer.model, _selection_shapes=(0,))
+                )
+                self.assertAlmostEqual(navigation(wp.vec3(0.5, 0, 0), wp.vec3(0.4, 0, 0), reference=1.0), 0.0625)
+
+                mask = wp.array([1, 0, 1], dtype=int, device=device)
+                offsets = wp.array([0, 1, 1], dtype=int, device=device)
+                for dtype in (float, wp.vec3):
+                    values = [1.0, 2.0, 3.0] if dtype is float else [(1.0, 2.0, 3.0)] * 3
+                    source = wp.array(values, dtype=dtype, device=device)
+                    output = wp.empty(2, dtype=dtype, device=device)
+                    wp.launch(compact, dim=3, inputs=[source, mask, offsets, output], device=device)
+                    np.testing.assert_array_equal(output.numpy(), source.numpy()[[0, 2]])
+                # Adding a generic overload on first use invalidates the whole
+                # module, even if load_module had already been called at startup.
+                for module, before in zip(modules, executables, strict=True):
+                    self.assertEqual(module.execs, before, f"{module.name} reloaded on first interaction")
+
     def test_gui_mode_and_legacy_callbacks(self) -> None:
         """Render the default workspace and opt-in legacy panels with real ImGui callbacks."""
         try:

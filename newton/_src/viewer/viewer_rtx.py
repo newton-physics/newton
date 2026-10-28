@@ -1290,6 +1290,8 @@ void main() {
         Args:
             model: The Newton model instance.
         """
+        if model is not None and self.gui is not None:
+            self.gui.preload_kernels(model.device)
         super().set_model(model)
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the model's device.
         self._image_logger.set_device(self.device)

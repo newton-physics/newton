@@ -1139,6 +1139,12 @@ def compact(
         dst[offsets[i]] = src[i]
 
 
+# Register both viewer particle paths before preloading this module. Inferring
+# either overload on first use would invalidate all the already-loaded kernels.
+wp.overload(compact, [wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.vec3]])
+wp.overload(compact, [wp.array[float], wp.array[wp.int32], wp.array[wp.int32], wp.array[float]])
+
+
 @wp.kernel
 def transform_points(
     points: wp.array[wp.vec3],

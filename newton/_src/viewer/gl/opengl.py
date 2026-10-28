@@ -1394,6 +1394,36 @@ class RendererGL:
         if not headless:
             self._setup_window_callbacks()
 
+    def preload_inspection_shaders(self) -> None:
+        """Compile interactive display programs while the GUI is being initialized.
+
+        Keep framebuffer storage and scene geometry lazy: compiling the selection,
+        joint, contact, grid, and X-ray programs does not require a model or an
+        OIT framebuffer. Non-GUI callers retain the existing first-use paths.
+        """
+        from .contact_labels import ContactLabels  # noqa: PLC0415
+        from .joint_glyphs import JointGlyphShader  # noqa: PLC0415
+        from .physics_view import PhysicsContactShader, PhysicsShellShader, PhysicsSurfaceShader  # noqa: PLC0415
+        from .selection import SelectionOutline, SelectionSurfaceShader  # noqa: PLC0415
+        from .surface_grid import SurfaceGridShader  # noqa: PLC0415
+
+        self._make_current()
+        for name, factory in (
+            ("_selection_outline", SelectionOutline),
+            ("_selection_surface_shader", SelectionSurfaceShader),
+            ("_joint_shader", JointGlyphShader),
+            ("_contact_label_shader", ContactLabels),
+            ("_physics_contact_shader", PhysicsContactShader),
+            ("_surface_grid_shader", SurfaceGridShader),
+            ("_physics_collision_shader", PhysicsSurfaceShader),
+            ("_physics_shell_shader", PhysicsShellShader),
+            ("_oit_resolve_shader", OITResolveShader),
+        ):
+            if getattr(self, name, None) is None:
+                setattr(self, name, factory(self.gl))
+        if self._shape_transparent_shader is None:
+            self._shape_transparent_shader = ShaderShape(self.gl, enable_transparency=True)
+
     @property
     def shadow_radius(self) -> float:
         return self._shadow_radius

@@ -21,6 +21,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
+import warp as wp
 
 import newton as nt
 from newton.selection import ArticulationView
@@ -46,8 +47,9 @@ class ViewerGui:
     def __init__(self, viewer: ViewerBase, window: Window, *, workspace_enabled: bool = False) -> None:
         """Initialize the shared GUI backend, input routing, callbacks, and camera interaction state.
 
-        Defer workspace creation until the first UI frame. Workspace-enabled
-        viewers capture Newton logs when the optional GUI backend is available.
+        Compile interaction kernels now, but defer workspace creation until the
+        first UI frame. Workspace-enabled viewers capture Newton logs when the
+        optional GUI backend is available.
         """
         self._viewer = viewer
         self.ui = ImGuiBackend(window)
@@ -119,6 +121,49 @@ class ViewerGui:
             "selected_batch_idx": 0,
             "error_message": "",
         }
+        self.preload_kernels(viewer.device)
+
+    def preload_kernels(self, device: wp.Device) -> None:
+        """Compile built-in GUI operations before the first interaction on a device.
+
+        Call at construction and when binding a model on another device. Import
+        kernel definitions eagerly, but leave workspace construction, inspection
+        buffers, and graph capture lazy. Warp caches loaded modules, so revisiting
+        a device does not recompile them. Load only GUI dependencies, not every
+        imported solver or example kernel.
+        """
+        if not self.is_available:
+            return
+        from ...geometry import raycast  # noqa: PLC0415
+        from ...sim import articulation  # noqa: PLC0415
+        from ...utils import selection  # noqa: PLC0415
+
+        modules = [raycast, articulation, selection]
+        if self.workspace_enabled:
+            from ...geometry import bvh  # noqa: PLC0415
+            from .. import (  # noqa: PLC0415
+                viewer_bvh,
+                viewer_deformables,
+                viewer_history,
+                viewer_joint_selection,
+                viewer_navigation,
+            )
+            from . import collision, workspace  # noqa: PLC0415
+
+            modules.extend(
+                (
+                    bvh,
+                    viewer_bvh,
+                    viewer_deformables,
+                    viewer_history,
+                    viewer_joint_selection,
+                    viewer_navigation,
+                    collision,
+                    workspace,
+                )
+            )
+        for module in modules:
+            wp.load_module(module, device=device)
 
     @property
     def is_available(self) -> bool:

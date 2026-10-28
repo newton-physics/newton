@@ -342,6 +342,26 @@ class ViewerGL(ViewerBase):
         self._wp_pbo = None
         self._pbo_host_buffer = None
 
+        self._preload_kernels(self.device)
+        if self.gui is not None and self.gui.is_available:
+            self.renderer.preload_inspection_shaders()
+
+    def _preload_kernels(self, device: wp.Device) -> None:
+        """Compile render/guide kernels without allocating scene-dependent resources.
+
+        Include optional display paths (contacts, particles, wind, SDF guides,
+        and image capture) so toggling them cannot trigger first-use compilation.
+        Explicit modules keep unrelated backends and solvers out of this warmup.
+        """
+        from ..geometry import sdf_texture, sdf_utils  # noqa: PLC0415
+        from ..utils import mesh, render  # noqa: PLC0415
+        from . import image_logger, kernels, wind  # noqa: PLC0415
+        from .gl import opengl  # noqa: PLC0415
+
+        for module in (sdf_texture, sdf_utils, mesh, render, image_logger, kernels, wind, opengl):
+            wp.load_module(module, device=device)
+        wp.load_module(__name__, device=device)
+
     def _cuda_interop_enabled(self, category: CudaInterop) -> bool:
         return bool(self._enable_cuda_interop & category)
 
@@ -624,6 +644,12 @@ class ViewerGL(ViewerBase):
 
         if model is not None and model.device != self.device:
             self._invalidate_pbo()
+            self._preload_kernels(model.device)
+
+        if model is not None and self.gui is not None:
+            # Compile for the model's device even if the viewer was created in
+            # another device scope. Nothing is loaded from the per-frame path.
+            self.gui.preload_kernels(model.device)
 
         super().set_model(model)
 
