@@ -475,20 +475,6 @@ def get_mesh(
 
         ``uv_indices`` is ``None`` when no UV indices are available. Source point
         indices always have one entry per output vertex when requested.
-
-    Raises:
-        ImportError: If ``usd-core`` is not installed.
-        FileNotFoundError: If a file path or URL cannot be opened as a stage.
-        TypeError: If ``source`` is not a USD prim, stage, path, or URL, or if both
-            ``source`` and ``prim`` are given.
-        ValueError: If ``return_uv_indices``, ``return_source_point_indices``, or
-            ``preserve_facevarying_uvs`` is requested for a merged source, if an
-            ``http://`` URL is given, if ``root_path`` does not exist, if no Mesh
-            prim is found under the merge root, if a single Mesh prim has no
-            default-time points or face topology,
-            if authored normals or primvar indices do not match the mesh topology,
-            or if uniform or faceVarying normals are loaded with an unknown
-            ``face_varying_normal_conversion``.
     """
     from .utils import resolve_material_properties_for_prim  # noqa: PLC0415
 
@@ -541,8 +527,8 @@ def get_mesh(
     authored_indices = mesh.GetFaceVertexIndicesAttr().Get()
     counts = mesh.GetFaceVertexCountsAttr().Get()
     if authored_points is None or authored_indices is None or counts is None:
-        # Default-time values only: a bind pose may accompany animated points, but the
-        # render mesh itself is read at the default time code.
+        # The render mesh is read at the default time code; time samples alone are
+        # rejected instead of failing later with an unrelated reshape error.
         raise ValueError(
             f"Mesh prim '{prim.GetPath()}' has no default-time points, faceVertexIndices, or faceVertexCounts."
         )
