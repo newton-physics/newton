@@ -270,6 +270,10 @@ class Example:
             "Particles are outside the bowl below its rim"
         )
 
+    def test_final(self):
+        """Check final particle state and containment below the bowl rim."""
+        self.test_post_step()
+
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
