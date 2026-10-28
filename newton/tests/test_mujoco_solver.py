@@ -3438,6 +3438,49 @@ class TestMuJoCoSolverGeomProperties(unittest.TestCase):
 
 
 class TestMuJoCoSolverEqualityConstraintProperties(unittest.TestCase):
+    def test_connect_anchor_precision_far_from_origin(self):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+
+        offset = np.array([1.0e5, -2.0e5, 1.5e5])
+        body1_xform = wp.transform(wp.vec3(*(offset + np.array([0.3, 0.1, -0.2]))), wp.quat_rpy(0.7, -1.1, 0.4))
+        body2_xform = wp.transform(wp.vec3(*(offset + np.array([-0.2, 0.4, 0.1]))), wp.quat_rpy(-0.9, 0.5, 1.3))
+        body1 = builder.add_link(xform=body1_xform, mass=1.0, inertia=wp.mat33(np.eye(3)))
+        body2 = builder.add_link(xform=body2_xform, mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_articulation([builder.add_joint_free(child=body1)])
+        builder.add_articulation([builder.add_joint_free(child=body2)])
+
+        anchor1 = np.array([0.25, -0.15, 0.35])
+        constraint = _add_equality_constraint(
+            builder,
+            constraint_type=SolverMuJoCo.EqType.CONNECT,
+            body1=body1,
+            body2=body2,
+            anchor=wp.vec3(*anchor1),
+        )
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        mjc_eq = np.flatnonzero(solver.mjc_eq_to_newton_eq.numpy()[0] == constraint)[0]
+        anchor2 = solver.mjw_model.eq_data.numpy()[0, mjc_eq, 3:6]
+
+        # float64 reference from the float32-rounded body poses
+        def rot(xform):
+            x, y, z, w = np.array(xform, dtype=np.float32)[3:].astype(np.float64)
+            return np.array(
+                [
+                    [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                    [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                    [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+                ]
+            )
+
+        p1 = np.array(body1_xform, dtype=np.float32)[:3].astype(np.float64)
+        p2 = np.array(body2_xform, dtype=np.float32)[:3].astype(np.float64)
+        expected = rot(body2_xform).T @ (rot(body1_xform) @ anchor1 + p1 - p2)
+        np.testing.assert_allclose(anchor2, expected, atol=1.0e-5)
+
     def test_connect_reference_anchors_use_free_joint_coordinates(self):
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)

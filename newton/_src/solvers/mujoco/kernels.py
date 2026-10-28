@@ -1225,7 +1225,10 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
 
     X1 = body_pose_or_identity(ref_body_q, body1)
     X2 = body_pose_or_identity(ref_body_q, body2)
-    X_rel_out[world, mjc_eq] = wp.transform_inverse(X2) * X1
+    # Rotate the position difference rather than each position, to keep precision far from the origin.
+    q2_inv = wp.quat_inverse(wp.transform_get_rotation(X2))
+    p_rel = wp.quat_rotate(q2_inv, wp.transform_get_translation(X1) - wp.transform_get_translation(X2))
+    X_rel_out[world, mjc_eq] = wp.transform(p_rel, q2_inv * wp.transform_get_rotation(X1))
 
 
 @wp.kernel
