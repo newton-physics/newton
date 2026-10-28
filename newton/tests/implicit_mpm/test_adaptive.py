@@ -341,6 +341,8 @@ def test_bowl_graph_and_runtime_changes(test, device):
             test.assertIsNot(example.graph, old_graph)
             example.step()
             test.assertGreater(example.sim_time, sim_time)
+            test.assertFalse(np.array_equal(example.state_0.particle_q.numpy(), before["particle_q"]))
+            test.assertAlmostEqual(float(example.sim_clock.numpy()[0]), example.sim_time, places=6)
             example.test_post_step()
             example.mpm_solver.check_sparse_grid_rebuild_status()
 
