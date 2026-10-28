@@ -49,6 +49,13 @@ _INERTIA_SYMMETRY_ATOL = 1.0e-8
 _MESH_INERTIA_TILE_SIZE = 256
 
 
+@wp.func
+def _inverse_inertia(inertia: wp.mat33) -> wp.mat33:
+    # Small valid float32 inertias can underflow the determinant or overflow its
+    # reciprocal. Use float64 intermediates, then store the inverse in float32.
+    return wp.mat33(wp.inverse(wp.mat33d(inertia)))
+
+
 def _validate_hollow_thickness(
     shape_name: str,
     thickness: float,
@@ -957,8 +964,8 @@ def verify_and_correct_inertia(
                 )
 
     # Final check: ensure the corrected inertia matrix is positive definite
-    if has_violations and balance_inertia:
-        # Need to recompute after balancing since we modified the matrix
+    if was_corrected:
+        # Recompute from the actual tensor, including float32 rounding of shifts
         try:
             eigenvalues = np.linalg.eigvalsh(corrected_inertia)
         except np.linalg.LinAlgError:
@@ -978,7 +985,9 @@ def verify_and_correct_inertia(
             if np.any(np.isfinite(eigenvalues))
             else -max(correction, absolute_tolerance)
         )
-        epsilon = abs(min_eigenvalue) + max(correction, absolute_tolerance)
+        epsilon = abs(min_eigenvalue) + max(
+            correction, absolute_tolerance, _FLOAT32_EPS * np.max(np.abs(corrected_inertia))
+        )
         corrected_inertia[0, 0] += epsilon
         corrected_inertia[1, 1] += epsilon
         corrected_inertia[2, 2] += epsilon
@@ -1118,6 +1127,17 @@ def validate_and_correct_inertia_kernel(
             inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
             was_corrected = True
 
+        # A repair can round back to a singular tensor when the requested
+        # threshold/extra shift is small. Check the matrix after rounding and
+        # keep the final shift representable at the tensor's scale.
+        if was_corrected:
+            _eigvecs, eigvals = wp.eig3(inertia)
+            min_eig = wp.min(eigvals[0], wp.min(eigvals[1], eigvals[2]))
+            if min_eig <= 0.0:
+                scale = wp.max(wp.abs(inertia[0, 0]), wp.max(wp.abs(inertia[1, 1]), wp.abs(inertia[2, 2])))
+                adjustment = wp.abs(min_eig) + wp.max(correction, wp.max(absolute_tolerance, _FLOAT32_EPS * scale))
+                inertia = inertia + wp.mat33(adjustment, 0.0, 0.0, 0.0, adjustment, 0.0, 0.0, 0.0, adjustment)
+
     output_inertia = inertia if was_corrected else original_inertia
 
     # Write back corrected values
@@ -1132,7 +1152,7 @@ def validate_and_correct_inertia_kernel(
 
     # Update inverse inertia
     if mass > 0.0:
-        body_inv_inertia[tid] = wp.inverse(output_inertia)
+        body_inv_inertia[tid] = _inverse_inertia(output_inertia)
     else:
         body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 

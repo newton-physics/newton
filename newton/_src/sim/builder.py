@@ -68,7 +68,14 @@ from ..geometry import (
 )
 from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import MeshProperties
-from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.inertia import (
+    _INERTIA_ABS_ADJUSTMENT,
+    _INERTIA_ABS_FLOOR,
+    _INERTIA_REL_TOL,
+    _inverse_inertia,
+    validate_and_correct_inertia_kernel,
+    verify_and_correct_inertia,
+)
 from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
@@ -1837,7 +1844,7 @@ class ModelBuilder:
         # endregion
 
         # region compiler settings (similar to MuJoCo)
-        self.inertia_balance: bool = True
+        self.balance_inertia: bool = True
         """Whether to automatically correct rigid body inertia tensors that violate the triangle inequality.
         When True, adds a scalar multiple of the identity matrix to preserve rotation structure while
         ensuring physical validity (I1 + I2 >= I3 for principal moments). Default: True."""
@@ -1847,28 +1854,28 @@ class ModelBuilder:
         value will be clamped to this minimum. Set to None to disable mass clamping.
         Default: None."""
 
-        self.inertia_bound: float | None = None
+        self.bound_inertia: float | None = None
         """Minimum allowed eigenvalue for rigid body inertia tensors [kg*m^2]. If set, ensures
         all principal moments of inertia are at least this value. Set to None to disable inertia
         eigenvalue clamping. Default: None."""
 
-        self.inertia_relative_tolerance: float = 1.0e-6
+        self.inertia_relative_tolerance: float = _INERTIA_REL_TOL
         """Non-negative relative eigenvalue tolerance (dimensionless).
         A principal moment below ``max(inertia_relative_tolerance * largest_moment,
         inertia_absolute_tolerance)`` triggers correction. Must be finite. Default: 1.0e-6."""
 
-        self.inertia_absolute_tolerance: float = 1.0e-10
+        self.inertia_absolute_tolerance: float = _INERTIA_ABS_FLOOR
         """Positive absolute floor for eigenvalue and triangle-inequality tolerances [kg*m^2].
         Lower this to preserve physically valid small tensors. Must be finite and positive
         in float32. Default: 1.0e-10."""
 
-        self.inertia_correction: float = 1.0e-6
+        self.inertia_correction: float = _INERTIA_ABS_ADJUSTMENT
         """Non-negative extra diagonal shift when repairing inertia [kg*m^2].
         Added to the shift needed to meet the eigenvalue threshold or triangle inequality;
         does not affect tensors that pass validation. Zero disables the extra shift, not
         validation. Must be finite. Default: 1.0e-6."""
 
-        self.inertia_validate_detailed: bool = False
+        self.validate_inertia_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
         When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
         When True, uses a CPU implementation that reports specific issues for each body.
@@ -3521,75 +3528,6 @@ class ModelBuilder:
     # creating an unused instance attribute whose targets are never applied.
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
-
-    @property
-    def balance_inertia(self) -> bool:
-        """Deprecated alias for :attr:`inertia_balance`.
-
-        .. deprecated:: 1.8
-            Use :attr:`inertia_balance` instead.
-        """
-        warnings.warn(
-            "ModelBuilder.balance_inertia is deprecated in Newton 1.8; use inertia_balance instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        return self.inertia_balance
-
-    @balance_inertia.setter
-    def balance_inertia(self, value: bool) -> None:
-        warnings.warn(
-            "ModelBuilder.balance_inertia is deprecated in Newton 1.8; use inertia_balance instead.",
-            NewtonDeprecationWarning,
-            stacklevel=3,
-        )
-        self.inertia_balance = value
-
-    @property
-    def bound_inertia(self) -> float | None:
-        """Deprecated alias for :attr:`inertia_bound`.
-
-        .. deprecated:: 1.8
-            Use :attr:`inertia_bound` instead.
-        """
-        warnings.warn(
-            "ModelBuilder.bound_inertia is deprecated in Newton 1.8; use inertia_bound instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        return self.inertia_bound
-
-    @bound_inertia.setter
-    def bound_inertia(self, value: float | None) -> None:
-        warnings.warn(
-            "ModelBuilder.bound_inertia is deprecated in Newton 1.8; use inertia_bound instead.",
-            NewtonDeprecationWarning,
-            stacklevel=3,
-        )
-        self.inertia_bound = value
-
-    @property
-    def validate_inertia_detailed(self) -> bool:
-        """Deprecated alias for :attr:`inertia_validate_detailed`.
-
-        .. deprecated:: 1.8
-            Use :attr:`inertia_validate_detailed` instead.
-        """
-        warnings.warn(
-            "ModelBuilder.validate_inertia_detailed is deprecated in Newton 1.8; use inertia_validate_detailed instead.",
-            NewtonDeprecationWarning,
-            stacklevel=2,
-        )
-        return self.inertia_validate_detailed
-
-    @validate_inertia_detailed.setter
-    def validate_inertia_detailed(self, value: bool) -> None:
-        warnings.warn(
-            "ModelBuilder.validate_inertia_detailed is deprecated in Newton 1.8; use inertia_validate_detailed instead.",
-            NewtonDeprecationWarning,
-            stacklevel=3,
-        )
-        self.inertia_validate_detailed = value
 
     @property
     def joint_twist_lower(self) -> list[float]:
@@ -5885,7 +5823,7 @@ class ModelBuilder:
             self.body_inv_mass.append(0.0)
 
         if any(x for x in inertia):
-            self.body_inv_inertia.append(wp.inverse(inertia))
+            self.body_inv_inertia.append(_inverse_inertia(inertia))
         else:
             self.body_inv_inertia.append(inertia)
 
@@ -7980,7 +7918,7 @@ class ModelBuilder:
                 # recompute inverse mass and inertia
                 if m > 0.0:
                     self.body_inv_mass.append(1.0 / m)
-                    self.body_inv_inertia.append(wp.inverse(inertia))
+                    self.body_inv_inertia.append(_inverse_inertia(inertia))
                 else:
                     self.body_inv_mass.append(0.0)
                     self.body_inv_inertia.append(wp.mat33(0.0))
@@ -12440,7 +12378,7 @@ class ModelBuilder:
             self.body_inv_mass[i] = 0.0
 
         if any(x for x in new_inertia):
-            self.body_inv_inertia[i] = wp.inverse(new_inertia)
+            self.body_inv_inertia[i] = _inverse_inertia(new_inertia)
         else:
             self.body_inv_inertia[i] = new_inertia
 
@@ -14425,7 +14363,8 @@ class ModelBuilder:
             device: The simulation device to use (e.g., 'cpu', 'cuda'). If None, uses the current Warp device.
             requires_grad: If True, enables gradient computation for the model (for differentiable simulation).
             skip_all_validations: If True, skips all validation checks. Use for maximum performance when
-                you are confident the model is valid. Default is False.
+                you are confident the model is valid. Also skips mass/inertia correction, including bounds
+                and balancing. Use individual skip flags to retain these corrections. Default is False.
             skip_validation_worlds: If True, skips validation of world ordering and contiguity. Default is False.
             skip_validation_joints: If True, skips articulation-topology and membership validation. By default,
                 joints cannot connect separate articulations, and non-root joints must belong to an articulation or
@@ -15650,7 +15589,7 @@ class ModelBuilder:
             body_inertia = self.body_inertia
             body_inv_mass = self.body_inv_mass
             body_inv_inertia = self.body_inv_inertia
-            if validate_inertia and len(self.body_mass) > 0 and self.inertia_validate_detailed:
+            if validate_inertia and len(self.body_mass) > 0 and self.validate_inertia_detailed:
                 # Use detailed Python validation with per-body warnings on copies of the builder lists.
                 body_mass = list(body_mass)
                 body_inertia = list(body_inertia)
@@ -15661,9 +15600,9 @@ class ModelBuilder:
                     new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
                         body_mass[i],
                         body_inertia[i],
-                        self.inertia_balance,
+                        self.balance_inertia,
                         self.bound_mass,
-                        self.inertia_bound,
+                        self.bound_inertia,
                         body_label,
                         relative_tolerance=self.inertia_relative_tolerance,
                         absolute_tolerance=self.inertia_absolute_tolerance,
@@ -15673,14 +15612,16 @@ class ModelBuilder:
                         body_mass[i] = new_mass
                         body_inertia[i] = new_inertia
                         body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
-                        body_inv_inertia[i] = wp.inverse(new_inertia) if any(x for x in new_inertia) else new_inertia
+                        body_inv_inertia[i] = (
+                            _inverse_inertia(new_inertia) if any(x for x in new_inertia) else new_inertia
+                        )
 
             m.body_mass = wp.array(body_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_inv_mass = wp.array(body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_inertia = warp_array_from_values(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
             m.body_inv_inertia = warp_array_from_values(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
 
-            if validate_inertia and len(self.body_mass) > 0 and not self.inertia_validate_detailed:
+            if validate_inertia and len(self.body_mass) > 0 and not self.validate_inertia_detailed:
                 # Use fast Warp kernel validation, correcting the Model arrays in place on device.
                 correction_count = wp.zeros(1, dtype=wp.int32)
                 wp.launch(
@@ -15691,9 +15632,9 @@ class ModelBuilder:
                         m.body_inertia,
                         m.body_inv_mass,
                         m.body_inv_inertia,
-                        self.inertia_balance,
+                        self.balance_inertia,
                         self.bound_mass if self.bound_mass is not None else 0.0,
-                        self.inertia_bound if self.inertia_bound is not None else 0.0,
+                        self.bound_inertia if self.bound_inertia is not None else 0.0,
                         self.inertia_relative_tolerance,
                         self.inertia_absolute_tolerance,
                         self.inertia_correction,
@@ -15706,7 +15647,7 @@ class ModelBuilder:
                 if num_corrections > 0:
                     warnings.warn(
                         f"Inertia validation corrected {num_corrections} bodies. "
-                        f"Set inertia_validate_detailed=True for detailed per-body warnings.",
+                        f"Set validate_inertia_detailed=True for detailed per-body warnings.",
                         NewtonWarning,
                         stacklevel=3,
                     )

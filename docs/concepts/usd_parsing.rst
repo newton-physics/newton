@@ -439,7 +439,7 @@ Known gaps of the experimental importer, tracked as follow-ups:
   of short segments at typical densities may fall below
   :class:`~newton.ModelBuilder`'s inertia-validation floor, causing their inertia to be corrected
   during finalization. Explicitly authored comparably thin cables can do the same. Set
-  :attr:`~newton.ModelBuilder.inertia_validate_detailed` before finalization to identify corrected
+  :attr:`~newton.ModelBuilder.validate_inertia_detailed` before finalization to identify corrected
   bodies.
 * **Single-segment curves** -- an open two-point curve (one segment) is warned and skipped;
   the rod representation needs at least two segments. A periodic two-point curve closes into

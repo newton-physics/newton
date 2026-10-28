@@ -45,7 +45,7 @@ class TestStrictWarnings(unittest.TestCase):
 
             warnings.warn_explicit(
                 "Inertia validation corrected 1 bodies. "
-                "Set inertia_validate_detailed=True for detailed per-body warnings.",
+                "Set validate_inertia_detailed=True for detailed per-body warnings.",
                 UserWarning,
                 "test_custom_attributes.py",
                 1,

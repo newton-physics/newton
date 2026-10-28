@@ -1,1 +1,0 @@
-Deprecate `ModelBuilder.balance_inertia`, `bound_inertia`, and `validate_inertia_detailed` in favor of `inertia_balance`, `inertia_bound`, and `inertia_validate_detailed`; keep the old names as working read/write aliases.

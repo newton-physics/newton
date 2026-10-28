@@ -1,1 +1,1 @@
-Honor `ModelBuilder.finalize(skip_all_validations=True)` for mass/inertia validation and correction. Use individual validation skip flags with the default `skip_validation_inertia=False` to retain mass/inertia correction while skipping other checks.
+Compute rigid body inverse inertia with float64 intermediates so small float32 tensors retain finite, correct inverses. Keep repaired inertia positive definite when a small requested correction rounds away.
