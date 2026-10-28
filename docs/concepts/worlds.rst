@@ -416,6 +416,88 @@ updates for world ``0`` therefore continue to affect their global entities.
    Gravity shape: (3,)
 
 
+.. _Shape prototypes:
+
+Per-World Shape Prototypes
+--------------------------
+
+.. experimental::
+
+   Shape prototypes and shape slots may change without a deprecation period.
+
+A *shape prototype* is an asset: one or more shapes with shared inertial properties, such as an
+object of an asset catalog. A *shape slot* reserves shape rows on a body and holds one prototype
+at a time, independently in every world. This serves workloads such as reset-time asset
+catalogs, where each world picks one object of a catalog.
+
+Declare prototypes with :meth:`~newton.ModelBuilder.add_shape_prototype`, passing a builder with
+at most one body, such as an asset loaded with :meth:`~newton.ModelBuilder.add_usd`. Its shapes
+become the prototype's shapes, and its body's mass, center of mass, and inertia become the
+prototype's. Add slots with :meth:`~newton.ModelBuilder.add_shape_slot`: either new rows on a body,
+sized for the largest prototype, or existing shapes of a body that become replaceable. At runtime,
+:meth:`~newton.Model.assign_shape_prototypes` switches the prototype of any slots on the device
+without host synchronization: a prototype with ``n`` shapes fills the slot's first ``n`` rows and
+empties the others, and the body's mass properties follow. It returns the
+:class:`~newton.ModelFlags` to pass to solvers and viewers:
+
+.. testcode::
+
+   import warp as wp
+   import newton
+
+   cube = newton.ModelBuilder()
+   cube.add_shape_box(cube.add_body(label="cube"), hx=0.1, hy=0.1, hz=0.1)
+   ball = newton.ModelBuilder()
+   ball.add_shape_sphere(ball.add_body(label="ball"), radius=0.1)
+
+   env = newton.ModelBuilder()
+   cube_id = env.add_shape_prototype(cube)
+   ball_id = env.add_shape_prototype(ball)
+   body = env.add_body(label="object")
+   env.add_shape_slot(body, initial=cube_id)
+
+   scene = newton.ModelBuilder()
+   scene.replicate(env, world_count=2)
+   model = scene.finalize()
+
+   # World 1 switches to the ball; world 0 keeps the cube.
+   flags = model.assign_shape_prototypes(
+       wp.array([1], dtype=wp.int32, device=model.device),
+       wp.array([ball_id], dtype=wp.int32, device=model.device),
+   )
+   # solver.notify_model_changed(flags)
+   # viewer.notify_model_changed(flags)
+   print(model.shape_prototype_label, model.shape_slot_prototype.numpy())
+
+.. testoutput::
+
+   ['cube', 'ball'] [0 1]
+
+Each slot row is a regular shape: it keeps its own label, world, collision group, filter pairs,
+materials, and opacity, and copies the geometry and shape custom attributes of the prototype shape
+it holds into its per-shape arrays. Prototypes declared in a replicated builder are shared by all worlds, so model
+memory grows with the number of slot rows, not with the catalog size. The ``shape_prototype_*``,
+``shape_prototype_shape_*``, and ``shape_slot_*`` attributes of :class:`~newton.Model` describe the
+prototypes, their shapes, and the slots.
+
+Collision detection, sensors, and viewers are sized at construction for every prototype shape a
+slot row can hold. Current limitations:
+
+- Contacts must come from :class:`~newton.CollisionPipeline` for models with slots:
+  ``SolverMuJoCo`` requires ``use_mujoco_contacts=False``, ``SolverKamino`` requires
+  ``use_collision_detector=False``, and ``SolverImplicitMPM`` is unsupported. ``SolverMuJoCo``
+  compiles one geom layout for all worlds, so construct it before assigning different prototypes
+  per world. It follows per-world ``solref``, ``solimp``, ``solmix``, and friction after an
+  assignment, but ``condim`` and ``priority`` stay as compiled.
+- Prototype shapes cannot be planes, heightfields, Gaussians, or hydroelastic shapes.
+- :class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` follow assignments
+  after the next :meth:`~newton.Model.bvh_refit_shapes`. The deprecated ``SensorTiledCamera`` raises
+  for models with slots.
+- ``ViewerGL``, ``ViewerViser``, and ``ViewerNull`` follow assignments through
+  :meth:`~newton.viewer.ViewerBase.notify_model_changed`; ``ViewerUSD``, ``ViewerRerun``,
+  ``ViewerFile``, and ``ViewerRTX`` raise :class:`NotImplementedError` when notified of one.
+
+
 .. _World-entity partitioning:
 
 World-Entity GPU Thread Partitioning
