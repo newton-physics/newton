@@ -29,7 +29,9 @@ class DeformableVisualMesh:
     Properties are read-only; do not edit their arrays in place. Meshes with
     equal rest vertices and triangle indices share device storage, while
     bindings stay per mesh. The label can be changed for display, and the
-    texture can be replaced.
+    texture can be replaced. Meshes imported from USD also keep the source
+    paths of their body, simulation geometry, and graphics prim, which survive
+    composition, replication, and recording.
 
     .. experimental::
     """
@@ -63,6 +65,9 @@ class DeformableVisualMesh:
         world: int = -1,
         label: str = "",
         index: int = -1,
+        body_path: str | None = None,
+        sim_path: str | None = None,
+        graphics_path: str | None = None,
     ) -> None:
         """Store a visual mesh and its simulation binding.
 
@@ -78,6 +83,9 @@ class DeformableVisualMesh:
             world: Owning model world, or ``-1`` for global geometry.
             label: Display label.
             index: Index in :attr:`newton.Model.deformable_visual_meshes`.
+            body_path: Source USD path of the owning deformable body, when imported.
+            sim_path: Source USD path of the simulation geometry, when imported.
+            graphics_path: Source USD path of the graphics mesh, when imported.
         """
         self._kind = DeformableVisualMesh.Kind(kind)
         self._rest_vertices = rest_vertices
@@ -93,6 +101,28 @@ class DeformableVisualMesh:
         self._index = index
         self.label = label
         """Display label. Not unique; use :attr:`index` for a stable identity."""
+        self._body_path = body_path
+        self._sim_path = sim_path
+        self._graphics_path = graphics_path
+
+    @property
+    def body_path(self) -> str | None:
+        """Source USD path of the owning deformable body, or ``None`` for native meshes. Read-only."""
+        return self._body_path
+
+    @property
+    def sim_path(self) -> str | None:
+        """Source USD path of the simulation geometry, or ``None`` for native meshes. Read-only."""
+        return self._sim_path
+
+    @property
+    def graphics_path(self) -> str | None:
+        """Source USD path of the graphics mesh, or ``None`` for native meshes. Read-only.
+
+        Imported meshes start with this path as their :attr:`label`; the label may be
+        prefixed by builder composition, this path is not.
+        """
+        return self._graphics_path
 
     @property
     def kind(self) -> Kind:

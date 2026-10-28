@@ -14091,7 +14091,7 @@ class ModelBuilder:
         return np.arange(self._curve_body_start[index], self._curve_body_end[index], dtype=np.int32)
 
     def _bind_visual_vertices_to_bodies(
-        self, vertices: np.ndarray, bodies: np.ndarray, *, nearest: bool = False
+        self, vertices: np.ndarray, bodies: np.ndarray, *, nearest: bool = False, poses: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Bind visual vertices to rigid bodies.
 
@@ -14103,6 +14103,9 @@ class ModelBuilder:
         reconstruct the world position from the body's current pose each frame.
         """
         body_q = np.asarray(self.body_q, dtype=np.float64).reshape(-1, 7)
+        if poses is not None:
+            body_q = body_q.copy()
+            body_q[np.asarray(bodies, dtype=np.int32)] = np.asarray(poses, dtype=np.float64).reshape(len(bodies), 7)
         verts = np.asarray(vertices, dtype=np.float64)
 
         if nearest:
@@ -14135,7 +14138,7 @@ class ModelBuilder:
         return parent, local.astype(np.float32)
 
     def _embed_visual_vertices_in_triangles(
-        self, vertices: np.ndarray, tri_range: tuple[int, int]
+        self, vertices: np.ndarray, tri_range: tuple[int, int], positions: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Project each visual vertex onto its closest owning simulation triangle.
 
@@ -14148,7 +14151,8 @@ class ModelBuilder:
 
         lo, hi = tri_range
         tri_idx = np.asarray(self.tri_indices, dtype=np.int64).reshape(-1, 3)[lo:hi]
-        particles = np.asarray(self.particle_q, dtype=np.float64)
+        # USD binding can use an authored reference pose instead of the initial state.
+        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
         a, b, c = (particles[tri_idx[:, i]] for i in range(3))
         ab = b - a
         ac = c - a
@@ -14181,7 +14185,7 @@ class ModelBuilder:
         return parent.numpy().copy(), weights.numpy().copy()
 
     def _embed_visual_vertices_in_tets(
-        self, vertices: np.ndarray, tet_range: tuple[int, int]
+        self, vertices: np.ndarray, tet_range: tuple[int, int], positions: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Compute the containing owning tet and barycentric weights per visual vertex.
 
@@ -14194,7 +14198,8 @@ class ModelBuilder:
 
         lo, hi = tet_range
         tet_idx = np.asarray(self.tet_indices, dtype=np.int64).reshape(-1, 4)[lo:hi]
-        particles = np.asarray(self.particle_q, dtype=np.float64)
+        # USD binding can use an authored reference pose instead of the initial state.
+        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
 
         v0, v1, v2, v3 = (particles[tet_idx[:, i]] for i in range(4))
         # Columns are the tet edge vectors; bary123 = T^-1 (p - v0), bary0 = 1 - sum.
@@ -14311,6 +14316,9 @@ class ModelBuilder:
                     world=int(worlds[0]),
                     label=spec["label"],
                     index=index,
+                    body_path=spec.get("body_path"),
+                    sim_path=spec.get("sim_path"),
+                    graphics_path=spec.get("graphics_path"),
                 )
             )
         batches.meshes = tuple(meshes)
