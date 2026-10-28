@@ -402,7 +402,6 @@ def _eval_body_contact(
     rigid_contact_damping: wp.array[float],
     rigid_contact_friction_scale: wp.array[float],
     force_in_world_frame: bool,
-    friction_smoothing: float,
     body_f: wp.array[wp.spatial_vector],
     tid: int,
 ):
@@ -520,26 +519,17 @@ def _eval_body_contact(
     # contact damping
     fd = wp.min(vn, 0.0) * kd * wp.step(d)
 
-    # viscous friction
-    # ft = vt*kf
-
-    # Coulomb friction (box)
-    # lower = mu * d * ke
-    # upper = -lower
-
-    # vx = wp.clamp(wp.dot(wp.vec3(kf, 0.0, 0.0), vt), lower, upper)
-    # vz = wp.clamp(wp.dot(wp.vec3(0.0, 0.0, kf), vt), lower, upper)
-
-    # ft = wp.vec3(vx, 0.0, vz)
-
-    # Coulomb friction (smooth, but gradients are numerically unstable around |vt| = 0)
     ft = wp.vec3(0.0)
     if d < 0.0:
-        # use a smooth vector norm to avoid gradient instability at/around zero velocity
-        vs = wp.norm_huber(vt, delta=friction_smoothing)
-        if vs > 0.0:
-            fr = vt / vs
-            ft = fr * wp.min(kf * vs, -mu * (fn + fd))
+        friction_limit = -mu * (fn + fd)
+        if friction_limit > 0.0 and kf > 0.0:
+            # Avoid normalizing in the viscous branch, including at rest, so its
+            # velocity derivative is kf without a singular intermediate value.
+            ft = kf * vt
+            speed_sq = wp.dot(vt, vt)
+            slip_limit = friction_limit / kf
+            if speed_sq > slip_limit * slip_limit:
+                ft = vt * (friction_limit / wp.sqrt(speed_sq))
 
     f_total = n * (fn + fd) + ft
     # f_total = n * (fn + fd)
@@ -582,7 +572,6 @@ def eval_body_contact(
     rigid_contact_damping: wp.array[float],
     rigid_contact_friction_scale: wp.array[float],
     force_in_world_frame: bool,
-    friction_smoothing: float,
     body_f: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
@@ -612,7 +601,6 @@ def eval_body_contact(
         rigid_contact_damping,
         rigid_contact_friction_scale,
         force_in_world_frame,
-        friction_smoothing,
         body_f,
         tid,
     )
@@ -664,7 +652,6 @@ def eval_body_contact_forces(
     model: Model,
     state: State,
     contacts: Contacts | None,
-    friction_smoothing: float = 1.0,
     force_in_world_frame: bool = False,
     body_f_out: wp.array | None = None,
     body_q: wp.array | None = None,
@@ -703,7 +690,6 @@ def eval_body_contact_forces(
                 contacts.rigid_contact_damping,
                 contacts.rigid_contact_friction,
                 force_in_world_frame,
-                friction_smoothing,
             ],
             outputs=[body_f_out],
             device=model.device,

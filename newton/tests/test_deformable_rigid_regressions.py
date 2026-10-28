@@ -5,6 +5,7 @@
 
 import sys
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -21,6 +22,7 @@ from newton._src.geometry.soft_contacts_sdf import (
     optimize_edge_sdf,
     optimize_face_sdf,
 )
+from newton._src.solvers.vbd.rigid_vbd_kernels import compute_body_particle_contact_forces
 from newton.solvers.experimental.coupled import SolverCoupled
 from newton.tests.unittest_utils import (
     StdOutCapture,
@@ -396,7 +398,13 @@ def test_mesh_face_contact_uses_maximum_radius(test, device):
     count = int(contacts.soft_contact_count.numpy()[0])
     features = contacts._soft_contact_mesh_features.numpy()[:count]
     mask = evaluate_soft_contact_force_mask(model, state, contacts).numpy()[:count]
-    tv = np.flatnonzero(((features[:, 0] & 7) == 1) & mask)
+    tv = np.flatnonzero(
+        (
+            (features[:, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+            == int(soft_contacts_mesh._MESH_FEATURE_TV)
+        )
+        & mask
+    )
     test.assertGreater(len(tv), 0)
     bary = contacts.soft_contact_barycentric.numpy()[tv]
     ids = contacts.soft_contact_indices.numpy()[tv]
@@ -665,7 +673,11 @@ def test_identical_meshes_share_contact_precomputation(test, device):
     )
     model = builder.finalize(device=device)
     feature_data = mock.Mock(wraps=soft_contacts_mesh._mesh_feature_data)
-    with mock.patch.object(soft_contacts_mesh, "_mesh_feature_data", feature_data):
+    with (
+        mock.patch.object(soft_contacts_mesh, "_mesh_feature_data", feature_data),
+        warnings.catch_warnings(),
+    ):
+        warnings.simplefilter("error", newton.exceptions.NewtonDeprecationWarning)
         pipeline = newton.CollisionPipeline(model, enable_rigid_soft_full_surface_contact=True)
     test.assertEqual(feature_data.call_count, 1)
     # Identical instances share the actual adjacency spans, not just feature construction.
@@ -725,7 +737,11 @@ def _pinched_pad_contact_normals(device, depth, offset=(0.0, 0.0, 0.0), yaw=0.0)
     pipeline.collide(state, contacts)
     # Keep the pairs the solver applies forces to.
     mask = evaluate_soft_contact_force_mask(model, state, contacts)
-    normals = contacts.soft_contact_normal.numpy()[_force_contact_rows(contacts, mask)]
+    rows = _force_contact_rows(contacts, mask)
+    features_np = contacts._soft_contact_mesh_features.numpy()[rows, 0]
+    recovery_np = (features_np & int(soft_contacts_mesh._MESH_FEATURE_RECOVERY)) != 0
+    # Eq. (14) also permits wireframe EE forces; only recovery rows promise the nearest exit.
+    normals = contacts.soft_contact_normal.numpy()[rows[recovery_np]]
     inverse = wp.quat_inverse(rotation)
     return np.array([wp.quat_rotate(inverse, wp.vec3(*n)) for n in normals]).reshape(-1, 3)
 
@@ -762,8 +778,8 @@ def test_full_surface_skips_meshes_without_particle_collision(test, device):
         test.assertEqual(len(pairs), 0)
 
 
-def test_mesh_pad_pinch_pushes_toward_nearest_exit(test, device):
-    """A soft edge pinched inside a mesh pad keeps contacts that push it out through the nearest face.
+def test_mesh_pad_pinch_recovery_uses_nearest_exit(test, device):
+    """A soft edge pinched inside a mesh pad keeps recovery contacts toward the nearest face.
 
     Covers pairs inside the contact band (0.02 m here), penetrations beyond it that a closing
     gripper produces, and poses away from the origin where the crossing point's inside/outside
@@ -802,7 +818,9 @@ def test_dat_budget_counts_full_surface_mesh_queries(test, device):
     for full_surface in (False, True):
         with test.subTest(full_surface=full_surface):
             pipeline = newton.CollisionPipeline(
-                model, soft_contact_gap=0.1, enable_rigid_soft_full_surface_contact=full_surface
+                model,
+                soft_contact_gap=0.1,
+                enable_rigid_soft_full_surface_contact=full_surface,
             )
             solver = newton.solvers.SolverVBD(
                 model,
@@ -1229,20 +1247,73 @@ def test_mesh_endpoint_pairs_filter_only_in_solver(test, device):
         [(0, 1, 2)],
     )
     rows = _force_contact_rows(contacts)
-    families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & 7
+    families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK)
     weights = contacts.soft_contact_barycentric.numpy()[rows]
-    test.assertTrue(np.any((families == 1) & (weights.max(axis=1) == 1.0)))
-    test.assertTrue(np.any((families == 2) & (weights.max(axis=1) == 1.0)))
+    test.assertTrue(np.any((families == int(soft_contacts_mesh._MESH_FEATURE_TV)) & (weights.max(axis=1) == 1.0)))
+    test.assertTrue(np.any((families == int(soft_contacts_mesh._MESH_FEATURE_EE)) & (weights.max(axis=1) == 1.0)))
     mask = evaluate_soft_contact_force_mask(model, state, contacts)
     rows = _force_contact_rows(contacts, mask)
     count = len(rows)
-    families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & 7
+    families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK)
     test.assertEqual(count, 2)
-    np.testing.assert_array_equal(np.sort(families), (0, 1))
+    np.testing.assert_array_equal(
+        np.sort(families), (int(soft_contacts_mesh._MESH_FEATURE_VT), int(soft_contacts_mesh._MESH_FEATURE_TV))
+    )
     np.testing.assert_allclose(contacts.soft_contact_body_pos.numpy()[rows], [(0.1, 0.1, 0.05)] * 2, atol=1.0e-6)
     np.testing.assert_allclose(contacts.soft_contact_barycentric.numpy()[rows], [(1.0, 0.0, 0.0)] * 2)
     normal = np.array((0.003, 0.004, 0.005)) / np.linalg.norm((0.003, 0.004, 0.005))
     np.testing.assert_allclose(contacts.soft_contact_normal.numpy()[rows], [normal] * 2, atol=1.0e-6)
+
+
+def test_mesh_ee_uses_edge_offset_region(test, device):
+    """Keep interior EE contacts regardless of adjacent-face slopes (OGC Eq. 14)."""
+    for rigid_height, soft_height in ((0.5, 0.01), (0.0, -0.49)):
+        with test.subTest(rigid_height=rigid_height, soft_height=soft_height):
+            builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+            builder.add_shape_mesh(
+                -1,
+                mesh=newton.Mesh(
+                    [(-1.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, rigid_height)],
+                    [0, 1, 2],
+                    compute_inertia=False,
+                ),
+                cfg=builder.ShapeConfig(margin=0.0, gap=0.0),
+            )
+            builder.add_cloth_mesh(
+                pos=wp.vec3(0.0),
+                rot=wp.quat_identity(),
+                scale=1.0,
+                vel=wp.vec3(0.0),
+                vertices=[(0.0, -1.0, 0.01), (0.0, 1.0, 0.01), (1.0, 0.0, soft_height)],
+                indices=[0, 1, 2],
+                density=1.0,
+                particle_radius=0.0,
+            )
+            model = builder.finalize(device=device)
+            pipeline = newton.CollisionPipeline(
+                model,
+                enable_rigid_soft_full_surface_contact=True,
+                soft_contact_gap=0.02,
+                soft_contact_max=64,
+            )
+            state, contacts = model.state(), pipeline.contacts()
+            pipeline.collide(state, contacts)
+            count = int(contacts.soft_contact_count.numpy()[0])
+            features_np = contacts._soft_contact_mesh_features.numpy()[:count]
+            edge_indices_np = model.edge_indices.numpy()
+            rigid_edge_indices_np = contacts._soft_contact_mesh_data.rigid_features[2].numpy()
+            rows = [
+                i
+                for i, feature in enumerate(features_np)
+                if (int(feature[0]) & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+                == int(soft_contacts_mesh._MESH_FEATURE_EE)
+                and set(edge_indices_np[feature[1], 2:]) == {0, 1}
+                and set(rigid_edge_indices_np[feature[2], 1:]) == {0, 1}
+            ]
+            test.assertEqual(len(rows), 1)
+            row = rows[0]
+            np.testing.assert_allclose(contacts.soft_contact_barycentric.numpy()[row], (0.5, 0.5, 0.0), atol=1.0e-6)
+            test.assertTrue(evaluate_soft_contact_force_mask(model, state, contacts).numpy()[row])
 
 
 def test_mesh_tv_filter_replay(test, device):
@@ -1268,7 +1339,8 @@ def test_mesh_tv_filter_replay(test, device):
         with wp.ScopedCapture(device=device) as capture:
             detect_and_filter()
     original = state.particle_q.numpy().copy()
-    for displacement, expected_families in ((0.0, [0, 1]), (1.0, []), (0.0, [0, 1])):
+    expected_families = [int(soft_contacts_mesh._MESH_FEATURE_VT), int(soft_contacts_mesh._MESH_FEATURE_TV)]
+    for displacement, expected in ((0.0, expected_families), (1.0, []), (0.0, expected_families)):
         state.particle_q.assign(original + np.array((0.0, 0.0, displacement), dtype=np.float32))
         if device.is_cuda:
             wp.capture_launch(capture.graph)
@@ -1276,8 +1348,10 @@ def test_mesh_tv_filter_replay(test, device):
             detect_and_filter()
         rows = _force_contact_rows(contacts, mask)
 
-        families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & 7
-        np.testing.assert_array_equal(np.sort(families), expected_families)
+        families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & int(
+            soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK
+        )
+        np.testing.assert_array_equal(np.sort(families), expected)
 
 
 def test_mesh_tv_shared_soft_vertex_has_one_owner(test, device):
@@ -1293,7 +1367,12 @@ def test_mesh_tv_shared_soft_vertex_has_one_owner(test, device):
                 rows = _force_contact_rows(contacts, mask)
 
                 features = contacts._soft_contact_mesh_features.numpy()[rows]
-                tv = rows[np.flatnonzero((features[:, 0] & 7) == 1)]
+                tv = rows[
+                    np.flatnonzero(
+                        (features[:, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+                        == int(soft_contacts_mesh._MESH_FEATURE_TV)
+                    )
+                ]
                 test.assertEqual(len(tv), copies)
                 indices = contacts.soft_contact_indices.numpy()[tv]
                 weights = contacts.soft_contact_barycentric.numpy()[tv]
@@ -1314,7 +1393,12 @@ def test_mesh_tv_checks_soft_target_block(test, device):
     rows = _force_contact_rows(contacts, mask)
 
     features = contacts._soft_contact_mesh_features.numpy()[rows]
-    tv = rows[np.flatnonzero((features[:, 0] & 7) == 1)]
+    tv = rows[
+        np.flatnonzero(
+            (features[:, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+            == int(soft_contacts_mesh._MESH_FEATURE_TV)
+        )
+    ]
     test.assertEqual(len(tv), 1)
     bary = contacts.soft_contact_barycentric.numpy()[tv[0]]
     test.assertTrue(np.all(bary > 0.0))
@@ -1336,12 +1420,28 @@ def test_mesh_tv_checks_soft_target_block(test, device):
         rows = _force_contact_rows(contacts)
 
         features = contacts._soft_contact_mesh_features.numpy()[rows]
-        test.assertTrue(np.any(((features[:, 0] & 7) == 1) & (features[:, 1] == 0)))
+        test.assertTrue(
+            np.any(
+                (
+                    (features[:, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+                    == int(soft_contacts_mesh._MESH_FEATURE_TV)
+                )
+                & (features[:, 1] == 0)
+            )
+        )
         mask = evaluate_soft_contact_force_mask(model, state, contacts)
         rows = _force_contact_rows(contacts, mask)
 
         features = contacts._soft_contact_mesh_features.numpy()[rows]
-        test.assertFalse(np.any(((features[:, 0] & 7) == 1) & (features[:, 1] == 0)))
+        test.assertFalse(
+            np.any(
+                (
+                    (features[:, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+                    == int(soft_contacts_mesh._MESH_FEATURE_TV)
+                )
+                & (features[:, 1] == 0)
+            )
+        )
 
 
 def test_mesh_tv_shared_soft_edge_has_one_owner(test, device):
@@ -1354,8 +1454,10 @@ def test_mesh_tv_shared_soft_edge_has_one_owner(test, device):
         mask = evaluate_soft_contact_force_mask(model, state, contacts)
         rows = _force_contact_rows(contacts, mask)
 
-        families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & 7
-        tv = rows[np.flatnonzero(families == 1)]
+        families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & int(
+            soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK
+        )
+        tv = rows[np.flatnonzero(families == int(soft_contacts_mesh._MESH_FEATURE_TV))]
         test.assertEqual(len(tv), 1)
         indices = contacts.soft_contact_indices.numpy()[tv[0]]
         weights = contacts.soft_contact_barycentric.numpy()[tv[0]]
@@ -1365,23 +1467,35 @@ def test_mesh_tv_shared_soft_edge_has_one_owner(test, device):
 
 
 def test_mesh_tv_owner_requires_active_triangle(test, device):
-    """Keep a shared-feature TV row when the lowest incident triangle cannot emit it."""
+    """Retain every TV row but assign a shared feature to its first active triangle."""
     for points in (
         # Closest target is shared vertex 0.
         [(0.103, 0.104, 0.055), (0.15, 0.104, 0.055), (0.15, 0.15, 0.055), (0.103, 0.15, 0.055)],
         # Closest target is shared edge 0--2.
         [(0.095, 0.095, 0.055), (0.105, 0.095, 0.055), (0.105, 0.105, 0.055), (0.095, 0.105, 0.055)],
     ):
-        model, state, contacts = _box_patch_contacts(
-            device, points, [(0, 1, 2), (0, 2, 3)], inactive_particles=(0, 1, 2)
-        )
-        mask = evaluate_soft_contact_force_mask(model, state, contacts)
-        rows = _force_contact_rows(contacts, mask)
-
-        features = contacts._soft_contact_mesh_features.numpy()[rows]
-        tv = features[(features[:, 0] & 7) == 1]
-        test.assertEqual(len(tv), 1)
-        test.assertEqual(int(tv[0, 1]), 1)
+        for triangles in ([(0, 1, 2), (0, 2, 3)], [(0, 2, 3), (0, 1, 2)]):
+            model, state, contacts = _box_patch_contacts(device, points, triangles)
+            count = int(contacts.soft_contact_count.numpy()[0])
+            features_np = contacts._soft_contact_mesh_features.numpy()[:count].copy()
+            tv_rows = np.flatnonzero(
+                (features_np[:, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+                == int(soft_contacts_mesh._MESH_FEATURE_TV)
+            )
+            np.testing.assert_array_equal(np.sort(features_np[tv_rows, 1]), (0, 1))
+            particle_flags_np = model.particle_flags.numpy().copy()
+            # Vertex 3 makes only triangle (0, 2, 3) active, even when its
+            # barycentric weight is zero. Mixed triangles remain eligible.
+            active_owner = triangles.index((0, 2, 3))
+            for inactive, expected in (((0, 1, 2), [active_owner]), ((0,), [0]), ((0, 1, 2, 3), []), ((), [0])):
+                with test.subTest(target=points[0], triangles=triangles, inactive=inactive):
+                    current_flags_np = particle_flags_np.copy()
+                    current_flags_np[list(inactive)] &= ~int(newton.ParticleFlags.ACTIVE)
+                    model.particle_flags.assign(current_flags_np)
+                    mask_np = evaluate_soft_contact_force_mask(model, state, contacts).numpy()
+                    np.testing.assert_array_equal(features_np[tv_rows[mask_np[tv_rows]], 1], expected)
+                    np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy()[:count], features_np)
+                    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), count)
 
 
 def test_vbd_preserves_unfiltered_mesh_contacts(test, device):
@@ -1605,13 +1719,31 @@ def test_mesh_edge_recovery_shared_triangle_boundary(test, device):
                 mask = evaluate_soft_contact_force_mask(model, state, contacts)
                 rows = _force_contact_rows(contacts, mask)
 
-                families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & 7
+                families = contacts._soft_contact_mesh_features.numpy()[rows, 0] & int(
+                    soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK
+                )
                 indices = contacts.soft_contact_indices.numpy()[rows]
-                target = (families == 3) & (np.min(indices[:, :2], axis=1) == 0) & (np.max(indices[:, :2], axis=1) == 1)
+                target = (
+                    (families == int(soft_contacts_mesh._MESH_FEATURE_EE_DEPTH))
+                    & (np.min(indices[:, :2], axis=1) == 0)
+                    & (np.max(indices[:, :2], axis=1) == 1)
+                )
                 test.assertEqual(int(target.sum()), len(expected))
                 if expected:
                     weights = contacts.soft_contact_barycentric.numpy()[rows][target][0]
                     np.testing.assert_allclose(weights, (0.5, 0.5, 0.0), atol=1.0e-6)
+                    if permutation == 0 and p == (0.0, 0.0, -0.08):
+                        # EE-depth detection skips inactive edges; change flags
+                        # after detection to exercise its force-time gate.
+                        depth_rows = rows[target]
+                        model.particle_flags.zero_()
+                        mask = evaluate_soft_contact_force_mask(model, state, contacts).numpy()
+                        test.assertFalse(np.any(mask[depth_rows]))
+                        flags = model.particle_flags.numpy()
+                        flags[0] = int(newton.ParticleFlags.ACTIVE)
+                        model.particle_flags.assign(flags)
+                        mask = evaluate_soft_contact_force_mask(model, state, contacts).numpy()
+                        test.assertTrue(np.all(mask[depth_rows]))
 
 
 def test_mesh_filter_preserves_overflow(test, device):
@@ -1645,20 +1777,388 @@ def test_mesh_filter_preserves_overflow(test, device):
         np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy(), features)
         np.testing.assert_array_equal(contacts.soft_contact_body_pos.numpy(), positions)
     test.assertTrue(np.all(mask.numpy()))
+    model.particle_flags.zero_()
+    test.assertFalse(np.any(evaluate_soft_contact_force_mask(model, state, contacts).numpy()))
+    np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy(), features)
+    np.testing.assert_array_equal(contacts.soft_contact_body_pos.numpy(), positions)
 
     # The printed requirement must fit a complete rerun of the same collision pass.
     capture.begin()
     try:
-        _, _, complete = _box_patch_contacts(device, points, [], capacity=required)
+        complete_model, complete_state, complete = _box_patch_contacts(device, points, [], capacity=required)
         test.assertEqual(int(complete.soft_contact_count.numpy()[0]), required)
     finally:
         output = capture.end()
     if sys.platform != "win32":
         test.assertNotIn("Mesh soft-contact capacity exceeded", output)
+    # Source overflow bypasses geometric selection, but never particle activity.
+    # Check the stored row's own particle, without assuming append order.
+    complete._soft_contact_source_overflow.fill_(1)
+    flags = complete_model.particle_flags.numpy()
+    flags[0] &= ~int(newton.ParticleFlags.ACTIVE)
+    complete_model.particle_flags.assign(flags)
+    indices = complete.soft_contact_indices.numpy()[:, 0]
+    expected = (flags[indices] & int(newton.ParticleFlags.ACTIVE)) != 0
+    np.testing.assert_array_equal(
+        evaluate_soft_contact_force_mask(complete_model, complete_state, complete).numpy(), expected
+    )
+    test.assertTrue(np.any(expected))
+    test.assertTrue(np.any(~expected))
+
+
+def _add_bvh_dat_patch(builder, points):
+    builder.add_cloth_mesh(
+        pos=wp.vec3(0.0),
+        rot=wp.quat_identity(),
+        scale=1.0,
+        vel=wp.vec3(0.0),
+        vertices=points,
+        indices=[0, 1, 2],
+        density=1.0,
+        particle_radius=0.0,
+    )
+
+
+def test_mesh_complete_rigid_indices_and_reuse(test, device):
+    """Keep complete zero-weight corners; clear stale mesh IDs before analytic reuse."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    mesh = newton.Mesh.create_box(0.1, 0.1, 0.05)
+    mesh_shape = builder.add_shape_mesh(-1, mesh=mesh)
+    plane = builder.add_shape_plane()
+    _add_bvh_dat_patch(builder, [(-0.095, -0.095, 0.055), (0.15, -0.15, 0.055), (0.15, 0.15, 0.055)])
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        enable_rigid_soft_full_surface_contact=True,
+        soft_contact_gap=0.02,
+        soft_contact_max=512,
+    )
+    contacts, state = pipeline.contacts(), model.state()
+    pipeline.collide(state, contacts)
+    count = int(contacts.soft_contact_count.numpy()[0])
+    soft = contacts.soft_contact_indices.numpy()[:count]
+    rigid = contacts.soft_contact_rigid_indices.numpy()[:count]
+    shapes = contacts.soft_contact_shape.numpy()[:count]
+    families = {(int(np.sum(s >= 0)), int(np.sum(r >= 0))) for s, r in zip(soft, rigid, strict=True)}
+    test.assertTrue({(1, 3), (2, 2), (3, 1)} <= families)
+    for corners in rigid[shapes == mesh_shape]:
+        slots = corners[corners >= 0]
+        test.assertGreater(len(slots), 0)
+        test.assertTrue(np.all(slots < len(mesh.indices)))
+        test.assertEqual(len(set(np.asarray(mesh.indices)[slots])), len(slots))
+    # One triangle's closest point can lie on its edge/vertex; it still needs all
+    # three rigid corners for curved-motion truncation.
+    vt = rigid[np.sum(soft >= 0, axis=1) == 1]
+    test.assertTrue(np.all(vt[:, 1:] == vt[:, :1] + np.array((1, 2))))
+    flags = model.shape_flags.numpy()
+    flags[mesh_shape] &= ~int(newton.ShapeFlags.COLLIDE_PARTICLES)
+    model.shape_flags.assign(flags)
+    state.particle_q.assign(state.particle_q.numpy() - np.array((0.0, 0.0, 0.05), dtype=np.float32))
+    pipeline.collide(state, contacts)
+    count = int(contacts.soft_contact_count.numpy()[0])
+    test.assertGreater(count, 0)
+    test.assertTrue(np.all(contacts.soft_contact_shape.numpy()[:count] == plane))
+    test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy() == -1))
+
+    # Reusing this mesh-backed buffer with a particle-only pipeline must also
+    # clear its old rigid IDs, even though the new pipeline has no mesh pass.
+    particle_pipeline = newton.CollisionPipeline(model, broad_phase="nxn", soft_contact_gap=0.02)
+    for clear_buffers in (False, True):
+        contacts.soft_contact_rigid_indices.fill_(wp.vec3i(1, 2, 3))
+        contacts.clear_buffers = clear_buffers
+        particle_pipeline.collide(state, contacts)
+        test.assertGreater(int(contacts.soft_contact_count.numpy()[0]), 0)
+        test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy() == -1))
+
+    contacts.soft_contact_rigid_indices.fill_(wp.vec3i(1, 2, 3))
+    contacts.clear_buffers = True
+    contacts.clear()
+    test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy() == -1))
+
+    # Deep interior recovery rows pair with a nearest surface point, not a complete primitive.
+    flags[mesh_shape] |= int(newton.ShapeFlags.COLLIDE_PARTICLES)
+    model.shape_flags.assign(flags)
+    state.particle_q.assign(np.array([(-0.01, -0.01, 0.0), (0.01, -0.01, 0.0), (0.0, 0.01, 0.0)], dtype=np.float32))
+    pipeline.collide(state, contacts)
+    count = int(contacts.soft_contact_count.numpy()[0])
+    features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0]
+    recovery_np = (features_np >= 0) & ((features_np & int(soft_contacts_mesh._MESH_FEATURE_RECOVERY)) != 0)
+    test.assertTrue(np.any(recovery_np))
+    test.assertTrue(
+        np.all(
+            (features_np[recovery_np] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+            == int(soft_contacts_mesh._MESH_FEATURE_VT)
+        )
+    )
+    test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy()[:count][recovery_np] == -1))
+    mask = evaluate_soft_contact_force_mask(model, state, contacts).numpy()[:count]
+    test.assertTrue(np.all(mask[recovery_np]))
+    model.particle_flags.zero_()
+    mask = evaluate_soft_contact_force_mask(model, state, contacts).numpy()[:count]
+    # Analytic rows retain their existing behavior; mesh recovery cannot bypass activity.
+    np.testing.assert_array_equal(mask, features_np < 0)
+    np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy()[:count, 0], features_np)
+
+
+@wp.kernel
+def _mesh_nearest_query_results(mesh: wp.uint64, point: wp.vec3, radius: float, results: wp.array[wp.int32]):
+    """Probe the two nearest-face routines used by the production sign query."""
+    normal_query = wp.mesh_query_point_sign_normal(mesh, point, radius)
+    parity_query = wp.mesh_query_point_sign_parity(mesh, point, radius)
+    results[0] = wp.int32(normal_query.result)
+    results[1] = wp.int32(parity_query.result)
+
+
+def test_mesh_vertex_fallback_sign(test, device):
+    """Propagate the expanded sign to all VT rows and their production forces during replay."""
+    # The unscaled box has sliver faces skipped by the narrow sign query.
+    # The expanded query reaches an end face and resolves inside/outside.
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    builder.add_shape_mesh(
+        -1,
+        mesh=newton.Mesh.create_box(1.0, 1.0e-7, 1.0e-7),
+        scale=wp.vec3(1.0, 1.0e6, 1.0e6),
+        cfg=builder.ShapeConfig(margin=0.0, gap=0.0),
+    )
+    builder.add_particle(wp.vec3(0.25, 0.02, 0.095), wp.vec3(0.0), mass=1.0, radius=0.01)
+    model = builder.finalize(device=device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        enable_rigid_soft_full_surface_contact=True,
+        soft_contact_gap=0.02,
+        soft_contact_max=32,
+    )
+    contacts = pipeline.contacts()
+    mask = wp.empty(contacts.soft_contact_max, dtype=bool, device=device)
+    forces = wp.empty(contacts.soft_contact_max, dtype=wp.spatial_vector, device=device)
+    penalty = wp.full(contacts.soft_contact_max, 1000.0, device=device)
+    zero_material = wp.zeros(contacts.soft_contact_max, device=device)
+    query_results = wp.empty(2, dtype=wp.int32, device=device)
+    wp.launch(
+        _mesh_nearest_query_results,
+        dim=1,
+        inputs=[int(model.shape_source_ptr.numpy()[0]), wp.vec3(0.25, 2.0e-8, 9.5e-8), 0.03],
+        outputs=[query_results],
+        device=device,
+    )
+    np.testing.assert_array_equal(query_results.numpy(), (0, 0))
+
+    def detect_and_evaluate():
+        pipeline.collide(state, contacts)
+        evaluate_soft_contact_force_mask(model, state, contacts, out=mask)
+        wp.launch(
+            compute_body_particle_contact_forces,
+            dim=contacts.soft_contact_max,
+            inputs=[
+                1.0 / 60.0,
+                state.particle_q,
+                state.particle_q,
+                model.particle_radius,
+                model.shape_body,
+                state.body_q,
+                state.body_q,
+                state.body_qd,
+                model.body_com,
+                0.01,
+                False,
+                penalty,
+                zero_material,
+                zero_material,
+                contacts.soft_contact_count,
+                soft_contacts_mesh._make_soft_contact_filter_data(model, contacts, state.particle_q, state.body_q),
+                contacts.soft_contact_indices,
+                contacts.soft_contact_shape,
+                contacts.soft_contact_body_pos,
+                contacts.soft_contact_body_vel,
+                contacts.soft_contact_normal,
+                contacts.soft_contact_barycentric,
+                model.shape_margin,
+            ],
+            outputs=[forces],
+            device=device,
+        )
+
+    detect_and_evaluate()
+    if device.is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            detect_and_evaluate()
+    for z, inside, expected_force in ((0.095, True, 15.0), (0.105, False, 5.0), (0.095, True, 15.0)):
+        with test.subTest(z=z, inside=inside):
+            state.particle_q.assign(np.array([(0.25, 0.02, z)], dtype=np.float32))
+            if device.is_cuda:
+                wp.capture_launch(capture.graph)
+            else:
+                detect_and_evaluate()
+            count = int(contacts.soft_contact_count.numpy()[0])
+            features_np = contacts._soft_contact_mesh_features.numpy()[:count, 0]
+            recovery_np = (features_np & int(soft_contacts_mesh._MESH_FEATURE_RECOVERY)) != 0
+            test.assertEqual(np.count_nonzero(recovery_np), int(inside))
+            ordinary = np.flatnonzero(~recovery_np)
+            test.assertGreater(len(ordinary), 0)
+            np.testing.assert_array_equal(
+                (features_np[ordinary] & int(soft_contacts_mesh._MESH_FEATURE_INSIDE)) != 0, inside
+            )
+            test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy()[ordinary] >= 0))
+            selected = ordinary[mask.numpy()[ordinary]]
+            test.assertEqual(len(selected), 1)
+            np.testing.assert_allclose(contacts.soft_contact_normal.numpy()[selected[0]], (0.0, 0.0, 1.0), atol=3.0e-4)
+            # The observable stores the rigid reaction; negate it for the soft force.
+            np.testing.assert_allclose(-forces.numpy()[selected[0], :3], (0.0, 0.0, expected_force), atol=5.0e-3)
+
+
+def test_mesh_complete_bvh_query_coverage(test, device):
+    """Keep all edges, fixed geometry, short edges and slivers without crossing worlds."""
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    meshes = []
+    for _ in range(2):
+        builder.begin_world()
+        mesh = newton.Mesh.create_box(0.1, 0.1, 0.05)
+        mesh._collision_edges = np.empty((0, 2), dtype=np.int32)
+        meshes.append(mesh)
+        builder.add_shape_mesh(-1, mesh=mesh)
+        _add_bvh_dat_patch(builder, [(-0.095, -0.095, 0.055), (0.15, -0.15, 0.055), (0.15, 0.15, 0.055)])
+        builder.end_world()
+    model = builder.finalize(device=device)
+    model.particle_flags.zero_()
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        enable_rigid_soft_full_surface_contact=True,
+        soft_contact_gap=0.02,
+        soft_contact_max=512,
+    )
+    test.assertEqual(len(pipeline._soft_mesh_contact_data.rigid_features[2]), 36)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.soft_contact_count.numpy()[0])
+    soft = contacts.soft_contact_indices.numpy()[:count]
+    rigid = contacts.soft_contact_rigid_indices.numpy()[:count]
+    shapes = contacts.soft_contact_shape.numpy()[:count]
+    worlds = model.particle_world.numpy()[soft[:, 0]]
+    np.testing.assert_array_equal(worlds, model.shape_world.numpy()[shapes])
+    for world in (0, 1):
+        families = {
+            (int(np.sum(s >= 0)), int(np.sum(r >= 0)))
+            for s, r in zip(soft[worlds == world], rigid[worlds == world], strict=True)
+        }
+        test.assertTrue({(1, 3), (2, 2), (3, 1)} <= families)
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    mesh = newton.Mesh([(-0.0005, 0.0, 0.0), (0.0005, 0.0, 0.0), (0.0, -0.0001, 0.0)], [0, 1, 2], compute_inertia=False)
+    builder.add_shape_mesh(-1, mesh=mesh, cfg=builder.ShapeConfig(margin=0.0, gap=0.0))
+    _add_bvh_dat_patch(builder, [(0.0, -0.0005, 0.0001), (0.0, 0.0005, 0.0001), (0.001, 0.0005, 0.0001)])
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        enable_rigid_soft_full_surface_contact=True,
+        soft_contact_gap=0.0002,
+        soft_contact_max=512,
+    )
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.soft_contact_count.numpy()[0])
+    soft = contacts.soft_contact_indices.numpy()[:count]
+    rigid = contacts.soft_contact_rigid_indices.numpy()[:count]
+    matching = [
+        i
+        for i, (s, r) in enumerate(zip(soft, rigid, strict=True))
+        if set(s[s >= 0]) == {0, 1} and set(r[r >= 0]) == {0, 1}
+    ]
+    test.assertTrue(matching, "the perpendicular 1 mm edges are only 0.1 mm apart")
+    for i in matching:
+        np.testing.assert_allclose(contacts.soft_contact_barycentric.numpy()[i], (0.5, 0.5, 0.0), atol=1.0e-6)
+        np.testing.assert_allclose(contacts.soft_contact_body_pos.numpy()[i], (0.0, 0.0, 0.0), atol=1.0e-7)
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    mesh = newton.Mesh([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0e-7, 0.0)], [0, 1, 2], compute_inertia=False)
+    builder.add_shape_mesh(
+        -1,
+        mesh=mesh,
+        cfg=builder.ShapeConfig(margin=0.0, gap=0.0),
+    )
+    builder.add_particle(pos=wp.vec3(0.25, 2.5e-8, 1.0e-5), vel=wp.vec3(0.0), mass=1.0, radius=0.0)
+    model = builder.finalize(device=device)
+    query_radius = 1.0e-4
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        enable_rigid_soft_full_surface_contact=True,
+        soft_contact_gap=query_radius,
+        soft_contact_max=512,
+    )
+    state = model.state()
+    # Warp's sign queries skip this nonzero-area sliver. Their failure must not
+    # suppress the nearby face from the complete primitive list needed by DAT.
+    test.assertGreater(
+        np.linalg.norm(np.cross(mesh.vertices[1] - mesh.vertices[0], mesh.vertices[2] - mesh.vertices[0])), 0.0
+    )
+    query_results = wp.empty(2, dtype=wp.int32, device=device)
+    wp.launch(
+        _mesh_nearest_query_results,
+        dim=1,
+        inputs=[int(model.shape_source_ptr.numpy()[0]), wp.vec3(*state.particle_q.numpy()[0]), query_radius],
+        outputs=[query_results],
+        device=device,
+    )
+    np.testing.assert_array_equal(query_results.numpy(), (0, 0))
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(contacts.soft_contact_count.numpy()[0]), 1)
+    np.testing.assert_array_equal(contacts.soft_contact_rigid_indices.numpy()[0], (0, 1, 2))
+    # Unresolved sign must not silently become outside, even when overflow
+    # otherwise bypasses geometric filtering. The complete DAT row stays intact.
+    features_np = contacts._soft_contact_mesh_features.numpy().copy()
+    for count, source_overflow in ((1, 0), (contacts.soft_contact_max + 1, 0), (1, 1)):
+        contacts.soft_contact_count.fill_(count)
+        contacts._soft_contact_source_overflow.fill_(source_overflow)
+        test.assertFalse(evaluate_soft_contact_force_mask(model, state, contacts).numpy()[0])
+        np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy(), features_np)
+        np.testing.assert_array_equal(contacts.soft_contact_rigid_indices.numpy()[0], (0, 1, 2))
+
+    # Reuse the sliver with a soft triangle to exercise unresolved TV and EE
+    # records too; a particle-only fixture cannot reach those detection paths.
+    _add_bvh_dat_patch(builder, [(-0.3, -0.1, 1.0e-5), (0.25, 0.1, 1.0e-5), (0.6, -0.1, 1.0e-5)])
+    model = builder.finalize(device=device)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(
+        model,
+        broad_phase="nxn",
+        enable_rigid_soft_full_surface_contact=True,
+        soft_contact_gap=query_radius,
+        soft_contact_max=512,
+    )
+    contacts = pipeline.contacts()
+    mask = wp.empty(contacts.soft_contact_max, dtype=bool, device=device)
+
+    def detect_and_filter():
+        pipeline.collide(state, contacts)
+        evaluate_soft_contact_force_mask(model, state, contacts, out=mask)
+
+    detect_and_filter()
+    if device.is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            detect_and_filter()
+        wp.capture_launch(capture.graph)
+    count = int(contacts.soft_contact_count.numpy()[0])
+    features_np = contacts._soft_contact_mesh_features.numpy()[:count].copy()
+    families = set(features_np[:, 0] & int(soft_contacts_mesh._MESH_FEATURE_FAMILY_MASK))
+    test.assertEqual(families, {0, 1, 2})
+    test.assertFalse(np.any(mask.numpy()[:count]))
+    test.assertTrue(np.all(contacts.soft_contact_rigid_indices.numpy()[:count, 0] >= 0))
+    contacts._soft_contact_source_overflow.fill_(1)
+    test.assertFalse(np.any(evaluate_soft_contact_force_mask(model, state, contacts).numpy()[:count]))
+    np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy()[:count], features_np)
 
 
 for device in get_test_devices():
     for fn in (
+        test_mesh_vertex_fallback_sign,
+        test_mesh_complete_rigid_indices_and_reuse,
+        test_mesh_complete_bvh_query_coverage,
         test_disconnected_mesh_contact_capacity,
         test_soft_contact_accumulation_thread_counts,
         test_soft_contact_workspace_storage,
@@ -1669,7 +2169,7 @@ for device in get_test_devices():
         test_convex_hull_edges_use_collision_numbering,
         test_identical_meshes_share_contact_precomputation,
         test_full_surface_skips_meshes_without_particle_collision,
-        test_mesh_pad_pinch_pushes_toward_nearest_exit,
+        test_mesh_pad_pinch_recovery_uses_nearest_exit,
         test_dat_budget_counts_full_surface_mesh_queries,
         test_separated_mesh_shells_keep_default_capacity,
         test_mesh_contact_capacity,
@@ -1684,6 +2184,7 @@ for device in get_test_devices():
         test_mesh_force_mask_keeps_non_mesh_contacts,
         test_mesh_evaluation_skips_particle_contacts,
         test_mesh_endpoint_pairs_filter_only_in_solver,
+        test_mesh_ee_uses_edge_offset_region,
         test_mesh_tv_filter_replay,
         test_mesh_tv_shared_soft_vertex_has_one_owner,
         test_mesh_tv_checks_soft_target_block,

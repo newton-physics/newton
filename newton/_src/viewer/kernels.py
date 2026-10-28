@@ -419,6 +419,7 @@ def compute_contact_disk_transforms(
     shape_world: wp.array[int],
     shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
     contact_count: wp.array[int],
     contact_shape0: wp.array[int],
@@ -426,6 +427,7 @@ def compute_contact_disk_transforms(
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
     contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
     contact_force: wp.array[wp.spatial_vector],
     disk_radius_scale: float,
@@ -435,6 +437,7 @@ def compute_contact_disk_transforms(
     color_open: wp.vec3,
     color_stick: wp.vec3,
     color_slip: wp.vec3,
+    color_unknown: wp.vec3,
     # outputs
     transforms: wp.array[wp.transform],
     scales: wp.array[wp.vec3],
@@ -451,11 +454,12 @@ def compute_contact_disk_transforms(
     inferred contact mode computed from the linear contact force magnitude and
     the tangential relative velocity at the contact point:
 
-    * ``|F| < eps_force``                                  -> ``color_open``
-    * ``|F| >= eps_force and |v_tan| < eps_velocity``      -> ``color_stick``
-    * ``|F| >= eps_force and |v_tan| >= eps_velocity``     -> ``color_slip``
+    * ``|F| <= eps_force``                               -> ``color_open``
+    * ``|F| > eps_force and |v_tan| < eps_velocity``      -> ``color_stick``
+    * ``|F| > eps_force and |v_tan| >= eps_velocity``     -> ``color_slip``
 
-    When ``contact_force`` is null, every active contact uses ``color_open``.
+    When ``contact_force`` is null, every active contact uses ``color_unknown``;
+    unavailable force output is distinct from a measured zero force.
 
     Inactive slots (beyond ``contact_count[0]`` or hidden by the visible-worlds
     mask) receive a degenerate zero-scale transform and a black color.
@@ -507,13 +511,12 @@ def compute_contact_disk_transforms(
     n = contact_normal[tid]
     q = _quat_from_normal_z(n)
 
-    # Mode coloring (default to "color_open" when force is unavailable).
-    color = color_open
+    color = color_unknown
     thickness_scaling = 1.0  # Apply slightly different thickness based on color to avoid visible z-fighting
     if contact_force:
         f_lin = wp.spatial_top(contact_force[tid])
         f_mag = wp.length(f_lin)
-        if f_mag < eps_force:
+        if f_mag <= eps_force:
             color = color_open
         else:
             # Relative tangential velocity at the contact point.
@@ -525,7 +528,7 @@ def compute_contact_disk_transforms(
             v_b = wp.vec3(0.0, 0.0, 0.0)
             if body_b >= 0:
                 X_wb_b = body_q[body_b]
-                world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid])
+                world_pos1 = wp.transform_point(X_wb_b, contact_point1[tid] + contact_offset1[tid])
                 world_com_b = wp.transform_point(X_wb_b, body_com[body_b])
                 r_b = world_pos1 - world_com_b
                 v_b = velocity_at_point(body_qd[body_b], r_b)
@@ -542,7 +545,7 @@ def compute_contact_disk_transforms(
     disk_radius = disk_radius_scale * pair_radius
     disk_thickness = disk_thickness_scale * pair_radius
 
-    transforms[tid] = wp.transform(contact_center, q)
+    transforms[tid] = wp.transform_multiply(layer_xform, wp.transform(contact_center, q))
     scales[tid] = wp.vec3(disk_radius, disk_radius, disk_thickness * thickness_scaling)
     colors[tid] = color
 
@@ -554,6 +557,7 @@ def compute_contact_force_arrows(
     shape_world: wp.array[int],
     shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
     contact_count: wp.array[int],
     contact_shape0: wp.array[int],
@@ -611,9 +615,9 @@ def compute_contact_force_arrows(
         contact_center += world_offsets[world_a if world_a >= 0 else world_b]
 
     f_lin = -wp.spatial_top(contact_force[tid])  # Flip sign so positive force is along normal
-    line_start[tid] = contact_center
+    line_start[tid] = wp.transform_point(layer_xform, contact_center)
     pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
-    line_end[tid] = contact_center + (force_scale * pair_radius) * f_lin
+    line_end[tid] = wp.transform_point(layer_xform, contact_center + (force_scale * pair_radius) * f_lin)
 
 
 @wp.kernel
@@ -1127,3 +1131,22 @@ def transform_points(
 ):
     i = wp.tid()
     transformed_points[i] = wp.transform_point(xform, points[i])
+
+
+@wp.kernel
+def apply_world_offset_and_layer_transform_normals(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    world_offsets: wp.array[wp.vec3],
+    world_index: int,
+    layer_xform: wp.transform,
+    out_points: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+):
+    """Transform visual points and normals into a viewer layer."""
+    i = wp.tid()
+    p = points[i]
+    if world_index >= 0:
+        p = p + world_offsets[world_index]
+    out_points[i] = wp.transform_point(layer_xform, p)
+    out_normals[i] = wp.quat_rotate(wp.transform_get_rotation(layer_xform), normals[i])
