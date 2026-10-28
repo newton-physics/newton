@@ -241,6 +241,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._body_delta_counter = 0
 
         self._init_tendon_state(model)
+        self._tendon_guide_spin_impulse = wp.zeros(model.tendon_guide_count, dtype=wp.vec3, device=model.device)
 
         if model.particle_count > 1 and model.particle_grid is not None:
             # reserve space for the particle hash grid
@@ -655,6 +656,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._prepare_tendon_route(model, state_in.body_q)
                 self._rebaseline_tendon_geometry(state_in.body_q)
                 self.tendon_segment_lambda.zero_()
+                self._tendon_guide_spin_impulse.zero_()
                 self.tendon_segment_material_tension.zero_()
 
             for i in range(self.iterations):
@@ -1057,6 +1059,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 1,
                                 self.tendon_max_sweeps,
                                 self.tendon_settle_tol,
+                                self._tendon_guide_material_transfer,
                             ],
                             device=model.device,
                         )
@@ -1126,8 +1129,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                 self.tendon_segment_active_compliance,
                                 self.tendon_segment_material_tension,
                                 self.tendon_segment_damping_tension,
-                                self.tendon_segment_delta_lambda,
-                                self.joint_linear_relaxation,
+                                self.tendon_segment_lambda,
+                                dt,
+                                self._tendon_guide_spin_impulse,
                             ],
                             outputs=[body_deltas],
                             device=model.device,
@@ -1219,6 +1223,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         1,
                         self.tendon_max_sweeps,
                         self.tendon_settle_tol,
+                        self._tendon_guide_material_transfer,
                     ],
                     device=model.device,
                 )

@@ -463,7 +463,9 @@ class TestTendonState(unittest.TestCase):
         for device in wp.get_devices():
             for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
                 with self.subTest(device=device, solver=solver_type.__name__), wp.ScopedDevice(device):
-                    model, roller = build_kinematic_rolling_transport(mu=10.0)
+                    # Preload both spans so prescribed spin changes material
+                    # history through sticking, rather than free unloaded slip.
+                    model, roller = build_kinematic_rolling_transport(mu=10.0, pre_stretch=0.08)
                     model.body_color_groups = [wp.array([i], dtype=int) for i in range(model.body_count)]
                     solver = solver_type(model, iterations=4)
                     control = model.control()
