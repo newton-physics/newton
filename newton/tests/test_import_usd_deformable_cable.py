@@ -1194,7 +1194,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                     model = builder.finalize(device=device)
                     state, next_state = model.state(), model.state()
                     control = model.control()
-                    solver = newton.solvers.SolverVBD(model, iterations=5)
+                    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
                     initial_body_q = state.body_q.numpy().copy()
                     for _ in range(1 if relaxed else 120):
                         state.clear_forces()

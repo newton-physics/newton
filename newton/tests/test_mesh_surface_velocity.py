@@ -17,7 +17,7 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 def _make_solver(name, model):
     """Construct a rigid solver for the conveyor regression."""
     if name == "vbd":
-        return newton.solvers.SolverVBD(model, iterations=5)
+        return newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
     if name == "semi_implicit":
         return newton.solvers.SolverSemiImplicit(model)
     if name == "featherstone":

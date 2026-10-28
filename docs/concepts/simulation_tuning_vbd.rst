@@ -41,8 +41,9 @@ math, how the solver converges and why it fails:
   the update, and why that makes heavily deformed or stiffly coupled
   configurations the hard case;
 - how joint and contact constraints are enforced inside the same VBD loop
-  through a compliant augmented-Lagrangian (ALM) formulation,
-  and what roles ``rigid_avbd_alpha`` and
+  through an augmented-Lagrangian (ALM) formulation
+  (compliant ALM by default; the legacy path is deprecated),
+  and what roles ``rigid_avbd_alpha``, ``rigid_avbd_beta``, and
   ``rigid_avbd_gamma`` play;
 - how the penetration-free Divide and Truncate (DAT) scheme bounds and
   truncates per-vertex motion against contacts, and what that implies for
@@ -62,9 +63,11 @@ group: common (``iterations``, ``friction_epsilon``), particle (the
 self-contact family, the self-contact slot of ``collision_frequency`` /
 ``collision_frequency_type``, ``dat_conservative_bound_relaxation``,
 ``particle_enable_tile_solve``, contact buffer sizes), and rigid constraints
-(``rigid_avbd_alpha``/``gamma`` and ``rigid_contact_history``).
+(``rigid_compliant_alm`` mode selection, ``rigid_avbd_alpha``/``gamma``,
+the deprecated ``rigid_avbd_beta`` ramping, penalty seeds and ceilings,
+``rigid_contact_hard``, ``rigid_contact_history``).
 
-Deprecated beta and contact-seed controls affect only body-particle contacts.
+Deprecated penalty-ramping controls do not affect compliant-ALM rigid constraints.
 
 Until then, the authoritative parameter list with defaults is
 :class:`~newton.solvers.SolverVBD`; the supported-knob summary lives in

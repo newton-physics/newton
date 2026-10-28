@@ -454,7 +454,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         initial_body_q = state.body_q.numpy().copy()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
         np.testing.assert_allclose(state.body_q.numpy(), initial_body_q, atol=1.0e-6)
-        newton.solvers.SolverVBD(model, iterations=1)
+        newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
     def test_physics_attachment_joins_earlier_articulation_from_last_endpoint(self):
         """Join a cable's last endpoint to a rigid articulation imported before unrelated bodies."""
@@ -535,7 +535,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         builder.color()
         model = builder.finalize()
-        newton.solvers.SolverVBD(model, iterations=1)
+        newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
     def test_physics_attachments_join_multiple_rigid_articulations(self):
         """Join each cable to its own rigid articulation."""
@@ -720,7 +720,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
                 builder.color()
                 model = builder.finalize()
-                newton.solvers.SolverVBD(model, iterations=1)
+                newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
     def test_physics_attachment_follows_excluded_articulation_joint(self):
         """Keep an excluded loop joint outside an articulation extended by a cable."""
@@ -1099,7 +1099,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         builder.color()
         model = builder.finalize()
-        newton.solvers.SolverVBD(model, iterations=1)
+        newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
     def test_physics_attachment_disabled_or_unsupported_is_recorded_not_imported(self):
         """Disabled and cloth/volume-source attachments create no joints; both preserve their

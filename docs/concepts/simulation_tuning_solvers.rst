@@ -140,16 +140,18 @@ repository examples spend tuning effort, not a shared solver API.
        use armature, joint friction, effort limits, or velocity limits.
        Examples mostly tune ``iterations`` and ``rigid_contact_relaxation``.
    * - :class:`~newton.solvers.SolverVBD`
-     - ``iterations``, ``friction_epsilon``,
+     - ``iterations``, ``rigid_compliant_alm``, ``friction_epsilon``,
        ``dat_conservative_bound_relaxation``,
        ``rigid_avbd_alpha``,
        ``rigid_avbd_joint_alpha``, ``rigid_avbd_contact_alpha``,
        ``rigid_avbd_beta``, ``rigid_avbd_linear_beta``,
-       ``rigid_avbd_gamma``, ``rigid_contact_history``,
+       ``rigid_avbd_angular_beta``, ``rigid_avbd_gamma``,
+       ``rigid_contact_hard``, ``rigid_contact_history``,
        ``rigid_contact_k_start``,
        ``rigid_body_contact_buffer_size``,
        ``rigid_body_particle_contact_buffer_size``,
        ``rigid_joint_linear_ke``, ``rigid_joint_angular_ke``,
+       ``rigid_joint_linear_k_start``, ``rigid_joint_angular_k_start``,
        ``rigid_joint_linear_kd``, ``rigid_joint_angular_kd``,
        ``integrate_with_external_rigid_solver``,
        ``particle_enable_self_contact``, ``particle_self_contact_margin``,
@@ -163,14 +165,17 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_edge_parallel_epsilon``, ``particle_enable_tile_solve``,
        ``particle_topological_contact_filter_threshold``,
        ``particle_rest_shape_contact_exclusion_radius``.
-     - The solver uses finite-material compliant ALM for rigid contacts, structural
+     - ``rigid_compliant_alm`` (default ``True``) selects the recommended unified
+       finite-material compliant ALM formulation for rigid contacts, structural
        joints, drives, and limits. Authored stiffness determines physical
        compliance; :class:`~newton.solvers.SolverVBD` selects the numerical ALM
-       conditioning parameters internally.
+       conditioning parameters internally. Pass ``False`` to retain the
+       deprecated legacy AVBD path during its migration window.
+       ``rigid_contact_hard`` selects contact behavior only on that legacy path.
 
-       Deprecated beta and contact-seed controls affect only body-particle contacts.
+       Deprecated penalty-ramping controls do not affect compliant-ALM rigid constraints.
        Rigid simulations relying on those controls or on legacy hard constraints may
-       require stiffness retuning when migrating to compliant ALM. Alpha remains an
+       require stiffness retuning when enabling compliant ALM. Alpha remains an
        advanced stabilization override.
 
        Optional numeric contact warm-starting with

@@ -10000,9 +10000,9 @@ class ModelBuilder:
                 body origin and COM coincide. Defaults to ``"com"``.
 
                 .. deprecated:: 1.8
-                    ``"start"`` emits a :class:`~newton.exceptions.NewtonDeprecationWarning`
-                    and will be removed in a future release. Use ``"com"`` instead.
-                    When migrating body-local points, subtract the old local COM offset.
+                    ``"start"`` emits a :class:`~newton.exceptions.NewtonDeprecationWarning`.
+                    Use ``"com"`` instead. For manually authored body-local anchors,
+                    subtract the old ``body_com`` offset.
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10058,15 +10058,6 @@ class ModelBuilder:
         """
         if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
-
-        if body_frame_origin == "start":
-            warnings.warn(
-                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8 and will be removed '
-                'in a future release. Use the default "com" origin and subtract the old local COM '
-                "offset from body-local points.",
-                NewtonDeprecationWarning,
-                stacklevel=_external_warning_stacklevel(),
-            )
 
         start_body = self.body_count
         start_joint = self.joint_count
@@ -10272,6 +10263,16 @@ class ModelBuilder:
 
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
+
+        # Warn after validation but before mutating the builder.
+        if body_frame_origin == "start":
+            warnings.warn(
+                'add_rod(body_frame_origin="start") is deprecated as of Newton 1.8. '
+                'Use the default "com" origin. For manually authored body-local anchors, '
+                "subtract the old body_com offset.",
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
 
         # Create all edge bodies first.
         for e_idx, (body_q, com_offset, capsule_xform) in enumerate(edge_body_data):

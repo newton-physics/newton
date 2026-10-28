@@ -143,7 +143,7 @@ def _make_solver(
             ),
             SolverCoupled.Entry(
                 name="vbd",
-                solver=lambda v: SolverVBD(model=v, iterations=5),
+                solver=lambda v: SolverVBD(model=v, iterations=5, rigid_compliant_alm=True),
                 bodies=[int(i) for i in vbd_ids.numpy()],
                 particles=list(range(model.particle_count)),
             ),
@@ -847,7 +847,7 @@ class TestAdmmGraphCapture(unittest.TestCase):
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=1),
+                    solver=lambda v: SolverVBD(model=v, iterations=1, rigid_compliant_alm=True),
                     bodies=[body_b],
                 ),
             ],
@@ -1105,13 +1105,16 @@ class TestAdmmBodyParticleAttachment(unittest.TestCase):
     def test_single_vbd_entry_attachment_is_left_to_vbd(self):
         """Leave a same-entry model attachment to SolverVBD without an attachment warning."""
         model = _build_body_particle_attachment_scene()
-        with self.assertNoLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING"):
+        with (
+            self.assertNoLogs("newton._src.solvers.coupled.solver_coupled_admm", level="WARNING"),
+            self.assertWarns(DeprecationWarning),
+        ):
             solver = SolverCoupledADMM(
                 model,
                 [
                     SolverCoupled.Entry(
                         "both",
-                        lambda view: SolverVBD(view, iterations=0),
+                        lambda view: SolverVBD(view, iterations=0, rigid_compliant_alm=False),
                         bodies=range(model.body_count),
                         particles=range(model.particle_count),
                     ),
