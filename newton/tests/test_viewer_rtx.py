@@ -515,6 +515,60 @@ class TestViewerRTXRendering(unittest.TestCase):
     """Keep real OVRTX renders in one class so class-level parallelism runs them serially."""
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_runtime_mesh_textures(self):
+        """Replace one mesh's texture without changing another mesh sharing its material."""
+        from PIL import Image
+
+        model = newton.ModelBuilder().finalize()
+        points = wp.array([[0, -0.4, -0.4], [0, 0.4, -0.4], [0, 0.4, 0.4], [0, -0.4, 0.4]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+        uvs = wp.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=wp.vec2)
+        red = np.full((2, 2, 3), (255, 0, 0), dtype=np.uint8)
+        green = np.full((2, 2, 3), (0, 255, 0), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as directory:
+            blue_path = str(Path(directory) / "blue.png")
+            red_path = str(Path(directory) / "red.png")
+            Image.fromarray(np.full((2, 2, 3), (0, 0, 255), dtype=np.uint8)).save(blue_path)
+            Image.fromarray(red).save(red_path)
+            for asynchronous in (False, True):
+                with self.subTest(async_rendering=asynchronous):
+                    viewer = ViewerRTX(width=96, height=64, headless=True, async_rendering=asynchronous)
+                    try:
+                        viewer.set_model(model)
+                        viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
+                        left = wp.array(points.numpy() + np.array([0, -0.5, 0]), dtype=wp.vec3)
+                        right = wp.array(points.numpy() + np.array([0, 0.5, 0]), dtype=wp.vec3)
+                        for frame, (texture, channel) in enumerate(
+                            ((red_path, 0), (green, 1), (green, 1), (blue_path, 2), (None, None), (red, 0))
+                        ):
+                            with self.subTest(frame=frame):
+                                if frame == 1:
+                                    viewer.set_rendering_paused(True)
+                                    frozen = viewer.get_frame().numpy().copy()
+                                viewer.begin_frame(frame / 60.0)
+                                viewer.log_mesh("/left", left, indices, uvs=uvs, texture=texture)
+                                viewer.log_mesh("/right", right, indices, uvs=uvs, texture=red_path)
+                                viewer.end_frame()
+                                if frame == 0:
+                                    # Async rendering must display a frame before it can freeze one.
+                                    viewer.begin_frame(0.0)
+                                    viewer.end_frame()
+                                if frame == 1:
+                                    np.testing.assert_array_equal(viewer.get_frame().numpy(), frozen)
+                                    viewer.set_rendering_paused(False)
+                                    viewer.begin_frame(frame / 60.0)
+                                    viewer.end_frame()
+                                rgb = viewer.get_frame().numpy().astype(np.int32)
+                                for pixels, expected in ((rgb[:, :48], channel), (rgb[:, 48:], 0)):
+                                    if expected is None:
+                                        self.assertLess(np.max(np.ptp(pixels, axis=-1)), 30)
+                                    else:
+                                        others = np.delete(pixels, expected, axis=-1).max(axis=-1)
+                                        self.assertGreater(np.count_nonzero(pixels[:, :, expected] > others + 40), 30)
+                    finally:
+                        viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_moving_scene_capture_stays_frozen_until_resume(self):
         """Freeze both modes and resume with the latest scene rather than a stale result."""
         builder = newton.ModelBuilder()
@@ -971,6 +1025,7 @@ class TestViewerRTXMeshUpdates(unittest.TestCase):
         viewer._phase = viewer._PHASE_RENDER
         viewer._qualify = mock.Mock(side_effect=lambda name: name)
         viewer._mesh_prim_paths = {"/mesh": "/root/mesh"}
+        viewer._mesh_appearance = {}
         viewer._pending_mesh_points = {}
         viewer._pending_mesh_normals = {}
         viewer._pending_mesh_topology = {}

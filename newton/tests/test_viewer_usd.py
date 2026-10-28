@@ -242,10 +242,12 @@ class TestViewerUSD(unittest.TestCase):
                 partial_file.write(partial_png[: len(partial_png) // 2])
             raise OSError("simulated crash mid-write")
 
+        # Exports are named by content, so a crash can only hit a new image's file.
+        replacement = np.ascontiguousarray(255 - texture)
         viewer.clear_model()
         viewer.begin_frame(0.0)
         with mock.patch("PIL.Image.Image.save", partial_save), self.assertWarns(UserWarning):
-            viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+            viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=replacement)
 
         with open(tex_path, "rb") as published_file:
             self.assertEqual(published_file.read(), published)
