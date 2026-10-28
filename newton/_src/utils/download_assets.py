@@ -35,6 +35,9 @@ _HTTP_SERVER_ERROR_RE = re.compile(r"\bhttp 5\d\d\b", re.IGNORECASE)
 _GIT_DOWNLOAD_ATTEMPTS = 3
 _GIT_DOWNLOAD_RETRY_DELAY = 1.0
 _TRANSIENT_GIT_ERROR_PATTERNS = (
+    "could not resolve host",
+    "failed to connect to",
+    "timed out",
     "rpc failed",
     "early eof",
     "the remote end hung up",
