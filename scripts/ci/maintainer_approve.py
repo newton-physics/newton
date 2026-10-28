@@ -23,6 +23,7 @@ PROTECTED_FILES = {
     "CODING_GUIDELINES.rst",
     "CONTRIBUTING.md",
     "REVIEW_GUIDELINES.rst",
+    "SECURITY.md",
 }
 PROTECTED_PREFIXES = (".github/", ".agents/", ".claude/", ".codex/", "scripts/")
 

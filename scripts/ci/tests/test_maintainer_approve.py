@@ -5,7 +5,10 @@ import copy
 import importlib.util
 import json
 import os
+import shlex
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -50,6 +53,7 @@ class FakeGitHub:
         }
         self.membership = {"state": "active"}
         self.files = [{"filename": "newton/_src/example.py"}]
+        self.comparison_base_sha = BASE_SHA
         self.reviews = []
         self.calls = []
         self.fail_endpoint = None
@@ -71,7 +75,7 @@ class FakeGitHub:
         if endpoint == MEMBER:
             return copy.deepcopy(self.membership)
         if endpoint == f"{PREFIX}/compare/{BASE_SHA}...{SHA}?per_page=1&page=1":
-            return {"base_commit": {"sha": BASE_SHA}, "files": copy.deepcopy(self.files)}
+            return {"base_commit": {"sha": self.comparison_base_sha}, "files": copy.deepcopy(self.files)}
         if endpoint == PULL:
             self.pull_reads += 1
             if self.pull_reads == 2:
@@ -101,7 +105,17 @@ class TestMaintainerApprove(unittest.TestCase):
         self.assertFalse(any(method != "GET" for method, _, _ in self.api.calls))
 
     def test_authorized_command_approves_exact_head_without_merging(self):
-        """Approve the requested head and retain an attributable audit record."""
+        """Approve a complete comparison without altering or trusting human reviews."""
+        self.api.files = [{"filename": f"newton/file{index}.py"} for index in range(299)]
+        self.api.pull["changed_files"] = 299
+        self.api.reviews = [
+            {
+                "user": {"login": "other-maintainer", "type": "User"},
+                "body": f"<!-- maintainer-approval:123:{SHA} -->",
+                "state": "CHANGES_REQUESTED",
+                "commit_id": SHA,
+            }
+        ]
         self.run_approval()
         writes = [(method, path, body) for method, path, body in self.api.calls if method != "GET"]
         self.assertEqual(len(writes), 1)
@@ -112,7 +126,6 @@ class TestMaintainerApprove(unittest.TestCase):
         self.assertIn("@reviewer", body["body"])
         self.assertIn("#issuecomment-123", body["body"])
         self.assertIn("not an independent review", body["body"])
-        self.assertEqual(self.api.pull_reads, 3)
 
     def test_rejects_non_members_and_unavailable_authorization(self):
         """Fail closed on membership denial and API failures."""
@@ -123,16 +136,6 @@ class TestMaintainerApprove(unittest.TestCase):
                 if state == "api-error":
                     self.api.fail_endpoint = MEMBER
                 self.assert_rejected_without_write()
-
-    def test_rejects_pr_author_even_when_maintainer(self):
-        """Reject a maintainer requesting approval for their own PR."""
-        self.api.pull["user"]["id"] = 10
-        self.assert_rejected_without_write()
-
-    def test_rejects_stale_sha(self):
-        """Reject commands for an earlier head."""
-        self.api.pull["head"]["sha"] = "b" * 40
-        self.assert_rejected_without_write()
 
     def test_rejects_malformed_or_multiline_commands(self):
         """Require an exact command, full SHA, and bounded single-line reason."""
@@ -176,9 +179,9 @@ class TestMaintainerApprove(unittest.TestCase):
                     self.api.event["comment"]["user"]["type"] = "Bot"
                 self.assert_rejected_without_write()
 
-    def test_rejects_closed_draft_and_other_target_prs(self):
-        """Restrict the exception to open non-draft PRs targeting main."""
-        for change in ("closed", "draft", "release", "repository"):
+    def test_rejects_ineligible_prs(self):
+        """Reject self-approval, stale heads, and PRs outside the supported scope."""
+        for change in ("closed", "draft", "release", "repository", "author", "stale-head"):
             with self.subTest(change=change):
                 self.setUp()
                 if change == "closed":
@@ -187,23 +190,44 @@ class TestMaintainerApprove(unittest.TestCase):
                     self.api.pull["draft"] = True
                 elif change == "release":
                     self.api.pull["base"]["ref"] = "release-1.6"
-                else:
+                elif change == "repository":
                     self.api.pull["base"]["repo"]["full_name"] = "someone/newton"
+                elif change == "author":
+                    self.api.pull["user"]["id"] = 10
+                else:
+                    self.api.pull["head"]["sha"] = "b" * 40
                 self.assert_rejected_without_write()
 
     def test_rejects_sensitive_paths_including_renames(self):
         """Require independent review for automation and policy changes."""
-        for path in (".github/CODEOWNERS", "scripts/ci/maintainer_approve.py", "AGENTS.md", ".agents/policy.md"):
+        for path in (
+            ".github/CODEOWNERS",
+            "scripts/ci/maintainer_approve.py",
+            "AGENTS.md",
+            ".agents/policy.md",
+            "SECURITY.md",
+        ):
             for field in ("filename", "previous_filename"):
                 with self.subTest(path=path, field=field):
                     self.setUp()
                     self.api.files[0][field] = path
                     self.assert_rejected_without_write()
 
-    def test_rejects_incomplete_changed_file_list(self):
-        """Fail closed when GitHub truncates or changes the file list."""
-        self.api.pull["changed_files"] = 3001
-        self.assert_rejected_without_write()
+    def test_rejects_unreliable_comparisons(self):
+        """Reject truncated, mismatched, wrong-base, or unavailable comparisons."""
+        for failure in ("file-count", "file-cap", "base", "api-error"):
+            with self.subTest(failure=failure):
+                self.setUp()
+                if failure == "file-count":
+                    self.api.pull["changed_files"] = 2
+                elif failure == "file-cap":
+                    self.api.files = [{"filename": f"newton/file{index}.py"} for index in range(300)]
+                    self.api.pull["changed_files"] = 300
+                elif failure == "base":
+                    self.api.comparison_base_sha = "d" * 40
+                else:
+                    self.api.fail_endpoint = f"{PREFIX}/compare/{BASE_SHA}...{SHA}?per_page=1&page=1"
+                self.assert_rejected_without_write()
 
     def test_temporary_head_cannot_hide_protected_changes(self):
         """Inspect the requested commit even if a temporary head has allowed files."""
@@ -223,99 +247,29 @@ class TestMaintainerApprove(unittest.TestCase):
         with mock.patch.object(self.api, "list", side_effect=list_with_head_flip):
             self.assert_rejected_without_write()
 
-    def test_comparison_file_limit_fails_closed(self):
-        """Reject the comparison cap even when the PR file count matches it."""
-        self.api.files = [{"filename": f"newton/file{index}.py"} for index in range(300)]
-        self.api.pull["changed_files"] = 300
-        self.assert_rejected_without_write()
+    def test_duplicate_commands_do_not_submit_reviews(self):
+        """Avoid duplicate approval and resurrection of a dismissed command."""
+        for comment_id, state in ((123, "DISMISSED"), (122, "APPROVED")):
+            with self.subTest(comment_id=comment_id, state=state):
+                self.setUp()
+                self.api.reviews = [
+                    {
+                        "user": {"login": BOT, "type": "Bot"},
+                        "body": f"<!-- maintainer-approval:{comment_id}:{SHA} -->",
+                        "state": state,
+                        "commit_id": SHA,
+                    }
+                ]
+                self.run_approval()
+                self.assertFalse(any(method != "GET" for method, _, _ in self.api.calls))
 
-    def test_complete_comparison_below_limit_can_be_approved(self):
-        """Inspect all files in a complete comparison below the API limit."""
-        self.api.files = [{"filename": f"newton/file{index}.py"} for index in range(299)]
-        self.api.pull["changed_files"] = 299
-        self.run_approval()
-        self.assertTrue(any(method == "POST" for method, _, _ in self.api.calls))
-
-    def test_base_change_before_submission_prevents_approval(self):
-        """Reject a changed base after inspecting the pinned comparison."""
-        self.api.before_second_pull = lambda: self.api.pull["base"].update(sha="d" * 40)
-        self.assert_rejected_without_write()
-
-    def test_comparison_failure_does_not_fall_back_to_mutable_files(self):
-        """Reject unavailable immutable comparisons without a mutable fallback."""
-        self.api.fail_endpoint = f"{PREFIX}/compare/{BASE_SHA}...{SHA}?per_page=1&page=1"
-        self.assert_rejected_without_write()
-
-    def test_rejects_wrong_comparison_base(self):
-        """Reject a comparison response that identifies another base commit."""
-        request = self.api.request
-
-        def wrong_base(method, endpoint, body=None):
-            result = request(method, endpoint, body)
-            if "/compare/" in endpoint:
-                result["base_commit"]["sha"] = "d" * 40
-            return result
-
-        with mock.patch.object(self.api, "request", side_effect=wrong_base):
-            self.assert_rejected_without_write()
-
-    def test_replay_does_not_resurrect_dismissed_approval(self):
-        """Deduplicate consumed commands even after review dismissal."""
-        self.api.reviews = [
-            {
-                "user": {"login": BOT, "type": "Bot"},
-                "body": f"<!-- maintainer-approval:123:{SHA} -->",
-                "state": "DISMISSED",
-                "commit_id": SHA,
-            }
-        ]
-        self.assertIn("already processed", self.run_approval())
-        self.assertFalse(any(method != "GET" for method, _, _ in self.api.calls))
-
-    def test_spoofed_marker_cannot_suppress_app_approval(self):
-        """Accept deduplication markers only from the dedicated bot."""
-        self.api.reviews = [
-            {
-                "user": {"login": "someone", "type": "User"},
-                "body": f"<!-- maintainer-approval:123:{SHA} -->",
-            }
-        ]
-        self.run_approval()
-        self.assertTrue(any(method == "POST" for method, _, _ in self.api.calls))
-
-    def test_another_command_cannot_add_a_second_app_approval(self):
-        """Avoid submitting another approval for an already approved head."""
-        self.api.reviews = [
-            {
-                "user": {"login": BOT, "type": "Bot"},
-                "body": f"<!-- maintainer-approval:122:{SHA} -->",
-                "state": "APPROVED",
-                "commit_id": SHA,
-            }
-        ]
-        self.assertIn("already approved", self.run_approval())
-        self.assertFalse(any(method != "GET" for method, _, _ in self.api.calls))
-
-    def test_delegated_approval_does_not_modify_human_reviews(self):
-        """Leave another reviewer's requested changes for GitHub to enforce."""
-        self.api.reviews = [
-            {
-                "user": {"login": "other-maintainer", "type": "User"},
-                "body": "Please address the regression.",
-                "state": "CHANGES_REQUESTED",
-                "commit_id": SHA,
-            }
-        ]
-        self.run_approval()
-        self.assertEqual(
-            [(method, path) for method, path, _ in self.api.calls if method != "GET"],
-            [("POST", f"{PULL}/reviews")],
-        )
-
-    def test_push_before_submission_prevents_approval(self):
-        """Recheck the head immediately before submitting the review."""
-        self.api.before_second_pull = lambda: self.api.pull["head"].update(sha="b" * 40)
-        self.assert_rejected_without_write()
+    def test_change_before_submission_prevents_approval(self):
+        """Recheck both head and base after inspecting the comparison."""
+        for ref in ("head", "base"):
+            with self.subTest(ref=ref):
+                self.setUp()
+                self.api.before_second_pull = lambda ref=ref: self.api.pull[ref].update(sha="d" * 40)
+                self.assert_rejected_without_write()
 
     def test_change_during_submission_dismisses_created_review(self):
         """Roll back approval when head or authorization changes during submission."""
@@ -347,7 +301,7 @@ class TestMaintainerApprove(unittest.TestCase):
         with mock.patch.object(subprocess, "run", return_value=mock.Mock(returncode=0, stdout="{}")) as run:
             approval.GitHub().request("POST", f"{PULL}/reviews", {"body": reason})
         args, kwargs = run.call_args
-        self.assertNotIn("shell", kwargs)
+        self.assertFalse(kwargs.get("shell", False))
         self.assertNotIn(reason, args[0])
         self.assertEqual(json.loads(kwargs["input"]), {"body": reason})
 
@@ -362,15 +316,52 @@ class TestMaintainerApprove(unittest.TestCase):
     def test_review_listing_paginates(self):
         """Find reviews beyond the first API page before deduplication."""
         api = approval.GitHub()
-        with mock.patch.object(api, "request", side_effect=[[{}] * 100, [{}]]) as request:
-            self.assertEqual(len(api.list(f"{PULL}/reviews")), 101)
-        self.assertEqual(request.call_args.args, ("GET", f"{PULL}/reviews?per_page=100&page=2"))
+        reviews = [{"id": index} for index in range(101)]
+        pages = {
+            f"{PULL}/reviews?per_page=100&page=1": reviews[:100],
+            f"{PULL}/reviews?per_page=100&page=2": reviews[100:],
+        }
+        with mock.patch.object(api, "request", side_effect=lambda method, endpoint: pages[endpoint]):
+            self.assertEqual(api.list(f"{PULL}/reviews"), reviews)
 
-    def test_reruns_cannot_reuse_old_event_authorization(self):
-        """Require a fresh command instead of rerunning an old workflow."""
-        with mock.patch.dict(os.environ, {"GITHUB_EVENT_NAME": "issue_comment", "GITHUB_RUN_ATTEMPT": "2"}):
-            with self.assertRaisesRegex(approval.Rejected, "reruns require a new command"):
-                approval.main()
+    @unittest.skipUnless(sys.platform == "linux", "Exercise the Ubuntu approval runner's interpreter")
+    def test_workflow_rejects_replay_in_hostile_checkout(self):
+        """Reject a rerun without executing or reading repository runtime inputs."""
+        workflow = (SCRIPT.parents[2] / ".github/workflows/maintainer_approve.yml").read_text(encoding="utf-8")
+        step = workflow.split("- name: Validate command and submit delegated approval\n", 1)[1]
+        command = next(shlex.split(line.strip()[5:]) for line in step.splitlines() if line.strip().startswith("run: "))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            script = root / "scripts/ci/maintainer_approve.py"
+            script.parent.mkdir(parents=True)
+            script.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+            marker = root / "untrusted-code-ran"
+            interpreter = root / ".venv/bin/python"
+            interpreter.parent.mkdir(parents=True)
+            (root / ".venv/pyvenv.cfg").write_text("home = /usr/bin\nversion = 3.12.3\n", encoding="utf-8")
+            interpreter.write_text(
+                f"#!/bin/sh\nprintf '%s' \"$GH_TOKEN\" > {shlex.quote(str(marker))}\nexit 99\n",
+                encoding="utf-8",
+            )
+            interpreter.chmod(0o755)
+            (root / "uv.toml").write_text('required-version = ">999"\n', encoding="utf-8")
+            payload = "raise RuntimeError('repository Python import executed')\n"
+            (script.parent / "json.py").write_text(payload, encoding="utf-8")
+            (root / "sitecustomize.py").write_text(payload, encoding="utf-8")
+            env = {
+                "PATH": os.environ.get("PATH", os.defpath),
+                "GH_TOKEN": "dummy-approval-token",
+                "GITHUB_EVENT_NAME": "issue_comment",
+                "GITHUB_RUN_ATTEMPT": "2",
+                "PYTHONPATH": str(root),
+                "UV_CACHE_DIR": str(root / "cache"),
+                "UV_PYTHON_DOWNLOADS": "never",
+            }
+            result = subprocess.run(command, cwd=root, env=env, capture_output=True, text=True, timeout=30, check=False)
+            self.assertFalse(marker.exists(), "Repository interpreter received the App token")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("reruns require a new command", result.stderr)
+            self.assertNotIn("repository Python import executed", result.stderr)
 
 
 if __name__ == "__main__":

@@ -37,10 +37,10 @@ Repository write access, organization membership alone, and labels confer no
 authorization. The App checks current team membership through GitHub's API.
 
 Changes under `.github/`, `.agents/`, `.claude/`, `.codex/`, and `scripts/`, plus
-`AGENTS.md`, `CODING_GUIDELINES.rst`, `CONTRIBUTING.md`, and
-`REVIEW_GUIDELINES.rst`, require independent review. Both sides of a rename are
-checked. "Small" is the maintainer's judgment; the workflow does not infer risk
-from line count. The file-policy check compares the pinned base and requested
+`AGENTS.md`, `CODING_GUIDELINES.rst`, `CONTRIBUTING.md`, `REVIEW_GUIDELINES.rst`,
+and `SECURITY.md`, require independent review. Both sides of a rename are checked.
+"Small" is the maintainer's judgment; the workflow does not infer risk from line
+count. The file-policy check compares the pinned base and requested
 head commit SHAs, so temporarily switching the PR branch cannot change which
 files are inspected. Comparisons with 300 or more files are rejected because
 GitHub caps comparison file results at 300; this workflow never approves a
@@ -150,6 +150,13 @@ persisted checkout credentials, and reads command data from `GITHUB_EVENT_PATH`.
 It never checks out or executes PR code and never interpolates comment text into
 a shell command. The official token action creates a short-lived installation
 token scoped to `newton` and revokes it at job completion.
+
+The privileged step invokes the Ubuntu runner's `/usr/bin/python3` directly in
+isolated mode (`-I`). It uses only the standard library and ignores repository
+virtualenvs, `uv` configuration, `PYTHON*` environment variables, user site
+packages, and imports from the checkout. The interpreter and its system packages
+are part of the trusted runner image. Do not replace this invocation with a
+project runner or add repository imports without reviewing the credential boundary.
 
 The script re-fetches the comment, team membership, and PR head; checks changed
 file paths through an immutable base/head commit comparison; deduplicates App
