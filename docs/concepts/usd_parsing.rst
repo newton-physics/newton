@@ -110,6 +110,32 @@ The authored workflow is demonstrated by
 ``python -m newton.examples mpm_granular --from-usd`` and
 ``newton/examples/assets/mpm_sand.usda``.
 
+Mapping loaded vertices to authored points
+------------------------------------------
+
+.. experimental::
+   The ``return_source_point_indices`` option of :func:`newton.usd.get_mesh`
+   may change without a formal deprecation cycle.
+
+:func:`newton.usd.get_mesh` can return the source point index for each loaded
+vertex. UV seams and normals can split one authored point into several render
+vertices; the indices preserve that relationship.
+
+.. code-block:: python
+
+   mesh, _, point_indices = newton.usd.get_mesh(
+       visual_prim, load_uvs=True, return_source_point_indices=True
+   )
+   vertex_data = authored_point_data[point_indices]
+
+This option always returns ``(mesh, uv_indices, source_point_indices)``.
+The second item is ``None`` unless UV indices are requested and available.
+The source-point mapping is always third, including when both mappings are
+requested. Without this option, existing return values are unchanged.
+
+This option requires a single mesh prim. It is not available when merging a
+stage or file. See the function's return table for all combinations.
+
 Deformable Bodies
 -----------------
 
@@ -313,6 +339,30 @@ deformables are skipped, malformed topology or curves are skipped, and compliant
 imported. Dynamic and static friction belong to collision geometry and are not mapped onto
 the deformable collision approximation yet.
 
+Reading a deformable bind pose
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   :func:`newton.usd.get_deformable_bind_pose` follows the AOUSD proposal.
+
+Read the reference points used to bind visual geometry:
+
+.. code-block:: python
+
+   import newton.usd
+
+   visual = stage.GetPrimAtPath("/World/SoftBody/Visual")
+   points = newton.usd.get_deformable_bind_pose(visual)
+
+The reader uses a ``PhysicsDeformablePoseAPI`` instance with purpose
+``bindPose``, or the geometry's default-time points when none is authored.
+It does not substitute rest-shape points or an animated sample. Multiple
+bind poses and malformed data raise an error.
+
+The returned array owns its storage. Points remain in authored order, local
+coordinates, and stage length units. Apply transforms and unit conversion
+separately. These are not render vertices split at UV or normal seams.
+
 Limitations
 ~~~~~~~~~~~
 
@@ -368,11 +418,14 @@ Known gaps of the experimental importer, tracked as follow-ups:
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
 * **Collision and graphics geometry** -- separate collision or render geometry under a
-  deformable body is not simulated or driven (embedding is not implemented): untagged
-  PointBased graphics geometry warns and is skipped (a static import would leave a frozen
-  copy behind), and a dedicated point-based collider (every one warns) only toggles the
-  simulation geometry's collision as described above and never becomes a separate rigid
-  shape. Deformable-owned geometry is owned exclusively by the deformable importer: when a
+  deformable body is not simulated or driven by the importer yet. Procedural visual
+  binding is available through :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`;
+  importing authored visual bindings is not implemented yet.
+  Untagged PointBased graphics geometry
+  warns and is skipped (a static import would leave a frozen copy behind), and a dedicated
+  point-based collider (every one warns) only toggles the simulation geometry's collision
+  as described above and never becomes a separate rigid shape. Deformable-owned geometry
+  is owned exclusively by the deformable importer: when a
   deformable is skipped as kinematic or malformed it imports as nothing, with a warning,
   rather than falling back to a rigid representation. A disabled
   (``physics:bodyEnabled = false``) deformable follows the rigid-body precedent instead:
@@ -520,6 +573,27 @@ see :ref:`deformable-objects-welded-usd-graphs` for per-curve lookup.
 
    Solver tuning that is not part of the supported AOUSD schemas or a documented Newton schema
    extension is not imported; supply it on the builder or model after import.
+
+Finding deformable visual geometry
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   :func:`newton.usd.find_deformable_visual_prims` follows the AOUSD proposal.
+
+Use this reader to inspect visual geometry without creating a simulation:
+
+.. code-block:: python
+
+   import newton.usd
+
+   body = stage.GetPrimAtPath("/World/SoftBody")
+   visuals = newton.usd.find_deformable_visual_prims(body)
+
+The reader returns PointBased prims in traversal order, including instance
+proxies. It excludes simulation geometry and colliders, even disabled ones.
+It stops at nested deformable bodies, rigid bodies, and articulation roots.
+Visibility is not a filter. The reader does not edit the stage or compute
+embeddings; it only reports which prims the body owns.
 
 Material Color Spaces
 ---------------------

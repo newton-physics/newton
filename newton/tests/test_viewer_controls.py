@@ -3,6 +3,7 @@
 
 import importlib.util
 import inspect
+import sys
 import unittest
 from collections import namedtuple
 from types import SimpleNamespace
@@ -584,6 +585,23 @@ class TestViewerGizmos(unittest.TestCase):
         self.viewer._gizmo_log["target"] = target
         self.frame(0.0, 0.0, False)
         np.testing.assert_array_equal(target, original)
+
+    def test_mouse_input_without_pyglet_window_mouse_attribute(self) -> None:
+        """Route mouse input when ``pyglet.window`` lacks its ``mouse`` attribute.
+
+        A failed ``import pyglet.window`` (e.g. without a display) keeps
+        ``pyglet.window.mouse`` in ``sys.modules``, and a later re-import of
+        ``pyglet.window`` does not bind it as a package attribute again.
+        """
+        window = sys.modules["pyglet.window"]
+        with mock.patch.dict(vars(window)):
+            vars(window).pop("mouse", None)
+            yaw = self.viewer.camera.yaw
+            self.frame(700.0, 300.0, True)
+            self.frame(720.0, 300.0, True)
+            self.assertNotEqual(self.viewer.camera.yaw, yaw)
+            self.frame(720.0, 300.0, False)
+        self.assertEqual(self.gui._camera_drag_buttons, 0)
 
 
 if __name__ == "__main__":

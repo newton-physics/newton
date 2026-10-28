@@ -2030,6 +2030,22 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view._fk_level_parent_pos = None
         view._fk_level_capacity = 0
 
+        # Rebuild serial traversal from local topology, including synthetic FREE
+        # roots that have no corresponding joint in the parent model.
+        from ...sim.builder import _build_fk_joint_order  # noqa: PLC0415
+
+        fk_joint_order = _build_fk_joint_order(
+            view.joint_parent.numpy(),
+            view.joint_child.numpy(),
+            view.joint_articulation.numpy(),
+            view.joint_ancestor.numpy(),
+            articulation_starts,
+            view.articulation_end.numpy(),
+        )
+        view._fk_joint_order = (
+            None if fk_joint_order is None else wp.array(fk_joint_order, dtype=wp.int32, device=device)
+        )
+
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
 
