@@ -46,7 +46,8 @@ class ImGuiBackend:
                 imgui,
                 imguizmo,
             )
-            from imgui_bundle.python_backends import pyglet_backend
+
+            from .imgui_renderer import ImGuiRenderer  # noqa: PLC0415 - requires the optional GUI and a GL context
 
             self.imgui = imgui
             self.giz = imguizmo.im_guizmo
@@ -60,7 +61,7 @@ class ImGuiBackend:
         self.imgui.create_context()
         try:
             # Create without callbacks so we can fix the scroll handler first
-            self.impl = pyglet_backend.create_renderer(self.window, attach_callbacks=False)
+            self.impl = ImGuiRenderer(self.window, attach_callbacks=False)
         except Exception as e:
             # Unlikely to happen since RendererGL already sets PYOPENGL_PLATFORM=glx
             # on Wayland, but just in case the auto-detection missed the session type.

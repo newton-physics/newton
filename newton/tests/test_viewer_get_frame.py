@@ -207,16 +207,37 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     if _is_viewer_gl_unavailable_error(self, exc):
                         self.skipTest(f"ViewerGL display/backend not available: {exc}")
                     raise
+                image_texture = None
                 try:
                     viewer.set_model(model)
                     gui = viewer.gui
                     self.assertTrue(gui.is_available)
+                    from OpenGL import GL  # noqa: PLC0415 - optional GL dependency, after context creation
+
+                    image_texture = int(GL.glGenTextures(1))
+                    GL.glBindTexture(GL.GL_TEXTURE_2D, image_texture)
+                    GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MIN_FILTER, GL.GL_NEAREST)
+                    GL.glTexParameteri(GL.GL_TEXTURE_2D, GL.GL_TEXTURE_MAG_FILTER, GL.GL_NEAREST)
+                    pixels = np.array(
+                        [[[255, 0, 0, 255], [0, 255, 0, 255]], [[0, 0, 255, 255], [255, 255, 255, 255]]], dtype=np.uint8
+                    )
+                    GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, 2, 2, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels)
                     calls = []
                     for position in ("panel", "side", "free"):
 
-                        def callback(ui: ModuleType, position: str = position, calls: list[str] = calls) -> None:
+                        def callback(
+                            ui: ModuleType,
+                            position: str = position,
+                            calls: list[str] = calls,
+                            texture: int = image_texture,
+                        ) -> None:
                             ui.text(f"Custom {position} callback")
                             calls.append(position)
+                            if position == "free":
+                                # Exercise switches between font and user-image textures.
+                                ui.get_foreground_draw_list().add_image(
+                                    ui.ImTextureRef(texture), ui.ImVec2(16, 400), ui.ImVec2(80, 464)
+                                )
 
                         viewer.register_ui_callback(callback, position=position)
                     for frame in range(2):
@@ -237,7 +258,58 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         self.assertIsNotNone(gui.workspace)
                         self.assertIsNotNone(viewer.renderer._workspace_rect)
                         self.assertIn("free", calls)
+
+                    # Compare actual clipped text/widgets with the upstream
+                    # renderer, using identical draw data and an isolated target.
+                    from imgui_bundle.python_backends.pyglet_backend import PygletProgrammablePipelineRenderer
+
+                    previous_fbo = int(GL.glGetIntegerv(GL.GL_FRAMEBUFFER_BINDING))
+                    texture = GL.glGenTextures(1)
+                    framebuffer = GL.glGenFramebuffers(1)
+                    try:
+                        GL.glBindTexture(GL.GL_TEXTURE_2D, texture)
+                        GL.glTexImage2D(
+                            GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, 800, 600, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, None
+                        )
+                        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, framebuffer)
+                        GL.glFramebufferTexture2D(
+                            GL.GL_FRAMEBUFFER, GL.GL_COLOR_ATTACHMENT0, GL.GL_TEXTURE_2D, texture, 0
+                        )
+                        self.assertEqual(GL.glCheckFramebufferStatus(GL.GL_FRAMEBUFFER), GL.GL_FRAMEBUFFER_COMPLETE)
+                        images = []
+                        for render in (
+                            lambda data, gui=gui: PygletProgrammablePipelineRenderer.render(gui.ui.impl, data),
+                            gui.ui.impl.render,
+                        ):
+                            GL.glDisable(GL.GL_SCISSOR_TEST)
+                            GL.glClearColor(0.1, 0.2, 0.3, 1.0)
+                            GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+                            render(imgui.get_draw_data())
+                            images.append(GL.glReadPixels(0, 0, 800, 600, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE))
+                        np.testing.assert_array_equal(
+                            np.frombuffer(images[0], np.uint8), np.frombuffer(images[1], np.uint8)
+                        )
+                        image = np.frombuffer(images[1], np.uint8).reshape(600, 800, 4)
+                        np.testing.assert_array_equal(image[600 - 416, 32], [255, 0, 0, 255])
+
+                        # Rendering the UI must preserve independent alpha blend
+                        # factors used by scene transparency passes.
+                        GL.glBlendFuncSeparate(GL.GL_ONE, GL.GL_ZERO, GL.GL_ZERO, GL.GL_ONE)
+                        gui.ui.render()
+                        for name, value in (
+                            (GL.GL_BLEND_SRC_RGB, GL.GL_ONE),
+                            (GL.GL_BLEND_DST_RGB, GL.GL_ZERO),
+                            (GL.GL_BLEND_SRC_ALPHA, GL.GL_ZERO),
+                            (GL.GL_BLEND_DST_ALPHA, GL.GL_ONE),
+                        ):
+                            self.assertEqual(int(GL.glGetIntegerv(name)), value)
+                    finally:
+                        GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, previous_fbo)
+                        GL.glDeleteFramebuffers(1, [framebuffer])
+                        GL.glDeleteTextures([texture])
                 finally:
+                    if image_texture is not None:
+                        GL.glDeleteTextures([image_texture])
                     viewer.gui.ui.shutdown()
                     viewer.close()
                     # Do not leak GUI fonts/style/time into other ImGui tests.

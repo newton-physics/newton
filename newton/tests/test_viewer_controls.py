@@ -932,6 +932,7 @@ class TestViewerProperties(unittest.TestCase):
                 np.testing.assert_array_equal(live_control.probe.drive.numpy(), [11.0])
 
     def test_sparse_properties_and_joint_editor_ranges(self) -> None:
+        """Discover only selected frequencies while retaining dynamic custom fields and bounded editors."""
         builder = newton.ModelBuilder()
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         shape = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -954,6 +955,13 @@ class TestViewerProperties(unittest.TestCase):
         inspector._contexts()
         self.assertFalse(inspector._collect(Assignment.CONTROL))
         self.assertTrue(inspector._collect(Assignment.STATE))
+        all_fields = list(component_attributes(model, model, Assignment.MODEL))
+        body_fields = list(component_attributes(model, model, Assignment.MODEL, frequencies={Frequency.BODY}))
+        self.assertEqual(
+            [field[0] for field in body_fields],
+            [field[0] for field in all_fields if field[1].frequency == Frequency.BODY],
+        )
+        self.assertFalse(list(component_attributes(model, model, Assignment.MODEL, frequencies=set())))
         for attr in ("joint_q", "joint_qd", "joint_target_q", "joint_target_qd"):
             regular = joint_editor_options(attr, -2, 2)
             self.assertTrue(regular["slider"])
@@ -994,6 +1002,10 @@ class TestViewerProperties(unittest.TestCase):
         self.assertEqual([(d.frequency, list(d.indices)) for d in inspector.domains], [(frequency, [259])])
         self.assertEqual(
             {f[1] for fields in inspector._collect(Assignment.MODEL).values() for f in fields},
+            {"probe:names", "probe:target"},
+        )
+        self.assertEqual(
+            {field[0] for field in component_attributes(model, model, Assignment.MODEL, frequencies={frequency})},
             {"probe:names", "probe:target"},
         )
         self.assertEqual(inspector.reference_target(model, Frequency.SHAPE, shape), ("shape", shape))

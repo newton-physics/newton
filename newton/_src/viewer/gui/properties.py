@@ -294,6 +294,9 @@ class PropertyInspector:
         """Determine populated groups from metadata and storage, without reading live arrays."""
         groups = defaultdict(list)
         attributes = {}
+        frequencies = defaultdict(set)
+        for domain in self.domains:
+            frequencies[id(domain.model)].add(domain.frequency)
         for domain in self.domains:
             owner = self._owner(domain, component)
             if owner is None:
@@ -301,7 +304,9 @@ class PropertyInspector:
             key = (id(domain.model), id(owner))
             if key not in attributes:
                 attributes[key] = defaultdict(list)
-                for field in component_attributes(domain.model, owner, component):
+                for field in component_attributes(
+                    domain.model, owner, component, frequencies=frequencies[id(domain.model)]
+                ):
                     attributes[key][field[1].frequency].append(field)
             for name, spec, parent, attr, value in attributes[key].get(domain.frequency, ()):
                 if isinstance(value, (wp.array, np.ndarray, list, tuple)):

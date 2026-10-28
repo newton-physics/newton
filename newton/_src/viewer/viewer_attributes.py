@@ -14,7 +14,7 @@ import warp as wp
 from ..sim.model import Model
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Collection, Iterator, Sequence
     from typing import Any
 
 
@@ -31,7 +31,11 @@ def resolve_attribute(owner: object, name: str) -> tuple[object | None, str, Any
 
 
 def component_attributes(
-    model: Model, owner: object, component: Model.AttributeAssignment
+    model: Model,
+    owner: object,
+    component: Model.AttributeAssignment,
+    *,
+    frequencies: Collection[Model.AttributeFrequency | str] | None = None,
 ) -> Iterator[tuple[str, Model.AttributeSpec, object, str, Any]]:
     """Discover populated inspector fields without reading device array contents.
 
@@ -40,11 +44,21 @@ def component_attributes(
     inspector. Namespace containers remain intact so edits reach the original
     owner rather than a flattened copy.
 
+    Args:
+        model: Source of built-in and solver-defined attribute metadata.
+        owner: Component whose current storage is inspected.
+        component: Assignment used to filter custom fields.
+        frequencies: Limit discovery to these domains, or all domains when None.
+            Filter before resolving storage so a selected object does not scan
+            unrelated arrays. Values and late registrations remain live.
+
     Yields:
         Qualified name, attribute specification, storage owner, unqualified name,
         and value. The value is a reference to existing storage, not a snapshot.
     """
     for name, spec in model._iter_attribute_specs():
+        if frequencies is not None and spec.frequency not in frequencies:
+            continue
         if name.startswith("_") or spec.compaction_policy in ("world_start", "color_groups", "passthrough"):
             continue
         # Built-ins can exist on several components (e.g. Model's initial q).
