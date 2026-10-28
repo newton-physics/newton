@@ -924,7 +924,13 @@ class SensorCamera:
             state: Current particle positions and body transforms.
             deformable_visuals: Experimental precomputed visual buffers for this
                 model. Share these with a viewer to avoid skinning twice. If
-                omitted, evaluate directly into reusable camera buffers.
+                omitted, skin directly into the camera's reusable point buffer.
+
+        Raises:
+            TypeError: If ``deformable_visuals`` is not :class:`~newton.geometry.DeformableVisuals`.
+            ValueError: If the buffers belong to another model, or if this camera
+                was constructed with :attr:`DeformableSurfaceMode.SIMULATION_ONLY`
+                and cannot render them.
 
         .. experimental::
 
@@ -1025,6 +1031,10 @@ class SensorCamera:
                 to :meth:`sync_deformable_meshes` explicitly. Update or replay
                 supplied buffers before rendering; their freshness is not checked.
 
+        Raises:
+            ValueError: If ``deformable_visuals`` is given with
+                ``sync_deformables=False``, plus the :meth:`sync_deformable_meshes`
+                errors when it syncs.
         .. experimental::
 
             The ``deformable_visuals`` argument is experimental. Other camera

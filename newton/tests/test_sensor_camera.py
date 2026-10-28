@@ -1133,6 +1133,9 @@ class TestSensorCamera(unittest.TestCase):
                         )
                         np.testing.assert_allclose(self._unpack_rgb(albedo), expected * 255.0, atol=2)
 
+            # Ordinary cloth still renders from the State buffer, without a camera-owned copy.
+            self.assertEqual(camera._render_context._triangle_mesh.points.ptr, state.particle_q.ptr)
+
     def test_cloth_renders_triangle_colors_from_both_sides(self) -> None:
         """Verify two-sided depth, camera-facing normals, and per-face color under directional light."""
         for device in get_test_devices():
@@ -1871,6 +1874,19 @@ class TestSensorCameraDeformable(unittest.TestCase):
                     self.assertAlmostEqual(float(depth.numpy()[0, 8, 13]), edge, delta=0.03)
                     expected = model.tri_color.numpy()[0] * 255 if shown else [255, 255, 255]
                     np.testing.assert_allclose(TestSensorCamera._unpack_rgb(albedo)[0, 8, 8], expected, atol=2)
+                    if choice == surfaces.SIMULATION_ONLY:
+                        self.assertEqual(camera._render_context._triangle_mesh.points.ptr, state.particle_q.ptr)
+
+                        moved_state = model.state()
+                        moved = moved_state.particle_q.numpy().copy()
+                        moved[1:9, 2] += 0.3
+                        moved_state.particle_q.assign(moved)
+                        for current, expected_depth in ((moved_state, 1.7), (state, 2.0)):
+                            camera.update(
+                                current, transforms, rays, world_indices=worlds, depth_image=depth, albedo_image=albedo
+                            )
+                            np.testing.assert_allclose(depth.numpy()[[0, 3], 8, 8], expected_depth, atol=0.03)
+                            self.assertEqual(camera._render_context._triangle_mesh.points.ptr, current.particle_q.ptr)
 
     def test_skinning_follows_state_and_capture(self):
         """Render cloth and skins from the state each update or sync uses, and replay captured updates."""
@@ -1948,15 +1964,31 @@ class TestSensorCameraDeformable(unittest.TestCase):
                 rays, transforms = self._camera_arrays(model)
                 depth = camera.allocate_image_depth(1, 16, 16)
                 albedo = camera.allocate_image_albedo(1, 16, 16)
+                # Pass world indices like the other tests so they all share one compiled kernel.
+                worlds = wp.zeros(1, dtype=wp.int32, device=device)
                 camera.update(
-                    state_a, transforms, rays, depth_image=depth, albedo_image=albedo, deformable_visuals=visuals
+                    state_a,
+                    transforms,
+                    rays,
+                    depth_image=depth,
+                    albedo_image=albedo,
+                    world_indices=worlds,
+                    deformable_visuals=visuals,
                 )
                 self.assertAlmostEqual(float(depth.numpy()[0, 8, 8]), 2.5, delta=0.03)
 
                 camera.sync_deformable_meshes(state_a, deformable_visuals=visuals)
-                camera.update(state_a, transforms, rays, depth_image=depth, albedo_image=albedo, sync_deformables=False)
+                camera.update(
+                    state_a,
+                    transforms,
+                    rays,
+                    depth_image=depth,
+                    albedo_image=albedo,
+                    world_indices=worlds,
+                    sync_deformables=False,
+                )
                 self.assertAlmostEqual(float(depth.numpy()[0, 8, 8]), 2.5, delta=0.03)
-                camera.update(state_a, transforms, rays, depth_image=depth, albedo_image=albedo)
+                camera.update(state_a, transforms, rays, depth_image=depth, albedo_image=albedo, world_indices=worlds)
                 self.assertAlmostEqual(float(depth.numpy()[0, 8, 8]), 1.5, delta=0.03)
 
                 if device.is_cuda:
@@ -1965,7 +1997,13 @@ class TestSensorCameraDeformable(unittest.TestCase):
                     for state in (state_a, state_b):
                         visuals.update(state)
                         camera.update(
-                            state, transforms, rays, depth_image=depth, albedo_image=albedo, deformable_visuals=visuals
+                            state,
+                            transforms,
+                            rays,
+                            depth_image=depth,
+                            albedo_image=albedo,
+                            world_indices=worlds,
+                            deformable_visuals=visuals,
                         )
                         with wp.ScopedCapture(device) as capture:
                             visuals.update(state)
@@ -1975,6 +2013,7 @@ class TestSensorCameraDeformable(unittest.TestCase):
                                 rays,
                                 depth_image=depth,
                                 albedo_image=albedo,
+                                world_indices=worlds,
                                 deformable_visuals=visuals,
                             )
                         graphs.append(capture.graph)
@@ -1989,12 +2028,19 @@ class TestSensorCameraDeformable(unittest.TestCase):
                         rays,
                         depth_image=depth,
                         albedo_image=albedo,
+                        world_indices=worlds,
                         sync_deformables=False,
                         deformable_visuals=visuals,
                     )
                 with self.assertRaisesRegex(ValueError, "another model"):
                     other = self._builder().finalize(device=device)
                     camera.sync_deformable_meshes(state_a, deformable_visuals=newton.geometry.DeformableVisuals(other))
+                # A camera that leaves the visual meshes out must not silently accept their buffers.
+                simulation_only = SensorCamera(
+                    model, deformable_surface_mode=SensorCamera.DeformableSurfaceMode.SIMULATION_ONLY
+                )
+                with self.assertRaisesRegex(ValueError, "SIMULATION_ONLY"):
+                    simulation_only.sync_deformable_meshes(state_a, deformable_visuals=visuals)
 
     def test_textures_and_checkerboard(self):
         """Sample UVs outside the unit square, and keep skin textures while another shape shows its checkerboard."""

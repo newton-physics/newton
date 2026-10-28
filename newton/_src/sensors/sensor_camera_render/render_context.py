@@ -100,6 +100,7 @@ class RenderContext:
                 the visual meshes, or both.
         """
         self._model = model
+        self._deformable_surface_mode = deformable_surface_mode
         self._render_state = RenderContext.RenderState()
 
         self._kernel_cache: dict[tuple, wp.Kernel] = {}
@@ -113,8 +114,8 @@ class RenderContext:
         self._triangle_indices: wp.array[wp.int32] | None = None
         self._topology_particle_mask: wp.array[wp.bool] | None = None
 
-        # The camera owns the point buffer of its deformable surfaces: the simulation particles
-        # first, then the skinned vertices; both counts are 0 when that surface is left out.
+        # Skinned meshes need a combined point buffer: simulation particles first,
+        # then visual vertices. Without skins, retain the State's particle buffer.
         self._triangle_particle_start = 0
         self._triangle_particle_count = 0
         self._skinned_vertex_count = 0
@@ -173,11 +174,13 @@ class RenderContext:
             deformable_surface_mode != DeformableSurfaceMode.VISUAL_ONLY and model.particle_count and model.tri_count
         )
         if has_simulation_triangles:
-            # Only the particle span the triangles reference is copied each frame, so unrelated
-            # particles (granular material, for example) cost nothing here.
-            tri_particles = model.tri_indices.numpy()
-            self._triangle_particle_start = int(tri_particles.min())
-            self._triangle_particle_count = int(tri_particles.max()) + 1 - self._triangle_particle_start
+            self._triangle_particle_count = model.particle_count
+            if deformable_visual_meshes:
+                # Copy only the triangle span into the combined buffer. Interleaved
+                # non-triangle particles inside that span are copied too.
+                tri_particles = model.tri_indices.numpy()
+                self._triangle_particle_start = int(tri_particles.min())
+                self._triangle_particle_count = int(tri_particles.max()) + 1 - self._triangle_particle_start
         if model.particle_q is not None and model.particle_q.shape[0]:
             self._has_particles = True
             self._render_state.has_particles = True
@@ -211,7 +214,6 @@ class RenderContext:
                         wp.empty(visual.count, dtype=wp.vec3, device=self.device),
                     )
                 )
-
         skin_texture_ids = self._load_texture_and_mesh_data(model, load_textures, deformable_visual_meshes)
         if has_simulation_triangles or deformable_visual_meshes:
             self._init_triangle_mesh(model, deformable_visual_meshes, skin_texture_ids)
@@ -263,13 +265,22 @@ class RenderContext:
         Args:
             state: Current simulation state with particle positions and body transforms.
             deformable_visuals: Precomputed visual points, or ``None`` to skin from the state.
+
+        Raises:
+            ValueError: If visual points are supplied to a context that leaves the visual
+                meshes out, so a caller cannot assume they were rendered.
         """
+        if deformable_visuals is not None and self._deformable_surface_mode == DeformableSurfaceMode.SIMULATION_ONLY:
+            raise ValueError(
+                "deformable_visuals were supplied, but this camera was constructed with "
+                "DeformableSurfaceMode.SIMULATION_ONLY and does not render visual meshes"
+            )
 
         model = self.model
-        if self._triangle_points is not None:
-            # A state change is a copy and a BVH refit, never a rebuild, so each state can be
-            # captured in its own graph.
-            if self._triangle_particle_count:
+        if self._has_triangle_mesh:
+            if not self._skinned_vertex_count:
+                self._set_triangle_points(state.particle_q)
+            elif self._triangle_particle_count:
                 needed = self._triangle_particle_start + self._triangle_particle_count
                 if state.particle_q is None or state.particle_q.shape[0] < needed:
                     raise ValueError(
@@ -733,10 +744,29 @@ class RenderContext:
     def _has_gaussians(self) -> bool:
         return self.model.gaussians_data is not None
 
+    def _set_triangle_points(self, triangle_points: wp.array[wp.vec3f]) -> None:
+        if self._triangle_points is None or self._triangle_points.ptr != triangle_points.ptr:
+            self._triangle_mesh = None
+        self._triangle_points = triangle_points
+
+    def _set_triangle_indices(self, triangle_indices: wp.array[wp.int32]) -> None:
+        if self._triangle_indices is None or self._triangle_indices.ptr != triangle_indices.ptr:
+            self._triangle_mesh = None
+        self._triangle_indices = triangle_indices
+
     def _sync_triangle_mesh(self):
         if self._triangle_mesh is None:
+            triangle_groups = self._triangle_groups
+            if triangle_groups is None:
+                triangle_indices_np = self._triangle_indices.reshape((-1, 3)).numpy()
+                particle_world_np = self.model.particle_world.numpy()
+                triangle_world_np = particle_world_np[triangle_indices_np[:, 0]]
+                triangle_groups_np = np.where(triangle_world_np < 0, self.world_count, triangle_world_np).astype(
+                    np.int32
+                )
+                triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
             self._triangle_mesh = wp.Mesh(
-                self._triangle_points, self._triangle_indices, groups=self._triangle_groups, bvh_constructor="sah"
+                self._triangle_points, self._triangle_indices, groups=triangle_groups, bvh_constructor="sah"
             )
 
             wp.launch(
@@ -855,12 +885,15 @@ class RenderContext:
     def _init_triangle_mesh(
         self, model: Model, deformable_visual_meshes: Sequence[DeformableVisualMesh], skin_texture_ids: list[int]
     ):
-        """Build the static index buffer and camera-owned point buffer for the deformable surfaces.
+        """Initialize simulation triangles and optional skinned surfaces.
 
-        The buffer holds the particle span the simulation triangles reference, then the skinned
-        vertices of every visual mesh in model order, so the skinning batches apply with that span's
-        length as offset and later frames skin exactly these meshes.
+        Only skins need a camera-owned buffer. It holds the particle span the simulation
+        triangles reference, then visual vertices in model order for batched skinning.
         """
+        if not deformable_visual_meshes:
+            self._set_triangle_points(model.particle_q)
+            self._set_triangle_indices(model.tri_indices.flatten())
+            return
         triangle_indices: list[np.ndarray] = []
         triangle_uvs: list[np.ndarray] = []
         triangle_texture_ids: list[np.ndarray] = []
