@@ -163,8 +163,6 @@ def parse_usd(
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
-    legacy_angular_velocity_units: bool = False,
-    legacy_springref_units: bool = False,
     return_deformable_results: bool = False,
     allow_unsafe_torch_checkpoints: bool = False,
 ) -> dict[str, Any]:
@@ -305,32 +303,6 @@ def parse_usd(
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
-        legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state angular velocity handling:
-            resolved ``state:angular:physics:velocity``
-            and D6 ``state:rot*:physics:velocity`` values are copied into
-            ``joint_qd`` without converting degrees/s to radians/s. Applies
-            to revolute, native D6, and merged joints. Rigid-body velocities,
-            linear joint velocities, positions, and drive targets retain their
-            usual unit conversion. Defaults to False.
-
-            .. deprecated:: 1.7
-                This temporary flag will be removed in Newton 1.8. Enabling
-                it emits a :class:`DeprecationWarning`. Migrate authored
-                asset values to their documented units and leave it False.
-
-        legacy_springref_units: If True, restore Newton 1.6 handling of ``mjc:springref`` as an
-            already converted Newton value, ignoring
-            ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
-            conversion is unchanged. Requires registered MuJoCo custom
-            attributes to load spring references. Defaults to False, which
-            interprets revolute spring references using the compiler's angle
-            units (degrees if unauthored) and converts them to radians.
-
-            .. deprecated:: 1.7
-                This temporary flag will be removed in Newton 1.8. Enabling
-                it emits a :class:`DeprecationWarning`. Migrate authored
-                asset values to their documented units and leave it False.
-
         return_deformable_results: If True, include the experimental deformable entries in the
             returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
@@ -457,18 +429,6 @@ def parse_usd(
             * - ``"actuator_count"``
               - Number of external actuators parsed from the USD stage
     """
-    for name, enabled in (
-        ("legacy_angular_velocity_units", legacy_angular_velocity_units),
-        ("legacy_springref_units", legacy_springref_units),
-    ):
-        if enabled:
-            warnings.warn(
-                f"{name}=True is deprecated and will be removed in Newton 1.8. "
-                "Migrate authored asset values to their documented units and leave this option False.",
-                NewtonDeprecationWarning,
-                stacklevel=_external_warning_stacklevel(),
-            )
-
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
     first_imported_joint = builder.joint_count
@@ -648,8 +608,6 @@ def parse_usd(
         limit_gains_configured=default_joint_limit_gains_configured,
         mjc_resolver=mjc_resolver,
         verbose=verbose,
-        legacy_angular_velocity_units=legacy_angular_velocity_units,
-        legacy_springref_units=legacy_springref_units,
     )
     solreflimit_mode_key = "mujoco:solreflimit_mode"
     solreflimit_gain_baseline_key = "mujoco:solreflimit_gain_baseline"

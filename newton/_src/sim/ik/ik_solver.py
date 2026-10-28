@@ -201,6 +201,17 @@ class IKSolver:
     :class:`~newton.ik.IKOptimizerLBFGS`, and keeps the lowest-cost candidate for each
     base problem.
 
+    Forward kinematics follows articulation tree joints. Joints outside
+    articulations, including loop-closing joints, do not contribute to link
+    poses or their position/rotation Jacobians; loop-closure constraints are
+    not enforced by this solver. Position and rotation objectives require a
+    link with an incoming articulation joint and raise :class:`ValueError`
+    otherwise. External root parents retain their :attr:`Model.body_q` pose
+    from solver initialization. Models with multiple incoming articulation
+    joints for any body are rejected with :class:`ValueError`, even when the
+    objective targets a different link. Rebuild the solver after changing an
+    external root parent's model pose; ``reset()`` does not refresh that pose.
+
     Args:
         model: Shared articulation model.
         n_problems: Number of base IK problems solved together.

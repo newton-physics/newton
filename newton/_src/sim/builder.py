@@ -186,14 +186,6 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
     "limits of ModelBuilder.JointDofConfig instead."
 )
-_ADD_ROD_POSITIONS_DEPRECATION_MSG = (
-    "ModelBuilder.add_rod(positions=...) is deprecated in Newton 1.6; "
-    "construct newton.Rod(...) and pass it with add_rod(rod=...) instead."
-)
-_ADD_ROD_GRAPH_DEPRECATION_MSG = (
-    "ModelBuilder.add_rod_graph() is deprecated in Newton 1.6; "
-    "construct newton.Rod(..., edges=...) and pass it with add_rod(rod=...) instead."
-)
 _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
     "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
 )
@@ -1342,13 +1334,23 @@ class ModelBuilder:
         namespace: str | None = None
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
 
-        references: str | None = None
+        references: Model.AttributeFrequency | str | None = None
         """For attributes containing entity indices, specifies how values are transformed during add_builder/add_world/replicate merging.
 
-        Built-in entity types (values are offset by entity count):
+        Use :class:`Model.AttributeFrequency` for a built-in reference domain, such as
+        ``Model.AttributeFrequency.CURVE``, or a string for a custom frequency.
+        Unlike :attr:`frequency`, which indexes the attribute's rows, this field
+        identifies what its stored integer values refer to.
+
+        Built-in string names are also supported (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
               ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``
+
+        For experimental deformable object types, use ``Model.AttributeFrequency.CURVE``,
+        ``SURFACE``, or ``VOLUME``. The strings ``"curve"``, ``"surface"``, and ``"volume"``
+        refer to custom frequencies, regardless of registration order.
+        Registration preserves the supplied value of this field.
 
         Special handling:
             - ``"world"``: Missing custom-frequency row values are initialized from
@@ -1504,6 +1506,14 @@ class ModelBuilder:
                 return 0
             return len(self.values)
 
+        def _values_with_defaults(self, count: int) -> dict[int, Any] | list[Any]:
+            """Return explicit values for existing rows without changing this declaration."""
+            if self.is_custom_frequency:
+                values = list(self.values or [])
+                values.extend([None] * max(0, count - len(values)))
+                return [self.default if value is None else value for value in values]
+            return {**dict.fromkeys(range(count), self.default), **(self.values or {})}
+
         def _build_default_array(
             self, count: int, device: Devicelike | None = None, requires_grad: bool = False
         ) -> wp.array[Any] | list:
@@ -1556,8 +1566,8 @@ class ModelBuilder:
         Represents a custom frequency definition for the ModelBuilder.
 
         Custom frequencies allow defining entity types beyond the built-in ones (BODY, SHAPE, JOINT, etc.).
-        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before any custom attributes
-        using them can be added.
+        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before assigning them
+        to an attribute's :attr:`CustomAttribute.frequency` field.
 
         The optional ``usd_prim_filter`` callback enables automatic USD parsing for this frequency.
         When provided, :meth:`ModelBuilder.add_usd` will call this function for each prim in the USD
@@ -2145,7 +2155,7 @@ class ModelBuilder:
         self.curve_label: list[str] = []
         """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
 
-        Native :meth:`add_rod` and :meth:`add_rod_graph` calls each append one entry.
+        Native :meth:`add_rod` calls each append one entry.
         USD cable imports record one entry per simulation prim, except that curves
         welded into a graph share one entry for the complete graph. A prim containing
         several disconnected curves also has one entry. See :ref:`deformable-objects`
@@ -2458,7 +2468,8 @@ class ModelBuilder:
             and existing.dtype == incoming.dtype
             and existing.assignment == incoming.assignment
             and existing.namespace == incoming.namespace
-            and existing.references == incoming.references
+            and Model._normalize_attribute_reference(existing.references)
+            == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
         )
 
@@ -2552,7 +2563,10 @@ class ModelBuilder:
 
     def _index_custom_world_reference_attribute(self, attribute: CustomAttribute) -> None:
         """Index a custom-frequency world reference for row insertion."""
-        if not attribute.is_custom_frequency or attribute.references != "world":
+        if (
+            not attribute.is_custom_frequency
+            or Model._normalize_attribute_reference(attribute.references) != Model.AttributeFrequency.WORLD
+        ):
             return
 
         freq_key = attribute.frequency
@@ -2579,7 +2593,8 @@ class ModelBuilder:
         """
         Register a custom frequency for the builder.
 
-        Custom frequencies must be registered before adding any custom attributes that use them.
+        Custom frequencies must be registered before assigning them to an attribute's
+        :attr:`CustomAttribute.frequency` field.
         This enables explicit declaration of custom entity types and optionally provides USD
         parsing support via the ``usd_prim_filter`` callback.
 
@@ -2728,7 +2743,10 @@ class ModelBuilder:
                     )
                 if owner_attribute.assignment != Model.AttributeAssignment.MODEL:
                     raise ValueError(f"Articulation owner attribute '{owner_key}' must be assigned to Model")
-                if owner_attribute.references != "articulation":
+                if (
+                    Model._normalize_attribute_reference(owner_attribute.references)
+                    != Model.AttributeFrequency.ARTICULATION
+                ):
                     raise ValueError(
                         f"Articulation owner attribute '{owner_key}' must declare references='articulation'"
                     )
@@ -3793,6 +3811,29 @@ class ModelBuilder:
                 targets = shape_transform_start + moved_copies[:, None] * counts["shape"] + static_shapes[None]
                 store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
 
+        # World guides carry their own frame; body-local guides follow the placed body.
+        world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
+        for name in ("tendon_guide_offset", "tendon_guide_axis"):
+            attribute_specs.pop(name)
+            start = int(bases["tendon_guide"])
+            values = getattr(self, name)
+            values.extend(source_list(name) * copy_count)
+            is_offset = name == "tendon_guide_offset"
+            if world_guides.size == 0 or (not is_offset and translations_only):
+                continue
+            source_vectors = np.asarray(getattr(builder, name), dtype=np.float32)[world_guides]
+            for world_index, xform in enumerate(xforms):
+                if xform is None:
+                    continue
+                transformed = source_vectors.copy()
+                if not translations_only:
+                    rotate_vectors(xform.q, transformed)
+                if is_offset:
+                    transformed += np.asarray(xform.p, dtype=np.float32)
+                targets = start + world_index * counts["tendon_guide"] + world_guides
+                for target, vector in zip(targets, transformed.tolist(), strict=True):
+                    values[target] = tuple(vector)
+
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():
                 translated_shapes = [shape + int(shape_start) for shape in shapes]
@@ -3971,9 +4012,12 @@ class ModelBuilder:
         self.joint_coord_count += copy_count * counts["joint_coord"]
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
+        custom_attributes = self._prepare_builder_custom_attributes(builder)
         for copy_index, world in enumerate(worlds.tolist()):
             entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
-            self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[copy_index])
+            self._merge_builder_custom_attributes(
+                builder, entity_offsets, world, label_prefixes[copy_index], custom_attributes
+            )
             self._merge_builder_actuators(
                 builder,
                 int(joint_dof_starts[copy_index]),
@@ -3997,6 +4041,8 @@ class ModelBuilder:
                 counts[key] = count
             elif frequency == Model.AttributeFrequency.CONSTRAINT_MIMIC:
                 counts[key] = len(builder.constraint_mimic_joint0)
+            elif key in cls._BUILDER_GROUP_REFERENCES:
+                counts[key] = len(getattr(builder, f"{key}_label"))
         return counts
 
     @staticmethod
@@ -4042,7 +4088,7 @@ class ModelBuilder:
                 specs[name] = Model.AttributeSpec(
                     group,
                     references=reference,
-                    compaction_policy="start" if suffix.endswith("_start") else "end",
+                    compaction_policy="range_start" if suffix.endswith("_start") else "end",
                 )
                 declared_builder_attributes.add(name)
 
@@ -4095,7 +4141,9 @@ class ModelBuilder:
         if validated.get(builder) == cache_key:
             return
 
-        valid_references = entity_kinds | set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
+        custom_references = set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
+        valid_references = entity_kinds | custom_references
+        references_resolved = True
 
         for freq_key, frequency in builder.custom_frequencies.items():
             existing = self.custom_frequencies.get(freq_key)
@@ -4115,11 +4163,23 @@ class ModelBuilder:
                         f"existing={merged.default}, incoming={attr.default}"
                     )
 
-            if attr.values and attr.references not in (None, "world") and attr.references not in valid_references:
-                raise ValueError(
-                    f"Unknown references value '{attr.references}'. "
-                    f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
+            reference = Model._normalize_attribute_reference(attr.references)
+            reference_key = None if reference is None else self._builder_frequency_key(reference)
+            reference_domains = entity_kinds if isinstance(reference, Model.AttributeFrequency) else custom_references
+            if reference_key not in (None, "world") and reference_key not in reference_domains:
+                unused_custom_reference = (
+                    isinstance(reference, str)
+                    and isinstance(attr.frequency, str)
+                    and not attr.values
+                    and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
                 )
+                if unused_custom_reference:
+                    references_resolved = False
+                else:
+                    raise ValueError(
+                        f"Unknown references value '{attr.references}'. "
+                        f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
+                    )
 
             if (
                 attr.values
@@ -4145,7 +4205,10 @@ class ModelBuilder:
                     f"({existing!r} != {finalizer!r})."
                 )
 
-        validated[builder] = cache_key
+        # Adding rows does not change the schema epoch. Recheck deferred references
+        # on the next merge so default-only rows cannot bypass validation.
+        if references_resolved:
+            validated[builder] = cache_key
 
     def add_articulation(
         self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None
@@ -4510,8 +4573,6 @@ class ModelBuilder:
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
-        legacy_angular_velocity_units: bool = False,
-        legacy_springref_units: bool = False,
         return_deformable_results: bool = False,
         allow_unsafe_torch_checkpoints: bool = False,
     ) -> dict[str, Any]:
@@ -4651,32 +4712,6 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
-            legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state angular velocity handling:
-                resolved ``state:angular:physics:velocity``
-                and D6 ``state:rot*:physics:velocity`` values are copied into
-                ``joint_qd`` without converting degrees/s to radians/s. Applies
-                to revolute, native D6, and merged joints. Rigid-body velocities,
-                linear joint velocities, positions, and drive targets retain their
-                usual unit conversion. Defaults to False.
-
-                .. deprecated:: 1.7
-                    This temporary flag will be removed in Newton 1.8. Enabling
-                    it emits a :class:`DeprecationWarning`. Migrate authored
-                    asset values to their documented units and leave it False.
-
-            legacy_springref_units: If True, restore Newton 1.6 handling of ``mjc:springref`` as an
-                already converted Newton value, ignoring
-                ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
-                conversion is unchanged. Requires registered MuJoCo custom
-                attributes to load spring references. Defaults to False, which
-                interprets revolute spring references using the compiler's angle
-                units (degrees if unauthored) and converts them to radians.
-
-                .. deprecated:: 1.7
-                    This temporary flag will be removed in Newton 1.8. Enabling
-                    it emits a :class:`DeprecationWarning`. Migrate authored
-                    asset values to their documented units and leave it False.
-
             return_deformable_results: If True, include the experimental deformable entries in the
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
@@ -4836,8 +4871,6 @@ class ModelBuilder:
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
-            legacy_angular_velocity_units=legacy_angular_velocity_units,
-            legacy_springref_units=legacy_springref_units,
             return_deformable_results=return_deformable_results,
             allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints,
         )
@@ -4882,6 +4915,9 @@ class ModelBuilder:
         """
         Parses MuJoCo XML (MJCF) file and adds the bodies and joints to the given ModelBuilder.
         MuJoCo-specific custom attributes are registered on the builder automatically.
+        Importing ``<dcmotor>`` actuators requires the optional ``mujoco`` package
+        (included in ``newton[sim]``) to resolve native defaults, and raises
+        :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
@@ -5191,17 +5227,43 @@ class ModelBuilder:
 
     # endregion
 
+    def _prepare_builder_custom_attributes(self, builder: ModelBuilder) -> dict[str, ModelBuilder.CustomAttribute]:
+        # Resolve source rows before deciding which attributes need per-copy work.
+        builder._resolve_custom_frequency_articulation_owners()
+        attributes = {}
+        for full_key, attr in builder.custom_attributes.items():
+            # Empty declarations are shared by all copies. Reference defaults on
+            # frequencies with rows still need per-copy remapping.
+            if not attr.values:
+                can_skip_remapping = attr.references is None
+                if not can_skip_remapping:
+                    has_empty_custom_frequency = (
+                        isinstance(attr.frequency, str) and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
+                    )
+                    can_skip_remapping = (
+                        has_empty_custom_frequency and attr.reference_value_transformer is None
+                    ) or attr.references in (Model.AttributeFrequency.WORLD, "world")
+                if can_skip_remapping:
+                    if full_key not in self.custom_attributes:
+                        mapped_values = [] if isinstance(attr.frequency, str) else {}
+                        merged = replace(attr, values=mapped_values)
+                        self.custom_attributes[full_key] = merged
+                        self._custom_schema_epoch += 1
+                        self._index_custom_world_reference_attribute(merged)
+                    continue
+            attributes[full_key] = attr
+        return attributes
+
     def _merge_builder_custom_attributes(
         self,
         builder: ModelBuilder,
         entity_offsets: dict[str, int],
         world: int,
         label_prefix: str | None,
+        attributes: dict[str, ModelBuilder.CustomAttribute],
     ) -> None:
-        # Resolve source rows before ordinary reference remapping copies them.
-        # Resolve existing destination rows too, since its topology may have
+        # Resolve existing destination rows, since its topology may have
         # changed since the rows were first added.
-        builder._resolve_custom_frequency_articulation_owners()
         self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
@@ -5228,11 +5290,11 @@ class ModelBuilder:
                 if source_domain >= 0:
                     collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
 
-        def get_offset(entity_or_key: str | None) -> int:
+        def get_offset(entity_or_key: Model.AttributeFrequency | str | None) -> int:
             if entity_or_key is None:
                 return 0
-            if entity_or_key in entity_offsets:
-                return entity_offsets[entity_or_key]
+            if isinstance(entity_or_key, Model.AttributeFrequency):
+                return entity_offsets[entity_or_key.name.lower()]
             if entity_or_key in custom_frequency_offsets:
                 return custom_frequency_offsets[entity_or_key]
             if entity_or_key in builder._custom_frequency_counts:
@@ -5242,16 +5304,11 @@ class ModelBuilder:
                 f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
             )
 
-        for full_key, attr in builder.custom_attributes.items():
-            if not attr.values:
-                if full_key not in self.custom_attributes:
-                    freq_key = attr.frequency
-                    mapped_values = [] if isinstance(freq_key, str) else {}
-                    merged = replace(attr, values=mapped_values)
-                    self.custom_attributes[full_key] = merged
-                    self._custom_schema_epoch += 1
-                    self._index_custom_world_reference_attribute(merged)
-                continue
+        source_counts = None
+        for full_key, attr in attributes.items():
+            reference = attr.references
+            if isinstance(reference, str):
+                reference = Model._normalize_attribute_reference(reference)
 
             freq_key = attr.frequency
             if isinstance(freq_key, str):
@@ -5261,10 +5318,10 @@ class ModelBuilder:
             elif attr.frequency == Model.AttributeFrequency.WORLD:
                 index_offset = 0 if world == -1 else world
             else:
-                index_offset = get_offset(attr.frequency.name.lower())
+                index_offset = get_offset(attr.frequency)
 
-            use_current_world = attr.references == "world"
-            value_offset = 0 if use_current_world else get_offset(attr.references)
+            use_current_world = reference == Model.AttributeFrequency.WORLD
+            value_offset = 0 if use_current_world else get_offset(reference)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             source_values = attr.values
@@ -5343,12 +5400,20 @@ class ModelBuilder:
                     if offset == 0:
                         return value
                     if self._is_integer_scalar(value):
-                        return value + offset if value >= 0 else value
+                        index = int(value)
+                        return index + offset if index >= 0 else value
                     if isinstance(value, (list, tuple)):
                         transformed = [
                             item + offset if self._is_integer_scalar(item) and item >= 0 else item for item in value
                         ]
                         return type(value)(transformed)
+                    value_type = type(value)
+                    if wp.types.type_is_vector(value_type) and wp.types.type_is_int(value_type._wp_scalar_type_):
+                        return value_type(*(item + offset if item >= 0 else item for item in value))
+                    if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.integer):
+                        transformed = value.copy()
+                        transformed[value >= 0] += offset
+                        return transformed
                     try:
                         return value + offset
                     except TypeError:
@@ -5365,6 +5430,26 @@ class ModelBuilder:
                     if is_collision_mask_domain:
                         return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
+
+                if value_offset and not self._custom_attribute_defaults_match(
+                    transform_value(attr.default), attr.default
+                ):
+                    # Different copies need different reference values, not a shared shifted default.
+                    if freq_key == Model.AttributeFrequency.ONCE:
+                        # Implicit source defaults must not replace an existing global value.
+                        count = int(full_key not in self.custom_attributes)
+                    elif freq_key == Model.AttributeFrequency.WORLD:
+                        # Each copy uses one destination world, or none for global entities.
+                        count = int(world >= 0)
+                    else:
+                        if source_counts is None:
+                            source_counts = self._builder_merge_counts(builder)
+                        count = (
+                            builder._custom_frequency_counts.get(freq_key, 0)
+                            if isinstance(freq_key, str)
+                            else source_counts.get(self._builder_frequency_key(freq_key), 0)
+                        )
+                    source_values = attr._values_with_defaults(count)
 
             merged = self.custom_attributes.get(full_key)
             if merged is None:
@@ -6568,8 +6653,8 @@ class ModelBuilder:
             Rod joints use each anchor frame's local ``+Z`` as the corresponding
             segment's material tangent axis for separating axial stretch from
             shear and twist from bend. At structural rest, the transformed
-            parent and child anchor points coincide. :meth:`add_rod` and
-            :meth:`add_rod_graph` satisfy both conventions automatically.
+            parent and child anchor points coincide. :meth:`add_rod` satisfies
+            both conventions automatically.
 
         Args:
             parent: The index of the parent body.
@@ -6687,9 +6772,12 @@ class ModelBuilder:
         """Add a complete experimental massless routed tendon atomically.
 
         Each guide after the first owns the incoming span's material parameters.
-        All guides must reference bodies in one world. Roller guides may be
-        dynamic only when internal and not adjacent to another dynamic guide.
+        All guides must belong to one simulation world. A guide with ``body=-1``
+        is fixed in world space and belongs to :attr:`current_world`. Roller guides
+        may be dynamic only when internal and not adjacent to another dynamic guide.
         The route is validated and copied before any tendon arrays are changed.
+        Author world-attached routes in the source builder before :meth:`add_world`
+        or :meth:`replicate`; those methods end outside the copied world contexts.
 
         .. experimental::
 
@@ -6753,10 +6841,10 @@ class ModelBuilder:
         previous_dynamic = False
         for index, guide in enumerate(route):
             body = guide.body
-            if not self._is_integer_scalar(body) or body < 0 or body >= self.body_count:
+            if not self._is_integer_scalar(body) or body < -1 or body >= self.body_count:
                 raise ValueError(f"Tendon guide body index {body} is out of range")
             body = int(body)
-            world = self.body_world[body]
+            world = self.body_world[body] if body >= 0 else self.current_world
             if tendon_world is not None and world != tendon_world:
                 raise ValueError("All guides in a tendon must belong to the same world")
             tendon_world = world
@@ -7330,12 +7418,15 @@ class ModelBuilder:
 
         Note:
             Deformable labels do not change which fixed joints are collapsed. A curve's
-            record is retained only if all of its segment bodies and joints survive.
-            Otherwise the incomplete record is omitted with a warning. Pass the relevant
-            fixed joint through ``joints_to_keep`` to preserve the complete curve.
+            record describes its surviving segment bodies and joints. It is omitted with
+            a warning only when no segment bodies remain. Pass the relevant fixed joints
+            through ``joints_to_keep`` to preserve the original segment layout.
             Curve-removal warnings are emitted after collapse completes.
         """
         joints_to_keep = set(joints_to_keep or ())
+
+        original_counts = self._builder_merge_counts(self)
+        original_counts.update(once=1, world=max(1, self.world_count))
 
         body_data = {}
         body_children = {-1: []}
@@ -7427,8 +7518,8 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
-        # Preserve body frames needed by equality constraints and tendon guides when collapsing into world.
-        bodies_requiring_body_frame = set(self.tendon_guide_body)
+        # Preserve body frames still required by constraints when collapsing into world.
+        bodies_requiring_body_frame = set()
         for body1, body2 in zip(
             self._eq_list("equality_constraint_body1"),
             self._eq_list("equality_constraint_body2"),
@@ -7486,20 +7577,20 @@ class ModelBuilder:
             entry_xform = incoming_xform
             entry_last_dynamic_body = last_dynamic_body
             joint = joint_data[(parent_body, child_body)][0]
-            # Local frames referenced by constraints or tendons cannot be remapped onto body -1.
+            # These constraints still require an actual body frame.
             should_skip_merge = child_body in bodies_requiring_body_frame and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
             joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
-                # Keep a body frame required by a constraint or tendon instead of merging it into world.
+                # Keep a body frame required by a constraint instead of merging it into world.
                 if verbose:
                     parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                     child_lbl = self.body_label[child_body]
                     logger.info(
                         "Skipping collapse of fixed joint %s between %s and %s: %s is referenced by a "
-                        "constraint or tendon and cannot be merged into world",
+                        "constraint and cannot be merged into world",
                         joint["label"],
                         parent_lbl,
                         child_lbl,
@@ -7795,33 +7886,29 @@ class ModelBuilder:
         self.articulation_label = new_articulation_label
         self.articulation_world = new_articulation_world
 
-        # Rebuild deformable curve ranges after reindexing. Retain a deformable object record only when
-        # every one of its simulation bodies and joints survived collapse; exposing a partial
-        # range would misrepresent the original curve topology.
+        # Records describe the surviving simulation bodies, not the original segments.
+        # Retained bodies and joints preserve their order, so each range stays contiguous.
         curve_records = []
-        incomplete_curve_labels = []
-        for label, world, body_start, body_end, joint_start, joint_end in zip(
-            self.curve_label,
-            self.curve_world,
-            self._curve_body_start,
-            self._curve_body_end,
-            self._curve_joint_start,
-            self._curve_joint_end,
-            strict=True,
+        curve_remap = {}
+        removed_curve_labels = []
+        for curve_index, (label, world, body_start, body_end, joint_start, joint_end) in enumerate(
+            zip(
+                self.curve_label,
+                self.curve_world,
+                self._curve_body_start,
+                self._curve_body_end,
+                self._curve_joint_start,
+                self._curve_joint_end,
+                strict=True,
+            )
         ):
             old_bodies = list(range(body_start, body_end))
             old_joints = list(range(joint_start, joint_end))
             new_bodies = [body_remap[body] for body in old_bodies if body in body_remap]
             new_joints = [joint_remap[joint] for joint in old_joints if joint in joint_remap]
 
-            bodies_complete = len(new_bodies) == len(old_bodies) and all(
-                body == new_bodies[0] + offset for offset, body in enumerate(new_bodies)
-            )
-            joints_complete = len(new_joints) == len(old_joints) and (
-                not new_joints or all(joint == new_joints[0] + offset for offset, joint in enumerate(new_joints))
-            )
-            if not old_bodies or not bodies_complete or not joints_complete:
-                incomplete_curve_labels.append(label)
+            if not new_bodies:
+                removed_curve_labels.append(label)
                 continue
 
             if new_joints:
@@ -7833,6 +7920,7 @@ class ModelBuilder:
                 new_boundary = bisect_left(retained_joints, joint_start, key=lambda joint: joint["original_id"])
                 remapped_joint_range = (new_boundary, new_boundary)
 
+            curve_remap[curve_index] = len(curve_records)
             curve_records.append((label, world, new_bodies[0], new_bodies[-1] + 1, *remapped_joint_range))
 
         self.curve_label = [record[0] for record in curve_records]
@@ -7842,39 +7930,73 @@ class ModelBuilder:
         self._curve_joint_start = [record[4] for record in curve_records]
         self._curve_joint_end = [record[5] for record in curve_records]
 
-        def remap_articulation_reference(value: Any) -> Any:
+        def remap_object_reference(value: Any, remap: dict[int, int]) -> Any:
             if isinstance(value, bool):
                 return value
             if isinstance(value, list):
-                return [remap_articulation_reference(v) for v in value]
+                return [remap_object_reference(v, remap) for v in value]
             if isinstance(value, tuple):
-                return tuple(remap_articulation_reference(v) for v in value)
+                return tuple(remap_object_reference(v, remap) for v in value)
+            if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.integer):
+                transformed = value.copy()
+                for index in np.ndindex(value.shape):
+                    transformed[index] = remap_object_reference(value[index], remap)
+                return transformed
+            value_type = type(value)
+            if wp.types.type_is_vector(value_type) and wp.types.type_is_int(value_type._wp_scalar_type_):
+                return value_type(*(remap_object_reference(v, remap) for v in value))
             # Covers Python int as well as Warp scalar integer types (wp.int32 etc.),
             # whose default `dtype(0)` instances are not Python ints.
             try:
                 idx = int(value)
             except (TypeError, ValueError):
                 return value
-            return articulation_remap.get(idx, -1) if idx >= 0 else value
+            return remap.get(idx, -1) if idx >= 0 else value
 
-        # ARTICULATION-frequency attributes use dict storage by construction
+        object_remaps = {
+            Model.AttributeFrequency.ARTICULATION: articulation_remap,
+            Model.AttributeFrequency.CURVE: curve_remap,
+        }
+        for custom_attr in self.custom_attributes.values():
+            remap = object_remaps.get(Model._normalize_attribute_reference(custom_attr.references))
+            if remap is None or self._custom_attribute_defaults_match(
+                remap_object_reference(custom_attr.default, remap), custom_attr.default
+            ):
+                continue
+            # Fill old rows before their indices change; leave defaults for future rows alone.
+            frequency = custom_attr.frequency
+            count = (
+                self._custom_frequency_counts.get(frequency, 0)
+                if isinstance(frequency, str)
+                else original_counts.get(self._builder_frequency_key(frequency), 0)
+            )
+            custom_attr.values = custom_attr._values_with_defaults(count)
+
+        # Built-in frequency attributes use dict storage by construction
         # (see CustomAttribute._create_empty_values_container).
-        for custom_attr in self.get_custom_attributes_by_frequency([Model.AttributeFrequency.ARTICULATION]):
-            custom_attr.values = {
-                new_idx: custom_attr.values[old_idx]
-                for old_idx, new_idx in articulation_remap.items()
-                if old_idx in custom_attr.values
-            }
+        for frequency, remap in (
+            (Model.AttributeFrequency.BODY, body_remap),
+            (Model.AttributeFrequency.JOINT, joint_remap),
+            (Model.AttributeFrequency.ARTICULATION, articulation_remap),
+            (Model.AttributeFrequency.CURVE, curve_remap),
+        ):
+            for custom_attr in self.get_custom_attributes_by_frequency([frequency]):
+                custom_attr.values = {
+                    new_idx: custom_attr.values[old_idx]
+                    for old_idx, new_idx in remap.items()
+                    if old_idx in custom_attr.values
+                }
 
         for custom_attr in self.custom_attributes.values():
-            if custom_attr.references != "articulation" or custom_attr.values is None:
+            remap = object_remaps.get(Model._normalize_attribute_reference(custom_attr.references))
+            if remap is None or custom_attr.values is None:
                 continue
             if isinstance(custom_attr.values, dict):
                 custom_attr.values = {
-                    entity_idx: remap_articulation_reference(value) for entity_idx, value in custom_attr.values.items()
+                    entity_idx: remap_object_reference(value, remap) for entity_idx, value in custom_attr.values.items()
                 }
             else:
-                custom_attr.values = [remap_articulation_reference(value) for value in custom_attr.values]
+                custom_attr.values = [remap_object_reference(value, remap) for value in custom_attr.values]
 
         # save original joint worlds and articulations before clearing
         original_ = self.joint_world[:] if self.joint_world else []
@@ -8169,9 +8291,10 @@ class ModelBuilder:
             return joint_remap.get(idx, -1)
 
         for custom_attr in self.custom_attributes.values():
-            if custom_attr.references == "body":
+            reference = Model._normalize_attribute_reference(custom_attr.references)
+            if reference == Model.AttributeFrequency.BODY:
                 remap_reference = _remap_body_reference
-            elif custom_attr.references == "joint":
+            elif reference == Model.AttributeFrequency.JOINT:
                 remap_reference = _remap_joint_reference
             else:
                 continue
@@ -8197,10 +8320,10 @@ class ModelBuilder:
                 self.joint_children[p].append((c, i))
 
         # Warning filters may raise, so finish rebuilding all references before emitting these.
-        for label in incomplete_curve_labels:
+        for label in removed_curve_labels:
             warnings.warn(
-                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
-                "of its segment bodies or joints were removed; pass the relevant fixed joint through "
+                f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because all "
+                "of its segment bodies were removed; pass the relevant fixed joint through "
                 "joints_to_keep to preserve the complete deformable object.",
                 NewtonWarning,
                 stacklevel=2,
@@ -9776,11 +9899,11 @@ class ModelBuilder:
         self,
         positions: list[Vec3],
         *,
-        quaternions: list[Quat] | None,
+        quaternions: list[Quat],
         rest_positions: list[Vec3] | np.ndarray | None = None,
         rest_quaternions: list[Quat] | np.ndarray | None = None,
         rest_straight: bool = False,
-        radius: float | None,
+        radius: float,
         cfg: ShapeConfig | None,
         stretch_stiffness: float | None,
         stretch_damping: float | None,
@@ -9790,30 +9913,15 @@ class ModelBuilder:
         bend_damping: float | None,
         twist_stiffness: float | None,
         twist_damping: float | None,
-        closed: bool | None,
+        closed: bool,
         label: str | None,
         wrap_in_articulation: bool,
         color: Vec3 | None,
         body_frame_origin: Literal["start", "com"],
     ) -> tuple[list[int], list[int]]:
         """Add an ordered point chain through the established graph path."""
-        self._validate_rod_stiffness_inputs(
-            "add_rod",
-            stretch_stiffness=stretch_stiffness,
-            shear_stiffness=shear_stiffness,
-            bend_stiffness=bend_stiffness,
-            twist_stiffness=twist_stiffness,
-        )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
-        closed = False if closed is None else closed
-
-        radius = 0.1 if radius is None else radius
         if cfg is None:
             cfg = self.default_shape_cfg
-        if rest_straight and (rest_positions is not None or rest_quaternions is not None):
-            raise ValueError(
-                "add_rod: rest_straight=True cannot be combined with explicit rest_positions or rest_quaternions"
-            )
 
         # Stretch defaults to the cable/rod axial stiffness used by VBD examples.
         stretch_stiffness = 1.0e5 if stretch_stiffness is None else stretch_stiffness
@@ -9824,51 +9932,12 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         num_segments = len(positions) - 1
-        if num_segments < 1:
-            raise ValueError("add_rod: positions must contain at least 2 points")
 
-        # Coerce all input positions to wp.vec3 so arithmetic (p1 - p0), wp.length, wp.normalize
-        # always operate on Warp vector types even if the caller passed tuples/lists.
-        positions_wp: list[wp.vec3] = [axis_to_vec3(p) for p in positions]
         rest_positions_wp = (
-            positions_wp if rest_positions is None else [axis_to_vec3(position) for position in rest_positions]
+            positions if rest_positions is None else [axis_to_vec3(position) for position in rest_positions]
         )
-        if len(rest_positions_wp) != len(positions_wp):
-            raise ValueError(
-                f"add_rod: rest_positions must have {len(positions_wp)} elements to match positions, "
-                f"got {len(rest_positions_wp)}"
-            )
 
-        if quaternions is not None and len(quaternions) != num_segments:
-            raise ValueError(
-                f"add_rod: quaternions must have {num_segments} elements for {num_segments} segments, "
-                f"got {len(quaternions)} quaternions"
-            )
-        if rest_quaternions is not None and len(rest_quaternions) != num_segments:
-            raise ValueError(
-                f"add_rod: rest_quaternions must have {num_segments} elements for {num_segments} segments, "
-                f"got {len(rest_quaternions)} quaternions"
-            )
-
-        if num_segments < 2:
-            # A "rod" in this API is defined as multiple capsules coupled by rod joints.
-            # If you want a single capsule, create a body + capsule shape directly.
-            raise ValueError(
-                f"add_rod: requires at least 2 segments (got {num_segments}); "
-                "for a single capsule, create a body and add a capsule shape instead."
-            )
         if closed:
-            closure_gap = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[0]))
-            first_length = float(wp.length(rest_positions_wp[1] - rest_positions_wp[0]))
-            last_length = float(wp.length(rest_positions_wp[-1] - rest_positions_wp[-2]))
-            if not all(math.isfinite(value) for value in (closure_gap, first_length, last_length)):
-                raise ValueError("add_rod: closed structural-rest centerline must have finite endpoint segments")
-            closure_tolerance = max(1.0e-9, 1.0e-3 * min(first_length, last_length))
-            if closure_gap > closure_tolerance:
-                raise ValueError(
-                    "add_rod: closed structural-rest centerline must have coincident first and last points "
-                    f"(gap={closure_gap:.3e}, tolerance={closure_tolerance:.3e})"
-                )
             rest_positions_wp[-1] = rest_positions_wp[0]
 
         # Build linear graph edges: (0, 1), (1, 2), ..., (N-1, N)
@@ -9877,7 +9946,7 @@ class ModelBuilder:
 
         # The graph builder creates the bodies, internal joints, and optional articulation.
         link_bodies, link_joints = self._add_rod_graph(
-            node_positions=positions_wp,
+            node_positions=positions,
             edges=edges,
             rest_node_positions=rest_positions_wp if rest_positions is not None else None,
             radius=radius,
@@ -9944,16 +10013,11 @@ class ModelBuilder:
                             rest_dir,
                         )
 
-                    initial_dir, _ = self._rod_segment_direction(positions_wp[segment], positions_wp[segment + 1])
-                    initial_argument = (
-                        f"quaternions[{segment}]"
-                        if quaternions is not None
-                        else f"derived quaternion at segment {segment}"
-                    )
+                    initial_dir, _ = self._rod_segment_direction(positions[segment], positions[segment + 1])
                     initial_q = self._rod_frame_for_direction(
                         "add_rod",
-                        initial_argument,
-                        None if quaternions is None else quaternions[segment],
+                        f"quaternions[{segment}]",
+                        quaternions[segment],
                         initial_dir,
                     )
                     return self._transport_rod_frame(
@@ -9999,10 +10063,8 @@ class ModelBuilder:
 
     def add_rod(
         self,
-        positions: list[Vec3] | None = None,
         *,
-        quaternions: list[Quat] | None = None,
-        radius: float | None = None,
+        rod: Rod,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
@@ -10012,24 +10074,17 @@ class ModelBuilder:
         bend_damping: float | None = None,
         twist_stiffness: float | None = None,
         twist_damping: float | None = None,
-        closed: bool | None = None,
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] = "com",
-        rod: Rod | None = None,
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
 
-        Exactly one input form is required:
-
-        - ``positions=...`` constructs an ordered chain. The separate
-          ``quaternions`` and ``closed`` arguments belong only to this
-          compatibility form.
-        - ``rod=...`` uses the geometry, frames, topology, and optional
-          constitutive data stored on a :class:`newton.Rod`, which may represent
-          an ordered chain or an explicit graph.
+        Uses the geometry, frames, topology, and optional constitutive data
+        stored on a :class:`newton.Rod`, which may represent an ordered chain
+        or an explicit graph.
 
         The remaining arguments configure assembly. Each segment becomes a
         capsule body, and incident segments are connected by rod joints with
@@ -10040,22 +10095,7 @@ class ModelBuilder:
         normalized and minimally rotated to align while preserving roll.
 
         Args:
-            positions: Geometry source for the ordered-chain form: centerline
-                node positions (segment endpoints) in world space [m].
-                Mutually exclusive with ``rod``.
-
-                .. deprecated:: 1.6
-                    Construct a :class:`newton.Rod` and pass it with
-                    ``rod=...`` instead.
-            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
-                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
-                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
-                orientations are computed automatically to align +Z with each segment direction.
-                Valid only with ``positions``; must be None when ``rod`` is
-                supplied.
-            radius: Capsule radius [m] for the ``positions`` form. If None,
-                defaults to 0.1 m. Must be None with ``rod``; the Rod's radius
-                is used, with the same default when it is unset.
+            rod: Initial/rest geometry, frame, topology, and constitutive-data source.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, it is derived locally from Rod material or section rigidity;
@@ -10077,10 +10117,6 @@ class ModelBuilder:
                 ``bend_stiffness`` otherwise.
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            closed: For the ``positions`` form, whether to connect the last
-                segment back to the first. Repeat the first position at the end
-                to include the closing segment. When using ``rod``, pass
-                ``closed=True`` to the :class:`newton.Rod` constructor instead.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
                 The same name is appended to :attr:`curve_label` for this rod; if None,
                 a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
@@ -10098,8 +10134,6 @@ class ModelBuilder:
                 the body origin at the initial segment midpoint so the
                 body origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
                 a supported option.
-            rod: Initial/rest geometry, frame, topology, and constitutive-data source for
-                the prepared-object form. Mutually exclusive with ``positions``.
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10125,17 +10159,11 @@ class ModelBuilder:
             articulations may remain outside them.
 
         Raises:
-            ValueError: If both or neither of ``positions`` and ``rod`` are supplied.
-            TypeError: If ``rod`` is not a :class:`newton.Rod`, or a Rod is
-                passed as ``positions``.
-            ValueError: If ``quaternions``, ``radius``, or ``closed`` is non-None
-                with ``rod``.
-            ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
+            TypeError: If ``rod`` is not a :class:`newton.Rod`.
             ValueError: If initial/rest positions or frames have incompatible lengths,
                 non-finite or too-short edges, or invalid frame alignment.
             ValueError: If the structural-rest centerline of a closed chain does not close.
             ValueError: If the Rod uses ``rest_straight`` with explicit rest inputs or a graph.
-            ValueError: If the ordered point-list form has fewer than 2 segments.
             ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
             ValueError: If automatic section-rigidity discretization is requested
                 for branching topology or for a wrapped explicit cycle.
@@ -10159,182 +10187,13 @@ class ModelBuilder:
               midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
               ``(0, 0, half_height)``.
         """
-        if (positions is None) == (rod is None):
-            raise ValueError("add_rod: exactly one of positions and rod must be supplied")
-
-        if isinstance(positions, Rod):
-            raise TypeError("add_rod: pass a Rod with the rod keyword, not as positions")
-
-        if rod is not None and not isinstance(rod, Rod):
+        if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
 
         start_body = self.body_count
         start_joint = self.joint_count
-        if rod is not None:
-            if quaternions is not None:
-                raise ValueError("add_rod: quaternions must be None when rod is supplied")
-            if radius is not None:
-                raise ValueError("add_rod: radius must be None when rod is supplied; set rod.radius instead")
-            if closed is not None:
-                raise ValueError("add_rod: closed must be None when rod is supplied")
-            result = self._add_rod_object(
-                rod,
-                cfg=cfg,
-                stretch_stiffness=stretch_stiffness,
-                stretch_damping=stretch_damping,
-                shear_stiffness=shear_stiffness,
-                shear_damping=shear_damping,
-                bend_stiffness=bend_stiffness,
-                bend_damping=bend_damping,
-                twist_stiffness=twist_stiffness,
-                twist_damping=twist_damping,
-                label=label,
-                wrap_in_articulation=wrap_in_articulation,
-                junction_collision_filter=junction_collision_filter,
-                color=color,
-                body_frame_origin=body_frame_origin,
-            )
-            self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
-            return result
-
-        assert positions is not None
-        warnings.warn(
-            _ADD_ROD_POSITIONS_DEPRECATION_MSG,
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        result = self._add_rod_chain(
-            positions,
-            quaternions=quaternions,
-            radius=radius,
-            cfg=cfg,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
-            shear_stiffness=shear_stiffness,
-            shear_damping=shear_damping,
-            bend_stiffness=bend_stiffness,
-            bend_damping=bend_damping,
-            twist_stiffness=twist_stiffness,
-            twist_damping=twist_damping,
-            closed=closed,
-            label=label,
-            wrap_in_articulation=wrap_in_articulation,
-            color=color,
-            body_frame_origin=body_frame_origin,
-        )
-        self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
-        return result
-
-    def add_rod_graph(
-        self,
-        node_positions: list[Vec3],
-        edges: list[tuple[int, int]],
-        *,
-        radius: float = 0.1,
-        cfg: ShapeConfig | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        label: str | None = None,
-        wrap_in_articulation: bool = True,
-        quaternions: list[Quat] | None = None,
-        junction_collision_filter: bool = True,
-        color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "com",
-    ) -> tuple[list[int], list[int]]:
-        """Adds a rod *graph* (supports junctions) from nodes + edges.
-
-        .. deprecated:: 1.6
-            Construct a :class:`newton.Rod` with ``edges=...`` and pass it to
-            :meth:`add_rod` with ``rod=...`` instead.
-
-        Representation:
-
-        - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (local +Z points toward ``v``).
-        - Rod joints are created between edge-bodies that share a node, using a spanning-tree
-          traversal so that each body has a single parent in an articulation.
-
-        Notes:
-
-        - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
-          free-rooted articulation per connected component). This keeps the joint graph
-          articulation-safe (tree/forest), avoiding cycles at junctions.
-        - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
-          ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
-          you need closed loops, build them explicitly without placing the joints in an articulation.
-        - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
-          all incident edges. This can preserve rings/loops, but does not produce an articulation
-          tree (edges may effectively have multiple "parents" in the joint graph).
-
-        Args:
-            node_positions: Junction node positions in world space.
-            edges: List of (u, v) node index pairs defining rod segments. Each edge creates one
-                capsule body oriented so its local +Z points from node ``u`` to node ``v``.
-            radius: Capsule radius.
-            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
-                Defaults to 1.0e5.
-            stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
-            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
-                ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
-                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
-                Defaults to 0.0.
-            bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
-                ``bend_stiffness``.
-            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
-                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations.
-                The same name is appended to :attr:`curve_label` for this rod; if None,
-                a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
-                Generated joint labels retain
-                the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, places each connected component's generated joints and a
-                free joint to the world in one articulation.
-            quaternions: Optional per-edge orientations in world space. If provided, must have
-                ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
-                the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
-                None, orientations are computed automatically to align +Z with each edge direction.
-            junction_collision_filter: If True, adds collision filters between *non-jointed* segment
-                bodies that are incident to a junction node (degree >= 3). This prevents immediate
-                self-collision impulses at welded junctions, even though the joint set is a spanning
-                tree (so not all incident body pairs are directly jointed).
-            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
-                capsule shapes. If None, the graph uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the convention where the body origin is at the edge start node
-                (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
-                the edge length. ``"com"`` places the body origin at the edge midpoint so the body
-                origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
-                a supported option.
-
-        Returns:
-            A pair ``(body_indices, joint_indices)`` where bodies correspond to
-            edges in the same order as ``edges``. ``joint_indices`` contains only rod joints,
-            not the automatically-created free root joints.
-
-        Raises:
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
-        """
-        start_body = self.body_count
-        start_joint = self.joint_count
-        warnings.warn(
-            _ADD_ROD_GRAPH_DEPRECATION_MSG,
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        result = self._add_rod_graph(
-            node_positions,
-            edges,
-            radius=radius,
+        result = self._add_rod_object(
+            rod,
             cfg=cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
@@ -10346,7 +10205,6 @@ class ModelBuilder:
             twist_damping=twist_damping,
             label=label,
             wrap_in_articulation=wrap_in_articulation,
-            quaternions=quaternions,
             junction_collision_filter=junction_collision_filter,
             color=color,
             body_frame_origin=body_frame_origin,
@@ -10393,35 +10251,35 @@ class ModelBuilder:
         bend_damping = 0.0 if bend_damping is None else bend_damping
 
         self._validate_rod_stiffness_inputs(
-            "add_rod_graph",
+            "add_rod",
             stretch_stiffness=stretch_stiffness,
             shear_stiffness=shear_stiffness,
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
         )
-        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod_graph", body_frame_origin)
+        body_frame_origin = self._resolve_rod_body_frame_origin("add_rod", body_frame_origin)
         if len(node_positions) < 2:
-            raise ValueError("add_rod_graph: node_positions must contain at least 2 nodes")
+            raise ValueError("add_rod: node_positions must contain at least 2 nodes")
         if len(edges) < 1:
-            raise ValueError("add_rod_graph: edges must contain at least 1 edge")
+            raise ValueError("add_rod: edges must contain at least 1 edge")
 
         num_nodes = len(node_positions)
         num_edges = len(edges)
         if articulation_root_node is not None:
             if articulation_root_joint_factory is None:
-                raise ValueError("add_rod_graph: articulation_root_node requires an articulation root joint factory")
+                raise ValueError("add_rod: articulation_root_node requires an articulation root joint factory")
             if articulation_root_node < 0 or articulation_root_node >= num_nodes:
                 raise ValueError(
-                    f"add_rod_graph: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
+                    f"add_rod: articulation_root_node must be in [0, {num_nodes}), got {articulation_root_node}"
                 )
         if quaternions is not None and len(quaternions) != num_edges:
             raise ValueError(
-                f"add_rod_graph: quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"add_rod: quaternions must have {num_edges} elements for {num_edges} edges, "
                 f"got {len(quaternions)} quaternions"
             )
         if rest_quaternions is not None and len(rest_quaternions) != num_edges:
             raise ValueError(
-                f"add_rod_graph: rest_quaternions must have {num_edges} elements for {num_edges} edges, "
+                f"add_rod: rest_quaternions must have {num_edges} elements for {num_edges} edges, "
                 f"got {len(rest_quaternions)} quaternions"
             )
 
@@ -10439,7 +10297,7 @@ class ModelBuilder:
         )
         if len(rest_node_positions_wp) != num_nodes:
             raise ValueError(
-                f"add_rod_graph: rest_node_positions must have {num_nodes} elements to match node_positions, "
+                f"add_rod: rest_node_positions must have {num_nodes} elements to match node_positions, "
                 f"got {len(rest_node_positions_wp)}"
             )
 
@@ -10459,18 +10317,16 @@ class ModelBuilder:
         # Validate all edge geometry and frames before adding bodies.
         for e_idx, (u, v) in enumerate(edges):
             if u < 0 or u >= num_nodes or v < 0 or v >= num_nodes:
-                raise ValueError(
-                    f"add_rod_graph: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes"
-                )
+                raise ValueError(f"add_rod: edge {e_idx} has invalid node indices ({u}, {v}) for {num_nodes} nodes")
             if u == v:
-                raise ValueError(f"add_rod_graph: edge {e_idx} connects a node to itself ({u} -> {v})")
+                raise ValueError(f"add_rod: edge {e_idx} connects a node to itself ({u} -> {v})")
 
             p0 = node_positions_wp[u]
             p1 = node_positions_wp[v]
             seg_dir, seg_length = self._rod_segment_direction(p0, p1)
             if not math.isfinite(seg_length) or seg_length <= min_segment_length:
                 raise ValueError(
-                    f"add_rod_graph: edge {e_idx} has a too-small or non-finite length "
+                    f"add_rod: edge {e_idx} has a too-small or non-finite length "
                     f"(length={seg_length:.3e}); segment length must be finite and > {min_segment_length:.1e}"
                 )
 
@@ -10478,7 +10334,7 @@ class ModelBuilder:
                 f"quaternions[{e_idx}]" if quaternions is not None else f"derived quaternion at edge {e_idx}"
             )
             q = self._rod_frame_for_direction(
-                "add_rod_graph",
+                "add_rod",
                 initial_argument,
                 None if quaternions is None else quaternions[e_idx],
                 seg_dir,
@@ -10490,7 +10346,7 @@ class ModelBuilder:
                 )
                 if not math.isfinite(rest_seg_length) or rest_seg_length <= min_segment_length:
                     raise ValueError(
-                        f"add_rod_graph: rest edge {e_idx} has a too-small or non-finite length "
+                        f"add_rod: rest edge {e_idx} has a too-small or non-finite length "
                         f"(length={rest_seg_length:.3e}); rest segment length must be finite and "
                         f"> {min_segment_length:.1e}"
                     )
@@ -10500,14 +10356,14 @@ class ModelBuilder:
 
             if rest_quaternions is not None:
                 q_rest = self._rod_frame_for_direction(
-                    "add_rod_graph",
+                    "add_rod",
                     f"rest_quaternions[{e_idx}]",
                     rest_quaternions[e_idx],
                     rest_seg_dir,
                 )
             elif has_separate_rest_positions:
                 q_rest = self._transport_rod_frame(
-                    "add_rod_graph",
+                    "add_rod",
                     f"derived rest quaternion at edge {e_idx}",
                     q,
                     seg_dir,
@@ -10567,7 +10423,7 @@ class ModelBuilder:
             elif node_idx == edge_v[e_idx]:
                 z = 0.5 * edge_len[e_idx] if use_com_origin else edge_len[e_idx]
             else:
-                raise RuntimeError("add_rod_graph: internal error (node not incident to edge)")
+                raise RuntimeError("add_rod: internal error (node not incident to edge)")
             rotation = _reverse_tangent_rotation if reverse_tangent else _identity_rotation
             return wp.transform(wp.vec3(0.0, 0.0, float(z)), rotation)
 
@@ -10619,7 +10475,7 @@ class ModelBuilder:
                 for child_edge in inc[1:]:
                     child_body = edge_bodies[child_edge]
                     if parent_body == child_body:
-                        raise RuntimeError("add_rod_graph: internal error (self-connection)")
+                        raise RuntimeError("add_rod: internal error (self-connection)")
 
                     child_xform = _edge_anchor_xform(child_edge, node_idx)
 
@@ -10659,9 +10515,7 @@ class ModelBuilder:
             if articulation_root_node is not None:
                 root_edges = node_incidence[articulation_root_node]
                 if not root_edges:
-                    raise ValueError(
-                        f"add_rod_graph: articulation_root_node {articulation_root_node} has no incident edge"
-                    )
+                    raise ValueError(f"add_rod: articulation_root_node {articulation_root_node} has no incident edge")
                 start_edges.remove(root_edges[0])
                 start_edges.insert(0, root_edges[0])
 
@@ -10706,7 +10560,7 @@ class ModelBuilder:
 
                             child_body = edge_bodies[child_edge]
                             if parent_body == child_body:
-                                raise RuntimeError("add_rod_graph: internal error (self-connection)")
+                                raise RuntimeError("add_rod: internal error (self-connection)")
 
                             # Anchors at the shared node on each edge body
                             parent_reversed = shared_node == edge_u[parent_edge]
@@ -15285,6 +15139,15 @@ class ModelBuilder:
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
+            # Snapshot identities so later builder edits cannot change model inspection.
+            for family, references in self._BUILDER_GROUP_REFERENCES.items():
+                labels = list(getattr(self, f"{family}_label"))
+                setattr(m, f"{family}_label", labels)
+                setattr(m, f"{family}_count", len(labels))
+                setattr(m, f"{family}_world", wp.array(getattr(self, f"{family}_world"), dtype=wp.int32))
+                for suffix in references:
+                    setattr(m, f"{family}_{suffix}", wp.array(getattr(self, f"_{family}_{suffix}"), dtype=wp.int32))
+
             # ---------------------
             # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
             # can live on it. The per-row ``equality_constraint_*`` arrays are materialized by the
@@ -15473,6 +15336,9 @@ class ModelBuilder:
                     custom_attr.assignment,
                     custom_attr.namespace,
                     custom_attr.references,
+                )
+                m._set_attribute_spec(
+                    custom_attr.key, replace(m.attribute_specs[custom_attr.key], default=custom_attr.default)
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
