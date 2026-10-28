@@ -1409,7 +1409,7 @@ def _build_split_four_bar(world_count: int) -> tuple[newton.Model, list[tuple[st
             axis=wp.vec3(0.0, 1.0, 0.0),
         )
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-    builder.replicate(template, world_count=world_count)
+    builder.replicate(template, copy_count=world_count)
     builder.color()
     model = builder.finalize(device="cpu")
 
