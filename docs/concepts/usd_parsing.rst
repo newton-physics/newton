@@ -43,6 +43,30 @@ Revolute ``mjc:ref`` and ``mjc:springref`` instead follow the PhysicsScene's
 ``mjc:compiler:angle`` setting (degrees by default). The importer converts these
 values to radians or radians/s.
 
+**USD joint direction:** Newton imports ``physics:body0`` as the parent body and
+``physics:body1`` as the child body. UsdPhysics measures the joint position from
+the ``physics:body0`` joint frame to the ``physics:body1`` joint frame. If
+``physics:body1`` is not an imported rigid body, for example because it is empty
+(the world) or a static prim, the importer swaps the two ends: the world becomes
+the parent and ``physics:body0`` becomes the child. The swap reverses the
+direction in which the joint position is measured, so the importer negates the
+axis of a swapped revolute or prismatic joint. Limits, drive targets, initial
+joint state, and other per-joint values keep their authored signs, and
+``joint_q`` equals the authored joint position. For these joints,
+:attr:`newton.Model.joint_axis` holds the negated authored axis.
+
+The importer reverses a swapped D6 joint, or single-axis joints merged into one
+D6 joint, the same way when the joint has no rotational axis, or one rotational
+axis with every translational axis parallel to it. Any other swapped D6 or merged
+joint keeps its authored axes, so its limits, drives, and initial state may act in
+the mirrored direction. Importing such a joint is deprecated: it emits a
+:class:`~newton.exceptions.NewtonDeprecationWarning`, and a future release will
+raise an error. Author the joint with the rigid body as ``physics:body1``
+instead. A swapped spherical joint keeps its axes, so its
+``joint_q`` holds the inverse of the authored joint rotation. This does not
+change its motion, because Newton imports no limits or drives for spherical
+joints.
+
 Particle Simulation Geometry
 ----------------------------
 
