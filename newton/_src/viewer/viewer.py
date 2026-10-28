@@ -1600,7 +1600,7 @@ class ViewerBase(ABC):
         opacities: wp.array[wp.float32] | None = None,
     ):
         """
-        Convenience helper to create/cache a mesh of a given geometry and
+        Convenience helper to create/cache a prototype of a given geometry and
         render a batch of instances with the provided transforms/colors/materials.
 
         Args:

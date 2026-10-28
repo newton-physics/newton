@@ -652,11 +652,11 @@ class TestViewerUSD(unittest.TestCase):
         viewer.log_geo("/plane", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
 
         stage = viewer.stage
-        self.assertAlmostEqual(UsdGeom.Sphere.Get(stage, "/root/sphere").GetRadiusAttr().Get(), 0.5)
+        self.assertAlmostEqual(UsdGeom.Sphere.Get(stage, "/root/sphere").GetRadiusAttr().Get(0), 0.5)
         for name, schema in (("capsule", UsdGeom.Capsule), ("cylinder", UsdGeom.Cylinder), ("cone", UsdGeom.Cone)):
             gprim = schema.Get(stage, f"/root/{name}")
-            self.assertAlmostEqual(gprim.GetRadiusAttr().Get(), 0.2, places=6)
-            self.assertAlmostEqual(gprim.GetHeightAttr().Get(), 0.6, places=6)
+            self.assertAlmostEqual(gprim.GetRadiusAttr().Get(0), 0.2, places=6)
+            self.assertAlmostEqual(gprim.GetHeightAttr().Get(0), 0.6, places=6)
             self.assertEqual(gprim.GetAxisAttr().Get(), UsdGeom.Tokens.z)
         for name, schema in (("box", UsdGeom.Cube), ("ellipsoid", UsdGeom.Sphere)):
             gprim = schema.Get(stage, f"/root/{name}/geom")
@@ -675,12 +675,37 @@ class TestViewerUSD(unittest.TestCase):
         bound = UsdGeom.Sphere.Get(stage, "/root/shape/geom").ComputeLocalBound(0, UsdGeom.Tokens.default_)
         np.testing.assert_allclose(bound.ComputeAlignedRange().GetMax(), [1.0, 1.0, 1.0], rtol=1e-6)
 
-        viewer.log_geo("/shape", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+        with self.assertWarns(UserWarning):
+            viewer.log_geo("/shape", newton.GeoType.SPHERE, (0.5,), 0.0, True)
         self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Sphere))
         self.assertFalse(stage.GetPrimAtPath("/root/shape/geom"))
 
-        viewer.log_geo("/shape", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
+        with self.assertWarns(UserWarning):
+            viewer.log_geo("/shape", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
         self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Mesh))
+
+        viewer.log_geo("/gprim", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        with self.assertWarns(UserWarning):
+            viewer.log_mesh("/gprim", points, indices)
+        self.assertTrue(stage.GetPrimAtPath("/root/gprim").IsA(UsdGeom.Mesh))
+
+    def test_log_geo_animates_gprim_size(self):
+        """Re-logging a Gprim prototype keeps earlier sizes as time samples."""
+        viewer = self._make_viewer()
+        for frame, radius in ((0, 0.5), (1, 0.25)):
+            viewer.begin_frame(frame / viewer.fps)
+            viewer.log_geo("/sphere", newton.GeoType.SPHERE, (radius,), 0.0, True)
+            viewer.log_geo("/box", newton.GeoType.BOX, (radius, radius, radius), 0.0, True)
+
+        sphere = UsdGeom.Sphere.Get(viewer.stage, "/root/sphere")
+        cube = UsdGeom.Cube.Get(viewer.stage, "/root/box/geom")
+        for frame, radius in ((0, 0.5), (1, 0.25)):
+            self.assertAlmostEqual(sphere.GetRadiusAttr().Get(frame), radius)
+            np.testing.assert_allclose(sphere.GetExtentAttr().Get(frame)[1], [radius] * 3)
+            bound = cube.ComputeLocalBound(frame, UsdGeom.Tokens.default_).ComputeAlignedRange()
+            np.testing.assert_allclose(bound.GetMax(), [radius] * 3, rtol=1e-6)
 
     def test_log_shapes_instances_gprim_prototypes(self):
         """Render Gprim instances with their color while prototypes stay hidden."""
