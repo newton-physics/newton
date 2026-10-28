@@ -437,8 +437,10 @@ class TestDeformableVisualRodBinding(unittest.TestCase):
         assert_np_equal(nearest.parent.numpy(), np.full(4, start, dtype=np.int32))
         assert_np_equal(given.parent.numpy(), np.full(4, other, dtype=np.int32))
         state = model.state()
+        output = newton.geometry.DeformableVisuals(model)
+        output.update(state)
         for mesh in (nearest, given):
-            assert_np_equal(_skin(model, mesh, state), verts, tol=1.0e-6)
+            assert_np_equal(output.get_points(mesh).numpy(), verts, tol=1.0e-6)
         with self.assertRaisesRegex(ValueError, "exactly one of parent, bodies, or curve"):
             builder.add_deformable_visual_mesh(
                 verts, [0, 1, 2, 0, 2, 3], kind="body", bodies=[start], parent=[start] * 4
@@ -490,16 +492,19 @@ class TestDeformableVisualRodBinding(unittest.TestCase):
 
                 # Translate body 1 only; its two vertices move, body 0's stay.
                 state = model.state()
+                output = newton.geometry.DeformableVisuals(model)
                 body_q = state.body_q.numpy().copy()
                 body_q[b1, :3] += (0.0, 0.0, 2.0)
                 state.body_q = wp.array(body_q, dtype=wp.transform)
-                skinned = _skin(model, rm, state)
+                output.update(state)
+                skinned = output.get_points(rm).numpy()
                 assert_np_equal(skinned[:2], verts[:2], tol=1.0e-5)
                 assert_np_equal(skinned[2:], verts[2:] + np.array([0.0, 0.0, 2.0], dtype=np.float32), tol=1.0e-5)
                 body_q[b1, 3:] = (0, 0, math.sqrt(0.5), math.sqrt(0.5))
                 state.body_q.assign(body_q)
                 rotated = np.column_stack((1.0 - verts[2:, 1], verts[2:, 0] - 1.0, np.full(2, 2.0)))
-                skinned = _skin(model, rm, state)
+                output.update(state)
+                skinned = output.get_points(rm).numpy()
                 assert_np_equal(skinned[:2], verts[:2], tol=1.0e-5)
                 assert_np_equal(skinned[2:], rotated, tol=1.0e-5)
 
@@ -687,6 +692,8 @@ class TestDeformableVisualRecording(unittest.TestCase):
         poses = state.body_q.numpy().copy()
         poses[:, 2] += 3
         state.body_q.assign(poses)
+        expected = newton.geometry.DeformableVisuals(model)
+        expected.update(state)
         with wp.ScopedDevice("cpu"), tempfile.TemporaryDirectory() as directory:
             for suffix in ("json", "bin") if HAS_CBOR2 else ("json",):
                 with self.subTest(format=suffix):
@@ -701,6 +708,8 @@ class TestDeformableVisualRecording(unittest.TestCase):
                         playback.load_model(restored)
                         replay = restored.state()
                         playback.load_state(replay, 0)
+                        output = newton.geometry.DeformableVisuals(restored)
+                        output.update(replay)
                         self.assertEqual(restored.deformable_visual_mesh_count, 10)
                         np.testing.assert_array_equal(
                             restored.deformable_visual_meshes[4].uvs.numpy(), [[0, 0], [1, 0], [0, 1]]
@@ -712,7 +721,9 @@ class TestDeformableVisualRecording(unittest.TestCase):
                             self.assertEqual(mesh.kind, original.kind)
                             self.assertEqual(mesh.world, original.world)
                             np.testing.assert_array_equal(mesh.parent.numpy(), original.parent.numpy())
-                            np.testing.assert_allclose(_skin(restored, mesh, replay), _skin(model, original, state))
+                            np.testing.assert_allclose(
+                                output.get_points(mesh).numpy(), expected.get_points(original).numpy()
+                            )
                     kept = scene.finalize("cpu")
                     meshes = kept.deformable_visual_meshes
                     playback.load_model(kept)
@@ -821,7 +832,13 @@ class TestDeformableVisualViewer(unittest.TestCase):
         viewer.set_layer_transform("__default__", wp.transform((0, 0, 3), wp.quat_identity()))
         viewer.log_state(model.state())
         offsets = viewer.world_offsets.numpy()
-        for i in range(model.deformable_visual_mesh_count):
+        self.assertEqual(model.deformable_visual_mesh_count, 2)
+        for i, mesh in enumerate(model.deformable_visual_meshes):
+            self.assertEqual(mesh.world, i)
+            self.assertEqual(mesh.label, "skin")
+            np.testing.assert_array_equal(
+                mesh.parent.numpy(), np.arange(source.particle_count) + i * source.particle_count
+            )
             name = f"/model/deformable_visual_meshes/mesh_{i}_skin"
             vertices = viewer.objects[name].vertices.numpy()
             expected = np.asarray(source.particle_q) + offsets[i] + (0, 0, 3)
