@@ -184,11 +184,11 @@ jobs:
           echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)" >> "$GITHUB_OUTPUT"
 
       # Warp kernel binaries are architecture-specific, so each GPU type keeps its own cache.
-      # Post-submit (push) runs start cold to catch stale-cache issues without
-      # slowing the merge queue.
+      # Keep cold-cache coverage on the larger nightly runner. Recompiling the
+      # full suite on every push can exhaust the smaller runner's test timeout.
       - name: Restore Warp kernel cache
         id: restore-warp-cache
-        if: github.event_name != 'push'
+        if: inputs.trigger-category != 'scheduled-nightly'
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
