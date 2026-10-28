@@ -1294,6 +1294,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
             level_offsets: wp.array2d[int],
             segment_offsets: wp.array[int],
             segment_joints: wp.array[int],
+            joint_order: wp.array[int],
             joint_articulation: wp.array[int],
             joint_q: wp.array[float],
             joint_qd: wp.array[float],
@@ -1310,6 +1311,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
             body_flags: wp.array[wp.int32],
             body_flag_filter: int,
             articulation_active: wp.array[int],
+            joint_mask: wp.array[bool],
             body_q: wp.array[wp.transform],
             body_qd: wp.array[wp.spatial_vector],
         ):
@@ -1329,6 +1331,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
                             eval_single_articulation_fk(
                                 joint,
                                 joint + 1,
+                                joint_order,
                                 joint_articulation,
                                 joint_q,
                                 joint_qd,
@@ -1344,6 +1347,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
                                 body_com,
                                 body_flags,
                                 body_flag_filter,
+                                joint_mask,
                                 body_q,
                                 body_qd,
                             )
@@ -7501,17 +7505,20 @@ def copy_free_rigid_propagation_body_response(
     mf_body_Hinv: wp.array[wp.spatial_matrix],
     # outputs
     propagation_body_response: wp.array3d[float],
+    propagation_body_response_split: wp.array3d[float],
 ):
     """Seed the 6x6 propagation response of free bodies with their inverse inertia.
 
     Articulated links get their response from the tree factorization; a free body's
-    response is the same inverse spatial inertia its free-body rows use.
+    response is the same inverse spatial inertia its free-body rows use. A free body
+    shares no joint, so its split response is the same matrix.
     """
     body = free_rigid_body_indices[wp.tid()]
     Hinv = mf_body_Hinv[body]
     for r in range(6):
         for c in range(6):
             propagation_body_response[body, r, c] = Hinv[r, c]
+            propagation_body_response_split[body, r, c] = Hinv[r, c]
 
 
 @wp.func
@@ -7535,37 +7542,39 @@ def propagation_contact_row_dot(
 
 
 @wp.kernel
-def count_propagation_coupled_bodies(
+def count_propagation_joint_split(
     propagation_constraint_count: wp.array[int],
     propagation_body_a: wp.array2d[int],
     propagation_body_b: wp.array2d[int],
     propagation_max_constraints: int,
-    propagation_body_coupling_group: wp.array[int],
+    body_to_joint: wp.array[int],
+    joint_parent: wp.array[int],
+    max_depth: int,
     # outputs
     propagation_body_split_seen: wp.array[int],
-    propagation_coupling_group_body_count: wp.array[int],
+    propagation_joint_split: wp.array[int],
 ):
-    """Count the distinct row-bearing bodies in each coupling group."""
+    """Count, per joint, the distinct row-bearing bodies whose root path contains it."""
     tid = wp.tid()
     world = tid // propagation_max_constraints
     i = tid - world * propagation_max_constraints
     if i >= wp.min(propagation_constraint_count[world], propagation_max_constraints):
         return
-    ba = propagation_body_a[world, i]
-    if ba >= 0 and wp.atomic_add(propagation_body_split_seen, ba, 1) == 0:
-        wp.atomic_add(propagation_coupling_group_body_count, propagation_body_coupling_group[ba], 1)
-    bb = propagation_body_b[world, i]
-    if bb >= 0 and wp.atomic_add(propagation_body_split_seen, bb, 1) == 0:
-        wp.atomic_add(propagation_coupling_group_body_count, propagation_body_coupling_group[bb], 1)
-
-
-@wp.func
-def propagation_body_split(
-    body: int,
-    propagation_body_coupling_group: wp.array[int],
-    propagation_coupling_group_body_count: wp.array[int],
-) -> float:
-    return float(wp.max(propagation_coupling_group_body_count[propagation_body_coupling_group[body]], 1))
+    for side in range(2):
+        body = propagation_body_a[world, i]
+        if side == 1:
+            body = propagation_body_b[world, i]
+        if body < 0 or wp.atomic_add(propagation_body_split_seen, body, 1) != 0:
+            continue
+        joint = body_to_joint[body]
+        for _depth in range(max_depth):
+            if joint < 0:
+                break
+            wp.atomic_add(propagation_joint_split, joint, 1)
+            parent = joint_parent[joint]
+            joint = -1
+            if parent >= 0:
+                joint = body_to_joint[parent]
 
 
 @wp.kernel
@@ -7576,8 +7585,7 @@ def compute_propagation_effective_mass_and_rhs(
     propagation_J_a: wp.array3d[float],
     propagation_J_b: wp.array3d[float],
     propagation_body_response: wp.array3d[float],
-    propagation_body_coupling_group: wp.array[int],
-    propagation_coupling_group_body_count: wp.array[int],
+    propagation_body_response_split: wp.array3d[float],
     propagation_phi: wp.array2d[float],
     propagation_row_type: wp.array2d[int],
     propagation_target_velocity: wp.array2d[float],
@@ -7603,8 +7611,8 @@ def compute_propagation_effective_mass_and_rhs(
 
     ``M^-1`` is each touched body's own 6x6 response, so a row between two links of one
     articulation misses their cross term here; see
-    :func:`refine_same_articulation_propagation_rows`. Each response is scaled by the
-    number of row-bearing bodies in the body's coupling group (mass splitting). The bias follows the free-body
+    :func:`refine_same_articulation_propagation_rows`. ``M^-1 J^T`` and the step use the split
+    response (mass splitting), the regularization fixed point the exact one. The bias follows the free-body
     rows: penetrating contacts get the Baumgarte term, bounded by the bodies' maximum
     depenetration velocity, and separated contacts may close ``contact_speculative_scale``
     times their gap during the step. An impacting contact whose rebound fires gets its
@@ -7623,26 +7631,26 @@ def compute_propagation_effective_mass_and_rhs(
     bb = propagation_body_b[world, i]
     d = pgs_cfm
     d_unsplit = pgs_cfm
-    # Mass splitting: a sweep sees only each body's own response, so a body shares its coupling
-    # group's mobility with the group's other row-bearing bodies to damp the Jacobi update.
+    # Mass splitting: a sweep sees only each body's own response, so the step uses the split
+    # response, which scales each joint's share of the mobility by the row-bearing bodies sharing it.
     if ba >= 0:
-        split_a = propagation_body_split(ba, propagation_body_coupling_group, propagation_coupling_group_body_count)
         for r in range(6):
+            exact = float(0.0)
             value = float(0.0)
             for c in range(6):
-                value += propagation_body_response[ba, r, c] * propagation_J_a[world, i, c]
-            d_unsplit += propagation_J_a[world, i, r] * value
-            value *= split_a
+                exact += propagation_body_response[ba, r, c] * propagation_J_a[world, i, c]
+                value += propagation_body_response_split[ba, r, c] * propagation_J_a[world, i, c]
+            d_unsplit += propagation_J_a[world, i, r] * exact
             propagation_MiJt_a[world, i, r] = value
             d += propagation_J_a[world, i, r] * value
     if bb >= 0:
-        split_b = propagation_body_split(bb, propagation_body_coupling_group, propagation_coupling_group_body_count)
         for r in range(6):
+            exact = float(0.0)
             value = float(0.0)
             for c in range(6):
-                value += propagation_body_response[bb, r, c] * propagation_J_b[world, i, c]
-            d_unsplit += propagation_J_b[world, i, r] * value
-            value *= split_b
+                exact += propagation_body_response[bb, r, c] * propagation_J_b[world, i, c]
+                value += propagation_body_response_split[bb, r, c] * propagation_J_b[world, i, c]
+            d_unsplit += propagation_J_b[world, i, r] * exact
             propagation_MiJt_b[world, i, r] = value
             d += propagation_J_b[world, i, r] * value
     if d > 0.0:
@@ -8689,19 +8697,24 @@ def compute_propagation_tree_body_response_for_size(
     propagation_body_com_rel: wp.array2d[float],
     propagation_tree_U: wp.array2d[float],
     propagation_tree_D_inv: wp.array3d[float],
+    propagation_joint_split: wp.array[int],
     # scratch
     propagation_tree_pA: wp.array2d[float],
     propagation_tree_u: wp.array[float],
+    propagation_tree_u_basis: wp.array2d[float],
     propagation_tree_qdd: wp.array[float],
     propagation_tree_body_delta: wp.array2d[float],
     # outputs
     propagation_body_response: wp.array3d[float],
+    propagation_body_response_split: wp.array3d[float],
 ):
-    """Compute the 6x6 center-of-mass response of each contact-touched link by tree solves.
+    """Compute the exact and split 6x6 center-of-mass responses of each contact-touched link by tree solves.
 
     For any joint DOF count. A unit wrench at a link only couples to the joints on its
     path to the root, so each of the six basis solves walks that path only. The walk is
-    capped at the articulation's joint count.
+    capped at the articulation's joint count. The exact response is ``sum_j u_j^T D_j^-1 u_j``
+    over the path joints, with ``u_j`` the joint's backward-sweep projection of the six unit
+    wrenches; the split response weights each term by the joint's ``propagation_joint_split`` count.
     """
     group_idx = wp.tid()
     art = group_to_art[group_idx]
@@ -8765,6 +8778,7 @@ def compute_propagation_tree_body_response_for_size(
                     for r in range(6):
                         v -= propagation_joint_S_flat[gdof, r] * propagation_tree_pA[child, r]
                     propagation_tree_u[gdof] = v
+                    propagation_tree_u_basis[gdof, basis] = v
                 if parent >= 0:
                     propagated_child = _spatial_row(propagation_tree_pA, child)
                     for a in range(dof_count):
@@ -8806,6 +8820,34 @@ def compute_propagation_tree_body_response_for_size(
 
             for r in range(6):
                 propagation_body_response[target_body, r, basis] = propagation_tree_body_delta[target_body, r]
+
+        # Split response: add (n_j - 1) u_j^T D_j^-1 u_j for each path joint shared by n_j > 1 bodies.
+        extra_response = wp.spatial_matrix()
+        walk = body_to_joint[target_body]
+        for _k in range(path_len):
+            joint = walk
+            walk_parent = joint_parent[joint]
+            if walk_parent >= 0:
+                walk = body_to_joint[walk_parent]
+            else:
+                walk = int(-1)
+            extra = float(propagation_joint_split[joint] - 1)
+            if extra <= 0.0:
+                continue
+            dof_start = joint_qd_start[joint]
+            dof_count = joint_dof_dim[joint, 0] + joint_dof_dim[joint, 1]
+            for a in range(dof_count):
+                weighted = wp.spatial_vector()
+                for b in range(dof_count):
+                    weighted += propagation_tree_D_inv[joint, a, b] * _spatial_row(
+                        propagation_tree_u_basis, dof_start + b
+                    )
+                extra_response += wp.outer(_spatial_row(propagation_tree_u_basis, dof_start + a), extra * weighted)
+        for r in range(6):
+            for c in range(6):
+                propagation_body_response_split[target_body, r, c] = (
+                    propagation_body_response[target_body, r, c] + extra_response[r, c]
+                )
 
 
 @wp.kernel

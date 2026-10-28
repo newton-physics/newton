@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import collections
+import copy
 import inspect
 import logging
 import os
 import queue
+import re
 import time
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
@@ -205,7 +208,8 @@ class ViewerViser(ViewerBase):
             return max(abs(float(maximum) - float(minimum)) / 100.0, 1.0e-6)
 
         def text(self, value: Any) -> None:
-            content = str(value)
+            # ImGui text is literal; retain that behavior in Markdown widgets.
+            content = re.sub(r"([\\`*_{}\[\]<>()#+.!|~-])", r"\\\1", str(value)).replace("\n", "  \n")
 
             def create(_key):
                 return self._add(lambda: self._viewer._server.gui.add_markdown(content))
@@ -613,6 +617,41 @@ class ViewerViser(ViewerBase):
         """Clear all scenes and restore the default camera for example switching."""
         super().clear_all_layers()
         self._reset_camera_to_default(self._get_camera_up_axis())
+
+    @override
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Preserve native wireframe choices and each client's view on reset."""
+        wireframe = self._display_options_user.get("wireframe") if switching else self._wireframe
+        if not switching:
+            camera_request = copy.deepcopy(self._camera_request)
+            camera_fov = self._camera_fov_radians
+            camera_pitch, camera_yaw = self._camera_pitch, self._camera_yaw
+            client_cameras = {
+                client_id: {
+                    name: copy.deepcopy(getattr(client.camera, name))
+                    for name in ("position", "look_at", "up_direction", "fov", "near", "far")
+                }
+                for client_id, client in self._server.get_clients().items()
+            }
+        try:
+            with super()._preserve_display_options(switching=switching):
+                yield
+        finally:
+            if wireframe is not None:
+                self._set_wireframe(wireframe)
+            if not switching:
+                self._camera_fov_radians = camera_fov
+                self._camera_pitch, self._camera_yaw = camera_pitch, camera_yaw
+                if camera_request is not None:
+                    self._set_camera_request(*camera_request)
+                # Client navigation is independent of the cached request used
+                # for new connections. Restore each connected view separately.
+                for client_id, client in self._server.get_clients().items():
+                    if client_id in client_cameras:
+                        with client.atomic():
+                            self._apply_attrs(client.camera, client_cameras[client_id])
+            self._sync_gui_controls()
 
     @override
     def _init_extra_layer_state(self, layer):
@@ -1400,6 +1439,7 @@ class ViewerViser(ViewerBase):
                         self._end_gizmo_drag(name)
             elif event_type == "viewer_option":
                 _, attribute, value = event
+                self._display_options_user[attribute] = value
                 if attribute == "wireframe":
                     self._set_wireframe(value)
                 else:

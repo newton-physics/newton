@@ -52,24 +52,11 @@ _TRANSPARENT_INSTANCER_SUFFIX = "/__transparent__"
 
 
 @wp.kernel
-def _capsule_duplicate_vec3(in_values: wp.array[wp.vec3], out_values: wp.array[wp.vec3]):
-    # Duplicate N values into 2N values (two caps per capsule).
+def _capsule_render_scales(scales: wp.array[wp.vec3], out_scales: wp.array[wp.vec3]) -> None:
     tid = wp.tid()
-    out_values[tid] = in_values[tid // 2]
-
-
-@wp.kernel
-def _capsule_duplicate_vec4(in_values: wp.array[wp.vec4], out_values: wp.array[wp.vec4]):
-    # Duplicate N values into 2N values (two caps per capsule).
-    tid = wp.tid()
-    out_values[tid] = in_values[tid // 2]
-
-
-@wp.kernel
-def _capsule_duplicate_float(in_values: wp.array[wp.float32], out_values: wp.array[wp.float32]):
-    # Duplicate N values into 2N values (two caps per capsule).
-    tid = wp.tid()
-    out_values[tid] = in_values[tid // 2]
+    scale = scales[tid]
+    # Keep the axial basis nonzero for the zero-length (sphere) case.
+    out_scales[tid] = wp.vec3(scale[0], scale[1], scale[0] + scale[2])
 
 
 @wp.kernel
@@ -77,41 +64,16 @@ def _capsule_build_body_scales(
     shape_scale: wp.array[wp.vec3],
     shape_indices: wp.array[wp.int32],
     out_scales: wp.array[wp.vec3],
-):
+) -> None:
     # model.shape_scale stores capsule params as (radius, half_height, _unused).
     # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
-    # (radius, radius, half_height) for the cylinder body.
+    # (radius, radius, half_height) for the capsule instance parameters.
     tid = wp.tid()
     s = shape_indices[tid]
     scale = shape_scale[s]
     r = scale[0]
     half_height = scale[1]
     out_scales[tid] = wp.vec3(r, r, half_height)
-
-
-@wp.kernel
-def _capsule_build_cap_xforms_and_scales(
-    capsule_xforms: wp.array[wp.transform],
-    capsule_scales: wp.array[wp.vec3],
-    out_xforms: wp.array[wp.transform],
-    out_scales: wp.array[wp.vec3],
-):
-    tid = wp.tid()
-    i = tid // 2
-    # Each capsule has two caps; even tid is the +Z end, odd tid is the -Z end.
-    is_plus_end = (tid % 2) == 0
-
-    t = capsule_xforms[i]
-    p = wp.transform_get_translation(t)
-    q = wp.transform_get_rotation(t)
-
-    r = capsule_scales[i][0]
-    half_height = capsule_scales[i][2]
-    offset_local = wp.vec3(0.0, 0.0, half_height if is_plus_end else -half_height)
-    p2 = p + wp.quat_rotate(q, offset_local)
-
-    out_xforms[tid] = wp.transform(p2, q)
-    out_scales[tid] = wp.vec3(r, r, r)
 
 
 @wp.kernel
@@ -216,6 +178,8 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
+    _supports_deformable_visual_meshes = True
+
     class CudaInterop(enum.IntFlag):
         """Render-geometry categories eligible for CUDA-OpenGL interoperability."""
 
@@ -223,10 +187,10 @@ class ViewerGL(ViewerBase):
         """Disable CUDA-OpenGL interoperability for render geometry."""
 
         DYNAMIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=True``."""
+        """Meshes logged with ``dynamic=True``. Either mesh flag also enables model-owned skinned meshes."""
 
         STATIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=False``."""
+        """Meshes logged with ``dynamic=False``. Either mesh flag also enables model-owned skinned meshes."""
 
         POINTS = enum.auto()
         """Point instance-transform buffers."""
@@ -493,7 +457,9 @@ class ViewerGL(ViewerBase):
                 to hide all rotation rings.
             snap_to: Optional world transform with translation [m] and a
                 unitless rotation quaternion to apply when this gizmo is
-                released by the user.
+                released by the user. Cancelling a drag by removing its handle,
+                hiding the UI, pausing rendering, or losing window focus keeps
+                the current pose instead.
         """
         axis_order = (Axis.X, Axis.Y, Axis.Z)
 
@@ -742,7 +708,7 @@ class ViewerGL(ViewerBase):
 
         # Write-index: maps model shape index → packed output position (-1 = skip)
         write_np = np.full(shape_count, -1, dtype=np.int32)
-        # World xforms output (capsules read these for cap sphere computation)
+        # World transforms for the capsule instancing path
         all_world_xforms = wp.empty(total, dtype=wp.transform, device=device)
 
         for _key, shapes, offset, n in groups:
@@ -753,18 +719,20 @@ class ViewerGL(ViewerBase):
                 shapes.world_xforms = all_world_xforms[offset : offset + n]
 
             if _key not in capsule_keys:
-                if shapes.name not in self.objects:
-                    if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
-                        instancer = MeshInstancerGL(
-                            max(n, 1),
-                            self.objects[shapes.mesh],
-                            enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
-                        )
-                        # Planes (e.g. the ground) opt out of the wireframe edge
-                        # overlay. Keyed on geometry type, not the checker material
-                        # bit, so checker-shaded non-planes still get edges (#2808).
-                        instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
-                        self.objects[shapes.name] = instancer
+                mesh = self.objects.get(shapes.mesh)
+                instancer = self.objects.get(shapes.name)
+                # Visibility changes can reuse a batch name for a different geometry.
+                if isinstance(mesh, MeshGL) and (instancer is None or instancer.mesh is not mesh):
+                    instancer = MeshInstancerGL(
+                        max(n, 1),
+                        mesh,
+                        enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
+                    )
+                    # Planes (e.g. the ground) opt out of the wireframe edge
+                    # overlay. Keyed on geometry type, not the checker material
+                    # bit, so checker-shaded non-planes still get edges (#2808).
+                    instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
+                    self.objects[shapes.name] = instancer
 
         self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms
@@ -948,6 +916,59 @@ class ViewerGL(ViewerBase):
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
         """
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            normals,
+            uvs,
+            texture,
+            hidden,
+            backface_culling,
+            color,
+            roughness,
+            metallic,
+            dynamic,
+            opacity,
+        )
+
+    @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        existing = self.objects.get(name)
+        if hidden and existing is not None:
+            existing.hidden = True
+            return
+        # Skinning changes vertices, not topology. Keep indices fixed with either mesh interop flag.
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            hidden=hidden,
+            reuse_texture=True,
+            cuda_interop_category=self.CudaInterop.DYNAMIC_MESH | self.CudaInterop.STATIC_MESH,
+            **kwargs,
+        )
+
+    def _log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+        dynamic=False,
+        opacity=None,
+        *,
+        reuse_texture=False,
+        cuda_interop_category: CudaInterop | None = None,
+    ):
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
@@ -966,6 +987,8 @@ class ViewerGL(ViewerBase):
 
         updated = False
         if replace:
+            if cuda_interop_category is None:
+                cuda_interop_category = self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
             point_capacity = len(points)
             index_capacity = len(indices)
             if existing is not None and existing.dynamic and dynamic:
@@ -978,15 +1001,14 @@ class ViewerGL(ViewerBase):
                 hidden=hidden,
                 backface_culling=backface_culling,
                 dynamic=dynamic,
-                enable_cuda_interop=self._cuda_interop_enabled(
-                    self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
-                ),
+                enable_cuda_interop=self._cuda_interop_enabled(cuda_interop_category),
             )
             if existing is not None:
                 replacement.color = existing.color
+                replacement._color_is_default = existing._color_is_default
                 replacement.material = existing.material
             try:
-                replacement.update(points, indices, normals, uvs, texture, opacity=opacity)
+                replacement.update(points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture)
             except Exception:
                 replacement.destroy()
                 raise
@@ -999,12 +1021,23 @@ class ViewerGL(ViewerBase):
                 existing.destroy()
 
         if not updated:
-            self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
+            self.objects[name].update(
+                points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture
+            )
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+        if reuse_texture:
+            # Model-owned visuals opt in without changing ordinary log_mesh materials.
+            mesh = self.objects[name]
+            r, m, c, _t = mesh.material
+            mesh.material = (r, m, c, 1.0 if mesh.texture_id else 0.0)
+            if mesh._color_is_default:
+                # Textures supply their own albedo; retain explicit tints across updates.
+                mesh.color = (1.0, 1.0, 1.0) if mesh.texture_id else MeshGL._DEFAULT_COLOR
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
+            self.objects[name]._color_is_default = False
 
         if roughness is not None or metallic is not None:
             r, m, c, t = self.objects[name].material
@@ -1030,7 +1063,7 @@ class ViewerGL(ViewerBase):
         transform_count = len(xforms) if xforms is not None else 0
         resized = False
 
-        if instancer is None:
+        if instancer is None or instancer.mesh is not mesh:
             capacity = max(transform_count, 1)
             instancer = MeshInstancerGL(
                 capacity,
@@ -1156,6 +1189,15 @@ class ViewerGL(ViewerBase):
         if isinstance(transparent_instancer, MeshInstancerGL):
             transparent_instancer.hidden = True
 
+    def _get_capsule_mesh(self) -> str:
+        """Share one closed prototype across all capsule sizes in this layer."""
+        name = self._qualify("/geometry/_capsule_instancer/mesh")
+        if name not in self.objects:
+            # Match the unit radius/half-height assumed by gl.shaders.capsule_vertex_transform.
+            self.log_geo(name, nt.GeoType.CAPSULE, (1.0, 1.0), 0.0, True, hidden=True)
+            self.objects[name]._capsule_instancing = True
+        return name
+
     @override
     def log_capsules(
         self,
@@ -1167,117 +1209,44 @@ class ViewerGL(ViewerBase):
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
         opacities: wp.array[wp.float32] | None = None,
-    ):
-        """
-        Render capsules using instanced cylinder bodies + instanced sphere end caps.
+    ) -> None:
+        """Render continuous capsule surfaces, batching arbitrary radii and lengths.
 
-        This specialized path improves batching for varying-length capsules by reusing two
-        prototype meshes (unit cylinder + unit sphere) and applying per-instance transforms/scales.
+        The shared prototype comes from :meth:`newton.Mesh.create_capsule`.
+        Instance scales are ``(radius, radius, half_height)``; the shader scales
+        the hemispheres uniformly and translates them to the cylinder ends.
+        The supplied mesh path is unused in this specialized backend.
 
         Args:
-            name: Unique name for the capsule instancer group.
-            mesh: Capsule prototype mesh path from ViewerBase (unused in this backend).
-            xforms: Capsule instance transforms (wp.transform), length N.
-            scales: Capsule body instance scales, expected (radius, radius, half_height), length N.
-            colors: Capsule instance colors (wp.vec3), length N or None (no update).
-            materials: Capsule instance materials (wp.vec4), length N or None (no update).
-            hidden: Whether the instances are hidden.
-            opacities: Capsule display opacities (wp.float32), length N or None (no update).
+            name: Unique name for the capsule batch within the active layer.
+            mesh: Capsule prototype path, unused by this backend.
+            xforms: Per-instance transforms, or ``None`` to clear visible instances.
+            scales: Per-instance capsule dimensions [m] as ``(radius, radius, half_height)``.
+                Supply these with visible transforms; ``None`` uses unit-radius spheres.
+            colors: Per-instance RGB colors, or ``None`` to keep existing colors.
+            materials: Per-instance material parameters, or ``None`` to keep existing materials.
+            hidden: Whether to hide the batch without updating existing instance buffers.
+            opacities: Per-instance display opacities in ``[0, 1]``, or ``None`` to keep existing values.
         """
-        # Route the user-supplied capsule batch name through the active
-        # layer so two layers calling ``log_capsules`` with the same path
-        # don't overwrite each other (idempotent on already-qualified names).
-        name = self._qualify(name)
-
-        # Render capsules via instanced cylinder body + instanced sphere caps.
-        # Prototype mesh keys are qualified with the active layer so a
-        # ``clear_model()`` on one layer does not destroy prototypes shared
-        # by capsule instancers in other live layers.
-        sphere_mesh = self._qualify("/geometry/_capsule_instancer/sphere")
-        cylinder_mesh = self._qualify("/geometry/_capsule_instancer/cylinder")
-
-        if sphere_mesh not in self.objects:
-            self.log_geo(sphere_mesh, nt.GeoType.SPHERE, (1.0,), 0.0, True, hidden=True)
-        if cylinder_mesh not in self.objects:
-            self.log_geo(cylinder_mesh, nt.GeoType.CYLINDER, (1.0, 1.0), 0.0, True, hidden=True)
-
-        # Cylinder body uses the capsule transforms and (radius, radius, half_height) scaling.
-        cyl_name = f"{name}/capsule_cylinder"
-        cap_name = f"{name}/capsule_caps"
-
-        # If hidden, just hide the instancers (skip all per-frame cap buffer work).
-        if hidden:
-            self.log_instances(cyl_name, cylinder_mesh, None, None, None, None, hidden=True)
-            self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
-            return
-
+        render_scales = None
+        if not hidden and scales is not None:
+            render_scales = wp.empty_like(scales)
+            wp.launch(
+                _capsule_render_scales,
+                dim=len(scales),
+                inputs=[scales],
+                outputs=[render_scales],
+                device=self.device,
+                record_tape=False,
+            )
         self.log_instances(
-            cyl_name, cylinder_mesh, xforms, scales, colors, materials, opacities=opacities, hidden=hidden
-        )
-
-        # Sphere caps: two spheres per capsule, offset by ±half_height along local +Z.
-        n = len(xforms) if xforms is not None else 0
-        if n == 0:
-            self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
-            return
-
-        cap_count = n * 2
-        cap_xforms = wp.empty(cap_count, dtype=wp.transform, device=self.device)
-        cap_scales = wp.empty(cap_count, dtype=wp.vec3, device=self.device)
-
-        wp.launch(
-            _capsule_build_cap_xforms_and_scales,
-            dim=cap_count,
-            inputs=[xforms, scales],
-            outputs=[cap_xforms, cap_scales],
-            device=self.device,
-            record_tape=False,
-        )
-
-        cap_colors = None
-        if colors is not None:
-            cap_colors = wp.empty(cap_count, dtype=wp.vec3, device=self.device)
-            wp.launch(
-                _capsule_duplicate_vec3,
-                dim=cap_count,
-                inputs=[colors],
-                outputs=[cap_colors],
-                device=self.device,
-                record_tape=False,
-            )
-
-        cap_materials = None
-        if materials is not None:
-            cap_materials = wp.empty(cap_count, dtype=wp.vec4, device=self.device)
-            wp.launch(
-                _capsule_duplicate_vec4,
-                dim=cap_count,
-                inputs=[materials],
-                outputs=[cap_materials],
-                device=self.device,
-                record_tape=False,
-            )
-
-        cap_opacities = None
-        if opacities is not None:
-            cap_opacities = wp.empty(cap_count, dtype=wp.float32, device=self.device)
-            wp.launch(
-                _capsule_duplicate_float,
-                dim=cap_count,
-                inputs=[opacities],
-                outputs=[cap_opacities],
-                device=self.device,
-                record_tape=False,
-            )
-
-        self.log_instances(
-            cap_name,
-            sphere_mesh,
-            cap_xforms,
-            cap_scales,
-            cap_colors,
-            cap_materials,
-            opacities=cap_opacities,
+            name,
+            self._get_capsule_mesh(),
+            xforms,
+            render_scales,
+            colors,
+            materials,
+            opacities=opacities,
             hidden=hidden,
         )
 
@@ -2374,7 +2343,9 @@ class ViewerGL(ViewerBase):
             scroll_x: Horizontal scroll delta.
             scroll_y: Vertical scroll delta.
         """
-        if self.gui:
+        # With ImGui, mouse input is routed during prepare_frame() so the
+        # camera and gizmos see the same processed events and hover state.
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_scroll(scroll_y, is_ctrl_down=self._is_ctrl_down())
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
@@ -2397,7 +2368,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
     def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
@@ -2410,7 +2381,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button released.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_release(x, y, button)
 
     def on_mouse_drag(
@@ -2433,7 +2404,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords, modifiers)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
@@ -2546,13 +2517,13 @@ class ViewerGL(ViewerBase):
     def _ui_populate_rendering_panel(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""
         # Sky rendering
-        _changed, self.renderer.draw_sky = imgui.checkbox("Sky", self.renderer.draw_sky)
+        self._edit_display_option(self.renderer, "draw_sky", imgui.checkbox, "Sky")
 
         # Shadow rendering
-        _changed, self.renderer.draw_shadows = imgui.checkbox("Shadows", self.renderer.draw_shadows)
+        self._edit_display_option(self.renderer, "draw_shadows", imgui.checkbox, "Shadows")
 
         # Wireframe mode
-        _changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
+        self._edit_display_option(self.renderer, "draw_wireframe", imgui.checkbox, "Wireframe")
 
         def _edit_color3(label: str, color: tuple[float, float, float]) -> tuple[bool, tuple[float, float, float]]:
             """Normalize color_edit3 input/output across imgui_bundle versions."""
@@ -2564,11 +2535,11 @@ class ViewerGL(ViewerBase):
             return changed, (updated_color[0], updated_color[1], updated_color[2])
 
         # Light color
-        _changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
+        self._edit_display_option(self.renderer, "_light_color", _edit_color3, "Light Color")
         # Sky color
-        _changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
+        self._edit_display_option(self.renderer, "sky_upper", _edit_color3, "Sky Color")
         # Ground color
-        _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
+        self._edit_display_option(self.renderer, "sky_lower", _edit_color3, "Ground Color")
 
     def _ui_populate_layers_panel(self, imgui):
         """Top-level Layers panel — toggle visibility of overlaid solvers/models.

@@ -26,7 +26,7 @@ Minimum Requirements
      - Notes
    * - Python
      - 3.10
-     - 3.11+ recommended
+     - 3.10 support is deprecated; removal planned for Newton 1.9. Use 3.11+.
    * - OS
      - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
      - macOS has no GPU acceleration
@@ -142,8 +142,8 @@ with other packages:
 .. note::
 
     Users on Python 3.10 may experience issues when installing ``imgui_bundle`` (a dependency of the
-    ``examples`` extra). If you encounter installation errors, we recommend upgrading to a later
-    Python version, or follow the :doc:`development` guide to install Newton using ``uv``.
+    ``examples`` extra). If you encounter installation errors, we recommend upgrading to
+    Python 3.11 or newer, or follow the :doc:`development` guide to install Newton using ``uv``.
 
 .. _running-examples:
 
