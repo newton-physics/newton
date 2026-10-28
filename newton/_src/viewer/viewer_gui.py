@@ -363,10 +363,10 @@ class ViewerGui:
         self._camera_drag_buttons &= ~button
         if self._viewer.is_rendering_paused():
             return
-        import pyglet
+        from pyglet.window import mouse
 
         if self.is_available:
-            mouse_index = {pyglet.window.mouse.LEFT: 0, pyglet.window.mouse.RIGHT: 1, pyglet.window.mouse.MIDDLE: 2}
+            mouse_index = {mouse.LEFT: 0, mouse.RIGHT: 1, mouse.MIDDLE: 2}
             # ImGuizmo's WantCaptureMouse override can describe the previous
             # frame. ImGui records window ownership at the processed press.
             if self.ui.io.mouse_down_owned[mouse_index[button]] or (
@@ -374,10 +374,10 @@ class ViewerGui:
             ):
                 return
         viewer = self._viewer
-        if button in (pyglet.window.mouse.LEFT, pyglet.window.mouse.MIDDLE):
+        if button in (mouse.LEFT, mouse.MIDDLE):
             self._camera_drag_buttons |= button
         if (
-            button == pyglet.window.mouse.RIGHT
+            button == mouse.RIGHT
             and getattr(viewer, "picking_enabled", False)
             and getattr(viewer, "picking", None) is not None
         ):
@@ -385,10 +385,10 @@ class ViewerGui:
 
     def handle_mouse_release(self, x: float, y: float, button: int) -> None:
         """Handle mouse button release: end camera navigation or right-click picking."""
-        import pyglet
+        from pyglet.window import mouse
 
         self._camera_drag_buttons &= ~button
-        if button == pyglet.window.mouse.RIGHT and getattr(self._viewer, "picking", None) is not None:
+        if button == mouse.RIGHT and getattr(self._viewer, "picking", None) is not None:
             self.release_picking()
 
     def _camera_pan_scale(self) -> float:
@@ -418,12 +418,10 @@ class ViewerGui:
         modifiers: int = 0,
     ) -> None:
         """Handle mouse drag: middle-click orbit/pan/dolly, left-click look, right-click pick."""
-        import pyglet
+        from pyglet.window import key, mouse
 
         allow_active_pick_drag = (
-            bool(buttons & pyglet.window.mouse.RIGHT)
-            and getattr(self._viewer, "picking_enabled", False)
-            and self.is_pick_active()
+            bool(buttons & mouse.RIGHT) and getattr(self._viewer, "picking_enabled", False) and self.is_pick_active()
         )
         camera_buttons = buttons & self._camera_drag_buttons
         # ImGuizmo can request ImGui mouse capture even when only hovered.
@@ -436,10 +434,10 @@ class ViewerGui:
         viewer = self._viewer
         camera = getattr(viewer, "camera", None)
 
-        if camera_buttons & pyglet.window.mouse.MIDDLE and camera is not None:
-            if modifiers & pyglet.window.key.MOD_CTRL:
+        if camera_buttons & mouse.MIDDLE and camera is not None:
+            if modifiers & key.MOD_CTRL:
                 camera.dolly(dy * self._camera_dolly_drag_sensitivity)
-            elif modifiers & pyglet.window.key.MOD_SHIFT:
+            elif modifiers & key.MOD_SHIFT:
                 scale = self._camera_pan_scale()
                 camera.pan(-dx * scale, -dy * scale)
             else:
@@ -451,12 +449,12 @@ class ViewerGui:
                 viewer._camera_dirty = True
             return
 
-        if camera_buttons & pyglet.window.mouse.LEFT:
+        if camera_buttons & mouse.LEFT:
             self.rotate_camera_from_drag(dx, dy)
             if camera is not None:
                 camera.sync_pivot_to_view()
         if (
-            buttons & pyglet.window.mouse.RIGHT
+            buttons & mouse.RIGHT
             and getattr(viewer, "picking_enabled", False)
             and getattr(viewer, "picking", None) is not None
         ):
@@ -544,14 +542,12 @@ class ViewerGui:
         if not (any(io.mouse_clicked) or any(io.mouse_released) or io.mouse_wheel):
             return
 
-        import pyglet
+        from pyglet.window import mouse
 
         imgui = self.ui.imgui
         x, y = io.mouse_pos.x, io.display_size.y - io.mouse_pos.y
         to_framebuffer_coords = self._viewer._to_framebuffer_coords
-        for index, button in enumerate(
-            (pyglet.window.mouse.LEFT, pyglet.window.mouse.RIGHT, pyglet.window.mouse.MIDDLE)
-        ):
+        for index, button in enumerate((mouse.LEFT, mouse.RIGHT, mouse.MIDDLE)):
             if imgui.is_mouse_released(index):
                 self.handle_mouse_release(x, y, button)
             if imgui.is_mouse_clicked(index):
@@ -565,20 +561,16 @@ class ViewerGui:
         if not any(io.mouse_down) or not (io.mouse_delta.x or io.mouse_delta.y):
             return
 
-        import pyglet
+        from pyglet.window import key, mouse
 
         imgui = self.ui.imgui
         buttons = 0
-        for index, button in enumerate(
-            (pyglet.window.mouse.LEFT, pyglet.window.mouse.RIGHT, pyglet.window.mouse.MIDDLE)
-        ):
+        for index, button in enumerate((mouse.LEFT, mouse.RIGHT, mouse.MIDDLE)):
             if imgui.is_mouse_down(index) and not imgui.is_mouse_clicked(index):
                 # Movement preceding a press is not part of the new drag.
                 buttons |= button
         if buttons:
-            modifiers = (pyglet.window.key.MOD_CTRL if io.key_ctrl else 0) | (
-                pyglet.window.key.MOD_SHIFT if io.key_shift else 0
-            )
+            modifiers = (key.MOD_CTRL if io.key_ctrl else 0) | (key.MOD_SHIFT if io.key_shift else 0)
             self.handle_mouse_drag(
                 io.mouse_pos.x,
                 io.display_size.y - io.mouse_pos.y,
