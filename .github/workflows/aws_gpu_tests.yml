@@ -368,7 +368,7 @@ jobs:
           env_vars: AWS_INSTANCE_TYPE
           fail_ci_if_error: true
           files: ./coverage.xml
-          flags: unittests
+          flags: gpu
           plugins: noop
           override_commit: ${{ inputs.ref || github.sha }}
           token: ${{ secrets.CODECOV_TOKEN }}

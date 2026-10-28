@@ -234,7 +234,7 @@ class TimelineView:
                 outline.append(ui.ImVec2(left, y))
                 if right > left:
                     outline.append(ui.ImVec2(right, y))
-            draw.add_polyline(outline, color((*rgb, 0.90)), 1.25 * scale, 0)
+            draw.add_polyline(outline, color((*rgb, 0.90)), thickness=1.25 * scale, flags=0)
         for column, tint in enumerate((body_color, particle_color)):
             previous = None
             for j, speed in zip(samples, visible_speeds[:, column], strict=True):
@@ -355,7 +355,7 @@ class TimelineView:
         ):
             ui.same_line(spacing=4 * scale)
             ui.set_cursor_pos_y(row_y)
-            enabled = 0 <= self.history.index + delta < len(self.history.frames) if self.history.frames else delta > 0
+            enabled = delta > 0 or self.history.index > 0
             if widgets.icon_button(
                 label,
                 icon,
@@ -365,8 +365,8 @@ class TimelineView:
                 show_lock=False,
             ):
                 viewer._paused = True
-                viewer._step_requested = not self.history.frames
-                if self.history.frames:
+                viewer._step_requested = delta > 0 and self.history.index >= len(self.history.frames) - 1
+                if not viewer._step_requested:
                     self.history.select(self.history.index + delta)
         ui.same_line(spacing=4 * scale)
         ui.set_cursor_pos_y(row_y)

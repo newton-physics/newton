@@ -9,6 +9,7 @@ import re
 import time
 import warnings
 from collections.abc import Callable, Sequence
+from contextlib import nullcontext
 from importlib import metadata
 from typing import Any, Literal
 
@@ -698,15 +699,16 @@ class ViewerGL(ViewerBase):
                 )
                 batch.scales = out_scales
 
-        self.picking = Picking(model, world_offsets=self.world_offsets)
-        self.picking.visible_worlds_mask = self._visible_worlds_mask
-        self.wind = Wind(model)
-
+        self.picking = None
         if model is not None:
+            self.picking = Picking(
+                model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask
+            )
             try:
                 self.picking._load_kernels()
             except Exception:
                 pass
+        self.wind = Wind(model)
 
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
@@ -1876,6 +1878,7 @@ class ViewerGL(ViewerBase):
         self._plot_logger.log_scalar(self._qualify(name), value, clear=clear, smoothing=smoothing)
 
     def _prepare_shape_transforms(self, state: nt.State) -> None:
+        """Prepare CUDA draw buffers, capturing only storage reused across frames."""
         inputs = [
             self.model.shape_transform,
             self.model.shape_body,
@@ -1908,11 +1911,19 @@ class ViewerGL(ViewerBase):
             else tuple(value)
             for value in inputs + color_inputs
         )
-        if key not in self._shape_prepare_graphs:
-            if len(self._shape_prepare_graphs) >= 4:
-                self._shape_prepare_graphs.clear()
-            wp.load_module(module=__name__, device=self.device)
-            with wp.ScopedCapture(device=self.device, force_module_load=False) as capture:
+        previous = self._shape_prepare_graphs.pop(key, None)
+        graph = previous[0] if previous is not None else None
+        if graph is None:
+            # Differentiable simulations can log a fresh State every frame.
+            # A first encounter runs directly; capture only after buffer reuse.
+            # Retaining inputs also prevents recycled pointers from looking
+            # like a second encounter. Evict the least recently used entry.
+            if previous is not None:
+                wp.load_module(module=__name__, device=self.device)
+            context = (
+                wp.ScopedCapture(device=self.device, force_module_load=False) if previous is not None else nullcontext()
+            )
+            with context as capture:
                 self._shape_opacity_update_flags.zero_()
                 wp.launch(
                     _update_shape_colors,
@@ -1931,8 +1942,12 @@ class ViewerGL(ViewerBase):
                 )
                 wp.copy(self._packed_vbo_xforms_host, self._packed_vbo_xforms)
                 wp.copy(self._shape_opacity_update_flags_host, self._shape_opacity_update_flags)
-            self._shape_prepare_graphs[key] = capture.graph, inputs, color_inputs
-        wp.capture_launch(self._shape_prepare_graphs[key][0])
+            graph = capture.graph if capture is not None else None
+        if len(self._shape_prepare_graphs) >= 4:
+            del self._shape_prepare_graphs[next(iter(self._shape_prepare_graphs))]
+        self._shape_prepare_graphs[key] = graph, inputs, color_inputs
+        if graph is not None:
+            wp.capture_launch(graph)
         wp.synchronize_stream(wp.get_stream(self.device))
 
     @override
@@ -2038,24 +2053,17 @@ class ViewerGL(ViewerBase):
             self.log_lines("picking_line", None, None, None)
             return
 
-        # Get the picked body index
-        pick_body_idx = self.picking.pick_body.numpy()[0]
-        if pick_body_idx < 0:
-            self.log_lines("picking_line", None, None, None)
-            return
-
+        pick_body_idx = self.picking.pick_body
         # Get the pick target and current picked point on geometry (in physics space)
-        pick_state = self.picking.pick_state.numpy()
-
-        pick_target = pick_state[0]["picking_target_world"]
-        picked_point = pick_state[0]["picked_point_world"]
+        pick_target = self.picking.pick_target
+        picked_point = self.picking.pick_point
 
         # Apply world offset to convert from physics space to visual space
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
             if self.model.body_world is not None:
                 body_world_idx = self.model.body_world.numpy()[pick_body_idx]
                 if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
-                    world_offset = self.world_offsets.numpy()[body_world_idx]
+                    world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
                     pick_target = pick_target + world_offset
                     picked_point = picked_point + world_offset
 
@@ -2104,7 +2112,7 @@ class ViewerGL(ViewerBase):
             state: The current simulation state.
         """
         if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
         if self.wind is not None:
             self.wind._apply_wind_force(state)

@@ -29,6 +29,31 @@ from newton.viewer import ViewerViser
 
 @unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
 class TestViewerViserInteraction(unittest.TestCase):
+    def test_contact_disks_reuse_mesh_when_contact_count_changes(self) -> None:
+        """Changing active contacts updates instances without replacing Viser geometry."""
+        builder = newton.ModelBuilder()
+        builder.add_shape_sphere(-1, radius=0.2)
+        builder.add_shape_sphere(-1, radius=0.2)
+        model = builder.finalize(device="cpu")
+        contacts = newton.CollisionPipeline(model, rigid_contact_max=2, soft_contact_max=0).contacts()
+        contacts.rigid_contact_shape0.assign([0, 0])
+        contacts.rigid_contact_shape1.assign([1, 1])
+        contacts.rigid_contact_normal.assign([(0.0, 0.0, 1.0)] * 2)
+        self.viewer.set_model(model)
+        self.viewer.show_contacts = True
+        state = model.state()
+        handles = None
+        for count in (2, 1, 2):
+            contacts.rigid_contact_count.assign([count])
+            self.viewer.log_contacts(contacts, state)
+            current = {name: self.viewer._scene_handles[name] for name in self.viewer._instances}
+            self.assertTrue(current)
+            if handles is not None:
+                self.assertEqual(current.keys(), handles.keys())
+                for name, handle in current.items():
+                    self.assertTrue(handle is handles[name], f"Replaced mesh: {name}")
+            handles = current
+
     def setUp(self):
         """Start a real Viser server and connect through its WebSocket protocol."""
         import msgspec  # noqa: PLC0415
@@ -607,7 +632,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     modifier=None,
                 )
                 self.wait_for(self.viewer.picking.is_picking)
-                self.assertEqual(int(self.viewer.picking.pick_body.numpy()[0]), 0)
+                self.assertEqual(self.viewer.picking.pick_body, 0)
                 handle = self.viewer._picking_controls[self.viewer.layer.layer_id]
                 self.send(
                     "TransformControlsUpdateMessage",
@@ -615,9 +640,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     position=(0.0, -1.0, 1.0),
                     wxyz=(1.0, 0.0, 0.0, 0.0),
                 )
-                self.wait_for(
-                    lambda: np.isclose(self.viewer.picking.pick_state.numpy()[0]["picking_target_world"][1], -1.0)
-                )
+                self.wait_for(lambda: np.isclose(self.viewer.picking.pick_target[1], -1.0))
                 state.clear_forces()
                 if graph is None:
                     self.viewer.apply_forces(state)

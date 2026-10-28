@@ -447,7 +447,10 @@ class ImGuiBackend:
             "plot_lines": (0.72, 0.72, 0.72, 1),
         }
         for name, color in palette.items():
-            style.set_color_(getattr(self.imgui.Col_, name), self.imgui.ImVec4(*color))
+            # Some palette entries were added after the minimum supported
+            # imgui-bundle version. Older versions keep their built-in colors.
+            if (slot := getattr(self.imgui.Col_, name, None)) is not None:
+                style.set_color_(slot, self.imgui.ImVec4(*color))
 
     def cancel_mouse_interaction(self) -> None:
         """Discard pending input and release widgets without completing a click."""

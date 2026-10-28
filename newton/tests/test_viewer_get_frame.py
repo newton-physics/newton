@@ -183,6 +183,51 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    def test_contact_label_leaders_ignore_pixel_rounding(self) -> None:
+        """Only displaced labels add leader geometry at integer or fractional DPI."""
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+        self.addCleanup(viewer.close)
+        viewer.set_camera(pos=(1.0, 1.0, 1.0), pitch=0.0, yaw=0.0)
+        viewer.camera.look_at((0.0, 0.0, 0.0))
+        point = ((0.013, 0.017, 0.0),)
+        for scale in (1.0, 1.5, 2.0):
+            viewer.renderer._contact_label_scale = scale
+            for labels in ([(point, "1", False)], [(point, "1", False), (point, "2", True)]):
+                viewer.renderer._contact_labels = labels
+                viewer.begin_frame(0.0)
+                viewer.end_frame()
+                shader = viewer.renderer._contact_label_shader
+                self.assertEqual(len(shader.layout), len(labels))
+                if len(labels) == 1:
+                    self.assertEqual(shader.count, 6)
+                else:
+                    self.assertGreater(shader.count, 12)
+
+    def test_shape_graph_capture_requires_buffer_reuse(self) -> None:
+        """One-shot States avoid capture; recurring buffers replay with current transforms."""
+        if not wp.is_cuda_available():
+            self.skipTest("CUDA graph capture requires CUDA")
+        with wp.ScopedDevice("cuda:0"):
+            viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        model = _make_box_model("cuda:0")
+        viewer.set_model(model)
+        states = [model.state() for _ in range(8)]
+        with mock.patch.object(wp, "ScopedCapture", wraps=wp.ScopedCapture) as capture:
+            for index, state in enumerate(states):
+                state.body_q.assign([[index, 0, 0, 0, 0, 0, 1]])
+                viewer.log_state(state)
+                np.testing.assert_allclose(viewer._packed_world_xforms.numpy()[0, :3], [index, 0, 0])
+            self.assertEqual(capture.call_count, 0)
+            for index in range(6):
+                state = states[-1 - index % 2]
+                state.body_q.assign([[10 + index, 0, 0, 0, 0, 0, 1]])
+                viewer.log_state(state)
+                np.testing.assert_allclose(viewer._packed_world_xforms.numpy()[0, :3], [10 + index, 0, 0])
+            self.assertEqual(capture.call_count, 2)
+            self.assertLessEqual(len(viewer._shape_prepare_graphs), 4)
+
     def test_gui_preloads_interaction_kernels(self) -> None:
         """First selection and particle filtering reuse startup-compiled CPU/CUDA modules."""
         try:
@@ -317,7 +362,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     )
                     GL.glTexImage2D(GL.GL_TEXTURE_2D, 0, GL.GL_RGBA8, 2, 2, 0, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE, pixels)
                     calls = []
-                    for position in ("panel", "side", "free"):
+                    for position in ("panel", "side", "stats", "free"):
 
                         def callback(
                             ui: ModuleType,
@@ -334,6 +379,13 @@ class TestViewerGLGetFrame(unittest.TestCase):
                                 )
 
                         viewer.register_ui_callback(callback, position=position)
+
+                    def timeline_gui(ui: ModuleType, calls: list[str] = calls) -> None:
+                        # User callbacks must not be filtered by their Python name.
+                        ui.get_foreground_draw_list().add_text((16, 480), 0xFFFFFFFF, "Custom timeline")
+                        calls.append("timeline_gui")
+
+                    viewer.register_ui_callback(timeline_gui, position="free")
                     for frame in range(2):
                         viewer.begin_frame(frame / 60)
                         viewer.log_state(state)
@@ -344,7 +396,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         self.assertIsNone(gui.workspace)
                         self.assertIsNone(gui.console_capture)
                         self.assertIsNone(viewer.renderer._workspace_rect)
-                        self.assertEqual(calls, ["panel", "side", "free"] * 2)
+                        self.assertEqual(calls, ["panel", "side", "stats", "free", "timeline_gui"] * 2)
                         self.assertIsNotNone(
                             gui.ui.imgui.internal.find_window_by_name(f"Newton Viewer v{newton.__version__}")
                         )
@@ -352,6 +404,9 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         self.assertIsNotNone(gui.workspace)
                         self.assertIsNotNone(viewer.renderer._workspace_rect)
                         self.assertIn("free", calls)
+                        self.assertIn("stats", calls)
+                        self.assertIn("timeline_gui", calls)
+                        self.assertFalse(gui.workspace.timeline_options["recording"])
 
                     # Compare actual clipped text/widgets with the upstream
                     # renderer, using identical draw data and an isolated target.
@@ -488,6 +543,21 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, previous_fbo)
                         GL.glDeleteFramebuffers(1, [framebuffer])
                         GL.glDeleteTextures([texture])
+
+                    # Model switches clear old images but must keep the image
+                    # presentation alive for the next example in both GUIs.
+                    for reset in (False, True):
+                        if reset:
+                            viewer.clear_model()
+                        for frame in range(3):
+                            viewer.begin_frame(frame / 60)
+                            viewer.log_image("sensor", np.full((16, 16, 3), 150, dtype=np.uint8))
+                            viewer.end_frame()
+                        texture_id, _, _ = viewer._image_logger.get_texture("sensor")
+                        commands = (
+                            command for draw_list in imgui.get_draw_data().cmd_lists for command in draw_list.cmd_buffer
+                        )
+                        self.assertTrue(any(command.get_tex_id() == texture_id for command in commands))
                 finally:
                     if image_texture is not None:
                         GL.glDeleteTextures([image_texture])

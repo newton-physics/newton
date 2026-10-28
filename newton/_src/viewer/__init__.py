@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING
 from .viewer import Layer, ViewerBase
 
 if TYPE_CHECKING:
+    from .picking import Picking
     from .viewer_file import ViewerFile
     from .viewer_gl import ViewerGL
     from .viewer_null import ViewerNull
@@ -53,18 +54,20 @@ if TYPE_CHECKING:
     from .viewer_usd import ViewerUSD
     from .viewer_viser import ViewerViser
 
-_BACKEND_MODULES = {
-    "ViewerFile": ".viewer_file",
-    "ViewerGL": ".viewer_gl",
-    "ViewerNull": ".viewer_null",
-    "ViewerRerun": ".viewer_rerun",
-    "ViewerRTX": ".viewer_rtx",
-    "ViewerUSD": ".viewer_usd",
-    "ViewerViser": ".viewer_viser",
+_LAZY_IMPORTS: dict[str, tuple[str, str | None]] = {
+    "Picking": (".picking", "Picking"),
+    "ViewerFile": (".viewer_file", "ViewerFile"),
+    "ViewerGL": (".viewer_gl", "ViewerGL"),
+    "ViewerNull": (".viewer_null", "ViewerNull"),
+    "ViewerRerun": (".viewer_rerun", "ViewerRerun"),
+    "ViewerRTX": (".viewer_rtx", "ViewerRTX"),
+    "ViewerUSD": (".viewer_usd", "ViewerUSD"),
+    "ViewerViser": (".viewer_viser", "ViewerViser"),
 }
 
 __all__ = [
     "Layer",
+    "Picking",
     "ViewerBase",
     "ViewerFile",
     "ViewerGL",
@@ -77,10 +80,12 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    module_name = _BACKEND_MODULES.get(name)
-    if module_name is None:
+    try:
+        module_name, attr_name = _LAZY_IMPORTS[name]
+    except KeyError:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
-    value = getattr(importlib.import_module(module_name, __name__), name)
+    module = importlib.import_module(module_name, __name__)
+    value = module if attr_name is None else getattr(module, attr_name)
     globals()[name] = value
     return value
 

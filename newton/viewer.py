@@ -6,29 +6,9 @@ from typing import TYPE_CHECKING
 from ._src import viewer as _viewer
 
 if TYPE_CHECKING:
-    from ._src.viewer import (
-        Layer,
-        ViewerBase,
-        ViewerFile,
-        ViewerGL,
-        ViewerNull,
-        ViewerRerun,
-        ViewerRTX,
-        ViewerUSD,
-        ViewerViser,
-    )
+    pass
 
-__all__ = [
-    "Layer",
-    "ViewerBase",
-    "ViewerFile",
-    "ViewerGL",
-    "ViewerNull",
-    "ViewerRTX",
-    "ViewerRerun",
-    "ViewerUSD",
-    "ViewerViser",
-]
+__all__ = [*_viewer.__all__]  # noqa: PLE0604
 
 
 def __getattr__(name: str):

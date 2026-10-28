@@ -544,11 +544,11 @@ Editing, history, and rebuilding
   playback reaches the latest frame before live simulation resumes. They
   are not solver checkpoints and cannot restart simulation from an arbitrary
   earlier time.
-* Recording is enabled by default for compatible examples, bounded to
+* Recording is opt-in for compatible examples: enable **Record history** in
+  the timeline to retain display snapshots. Recording is bounded to
   128 MiB and 60,000 display frames. A snapshot above 64 MiB stops recording
   before state-array transfers. Recording copies selected state, control,
-  and contact arrays to the host; disable it when measuring simulation or
-  rendering throughput.
+  and contact arrays to the host. With recording off, no snapshots are taken.
 * Topology editing and USD authoring are not provided by this inspector.
   Rebuild the Model, State, Control, Solver, and CollisionPipeline in the
   application, then call ``set_model`` and the relevant component setters again.
@@ -689,6 +689,15 @@ Call it each frame before stepping the solver:
 
     viewer.apply_forces(state)
     solver.step(model, state, ...)
+
+The picking behind right-click dragging is a :class:`~newton.viewer.Picking` controller, exposed as
+``viewer.picking``. Applications with their own input handling or renderer can create one directly,
+call :meth:`~newton.viewer.Picking.pick`, :meth:`~newton.viewer.Picking.update`, and
+:meth:`~newton.viewer.Picking.release` from their cursor events, and call
+:meth:`~newton.viewer.Picking.apply_force` before each solver step. To drive the target from a 3D input
+such as a gizmo, assign :attr:`~newton.viewer.Picking.pick_target` instead of calling ``update()``.
+Tune the spring through :attr:`~newton.viewer.Picking.pick_stiffness` and
+:attr:`~newton.viewer.Picking.pick_damping`, for example ``viewer.picking.pick_stiffness = 200.0``.
 
 :meth:`~newton.viewer.ViewerGL.is_key_down` queries whether a key is currently pressed.
 Keys can be specified as single-character strings (``'w'``), special key names (``'space'``, ``'escape'``), or pyglet key constants:
@@ -1374,10 +1383,17 @@ observables to the viewer:
 
 See :ref:`solver_observables` for allocation, contact-buffer identity, and backend
 support. Without force output, mode disks are amber (unknown) and force arrows
-are hidden. With force output, disks are black for open contacts, light gray for
+are hidden. With force output, disks are gray for open contacts, green for
 sticking contacts, and blue for slipping contacts. A measured force magnitude
 at or below ``contact_mode_eps_force`` is open, including zero force when the
 threshold is zero.
+
+ViewerGL shows the opposing contact point and its connecting line by default,
+in both regular and X-ray views. Use **Viewer settings > Contacts**, or set
+``viewer.show_contact_pairs = False`` and ``viewer.show_contact_lines = False``,
+to retain only the normal and mode disk on the first witness. Contact numbers
+are enabled by default but only drawn while paused with a **Contacts** inspector
+tab open. Disable them with ``viewer.show_contact_labels = False``.
 
 Default force-arrow calibration uses the average dynamic mass of populated local
 worlds plus shared global dynamic mass, so replicating identical worlds does not
@@ -1486,3 +1502,9 @@ When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world
 .. code-block:: python
 
     viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))
+
+ViewerGL applies these offsets and world visibility to loose particles and
+deformable surfaces as well as rigid shapes, including with ``legacy_gui=True``
+and headless rendering. Other backends retain their existing particle and
+deformable placement. Explorer visibility toggles preserve positions; explicit
+``set_visible_worlds()`` calls compact the visible grid unless ``reflow=False``.

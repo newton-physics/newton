@@ -342,7 +342,9 @@ class TestLogContacts(unittest.TestCase):
             viewer.log_contacts(contacts, state)
         self.assertIsNone(lines.call_args.args[1])
         self.assertEqual(len(arrows.call_args_list[0].args[1]), 1)
-        self.assertEqual(len(instances.call_args.args[2]), 1)
+        self.assertEqual(len(instances.call_args.args[2]), 2)
+        # Capacity stays fixed; unused disks must not contribute geometry.
+        assert_np_equal(instances.call_args.args[3].numpy()[1], np.zeros(3))
         viewer.show_contact_pairs = True
         viewer.show_contacts = False
         with patch.object(viewer, "log_arrows") as arrows, patch.object(viewer, "log_instances") as instances:

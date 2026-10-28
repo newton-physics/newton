@@ -213,7 +213,8 @@ class ContactLabels(ShaderGL):
             for point, text, selected, offset in self.layout:
                 x, y = offset
                 color = (1.0, 0.62, 0.22) if selected else (0.84, 0.94, 0.88)
-                if not np.allclose(offset, (8, 8)):
+                # Snapping text to physical pixels is not a layout displacement.
+                if not np.allclose(offset, (8, 8), rtol=0, atol=0.5 / scale + 1e-6):
                     # A thin leader ties stacked labels to their own witness.
                     end = np.clip(np.zeros(2), offset, offset + measure(text))
                     length = np.linalg.norm(end)

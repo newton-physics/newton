@@ -456,40 +456,6 @@ class TestViewerGuiDrawsLoggedImages(unittest.TestCase):
         gui._viewer._image_logger.draw.assert_called_once_with(gui.ui, sidebar_width_px=_SIDEBAR_WIDTH_PX)
 
 
-class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
-    def test_clear_model_keeps_drawing_logged_images(self):
-        """Verify the image window is still drawn after clear_model drops example UI callbacks."""
-        from newton._src.viewer import viewer_gl  # noqa: PLC0415
-        from newton._src.viewer.gui import viewer_gui  # noqa: PLC0415
-
-        renderer = mock.MagicMock()
-        renderer.window.get_framebuffer_size.return_value = (640, 480)
-        renderer.window.get_size.return_value = (640, 480)
-        fake_ui = types.SimpleNamespace(
-            is_available=True,
-            imgui=mock.MagicMock(),
-            io=types.SimpleNamespace(config_flags=0),
-            dpi_scale=1.0,
-            shutdown=mock.Mock(),
-        )
-        with (
-            wp.ScopedDevice("cpu"),
-            mock.patch.object(viewer_gl, "RendererGL", return_value=renderer),
-            mock.patch.object(viewer_gl, "ImageLogger"),
-            mock.patch.object(viewer_gui, "ImGuiBackend", return_value=fake_ui),
-        ):
-            viewer = viewer_gl.ViewerGL(headless=False)
-        self.addCleanup(viewer.close)
-
-        viewer.clear_model()
-        viewer.gui.workspace = mock.Mock()
-        with mock.patch.object(viewer.gui, "_render_gizmos"):
-            viewer.gui._render_ui()
-
-        viewer.gui.workspace.draw.assert_called_once()
-        viewer._image_logger.draw.assert_not_called()
-
-
 class TestViewerRTXLogImage(unittest.TestCase):
     def _make_viewer(self, headless: bool):
         from newton._src.viewer.viewer_rtx import ViewerRTX  # noqa: PLC0415

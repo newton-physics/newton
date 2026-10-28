@@ -1275,10 +1275,11 @@ class ViewerGui:
             self.workspace.bind(self._workspace_example)
             self.workspace.draw()
             self._render_gizmos()
+            if self._ui_callbacks["stats"]:
+                self._render_stats_overlay(custom_only=True)
             for callback in self._ui_callbacks["free"]:
-                if getattr(callback, "__name__", "") != "timeline_gui":
-                    name = getattr(callback, "__qualname__", type(callback).__name__)
-                    self.ui.draw_section(f"Example overlay {name}", lambda cb=callback: cb(self.ui.imgui))
+                name = getattr(callback, "__qualname__", type(callback).__name__)
+                self.ui.draw_section(f"Example overlay {name}", lambda cb=callback: cb(self.ui.imgui))
             return
 
         self._render_left_panel()
@@ -1537,8 +1538,8 @@ class ViewerGui:
         self._shape_visual_count = int(np.count_nonzero(flags & int(nt.ShapeFlags.VISIBLE)))
         self._shape_collision_count = int(np.count_nonzero(flags & int(nt.ShapeFlags.COLLIDE_SHAPES)))
 
-    def _render_stats_overlay(self):
-        """Render performance overlay in the top-right corner."""
+    def _render_stats_overlay(self, *, custom_only: bool = False) -> None:
+        """Render statistics callbacks; legacy mode also includes built-in scene counters."""
         if not self.is_available:
             return
 
@@ -1549,6 +1550,9 @@ class ViewerGui:
         fps_color = (1.0, 1.0, 1.0, 1.0)
 
         window_pos = (io.display_size[0] - 10 * s, 10 * s)
+        if custom_only:
+            x, y, width, _ = self.workspace.rect
+            window_pos = (x + width - 10 * s, y + 54 * s)
         imgui.set_next_window_pos(imgui.ImVec2(window_pos[0], window_pos[1]), pivot=imgui.ImVec2(1.0, 0.0))
 
         flags: imgui.WindowFlags = (
@@ -1574,7 +1578,8 @@ class ViewerGui:
             imgui.push_style_color(imgui.Col_.window_bg, imgui.ImVec4(r, g, b, 0.7))
             pushed_window_bg = True
 
-        if imgui.begin("Performance Stats", flags=flags):
+        expanded, _ = imgui.begin("Performance Stats", flags=flags)
+        if expanded and not custom_only:
             imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(*fps_color))
             imgui.text(f"FPS: {self._current_fps:.1f}")
             imgui.pop_style_color()
@@ -1602,8 +1607,10 @@ class ViewerGui:
                 imgui.separator()
                 imgui.text(f"Unique Objects: {len(objects)}")
 
-        for callback in self._ui_callbacks["stats"]:
-            callback(self.ui.imgui)
+        if expanded:
+            for callback in self._ui_callbacks["stats"]:
+                name = getattr(callback, "__qualname__", type(callback).__name__)
+                self.ui.draw_section(f"Example statistics {name}", lambda cb=callback: cb(imgui))
 
         imgui.end()
         if pushed_window_bg:

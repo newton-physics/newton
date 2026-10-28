@@ -258,7 +258,7 @@ class OrientationGizmo:
                 for i in range(4):
                     draw.add_line(point(region[i]), point(region[(i + 1) % 4]), color(1.0, 0.74, 0.47, 0.85), s)
                 self._highlight_faces.append((axis, sign))
-            draw.add_polyline(path, color(0.68, 0.68, 0.68, 0.9), s, ui.ImDrawFlags_.closed)
+            draw.add_polyline(path, color(0.68, 0.68, 0.68, 0.9), thickness=s, flags=ui.ImDrawFlags_.closed)
             if caption is not None:
                 text, font_size, position = caption
                 draw.add_text(ui.get_font(), font_size, position, color(0.95, 0.95, 0.95), text)
@@ -269,7 +269,7 @@ class OrientationGizmo:
         )
         for arc, opacity in zip(self._ring_arcs, (0.70, 0.30), strict=True):
             tint = color(0.96, 0.61, 0.32, 0.9) if ring_hover else color(0.64, 0.64, 0.64, opacity)
-            draw.add_polyline(arc, tint, s, 0)
+            draw.add_polyline(arc, tint, thickness=s, flags=0)
         for side in (-1, 1):
             tick = ring_center + np.array((side * 43 * s, 0))
             extent = np.array((0, 2 * s))

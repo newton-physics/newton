@@ -32,6 +32,7 @@ from newton._src.viewer.gui.properties import (
     component_attributes,
     joint_editor_options,
 )
+from newton._src.viewer.gui.timeline import TimelineView
 from newton._src.viewer.gui.viewer_gui import ViewerGui
 from newton._src.viewer.gui.widgets import PhysicsWidgets
 from newton._src.viewer.gui.workspace import ViewerWorkspace
@@ -63,6 +64,61 @@ class TestViewerUI(unittest.TestCase):
         self.ui.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
         self.ui.is_available = True
         self.ui._frame_time = None
+
+    def test_timeline_next_steps_at_live_end(self) -> None:
+        """The real next-frame button traverses history, then requests live physics."""
+        ui = self.ui.imgui
+        self.ui.dpi_scale = 1.0
+        builder = newton.ModelBuilder()
+        builder.add_body()
+        model = builder.finalize(device="cpu")
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        example = SimpleNamespace(viewer=viewer, model=model, state_0=model.state(), sim_time=0.0)
+        history = FrameHistory(example)
+        history.capture()
+        example.sim_time = 1.0
+        history.capture()
+        self.assertEqual(len(history.frames), 2)
+        timeline = TimelineView(history)
+        viewer = ViewerGL.__new__(ViewerGL)
+        viewer.__dict__.update(vars(ViewerNull()))
+        viewer._paused, viewer._step_requested = True, False
+        viewer.gui = SimpleNamespace(ui=self.ui)
+        widgets = PhysicsWidgets(viewer.gui)
+        button = widgets.icon_button
+        next_position = None
+
+        def capture_button(label: str, *args: object, **kwargs: object) -> bool:
+            nonlocal next_position
+            clicked = button(label, *args, **kwargs)
+            if label == "##next_timeline_frame":
+                lo, hi = ui.get_item_rect_min(), ui.get_item_rect_max()
+                next_position = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2)
+            return clicked
+
+        def draw() -> None:
+            self.ui.begin_frame()
+            ui.set_next_window_pos((0, 0))
+            ui.set_next_window_size((620, 100))
+            ui.begin("##transport", flags=ui.WindowFlags_.no_title_bar)
+            with mock.patch.object(widgets, "icon_button", capture_button):
+                timeline._draw_transport(ui, viewer, widgets)
+            ui.end()
+            ui.end_frame()
+
+        history.select(0)
+        draw()
+        draw()
+        self.ui.io.add_mouse_pos_event(*next_position)
+        draw()
+        for live in (False, True):
+            self.ui.io.add_mouse_button_event(0, True)
+            draw()
+            self.ui.io.add_mouse_button_event(0, False)
+            draw()
+            self.assertEqual(history.index, 1)
+            self.assertEqual(viewer._step_requested, live)
 
     def test_frame_delta(self) -> None:
         """Advance ImGui time by elapsed frame durations, including a repeated timestamp."""
@@ -919,7 +975,7 @@ class TestViewerProperties(unittest.TestCase):
         original_layer = viewer.layer.layer_id
         viewer.activate("other")
         for setter in (viewer.set_control, viewer.set_solver, viewer.set_collision_pipeline):
-            with self.assertRaisesRegex(ValueError, "set_model"):
+            with self.assertRaisesRegex(RuntimeError, "set_model"):
                 setter(None)
         other_model = builder.finalize(device="cpu")
         viewer.set_model(other_model)

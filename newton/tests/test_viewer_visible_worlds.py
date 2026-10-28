@@ -36,6 +36,24 @@ def _build_multi_world_model(world_count, device=None):
 
 
 class TestViewerVisibleWorlds(unittest.TestCase):
+    def test_shape_visibility_refreshes_property_cache(self) -> None:
+        """Visibility edits refresh already-inspected opacity without reselection."""
+        if not wp.is_cuda_available():
+            self.skipTest("CPU NumPy views share storage; cached readback requires CUDA")
+        model = _build_multi_world_model(1, device="cuda:0")
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        workspace = ViewerWorkspace.__new__(ViewerWorkspace)
+        workspace.viewer, workspace.model = viewer, model
+        workspace.tree = ModelTree(model)
+        workspace._visibility_cache = {}
+        workspace._hidden_shapes = {}
+        workspace._cache = {}
+        self.assertEqual(workspace.read(model, "shape_opacity", 0)[0], 1.0)
+        for opacity in (0.0, 1.0):
+            workspace.toggle_visibility(("shape", 0))
+            self.assertEqual(workspace.read(model, "shape_opacity", 0)[0], opacity)
+
     def test_set_visible_worlds_filters_shapes(self):
         """Only shapes from visible worlds are populated."""
         model = _build_multi_world_model(4)
@@ -123,9 +141,11 @@ class TestViewerVisibleWorlds(unittest.TestCase):
         expected = np.array([[-10.0, 0.0, 0.0], [0.0, 0.0, 0.0], [10.0, 0.0, 0.0]])
         assert_np_equal(visible_offsets, expected, tol=1e-5)
 
-        # Non-visible worlds should have zero offset
-        for w in [1, 2, 3, 5, 6]:
-            assert_np_equal(offsets[w], np.array([0.0, 0.0, 0.0]), tol=1e-5)
+        # Revealing a previously hidden world must not place it on top of
+        # another world or move the worlds that were already visible.
+        self.assertEqual(len(np.unique(offsets, axis=0)), model.world_count)
+        viewer.set_visible_worlds(None, reflow=False)
+        assert_np_equal(viewer.world_offsets.numpy(), offsets)
 
     def test_visible_worlds_mask(self):
         """Internal mask array is correctly built."""

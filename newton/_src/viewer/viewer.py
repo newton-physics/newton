@@ -53,6 +53,43 @@ _DEFAULT_LAYER_ID = "__default__"
 #: Fields that configure a layer itself rather than model/runtime state.
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
 
+# Shared inventories keep reset preservation and GUI change tracking aligned.
+_LAYER_DISPLAY_OPTIONS = {
+    "sdf_margin_mode",
+    "contact_mode_eps_force",
+    "contact_mode_eps_velocity",
+    "contact_viz_scale",
+    "contact_normal_scale",
+    "gaussians_max_points",
+}
+_GLOBAL_DISPLAY_OPTIONS = (
+    "show_ui",
+    "vsync",
+    "_paused",
+    "camera_speed",
+    "camera_slowdown",
+    "show_contact_pairs",
+    "show_contact_lines",
+    "show_contact_labels",
+)
+_RENDERER_DISPLAY_OPTIONS = (
+    "draw_sky",
+    "draw_shadows",
+    "draw_wireframe",
+    "draw_edges",
+    "wireframe_line_width",
+    "_light_color",
+    "sky_upper",
+    "sky_lower",
+    "arrow_scale",
+    "joint_scale",
+    "com_scale",
+    "contact_arrow_scale",
+    "contact_normal_max_pixels",
+    "contact_force_max_pixels",
+    "contact_disk_scale",
+)
+
 _VIEWER_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_]")
 
 
@@ -190,54 +227,11 @@ class ViewerBase(ABC):
     @contextmanager
     def _track_display_options(self) -> Iterator[None]:
         """Remember display changes made during a GUI draw, not scene defaults."""
-        names = {
-            "sdf_margin_mode",
-            "contact_mode_eps_force",
-            "contact_mode_eps_velocity",
-            "contact_viz_scale",
-            "contact_normal_scale",
-            "contact_force_scale",
-            "gaussians_max_points",
-        }
+        names = _LAYER_DISPLAY_OPTIONS | {"contact_force_scale"}
         owners = [(self, [name for name in vars(self.layer) if name.startswith("show_") or name in names])]
-        owners.append(
-            (
-                self,
-                [
-                    "show_ui",
-                    "vsync",
-                    "_paused",
-                    "camera_speed",
-                    "camera_slowdown",
-                    "show_contact_pairs",
-                    "show_contact_lines",
-                    "show_contact_labels",
-                ],
-            )
-        )
-        owners.append((getattr(self, "camera", None), ["fov", "near", "far"]))
-        owners.append(
-            (
-                getattr(self, "renderer", None),
-                [
-                    "draw_sky",
-                    "draw_shadows",
-                    "draw_wireframe",
-                    "draw_edges",
-                    "wireframe_line_width",
-                    "_light_color",
-                    "sky_upper",
-                    "sky_lower",
-                    "arrow_scale",
-                    "joint_scale",
-                    "com_scale",
-                    "contact_arrow_scale",
-                    "contact_normal_max_pixels",
-                    "contact_force_max_pixels",
-                    "contact_disk_scale",
-                ],
-            )
-        )
+        owners.append((self, _GLOBAL_DISPLAY_OPTIONS))
+        owners.append((getattr(self, "camera", None), ("fov", "near", "far")))
+        owners.append((getattr(self, "renderer", None), _RENDERER_DISPLAY_OPTIONS))
         before = [
             (owner, name, copy.deepcopy(getattr(owner, name)))
             for owner, fields in owners
@@ -271,15 +265,7 @@ class ViewerBase(ABC):
     def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
         """Restore reset state, or explicit display choices when entering a new example."""
         user_options = self._display_options_user
-        option_names = {
-            "visible",
-            "sdf_margin_mode",
-            "contact_mode_eps_force",
-            "contact_mode_eps_velocity",
-            "contact_viz_scale",
-            "contact_normal_scale",
-            "gaussians_max_points",
-        }
+        option_names = _LAYER_DISPLAY_OPTIONS | {"visible"}
         saved = {
             layer_id: {
                 name: value
@@ -296,16 +282,7 @@ class ViewerBase(ABC):
         defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
         globals_saved = {
             name: user_options[name] if switching else getattr(self, name)
-            for name in (
-                "show_ui",
-                "vsync",
-                "_paused",
-                "camera_speed",
-                "camera_slowdown",
-                "show_contact_pairs",
-                "show_contact_lines",
-                "show_contact_labels",
-            )
+            for name in _GLOBAL_DISPLAY_OPTIONS
             if hasattr(self, name) and (not switching or name in user_options)
         }
         camera = getattr(self, "camera", None)
@@ -319,24 +296,7 @@ class ViewerBase(ABC):
         # Include recorded names directly so new controls need no switch allowlist.
         render_saved = {
             name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
-            for name in (
-                "draw_sky",
-                "draw_shadows",
-                "draw_wireframe",
-                "draw_edges",
-                "wireframe_line_width",
-                "_light_color",
-                "sky_upper",
-                "sky_lower",
-                "arrow_scale",
-                "joint_scale",
-                "com_scale",
-                "contact_arrow_scale",
-                "contact_normal_max_pixels",
-                "contact_force_max_pixels",
-                "contact_disk_scale",
-                *user_options,
-            )
+            for name in (*_RENDERER_DISPLAY_OPTIONS, *user_options)
             if hasattr(renderer, name) and (not switching or name in user_options)
         }
         try:
@@ -938,7 +898,7 @@ class ViewerBase(ABC):
                 inputs are editable while running or paused at the live frame.
 
         Raises:
-            ValueError: No model has been set.
+            RuntimeError: No model has been set.
         """
         self._set_inspection_component("control", control)
 
@@ -957,7 +917,8 @@ class ViewerBase(ABC):
             solver: Solver using the active Model, or None to clear it.
 
         Raises:
-            ValueError: No model has been set, or the solver uses another model.
+            RuntimeError: No model has been set.
+            ValueError: The solver uses another model.
         """
         self._set_inspection_component("solver", solver)
 
@@ -977,7 +938,8 @@ class ViewerBase(ABC):
             pipeline: Pipeline using the active Model, or None to clear it.
 
         Raises:
-            ValueError: No model has been set, or the pipeline uses another model.
+            RuntimeError: No model has been set.
+            ValueError: The pipeline uses another model.
         """
         self._set_inspection_component("collision_pipeline", pipeline)
 
@@ -989,7 +951,7 @@ class ViewerBase(ABC):
         references and can detect when solver or pipeline resources change.
         """
         if self.model is None:
-            raise ValueError("Call set_model() before setting inspection components.")
+            raise RuntimeError("Call set_model() before setting inspection components.")
         if name in ("solver", "collision_pipeline") and component is not None and component.model is not self.model:
             raise ValueError(f"{name} must belong to the viewer's active model")
         if name not in self._inspection_components or self._inspection_components[name] is not component:
@@ -1210,7 +1172,9 @@ class ViewerBase(ABC):
         """Set world offsets for visual separation of multiple worlds.
 
         When :meth:`set_visible_worlds` restricts rendering to a subset, only
-        the visible worlds receive compact grid positions.
+        the visible worlds receive compact grid positions. Hidden worlds get
+        separate positions beside that grid, so revealing them without reflow
+        does not overlap existing worlds.
 
         Args:
             spacing: Spacing between worlds along each axis as a tuple, list, or wp.vec3.
@@ -1244,6 +1208,17 @@ class ViewerBase(ABC):
             for grid_idx, world_idx in enumerate(sorted(self._visible_worlds)):
                 if world_idx < self.model.world_count and grid_idx < len(compact_offsets):
                     full_offsets[world_idx] = compact_offsets[grid_idx]
+            hidden = sorted(set(range(self.model.world_count)) - self._visible_worlds)
+            hidden_offsets = compute_world_offsets(len(hidden), spacing, up_axis)
+            axes = np.flatnonzero(spacing)
+            if hidden and render_count and len(axes):
+                # Reserve a disjoint grid for hidden worlds without changing
+                # the compact layout promised by set_visible_worlds().
+                axis = axes[0]
+                hidden_offsets[:, axis] += (
+                    compact_offsets[:, axis].max() + abs(spacing[axis]) - hidden_offsets[:, axis].min()
+                )
+            full_offsets[hidden] = hidden_offsets
 
         # Convert to warp array
         self.world_offsets = wp.array(full_offsets, dtype=wp.vec3, device=self.device)
@@ -1723,7 +1698,6 @@ class ViewerBase(ABC):
         contact_scale = 0.5 * float(self.contact_viz_scale)
         sides = 2 if self.show_contact_pairs else 1
         max_glyphs = sides * max_contacts
-        active_glyphs = sides * num_contacts
 
         # ---- Contact-normal arrows -------------------------------
         connect_points = self.show_contact_pairs and self.show_contact_lines
@@ -1841,9 +1815,11 @@ class ViewerBase(ABC):
             self.log_instances(
                 self._qualify("/contacts/modes"),
                 self._contact_disk_mesh,
-                self._contact_disk_xforms[:active_glyphs],
-                self._contact_disk_scales[:active_glyphs],
-                self._contact_disk_colors[:active_glyphs],
+                # Keep capacity stable for backends that retain instanced
+                # meshes. The kernel gives unused slots zero scale.
+                self._contact_disk_xforms[:max_glyphs],
+                self._contact_disk_scales[:max_glyphs],
+                self._contact_disk_colors[:max_glyphs],
                 None,
                 hidden=False,
             )

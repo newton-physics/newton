@@ -179,7 +179,7 @@ class ViewerWorkspace:
         self._focus_environment = False
         self._focus_scene = False
         self.timeline_options = {
-            "recording": True,
+            "recording": False,
             "playback_speed": 1.0,
             "contact_log": True,
             "show_rigid_contacts": True,
@@ -1571,6 +1571,7 @@ class ViewerWorkspace:
                 self.tree.meta.setdefault(("shape", i), {})["opacity"] = value
         self._visibility_cache.clear()
         self.viewer.model_changed = True
+        self._cache.clear()
 
     def _flag_buttons(self, key: TreeKey, *, compact: bool = False) -> None:
         """Draw body or shape flags with distinct active and read-only states and route permitted edits."""
