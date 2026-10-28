@@ -27,17 +27,12 @@ _CERTIFICATE_TILT = wp.constant(0.003)
 @wp.func
 def box_polyhedron_pair(a: Any, b: Any) -> bool:
     """Select box pairs whose portal normal needs a minimum-depth certificate."""
+    # A minimum-depth triangle certificate can select the back face of a
+    # zero-thickness terrain triangle. Keep these pairs on the portal path.
     return (
         a.shape_type == int(GeoType.BOX)
-        and (
-            b.shape_type == int(GeoType.BOX)
-            or b.shape_type == int(GeoType.CONVEX_MESH)
-            or b.shape_type == int(GeoTypeEx.TRIANGLE)
-        )
-    ) or (
-        (a.shape_type == int(GeoType.CONVEX_MESH) or a.shape_type == int(GeoTypeEx.TRIANGLE))
-        and b.shape_type == int(GeoType.BOX)
-    )
+        and (b.shape_type == int(GeoType.BOX) or b.shape_type == int(GeoType.CONVEX_MESH))
+    ) or (a.shape_type == int(GeoType.CONVEX_MESH) and b.shape_type == int(GeoType.BOX))
 
 
 @wp.func
