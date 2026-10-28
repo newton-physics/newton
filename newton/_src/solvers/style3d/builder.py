@@ -12,7 +12,7 @@ from .linear_solver import NonZeroEntry
 
 
 @wp.func
-def add_connection(v0: int, v1: int, counts: wp.array[int], neighbors: wp.array2d[int]):
+def add_connection(v0: int, v1: int, counts: wp.array[int], neighbors: wp.array2d[int], overflow: wp.array[int]):
     """
     Adds a connection from vertex v0 to vertex v1 in a sparse matrix format.
     If the connection already exists, returns its slot index.
@@ -23,6 +23,7 @@ def add_connection(v0: int, v1: int, counts: wp.array[int], neighbors: wp.array2
         v1: Index of the target vertex (to be added as neighbor of v0).
         counts: 1D array storing how many neighbors each vertex currently has.
         neighbors: 2D array storing the neighbor list for each vertex.
+        overflow: One-element array recording an overflowing vertex index plus one.
 
     Returns:
         int: The slot index in `neighbors[v0]` where `v1` is stored,
@@ -38,7 +39,7 @@ def add_connection(v0: int, v1: int, counts: wp.array[int], neighbors: wp.array2
         counts[v0] += 1
         return slot
     else:
-        wp.printf("Error: Too many neighbors for vertex %d (max %d)\n", v0, neighbors.shape[1])
+        wp.atomic_max(overflow, 0, v0 + 1)
         return -1
 
 
@@ -52,6 +53,7 @@ def add_bend_constraints_kernel(
     neighbor_counts: wp.array[int],
     nz_values: wp.array2d[float],
     diags: wp.array[float],
+    overflow: wp.array[int],
 ):
     """Accumulate contributions from bending constraints into a sparse matrix structure."""
     for eid in range(num_edge):
@@ -65,8 +67,8 @@ def add_bend_constraints_kernel(
                 weight = tmp_bend_hess[i][j]
                 if i != j:
                     # Add off-diagonal symmetric entries
-                    slot_ij = add_connection(edge[i], edge[j], neighbor_counts, neighbors)
-                    slot_ji = add_connection(edge[j], edge[i], neighbor_counts, neighbors)
+                    slot_ij = add_connection(edge[i], edge[j], neighbor_counts, neighbors, overflow)
+                    slot_ji = add_connection(edge[j], edge[i], neighbor_counts, neighbors, overflow)
                     if slot_ij >= 0:
                         nz_values[edge[i], slot_ij] += weight
                     if slot_ji >= 0:
@@ -88,6 +90,7 @@ def add_stretch_constraints_kernel(
     neighbor_counts: wp.array[int],
     nz_values: wp.array2d[float],
     diags: wp.array[float],
+    overflow: wp.array[int],
 ):
     """Accumulate contributions from stretch constraints into the sparse matrix."""
     for fid in range(num_tri):
@@ -108,8 +111,8 @@ def add_stretch_constraints_kernel(
                 weight = area * ((ku + ks) * dFu_dx[i] * dFu_dx[j] + (kv + ks) * dFv_dx[i] * dFv_dx[j])
                 if i != j:
                     # Off-diagonal symmetric terms
-                    slot_ij = add_connection(face[i], face[j], neighbor_counts, neighbors)
-                    slot_ji = add_connection(face[j], face[i], neighbor_counts, neighbors)
+                    slot_ij = add_connection(face[i], face[j], neighbor_counts, neighbors, overflow)
+                    slot_ji = add_connection(face[j], face[i], neighbor_counts, neighbors, overflow)
                     if slot_ij >= 0:
                         nz_values[face[i], slot_ij] += weight
                     if slot_ji >= 0:
@@ -140,6 +143,24 @@ def assemble_nz_ell_kernel(
 ########################################################################################################################
 
 
+def _compute_max_neighbors(num_verts, tri_indices, edge_indices):
+    """Count the unique target slots inserted by stretch and valid bending stencils."""
+    pairs = []
+    for indices, width in ((tri_indices, 3), (edge_indices, 4)):
+        stencils = np.asarray(indices, dtype=np.int64).reshape(-1, width)
+        if width == 4:
+            stencils = stencils[(stencils[:, 0] >= 0) & (stencils[:, 1] >= 0)]
+        if len(stencils) == 0:
+            continue
+        # Kernels exclude equal stencil positions, not equal vertex IDs.
+        rows, cols = np.nonzero(~np.eye(width, dtype=bool))
+        pairs.append((stencils[:, rows] * num_verts + stencils[:, cols]).ravel())
+    if not pairs:
+        return 0
+    connections = np.unique(np.concatenate(pairs))
+    return int(np.bincount(connections // num_verts).max(initial=0))
+
+
 class PDMatrixBuilder:
     """Helper class for building Projective Dynamics (PD) matrix in sparse ELL format."""
 
@@ -150,6 +171,13 @@ class PDMatrixBuilder:
         self.diags = wp.zeros(num_verts, dtype=wp.float32, device="cpu")
         self.values = wp.zeros(shape=(num_verts, max_neighbor), dtype=wp.float32, device="cpu")
         self.neighbors = wp.zeros(shape=(num_verts, max_neighbor), dtype=wp.int32, device="cpu")
+        self._overflow = wp.zeros(1, dtype=wp.int32, device="cpu")
+
+    def _check_overflow(self):
+        """Reject incomplete matrices instead of silently dropping connections."""
+        vertex = int(self._overflow.numpy()[0]) - 1
+        if vertex >= 0:
+            raise ValueError(f"PD matrix capacity {self.max_neighbors} exceeded at vertex {vertex}.")
 
     def add_stretch_constraints(
         self,
@@ -178,9 +206,10 @@ class PDMatrixBuilder:
                 tri_poses_wp,
                 tri_aniso_ke_wp,
             ],
-            outputs=[self.neighbors, self.counts, self.values, self.diags],
+            outputs=[self.neighbors, self.counts, self.values, self.diags, self._overflow],
             device="cpu",
         )
+        self._check_overflow()
 
     def add_bend_constraints(
         self,
@@ -222,9 +251,10 @@ class PDMatrixBuilder:
             add_bend_constraints_kernel,
             dim=1,
             inputs=[num_edge, edge_inds_wp, bend_hess_wp],
-            outputs=[self.neighbors, self.counts, self.values, self.diags],
+            outputs=[self.neighbors, self.counts, self.values, self.diags, self._overflow],
             device="cpu",
         )
+        self._check_overflow()
 
     def finalize(self, device):
         """Assembles final sparse matrix in ELL format.
@@ -234,6 +264,7 @@ class PDMatrixBuilder:
                 num_nz: wp.array of non-zero count per row
                 nz_ell: wp.array2d of NonZeroEntry (value + column)
         """
+        self._check_overflow()
         diag = wp.array(self.diags, dtype=float, device=device)
         num_nz = wp.array(self.counts, dtype=int, device=device)
         nz_ell = wp.array2d(shape=(self.max_neighbors, self.num_verts), dtype=NonZeroEntry, device=device)

@@ -480,7 +480,8 @@ class TestViewerRTXLogImage(unittest.TestCase):
         # Neither OVRTX nor the window is created before the first rendered frame.
         with (
             wp.ScopedDevice("cpu"),
-            patch_sys_module("ovrtx", types.SimpleNamespace(__version__="0.3.0")),
+            patch_sys_module("ovrtx", types.SimpleNamespace()),
+            patch_sys_module("ovstage", types.SimpleNamespace()),
         ):
             viewer = ViewerRTX(headless=headless)
         self.addCleanup(viewer.close)

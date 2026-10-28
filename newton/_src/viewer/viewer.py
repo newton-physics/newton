@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import enum
 import hashlib
 import math
@@ -10,7 +11,8 @@ import os
 import sys
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -19,6 +21,7 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
+from ..core.host_transform import transform_add_translation, transform_from_array, transform_multiply
 from ..core.types import MAXVAL, Axis
 from ..exceptions import NewtonWarning
 from .kernels import (
@@ -32,7 +35,6 @@ from .kernels import (
     repack_shape_opacities,
     transform_points,
 )
-from .transform import transform_add_translation, transform_from_array, transform_multiply
 from .utils import OPAQUE_OPACITY_THRESHOLD
 
 MAX_TRIANGLE_OPACITY_GROUPS = 32
@@ -131,6 +133,10 @@ class ViewerBase(ABC):
         self.picking_enabled = True
         self._camera_speed = 4.0
         self._rendering_paused = False
+        # Built-in display controls record explicit edits for example switching.
+        # Constructor defaults must not become preferences for later examples.
+        # Contact force scale is stored as a gain relative to model calibration.
+        self._display_options_user: dict[str, Any] = {}
 
         # Layer registry. The default layer is always present and has an
         # empty name prefix to keep backward compatibility for code that
@@ -164,6 +170,106 @@ class ViewerBase(ABC):
         active_layer_id = self.__dict__.get("_active_layer_id")
         if layers is not None and active_layer_id in layers:
             setattr(layers[active_layer_id], name, value)
+
+    @staticmethod
+    def _apply_attrs(target: Any, values: dict[str, Any]) -> None:
+        """Apply a saved set of display attributes to its owner."""
+        for name, value in values.items():
+            setattr(target, name, value)
+
+    def _edit_display_option(self, target: Any, name: str, widget: Callable, label: str, *args) -> None:
+        """Apply a widget's value and remember only explicit user edits."""
+        changed, value = widget(label, getattr(target, name), *args)
+        setattr(target, name, value)
+        if changed:
+            self._display_options_user[name] = value
+
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Restore reset state, or explicit display choices when entering a new example."""
+        user_options = self._display_options_user
+        option_names = {
+            "visible",
+            "sdf_margin_mode",
+            "contact_mode_eps_force",
+            "contact_mode_eps_velocity",
+            "contact_viz_scale",
+            "gaussians_max_points",
+        }
+        saved = {
+            layer_id: {
+                name: value
+                for name, value in vars(layer).items()
+                if name.startswith("show_") or name in option_names or name in user_options
+            }
+            for layer_id, layer in self.layers.items()
+        }
+        force_gains = {
+            layer_id: layer.contact_force_scale / layer._contact_force_scale_default
+            for layer_id, layer in self.layers.items()
+        }
+        active_id = self.layer.layer_id
+        defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
+        globals_saved = {
+            name: user_options[name] if switching else getattr(self, name)
+            for name in ("show_ui", "vsync", "_paused", "camera_speed")
+            if hasattr(self, name) and (not switching or name in user_options)
+        }
+        camera = getattr(self, "camera", None)
+        # Reset keeps the navigated view in every interactive backend. A new
+        # scene chooses its own framing, projection, and navigation speed.
+        camera_saved = {
+            name: copy.deepcopy(getattr(camera, name))
+            for name in ("fov", "near", "far", "pos", "pitch", "yaw", "pivot")
+            if not switching and hasattr(camera, name)
+        }
+        renderer = getattr(self, "renderer", None)
+        # Include recorded names directly so new controls need no switch allowlist.
+        render_saved = {
+            name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
+            for name in (
+                "draw_sky",
+                "draw_shadows",
+                "draw_wireframe",
+                "draw_edges",
+                "wireframe_line_width",
+                "_light_color",
+                "sky_upper",
+                "sky_lower",
+                "arrow_scale",
+                "joint_scale",
+                "com_scale",
+                *user_options,
+            )
+            if hasattr(renderer, name) and (not switching or name in user_options)
+        }
+        try:
+            yield
+        finally:
+            for layer_id, layer in self.layers.items():
+                if switching:
+                    options = {name: value for name, value in user_options.items() if hasattr(layer, name)}
+                    if "contact_force_scale" in user_options:
+                        options["contact_force_scale"] = (
+                            layer._contact_force_scale_default * user_options["contact_force_scale"]
+                        )
+                else:
+                    options = dict(saved.get(layer_id, defaults))
+                    options["contact_force_scale"] = layer._contact_force_scale_default * force_gains.get(
+                        layer_id, force_gains.get(active_id, 1.0)
+                    )
+                for name, value in options.items():
+                    setattr(layer, name, value)
+                    if layer is self.layer and name != "visible":
+                        setattr(self, name, value)
+                layer.model_changed = True
+                if layer is self.layer:
+                    self.model_changed = True
+            self._apply_attrs(self, globals_saved)
+            camera = getattr(self, "camera", None)
+            if camera is not None:
+                self._apply_attrs(camera, camera_saved)
+            self._apply_attrs(getattr(self, "renderer", None), render_saved)
 
     @staticmethod
     def _snapshot_layer_runtime_fields(layer: Layer) -> frozenset[str]:
@@ -1028,17 +1134,19 @@ class ViewerBase(ABC):
         """Adapt contact-visualization scales to the current model.
 
         Sets the relative ``contact_viz_scale`` default and adapts
-        ``contact_force_scale`` to the aggregate model weight.
+        ``contact_force_scale`` to the mean dynamic mass of populated local
+        worlds plus shared global dynamic mass, multiplied by the first
+        gravity vector's magnitude.
 
-        Falls back to the literal defaults if the relevant model data is
-        unavailable (e.g. no shapes / no dynamic bodies / zero gravity).
+        Uses nominal gravity when gravity is zero or unavailable, and a unit
+        characteristic force when no dynamic mass is available.
         """
         # Save the previous defaults so we can detect user overrides set
         # before the model was attached (rare but possible).
         prev_default_scale = self._contact_viz_scale_default
         prev_default_force_scale = self._contact_force_scale_default
 
-        # Characteristic force F_char = sum(dynamic body mass) * |gravity|.
+        # Replicating identical worlds must not change force-arrow lengths.
         F_char = 0.0
         if (
             self.model is not None
@@ -1049,7 +1157,14 @@ class ViewerBase(ABC):
             mass_np = self.model.body_mass.numpy()
             inv_mass_np = self.model.body_inv_mass.numpy()
             dyn_mask = np.isfinite(mass_np) & (inv_mass_np > 0.0)
-            total_mass = float(mass_np[dyn_mask].sum()) if dyn_mask.any() else 0.0
+            dynamic_mass = mass_np[dyn_mask]
+            mean_mass = float(dynamic_mass.sum())
+            if self.model.body_world is not None:
+                worlds = self.model.body_world.numpy()[dyn_mask]
+                local_mask = worlds >= 0
+                # Global bodies are shared by local worlds, not another replica.
+                mean_mass = float(dynamic_mass[~local_mask].sum())
+                mean_mass += float(dynamic_mass[local_mask].sum()) / max(1, len(np.unique(worlds[local_mask])))
             g_mag = 9.81
             if self.model.gravity is not None:
                 g_np = self.model.gravity.numpy()
@@ -1058,7 +1173,7 @@ class ViewerBase(ABC):
                     g_mag = float(np.linalg.norm(g0))
                     if not np.isfinite(g_mag) or g_mag <= 0.0:
                         g_mag = 9.81
-            F_char = total_mass * g_mag
+            F_char = mean_mass * g_mag
         if not np.isfinite(F_char) or F_char <= 0.0:
             F_char = 1.0
 
@@ -1140,7 +1255,7 @@ class ViewerBase(ABC):
             materials = shapes.materials if self.model_changed else None
 
             # Capsules may be rendered via a specialized path by the concrete viewer/backend
-            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # (e.g., deforming a shared capsule prototype to batch different dimensions).
             # The base implementation of log_capsules() falls back to log_instances().
             if shapes.geo_type == newton.GeoType.CAPSULE:
                 self.log_capsules(
@@ -1303,7 +1418,7 @@ class ViewerBase(ABC):
           (gated on :attr:`show_contact_normals`).
         * ``"/contacts/modes"`` — thin oriented disks at each contact, color
           coded by inferred contact mode (open / stick / slip) when contact
-          force output is available, else by a uniform default color
+          force output is available, else amber to indicate an unknown mode
           (gated on :attr:`show_contact_disks`).
         * ``"/contacts/forces"`` — arrows along the linear part of
           the contact-force output (gated on :attr:`show_contact_forces`;
@@ -1440,6 +1555,7 @@ class ViewerBase(ABC):
                     self.model.shape_world,
                     self.model.shape_collision_radius,
                     self.world_offsets,
+                    self.layer.xform,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
@@ -1447,8 +1563,9 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
                     contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
-                    contact_f,  # may be None — kernel falls back to default color
+                    contact_f,  # may be None — kernel uses the unknown-mode color
                     contact_scale * 0.2,
                     contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
@@ -1456,6 +1573,7 @@ class ViewerBase(ABC):
                     wp.vec3(0.1, 0.1, 0.1),  # open: black
                     wp.vec3(0.6, 0.6, 0.6),  # stick: light gray
                     wp.vec3(0.2, 0.2, 0.9),  # slip: blue
+                    wp.vec3(0.95, 0.7, 0.3),  # unknown: amber
                 ],
                 outputs=[self._contact_disk_xforms, self._contact_disk_scales, self._contact_disk_colors],
                 device=self.device,
@@ -1492,6 +1610,7 @@ class ViewerBase(ABC):
                     self.model.shape_world,
                     self.model.shape_collision_radius,
                     self.world_offsets,
+                    self.layer.xform,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,

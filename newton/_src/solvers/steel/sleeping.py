@@ -11,6 +11,9 @@ import warp as wp
 from ...core.reset import reset_world_selected
 from ...sim import Model
 from ...sim.enums import BodyFlags, JointType, ModelFlags
+from .kernels import WARP_DETERMINISM_OFF
+
+wp.set_module_options(WARP_DETERMINISM_OFF)
 
 
 class _SleepState:
@@ -1001,6 +1004,12 @@ def _freeze_dofs(
         qd[i] = 0.0
         qdd[i] = 0.0
         v[i] = 0.0
+
+
+@wp.kernel(enable_backward=False)
+def _publish_body_awake(body_awake: wp.array[int], out: wp.array[wp.bool]):
+    i = wp.tid()
+    out[i] = body_awake[i] != 0
 
 
 @wp.kernel(enable_backward=False)
