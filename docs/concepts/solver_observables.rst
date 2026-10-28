@@ -104,9 +104,10 @@ the pipeline for the backend's export capacity:
 
 There is no ``pipeline.collide()`` call in this mode: the solver fills contact
 geometry and forces. Native Kamino similarly seeds the model's rigid capacity
-when constructed before the pipeline. MuJoCo Warp and Kamino reject insufficient
-contact storage. :class:`~newton.solvers.SolverMuJoCo` with ``use_mujoco_cpu=True``
-omits excess contacts with a warning when output storage is too small.
+when constructed before the pipeline. Both MuJoCo backends and Kamino reject
+observable storage smaller than their configured export capacity.
+With ``use_mujoco_cpu=True``, ``nconmax`` bounds contact export, not simulation;
+excess contacts are omitted with a warning.
 
 A solver advertises available entries through
 :attr:`~newton.solvers.SolverBase.supported_observables` and rejects an

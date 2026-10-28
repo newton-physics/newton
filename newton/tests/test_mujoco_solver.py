@@ -5620,15 +5620,15 @@ class TestMuJoCoContactForce(unittest.TestCase):
             self.assertGreater(np.linalg.norm(forces[1:count, :3]), 0.0)
             state_in, state_out = state_out, state_in
 
-    def _build_box_on_ground(self, *, friction: float = 1.0):
-        """Create a box resting on a ground plane with the given friction."""
+    def _build_box_on_ground(self, *, friction: float = 1.0, height: float = 0.1):
+        """Create a box above a ground plane with the given friction and height."""
         builder = newton.ModelBuilder()
         builder.default_shape_cfg.ke = 1e4
         builder.default_shape_cfg.kd = 1000.0
         builder.default_shape_cfg.mu = friction
         ground_shape = builder.add_ground_plane()
-        # Place the box so its bottom face touches the ground (hz=0.1 → center at z=0.1)
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()))
+        # At the default height, the box's bottom face touches the ground.
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_identity()))
         builder.add_shape_box(body=body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize()
         return model, ground_shape
@@ -5654,6 +5654,7 @@ class TestMuJoCoContactForce(unittest.TestCase):
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
 
+        self.assertEqual(solver.get_max_contact_count(), solver.mjw_data.naconmax)
         state_in = model.state()
         state_out = model.state()
         control = model.control()
@@ -5696,13 +5697,8 @@ class TestMuJoCoContactForce(unittest.TestCase):
             for capacity in (1, 0):
                 limited = newton.Contacts(capacity, 0, device=model.device)
                 limited.force = wp.empty(capacity, dtype=wp.spatial_vector, device=model.device)
-                limited_observables = solver.observables(
-                    contacts=limited, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
-                )
-                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exporting only the first") as warning:
-                    solver.step(state_in, state_out, control, limited, dt, observables=limited_observables)
-                self.assertEqual(warning.filename, __file__)
-                self.assertEqual(int(limited.rigid_contact_count.numpy()[0]), capacity)
+                with self.assertRaisesRegex(ValueError, "MuJoCo contact capacity"):
+                    solver.observables(contacts=limited, kinds={solver.ObservableKind.CONTACT_F})
                 limited.force = None
                 with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "exporting only the first") as warning:
                     caller_line = inspect.currentframe().f_lineno + 1
@@ -7895,7 +7891,12 @@ class TestMuJoCoOptions(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not support"):
             solver.observables(kinds={solver.ObservableKind.OVERFLOW})
         flag = SolverMuJoCo.ObservableKind.QFRC_ACTUATOR
-        contacts = newton.Contacts(solver.get_max_contact_count() // 2, 0, device=model.device)
+        with self.assertRaisesRegex(ValueError, "MuJoCo contact capacity"):
+            solver.observables(
+                {solver.ObservableKind.CONTACT_F},
+                contacts=newton.Contacts(solver.get_max_contact_count() - 1, 0, device=model.device),
+            )
+        contacts = newton.Contacts(solver.get_max_contact_count(), 0, device=model.device)
         observables = solver.observables(solver.supported_observables, contacts=contacts)
         self.assertEqual(
             observables.kinds,
@@ -7939,6 +7940,11 @@ class TestMuJoCoOptions(unittest.TestCase):
             solver.observables({solver.ObservableKind.CONTACT_F}, contacts=contacts)
         with self.assertRaisesRegex(NotImplementedError, "requires use_mujoco_contacts=True"):
             solver.update_contacts(contacts)
+
+        model = self._create_multiworld_model(world_count=2)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, nconmax=64)
+        self.assertEqual(solver.mjw_data.naconmax, 128)
+        self.assertEqual(solver.get_max_contact_count(), 64)
 
     def _create_body_observable_builder(self):
         """Build a moving chain with nonzero velocity-dependent acceleration."""

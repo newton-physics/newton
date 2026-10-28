@@ -716,7 +716,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         errors, and :ref:`solver_observables` for usage and native collision setup.
 
         Raises:
-            ValueError: If MuJoCo Warp's contact export capacity exceeds the
+            ValueError: If MuJoCo's contact export capacity exceeds the
                 rigid contact capacity of ``contacts``.
         """
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
@@ -728,8 +728,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
         if (
             observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
-            and not self.use_mujoco_cpu
-            and self.mjw_model.opt.run_collision_detection
+            and (self.use_mujoco_cpu or self.mjw_model.opt.run_collision_detection)
             and self.get_max_contact_count() > contacts.rigid_contact_max
         ):
             raise ValueError(
@@ -4387,7 +4386,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nconmax: Number of contact points per world. If None, a default value
                 is estimated automatically. An explicit value is preserved unless
                 it cannot hold the initial MuJoCo contacts; in that case, it is
-                increased with a warning.
+                increased with a warning. With ``use_mujoco_cpu=True``, this limits contact
+                export rather than simulation; excess runtime contacts are omitted
+                from the export with a warning.
             iterations: Number of solver iterations. If None, uses model custom attribute or MuJoCo's default (100).
             ls_iterations: Number of line search iterations for the solver. If None, uses model custom attribute or MuJoCo's default (50).
             ccd_iterations: Maximum CCD iterations. If None, uses model custom attribute or MuJoCo's default (35).
@@ -4405,7 +4406,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             viscosity: Medium viscosity for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0.0).
             wind: Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
-            use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
+            use_mujoco_cpu: If True, use MuJoCo's C implementation instead of `mujoco_warp`.
             enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use the model custom attribute or disable it by default. Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
             enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, island detection, and a non-RK4 integrator.
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
@@ -6547,13 +6548,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return as_signed_int32(contype), as_signed_int32(conaffinity)
 
     def get_max_contact_count(self) -> int:
-        """Return an upper bound on the number of rigid contacts exported by the solver.
+        """Return the configured rigid contact export capacity.
 
-        With ``use_mujoco_cpu=True``, the conservative bound comes from MuJoCo's
-        fixed arena. Smaller output buffers omit excess contacts with a warning.
+        With ``use_mujoco_cpu=True``, this is the resolved ``nconmax``.
+        Excess runtime contacts are omitted from export with a warning.
         """
         if self.use_mujoco_cpu:
-            return self.mj_data.narena // self.mj_data.contact.dist.strides[0]
+            return self.mjw_data.naconmax // self.mjw_data.nworld
         return self.mjw_data.naconmax
 
     @override
@@ -6645,7 +6646,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if contact_f is not None and contacts.force is not None and contacts.force.ptr != contact_f.ptr:
             count = (
-                min(self.mj_data.ncon, contacts.rigid_contact_max) if self.use_mujoco_cpu else contacts.force.shape[0]
+                min(self.mj_data.ncon, contacts.rigid_contact_max, self.get_max_contact_count())
+                if self.use_mujoco_cpu
+                else contacts.force.shape[0]
             )
             if count:
                 wp.copy(contacts.force, contact_f, count=count)
@@ -6655,12 +6658,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     ) -> None:
         """Export MuJoCo CPU contact geometry and world-frame wrenches."""
         data = self.mj_data
-        count = min(data.ncon, contacts.rigid_contact_max)
+        capacity = min(self.get_max_contact_count(), contacts.rigid_contact_max)
+        count = min(data.ncon, capacity)
         if count < data.ncon:
             warnings.warn(
-                f"MuJoCo contact count ({data.ncon}) exceeds Contacts capacity "
-                f"({contacts.rigid_contact_max}); exporting only the first {count} contacts. "
-                "Increase rigid_contact_max to export all contacts.",
+                f"MuJoCo contact count ({data.ncon}) exceeds contact export capacity "
+                f"({capacity}); exporting only the first {count} contacts. "
+                "Increase nconmax and rigid_contact_max to export all contacts.",
                 NewtonWarning,
                 stacklevel=warning_stacklevel,
             )
