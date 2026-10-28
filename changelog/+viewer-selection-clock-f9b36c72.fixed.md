@@ -1,1 +1,1 @@
-Inspect all selected objects' registered property rows, including shared vertices of selected triangles and tetrahedra, and advance the camera sensor example's simulation history with its live clock.
+Inspect all selected objects' registered property rows, including shared vertices of selected triangles and tetrahedra.

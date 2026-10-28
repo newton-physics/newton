@@ -19,6 +19,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
+from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
@@ -1131,6 +1132,8 @@ class Model:
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
         Stored per-element; kernels multiply by rest volume internally."""
 
+        self._deformable_visual_meshes: tuple[DeformableVisualMesh, ...] = ()
+        self._deformable_visual_skin_batches: _DeformableVisualSkinBatches | None = None
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
         self.muscle_params: wp.array2d[wp.float32] | None = None
@@ -2089,6 +2092,33 @@ class Model:
             self, state, self.bvh_particles.lowers, self.bvh_particles.uppers, self.bvh_particles.groups
         )
         self.bvh_particles.refit()
+
+    @property
+    def deformable_visual_meshes(self) -> tuple[DeformableVisualMesh, ...]:
+        """Deformable visual meshes stored at finalization. Read-only.
+
+        The tuple is empty when no meshes were added. See
+        :class:`~newton.geometry.DeformableVisualMesh`.
+
+        .. experimental::
+        """
+        return self._deformable_visual_meshes
+
+    @property
+    def deformable_visual_mesh_count(self) -> int:
+        """Number of deformable visual meshes.
+
+        .. experimental::
+        """
+        return len(self._deformable_visual_meshes)
+
+    def _get_deformable_visual_skin_batches(self) -> _DeformableVisualSkinBatches:
+        """Return the fixed skinning layout, rebuilding loaded recordings once."""
+        if self._deformable_visual_skin_batches is None:
+            self._deformable_visual_skin_batches = _DeformableVisualSkinBatches.from_meshes(
+                self.deformable_visual_meshes, self.device
+            )
+        return self._deformable_visual_skin_batches
 
     def state(self, requires_grad: bool | None = None) -> State:
         """

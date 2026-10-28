@@ -488,7 +488,7 @@ class ViewportControls:
         _, self.adaptive_detail = ui.checkbox("Fade distant and dense detail", self.adaptive_detail)
         if ui.is_item_hovered():
             ui.set_tooltip("Reduces shell opacity with distance and fades edges as triangles become too small to read.")
-        if viewer.model is not None and viewer.model.tri_count:
+        if viewer.model is not None and (viewer.model.tri_count or viewer.model.deformable_visual_mesh_count):
             ui.separator_text("X-ray · Deformables")
             edit = workspace.widgets.number(
                 "Surface opacity", self.deformable_opacity, editable=True, speed=0.002, bounds=(0.02, 0.8)

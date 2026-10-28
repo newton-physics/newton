@@ -298,7 +298,7 @@ class Example:
             (self.worlds_per_col * H, self.worlds_per_row * W, 4), dtype=wp.uint8, device=device
         )
 
-    def step(self) -> None:
+    def step(self):
         wp.launch(
             animate_franka,
             self.model.joint_count,
@@ -316,7 +316,7 @@ class Example:
         newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
         self.sim_time += self.frame_dt
 
-    def render(self) -> None:
+    def render(self):
         sensor_image_is_main_view = self.render_sensors()
 
         self.viewer.begin_frame(self.sim_time)

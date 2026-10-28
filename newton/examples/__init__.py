@@ -865,7 +865,7 @@ def add_mujoco_contacts_arg(parser):
 
 def add_kamino_contacts_arg(parser):
     """Add ``--use-kamino-contacts`` argument to *parser*."""
-    import argparse  # noqa: PLC0415  â€” needed for BooleanOptionalAction
+    import argparse  # noqa: PLC0415  — needed for BooleanOptionalAction
 
     parser.add_argument(
         "--use-kamino-contacts",
