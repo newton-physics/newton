@@ -7,10 +7,25 @@ from __future__ import annotations
 
 from enum import Enum
 
+import numpy as np
 import warp as wp
 
 from ..articulation import eval_single_articulation_fk
 from ..enums import BodyFlags
+from ..model import Model
+
+
+def _validate_articulation_tree(model: Model) -> None:
+    """Reject multiple articulated writers to a body pose before constructing IK."""
+    children = model.joint_child.numpy()
+    articulated = model.joint_articulation.numpy() >= 0
+    counts = np.bincount(children[articulated & (children >= 0)], minlength=model.body_count)
+    shared = np.flatnonzero(counts > 1)
+    if shared.size:
+        raise ValueError(
+            f"IK does not support bodies with multiple incoming articulation joints (body {shared[0]}). "
+            "Use a single articulation tree per body."
+        )
 
 
 class IKJacobianType(Enum):
@@ -32,6 +47,7 @@ class IKJacobianType(Enum):
 def _eval_fk_articulation_batched(
     articulation_start: wp.array[wp.int32],
     articulation_end: wp.array[wp.int32],
+    joint_order: wp.array[int],
     joint_articulation: wp.array[int],
     joint_q: wp.array2d[wp.float32],
     joint_qd: wp.array2d[wp.float32],
@@ -46,6 +62,7 @@ def _eval_fk_articulation_batched(
     joint_dof_dim: wp.array2d[wp.int32],
     body_com: wp.array[wp.vec3],
     body_flags: wp.array[wp.int32],
+    joint_mask: wp.array[bool],
     body_q: wp.array2d[wp.transform],
     body_qd: wp.array2d[wp.spatial_vector],
 ):
@@ -57,6 +74,7 @@ def _eval_fk_articulation_batched(
     eval_single_articulation_fk(
         joint_start,
         joint_end,
+        joint_order,
         joint_articulation,
         joint_q[problem_idx],
         joint_qd[problem_idx],
@@ -72,6 +90,7 @@ def _eval_fk_articulation_batched(
         body_com,
         body_flags,
         int(BodyFlags.ALL),
+        joint_mask,
         body_q[problem_idx],
         body_qd[problem_idx],
     )
@@ -86,6 +105,7 @@ def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
         inputs=[
             model.articulation_start,
             model.articulation_end,
+            model._fk_joint_order,
             model.joint_articulation,
             joint_q,
             joint_qd,
@@ -100,6 +120,7 @@ def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
             model.joint_dof_dim,
             model.body_com,
             model.body_flags,
+            None,
         ],
         outputs=[body_q, body_qd],
         device=model.device,
@@ -107,18 +128,39 @@ def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
 
 
 @wp.kernel
+def _initialize_body_q(
+    model_body_q: wp.array[wp.transform],
+    body_q: wp.array2d[wp.transform],
+):
+    """Seed each batch row with model poses, including external root parents."""
+    row, body = wp.tid()
+    body_q[row, body] = model_body_q[body]
+
+
+@wp.kernel
 def fk_accum(
     joint_parent: wp.array[wp.int32],
+    joint_child: wp.array[wp.int32],
+    joint_ancestor: wp.array[wp.int32],
+    joint_articulation: wp.array[wp.int32],
     X_local: wp.array2d[wp.transform],
     body_q: wp.array2d[wp.transform],
 ):
+    """Accumulate articulation-tree transforms into their child-body poses."""
     problem_idx, local_joint_idx = wp.tid()
+    if joint_articulation[local_joint_idx] < 0:
+        return
     Xw = X_local[problem_idx, local_joint_idx]
-    parent = joint_parent[local_joint_idx]
-    while parent >= 0:
-        Xw = X_local[problem_idx, parent] * Xw
-        parent = joint_parent[parent]
-    body_q[problem_idx, local_joint_idx] = Xw
+    root = local_joint_idx
+    ancestor = joint_ancestor[root]
+    while ancestor >= 0:
+        Xw = X_local[problem_idx, ancestor] * Xw
+        root = ancestor
+        ancestor = joint_ancestor[ancestor]
+    parent = joint_parent[root]
+    if parent >= 0:
+        Xw = body_q[problem_idx, parent] * Xw
+    body_q[problem_idx, joint_child[local_joint_idx]] = Xw
 
 
 @wp.kernel

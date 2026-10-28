@@ -229,10 +229,12 @@ class ViewerRTX(ViewerUSD):
                 applies it to bodies, camera, and debug geometry. The caller
                 owns the stage's content, lights, and lifetime; the viewer adds
                 its camera, render product, and debug geometry under
-                ``/__newton_viewer``. The viewer generates no geometry for the
-                model's shapes, cloth, or particles; ``show_triangles`` (off by
-                default here) and ``show_particles`` draw simulated cloth and
-                particles as debug overlays. :meth:`set_visible_worlds`,
+                ``/__newton_viewer``. Model shapes come from the supplied stage.
+                The viewer does not update its authored deformable prims.
+                ``show_triangles``, ``show_deformable_visual_meshes``, and
+                ``show_particles`` enable separate overlays, all off by default
+                here. Hidden overlay geometry may still be registered under the
+                viewer's subtree. :meth:`set_visible_worlds`,
                 ``show_collision``, and ``show_visual`` affect only the debug
                 geometry, ``environment`` must stay ``"default"``, and layers
                 are not supported. :meth:`set_model` and :meth:`end_frame`
@@ -461,25 +463,27 @@ void main() {
         gl.glGenVertexArrays(1, vao)
         self._gl_vao = vao[0]
 
+        # With ImGui, mouse input is routed during prepare_frame() so the
+        # camera and gizmos see the same processed events and hover state.
         # ---- input callbacks ------------------------------------------------
         @self._window.event
         def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords, modifiers)
 
         @self._window.event
         def on_mouse_press(x, y, button, modifiers):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
         @self._window.event
         def on_mouse_release(x, y, button, modifiers):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_release(x, y, button)
 
         @self._window.event
         def on_mouse_scroll(x, y, scroll_x, scroll_y):
-            if self.gui:
+            if self.gui and not self.gui.is_available:
                 self.gui.handle_mouse_scroll(scroll_y)
 
         @self._window.event
@@ -492,6 +496,10 @@ void main() {
         @self._window.event
         def on_key_release(symbol, modifiers):
             self._keys_down.discard(symbol)
+
+        @self._window.event
+        def on_deactivate():
+            self._keys_down.clear()
 
         @self._window.event
         def on_resize(width, height):
@@ -1598,7 +1606,9 @@ void main() {
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
             snap_to: Optional world transform to snap to when this gizmo is
-                released by the user.
+                released by the user. Cancelling a drag by removing its handle,
+                hiding the UI, pausing rendering, or losing window focus keeps
+                the current pose instead.
         """
         self._gizmo_log[name] = {
             "transform": transform,
@@ -1806,6 +1816,14 @@ void main() {
             # Avoid the default glass-like IOR so opacity behaves like viewer alpha.
             return 1.0
         return None
+
+    @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        if hidden and self._phase == self._PHASE_RENDER and name in self._mesh_prim_paths:
+            self._pending_mesh_visibility[name] = False
+            return
+        super()._log_deformable_visual_mesh(name, points, indices, hidden=hidden, **kwargs)
 
     @override
     def log_mesh(
@@ -2969,8 +2987,9 @@ void main() {
 
         super().clear_model()
         if self._borrowed_stage is not None:
-            # The stage presents the model, so simulated cloth would duplicate its deformables.
+            # The stage already presents the deformables; overlays are opt-in.
             self.show_triangles = False
+            self.show_deformable_visual_meshes = False
 
     def _has_other_user_layers(self) -> bool:
         active_layer_id = getattr(self, "_active_layer_id", _DEFAULT_LAYER_ID)
