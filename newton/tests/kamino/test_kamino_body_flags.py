@@ -513,7 +513,8 @@ class TestKaminoBodyFlags(unittest.TestCase):
 
         One pile has the MuJoCo cube at the bottom and the other has it at the top. Kamino simulates the
         MuJoCo proxies as dynamic bodies, and the proxy collision pipeline passes the contacts between the
-        proxies and the ground to Kamino with negative shape indices.
+        proxies and the ground to Kamino with negative shape indices. The coupled solver sets the proxy mass
+        and inertia after Kamino is built, and Kamino reads them from the view.
         """
         configs = {
             "dvi": SolverKamino.Config(dynamics_solver="dvi"),
@@ -561,12 +562,20 @@ class TestKaminoBodyFlags(unittest.TestCase):
                                 source="mjc",
                                 destination="kamino",
                                 bodies=bodies["mjc"],
+                                mass_scale=0.5,
                                 collision_pipeline=newton.CollisionPipeline,
                             )
                         ],
                         iterations=2,
                     ),
                 )
+                view = solver.view("kamino")
+                kamino_bodies = solver.solver("kamino")._model_kamino.bodies
+                np.testing.assert_array_equal(kamino_bodies.m_i.numpy(), view.body_mass.numpy())
+                np.testing.assert_array_equal(kamino_bodies.i_I_i.numpy(), view.body_inertia.numpy())
+                np.testing.assert_array_equal(kamino_bodies.inv_m_i.numpy(), view.body_inv_mass.numpy())
+                np.testing.assert_array_equal(kamino_bodies.inv_i_I_i.numpy(), view.body_inv_inertia.numpy())
+
                 pipeline = newton.CollisionPipeline(model)
                 contacts = pipeline.contacts()
                 state_in, state_out, control = model.state(), model.state(), model.control()
