@@ -4646,6 +4646,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
 
+        if (use_mujoco_contacts or use_mujoco_cpu) and getattr(model, "shape_slot_count", 0) > 0:
+            # MuJoCo compiles one geom per shape; it cannot follow a slot's prototype.
+            raise NotImplementedError(
+                "SolverMuJoCo supports shape slots only with Newton contacts; "
+                "set use_mujoco_contacts=False and use_mujoco_cpu=False."
+            )
         self._use_mujoco_contacts = use_mujoco_contacts
         """Whether MuJoCo handles collision detection.
 
@@ -8895,6 +8901,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if heterogeneous_geoms and self._use_mujoco_contacts and not disable_contacts
                 else (GeoType.CONE,)
             )
+            if getattr(model, "shape_slot_count", 0) > 0:
+                # Slots take the scale of their prototype; with Newton contacts their geoms are unused.
+                converted_shapes = converted_shapes[model.shape_slot.numpy()[converted_shapes] < 0]
             self._compiled_mesh_shape_indices = converted_shapes[np.isin(shape_type[converted_shapes], compiled_types)]
             self._compiled_mesh_shape_scales = shape_scale_np[self._compiled_mesh_shape_indices].copy()
 

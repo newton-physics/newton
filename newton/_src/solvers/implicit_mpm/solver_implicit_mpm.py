@@ -1558,6 +1558,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         enable_timers: bool = False,
     ):
         super().__init__(model)
+        if getattr(model, "shape_slot_count", 0) > 0:
+            # The collider merges every particle-colliding shape of a body at setup.
+            raise NotImplementedError("SolverImplicitMPM does not support shape slots.")
 
         self._initial_particle_count = int(model.particle_count)
         self._initial_world_count = int(model.world_count)

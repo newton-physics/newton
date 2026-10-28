@@ -17,7 +17,7 @@ from warp._src import types as warp_types
 
 from ..core.types import override
 from ..geometry import Mesh
-from ..sim import Model, State
+from ..sim import Model, ModelFlags, State
 from ..sim.shape_contact_pairs import _ShapeContactPairs
 from .viewer import ViewerBase
 
@@ -1418,6 +1418,14 @@ class ViewerFile(ViewerBase):
             opacity: Optional display opacity in [0, 1].
         """
         pass
+
+    @override
+    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+        if flags & ModelFlags.SHAPE_GEOMETRY and self._shape_geometry_changed():
+            raise NotImplementedError(
+                "ViewerFile does not support shape geometry changes such as shape prototype assignment."
+            )
+        super().notify_model_changed(flags)
 
     @override
     def log_instances(

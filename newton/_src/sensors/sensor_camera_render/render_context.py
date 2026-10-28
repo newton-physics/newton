@@ -21,6 +21,32 @@ DEFAULT_AMBIENT_SKY_COLOR = (0.2, 0.2, 0.225)
 DEFAULT_AMBIENT_GROUND_COLOR = (0.05, 0.05, 0.06)
 
 
+@wp.kernel(enable_backward=False)
+def _gather_slot_render_data(
+    slot_shapes: wp.array[wp.int32],
+    shape_prototype_shape_held: wp.array[wp.int32],
+    prototype_render_type: wp.array[wp.int32],
+    prototype_texture_ids: wp.array[wp.int32],
+    prototype_mesh_data_ids: wp.array[wp.int32],
+    # outputs
+    shape_render_type: wp.array[wp.int32],
+    shape_texture_ids: wp.array[wp.int32],
+    shape_mesh_data_ids: wp.array[wp.int32],
+):
+    shape = slot_shapes[wp.tid()]
+    prototype_shape = shape_prototype_shape_held[shape]
+    if prototype_shape >= 0:
+        shape_render_type[shape] = prototype_render_type[prototype_shape]
+        shape_texture_ids[shape] = prototype_texture_ids[prototype_shape]
+        shape_mesh_data_ids[shape] = prototype_mesh_data_ids[prototype_shape]
+
+
+def _render_types(shape_types: np.ndarray) -> np.ndarray:
+    """Shape types as rendered: heightfields and convex hulls are triangle meshes."""
+    as_mesh = np.isin(shape_types, (int(GeoType.HFIELD), int(GeoType.CONVEX_MESH)))
+    return np.where(as_mesh, int(GeoType.MESH), shape_types).astype(np.int32)
+
+
 class RenderContext:
     @dataclass(unsafe_hash=True)
     class RenderState:
@@ -99,13 +125,14 @@ class RenderContext:
         # kernels entirely (no extra shape-type branch, so no register/occupancy
         # cost). The remapped type array is what the render kernel dispatches on;
         # model.shape_type is left untouched for collision and BVH bounds.
+        # Slot rows render the prototype shape they hold; their per-shape data is gathered before each render.
+        self._slots = model.shape_slot_shapes if getattr(model, "shape_slot_count", 0) > 0 else None
         if model.shape_type is not None:
             shape_type_np = model.shape_type.numpy()
-            as_mesh = np.isin(shape_type_np, (int(GeoType.HFIELD), int(GeoType.CONVEX_MESH)))
-            if np.any(as_mesh):
-                shape_type_np = shape_type_np.copy()
-                shape_type_np[as_mesh] = int(GeoType.MESH)
-                self._shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
+            if self._slots is not None or np.any(_render_types(shape_type_np) != shape_type_np):
+                self._shape_render_type = wp.array(
+                    _render_types(shape_type_np), dtype=wp.int32, device=model.shape_type.device
+                )
 
         if model.particle_q is not None and model.particle_q.shape[0]:
             self._has_particles = True
@@ -156,6 +183,24 @@ class RenderContext:
         if self._empty_triangle_colors is None:
             self._empty_triangle_colors = wp.zeros(0, dtype=wp.vec3f, device=self.device)
         return self._empty_triangle_colors
+
+    def _gather_slot_render_data(self) -> None:
+        """Copy the render type, texture, and mesh data of the prototype shape each slot row holds."""
+        if self._slots is None:
+            return
+        wp.launch(
+            _gather_slot_render_data,
+            dim=self._slots.shape[0],
+            inputs=[
+                self._slots,
+                self.model._shape_prototype_shape_held,
+                self._prototype_render_type,
+                self._prototype_texture_ids,
+                self._prototype_mesh_data_ids,
+            ],
+            outputs=[self._shape_render_type, self._shape_texture_ids, self._shape_mesh_data_ids],
+            device=self.device,
+        )
 
     def _get_shape_render_type(self) -> wp.array[wp.int32] | None:
         if self._shape_render_type is not None:
@@ -472,6 +517,7 @@ class RenderContext:
                 tiles_y = (height + config.tile_height - 1) // config.tile_height
                 pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
 
+            self._gather_slot_render_data()
             wp.launch(
                 kernel=render_kernel,
                 dim=(view_count * pixels_per_view),
@@ -491,7 +537,7 @@ class RenderContext:
                     model.bvh_shapes.id if model.bvh_shapes is not None else 0,
                     model.bvh_shapes_group_roots,
                     # Shapes
-                    model.bvh_shape_enabled,
+                    model._bvh_shape_active_leaves,
                     self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,
@@ -602,48 +648,19 @@ class RenderContext:
         """
         self._mesh_data_source = []
         self._texture_data_source = []
-
         texture_hashes = {}
         mesh_hashes = {}
 
-        mesh_data_ids = []
-        texture_data_ids = []
-
-        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
-        for shape, shape_type in zip(model.shape_source, shape_types, strict=True):
-            if isinstance(shape, Mesh):
-                if shape.texture is not None and load_textures:
-                    if shape.texture_hash not in texture_hashes:
-                        pixels = load_texture(shape.texture)
-                        if pixels is None:
-                            raise ValueError(f"Failed to load texture: {shape.texture}")
-
-                        # Normalize texture to a uint8 array with 3 or 4 channels
-                        pixels = normalize_texture(pixels, require_channels=True)
-                        if pixels.shape[2] == 3:
-                            # In-memory RGB (and expanded grayscale) images are opaque; textures have 4 channels.
-                            alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
-                            pixels = np.concatenate((pixels, alpha), axis=2)
-
-                        texture_hashes[shape.texture_hash] = len(self._texture_data_source)
-
-                        data = TextureData()
-                        data.texture = wp.Texture2D(
-                            pixels,
-                            filter_mode=wp.TextureFilterMode.LINEAR,
-                            address_mode=wp.TextureAddressMode.WRAP,
-                            normalized_coords=True,
-                            dtype=wp.uint8,
-                            num_channels=4,
-                            device=self.device,
-                        )
-                        data.repeat = wp.vec2f(1.0, 1.0)
-                        self._texture_data_source.append(data)
-
-                    texture_data_ids.append(texture_hashes[shape.texture_hash])
-                else:
+        def ids(sources: Sequence, shape_types: Sequence) -> tuple[list[int], list[int]]:
+            """Texture and mesh-data ids of each source, loading data that is not loaded yet."""
+            texture_data_ids = []
+            mesh_data_ids = []
+            for shape, shape_type in zip(sources, shape_types, strict=True):
+                if not isinstance(shape, Mesh):
                     texture_data_ids.append(-1)
-
+                    mesh_data_ids.append(-1)
+                    continue
+                texture_data_ids.append(self._load_texture(shape, texture_hashes) if load_textures else -1)
                 # A convex hull renders its collision mesh, whose vertices may be deduplicated, so
                 # the per-vertex UVs and normals of its source mesh do not match the hit faces.
                 if shape_type != GeoType.CONVEX_MESH and (shape.uvs is not None or shape.normals is not None):
@@ -663,12 +680,51 @@ class RenderContext:
                     mesh_data_ids.append(mesh_hashes[shape])
                 else:
                     mesh_data_ids.append(-1)
-            else:
-                texture_data_ids.append(-1)
-                mesh_data_ids.append(-1)
+            return texture_data_ids, mesh_data_ids
+
+        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
+        texture_data_ids, mesh_data_ids = ids(model.shape_source, shape_types)
+        if self._slots is not None:
+            prototype_types = model.shape_prototype_shape_type.numpy()
+            prototype_texture_ids, prototype_mesh_data_ids = ids(model.shape_prototype_shape_source, prototype_types)
+            self._prototype_render_type = wp.array(_render_types(prototype_types), dtype=wp.int32, device=self.device)
+            self._prototype_texture_ids = wp.array(prototype_texture_ids, dtype=wp.int32, device=self.device)
+            self._prototype_mesh_data_ids = wp.array(prototype_mesh_data_ids, dtype=wp.int32, device=self.device)
 
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
         self._shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)
 
         self._mesh_data = wp.array(self._mesh_data_source, dtype=MeshData, device=self.device)
         self._shape_mesh_data_ids = wp.array(mesh_data_ids, dtype=wp.int32, device=self.device)
+
+    def _load_texture(self, shape: Mesh, texture_hashes: dict) -> int:
+        """Texture id of a mesh's texture, loading it on first use, or ``-1`` without one."""
+        if shape.texture is None:
+            return -1
+        if shape.texture_hash not in texture_hashes:
+            pixels = load_texture(shape.texture)
+            if pixels is None:
+                raise ValueError(f"Failed to load texture: {shape.texture}")
+
+            # Normalize texture to a uint8 array with 3 or 4 channels
+            pixels = normalize_texture(pixels, require_channels=True)
+            if pixels.shape[2] == 3:
+                # In-memory RGB (and expanded grayscale) images are opaque; textures have 4 channels.
+                alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
+                pixels = np.concatenate((pixels, alpha), axis=2)
+
+            texture_hashes[shape.texture_hash] = len(self._texture_data_source)
+
+            data = TextureData()
+            data.texture = wp.Texture2D(
+                pixels,
+                filter_mode=wp.TextureFilterMode.LINEAR,
+                address_mode=wp.TextureAddressMode.WRAP,
+                normalized_coords=True,
+                dtype=wp.uint8,
+                num_channels=4,
+                device=self.device,
+            )
+            data.repeat = wp.vec2f(1.0, 1.0)
+            self._texture_data_source.append(data)
+        return texture_hashes[shape.texture_hash]

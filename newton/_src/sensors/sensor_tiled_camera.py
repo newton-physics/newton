@@ -129,6 +129,8 @@ class SensorTiledCamera:
                 to skip texture loading when textures are not needed.
         """
         warnings.warn(_TILED_CAMERA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        if getattr(model, "shape_slot_count", 0) > 0:
+            raise NotImplementedError("SensorTiledCamera does not support shape slots; use SensorCamera.")
 
         self.model = model
 
