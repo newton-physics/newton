@@ -274,7 +274,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
     Particle-body attachment limitations:
         - Attachments are translational and constrain one particle to a body-local point.
-        - Attachments use the compliant-ALM rows of structural joints: a finite
+        - Attachments are compliant-ALM rows, like joint rows: a finite
           ``stiffness`` keeps its physical spring offset under load, while infinite
           stiffness is the hard limit of the same row and ignores ``damping``.
           Multipliers are retained across steps with ``rigid_avbd_gamma``. Finite

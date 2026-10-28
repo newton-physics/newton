@@ -18,6 +18,7 @@ import warp as wp
 
 from newton._src.math import orthonormal_basis
 from newton._src.solvers.vbd.rigid_vbd_kernels import (
+    _attachment_auto_rho,
     _eval_body_particle_contact,
     _eval_soft_ef_contact,
     _reset_world_selected,
@@ -1881,11 +1882,11 @@ def step_particle_body_attachment_lambda_rho(
 ):
     """Once-per-step attachment setup: auto-``rho`` refresh and multiplier retention.
 
-    Like structural joint rows, the support is the endpoints' reduced inverse mass over
-    ``dt^2``, excluding anchor-arm mobility. The particle block also carries its incident
-    material Hessian, so a particle held by stiff material supports a larger ``rho``.
-    Like limit rows, the support is used directly as ``rho`` for finite and infinite
-    stiffness, so a stiff attachment does not dominate its endpoints' local solves.
+    The support is the endpoints' reduced inverse mass over ``dt^2``, excluding
+    anchor-arm mobility. The particle block also carries its incident material Hessian,
+    so a particle held by stiff material supports a larger ``rho``. Like limit rows, the
+    support is used directly as ``rho`` for finite and infinite stiffness, so a stiff
+    attachment does not dominate its endpoints' local solves.
     """
     i = wp.tid()
     stiffness = attachment_stiffness[i]
@@ -1988,7 +1989,7 @@ def step_particle_body_attachment_lambda_rho(
     support = float(0.0)
     if inv_m_eff > 0.0:
         support = 1.0 / (dt * dt * inv_m_eff)
-    rho[i] = support
+    rho[i] = _attachment_auto_rho(support, stiffness)
 
 
 @wp.kernel

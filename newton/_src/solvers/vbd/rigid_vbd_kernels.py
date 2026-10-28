@@ -174,7 +174,8 @@ def _material_force_terms(rho: float, material_k: float, dual: Any, use_complian
 # Each policy maps inverse-Delassus row support (scaled by 1/dt^2), plus any
 # row-specific material or structural inputs, to an ALM rho. Joint and contact
 # supports are computed by step_joint_C0_lambda_rho and
-# step_body_body_contact_C0_lambda. Separate wrappers keep each row class's
+# step_body_body_contact_C0_lambda; attachment supports by
+# step_particle_body_attachment_lambda_rho. Separate wrappers keep each row class's
 # policy explicit even when formulas currently coincide.
 
 
@@ -204,6 +205,14 @@ def _limit_auto_rho(axis_support: float, material_k: float):
     if axis_support <= 0.0 or material_k <= 0.0:
         return 0.0
     return axis_support
+
+
+@wp.func
+def _attachment_auto_rho(row_support: float, material_k: float):
+    """Return support as particle-body attachment rho, or zero if the row is off."""
+    if row_support <= 0.0 or material_k <= 0.0:
+        return 0.0
+    return row_support
 
 
 @wp.func
