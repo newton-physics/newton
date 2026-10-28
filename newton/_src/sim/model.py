@@ -19,11 +19,7 @@ import warp as wp
 
 from ..core.types import Devicelike
 from ..exceptions import NewtonDeprecationWarning
-from ..geometry.deformable_visual import (
-    DeformableVisualMesh,
-    DeformableVisuals,
-    _DeformableVisualSkinBatches,
-)
+from ..geometry.deformable_visual import DeformableVisualMesh, _DeformableVisualSkinBatches
 from ..geometry.flags import ShapeFlags
 from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
@@ -2099,119 +2095,30 @@ class Model:
 
     @property
     def deformable_visual_meshes(self) -> tuple[DeformableVisualMesh, ...]:
-        """High-resolution visual meshes embedded in deformables, skinned from the
-        simulation state for visualization only (see
-        :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). Empty when no
-        visual meshes were attached. Read-only; set when the model is finalized or
-        filled from a recording and fixed after that, since the skinning data is
-        derived from it then.
+        """Deformable visual meshes stored at finalization. Read-only.
+
+        The tuple is empty when no meshes were added. See
+        :class:`~newton.geometry.DeformableVisualMesh`.
 
         .. experimental::
-
-            This attribute may change without a formal deprecation cycle."""
+        """
         return self._deformable_visual_meshes
 
     @property
     def deformable_visual_mesh_count(self) -> int:
-        """Number of deformable visual meshes. Read-only; the length of :attr:`deformable_visual_meshes`.
+        """Number of deformable visual meshes.
 
         .. experimental::
-
-            This attribute may change without a formal deprecation cycle."""
+        """
         return len(self._deformable_visual_meshes)
 
-    def deformable_visuals(self) -> DeformableVisuals:
-        """Allocate current points and normals for deformable visual meshes.
-
-        The returned buffers are model-compatible and reusable across
-        simulation states and ordered graph replays. Populate them with
-        :meth:`update_deformable_visuals` before reading or rendering them.
-
-        Returns:
-            Uninitialized current deformable visual data.
-
-        .. experimental::
-
-            This API may change without a formal deprecation cycle while
-            deformable visual support is experimental.
-        """
-        return DeformableVisuals(self)
-
     def _get_deformable_visual_skin_batches(self) -> _DeformableVisualSkinBatches:
-        """Return the per-kind skinning batches of the visual meshes.
-
-        :meth:`~newton.ModelBuilder.finalize` builds them with the meshes; a model
-        restored from a recording builds them from its meshes on first use. Consumers
-        keep the batches they were sized with and skin exactly those meshes.
-        """
-        batches = self._deformable_visual_skin_batches
-        if batches is None:
-            batches = _DeformableVisualSkinBatches.from_meshes(self._deformable_visual_meshes, self.device)
-            self._deformable_visual_skin_batches = batches
-        return batches
-
-    def update_deformable_visuals(self, state: State, visuals: DeformableVisuals) -> DeformableVisuals:
-        """Update current deformable visual points and normals from a state.
-
-        This method reuses the fixed buffers allocated by
-        :meth:`deformable_visuals` and performs no structural allocation.
-        Warm up before graph capture, and replay the graph before consuming its
-        output. Different states can share one output when updates and consumers
-        are ordered. The caller is responsible for keeping the visual data current;
-        the output does not track its source State. Keep captured arrays alive and
-        change their contents, not their storage, between replays.
-
-        Args:
-            state: Simulation state containing current particle positions and
-                body transforms.
-            visuals: Model-compatible destination for current visual data.
-
-        Returns:
-            The updated ``visuals`` object.
-
-        Raises:
-            TypeError: If ``visuals`` is not :class:`DeformableVisuals`.
-            ValueError: If the output belongs to another model or the required
-                state arrays are missing, too short, or on another device.
-
-        .. experimental::
-
-            This API may change without a formal deprecation cycle while
-            deformable visual support is experimental.
-        """
-        if not isinstance(visuals, DeformableVisuals):
-            raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
-        visuals._validate_model(self)
-
-        # Skin and shade the meshes the output was sized for.
-        batches = visuals._skin_batches
-        self._validate_deformable_visual_state(state, batches)
-        batches.skin(state, self, visuals.points)
-        batches.compute_normals(visuals.points, visuals.normals)
-
-        visuals._mark_updated()
-        return visuals
-
-    def _validate_deformable_visual_state(self, state: State, batches: _DeformableVisualSkinBatches) -> None:
-        """Check that ``state`` provides the arrays ``batches`` skin from."""
-        needs_particles = batches.needs_particles
-        needs_bodies = self.body_count > 0 and batches.needs_bodies
-        if needs_particles and state.particle_q is None:
-            raise ValueError("State.particle_q is required by this model's deformable visual meshes")
-        if needs_bodies and state.body_q is None:
-            raise ValueError("State.body_q is required by this model's body-bound deformable visual meshes")
-        if needs_particles and state.particle_q.device != self.device:
-            raise ValueError(
-                f"State particle device {state.particle_q.device} does not match model device {self.device}"
+        """Return the fixed skinning layout, rebuilding loaded recordings once."""
+        if self._deformable_visual_skin_batches is None:
+            self._deformable_visual_skin_batches = _DeformableVisualSkinBatches.from_meshes(
+                self.deformable_visual_meshes, self.device
             )
-        if needs_bodies and state.body_q.device != self.device:
-            raise ValueError(f"State body device {state.body_q.device} does not match model device {self.device}")
-        if needs_particles and len(state.particle_q) < self.particle_count:
-            raise ValueError(
-                f"State.particle_q must contain at least {self.particle_count} particles; got {len(state.particle_q)}"
-            )
-        if needs_bodies and len(state.body_q) < self.body_count:
-            raise ValueError(f"State.body_q must contain at least {self.body_count} bodies; got {len(state.body_q)}")
+        return self._deformable_visual_skin_batches
 
     def state(self, requires_grad: bool | None = None) -> State:
         """

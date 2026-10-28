@@ -8,6 +8,9 @@ import warp as wp
 
 @wp.func
 def _closest_triangle_weights(p: wp.vec3d, a: wp.vec3d, b: wp.vec3d, c: wp.vec3d):
+    # A float64 counterpart of triangle_closest_point_barycentric in geometry/kernels.py: the
+    # float32 version loses the weights of vertices far from a small triangle (see
+    # test_triangle_embedding_far_from_surface), and the per-edge pass keeps exact ties stable.
     ab, ac, ap = b - a, c - a, p - a
     d00, d01, d11 = wp.dot(ab, ab), wp.dot(ab, ac), wp.dot(ac, ac)
     d20, d21 = wp.dot(ap, ab), wp.dot(ap, ac)

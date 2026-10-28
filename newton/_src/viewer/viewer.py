@@ -735,7 +735,7 @@ class ViewerBase(ABC):
         # World offset support
         layer.world_offsets = None
         # Deformable visual data and transformed viewer buffers.
-        layer._deformable_visuals: newton.DeformableVisuals | None = None
+        layer._deformable_visuals: newton.geometry.DeformableVisuals | None = None
         layer._deformable_visuals_explicit = False
         layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array]] = {}
         layer._deformable_visual_mesh_null_offsets: wp.array | None = None
@@ -855,7 +855,7 @@ class ViewerBase(ABC):
             # Adapt contact-visualization scales to the model.
             self._auto_compute_contact_scales()
 
-    def set_deformable_visuals(self, visuals: newton.DeformableVisuals | None) -> None:
+    def set_deformable_visuals(self, visuals: newton.geometry.DeformableVisuals | None) -> None:
         """Use precomputed deformable visuals when logging model states.
 
         Passing shared visual data lets the viewer reuse the same evaluated
@@ -869,7 +869,7 @@ class ViewerBase(ABC):
 
         Raises:
             RuntimeError: If no model has been set.
-            TypeError: If ``visuals`` is not :class:`newton.DeformableVisuals`.
+            TypeError: If ``visuals`` is not :class:`newton.geometry.DeformableVisuals`.
             ValueError: If ``visuals`` belongs to another model.
 
         .. experimental::
@@ -883,9 +883,10 @@ class ViewerBase(ABC):
             return
         if self.model is None:
             raise RuntimeError("Model must be set before calling set_deformable_visuals()")
-        if not isinstance(visuals, newton.DeformableVisuals):
+        if not isinstance(visuals, newton.geometry.DeformableVisuals):
             raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
-        visuals._validate_model(self.model)
+        if visuals.model is not self.model:
+            raise ValueError("DeformableVisuals was created for another model.")
         self._deformable_visuals = visuals
         self._deformable_visuals_explicit = True
 
@@ -3588,7 +3589,7 @@ class ViewerBase(ABC):
         """Skin and draw the visual meshes embedded in deformables.
 
         Skinning and normal recomputation run on-device through the shared
-        :meth:`newton.Model.update_deformable_visuals`;
+        :meth:`newton.geometry.DeformableVisuals.update`;
         backends receive the deformed geometry through the visual-mesh hook.
         Skinned meshes draw in
         addition to the raw simulation triangles; toggle ``show_triangles`` and
@@ -3605,12 +3606,13 @@ class ViewerBase(ABC):
         visuals = self._deformable_visuals
         if show and any(self._should_render_world(mesh.world) for mesh in meshes):
             if visuals is None:
-                visuals = self.model.deformable_visuals()
+                visuals = newton.geometry.DeformableVisuals(self.model)
                 self._deformable_visuals = visuals
             if self._deformable_visuals_explicit:
-                visuals._validate_model(self.model)
+                if visuals.model is not self.model:
+                    raise ValueError("DeformableVisuals was created for another model.")
             else:
-                self.model.update_deformable_visuals(state, visuals)
+                visuals.update(state)
             visuals.wait()
 
         for rm in meshes:
