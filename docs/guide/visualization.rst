@@ -44,10 +44,25 @@ Evaluate the current positions and normals for a state:
    points = visuals.get_points(visual_index)
 
 Allocate once and reuse the output. Update it before reading; it does not track
-which state is current. For CUDA capture, warm up before recording and replay
-before consuming the output. Call ``visuals.wait()`` when consuming on another
+which state is current. Allocate the output before CUDA capture and replay
+before consuming the result. Call ``visuals.wait()`` when consuming on another
 stream. Finish reads before the next update overwrites the buffers. Allocate
 separate outputs for simultaneous snapshots. Skinning is not differentiable.
+
+A warm-up update is recommended to load kernels before capture. Newton does
+not warn when it is skipped: Warp can also load kernels during capture on
+supported drivers. See :func:`~warp.capture_begin` for kernel-loading options.
+Capture records the update but does not execute it:
+
+.. code-block:: python
+
+   visuals = newton.geometry.DeformableVisuals(model)
+   visuals.update(state)  # Recommended: load kernels before capture.
+   with wp.ScopedCapture(model.device) as capture:
+       visuals.update(state)
+   wp.capture_launch(capture.graph)  # Run before a viewer or camera reads the output.
+
+Keep captured input and output arrays alive without replacing their storage.
 
 Triangle and tetrahedron bindings take explicit parent elements and
 barycentric weights. Name the owning elements either through a recorded
@@ -108,9 +123,10 @@ pose is stored as body-local offsets, so separate body bindings can show
 seams. Fixed-joint collapse remaps these offsets, including vertices fixed to
 the world. Composition preserves the placement and owning world.
 
-ViewerGL draws skins when ``log_state()`` is called. The **Show
-Skinned Meshes** checkbox is independent of **Show Visual** and the simulation
-triangle display. World spacing and layer placement also apply to skins.
+Supported viewers draw skinned meshes through
+:meth:`~newton.viewer.ViewerBase.log_state`. The **Show Skinned Meshes** option
+is independent of **Show Visual** and the simulation triangle display. World
+spacing and layer placement also apply to skinned meshes.
 
 .. code-block:: python
 
@@ -118,32 +134,15 @@ triangle display. World spacing and layer placement also apply to skins.
    viewer.set_deformable_visuals(visuals)  # Optional; the viewer otherwise evaluates.
    viewer.log_state(state)
 
-Update shared output before logging. Null and File do not evaluate skins and
-ignore the display option. File records the mesh data for playback, as described
-below. Viser does not draw skins yet and raises
-when the option is on. :meth:`ModelBuilder.add_usd` can also create bindings from authored USD
-visual geometry; see :ref:`deformable-visual-rendering`.
+Update shared output before logging. Hidden meshes stop uploading geometry;
+showing them restores the latest evaluated points. Backend differences are
+listed below. :meth:`ModelBuilder.add_usd` can also create bindings from
+authored USD visual geometry; see :ref:`deformable-visual-rendering`.
 
 Pass per-vertex ``uvs`` and an image array or path as ``texture`` when adding a
-visual mesh. GL uses the texture without a default brown tint. Replace the
-texture value to change it; editing pixels in place is not supported for these
-cached assets. Ordinary ``log_mesh()`` image updates keep their existing behavior.
-Each skin keeps its own GL texture, so replicated skins upload the same image
-once per copy.
-
-Skinned meshes keep their topology fixed. With GL CUDA interoperability enabled,
-only vertex data is updated on the device. Either mesh interop flag enables this
-path. Without interoperability, GL uses its existing host upload path.
-
-USD, RTX and Rerun also display skinned meshes. Hidden meshes do not keep
-uploading geometry; showing them restores the latest evaluated points. Rerun
-decodes each texture path once per model layer and then, as for any updated
-mesh, re-logs a visible skin with its texture every frame. USD-based viewers
-write one texture per skin.
-
-When RTX borrows an existing stage, skinned overlays start hidden. They do not
-replace or update the stage's authored deformable prims. Enable them explicitly
-when needed. Viser remains unsupported for skins; use its simulation geometry.
+visual mesh. Replace the texture value to change it; editing pixels in place
+is not supported for these cached assets. Ordinary ``log_mesh()`` image updates
+keep their existing behavior. Skinned meshes keep their topology fixed.
 
 :class:`~newton.viewer.ViewerFile` records deformable visual meshes and
 simulation state without evaluating them. JSON and binary recordings rebuild
@@ -151,6 +150,41 @@ their skinning batches on first use. Load into an empty Model to restore the
 recorded meshes. A finalized Model that already has meshes keeps them; the
 recording's driver counts and mesh layout must then match. Older physics-only
 recordings still load into a compatible model with meshes.
+
+.. list-table:: Skinned mesh support
+   :header-rows: 1
+   :widths: 15 15 70
+
+   * - Viewer
+     - Support
+     - Backend differences
+   * - GL
+     - Draws
+     - Uploads topology once and reuses textures. Either mesh CUDA interop flag
+       enables device-side vertex updates; otherwise it uses host uploads.
+       Each mesh copy uploads its own texture.
+   * - USD
+     - Exports
+     - Writes time-sampled meshes and one texture per mesh.
+   * - RTX
+     - Draws
+     - Uses USD meshes and textures. When borrowing a stage, overlays start
+       hidden and do not replace authored prims; enable them explicitly.
+   * - Rerun
+     - Draws
+     - Decodes each texture path once per model layer, but re-logs each visible
+       mesh with its texture every frame.
+   * - File
+     - Records
+     - Saves mesh data and simulation state for playback. Does not evaluate
+       skins and ignores the display option.
+   * - Null
+     - No drawing
+     - Does not evaluate skins and ignores the display option.
+   * - Viser
+     - No drawing
+     - Skinned meshes are off by default; enabling them raises an error.
+       Simulation geometry remains available.
 
 For example, bind a triangle to a small cloth and evaluate its current points:
 
