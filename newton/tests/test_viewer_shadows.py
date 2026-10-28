@@ -82,7 +82,10 @@ class TestViewerGLShadows(unittest.TestCase):
             projection = viewer.camera.get_projection_matrix().reshape(4, 4).T
             clip = points @ (projection @ view).T
             ndc = clip[:, :2] / clip[:, 3:4]
-            pixels = np.floor((ndc * (0.5, -0.5) + 0.5) * (512, 384)).astype(int)
+            # Retina framebuffers can be larger than the requested window.
+            # Project into the captured image, not logical window coordinates.
+            height, width = frame.shape[:2]
+            pixels = np.floor((ndc * (0.5, -0.5) + 0.5) * (width, height)).astype(int)
             return frame[pixels[:, 1], pixels[:, 0]]
 
         renderer = viewer.renderer
