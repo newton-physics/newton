@@ -266,7 +266,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
         # (Newton model attribute, Kamino container, Kamino attribute) for each direct alias.
         # ``body_inv_mass`` and ``body_inv_inertia`` are intentionally excluded:
-        # Kamino owns masked copies so it can zero KINEMATIC/PROXY rows without
+        # Kamino owns masked copies so it can zero KINEMATIC rows without
         # mutating the underlying Newton model.
         aliased_properties = [
             ("gravity", gravity, "vector"),
