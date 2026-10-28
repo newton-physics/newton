@@ -8,6 +8,8 @@ import os
 from time import perf_counter
 from typing import TYPE_CHECKING
 
+from .icon_atlas import IconAtlas
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -74,7 +76,8 @@ class ImGuiBackend:
             raise
 
         self.io = self.imgui.get_io()
-        # Reuse a local UI font; no network, icon atlas, or extra dependency.
+        self.icon_atlas = IconAtlas(self.imgui)
+        # Reuse a local UI font without a network or extra font dependency.
         for font_path in (
             "C:/Windows/Fonts/segoeui.ttf",
             "/System/Library/Fonts/SFNS.ttf",
@@ -650,9 +653,11 @@ class ImGuiBackend:
         except ImportError:
             logger.warning("portable_file_dialogs not available")
 
-    def shutdown(self):
-        """Release the platform GUI renderer when it was initialized."""
+    def shutdown(self) -> None:
+        """Release owned GUI textures and the platform renderer once."""
         if not self.is_available:
             return
 
+        self.icon_atlas.close()
         self.impl.shutdown()
+        self.is_available = False

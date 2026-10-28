@@ -2377,6 +2377,10 @@ class ViewerGL(ViewerBase):
         if self._image_logger is not None:
             self._image_logger.clear()
         self._destroy_render_geometry()
+        if self.gui is not None:
+            # GUI textures must be released before their GL context is closed.
+            self.renderer._make_current()
+            self.gui.ui.shutdown()
         self.renderer.close()
 
     @property

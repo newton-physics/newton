@@ -466,7 +466,11 @@ class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
         renderer.window.get_framebuffer_size.return_value = (640, 480)
         renderer.window.get_size.return_value = (640, 480)
         fake_ui = types.SimpleNamespace(
-            is_available=True, imgui=mock.MagicMock(), io=types.SimpleNamespace(config_flags=0), dpi_scale=1.0
+            is_available=True,
+            imgui=mock.MagicMock(),
+            io=types.SimpleNamespace(config_flags=0),
+            dpi_scale=1.0,
+            shutdown=mock.Mock(),
         )
         with (
             wp.ScopedDevice("cpu"),

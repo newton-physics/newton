@@ -303,6 +303,58 @@ class TestViewerGLGetFrame(unittest.TestCase):
                             (GL.GL_BLEND_DST_ALPHA, GL.GL_ONE),
                         ):
                             self.assertEqual(int(GL.glGetIntegerv(name)), value)
+
+                        if not legacy:
+                            # Reuse this context to check actual cached-icon
+                            # pixels, including mid-frame font texture growth and DPI
+                            # changes. Merely comparing two renderers could miss
+                            # blank or incorrectly mapped icon textures.
+                            atlas = gui.ui.icon_atlas
+                            fonts = imgui.get_io().fonts
+                            for scale in (1.0, 2.0, 1.5):
+                                size = int(16 * scale)
+                                gui.ui.begin_frame()
+                                draw = imgui.get_foreground_draw_list()
+                                vertices = draw.vtx_buffer.size()
+                                for copy in range(3):
+                                    if scale == 1.0 and copy == 1:
+                                        previous_size = fonts.tex_data.width, fonts.tex_data.height
+                                        rect = imgui.ImFontAtlasRect()
+                                        fonts.add_custom_rect(*previous_size, rect)
+                                        self.assertNotEqual(
+                                            (fonts.tex_data.width, fonts.tex_data.height), previous_size
+                                        )
+                                    self.assertTrue(
+                                        atlas.draw(
+                                            draw,
+                                            "body",
+                                            (100 + 40 * copy, 100),
+                                            size,
+                                            scale=scale,
+                                            color=imgui.get_color_u32((1.0, 0.5, 0.25, 1.0)),
+                                            solid=True,
+                                        )
+                                    )
+                                self.assertEqual(draw.vtx_buffer.size() - vertices, 12)
+                                self.assertFalse(
+                                    atlas.draw(draw, "unknown", (0, 0), size, scale=scale, color=0xFFFFFFFF)
+                                )
+                                gui.ui.end_frame()
+                                GL.glDisable(GL.GL_SCISSOR_TEST)
+                                GL.glClearColor(0, 0, 0, 1)
+                                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+                                gui.ui.render()
+                                pixels = np.frombuffer(
+                                    GL.glReadPixels(0, 0, 800, 600, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE), np.uint8
+                                ).reshape(600, 800, 4)[::-1]
+                                first = pixels[100 : 100 + size, 100 : 100 + size, :3]
+                                self.assertGreater(np.count_nonzero(first[..., 0] > 128), size * size // 4)
+                                self.assertGreater(first[..., 0].sum(), first[..., 1].sum())
+                                self.assertGreater(first[..., 1].sum(), first[..., 2].sum())
+                                for copy in (1, 2):
+                                    np.testing.assert_array_equal(
+                                        pixels[100 : 100 + size, 100 + 40 * copy : 100 + 40 * copy + size, :3], first
+                                    )
                     finally:
                         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, previous_fbo)
                         GL.glDeleteFramebuffers(1, [framebuffer])
@@ -310,7 +362,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 finally:
                     if image_texture is not None:
                         GL.glDeleteTextures([image_texture])
+                    icon_texture = viewer.gui.ui.icon_atlas._texture
+                    icon_texture_id = icon_texture.id if icon_texture is not None else None
                     viewer.gui.ui.shutdown()
+                    if icon_texture_id is not None:
+                        self.assertFalse(GL.glIsTexture(icon_texture_id))
                     viewer.close()
                     # Do not leak GUI fonts/style/time into other ImGui tests.
                     imgui.destroy_context()
