@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from itertools import pairwise
 from time import perf_counter
 from typing import TYPE_CHECKING
 
@@ -15,6 +14,7 @@ if TYPE_CHECKING:
     from imgui_bundle import imgui
     from numpy.typing import ArrayLike
 
+    from newton._src.viewer.camera import Camera
     from newton._src.viewer.gui.viewport import ViewportControls
 
 
@@ -35,6 +35,7 @@ class OrientationGizmo:
         self._moving = None
         self._animation = None
         self._faces = []
+        self._projection_key: tuple[object, ...] | None = None
         self._opacity = 0.65
         self._fade_time = perf_counter()
         self.rect = (0, 0, 0, 0)
@@ -63,6 +64,76 @@ class OrientationGizmo:
         camera.orbit(yaw - camera.yaw, pitch - camera.pitch)
         if t == 1.0:
             self._animation = None
+
+    def _update_projection(self, camera: Camera, center: np.ndarray, scale: float) -> None:
+        """Rebuild cube/compass geometry only when orientation, layout, or font metrics change.
+
+        Camera translation and simulation updates do not affect this screen-space
+        widget. Keep hit testing and colors outside the cache so hover, fading,
+        and dragging remain responsive even while the geometry is unchanged.
+        """
+        ui = self.controls.workspace.gui.ui.imgui
+        key = (camera.yaw, camera.pitch, camera.up_axis, *center, scale, ui.get_font(), ui.get_font_size())
+        if self._projection_key == key:
+            return
+        self._projection_key = key
+        right, up, toward = map(np.asarray, (camera.get_right(), camera.get_up(), -camera.get_front()))
+        basis = np.array((right, -up))
+        positions = center + basis.T * (44 * scale)
+        self._toward, self._axis_heads, self._axis_order = toward, positions, np.argsort(toward)
+
+        labels = {(camera.up_axis, 1): "TOP", (camera.up_axis, -1): "BOTTOM"}
+        front = np.zeros(3)
+        front[2 if camera.up_axis == 1 else 1] = 1 if camera.up_axis == 1 else -1
+        world_up = np.eye(3)[camera.up_axis]
+        world_right = np.cross(-front, world_up)
+        for vector, positive, negative in ((front, "FRONT", "BACK"), (world_right, "RIGHT", "LEFT")):
+            axis = int(np.argmax(np.abs(vector)))
+            labels[axis, int(vector[axis])] = positive
+            labels[axis, -int(vector[axis])] = negative
+        faces = []
+        for axis in range(3):
+            others = [i for i in range(3) if i != axis]
+            for sign in (-1, 1):
+                facing = float(sign * toward[axis])
+                if facing < 0.001:
+                    continue
+                vertices = np.zeros((4, 3))
+                vertices[:, axis] = sign
+                vertices[:, others] = ((-1, -1), (1, -1), (1, 1), (-1, 1))
+                polygon = center + vertices @ basis.T * (self._half_extent * scale)
+                faces.append((facing, axis, sign, others, vertices, polygon))
+        faces.sort(key=lambda face: face[0])
+        self._faces = faces
+        self._face_paths = []
+        self._face_labels = []
+        for facing, axis, sign, _, _, polygon in faces:
+            self._face_paths.append(self._polygon_path(polygon))
+            caption = None
+            label_center = polygon.mean(axis=0)
+            if facing > 0.20 and all(np.linalg.norm(label_center - p) > 16 * scale for p in positions):
+                text = labels[axis, sign]
+                extent = ui.calc_text_size(text)
+                available = np.ptp(polygon, axis=0)
+                fit = min(1.0, 0.85 * available[0] / max(extent.x, 1), 0.65 * available[1] / max(extent.y, 1))
+                font_size = ui.get_font_size() * fit
+                if font_size >= 8 * scale:
+                    position = label_center - np.array((extent.x, extent.y)) * (0.5 * fit)
+                    caption = text, font_size, ui.ImVec2(*position)
+            self._face_labels.append(caption)
+
+        # Two connected arcs replace dozens of individual line submissions.
+        self._ring_center = np.array((center[0], center[1] + 42 * scale))
+        angles = np.linspace(0, 2 * np.pi, 49)
+        ring = self._ring_center + np.column_stack((np.cos(angles) * 43, np.sin(angles) * 7)) * scale
+        self._ring_arcs = [[ui.ImVec2(*p) for p in arc] for arc in (ring[:25], ring[24:])]
+
+    def _polygon_path(self, polygon: np.ndarray) -> list[imgui.ImVec2]:
+        """Convert a projected face to the clockwise winding required by ImGui's fill."""
+        ui = self.controls.workspace.gui.ui.imgui
+        signed_area = sum(a[0] * b[1] - b[0] * a[1] for a, b in zip(polygon, np.roll(polygon, -1, axis=0), strict=True))
+        ordered = polygon if signed_area >= 0 else polygon[::-1]
+        return [ui.ImVec2(*p) for p in ordered]
 
     def draw(self) -> None:
         """Draw the orientation cube and axes, handle orbit or placement drags, and expose camera context settings."""
@@ -128,42 +199,8 @@ class OrientationGizmo:
             return ui.ImVec2(float(xy[0]), float(xy[1]))
 
         center = np.array((x + width * 0.5, y + 56 * s))
-        right, up, toward = map(np.asarray, (camera.get_right(), camera.get_up(), -camera.get_front()))
-        basis = np.array((right, -up))
-
-        def project(vertices: ArrayLike) -> np.ndarray:
-            return center + np.asarray(vertices) @ basis.T * (self._half_extent * s)
-
-        def fill(polygon: ArrayLike, shade: float) -> None:
-            signed_area = sum(
-                a[0] * b[1] - b[0] * a[1] for a, b in zip(polygon, np.roll(polygon, -1, axis=0), strict=True)
-            )
-            ordered = polygon if signed_area >= 0 else polygon[::-1]
-            draw.add_convex_poly_filled([point(p) for p in ordered], shade)
-
-        faces = []
-        labels = {(camera.up_axis, 1): "TOP", (camera.up_axis, -1): "BOTTOM"}
-        front = np.zeros(3)
-        front[2 if camera.up_axis == 1 else 1] = 1 if camera.up_axis == 1 else -1
-        world_up = np.eye(3)[camera.up_axis]
-        world_right = np.cross(-front, world_up)
-        for vector, positive, negative in ((front, "FRONT", "BACK"), (world_right, "RIGHT", "LEFT")):
-            axis = int(np.argmax(np.abs(vector)))
-            labels[axis, int(vector[axis])] = positive
-            labels[axis, -int(vector[axis])] = negative
-        for axis in range(3):
-            others = [i for i in range(3) if i != axis]
-            for sign in (-1, 1):
-                normal = np.eye(3)[axis] * sign
-                facing = float(normal @ toward)
-                if facing < 0.001:
-                    continue
-                vertices = np.zeros((4, 3))
-                vertices[:, axis] = sign
-                vertices[:, others] = ((-1, -1), (1, -1), (1, 1), (-1, 1))
-                faces.append((facing, axis, sign, others, vertices, project(vertices)))
-        faces.sort(key=lambda face: face[0])
-        self._faces = faces
+        self._update_projection(camera, center, s)
+        faces, positions, toward = self._faces, self._axis_heads, self._toward
         # Resolve the target first, then shade its region on every adjacent
         # visible face. A corner is one 3D target, even across three polygons.
         hit = None
@@ -186,22 +223,23 @@ class OrientationGizmo:
         # Project fixed world-space endpoints just like the cube. Screen-space
         # normalization and overlap avoidance introduce jumps during orbiting.
         axis_colors = ((0.94, 0.43, 0.40), (0.49, 0.84, 0.55), (0.43, 0.69, 1.0))
-        positions = center + basis.T * (44 * s)
-        self._axis_heads = positions
         axis_hover = None
-        for axis in np.argsort(toward):
-            distance = np.linalg.norm(mouse - positions[axis])
-            if hovered and (hit is None or np.count_nonzero(hit) == 1 or distance <= 5 * s) and distance <= 8 * s:
-                axis_hover = int(axis)
-                hit = np.eye(3)[axis] * (-1 if io.key_shift else 1)
-        for axis in np.argsort(toward):
+        if hovered:
+            for axis in self._axis_order:
+                distance = np.linalg.norm(mouse - positions[axis])
+                if (hit is None or np.count_nonzero(hit) == 1 or distance <= 5 * s) and distance <= 8 * s:
+                    axis_hover = int(axis)
+                    hit = np.eye(3)[axis] * (-1 if io.key_shift else 1)
+        for axis in self._axis_order:
             rgb = axis_colors[axis]
             draw.add_line(point(center), point(positions[axis]), color(*rgb, 0.90), 2 * s)
         self._hover_direction = hit
         self._highlight_faces = []
-        for facing, axis, sign, others, _vertices, polygon in faces:
+        for (facing, axis, sign, others, _vertices, polygon), path, caption in zip(
+            faces, self._face_paths, self._face_labels, strict=True
+        ):
             shade = 0.17 + 0.17 * facing
-            fill(polygon, color(shade, shade, shade, 0.98))
+            draw.add_convex_poly_filled(path, color(shade, shade, shade, 0.98))
             if hit is not None and hit[axis] == sign:
                 edges = (0, 0.23, 0.77, 1)
                 if np.count_nonzero(hit) == 1:
@@ -216,42 +254,28 @@ class OrientationGizmo:
                             for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))
                         ]
                     )
-                fill(region, color(0.96, 0.61, 0.32, 0.55))
+                draw.add_convex_poly_filled(self._polygon_path(region), color(0.96, 0.61, 0.32, 0.55))
                 for i in range(4):
                     draw.add_line(point(region[i]), point(region[(i + 1) % 4]), color(1.0, 0.74, 0.47, 0.85), s)
                 self._highlight_faces.append((axis, sign))
-            for i in range(4):
-                draw.add_line(point(polygon[i]), point(polygon[(i + 1) % 4]), color(0.68, 0.68, 0.68, 0.9), s)
-            if facing > 0.20 and all(np.linalg.norm(polygon.mean(axis=0) - p) > 16 * s for p in positions):
-                text = labels[axis, sign]
-                extent = ui.calc_text_size(text)
-                label_center = polygon.mean(axis=0)
-                available = np.ptp(polygon, axis=0)
-                fit = min(1.0, 0.85 * available[0] / max(extent.x, 1), 0.65 * available[1] / max(extent.y, 1))
-                font_size = ui.get_font_size() * fit
-                if font_size >= 8 * s:
-                    draw.add_text(
-                        ui.get_font(),
-                        font_size,
-                        point(label_center - np.array((extent.x, extent.y)) * (0.5 * fit)),
-                        color(0.95, 0.95, 0.95),
-                        text,
-                    )
+            draw.add_polyline(path, color(0.68, 0.68, 0.68, 0.9), s, ui.ImDrawFlags_.closed)
+            if caption is not None:
+                text, font_size, position = caption
+                draw.add_text(ui.get_font(), font_size, position, color(0.95, 0.95, 0.95), text)
         # The compass has a restrained back arc and a brighter front rim.
-        ring_center = np.array((center[0], y + 98 * s))
-        ring_distance = np.linalg.norm((mouse - ring_center) / (43 * s, 7 * s))
-        ring_hover = hovered and 0.65 < ring_distance < 1.5 and axis_hover is None
-        ring = [ring_center + np.array((np.cos(t) * 43 * s, np.sin(t) * 7 * s)) for t in np.linspace(0, 2 * np.pi, 49)]
-        for a, b in pairwise(ring):
-            front_arc = (a[1] + b[1]) * 0.5 >= ring_center[1]
-            tint = color(0.96, 0.61, 0.32, 0.9) if ring_hover else color(0.64, 0.64, 0.64, 0.70 if front_arc else 0.30)
-            draw.add_line(point(a), point(b), tint, s)
+        ring_center = self._ring_center
+        ring_hover = (
+            hovered and axis_hover is None and 0.65 < np.linalg.norm((mouse - ring_center) / (43 * s, 7 * s)) < 1.5
+        )
+        for arc, opacity in zip(self._ring_arcs, (0.70, 0.30), strict=True):
+            tint = color(0.96, 0.61, 0.32, 0.9) if ring_hover else color(0.64, 0.64, 0.64, opacity)
+            draw.add_polyline(arc, tint, s, 0)
         for side in (-1, 1):
             tick = ring_center + np.array((side * 43 * s, 0))
             extent = np.array((0, 2 * s))
             draw.add_line(point(tick - extent), point(tick + extent), color(0.70, 0.70, 0.70, 0.7), s)
 
-        for axis in np.argsort(toward):
+        for axis in self._axis_order:
             rgb = axis_colors[axis]
             position = positions[axis]
             over = axis == axis_hover

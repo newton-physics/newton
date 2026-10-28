@@ -266,9 +266,16 @@ class PhysicsWidgets:
         lock_width = 15 * scale if locked or unit else 0
         unit_width = ui.calc_text_size(unit).x + 5 * scale if unit else 0
         draw = ui.get_window_draw_list()
-        draw.push_clip_rect(pos, ui.ImVec2(pos.x + max(1, width - lock_width - unit_width), pos.y + height), True)
-        draw.add_text(ui.ImVec2(pos.x, self.text_top(pos.y, height)), self.color(color or (0.88, 0.88, 0.88, 1)), text)
-        draw.pop_clip_rect()
+        # Clip glyph geometry instead of changing the GPU scissor for each
+        # label. Neighboring labels can then share ImGui's text draw command.
+        draw.add_text(
+            ui.get_font(),
+            ui.get_font_size(),
+            ui.ImVec2(pos.x, self.text_top(pos.y, height)),
+            self.color(color or (0.88, 0.88, 0.88, 1)),
+            text,
+            cpu_fine_clip_rect=ui.ImVec4(pos.x, pos.y, pos.x + max(1, width - lock_width - unit_width), pos.y + height),
+        )
         if unit:
             draw.add_text(
                 ui.ImVec2(pos.x + width - lock_width - unit_width + 5 * scale, self.text_top(pos.y, height)),
@@ -573,15 +580,16 @@ class PhysicsWidgets:
         clicked = self.button("##reference:" + label, ui.ImVec2(button_width, ui.get_frame_height()))
         lo, hi = ui.get_item_rect_min(), ui.get_item_rect_max()
         draw = ui.get_window_draw_list()
-        draw.push_clip_rect(lo, hi, True)
         draw.add_text(
+            ui.get_font(),
+            ui.get_font_size(),
             ui.ImVec2(
                 lo.x + max(padding, (button_width - ui.calc_text_size(caption).x) / 2), self.text_top(lo.y, hi.y - lo.y)
             ),
             ui.get_color_u32(ui.Col_.text),
             caption,
+            cpu_fine_clip_rect=ui.ImVec4(lo.x, lo.y, hi.x, hi.y),
         )
-        draw.pop_clip_rect()
         ui.end_disabled()
         if target is not None and caption != target and ui.is_item_hovered(ui.HoveredFlags_.delay_normal):
             ui.set_tooltip(target)

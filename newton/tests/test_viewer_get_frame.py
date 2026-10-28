@@ -449,6 +449,41 @@ class TestViewerGLGetFrame(unittest.TestCase):
                                     np.testing.assert_array_equal(
                                         pixels[100 : 100 + size, 100 + 40 * copy : 100 + 40 * copy + size, :3], first
                                     )
+                            # Clipped property labels should still batch as text,
+                            # without a separate GPU scissor command per field.
+                            # Check actual pixels as well as command count so a
+                            # faster path cannot silently remove label clipping.
+                            for label_width in (70, 150):
+                                gui.ui.begin_frame()
+                                imgui.set_next_window_pos((40, 40))
+                                imgui.set_next_window_size((300, 350))
+                                imgui.push_style_var(imgui.StyleVar_.window_padding, (0, 0))
+                                imgui.push_style_var(imgui.StyleVar_.window_border_size, 0)
+                                imgui.begin(
+                                    "##label_batch",
+                                    flags=imgui.WindowFlags_.no_decoration | imgui.WindowFlags_.no_background,
+                                )
+                                origin = imgui.get_cursor_screen_pos()
+                                for _ in range(6):
+                                    gui.workspace.widgets._fixed_label(
+                                        "A very long property name for clipping", label_width
+                                    )
+                                draw = imgui.get_window_draw_list()
+                                command_count = sum(command.elem_count > 0 for command in draw.cmd_buffer)
+                                imgui.end()
+                                imgui.pop_style_var(2)
+                                gui.ui.end_frame()
+                                GL.glDisable(GL.GL_SCISSOR_TEST)
+                                GL.glClearColor(0, 0, 0, 1)
+                                GL.glClear(GL.GL_COLOR_BUFFER_BIT)
+                                gui.ui.render()
+                                pixels = np.frombuffer(
+                                    GL.glReadPixels(0, 0, 800, 600, GL.GL_RGBA, GL.GL_UNSIGNED_BYTE), np.uint8
+                                ).reshape(600, 800, 4)[::-1, :, :3]
+                                x, y = int(origin.x), int(origin.y)
+                                self.assertGreater(np.count_nonzero(pixels[y : y + 200, x : x + label_width]), 0)
+                                self.assertEqual(np.count_nonzero(pixels[y : y + 200, x + label_width : x + 280]), 0)
+                                self.assertEqual(command_count, 1)
                     finally:
                         GL.glBindFramebuffer(GL.GL_FRAMEBUFFER, previous_fbo)
                         GL.glDeleteFramebuffers(1, [framebuffer])

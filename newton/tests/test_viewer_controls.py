@@ -24,6 +24,7 @@ from newton._src.geometry.sdf_utils import SDF, SDFData
 from newton._src.viewer.camera import Camera
 from newton._src.viewer.gui.collision import CollisionInspector
 from newton._src.viewer.gui.imgui_backend import ImGuiBackend
+from newton._src.viewer.gui.orientation import OrientationGizmo
 from newton._src.viewer.gui.properties import (
     Assignment,
     Frequency,
@@ -98,6 +99,60 @@ class TestViewerUI(unittest.TestCase):
                 self.assertEqual(style.font_scale_dpi, scale)
                 self.assertEqual([tuple(style.color_(i)) for i in range(imgui.Col_.count)], colors)
                 self.assertEqual(self.ui.io.fonts.fonts[0], font)
+
+    def test_orientation_projection_reuse(self) -> None:
+        """Reuse idle geometry, but reproject immediately after orbit, layout, or font changes."""
+        ui = self.ui.imgui
+        camera = Camera()
+        camera.yaw, camera.pitch = -135.0, -30.0
+        workspace = SimpleNamespace(
+            gui=SimpleNamespace(ui=self.ui),
+            viewer=SimpleNamespace(camera=camera),
+            widgets=SimpleNamespace(scale=1.0),
+            rect=(0, 0, 640, 480),
+        )
+        controls = SimpleNamespace(
+            workspace=workspace,
+            prepare_popup=lambda: ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(8, 8)),
+        )
+        gizmo = OrientationGizmo(controls)
+
+        def draw() -> None:
+            self.ui.begin_frame()
+            try:
+                gizmo.draw()
+            finally:
+                ui.end_frame()
+
+        draw()
+        faces = gizmo._faces
+        camera.pos += camera.get_front()  # Translation cannot change orientation geometry.
+        draw()
+        self.assertIs(gizmo._faces, faces)
+        for change in ("orbit", "layout", "scale", "up_axis", "font"):
+            with self.subTest(change=change):
+                if change == "orbit":
+                    camera.orbit(10.0, 5.0)
+                elif change == "layout":
+                    workspace.rect = (20, 30, 600, 420)
+                elif change == "scale":
+                    workspace.widgets.scale = 1.5
+                elif change == "up_axis":
+                    camera.up_axis = 1
+                else:
+                    ui.get_style().font_scale_main = 1.2
+                draw()
+                self.assertIsNot(gizmo._faces, faces)
+                faces = gizmo._faces
+                x, y, width, _ = gizmo.rect
+                scale = workspace.widgets.scale
+                center = np.array((x + width * 0.5, y + 56 * scale))
+                basis = np.array((camera.get_right(), -camera.get_up()))
+                np.testing.assert_allclose(gizmo._axis_heads, center + basis.T * (44 * scale))
+                for _, _, _, _, vertices, polygon in faces:
+                    np.testing.assert_allclose(polygon, center + vertices @ basis.T * (19.5 * scale))
+                draw()
+                self.assertIs(gizmo._faces, faces)
 
 
 def _make_gl_state(paused: bool = False, step_requested: bool = False) -> ViewerGL:
@@ -955,6 +1010,33 @@ class TestViewerProperties(unittest.TestCase):
         inspector._contexts()
         self.assertFalse(inspector._collect(Assignment.CONTROL))
         self.assertTrue(inspector._collect(Assignment.STATE))
+        inspector.clear()
+        inspector._contexts()
+        with patch.object(model, "_iter_attribute_specs", wraps=model._iter_attribute_specs) as discover:
+            for _ in range(2):
+                for component in (Assignment.STATE, Assignment.CONTROL, Assignment.MODEL):
+                    inspector._collect(component)
+            self.assertEqual(discover.call_count, 1, "Unchanged property metadata must not be rebuilt every frame")
+
+        # Only metadata is cached: state swaps, optional arrays and both kinds
+        # of late solver registration must remain visible without reselecting.
+        replacement = model.state()
+        replacement.body_q = None
+        ws.viewer._last_state = replacement
+        fields = {f[1]: f for group in inspector._collect(Assignment.STATE).values() for f in group}
+        self.assertNotIn("body_q", fields)
+        self.assertIs(fields["body_qd"][-1], replacement.body_qd)
+        model.add_attribute("late_value", [4], Frequency.BODY)
+        fields = {f[1]: f for group in inspector._collect(Assignment.MODEL).values() for f in group}
+        self.assertIn("late_value", fields)
+        model.attribute_frequency["late_value"] = Frequency.SHAPE
+        self.assertNotIn("late_value", {f[1] for g in inspector._collect(Assignment.MODEL).values() for f in g})
+        model.attribute_frequency["late_value"] = Frequency.BODY
+        model.attribute_assignment["late_value"] = Assignment.STATE
+        replacement.late_value = [9]
+        self.assertNotIn("late_value", {f[1] for g in inspector._collect(Assignment.MODEL).values() for f in g})
+        fields = {f[1]: f for group in inspector._collect(Assignment.STATE).values() for f in group}
+        self.assertEqual(fields["late_value"][-1], [9])
         all_fields = list(component_attributes(model, model, Assignment.MODEL))
         body_fields = list(component_attributes(model, model, Assignment.MODEL, frequencies={Frequency.BODY}))
         self.assertEqual(

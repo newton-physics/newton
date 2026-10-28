@@ -14,7 +14,7 @@ import warp as wp
 from ..sim.model import Model
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Iterator, Sequence
+    from collections.abc import Collection, Iterable, Iterator, Sequence
     from typing import Any
 
 
@@ -36,6 +36,7 @@ def component_attributes(
     component: Model.AttributeAssignment,
     *,
     frequencies: Collection[Model.AttributeFrequency | str] | None = None,
+    specs: Iterable[tuple[str, Model.AttributeSpec]] | None = None,
 ) -> Iterator[tuple[str, Model.AttributeSpec, object, str, Any]]:
     """Discover populated inspector fields without reading device array contents.
 
@@ -51,12 +52,15 @@ def component_attributes(
         frequencies: Limit discovery to these domains, or all domains when None.
             Filter before resolving storage so a selected object does not scan
             unrelated arrays. Values and late registrations remain live.
+        specs: Optional prefiltered metadata from an inspector-owned index. The
+            caller must invalidate it on registry changes. Storage is always
+            resolved from the current owner, including replaced/optional arrays.
 
     Yields:
         Qualified name, attribute specification, storage owner, unqualified name,
         and value. The value is a reference to existing storage, not a snapshot.
     """
-    for name, spec in model._iter_attribute_specs():
+    for name, spec in model._iter_attribute_specs() if specs is None else specs:
         if frequencies is not None and spec.frequency not in frequencies:
             continue
         if name.startswith("_") or spec.compaction_policy in ("world_start", "color_groups", "passthrough"):

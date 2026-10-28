@@ -1,1 +1,1 @@
-Reduce ViewerGL GUI draw-submission overhead and limit property discovery to selected attribute frequencies, while preserving live values and scene OpenGL state.
+Reduce ViewerGL GUI overhead by caching property metadata and orientation geometry, limiting property discovery to selected frequencies, and batching clipped labels, while preserving live values and scene OpenGL state.

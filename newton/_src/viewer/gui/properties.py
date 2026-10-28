@@ -88,11 +88,34 @@ class PropertyInspector:
         self.context_key = None
         self.domains: list[AttributeRows] = []
         self.component = Assignment.STATE
+        self._spec_cache: dict[
+            Model,
+            tuple[tuple[dict[str, Any], ...], dict[Frequency | str, list[tuple[str, Model.AttributeSpec]]]],
+        ] = {}
 
     def clear(self) -> None:
         """Release model domains while preserving the selected component tab."""
         self.context_key = None
         self.domains.clear()
+        self._spec_cache.clear()
+
+    def _specs(self, model: Model) -> dict[Frequency | str, list[tuple[str, Model.AttributeSpec]]]:
+        """Index immutable specs by frequency, retaining no State/Control storage.
+
+        Registry maps remain mutable for late solver registration and legacy
+        frequency/assignment overrides. Compare shallow snapshots so those
+        changes invalidate immediately without rebuilding unified metadata for
+        every tab on every frame. AttributeSpec itself is frozen.
+        """
+        mappings = (model.attribute_specs, model.attribute_frequency, model.attribute_assignment)
+        cached = self._spec_cache.get(model)
+        if cached is None or cached[0] != mappings:
+            indexed = defaultdict(list)
+            for name, spec in model._iter_attribute_specs():
+                indexed[spec.frequency].append((name, spec))
+            cached = tuple(mapping.copy() for mapping in mappings), dict(indexed)
+            self._spec_cache[model] = cached
+        return cached[1]
 
     def _contexts(self) -> None:
         """Merge selected row domains without merging different Models or frequencies."""
@@ -101,6 +124,8 @@ class PropertyInspector:
         key = (id(ws.model), selection)
         if self.context_key == key:
             return
+        if self.context_key is not None and self.context_key[0] != key[0]:
+            self._spec_cache.clear()
         self.context_key = key
         domains = [
             domain
@@ -304,8 +329,12 @@ class PropertyInspector:
             key = (id(domain.model), id(owner))
             if key not in attributes:
                 attributes[key] = defaultdict(list)
+                specs = self._specs(domain.model)
                 for field in component_attributes(
-                    domain.model, owner, component, frequencies=frequencies[id(domain.model)]
+                    domain.model,
+                    owner,
+                    component,
+                    specs=(entry for frequency in frequencies[id(domain.model)] for entry in specs.get(frequency, ())),
                 ):
                     attributes[key][field[1].frequency].append(field)
             for name, spec, parent, attr, value in attributes[key].get(domain.frequency, ()):
