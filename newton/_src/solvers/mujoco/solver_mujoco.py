@@ -4357,13 +4357,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 via a ``wp.printf`` message; to detect it in Python without a
                 GPU sync, request ``ObservableKind.OVERFLOW`` via
                 :meth:`observables` and check the bitmask after each step.
-            kinematic_switchable_roots: If ``True``, every movable root body can be
-                made kinematic at runtime through :attr:`~newton.Model.body_flags`,
-                at the cost of an inactive weld per root in the MuJoCo model.
-                Making a root kinematic that was dynamic in every world at
-                construction is deprecated. If ``False``, only roots that are
-                kinematic in some world at construction can switch, which is the
-                future default.
+            kinematic_switchable_roots: If ``False``, only roots that are kinematic in
+                some world at construction can be switched to kinematic later, which
+                will become the default. ``True`` adds an inactive weld for every
+                movable root; switching those roots to kinematic is deprecated.
         """
         super().__init__(model)
         self._kinematic_switchable_roots = kinematic_switchable_roots

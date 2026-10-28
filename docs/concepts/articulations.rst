@@ -452,16 +452,9 @@ Implementation details differ by coordinate formulation:
   PADMM and DVI backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
   that reaches the target pose within the step.
 
-:class:`~newton.solvers.SolverMuJoCo` follows MuJoCo, which has no prescribed degrees of freedom: it holds
-kinematic roots with a weld that locks their acceleration. This has user-visible consequences:
-
-- Making a root kinematic that was dynamic when the solver was created is deprecated. To start a root dynamic,
-  mark it kinematic before creating the solver and switch it to dynamic afterwards (see
-  :ref:`Switching kinematic roots at runtime <mujoco-kinematic-switching>`).
-- A kinematic root without mass or inertia is driven as a MuJoCo mocap body. It cannot be switched to dynamic, and
-  contact friction and its dynamic descendants do not see its velocity.
-
-See :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
+:class:`~newton.solvers.SolverMuJoCo` holds kinematic roots with a weld to the world. Making a root
+kinematic that was dynamic when the solver was created is deprecated, and massless kinematic roots
+cannot become dynamic. See :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
 
 .. _Joint types:
 
