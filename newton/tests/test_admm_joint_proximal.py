@@ -16,6 +16,15 @@ from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledADMM
 from newton.tests.unittest_utils import get_cuda_test_devices
 
 
+def _mujoco_solver(model, **kwargs) -> SolverMuJoCo:
+    """Build a MuJoCo solver, skipping the current test or subtest when MuJoCo is not installed."""
+    try:
+        SolverMuJoCo.import_mujoco()
+    except ImportError as exc:
+        raise unittest.SkipTest(str(exc)) from exc
+    return SolverMuJoCo(model, **kwargs)
+
+
 def _cross(v):
     x, y, z = v
     return np.array([[0, -z, y], [z, 0, -x], [-y, x, 0]])
@@ -58,7 +67,7 @@ class TestAdmmJointProximal(unittest.TestCase):
                     name=str(body),
                     bodies=[body],
                     joints=[body] if free_bodies else [],
-                    solver=factory or (lambda view: SolverMuJoCo(view, use_mujoco_cpu=True, integrator="euler")),
+                    solver=factory or (lambda view: _mujoco_solver(view, use_mujoco_cpu=True, integrator="euler")),
                 )
                 for body in range(2)
             ],
@@ -129,7 +138,7 @@ class TestAdmmJointProximal(unittest.TestCase):
         for config in ({"joint_proximal_bodies": False}, {"joint_proximal_destination_entries": ()}):
             with self.subTest(config=config):
                 _, solver = self._make_solver(
-                    factory=lambda view: SolverMuJoCo(view, use_mujoco_cpu=True, integrator="implicitfast"),
+                    factory=lambda view: _mujoco_solver(view, use_mujoco_cpu=True, integrator="implicitfast"),
                     **config,
                 )
                 self.assertFalse(solver._admm_joint_proxies)
@@ -168,7 +177,7 @@ class TestAdmmJointProximal(unittest.TestCase):
             "featherstone": SolverFeatherstone,
             "xpbd": lambda view: SolverXPBD(view, iterations=10, angular_damping=0.0),
             "vbd": lambda view: SolverVBD(view, iterations=10, rigid_compliant_alm=True, rigid_joint_linear_ke=1e5),
-            "mujoco": lambda view: SolverMuJoCo(view, use_mujoco_cpu=True, integrator="euler"),
+            "mujoco": lambda view: _mujoco_solver(view, use_mujoco_cpu=True, integrator="euler"),
         }
         self._check_proxy_fixed_point(factories)
 
@@ -441,7 +450,7 @@ class TestAdmmJointProximal(unittest.TestCase):
                     name=str(body),
                     bodies=[body],
                     joints=[body],
-                    solver=lambda view: SolverMuJoCo(view, use_mujoco_cpu=True, integrator="euler"),
+                    solver=lambda view: _mujoco_solver(view, use_mujoco_cpu=True, integrator="euler"),
                 )
                 for body in (parent, child)
             ],

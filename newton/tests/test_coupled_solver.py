@@ -34,6 +34,15 @@ from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_t
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
+def _mujoco_solver(model, **kwargs) -> SolverMuJoCo:
+    """Build a MuJoCo solver, skipping the current test or subtest when MuJoCo is not installed."""
+    try:
+        SolverMuJoCo.import_mujoco()
+    except ImportError as exc:
+        raise unittest.SkipTest(str(exc)) from exc
+    return SolverMuJoCo(model, **kwargs)
+
+
 @wp.kernel(enable_backward=False)
 def _write_proxy_body_wrench_kernel(
     body_local_to_proxy_global: wp.array[int],
@@ -4056,8 +4065,8 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
         """Give receiving proxies FREE roots and preserve transferred motion through native solves."""
         factories = {
             "featherstone": SolverFeatherstone,
-            "mujoco": lambda view: SolverMuJoCo(view, use_mujoco_cpu=True, integrator="euler"),
-            "mujoco_persistent": lambda view: SolverMuJoCo(
+            "mujoco": lambda view: _mujoco_solver(view, use_mujoco_cpu=True, integrator="euler"),
+            "mujoco_persistent": lambda view: _mujoco_solver(
                 view, use_mujoco_cpu=True, integrator="euler", update_data_interval=0
             ),
         }
@@ -4170,7 +4179,7 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
         """Convert body-only edits while retaining explicitly supplied joint state and force inputs."""
         factories = {
             "featherstone": SolverFeatherstone,
-            "mujoco": lambda model: SolverMuJoCo(
+            "mujoco": lambda model: _mujoco_solver(
                 model, use_mujoco_cpu=True, integrator="euler", update_data_interval=0
             ),
         }
@@ -4231,7 +4240,7 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
         """Replay body-only notifications with changing twists and persistent native state."""
         factories = {
             "featherstone": SolverFeatherstone,
-            "mujoco": lambda model: SolverMuJoCo(model, integrator="euler", update_data_interval=0),
+            "mujoco": lambda model: _mujoco_solver(model, integrator="euler", update_data_interval=0),
         }
         for backend, factory in factories.items():
             with self.subTest(backend=backend):
