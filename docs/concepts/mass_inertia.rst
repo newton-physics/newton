@@ -48,7 +48,7 @@ Best practices
 
 .. tip::
 
-   **Check finalize warnings.**  Set ``validate_inertia_detailed=True`` on
+   **Check finalize warnings.**  Set ``inertia_validate_detailed=True`` on
    :class:`~newton.ModelBuilder` during development to get per-body warnings
    for any mass or inertia values that were corrected.
 
@@ -179,27 +179,84 @@ behavior:
    * - Setting
      - Default
      - Description
-   * - :attr:`~newton.ModelBuilder.balance_inertia`
+   * - :attr:`~newton.ModelBuilder.inertia_balance`
      - ``True``
      - Fix triangle-inequality violations on principal moments by shifting
        eigenvalues uniformly.
    * - :attr:`~newton.ModelBuilder.bound_mass`
      - ``None``
      - Minimum mass value.  If set, clamps small masses up to this value.
-   * - :attr:`~newton.ModelBuilder.bound_inertia`
+   * - :attr:`~newton.ModelBuilder.inertia_bound`
      - ``None``
      - Minimum inertia eigenvalue.  If set, ensures all principal moments are
        at least this value.
-   * - :attr:`~newton.ModelBuilder.validate_inertia_detailed`
+   * - :attr:`~newton.ModelBuilder.inertia_validate_detailed`
      - ``False``
      - When ``True``, uses CPU validation with per-body warnings.  When
        ``False``, uses a fast GPU kernel that returns only the count of
        corrected bodies.
+   * - :attr:`~newton.ModelBuilder.inertia_relative_tolerance`
+     - ``1e-6``
+     - Non-negative relative eigenvalue threshold (dimensionless).
+   * - :attr:`~newton.ModelBuilder.inertia_absolute_tolerance`
+     - ``1e-10``
+     - Positive absolute floor for eigenvalue and triangle-inequality
+       tolerances [kg·m²].
+   * - :attr:`~newton.ModelBuilder.inertia_correction`
+     - ``1e-6``
+     - Non-negative extra diagonal shift applied when repairing inertia
+       [kg·m²]. Zero disables the extra shift, not validation.
+
+``balance_inertia``, ``bound_inertia``, and ``validate_inertia_detailed`` are
+deprecated aliases in Newton 1.8. Replace them with ``inertia_balance``,
+``inertia_bound``, and ``inertia_validate_detailed``, respectively. Reading or
+assigning an old name still works and emits a
+:class:`~newton.exceptions.NewtonDeprecationWarning`.
+
+Small-inertia models
+^^^^^^^^^^^^^^^^^^^^
+
+The eigenvalue threshold is
+``max(inertia_relative_tolerance * largest_moment, inertia_absolute_tolerance)``.
+When the smallest moment is below this threshold, all three moments are
+shifted by ``threshold - smallest_moment + inertia_correction``. Thus the
+correction is not a minimum imposed on every tensor.
+
+For example, a 1 mm diameter capsule with 10 mm cylindrical length and density
+1,000 kg/m³ has an axial moment of approximately 1e-12 kg·m². To preserve this
+valid tensor while retaining validation, lower the absolute tolerance before
+finalization:
+
+.. code-block:: python
+
+    builder.inertia_absolute_tolerance = 1e-14
+    model = builder.finalize()
+
+This example value is specific to that scale, not a universal recommended
+tolerance. Lowering ``inertia_correction`` alone does not prevent a tensor
+below the threshold from being adjusted. The numerical settings apply equally
+to the detailed CPU and fast Warp paths. They must be finite and within the
+float32 range; the absolute tolerance must remain positive in float32.
+
+To skip the entire mass/inertia validation and correction stage:
+
+.. code-block:: python
+
+    model = builder.finalize(skip_validation_inertia=True)
+
+This preserves the builder's stored mass, inertia, and inverse properties,
+including invalid values. It skips finiteness, symmetry, positive-definiteness,
+mass and inertia bounds, and triangle-inequality checks. The caller is
+responsible for supplying consistent properties supported by the chosen
+solver. ``finalize(skip_all_validations=True)`` also skips this stage.
+Neither option undoes earlier importer processing, shape-derived mass
+computation, or fixed-joint merging. These settings are model-compilation
+policy, applied after import; they do not introduce new USD-authored fields.
 
 Checks performed
 ^^^^^^^^^^^^^^^^
 
-The detailed (``validate_inertia_detailed=True``) and fast (default) validation
+The detailed (``inertia_validate_detailed=True``) and fast (default) validation
 paths apply the same conceptual checks, but the detailed path emits per-body
 warnings.  Work is underway to unify the two implementations.
 
@@ -210,11 +267,11 @@ The following checks are applied in order:
    is set).
 3. **Zero mass with non-zero inertia** — inertia zeroed.
 4. **Inertia symmetry** — enforced via :math:`(I + I^T) / 2`.
-5. **Positive definiteness** — negative eigenvalues adjusted.
+5. **Positive definiteness** — eigenvalues below the configured threshold adjusted.
 6. **Eigenvalue bounds** — all eigenvalues clamped to at least
-   ``bound_inertia`` (if set).
+   ``inertia_bound`` (if set).
 7. **Triangle inequality** — principal moments must satisfy
-   :math:`I_1 + I_2 \geq I_3`.  If violated and ``balance_inertia`` is
+   :math:`I_1 + I_2 \geq I_3`.  If violated and ``inertia_balance`` is
    ``True``, eigenvalues are shifted uniformly to satisfy the inequality.
 
 .. note::

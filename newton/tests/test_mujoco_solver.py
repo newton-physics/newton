@@ -6153,7 +6153,7 @@ class TestMuJoCoConversion(unittest.TestCase):
     def test_no_shapes_separate_worlds_false(self):
         """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=False."""
         builder = newton.ModelBuilder()
-        builder.bound_inertia = 0.01
+        builder.inertia_bound = 0.01
         b0 = builder.add_link(mass=0.01)
         b1 = builder.add_link(mass=0.01)
         j0 = builder.add_joint_revolute(-1, b0)
@@ -6166,7 +6166,7 @@ class TestMuJoCoConversion(unittest.TestCase):
     def test_no_shapes_separate_worlds_true(self):
         """Testing that an articulation without any shapes can be converted successfully when setting separate_worlds=True."""
         builder = newton.ModelBuilder()
-        builder.bound_inertia = 0.01
+        builder.inertia_bound = 0.01
         builder.begin_world()
         b0 = builder.add_link(mass=0.01)
         b1 = builder.add_link(mass=0.01)
@@ -8175,7 +8175,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_count = 4
         world_builder = newton.ModelBuilder()
         # force the ModelBuilder to correct zero mass/inertia values
-        world_builder.bound_inertia = 0.01
+        world_builder.inertia_bound = 0.01
         world_builder.bound_mass = 0.01
         world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
@@ -8237,7 +8237,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         world_count = 4
         world_builder = newton.ModelBuilder()
         # force the ModelBuilder to correct zero mass/inertia values
-        world_builder.bound_inertia = 0.01
+        world_builder.inertia_bound = 0.01
         world_builder.bound_mass = 0.01
         world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()

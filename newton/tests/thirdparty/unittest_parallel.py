@@ -76,7 +76,7 @@ _STRICT_WARNING_TEST_MODULE = rf"{_TEST_MODULE_PREFIX}test_.*$"
 _KNOWN_WARNING_DEBT = (
     {
         "message": (
-            r"Inertia validation corrected \d+ bodies\. Set validate_inertia_detailed=True for detailed per-body "
+            r"Inertia validation corrected \d+ bodies\. Set inertia_validate_detailed=True for detailed per-body "
             r"warnings\."
         ),
         "category": UserWarning,

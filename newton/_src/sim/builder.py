@@ -1837,7 +1837,7 @@ class ModelBuilder:
         # endregion
 
         # region compiler settings (similar to MuJoCo)
-        self.balance_inertia: bool = True
+        self.inertia_balance: bool = True
         """Whether to automatically correct rigid body inertia tensors that violate the triangle inequality.
         When True, adds a scalar multiple of the identity matrix to preserve rotation structure while
         ensuring physical validity (I1 + I2 >= I3 for principal moments). Default: True."""
@@ -1847,12 +1847,28 @@ class ModelBuilder:
         value will be clamped to this minimum. Set to None to disable mass clamping.
         Default: None."""
 
-        self.bound_inertia: float | None = None
+        self.inertia_bound: float | None = None
         """Minimum allowed eigenvalue for rigid body inertia tensors [kg*m^2]. If set, ensures
         all principal moments of inertia are at least this value. Set to None to disable inertia
         eigenvalue clamping. Default: None."""
 
-        self.validate_inertia_detailed: bool = False
+        self.inertia_relative_tolerance: float = 1.0e-6
+        """Non-negative relative eigenvalue tolerance (dimensionless).
+        A principal moment below ``max(inertia_relative_tolerance * largest_moment,
+        inertia_absolute_tolerance)`` triggers correction. Must be finite. Default: 1.0e-6."""
+
+        self.inertia_absolute_tolerance: float = 1.0e-10
+        """Positive absolute floor for eigenvalue and triangle-inequality tolerances [kg*m^2].
+        Lower this to preserve physically valid small tensors. Must be finite and positive
+        in float32. Default: 1.0e-10."""
+
+        self.inertia_correction: float = 1.0e-6
+        """Non-negative extra diagonal shift when repairing inertia [kg*m^2].
+        Added to the shift needed to meet the eigenvalue threshold or triangle inequality;
+        does not affect tensors that pass validation. Zero disables the extra shift, not
+        validation. Must be finite. Default: 1.0e-6."""
+
+        self.inertia_validate_detailed: bool = False
         """Whether to use detailed (slower) inertia validation that provides per-body warnings.
         When False, uses a fast GPU kernel that reports only the total number of corrected bodies.
         When True, uses a CPU implementation that reports specific issues for each body.
@@ -3505,6 +3521,75 @@ class ModelBuilder:
     # creating an unused instance attribute whose targets are never applied.
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
+
+    @property
+    def balance_inertia(self) -> bool:
+        """Deprecated alias for :attr:`inertia_balance`.
+
+        .. deprecated:: 1.8
+            Use :attr:`inertia_balance` instead.
+        """
+        warnings.warn(
+            "ModelBuilder.balance_inertia is deprecated in Newton 1.8; use inertia_balance instead.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
+        return self.inertia_balance
+
+    @balance_inertia.setter
+    def balance_inertia(self, value: bool) -> None:
+        warnings.warn(
+            "ModelBuilder.balance_inertia is deprecated in Newton 1.8; use inertia_balance instead.",
+            NewtonDeprecationWarning,
+            stacklevel=3,
+        )
+        self.inertia_balance = value
+
+    @property
+    def bound_inertia(self) -> float | None:
+        """Deprecated alias for :attr:`inertia_bound`.
+
+        .. deprecated:: 1.8
+            Use :attr:`inertia_bound` instead.
+        """
+        warnings.warn(
+            "ModelBuilder.bound_inertia is deprecated in Newton 1.8; use inertia_bound instead.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
+        return self.inertia_bound
+
+    @bound_inertia.setter
+    def bound_inertia(self, value: float | None) -> None:
+        warnings.warn(
+            "ModelBuilder.bound_inertia is deprecated in Newton 1.8; use inertia_bound instead.",
+            NewtonDeprecationWarning,
+            stacklevel=3,
+        )
+        self.inertia_bound = value
+
+    @property
+    def validate_inertia_detailed(self) -> bool:
+        """Deprecated alias for :attr:`inertia_validate_detailed`.
+
+        .. deprecated:: 1.8
+            Use :attr:`inertia_validate_detailed` instead.
+        """
+        warnings.warn(
+            "ModelBuilder.validate_inertia_detailed is deprecated in Newton 1.8; use inertia_validate_detailed instead.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
+        return self.inertia_validate_detailed
+
+    @validate_inertia_detailed.setter
+    def validate_inertia_detailed(self, value: bool) -> None:
+        warnings.warn(
+            "ModelBuilder.validate_inertia_detailed is deprecated in Newton 1.8; use inertia_validate_detailed instead.",
+            NewtonDeprecationWarning,
+            stacklevel=3,
+        )
+        self.inertia_validate_detailed = value
 
     @property
     def joint_twist_lower(self) -> list[float]:
@@ -14325,6 +14410,7 @@ class ModelBuilder:
         skip_validation_worlds: bool = False,
         skip_validation_joints: bool = False,
         skip_validation_shapes: bool = False,
+        skip_validation_inertia: bool = False,
         skip_validation_structure: bool = False,
         skip_validation_joint_ordering: bool = True,
     ) -> Model:
@@ -14345,6 +14431,10 @@ class ModelBuilder:
                 joints cannot connect separate articulations, and non-root joints must belong to an articulation or
                 close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
+            skip_validation_inertia: If True, skips all rigid body mass/inertia validation and correction,
+                preserving the builder's mass, inertia, and stored inverses. This includes finiteness, symmetry,
+                positive-definiteness, bounds, and triangle-inequality checks. Does not undo earlier importer
+                processing, shape mass computation, or fixed-joint merging. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
                 particle topology, array lengths, monotonicity). Default is False.
             skip_validation_joint_ordering: If True, skips validation of DFS topological joint ordering within
@@ -14354,13 +14444,24 @@ class ModelBuilder:
             A fully constructed Model object containing all simulation data on the specified device.
 
         Notes:
-            - Performs validation and correction of rigid body inertia and mass properties.
+            - Validates and corrects rigid body inertia and mass unless ``skip_validation_inertia``
+              or ``skip_all_validations`` is True.
             - Closes all start-index arrays (e.g., for muscles, joints, articulations) with sentinel values.
             - Sets up all arrays and properties required for simulation, including particles, bodies, shapes,
               joints, springs, muscles, constraints, and collision/contact data.
             - Python's cyclic garbage collector is temporarily disabled during this operation. Its previous state
               is restored before returning or propagating an exception.
         """
+
+        validate_inertia = not skip_validation_inertia and not skip_all_validations
+        if validate_inertia:
+            # Both validation paths consume float32-representable settings.
+            for name in ("inertia_relative_tolerance", "inertia_absolute_tolerance", "inertia_correction"):
+                value = getattr(self, name)
+                if not math.isfinite(value) or value < 0.0 or value > float(np.finfo(np.float32).max):
+                    raise ValueError(f"{name} must be finite, non-negative, and representable in float32")
+                if name == "inertia_absolute_tolerance" and np.float32(value) <= 0.0:
+                    raise ValueError("inertia_absolute_tolerance must be positive in float32")
 
         gc_was_enabled = gc.isenabled()
         gc.disable()
@@ -14389,7 +14490,9 @@ class ModelBuilder:
                 self.validate_joint_ordering()
 
             with self._raw_array_access():
-                return self._finalize_impl(device=device, requires_grad=requires_grad)
+                return self._finalize_impl(
+                    device=device, requires_grad=requires_grad, validate_inertia=validate_inertia
+                )
         finally:
             if gc_was_enabled:
                 gc.enable()
@@ -14399,6 +14502,7 @@ class ModelBuilder:
         device: Devicelike | None = None,
         *,
         requires_grad: bool = False,
+        validate_inertia: bool = True,
     ) -> Model:
         # construct world starts by ensuring they are cumulative and appending
         # tail-end global counts and sum total counts over the entire model.
@@ -15546,7 +15650,7 @@ class ModelBuilder:
             body_inertia = self.body_inertia
             body_inv_mass = self.body_inv_mass
             body_inv_inertia = self.body_inv_inertia
-            if len(self.body_mass) > 0 and self.validate_inertia_detailed:
+            if validate_inertia and len(self.body_mass) > 0 and self.inertia_validate_detailed:
                 # Use detailed Python validation with per-body warnings on copies of the builder lists.
                 body_mass = list(body_mass)
                 body_inertia = list(body_inertia)
@@ -15557,10 +15661,13 @@ class ModelBuilder:
                     new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
                         body_mass[i],
                         body_inertia[i],
-                        self.balance_inertia,
+                        self.inertia_balance,
                         self.bound_mass,
-                        self.bound_inertia,
+                        self.inertia_bound,
                         body_label,
+                        relative_tolerance=self.inertia_relative_tolerance,
+                        absolute_tolerance=self.inertia_absolute_tolerance,
+                        correction=self.inertia_correction,
                     )
                     if was_corrected:
                         body_mass[i] = new_mass
@@ -15573,7 +15680,7 @@ class ModelBuilder:
             m.body_inertia = warp_array_from_values(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
             m.body_inv_inertia = warp_array_from_values(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
 
-            if len(self.body_mass) > 0 and not self.validate_inertia_detailed:
+            if validate_inertia and len(self.body_mass) > 0 and not self.inertia_validate_detailed:
                 # Use fast Warp kernel validation, correcting the Model arrays in place on device.
                 correction_count = wp.zeros(1, dtype=wp.int32)
                 wp.launch(
@@ -15584,9 +15691,12 @@ class ModelBuilder:
                         m.body_inertia,
                         m.body_inv_mass,
                         m.body_inv_inertia,
-                        self.balance_inertia,
+                        self.inertia_balance,
                         self.bound_mass if self.bound_mass is not None else 0.0,
-                        self.bound_inertia if self.bound_inertia is not None else 0.0,
+                        self.inertia_bound if self.inertia_bound is not None else 0.0,
+                        self.inertia_relative_tolerance,
+                        self.inertia_absolute_tolerance,
+                        self.inertia_correction,
                         correction_count,
                     ],
                 )
@@ -15596,7 +15706,7 @@ class ModelBuilder:
                 if num_corrections > 0:
                     warnings.warn(
                         f"Inertia validation corrected {num_corrections} bodies. "
-                        f"Set validate_inertia_detailed=True for detailed per-body warnings.",
+                        f"Set inertia_validate_detailed=True for detailed per-body warnings.",
                         NewtonWarning,
                         stacklevel=3,
                     )

@@ -11,10 +11,68 @@ import warp as wp
 
 from newton import ModelBuilder
 from newton._src.geometry.inertia import verify_and_correct_inertia
+from newton.exceptions import NewtonDeprecationWarning
 
 
 class TestInertiaValidation(unittest.TestCase):
     """Test cases for inertia verification and correction."""
+
+    def test_builder_deprecated_inertia_settings(self):
+        """Keep old settings as warning-emitting aliases of the canonical attributes."""
+        builder = ModelBuilder()
+        for old, new, default, value in (
+            ("balance_inertia", "inertia_balance", True, False),
+            ("bound_inertia", "inertia_bound", None, 0.01),
+            ("validate_inertia_detailed", "inertia_validate_detailed", False, True),
+        ):
+            with self.subTest(setting=old):
+                self.assertEqual(getattr(builder, new), default)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, new) as caught:
+                    setattr(builder, old, value)
+                self.assertEqual(caught.filename, __file__)
+                self.assertEqual(getattr(builder, new), value)
+                setattr(builder, new, default)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, new) as caught:
+                    self.assertEqual(getattr(builder, old), default)
+                self.assertEqual(caught.filename, __file__)
+
+    def test_builder_inertia_tolerance_validation(self):
+        """Reject invalid numerical settings before constructing the model."""
+        builder = ModelBuilder()
+        for name in ("inertia_relative_tolerance", "inertia_absolute_tolerance", "inertia_correction"):
+            for value in (-1.0, float("nan"), float("inf"), 1e100):
+                with self.subTest(setting=name, value=value):
+                    setattr(builder, name, value)
+                    with self.assertRaisesRegex(ValueError, name):
+                        builder.finalize()
+            setattr(builder, name, 1.0e-6)
+        for value in (0.0, 1e-100):
+            builder.inertia_absolute_tolerance = value
+            with self.assertRaisesRegex(ValueError, "inertia_absolute_tolerance"):
+                builder.finalize()
+
+    def test_skip_inertia_validation(self):
+        """Preserve mass, inertia, and their stored inverses when validation is skipped."""
+        builder = ModelBuilder()
+        # Cover thin rods, triangle balancing, mass clamping, and invalid mass
+        # together so skipping cannot accidentally leave part of the stage enabled.
+        for mass, diagonal in ((1e-5, [8e-11, 8e-11, 1e-12]), (1.0, [1, 1, 4]), (-1.0, [1, 1, 1])):
+            builder.add_body(mass=mass, inertia=wp.mat33(np.diag(diagonal)))
+        builder.bound_mass = 2.0
+        builder.inertia_bound = 10.0
+        for detailed in (False, True):
+            builder.inertia_validate_detailed = detailed
+            for skip_all in (False, True):
+                with self.subTest(detailed=detailed, skip_all=skip_all):
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        model = builder.finalize(skip_all_validations=skip_all, skip_validation_inertia=not skip_all)
+                    self.assertEqual(len(caught), 0)
+                    for name in ("body_mass", "body_inertia", "body_inv_mass", "body_inv_inertia"):
+                        expected = np.array(getattr(builder, name), dtype=np.float32)
+                        if "inertia" in name:
+                            expected = expected.reshape(-1, 3, 3)
+                        np.testing.assert_array_equal(getattr(model, name).numpy(), expected)
 
     def test_negative_mass_correction(self):
         """Test that negative mass is corrected to zero."""
@@ -137,10 +195,10 @@ class TestInertiaValidation(unittest.TestCase):
     def test_model_builder_integration_fast(self):
         """Test that fast inertia validation works in ModelBuilder.finalize()."""
         builder = ModelBuilder()
-        builder.balance_inertia = True
+        builder.inertia_balance = True
         builder.bound_mass = 0.1
-        builder.bound_inertia = 0.01
-        builder.validate_inertia_detailed = False  # Use fast validation (default)
+        builder.inertia_bound = 0.01
+        builder.inertia_validate_detailed = False  # Use fast validation (default)
 
         # Add a body with invalid inertia
         invalid_inertia = wp.mat33([[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 1.0]])
@@ -157,7 +215,7 @@ class TestInertiaValidation(unittest.TestCase):
         # Should get one summary warning
         self.assertEqual(len(w), 1)
         self.assertIn("Inertia validation corrected 1 bodies", str(w[0].message))
-        self.assertIn("validate_inertia_detailed=True", str(w[0].message))
+        self.assertIn("inertia_validate_detailed=True", str(w[0].message))
 
         # Check that mass and inertia were corrected
         body_mass = model.body_mass.numpy()[body_idx]
@@ -166,17 +224,17 @@ class TestInertiaValidation(unittest.TestCase):
         self.assertGreaterEqual(body_mass, builder.bound_mass)
 
         Ixx, Iyy, Izz = body_inertia[0, 0], body_inertia[1, 1], body_inertia[2, 2]
-        self.assertGreaterEqual(Ixx, builder.bound_inertia)
-        self.assertGreaterEqual(Iyy, builder.bound_inertia)
-        self.assertGreaterEqual(Izz, builder.bound_inertia)
+        self.assertGreaterEqual(Ixx, builder.inertia_bound)
+        self.assertGreaterEqual(Iyy, builder.inertia_bound)
+        self.assertGreaterEqual(Izz, builder.inertia_bound)
 
     def test_model_builder_integration_detailed(self):
         """Test that detailed inertia validation works in ModelBuilder.finalize()."""
         builder = ModelBuilder()
-        builder.balance_inertia = True
+        builder.inertia_balance = True
         builder.bound_mass = 0.1
-        builder.bound_inertia = 0.01
-        builder.validate_inertia_detailed = True  # Use detailed validation
+        builder.inertia_bound = 0.01
+        builder.inertia_validate_detailed = True  # Use detailed validation
 
         # Add a body with invalid inertia
         invalid_inertia = wp.mat33([[0.001, 0.0, 0.0], [0.0, 0.001, 0.0], [0.0, 0.0, 1.0]])
@@ -202,9 +260,9 @@ class TestInertiaValidation(unittest.TestCase):
         self.assertGreaterEqual(body_mass, builder.bound_mass)
 
         Ixx, Iyy, Izz = body_inertia[0, 0], body_inertia[1, 1], body_inertia[2, 2]
-        self.assertGreaterEqual(Ixx, builder.bound_inertia)
-        self.assertGreaterEqual(Iyy, builder.bound_inertia)
-        self.assertGreaterEqual(Izz, builder.bound_inertia)
+        self.assertGreaterEqual(Ixx, builder.inertia_bound)
+        self.assertGreaterEqual(Iyy, builder.inertia_bound)
+        self.assertGreaterEqual(Izz, builder.inertia_bound)
 
         # Check triangle inequalities
         self.assertGreaterEqual(Ixx + Iyy, Izz - 1e-10)
@@ -301,15 +359,19 @@ class TestInertiaValidation(unittest.TestCase):
 class TestInertiaValidationParity(unittest.TestCase):
     """Test that CPU (detailed) and GPU (fast) validation paths produce identical results."""
 
-    def _finalize_both_paths(self, mass, inertia, bound_mass=None, bound_inertia=None, balance_inertia=True):
+    def _finalize_both_paths(
+        self, mass, inertia, bound_mass=None, bound_inertia=None, balance_inertia=True, **settings
+    ):
         """Helper to finalize a single-body model with both validation paths and return results."""
         results = {}
         for detailed in [True, False]:
             builder = ModelBuilder()
-            builder.balance_inertia = balance_inertia
+            builder.inertia_balance = balance_inertia
             builder.bound_mass = bound_mass
-            builder.bound_inertia = bound_inertia
-            builder.validate_inertia_detailed = detailed
+            builder.inertia_bound = bound_inertia
+            builder.inertia_validate_detailed = detailed
+            for name, value in settings.items():
+                setattr(builder, name, value)
 
             body_idx = builder.add_body(
                 mass=mass,
@@ -331,18 +393,20 @@ class TestInertiaValidationParity(unittest.TestCase):
             }
         return results
 
-    def _assert_parity(self, results, atol=1e-5):
+    def _assert_parity(self, results, atol=1e-5, rtol=1e-7):
         """Assert that detailed and fast results match."""
         np.testing.assert_allclose(
             results["detailed"]["model_mass"],
             results["fast"]["model_mass"],
             atol=atol,
+            rtol=rtol,
             err_msg="Model mass mismatch between detailed and fast paths",
         )
         np.testing.assert_allclose(
             results["detailed"]["model_inertia"],
             results["fast"]["model_inertia"],
             atol=atol,
+            rtol=rtol,
             err_msg="Model inertia mismatch between detailed and fast paths",
         )
 
@@ -378,11 +442,24 @@ class TestInertiaValidationParity(unittest.TestCase):
         # Inertia should be positive-definite
         eigenvalues = np.linalg.eigvals(results["detailed"]["model_inertia"])
         self.assertTrue(np.all(eigenvalues > 0))
+        results = self._finalize_both_paths(
+            mass=1.0, inertia=np.zeros((3, 3)), inertia_absolute_tolerance=1e-12, inertia_correction=2e-12
+        )
+        self._assert_parity(results, atol=0.0)
+        np.testing.assert_allclose(results["fast"]["model_inertia"], np.eye(3) * 3e-12, atol=0.0, rtol=1e-6)
 
     def test_parity_semidefinite_inertia(self):
         """Both paths should repair semi-definite inertia (one zero eigenvalue)."""
         results = self._finalize_both_paths(mass=1.0, inertia=np.diag([0.0, 1.0, 1.0]))
         self._assert_parity(results)
+        results = self._finalize_both_paths(
+            mass=1.0, inertia=np.diag([0.0, 1.0, 1.0]), inertia_relative_tolerance=1e-3, inertia_correction=0.0
+        )
+        # Warp's float32 eigendecomposition differs slightly from NumPy's.
+        self._assert_parity(results, atol=0.0, rtol=1e-6)
+        np.testing.assert_allclose(
+            results["fast"]["model_inertia"].diagonal(), [1e-3, 1.001, 1.001], atol=0.0, rtol=1e-6
+        )
 
     def test_parity_nonsymmetric_inertia(self):
         """Both paths should symmetrize non-symmetric inertia."""
@@ -407,7 +484,7 @@ class TestInertiaValidationParity(unittest.TestCase):
 
         for detailed in [True, False]:
             builder = ModelBuilder()
-            builder.validate_inertia_detailed = detailed
+            builder.inertia_validate_detailed = detailed
             idx = builder.add_body(mass=1.0, inertia=wp.mat33(inertia), label="near_symmetric")
 
             with warnings.catch_warnings(record=True) as w:
@@ -435,6 +512,9 @@ class TestInertiaValidationParity(unittest.TestCase):
         """Both paths should correct triangle inequality violations identically."""
         results = self._finalize_both_paths(mass=1.0, inertia=np.diag([0.1, 0.1, 10.0]))
         self._assert_parity(results)
+        results = self._finalize_both_paths(mass=1.0, inertia=np.diag([0.1, 0.1, 10.0]), inertia_correction=0.25)
+        self._assert_parity(results)
+        np.testing.assert_allclose(results["fast"]["model_inertia"].diagonal(), [10.15, 10.15, 20.05], rtol=1e-6)
 
     def test_parity_near_boundary_triangle(self):
         """Near-boundary triangle cases should get consistent corrections."""
@@ -478,13 +558,31 @@ class TestInertiaValidationParity(unittest.TestCase):
         for detailed in [True, False]:
             with self.subTest(detailed=detailed):
                 builder = ModelBuilder()
-                builder.validate_inertia_detailed = detailed
+                builder.inertia_validate_detailed = detailed
                 idx = builder.add_body(mass=0.015, inertia=small_inertia, label="finger")
                 with warnings.catch_warnings(record=True) as w:
                     warnings.simplefilter("always")
                     model = builder.finalize()
                 self.assertEqual(len(w), 0, f"Unexpected warnings: {[str(x.message) for x in w]}")
                 np.testing.assert_allclose(model.body_inertia.numpy()[idx].diagonal(), diag, atol=1e-10)
+
+                # A 1 mm diameter, 10 mm long capsule has valid moments below
+                # the default absolute threshold. Only the threshold needs to
+                # change to preserve it; the repair amount must not be added.
+                builder = ModelBuilder()
+                builder.inertia_validate_detailed = detailed
+                builder.inertia_absolute_tolerance = 1e-14
+                idx = builder.add_body()
+                builder.add_shape_capsule(idx, radius=0.0005, half_height=0.005)
+                expected = np.array(builder.body_inertia[idx]).reshape(3, 3)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    model = builder.finalize()
+                self.assertEqual(len(caught), 0)
+                np.testing.assert_array_equal(model.body_inertia.numpy()[idx], expected)
+                np.testing.assert_allclose(
+                    model.body_inv_inertia.numpy()[idx] @ expected, np.eye(3), atol=1e-6, rtol=1e-6
+                )
 
     def test_lightweight_inertia_parity(self):
         """Test that both paths preserve lightweight inertia identically."""
@@ -493,7 +591,7 @@ class TestInertiaValidationParity(unittest.TestCase):
         results = {}
         for detailed in [True, False]:
             builder = ModelBuilder()
-            builder.validate_inertia_detailed = detailed
+            builder.inertia_validate_detailed = detailed
             idx = builder.add_body(mass=0.0035, inertia=wp.mat33(small_inertia.astype(np.float32)), label="pad")
             with warnings.catch_warnings(record=True) as w:
                 warnings.simplefilter("always")
@@ -514,7 +612,7 @@ class TestInertiaValidationParity(unittest.TestCase):
         for detailed in (True, False):
             with self.subTest(detailed=detailed):
                 builder = ModelBuilder()
-                builder.validate_inertia_detailed = detailed
+                builder.inertia_validate_detailed = detailed
 
                 original_mass = -1.0
                 original_inertia = wp.mat33([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
