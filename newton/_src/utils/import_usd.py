@@ -267,6 +267,7 @@ def parse_usd(
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+            Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
         load_static_visual_shapes: If True, supported visual-only geometry outside
             rigid-body hierarchies is loaded as static shapes when
             ``load_visual_shapes`` is also True. Default is True.
@@ -857,6 +858,13 @@ def parse_usd(
         if _is_enabled_collider(prim):
             if recurse:
                 _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, False)
+            return
+
+        if path_name in deformable_visual_exclude_paths:
+            if recurse:
+                _load_visual_shape_children(
+                    parent_body_id, prim, body_xform, articulation_root_xform, allow_visual_shapes
+                )
             return
 
         type_name = str(prim.GetTypeName()).lower()
@@ -1651,6 +1659,7 @@ def parse_usd(
         get_tetmesh_cached=_get_tetmesh_cached,
         is_viewport_drawn=visuals.is_viewport_drawn,
         load_visual_shapes=load_visual_shapes,
+        hide_collision_shapes=hide_collision_shapes,
         incoming_world_xform=incoming_world_xform,
         linear_unit=linear_unit,
         ignore_paths=ignore_paths,
@@ -1669,6 +1678,11 @@ def parse_usd(
         path_attachment_attrs=path_attachment_attrs,
         articulation_has_self_collision=articulation_has_self_collision,
         prims=_deformable_prims,
+        cable_visual_sim_paths={
+            sim_path
+            for body_path, sim_path in _deformable_prims.body_owner.items()
+            if any(visuals.is_viewport_drawn(prim) for prim in _deformable_prims.visual_meshes.get(body_path, ()))
+        },
     )
 
     def import_attached_cables(body_paths) -> None:

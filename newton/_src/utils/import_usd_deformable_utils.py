@@ -12,6 +12,7 @@ themselves live in the sibling ``import_usd_deformable_{cable,cloth,volume,attac
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import warnings
@@ -23,6 +24,8 @@ import numpy as np
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -1440,7 +1443,7 @@ def _scout_deformable_prims(
                 continue
             for prim in usd.find_deformable_visual_prims(body_prim):
                 path = str(prim.GetPath())
-                if _is_ignored_path(path, ignore_paths):
+                if not prim.GetPath().HasPrefix(root_prim.GetPath()) or _is_ignored_path(path, ignore_paths):
                     continue
                 buckets.native_physics_exclude_paths.append(path)
                 if prim.IsA(UsdGeom.Mesh):
@@ -1480,6 +1483,7 @@ class _DeformableImportContext:
     get_tetmesh_cached: Callable
     is_viewport_drawn: Callable
     load_visual_shapes: bool
+    hide_collision_shapes: bool
     incoming_world_xform: wp.transform
     linear_unit: float
     ignore_paths: Sequence[str]
@@ -1504,3 +1508,5 @@ class _DeformableImportContext:
     # a curve's bind pose could not be used; both filled by the cable pass.
     cable_visual_bind_poses: dict[int, wp.transform] = field(default_factory=dict)
     cable_visual_bind_errors: dict[int, str] = field(default_factory=dict)
+    cable_visual_sim_paths: set[str] = field(default_factory=set)
+    cable_visual_bind_points: dict[str, np.ndarray | None] = field(default_factory=dict)

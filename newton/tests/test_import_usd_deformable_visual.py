@@ -274,6 +274,47 @@ class TestUSDDeformableVisual(unittest.TestCase):
         self.assertEqual(model.shape_count, 0)
         self.assertNotIn("/World/Outer/Skin", result["path_shape_map"])
 
+        subtree = newton.ModelBuilder()
+        subtree.add_usd(stage, root_path="/World/Outer/Sim")
+        self.assertEqual(subtree.finalize(device="cpu").deformable_visual_mesh_count, 0)
+
+    def test_rigid_ancestor_and_unsupported_graphics(self):
+        """Keep skins out of rigid geometry and skip unsupported graphics without losing physics."""
+        from pxr import UsdGeom, UsdPhysics
+
+        stage = _deformable_stage()
+        rigid = UsdGeom.Xform.Define(stage, "/World/Rigid")
+        UsdPhysics.RigidBodyAPI.Apply(rigid.GetPrim())
+        self._object(stage, "/World/Rigid/Soft", "surface")
+        UsdGeom.Points.Define(stage, "/World/Rigid/Soft/Points").CreatePointsAttr([(0, 0, 1)])
+        for load_visuals in (True, False):
+            with self.subTest(load_visuals=load_visuals):
+                builder = newton.ModelBuilder()
+                with self.assertLogs("newton", level="WARNING") as logs:
+                    result = builder.add_usd(stage, load_visual_shapes=load_visuals)
+                self.assertTrue(any("unsupported graphics" in message for message in logs.output))
+                self.assertNotIn("/World/Rigid/Soft/Skin", result["path_shape_map"])
+                model = builder.finalize(device="cpu")
+                self.assertGreater(model.particle_count, 0)
+                self.assertEqual(model.deformable_visual_mesh_count, int(load_visuals))
+
+    def test_cable_collision_visibility(self):
+        """Hide cable capsules only when a visible skin was imported successfully."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        _, skin, _ = self._object(stage, "/World/Cable", "curve")
+        for visible in (True, False):
+            with self.subTest(visible=visible):
+                skin.CreateVisibilityAttr(UsdGeom.Tokens.inherited if visible else UsdGeom.Tokens.invisible)
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage, hide_collision_shapes=True, force_show_colliders=True)
+                self.assertGreater(builder.shape_count, 0)
+                self.assertTrue(
+                    all(bool(flags & newton.ShapeFlags.VISIBLE) != visible for flags in builder.shape_flags)
+                )
+                self.assertTrue(all(flags & newton.ShapeFlags.COLLIDE_SHAPES for flags in builder.shape_flags))
+
 
 if __name__ == "__main__":
     unittest.main()

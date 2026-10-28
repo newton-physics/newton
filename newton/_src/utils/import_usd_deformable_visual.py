@@ -31,18 +31,16 @@ from .import_usd_deformable_utils import _DeformableImportContext, _world_matrix
 logger = logging.getLogger(__name__)
 
 
-def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_range) -> np.ndarray | None:
-    """Particle positions overridden with the simulation geometry's bind pose.
+def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_range) -> np.ndarray:
+    """Return only the owning simulation geometry's bind-pose positions.
 
     Embedding must pair the graphics bind pose with the simulation bind pose.
     When the simulation prim authors no ``bindPose`` its imported points are the
-    bind configuration and no override is needed (returns ``None``).
+    bind configuration.
     """
     from ..usd import utils as usd  # noqa: PLC0415
 
     sim_prim = ctx.stage.GetPrimAtPath(sim_path)
-    if not sim_prim or not sim_prim.IsValid():
-        return None
     bind = usd.get_deformable_bind_pose(sim_prim)
     p0, p1 = particle_range
     if len(bind) != p1 - p0:
@@ -50,11 +48,9 @@ def _sim_bind_positions(ctx: _DeformableImportContext, sim_path: str, particle_r
             f"{sim_path}: bind pose has {len(bind)} points but the imported geometry has {p1 - p0} particles"
         )
     if np.array_equal(bind, sim_prim.GetAttribute("points").Get()):
-        return None
+        return np.asarray(ctx.builder.particle_q[p0:p1], dtype=np.float64)
     world_mat = ctx.get_prim_world_mat(sim_prim, None, ctx.incoming_world_xform)
-    positions = np.array(ctx.builder.particle_q, dtype=np.float64)
-    positions[p0:p1] = _world_points(bind, world_mat, translate=True)
-    return positions
+    return _world_points(bind, world_mat, translate=True)
 
 
 def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
@@ -65,7 +61,9 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
     keep the roll the cable was built with. Failures are recorded per body and
     reported by the visual pass instead of stopping the simulation import.
     """
-    if not ctx.load_visual_shapes:
+    if not ctx.load_visual_shapes or not any(
+        path in ctx.cable_visual_sim_paths for sources in point_sources for path, _ in sources
+    ):
         return
     from ..sim.builder import ModelBuilder  # noqa: PLC0415
     from ..usd import utils as usd  # noqa: PLC0415
@@ -75,15 +73,17 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
         for path, _point in (source for sources in point_sources for source in sources):
             if path in authored:
                 continue
-            prim = ctx.stage.GetPrimAtPath(path)
-            bind = usd.get_deformable_bind_pose(prim)
-            # Keep the imported rod frames when the visual reference is the initial geometry.
-            if np.array_equal(bind, prim.GetAttribute("points").Get()):
-                bind = None
-            else:
-                matrix = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
-                bind = _world_points(bind, matrix, translate=True)
-            authored[path] = bind
+            if path not in ctx.cable_visual_bind_points:
+                prim = ctx.stage.GetPrimAtPath(path)
+                bind = usd.get_deformable_bind_pose(prim)
+                # Several curves can share a prim; read and transform its points only once.
+                if np.array_equal(bind, prim.GetAttribute("points").Get()):
+                    bind = None
+                else:
+                    matrix = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
+                    bind = _world_points(bind, matrix, translate=True)
+                ctx.cable_visual_bind_points[path] = bind
+            authored[path] = ctx.cable_visual_bind_points[path]
         if all(points is None for points in authored.values()):
             return
         initial = np.asarray(rod.points, dtype=np.float64).reshape(-1, 3)
@@ -96,19 +96,19 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
                 if not np.allclose(candidates, candidates[0], atol=tolerance, rtol=0.0):
                     raise ValueError("welded cable points have inconsistent bind poses")
                 points[index] = candidates[0]
-        body_q = np.asarray(ctx.builder.body_q, dtype=np.float64).reshape(-1, 7)
         for body, (start, end) in zip(bodies, rod.edges, strict=True):
+            body_q = np.asarray(ctx.builder.body_q[body], dtype=np.float64)
             initial_direction = initial[end] - initial[start]
             bind_direction = points[end] - points[start]
             # The body origin sits somewhere along its segment (the middle for rods); keep that spot.
             along = float(
-                np.dot(body_q[body, :3] - initial[start], initial_direction)
+                np.dot(body_q[:3] - initial[start], initial_direction)
                 / max(float(np.dot(initial_direction, initial_direction)), 1.0e-30)
             )
             frame = ModelBuilder._transport_rod_frame(
                 "add_usd",
                 "bindPose",
-                wp.quat(*body_q[body, 3:7]),
+                wp.quat(*body_q[3:7]),
                 wp.vec3(*initial_direction),
                 wp.vec3(*bind_direction),
             )
@@ -123,11 +123,13 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
 
 def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
     """Import graphics payloads for every imported deformable body and embed them."""
+    from ..geometry.flags import ShapeFlags  # noqa: PLC0415
     from ..usd import utils as usd  # noqa: PLC0415
 
     builder = ctx.builder
     # The simulation bind pose is read once per body, however many skins it carries.
-    sim_positions: dict[str, np.ndarray | None] = {}
+    sim_positions: dict[str, np.ndarray] = {}
+    skinned_bodies: set[int] = set()
     for body_path, sim_path in ctx.prims.body_owner.items():
         if sim_path in ctx.path_soft_map:
             family = "soft"
@@ -180,7 +182,10 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     if sim_path not in sim_positions:
                         sim_positions[sim_path] = _sim_bind_positions(ctx, sim_path, ranges["particle"])
                     parent, weights = builder._embed_visual_vertices_in_tets(
-                        world_verts, ranges["tet"], positions=sim_positions[sim_path]
+                        world_verts,
+                        ranges["tet"],
+                        positions=sim_positions[sim_path],
+                        particle_start=ranges["particle"][0],
                     )
                     index = builder.add_deformable_visual_mesh(
                         world_verts,
@@ -198,7 +203,10 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     if sim_path not in sim_positions:
                         sim_positions[sim_path] = _sim_bind_positions(ctx, sim_path, ranges["particle"])
                     parent, weights = builder._embed_visual_vertices_in_triangles(
-                        world_verts, ranges["tri"], positions=sim_positions[sim_path]
+                        world_verts,
+                        ranges["tri"],
+                        positions=sim_positions[sim_path],
+                        particle_start=ranges["particle"][0],
                     )
                     index = builder.add_deformable_visual_mesh(
                         world_verts,
@@ -218,24 +226,20 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                     ]
                     if failed:
                         raise ValueError(failed[0])
-                    reference_binding = None
+                    poses = None
                     if any(body in ctx.cable_visual_bind_poses for body in bodies):
                         poses = [ctx.cable_visual_bind_poses.get(body, builder.body_q[body]) for body in bodies]
-                        reference_binding = builder._bind_visual_vertices_to_bodies(
-                            world_verts, bodies, nearest=True, poses=np.asarray(poses)
-                        )
-                    index = builder.add_deformable_visual_mesh(
+                    index = builder._add_deformable_visual_mesh(
                         world_verts,
                         indices,
                         kind="body",
                         bodies=bodies,
+                        body_poses=poses,
                         uvs=uvs,
                         texture=texture,
                         label=path,
                     )
-                    if reference_binding is not None:
-                        spec = builder._deformable_visual_meshes[index]
-                        spec["parent"], spec["local_offsets"] = reference_binding
+                    skinned_bodies.update(bodies)
             except ValueError as exc:
                 logger.warning("%s: could not embed visual mesh; skipping (%s)", path, exc)
                 continue
@@ -246,3 +250,8 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             spec["graphics_path"] = path
             if ctx.verbose:
                 logger.info("  Embedded visual mesh %s (%d verts) in %s %s.", path, len(world_verts), family, sim_path)
+
+    if ctx.hide_collision_shapes:
+        for shape, body in enumerate(builder.shape_body):
+            if body in skinned_bodies:
+                builder.shape_flags[shape] &= ~ShapeFlags.VISIBLE
