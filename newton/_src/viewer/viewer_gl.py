@@ -639,15 +639,16 @@ class ViewerGL(ViewerBase):
                 )
                 batch.scales = out_scales
 
-        self.picking = Picking(model, world_offsets=self.world_offsets)
-        self.picking.visible_worlds_mask = self._visible_worlds_mask
-        self.wind = Wind(model)
-
+        self.picking = None
         if model is not None:
+            self.picking = Picking(
+                model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask
+            )
             try:
                 self.picking._load_kernels()
             except Exception:
                 pass
+        self.wind = Wind(model)
 
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
@@ -1930,24 +1931,17 @@ class ViewerGL(ViewerBase):
             self.log_lines("picking_line", None, None, None)
             return
 
-        # Get the picked body index
-        pick_body_idx = self.picking.pick_body.numpy()[0]
-        if pick_body_idx < 0:
-            self.log_lines("picking_line", None, None, None)
-            return
-
+        pick_body_idx = self.picking.pick_body
         # Get the pick target and current picked point on geometry (in physics space)
-        pick_state = self.picking.pick_state.numpy()
-
-        pick_target = pick_state[0]["picking_target_world"]
-        picked_point = pick_state[0]["picked_point_world"]
+        pick_target = self.picking.pick_target
+        picked_point = self.picking.pick_point
 
         # Apply world offset to convert from physics space to visual space
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
             if self.model.body_world is not None:
                 body_world_idx = self.model.body_world.numpy()[pick_body_idx]
                 if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
-                    world_offset = self.world_offsets.numpy()[body_world_idx]
+                    world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
                     pick_target = pick_target + world_offset
                     picked_point = picked_point + world_offset
 
@@ -1996,7 +1990,7 @@ class ViewerGL(ViewerBase):
             state: The current simulation state.
         """
         if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
         if self.wind is not None:
             self.wind._apply_wind_force(state)

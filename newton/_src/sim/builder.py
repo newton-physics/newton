@@ -11785,7 +11785,7 @@ class ModelBuilder:
             pos: The position of the cloth in world space
             rot: The orientation of the cloth in world space
             vel: The velocity of the cloth in world space
-            dim_x_: The number of rectangular cells along the x-axis
+            dim_x: The number of rectangular cells along the x-axis
             dim_y: The number of rectangular cells along the y-axis
             cell_x: The width of each cell in the x-direction
             cell_y: The width of each cell in the y-direction
@@ -12192,7 +12192,7 @@ class ModelBuilder:
             pos: The position of the solid in world space
             rot: The orientation of the solid in world space
             vel: The velocity of the solid in world space
-            dim_x_: The number of rectangular cells along the x-axis
+            dim_x: The number of rectangular cells along the x-axis
             dim_y: The number of rectangular cells along the y-axis
             dim_z: The number of rectangular cells along the z-axis
             cell_x: The width of each cell in the x-direction
