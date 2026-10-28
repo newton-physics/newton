@@ -52,6 +52,14 @@ class ModelFlags(IntEnum):
     JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
     """Indicates joint reference-pose and spring-reference updates, including Rod rest rotations in joint_target_q. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
+    SHAPE_GEOMETRY = 1 << 12
+    """Indicates shape geometry changes beyond :attr:`SHAPE_PROPERTIES`: shape slot rows took the type, source, and derived collision data of other prototype shapes or were emptied, as changed by :meth:`~newton.Model.assign_shape_prototypes`. Viewers and solvers that cache shape geometry must refresh it. Use at reset rather than every step.
+
+    .. experimental::
+
+        Shape prototypes, including this flag, may change without a deprecation period.
+    """
+
     ALL = (
         JOINT_PROPERTIES
         | JOINT_DOF_PROPERTIES
@@ -65,6 +73,7 @@ class ModelFlags(IntEnum):
         | JOINT_DOF_FORCE_PROPERTIES
         | JOINT_DOF_INERTIAL_PROPERTIES
         | JOINT_REFERENCE_POSE_PROPERTIES
+        | SHAPE_GEOMETRY
     )
     """Indicates all property updates."""
 

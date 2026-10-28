@@ -24,6 +24,7 @@ from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .enums import ModelFlags
 from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
@@ -45,6 +46,222 @@ if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
     from .collide import CollisionPipeline
+
+
+@wp.struct
+class _ShapeGeometry:
+    """Arrays a shape takes from the prototype shape it holds, indexed by shape or by prototype shape."""
+
+    type: wp.array[wp.int32]
+    source_ptr: wp.array[wp.uint64]
+    scale: wp.array[wp.vec3]
+    transform: wp.array[wp.transform]
+    is_solid: wp.array[wp.bool]
+    margin: wp.array[wp.float32]
+    gap: wp.array[wp.float32]
+    collision_radius: wp.array[wp.float32]
+    heightfield_index: wp.array[wp.int32]
+    edge_range: wp.array[wp.vec2i]
+    support_data: wp.array[wp.vec4i]
+    sdf_index: wp.array[wp.int32]
+    mesh_properties: wp.array[wp.int32]
+    mesh_boundary_start: wp.array[wp.int32]
+    aabb_lower: wp.array[wp.vec3]
+    aabb_upper: wp.array[wp.vec3]
+    interior_point: wp.array[wp.vec3]
+    voxel_resolution: wp.array[wp.vec3i]
+    flags: wp.array[wp.int32]
+    color: wp.array[wp.vec3]
+    bvh_bounds: wp.array2d[wp.vec3]
+    """Local shape BVH bounds; empty until :meth:`Model.bvh_build_shapes` runs."""
+
+
+_SHAPE_PROTOTYPE_FIELDS = {
+    "shape_type": "type",
+    "shape_source_ptr": "source_ptr",
+    "shape_scale": "scale",
+    "shape_transform": "transform",
+    "shape_is_solid": "is_solid",
+    "shape_margin": "margin",
+    "shape_gap": "gap",
+    "shape_collision_radius": "collision_radius",
+    "shape_heightfield_index": "heightfield_index",
+    "_shape_edge_range": "edge_range",
+    "_shape_support_data": "support_data",
+    "_shape_sdf_index": "sdf_index",
+    "_shape_mesh_properties": "mesh_properties",
+    "_shape_mesh_boundary_start": "mesh_boundary_start",
+    "shape_collision_aabb_lower": "aabb_lower",
+    "shape_collision_aabb_upper": "aabb_upper",
+    "_shape_interior_point": "interior_point",
+    "_shape_voxel_resolution": "voxel_resolution",
+    "shape_flags": "flags",
+    "shape_color": "color",
+}
+"""Model arrays a slot row takes from the prototype shape it holds, by :class:`_ShapeGeometry` field.
+Everything else, such as body, world, materials, collision group, and opacity, belongs to the row."""
+
+_SHAPE_PROTOTYPE_ATTRIBUTES = tuple(_SHAPE_PROTOTYPE_FIELDS)
+
+
+@wp.func
+def _copy_shape_geometry(
+    prototypes: _ShapeGeometry, prototype: int, shapes: _ShapeGeometry, shape: int, placement: wp.transform
+):
+    shapes.type[shape] = prototypes.type[prototype]
+    shapes.source_ptr[shape] = prototypes.source_ptr[prototype]
+    shapes.scale[shape] = prototypes.scale[prototype]
+    shapes.transform[shape] = wp.transform_multiply(placement, prototypes.transform[prototype])
+    shapes.is_solid[shape] = prototypes.is_solid[prototype]
+    shapes.margin[shape] = prototypes.margin[prototype]
+    shapes.gap[shape] = prototypes.gap[prototype]
+    shapes.collision_radius[shape] = prototypes.collision_radius[prototype]
+    shapes.heightfield_index[shape] = prototypes.heightfield_index[prototype]
+    shapes.edge_range[shape] = prototypes.edge_range[prototype]
+    shapes.support_data[shape] = prototypes.support_data[prototype]
+    shapes.sdf_index[shape] = prototypes.sdf_index[prototype]
+    shapes.mesh_properties[shape] = prototypes.mesh_properties[prototype]
+    shapes.mesh_boundary_start[shape] = prototypes.mesh_boundary_start[prototype]
+    shapes.aabb_lower[shape] = prototypes.aabb_lower[prototype]
+    shapes.aabb_upper[shape] = prototypes.aabb_upper[prototype]
+    shapes.interior_point[shape] = prototypes.interior_point[prototype]
+    shapes.voxel_resolution[shape] = prototypes.voxel_resolution[prototype]
+    shapes.flags[shape] = prototypes.flags[prototype]
+    shapes.color[shape] = prototypes.color[prototype]
+    if shapes.bvh_bounds.shape[0] > 0:
+        shapes.bvh_bounds[shape, 0] = prototypes.bvh_bounds[prototype, 0]
+        shapes.bvh_bounds[shape, 1] = prototypes.bvh_bounds[prototype, 1]
+
+
+@wp.kernel(enable_backward=False)
+def _assign_shape_prototypes_kernel(
+    assigned_slots: wp.array[wp.int32],
+    assigned_prototypes: wp.array[wp.int32],
+    prototype_shape_start: wp.array[wp.int32],
+    slot_shape_start: wp.array[wp.int32],
+    slot_shapes: wp.array[wp.int32],
+    slot_xform: wp.array[wp.transform],
+    prototype_shapes: _ShapeGeometry,
+    shapes: _ShapeGeometry,
+    # outputs
+    slot_prototype: wp.array[wp.int32],
+    shape_prototype_shape_held: wp.array[wp.int32],
+):
+    i, row = wp.tid()
+    slot = assigned_slots[i]
+    prototype = assigned_prototypes[i]
+    if slot < 0 or slot >= slot_prototype.shape[0]:
+        return
+    if prototype < -1 or prototype >= prototype_shape_start.shape[0] - 1:
+        return
+    first_row = slot_shape_start[slot]
+    capacity = slot_shape_start[slot + 1] - first_row
+    count = int(0)
+    if prototype >= 0:
+        count = prototype_shape_start[prototype + 1] - prototype_shape_start[prototype]
+    if count > capacity or row >= capacity:
+        return
+
+    shape = slot_shapes[first_row + row]
+    if row < count:
+        prototype_shape = prototype_shape_start[prototype] + row
+        _copy_shape_geometry(prototype_shapes, prototype_shape, shapes, shape, slot_xform[slot])
+        shape_prototype_shape_held[shape] = prototype_shape
+    else:
+        shape_prototype_shape_held[shape] = -1
+    if row == 0:
+        slot_prototype[slot] = prototype
+
+
+@wp.kernel(enable_backward=False)
+def _copy_prototype_shape_custom_kernel(
+    assigned_slots: wp.array[wp.int32],
+    slot_shape_start: wp.array[wp.int32],
+    slot_shapes: wp.array[wp.int32],
+    shape_prototype_shape_held: wp.array[wp.int32],
+    prototype_values: wp.array[Any],
+    # outputs
+    values: wp.array[Any],
+):
+    i, row = wp.tid()
+    slot = assigned_slots[i]
+    if slot < 0 or slot >= slot_shape_start.shape[0] - 1:
+        return
+    first_row = slot_shape_start[slot]
+    if row >= slot_shape_start[slot + 1] - first_row:
+        return
+    shape = slot_shapes[first_row + row]
+    prototype_shape = shape_prototype_shape_held[shape]
+    if prototype_shape >= 0:
+        values[shape] = prototype_values[prototype_shape]
+
+
+@wp.func
+def _shifted_inertia(inertia: wp.mat33, mass: float, offset: wp.vec3):
+    return inertia + mass * (wp.dot(offset, offset) * wp.identity(3, dtype=float) - wp.outer(offset, offset))
+
+
+@wp.kernel(enable_backward=False)
+def _update_slot_body_inertia_kernel(
+    assigned_slots: wp.array[wp.int32],
+    slot_body: wp.array[wp.int32],
+    slot_xform: wp.array[wp.transform],
+    slot_prototype: wp.array[wp.int32],
+    body_prototype_inertia: wp.array[wp.bool],
+    body_slot_range: wp.array[wp.vec2i],
+    body_slots: wp.array[wp.int32],
+    prototype_mass: wp.array[wp.float32],
+    prototype_com: wp.array[wp.vec3],
+    prototype_inertia: wp.array[wp.mat33],
+    base_mass: wp.array[wp.float32],
+    base_com: wp.array[wp.vec3],
+    base_inertia: wp.array[wp.mat33],
+    # outputs
+    body_mass: wp.array[wp.float32],
+    body_inv_mass: wp.array[wp.float32],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_inertia: wp.array[wp.mat33],
+):
+    slot = assigned_slots[wp.tid()]
+    if slot < 0 or slot >= slot_body.shape[0]:
+        return
+    body = slot_body[slot]
+    if body < 0 or not body_prototype_inertia[body]:
+        return
+
+    # Several assigned slots of one body recompute the same values.
+    slots = body_slot_range[body]
+    mass = base_mass[body]
+    moment = base_com[body] * mass
+    for k in range(slots[1]):
+        body_slot = body_slots[slots[0] + k]
+        prototype = slot_prototype[body_slot]
+        if prototype >= 0:
+            mass += prototype_mass[prototype]
+            moment += prototype_mass[prototype] * wp.transform_point(slot_xform[body_slot], prototype_com[prototype])
+    com = base_com[body]
+    if mass > 0.0:
+        com = moment / mass
+    inertia = _shifted_inertia(base_inertia[body], base_mass[body], base_com[body] - com)
+    for k in range(slots[1]):
+        body_slot = body_slots[slots[0] + k]
+        prototype = slot_prototype[body_slot]
+        if prototype >= 0:
+            xform = slot_xform[body_slot]
+            rotation = wp.quat_to_matrix(wp.transform_get_rotation(xform))
+            part = rotation * prototype_inertia[prototype] * wp.transpose(rotation)
+            offset = wp.transform_point(xform, prototype_com[prototype]) - com
+            inertia += _shifted_inertia(part, prototype_mass[prototype], offset)
+
+    body_mass[body] = mass
+    body_inv_mass[body] = wp.where(mass > 0.0, 1.0 / mass, 0.0)
+    body_com[body] = com
+    body_inertia[body] = inertia
+    if wp.determinant(inertia) != 0.0:
+        body_inv_inertia[body] = wp.inverse(inertia)
+    else:
+        body_inv_inertia[body] = wp.mat33(0.0)
 
 
 def _pack_shape_pair_codes(shape_a: np.ndarray, shape_b: np.ndarray) -> np.ndarray:
@@ -375,6 +592,37 @@ class Model:
             AttributeFrequency.ONCE,
             compaction_policy="passthrough",
         ),
+        "shape_prototype_label": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_start": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_mass": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_com": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_inertia": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_shape_prototype_geometry": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_shape_prototype_custom": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_label": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_source": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_type": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_scale": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_transform": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_margin": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_is_solid": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_flags": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_prototype_shape_color": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_slot_label": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_slot_body": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_slot_xform": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_slot_shape_start": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_slot_shapes": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_slot_prototype": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_body_slots": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "shape_slot": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_slot_row": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_prototype_shape_held": AttributeSpec(AttributeFrequency.SHAPE),
+        "_body_slot_range": AttributeSpec(AttributeFrequency.BODY),
+        "_body_prototype_inertia": AttributeSpec(AttributeFrequency.BODY),
+        "_body_base_mass": AttributeSpec(AttributeFrequency.BODY),
+        "_body_base_com": AttributeSpec(AttributeFrequency.BODY),
+        "_body_base_inertia": AttributeSpec(AttributeFrequency.BODY),
         # shapes
         "shape_label": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_transform": AttributeSpec(AttributeFrequency.SHAPE),
@@ -929,7 +1177,12 @@ class Model:
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
         self.bvh_shape_enabled: wp.array[wp.uint32] | None = None
         """Shape indices included in the shape BVH, shape ``[bvh_shape_count_enabled]``."""
+        self._bvh_shape_active_leaves: wp.array[wp.uint32] | None = None
+        """:attr:`bvh_shape_enabled` with empty slot rows (see :attr:`shape_slot_count`) replaced by ``0xFFFFFFFF``,
+        which ray queries skip; updated by :meth:`bvh_build_shapes` and :meth:`bvh_refit_shapes`."""
         self.bvh_shape_count_enabled: int = 0
+        self._bvh_shape_flags_mask: int = int(ShapeFlags.VISIBLE)
+        """Shape flags mask the shape BVH was built with."""
         """Number of shapes included in the shape BVH."""
         self.bvh_shape_bounds: wp.array2d[wp.vec3f] | None = None
         """Local-space AABB per shape (min/max) for mesh and gaussian shapes, shape ``[shape_count, 2]`` [m]."""
@@ -1182,6 +1435,130 @@ class Model:
 
             num_global_bodies = body_world_start[-1] - body_world_start[-2] + body_world_start[0]
         """
+        self.shape_prototype_count: int = 0
+        """Number of shape prototypes, declared with :meth:`ModelBuilder.add_shape_prototype
+        <newton.ModelBuilder.add_shape_prototype>` or :meth:`ModelBuilder.add_shape_slot
+        <newton.ModelBuilder.add_shape_slot>`.
+
+        A prototype is an asset: one or more prototype shapes with shared inertial properties. A
+        shape slot holds one prototype at a time; see :meth:`assign_shape_prototypes`.
+
+        .. experimental::
+
+            Shape prototypes may change without a deprecation period.
+        """
+        self.shape_prototype_label: list[str] = []
+        """Labels of the shape prototypes in declaration order, shape [shape_prototype_count], str.
+        Experimental, see :attr:`shape_prototype_count`."""
+        self.shape_prototype_shape_start: wp.array[wp.int32] | None = None
+        """Start of each prototype's shapes in the ``shape_prototype_shape_*`` arrays, shape
+        [shape_prototype_count + 1], int. Experimental, see :attr:`shape_prototype_count`."""
+        self.shape_prototype_mass: wp.array[wp.float32] | None = None
+        """Mass [kg] of each prototype, shape [shape_prototype_count], float.
+
+        A body's mass properties are those of its other shapes plus those of the prototypes its
+        slots hold, placed at the slots. Edits take effect at the next :meth:`assign_shape_prototypes`.
+        Experimental, see :attr:`shape_prototype_count`.
+        """
+        self.shape_prototype_com: wp.array[wp.vec3] | None = None
+        """Center of mass [m] of each prototype in its frame, shape [shape_prototype_count, 3], float.
+        Edits take effect at the next :meth:`assign_shape_prototypes`."""
+        self.shape_prototype_inertia: wp.array[wp.mat33] | None = None
+        """Inertia [kg·m²] of each prototype about its center of mass, in its frame, shape
+        [shape_prototype_count, 3, 3], float. Edits take effect at the next :meth:`assign_shape_prototypes`."""
+        self.shape_prototype_shape_count: int = 0
+        """Number of prototype shapes over all prototypes. Experimental, see :attr:`shape_prototype_count`."""
+        self.shape_prototype_shape_label: list[str] = []
+        """Label of each prototype shape, shape [shape_prototype_shape_count], str."""
+        self.shape_prototype_shape_source: list[Any] = []
+        """Geometry source (e.g. :class:`~newton.Mesh`) of each prototype shape, or ``None``, shape
+        [shape_prototype_shape_count]."""
+        self.shape_prototype_shape_type: wp.array[wp.int32] | None = None
+        """Geometry type (:class:`~newton.GeoType`) of each prototype shape, shape [shape_prototype_shape_count], int.
+
+        Like the other ``shape_prototype_shape_*`` geometry arrays, it is the value a slot row copies
+        into the ``shape_*`` array of the same name when it takes the prototype shape; read-only.
+        Experimental, see :attr:`shape_prototype_count`.
+        """
+        self.shape_prototype_shape_scale: wp.array[wp.vec3] | None = None
+        """Scale of each prototype shape, shape [shape_prototype_shape_count, 3], float; see :attr:`shape_scale`."""
+        self.shape_prototype_shape_transform: wp.array[wp.transform] | None = None
+        """Transform of each prototype shape in its prototype's frame, shape [shape_prototype_shape_count, 7],
+        float; a slot composes it with :attr:`shape_slot_xform`."""
+        self.shape_prototype_shape_margin: wp.array[wp.float32] | None = None
+        """Margin [m] of each prototype shape, shape [shape_prototype_shape_count], float; see :attr:`shape_margin`."""
+        self.shape_prototype_shape_is_solid: wp.array[wp.bool] | None = None
+        """Whether each prototype shape is solid, shape [shape_prototype_shape_count], bool."""
+        self.shape_prototype_shape_flags: wp.array[wp.int32] | None = None
+        """Flags (:class:`~newton.ShapeFlags`) of each prototype shape, shape [shape_prototype_shape_count], int."""
+        self.shape_prototype_shape_color: wp.array[wp.vec3] | None = None
+        """Display color of each prototype shape, shape [shape_prototype_shape_count, 3], float."""
+        self._shape_prototype_custom: dict[str, tuple[wp.array, wp.array]] = {}
+        """Model-assigned shape custom attributes by full key: the value of each prototype shape and
+        the per-shape array that slot rows copy them into."""
+        self._shape_prototype_geometry: dict[str, wp.array] = {}
+        """All arrays a slot row copies from a prototype shape, by shape attribute name, each shape
+        [shape_prototype_shape_count, ...]."""
+
+        self.shape_slot_count: int = 0
+        """Number of shape slots, added with :meth:`ModelBuilder.add_shape_slot
+        <newton.ModelBuilder.add_shape_slot>`.
+
+        A slot reserves shape rows of a body and holds one shape prototype at a time: a prototype
+        with ``n`` shapes fills the first ``n`` rows, and the other rows are empty. Empty rows neither
+        collide nor render. Change it with :meth:`assign_shape_prototypes`.
+
+        .. experimental::
+
+            Shape slots may change without a deprecation period.
+        """
+        self.shape_slot_label: list[str] = []
+        """Label of each slot, shape [shape_slot_count], str. Experimental, see :attr:`shape_slot_count`."""
+        self.shape_slot_body: wp.array[wp.int32] | None = None
+        """Body of each slot, or ``-1`` for a static slot, shape [shape_slot_count], int."""
+        self.shape_slot_xform: wp.array[wp.transform] | None = None
+        """Placement of each slot's prototype in its body frame, shape [shape_slot_count, 7], float.
+
+        A row holding prototype shape ``q`` has the local transform ``shape_slot_xform[k] *
+        shape_prototype_shape_transform[q]``. Experimental, see :attr:`shape_slot_count`.
+        """
+        self.shape_slot_shape_start: wp.array[wp.int32] | None = None
+        """Start of each slot's rows in :attr:`shape_slot_shapes`, shape [shape_slot_count + 1], int;
+        the difference of consecutive entries is the slot's capacity."""
+        self.shape_slot_shapes: wp.array[wp.int32] | None = None
+        """Shape index of each slot row, grouped by slot in row order, int."""
+        self.shape_slot_prototype: wp.array[wp.int32] | None = None
+        """Prototype each slot holds, or ``-1`` for an empty slot, shape [shape_slot_count], int.
+
+        Read-only: change it with :meth:`assign_shape_prototypes`. Experimental, see :attr:`shape_slot_count`.
+        """
+        self.shape_slot: wp.array[wp.int32] | None = None
+        """Slot of each shape, or ``-1`` for a shape that is not a slot row, shape [shape_count], int.
+        Experimental, see :attr:`shape_slot_count`."""
+        self._shape_slot_row: wp.array[wp.int32] | None = None
+        """Row of each slot row within its slot, shape [shape_count], int."""
+        self._shape_slot_capacity_max: int = 0
+        """Largest slot capacity."""
+        self._shape_prototype_shape_held: wp.array[wp.int32] | None = None
+        """Prototype shape each slot row holds, or ``-1`` for an empty row, shape [shape_count], int."""
+        self._body_slot_range: wp.array[wp.vec2i] | None = None
+        """Start in :attr:`_body_slots` and count of each body's slots, shape [body_count, 2], int."""
+        self._body_slots: wp.array[wp.int32] | None = None
+        """Slots grouped by body, int."""
+        self._body_prototype_inertia: wp.array[wp.bool] | None = None
+        """Whether :meth:`assign_shape_prototypes` recomputes the body's inertia, shape [body_count], bool."""
+        self._body_prototype_inertia_count: int = 0
+        """Number of bodies whose inertia :meth:`assign_shape_prototypes` recomputes."""
+        self._body_base_mass: wp.array[wp.float32] | None = None
+        """Body mass [kg] without its slots, shape [body_count], float."""
+        self._body_base_com: wp.array[wp.vec3] | None = None
+        """Body center of mass [m] without its slots, shape [body_count, 3], float."""
+        self._body_base_inertia: wp.array[wp.mat33] | None = None
+        """Body inertia [kg·m²] about :attr:`_body_base_com` without its slots, shape [body_count, 3, 3], float."""
+        self._bvh_prototype_bounds: wp.array2d[wp.vec3f] | None = None
+        """Local BVH bounds of each prototype shape, built with :attr:`bvh_shape_bounds`."""
+        self._geometry_struct_cache: dict[bool, tuple[tuple, _ShapeGeometry]] = {}
+        """Geometry structs of the prototype table and of the shapes, keyed by their arrays."""
 
         self.joint_q: wp.array[wp.float32] | None = None
         """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
@@ -1956,6 +2333,11 @@ class Model:
             device=device,
         )
 
+        # Slots get a leaf if any prototype they can hold would; ray queries skip it while it holds none.
+        enabled_flags = self.shape_flags
+        if self.shape_slot_count > 0:
+            enabled_flags = wp.array(self._shape_option_flags(), dtype=wp.int32, device=device)
+        self._bvh_shape_flags_mask = int(shape_flags)
         self.bvh_shape_enabled = wp.empty(shape_count, dtype=wp.uint32, device=device)
         num_enabled = wp.zeros(1, dtype=wp.int32, device=device)
         wp.launch(
@@ -1963,7 +2345,7 @@ class Model:
             dim=shape_count,
             inputs=[
                 self.shape_type,
-                self.shape_flags,
+                enabled_flags,
                 int(shape_flags),
                 self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
                 self.bvh_shape_enabled,
@@ -1973,6 +2355,24 @@ class Model:
         )
         self.bvh_shape_count_enabled = int(num_enabled.numpy()[0])
         self.bvh_shape_world_transforms = wp.empty(shape_count, dtype=wp.transformf, device=device)
+        # Leaves of empty shapes stay in the BVH; ray queries read a copy masked per refit.
+        self._bvh_shape_active_leaves = wp.empty_like(self.bvh_shape_enabled)
+        if self.shape_prototype_shape_count > 0:
+            self._bvh_prototype_bounds = wp.empty(
+                (self.shape_prototype_shape_count, 2), dtype=wp.vec3f, ndim=2, device=device
+            )
+            wp.launch_tiled(
+                kernel=compute_shape_local_bounds,
+                dim=self.shape_prototype_shape_count,
+                block_dim=SHAPE_BOUNDS_BLOCK_DIM,
+                inputs=[
+                    self._shape_prototype_geometry["shape_type"],
+                    self._shape_prototype_geometry["shape_source_ptr"],
+                    self.gaussians_data,
+                    self._bvh_prototype_bounds,
+                ],
+                device=device,
+            )
 
         if self.bvh_shape_count_enabled == 0:
             # drop any BVH from a previous build, it would index stale shapes
@@ -1995,6 +2395,7 @@ class Model:
             inputs=[self.bvh_shapes.id, self.bvh_shapes_group_roots],
             device=device,
         )
+        self._mark_inactive_bvh_shapes()
 
     def bvh_refit_shapes(self, state: State) -> None:
         """Refit the shape BVH stored on this model for the current state.
@@ -2002,7 +2403,8 @@ class Model:
         The shape BVH is built automatically by :meth:`ModelBuilder.finalize`.
         Manually populated models must call :meth:`bvh_build_shapes` first.
         Updates world-space shape transforms from ``state.body_q`` and refits
-        the BVH in place.
+        the BVH in place, and marks the leaves of empty slot rows (see
+        :attr:`shape_slot_count`) so that ray queries skip them.
 
         Args:
             state: Current simulation state with body transforms.
@@ -2024,6 +2426,66 @@ class Model:
         compute_shape_world_transforms_launch(self, state)
         compute_shape_bvh_bounds_launch(self, self.bvh_shapes.lowers, self.bvh_shapes.uppers, self.bvh_shapes.groups)
         self.bvh_shapes.refit()
+        self._mark_inactive_bvh_shapes()
+
+    def _mark_inactive_bvh_shapes(self) -> None:
+        """Mark the BVH leaves of empty slot rows on the device, so it also works in CUDA graphs."""
+        from ..geometry.bvh import mark_inactive_bvh_shapes  # noqa: PLC0415
+
+        if self.bvh_shape_count_enabled == 0:
+            return
+        if self.shape_slot_count == 0:
+            wp.copy(self._bvh_shape_active_leaves, self.bvh_shape_enabled)
+            return
+        wp.launch(
+            mark_inactive_bvh_shapes,
+            dim=self.bvh_shape_count_enabled,
+            inputs=[
+                self.bvh_shape_enabled,
+                self.shape_slot,
+                self._shape_prototype_shape_held,
+                self.shape_flags,
+                self._bvh_shape_flags_mask,
+            ],
+            outputs=[self._bvh_shape_active_leaves],
+            device=self.device,
+        )
+
+    def _prototype_shape_row(self) -> np.ndarray:
+        """Row index of each prototype shape within its prototype, on the host."""
+        start = self.shape_prototype_shape_start.numpy()
+        counts = np.diff(start)
+        return np.arange(int(start[-1])) - np.repeat(start[:-1], counts)
+
+    def _shape_slot_rows(self) -> tuple[np.ndarray, np.ndarray]:
+        """Shape and row index of every slot row, on the host."""
+        shapes = self.shape_slot_shapes.numpy()
+        return shapes, self._shape_slot_row.numpy()[shapes]
+
+    def _shape_option_flags(self) -> np.ndarray:
+        """Shape flags with each slot row's replaced by the union over the prototype shapes it can hold.
+
+        Row ``r`` of a slot can hold shape ``r`` of any prototype.
+        """
+        flags = self.shape_flags.numpy().copy()
+        slot_shapes, slot_rows = self._shape_slot_rows()
+        prototype_rows = self._prototype_shape_row()
+        row_flags = np.zeros(
+            max(int(slot_rows.max(initial=0)), int(prototype_rows.max(initial=0))) + 1, dtype=flags.dtype
+        )
+        np.bitwise_or.at(row_flags, prototype_rows, self.shape_prototype_shape_flags.numpy())
+        flags[slot_shapes] |= row_flags[slot_rows]
+        return flags
+
+    def _shape_current_sources(self) -> list[Any]:
+        """:attr:`shape_source` with each slot row's replaced by the source of the prototype shape it holds; syncs."""
+        sources = list(self.shape_source)
+        if self.shape_slot_count:
+            held = self._shape_prototype_shape_held.numpy()
+            for shape in self.shape_slot_shapes.numpy().tolist():
+                if held[shape] >= 0:
+                    sources[shape] = self.shape_prototype_shape_source[held[shape]]
+        return sources
 
     def bvh_build_particles(self, state: State, *, bvh_constructor: str | None = None) -> None:
         """Build or rebuild the particle BVH stored on this model.
@@ -2276,6 +2738,139 @@ class Model:
                 self.gravity.assign(current)
             else:
                 raise ValueError(f"Expected gravity with shape {local_shape} or {full_shape}, got {gravity_np.shape}")
+
+    def assign_shape_prototypes(self, slots: wp.array[wp.int32], prototypes: wp.array[wp.int32]) -> int:
+        """Make shape slots hold other shape prototypes, or empty them.
+
+        A slot that takes a prototype with ``n`` shapes copies their geometry (type, source, scale,
+        transform placed at :attr:`shape_slot_xform`, margin, gap, flags, color, and the collision
+        data derived in :meth:`ModelBuilder.finalize`) and their shape custom attributes into its
+        first ``n`` rows, and empties the others; ``-1`` empties every row. Each row keeps its
+        body, world, label, materials, collision group, filter pairs, and opacity, and edits to the
+        copied arrays, such as :attr:`shape_scale`, last until the next assignment. Empty rows neither collide in
+        :class:`~newton.CollisionPipeline` nor render, and sensors and ray casts skip them after
+        the next :meth:`bvh_refit_shapes`.
+
+        The bodies of the assigned slots then recompute their mass, center of mass, and inertia,
+        including their inverses, as the mass properties of their other shapes plus those of the
+        prototypes their slots hold (:attr:`shape_prototype_mass`, :attr:`shape_prototype_com`,
+        :attr:`shape_prototype_inertia`), unless their inertia is locked. Inertia corrections of
+        :meth:`ModelBuilder.finalize` are not applied.
+
+        Entries whose slot or prototype is out of range, or whose prototype has more shapes than
+        the slot has rows, are skipped. Each slot may appear at most once per call. The assignment
+        runs without host synchronization, so it can be captured in a CUDA graph. Notify solvers
+        and viewers with the returned flags::
+
+            flags = model.assign_shape_prototypes(slots, prototypes)
+            solver.notify_model_changed(flags)
+            viewer.notify_model_changed(flags)
+
+        .. experimental::
+
+            Shape prototypes may change without a deprecation period.
+
+        Args:
+            slots: Slot indices to assign, see :attr:`shape_slot_label`.
+            prototypes: Prototype index per entry of ``slots``, see :attr:`shape_prototype_label`,
+                or ``-1`` to empty the slot.
+
+        Returns:
+            The :class:`~newton.ModelFlags` bit-mask to pass to ``notify_model_changed``.
+        """
+        if self.shape_slot_prototype is None:
+            raise RuntimeError("assign_shape_prototypes() requires a finalized model.")
+        if slots.shape != prototypes.shape:
+            raise ValueError(f"slots shape {slots.shape} must match prototypes shape {prototypes.shape}.")
+        flags = int(ModelFlags.SHAPE_GEOMETRY | ModelFlags.SHAPE_PROPERTIES)
+        if self._body_prototype_inertia_count > 0:
+            flags |= int(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        if slots.shape[0] == 0 or self.shape_slot_count == 0:
+            return flags
+        wp.launch(
+            _assign_shape_prototypes_kernel,
+            dim=(slots.shape[0], self._shape_slot_capacity_max),
+            inputs=[
+                slots,
+                prototypes,
+                self.shape_prototype_shape_start,
+                self.shape_slot_shape_start,
+                self.shape_slot_shapes,
+                self.shape_slot_xform,
+                self._shape_geometry(prototypes=True),
+                self._shape_geometry(prototypes=False),
+            ],
+            outputs=[self.shape_slot_prototype, self._shape_prototype_shape_held],
+            device=self.device,
+        )
+        for prototype_values, values in self._shape_prototype_custom.values():
+            wp.launch(
+                _copy_prototype_shape_custom_kernel,
+                dim=(slots.shape[0], self._shape_slot_capacity_max),
+                inputs=[
+                    slots,
+                    self.shape_slot_shape_start,
+                    self.shape_slot_shapes,
+                    self._shape_prototype_shape_held,
+                    prototype_values,
+                ],
+                outputs=[values],
+                device=self.device,
+            )
+        if self._body_prototype_inertia_count > 0:
+            wp.launch(
+                _update_slot_body_inertia_kernel,
+                dim=slots.shape[0],
+                inputs=[
+                    slots,
+                    self.shape_slot_body,
+                    self.shape_slot_xform,
+                    self.shape_slot_prototype,
+                    self._body_prototype_inertia,
+                    self._body_slot_range,
+                    self._body_slots,
+                    self.shape_prototype_mass,
+                    self.shape_prototype_com,
+                    self.shape_prototype_inertia,
+                    self._body_base_mass,
+                    self._body_base_com,
+                    self._body_base_inertia,
+                ],
+                outputs=[
+                    self.body_mass,
+                    self.body_inv_mass,
+                    self.body_com,
+                    self.body_inertia,
+                    self.body_inv_inertia,
+                ],
+                device=self.device,
+            )
+        return flags
+
+    def _shape_geometry(self, prototypes: bool) -> _ShapeGeometry:
+        """The arrays a shape takes from its prototype, of the prototype table or of the shapes.
+
+        Cached until one of the arrays is replaced, since building the struct costs about as much
+        as launching a selection.
+        """
+        arrays = [
+            self._shape_prototype_geometry[name] if prototypes else getattr(self, name)
+            for name in _SHAPE_PROTOTYPE_FIELDS
+        ]
+        bounds = self._bvh_prototype_bounds if prototypes else self.bvh_shape_bounds
+        if self._bvh_prototype_bounds is None:
+            bounds = None
+        key = (prototypes, *map(id, arrays), id(bounds))
+        cached = self._geometry_struct_cache.get(prototypes)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        geometry = _ShapeGeometry()
+        for struct_field, values in zip(_SHAPE_PROTOTYPE_FIELDS.values(), arrays, strict=True):
+            setattr(geometry, struct_field, values)
+        geometry.bvh_bounds = wp.empty((0, 2), dtype=wp.vec3f, ndim=2, device=self.device) if bounds is None else bounds
+        # The key holds ids only; the struct keeps the arrays alive, so the ids stay unique.
+        self._geometry_struct_cache[prototypes] = (key, geometry)
+        return geometry
 
     @property
     def contact_max(self) -> int | None:
