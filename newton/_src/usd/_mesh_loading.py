@@ -250,28 +250,7 @@ def get_mesh(
     ] = "vertex_splitting",
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
-    return_uv_indices: Literal[False] = False,
-    root_path: None = None,
-    compute_inertia: bool = True,
-    apply_stage_units: bool = True,
-    load_visual_materials: bool = True,
-    return_source_point_indices: Literal[True],
-) -> tuple[Mesh, np.ndarray]: ...
-
-
-@overload
-def get_mesh(
-    source: Usd.Prim,
-    *,
-    load_normals: bool = False,
-    load_uvs: bool = False,
-    maxhullvert: int | None = None,
-    face_varying_normal_conversion: Literal[
-        "vertex_averaging", "angle_weighted", "vertex_splitting"
-    ] = "vertex_splitting",
-    vertex_splitting_angle_threshold_deg: float = 25.0,
-    preserve_facevarying_uvs: bool = False,
-    return_uv_indices: Literal[True],
+    return_uv_indices: bool = False,
     root_path: None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
@@ -292,29 +271,7 @@ def get_mesh(
     ] = "vertex_splitting",
     vertex_splitting_angle_threshold_deg: float = 25.0,
     preserve_facevarying_uvs: bool = False,
-    return_uv_indices: Literal[False] = False,
-    root_path: None = None,
-    compute_inertia: bool = True,
-    apply_stage_units: bool = True,
-    prim: Usd.Prim,
-    load_visual_materials: bool = True,
-    return_source_point_indices: Literal[True],
-) -> tuple[Mesh, np.ndarray]: ...
-
-
-@overload
-def get_mesh(
-    source: None = None,
-    *,
-    load_normals: bool = False,
-    load_uvs: bool = False,
-    maxhullvert: int | None = None,
-    face_varying_normal_conversion: Literal[
-        "vertex_averaging", "angle_weighted", "vertex_splitting"
-    ] = "vertex_splitting",
-    vertex_splitting_angle_threshold_deg: float = 25.0,
-    preserve_facevarying_uvs: bool = False,
-    return_uv_indices: Literal[True],
+    return_uv_indices: bool = False,
     root_path: None = None,
     compute_inertia: bool = True,
     apply_stage_units: bool = True,
@@ -439,14 +396,16 @@ def get_mesh(
             geometry is needed. If ``load_uvs`` is True, the material's shader
             network may still be inspected to select the UV primvar used by
             the texture.
-        return_source_point_indices: If True, return ``(mesh, source_point_indices)``.
-            The int32 array has one entry per output vertex, indexing the original
-            USD ``points`` array. Split vertices repeat their source point index;
-            an unchanged vertex layout returns ``arange(point_count)``. This lets
+        return_source_point_indices: If True, return
+            ``(mesh, uv_indices, source_point_indices)``. The second item is
+            ``None`` unless UV indices are requested and available.
+            ``source_point_indices`` is an int32 array with one entry per output
+            vertex, indexing the original USD ``points`` array. Split vertices
+            repeat their source point index; an unchanged vertex layout returns
+            ``arange(point_count)``. This lets
             callers map other per-point data, such as bind poses, to the loaded
             mesh. Only supported for a single ``UsdGeom.Mesh`` prim with no
-            ``root_path``. If ``return_uv_indices`` is also True, return
-            ``(mesh, uv_indices, source_point_indices)``.
+            ``root_path``.
 
             .. experimental::
                 This option may change without a formal deprecation cycle.
@@ -468,12 +427,12 @@ def get_mesh(
               - ``(mesh, uv_indices)``
             * - ``False``
               - ``True``
-              - ``(mesh, source_point_indices)``
+              - ``(mesh, None, source_point_indices)``
             * - ``True``
               - ``True``
               - ``(mesh, uv_indices, source_point_indices)``
 
-        ``uv_indices`` is ``None`` when no UV indices are available. Source point
+        ``uv_indices`` is ``None`` when not requested or unavailable. Source point
         indices always have one entry per output vertex when requested.
     """
     from .utils import resolve_material_properties_for_prim  # noqa: PLC0415
@@ -811,9 +770,7 @@ def get_mesh(
         )
         mesh_out.has_inertia = True
     if return_source_point_indices:
-        if return_uv_indices:
-            return mesh_out, uv_indices, source_point_indices
-        return mesh_out, source_point_indices
+        return mesh_out, uv_indices, source_point_indices
     if return_uv_indices:
         return mesh_out, uv_indices
     return mesh_out
