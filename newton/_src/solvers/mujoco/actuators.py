@@ -523,7 +523,8 @@ def add_actuator_position(
         target: Typed actuator transmission target.
         kp: Position feedback gain.
         kv: Velocity feedback gain.
-        dampratio: Damping ratio used when ``kv`` is zero.
+        dampratio: Damping ratio used when ``kv`` is zero, resolved to damping when
+            :class:`~newton.solvers.SolverMuJoCo` is constructed.
         gear: Native MuJoCo transmission gear, padded to six values. Ball/free
             joints require at least three/six components; these use MuJoCo's
             frames and force reference point, as described in :class:`ActuatorTarget`.

@@ -2839,30 +2839,21 @@ def copy_actuator_moment_kernel(
 
 
 @wp.kernel
-def resolve_actuator_dampratio_kernel(
+def actuator_reflected_inertia_kernel(
     actuator: int,
-    actuator_gainprm: wp.array2d[vec10],
     moment: wp.array2d[float],
     inv_mass_moment: wp.array2d[float],
-    actuator_biasprm: wp.array2d[vec10],
+    inertia_out: wp.array2d[float],
 ):
-    """Convert a positive ``biasprm[2]`` dampratio to damping, which MuJoCo resolves only at compile time."""
+    """Store the actuator's reflected inertia ``1 / (J M^-1 J^T)``, or zero if it is singular."""
     world = wp.tid()
-    kp = actuator_gainprm[world % actuator_gainprm.shape[0], actuator][0]
-    bias = actuator_biasprm[world, actuator]
-    if wp.abs(kp + bias[1]) > MJ_MINVAL or bias[2] <= 0.0:
-        return
-
-    # Reflected inertia 1 / (J M^-1 J^T) at qpos0.
     inv_weight = float(0.0)
     for i in range(moment.shape[1]):
         inv_weight += moment[world, i] * inv_mass_moment[world, i]
-    mass = float(0.0)
+    inertia = float(0.0)
     if inv_weight > MJ_MINVAL:
-        mass = 1.0 / inv_weight
-
-    bias[2] = -bias[2] * 2.0 * wp.sqrt(kp * mass)
-    actuator_biasprm[world, actuator] = bias
+        inertia = 1.0 / inv_weight
+    inertia_out[world, actuator] = inertia
 
 
 @wp.kernel(enable_backward=False)
