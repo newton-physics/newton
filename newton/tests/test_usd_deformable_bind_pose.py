@@ -84,6 +84,35 @@ class TestUsdDeformableBindPose(unittest.TestCase):
             [(0, 0, 0), (2, 0, 0), (0, 2, 0), (0, 0, 2)],
         )
 
+    def test_bind_pose_follows_loaded_mesh_vertices(self):
+        """Map authored bind points to render vertices split at UV seams."""
+        from pxr import Sdf, Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        source = UsdGeom.Mesh.Define(stage, "/Visual")
+        # Coincident points can have different bind positions: preserve IDs,
+        # rather than matching render vertices by their initial coordinates.
+        source.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 0), (-1, 0, 0)])
+        source.CreateFaceVertexCountsAttr([3, 3])
+        source.CreateFaceVertexIndicesAttr([0, 1, 2, 3, 2, 4])
+        UsdGeom.PrimvarsAPI(source).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, "faceVarying").Set(
+            [(0, 0), (1, 0), (0, 1), (0.5, 0), (0.5, 1), (1, 0)]
+        )
+        _author_pose(source.GetPrim(), "reference", [(0, 0, 0), (2, 0, 0), (0, 2, 0), (0, 0, 1), (-2, 0, 0)])
+        before = stage.GetRootLayer().ExportToString()
+
+        mesh, point_indices = newton.usd.get_mesh(
+            source.GetPrim(), load_uvs=True, return_source_point_indices=True, compute_inertia=False
+        )
+        bind_points = newton.usd.get_deformable_bind_pose(source.GetPrim())[point_indices]
+
+        self.assertEqual(len(mesh.vertices), 6)
+        np.testing.assert_array_equal(point_indices[mesh.indices], [0, 1, 2, 3, 2, 4])
+        np.testing.assert_array_equal(
+            bind_points[mesh.indices], [(0, 0, 0), (2, 0, 0), (0, 2, 0), (0, 0, 1), (0, 2, 0), (-2, 0, 0)]
+        )
+        self.assertEqual(stage.GetRootLayer().ExportToString(), before)
+
     def test_bind_pose_uses_authored_local_points(self):
         """Read explicit or default bind points without applying transforms or rest shapes."""
         from pxr import Sdf, Usd, UsdGeom
