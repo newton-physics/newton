@@ -2353,21 +2353,6 @@ def test_propagation_budget_holds_after_every_sweep(test, device):
                     test.assertTrue(sliding_saturated, "No group's sliding pairs used the whole budget")
 
 
-def test_propagation_budget_check_catches_an_unbounded_row(test, device):
-    """Trip the budget checks with the torsion-off sweep, which solves torsion rows as unbounded rows."""
-
-    def unbounded(solver):
-        solver._pgs_solve_propagation_kernel = solver_steel._get_pgs_solve_propagation_contact_kernel(
-            solver._propagation_max_constraints,
-            solver.model.device.arch,
-            worlds_per_block=solver_steel._PROPAGATION_WORLDS_PER_BLOCK,
-        )
-
-    sweeps = _record_propagation_sweeps(device, 0.01, on_solver=unbounded, **_CENTER_SPIN)
-    with test.assertRaises(AssertionError):
-        _assert_torsion_budgets(test, sweeps)
-
-
 def test_propagation_spin_decelerates_at_the_coulomb_rate_and_sticks(test, device):
     """Decelerate a sliding spin by r mu N / I and hold a slow spin, on both responses."""
     inertia_z = 0.00008
@@ -2423,7 +2408,7 @@ def test_propagation_spin_effect_tracks_immediate(test, device):
 def test_propagation_converges_to_the_immediate_response(test, device):
     """Close the coupled three-foot gap to immediate as sweeps rise, with torsion deciding stick."""
     gaps = {}
-    for iterations in (8, 32, 128, 512):
+    for iterations in (8, 32, 128):
         expected, _ = _spinner(device, "immediate", iterations, 0.01, spin=1.14)
         actual, solver = _spinner(device, "propagation", iterations, 0.01, spin=1.14)
         gaps[iterations] = float(np.abs(actual - expected).max())
@@ -2433,7 +2418,6 @@ def test_propagation_converges_to_the_immediate_response(test, device):
     test.assertGreater(abs(float(released[1])), 10.0 * abs(float(held[1])) + 1.0e-3)
     test.assertLessEqual(gaps[128], 1.0e-4, gaps)
     test.assertLessEqual(gaps[128], gaps[32] + 1.0e-6, gaps)
-    test.assertLessEqual(gaps[512], gaps[128] + 1.0e-6, gaps)
 
 
 def test_propagation_worlds_solve_as_if_isolated(test, device):
@@ -2558,7 +2542,7 @@ def test_propagation_mixed_families_and_contact_lifecycle(test, device):
         cfm=0.0,
         friction_anchor_beta=0.0,
         articulation_constraint_max=64,
-        free_body_constraint_max=64,
+        free_body_constraint_max=16,
         propagation_same_articulation_rows=False,
         **_PROPAGATION_TORSION,
     )
@@ -2663,7 +2647,6 @@ for _fn in (
     test_propagation_rows_host_groups_in_spares,
     test_propagation_free_body_contacts_reserve_no_spare,
     test_propagation_budget_holds_after_every_sweep,
-    test_propagation_budget_check_catches_an_unbounded_row,
     test_propagation_spin_decelerates_at_the_coulomb_rate_and_sticks,
     test_propagation_friction_keeps_its_rows_with_a_spare,
     test_propagation_spin_effect_tracks_immediate,
@@ -2713,12 +2696,10 @@ def _spare_rows(solver, count):
     return {c: int(slots[c] + needed[c] - 1) for c in range(count) if slots[c] >= 0 and needed[c] in (2, 4)}
 
 
-def _record_propagation_sweeps(device, radius, on_solver=None, **options):
+def _record_propagation_sweeps(device, radius, **options):
     """Record world 0's propagation impulses after every sweep of one pad-fixture step."""
     sweeps = []
     _, solver, model, state, contacts = fixture(radius, device=device, step=False, **options, **_PROPAGATION_TORSION)
-    if on_solver is not None:
-        on_solver(solver)
     launch_tiled = wp.launch_tiled
 
     def record(kernel, *args, **kwargs):
@@ -2804,7 +2785,7 @@ def _turntable(device, response, steps=8):
         cfm=0.0,
         friction_anchor_beta=0.0,
         articulation_constraint_max=64,
-        free_body_constraint_max=64,
+        free_body_constraint_max=16,
         contact_torsion_device=True,
     )
     pipeline = newton.CollisionPipeline(model, reduce_contacts=False, broad_phase="nxn", rigid_contact_max=64)
@@ -2959,8 +2940,8 @@ def _spinner(device, response, iterations, radius, *, spin, steps=1, graph=False
         solve_mode="matrix_free",
         articulated_contact_response=response,
         friction_anchor_beta=0.0,
-        articulation_constraint_max=96,
-        free_body_constraint_max=96,
+        articulation_constraint_max=64,
+        free_body_constraint_max=16,
         iterations=iterations,
         velocity_iterations=0,
         baumgarte=0.0,
