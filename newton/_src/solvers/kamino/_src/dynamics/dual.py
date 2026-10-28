@@ -117,6 +117,8 @@ class DualProblemConfigStruct:
     contact_recovery_speed: wp.float32
     contact_compliance: wp.bool
     limit_compliance: wp.bool
+    position_update_fraction: wp.float32
+    """Fraction of the timestep remaining after evaluating compliant constraint positions."""
 
 
 @dataclass
@@ -601,6 +603,7 @@ def _constraint_recovery_parameters(
     recovery_time: wp.float32,
     inv_dt: wp.float32,
     legacy_fraction: wp.float32,
+    position_update_fraction: wp.float32,
 ):
     """Return positional bias per unit violation and physical impulse compliance."""
     coefficient = legacy_fraction * inv_dt
@@ -612,7 +615,8 @@ def _constraint_recovery_parameters(
         time = recovery_time
         if time < 0.0:
             time = wp.max(damping, 0.0) / stiffness
-        coefficient = 1.0 / (dt + time)
+        # Moreau evaluates violations at the midpoint; impulses still span the full step.
+        coefficient = 1.0 / (position_update_fraction * dt + time)
         compliance = coefficient * inv_dt / stiffness
     return coefficient, compliance
 
@@ -649,7 +653,9 @@ def _build_free_velocity_bias_joint_kinematics(
     config = problem_config[wid]
 
     # Compute baumgarte constraint stabilization coefficient
-    c_b, _compliance = _constraint_recovery_parameters(0.0, 0.0, config.joint_recovery_time, inv_dt, config.alpha)
+    c_b, _compliance = _constraint_recovery_parameters(
+        0.0, 0.0, config.joint_recovery_time, inv_dt, config.alpha, config.position_update_fraction
+    )
     speed = config.joint_recovery_speed
 
     # Compute the free-velocity bias for the joint
@@ -786,7 +792,7 @@ def _build_free_velocity_bias_limits(
         stiffness = joint_limit_ke[dof]
         damping = joint_limit_kd[dof]
     coefficient, compliance = _constraint_recovery_parameters(
-        stiffness, damping, config.limit_recovery_time, inv_dt, config.beta
+        stiffness, damping, config.limit_recovery_time, inv_dt, config.beta, config.position_update_fraction
     )
     problem_v_b[lcio_l] = wp.max(-config.limit_recovery_speed, coefficient * wp.min(0.0, r_q))
     if problem_compliance:
@@ -870,7 +876,7 @@ def _build_free_velocity_bias_contacts(
             stiffness = contacts_stiffness[tid]
             damping = contacts_damping[tid]
     coefficient, compliance = _constraint_recovery_parameters(
-        stiffness, damping, config.contact_recovery_time, inv_dt, config.gamma
+        stiffness, damping, config.contact_recovery_time, inv_dt, config.gamma, config.position_update_fraction
     )
     if compliance > 0.0:
         # The compliant law obtains bounce from the material spring-damper.
@@ -1275,6 +1281,9 @@ class DualProblem:
         dynamics: ConstrainedDynamicsConfig = field(default_factory=ConstrainedDynamicsConfig)
         """Constrained dynamics problem construction configurations."""
 
+        position_update_fraction: float = field(default=1.0, kw_only=True)
+        """Remaining pose-update fraction: 1 for Euler, 1/2 for Moreau midpoint assembly."""
+
         def to_struct(self) -> DualProblemConfigStruct:
             """
             Converts the config to a DualProblemConfigStruct struct.
@@ -1296,6 +1305,7 @@ class DualProblem:
                 setattr(config_struct, name, wp.float32(getattr(self.constraints, name)))
             config_struct.contact_compliance = wp.bool(self.constraints.contact_compliance)
             config_struct.limit_compliance = wp.bool(self.constraints.limit_compliance)
+            config_struct.position_update_fraction = wp.float32(self.position_update_fraction)
             return config_struct
 
         @override
@@ -1305,6 +1315,8 @@ class DualProblem:
             """
             self.constraints.validate()
             self.dynamics.validate()
+            if not 0.0 < self.position_update_fraction <= 1.0:
+                raise ValueError("Position update fraction must be in (0, 1].")
 
         @override
         def __post_init__(self):

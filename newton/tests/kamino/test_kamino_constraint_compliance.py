@@ -33,6 +33,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         restitution=0.0,
         register_attributes=False,
     ):
+        """Build a unit-mass sphere and ground with controlled contact material and initial state."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, gravity))
         if register_attributes:
             SolverKamino.register_custom_attributes(builder)
@@ -65,9 +66,12 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         collect_solver_info=False,
         compute_solution_metrics=True,
         schur=None,
+        integrator="euler",
     ):
+        """Construct a dual solver with tolerances suitable for analytical response checks."""
         config = SolverKamino.Config(
             dynamics_solver=backend,
+            integrator=integrator,
             sparse_jacobian=sparse,
             sparse_dynamics=sparse,
             constraints=constraints,
@@ -92,6 +96,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         return SolverKamino(model, config=config)
 
     def _step(self, model, solver, *, dt=0.01, state_in=None, contacts=None):
+        """Advance one step and check finite velocities and the constraint residual."""
         state_in = model.state() if state_in is None else state_in
         state_out = model.state()
         pipeline = newton.CollisionPipeline(model)
@@ -106,36 +111,69 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         return state_out
 
     def test_contact_implicit_response(self):
-        """Match backward Euler for a material spring-damper across dual backends."""
-        model = self._sphere()
-        for backend in ("dvi", "padmm"):
+        """Match the end-step spring-damper law with Euler and midpoint contact evaluation."""
+        dt, stiffness, damping, gap, velocity, gravity = 0.01, 5000.0, 20.0, -0.02, -0.3, -10.0
+        model = self._sphere(stiffness=stiffness, damping=damping, gap=gap, velocity=velocity, gravity=gravity)
+        for backend, (integrator, internal) in product(
+            ("dvi", "padmm"), (("euler", False), ("moreau", True), ("moreau", False))
+        ):
             for sparse in (False, True):
                 for preconditioning in (False, True) if backend == "padmm" else (False,):
-                    with self.subTest(backend=backend, sparse=sparse, preconditioning=preconditioning):
+                    with self.subTest(
+                        backend=backend,
+                        integrator=integrator,
+                        internal=internal,
+                        sparse=sparse,
+                        preconditioning=preconditioning,
+                    ):
                         constraints = ConstraintStabilizationConfig(contact_compliance=True, delta=0.0)
                         solver = self._solver(
-                            model, constraints, backend=backend, sparse=sparse, preconditioning=preconditioning
+                            model,
+                            constraints,
+                            backend=backend,
+                            sparse=sparse,
+                            preconditioning=preconditioning,
+                            integrator=integrator,
+                            internal=internal,
                         )
-                        state = self._step(model, solver)
-                        expected = -0.1 / (1.0 + 500.0 * 0.01**2 + 20.0 * 0.01)
-                        self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
+                        state = self._step(model, solver, dt=dt)
+                        position_dt = dt * (0.5 if integrator == "moreau" and internal else 1.0)
+                        evaluated_gap = gap + (dt - position_dt) * velocity
+                        expected = (velocity + dt * gravity - dt * stiffness * evaluated_gap) / (
+                            1.0 + dt * (stiffness * position_dt + damping)
+                        )
+                        actual = float(state.body_qd.numpy()[0, 2])
+                        final_gap = float(state.body_q.numpy()[0, 2]) - 0.1
+                        self.assertAlmostEqual(actual, expected, delta=2.0e-5)
+                        self.assertAlmostEqual(final_gap, evaluated_gap + position_dt * actual, delta=2.0e-7)
+                        self.assertAlmostEqual(
+                            actual - velocity - dt * gravity,
+                            -dt * (stiffness * final_gap + damping * actual),
+                            delta=2.0e-5,
+                        )
 
     def test_contact_recovery_override_and_cap(self):
         """Use the same override in compliance and bias, and cap only positional recovery."""
         stiffness, gap, velocity = 500.0, -0.02, -0.3
         model = self._sphere(stiffness=stiffness, damping=20.0, gap=gap, gravity=0.0, velocity=velocity)
-        for dt, recovery_time, speed in ((0.01, 0.1, float("inf")), (0.005, 0.0, 0.1), (0.01, 0.04, 0.0)):
-            with self.subTest(dt=dt, recovery_time=recovery_time, speed=speed):
+        for integrator, (dt, recovery_time, speed) in product(
+            ("euler", "moreau"), ((0.01, 0.1, float("inf")), (0.005, 0.0, 0.1), (0.01, 0.04, 0.0))
+        ):
+            with self.subTest(integrator=integrator, dt=dt, recovery_time=recovery_time, speed=speed):
                 constraints = ConstraintStabilizationConfig(
                     contact_compliance=True,
                     contact_recovery_time=recovery_time,
                     contact_recovery_speed=speed,
                     delta=0.0,
                 )
-                solver = self._solver(model, constraints, sparse=True)
+                solver = self._solver(
+                    model, constraints, sparse=True, integrator=integrator, internal=integrator == "moreau"
+                )
                 state = self._step(model, solver, dt=dt)
-                compliance = 1.0 / (stiffness * dt * (dt + recovery_time))
-                bias = max(gap / (dt + recovery_time), -speed)
+                position_dt = dt * (0.5 if integrator == "moreau" else 1.0)
+                evaluated_gap = gap + (dt - position_dt) * velocity
+                compliance = 1.0 / (stiffness * dt * (position_dt + recovery_time))
+                bias = max(evaluated_gap / (position_dt + recovery_time), -speed)
                 impulse = -(velocity + bias) / (1.0 + compliance)
                 self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), velocity + impulse, delta=2.0e-5)
                 problem = solver._solver_kamino.problem_fd
@@ -204,17 +242,27 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
             builder.add_articulation([joint])
             model = builder.finalize(device=self.device)
             model.joint_q.assign([-0.02])
-            for backend, sparse, speed in product(("dvi", "padmm"), (False, True), (0.0, 0.1)):
-                with self.subTest(angular=angular, backend=backend, sparse=sparse, speed=speed):
+            for backend, sparse, speed, integrator in product(
+                ("dvi", "padmm"), (False, True), (0.0, 0.1), ("euler", "moreau")
+            ):
+                with self.subTest(angular=angular, backend=backend, sparse=sparse, speed=speed, integrator=integrator):
                     constraints = ConstraintStabilizationConfig(
                         limit_compliance=True,
                         limit_recovery_speed=speed,
                     )
-                    solver = self._solver(model, constraints, backend=backend, sparse=sparse)
+                    solver = self._solver(
+                        model,
+                        constraints,
+                        backend=backend,
+                        sparse=sparse,
+                        integrator=integrator,
+                        internal=integrator == "moreau",
+                    )
                     state_in = model.state()
                     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
                     state = self._step(model, solver, state_in=state_in)
-                    expected = speed / (1.0 + 1.0 / (0.01 * (500.0 * 0.01 + 20.0)))
+                    position_dt = 0.005 if integrator == "moreau" else 0.01
+                    expected = speed / (1.0 + 1.0 / (0.01 * (500.0 * position_dt + 20.0)))
                     self.assertAlmostEqual(float(state.body_qd.numpy()[0, 3 if angular else 0]), expected, delta=2.0e-5)
 
     def test_configuration_validation(self):
@@ -235,6 +283,11 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
             SolverKamino.Config(
                 dynamics_solver="lox", constraints=ConstraintStabilizationConfig(joint_recovery_time=0.01)
             )
+        for backend in ("dvi", "padmm"):
+            config = SolverKamino.Config(dynamics_solver=backend)
+            config.lox.contact_compliance = True
+            with self.subTest(backend=backend), self.assertRaisesRegex(ValueError, "constraints.contact_compliance"):
+                config.validate()
 
     def test_speculative_gap_and_restitution(self):
         """Keep gap closing and hard-contact restitution independent of the positional speed cap."""
@@ -456,21 +509,28 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         )
         model = builder.finalize(device=self.device)
         model.joint_q.assign([1.02])
-        for sparse, subsolver in ((False, "pgs"), (True, "pgs"), (False, "apgd"), (True, "apgd")):
+        model.joint_qd.assign([0.3])
+        for sparse, subsolver, integrator in product((False, True), ("pgs", "apgd"), ("euler", "moreau")):
             if subsolver == "apgd" and not self.device.is_cuda:
                 continue
-            with self.subTest(sparse=sparse, subsolver=subsolver):
+            with self.subTest(sparse=sparse, subsolver=subsolver, integrator=integrator):
                 solver = self._solver(
                     model,
                     ConstraintStabilizationConfig(limit_compliance=True, limit_recovery_time=0.1),
                     sparse=sparse,
                     unilateral_solver=subsolver,
                     schur=True,
+                    integrator=integrator,
+                    internal=integrator == "moreau",
                 )
                 state_in = model.state()
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
                 state = self._step(model, solver, state_in=state_in)
-                expected = -0.01 * 500.0 * 0.02 / (1.0 + 500.0 * 0.01**2 + 500.0 * 0.1 * 0.01)
+                position_dt = 0.005 if integrator == "moreau" else 0.01
+                evaluated_violation = 0.02 + (0.01 - position_dt) * 0.3
+                expected = (0.3 - 0.01 * 500.0 * evaluated_violation) / (
+                    1.0 + 500.0 * 0.01 * position_dt + 500.0 * 0.1 * 0.01
+                )
                 self.assertAlmostEqual(float(state.body_qd.numpy()[0, 0]), expected, delta=2.0e-5)
                 np.testing.assert_allclose(state.body_qd.numpy()[0, 1:], 0.0, atol=2.0e-5)
 

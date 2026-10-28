@@ -292,8 +292,7 @@ def _build_sphere_on_ground(
     builder = ModelBuilder()
     builder.begin_world(label="sphere_on_ground")
 
-    # Keep spring support above gravity even at the smallest tested overlap.
-    cfg = ModelBuilder.ShapeConfig(margin=margin, gap=gap, ke=2.0e5)
+    cfg = ModelBuilder.ShapeConfig(margin=margin, gap=gap)
 
     bid = builder.add_body(
         label="sphere",
@@ -320,12 +319,10 @@ def _build_sphere_on_ground(
     return builder
 
 
-def _fast_solver_config(dt: float) -> SolverKaminoImpl.Config:
+def _fast_solver_config() -> SolverKaminoImpl.Config:
     """Relaxed solver config suitable for fast unit tests."""
     config = SolverKaminoImpl.Config()
-    config.constraints.joint_recovery_time = dt * (1.0 / 0.1 - 1.0)
-    config.constraints.contact_recovery_time = dt * (1.0 / 0.01 - 1.0)
-    config.constraints.contact_compliance = True
+    config.constraints.alpha = 0.1
     config.padmm.primal_tolerance = 1e-3
     config.padmm.dual_tolerance = 1e-3
     config.padmm.compl_tolerance = 1e-3
@@ -351,7 +348,7 @@ def _step_solver(builder: ModelBuilder, device, num_steps: int = 5, dt: float = 
         config=CollisionDetector.Config(pipeline="primitive", default_gap=0.0),
     )
     contacts = detector.contacts
-    solver = SolverKaminoImpl(model=model, contacts=contacts, config=_fast_solver_config(dt))
+    solver = SolverKaminoImpl(model=model, contacts=contacts, config=_fast_solver_config())
 
     for _ in range(num_steps):
         solver.step(
@@ -377,7 +374,7 @@ class TestMarginGapSolver(unittest.TestCase):
     """Verify that the solver treats margin as the rest offset and gap as detection-only.
 
     Uses a single free-joint sphere above a static ground box (same pattern as
-    ``build_free_joint_test``).  Only 5 steps at dt=0.005 — enough to observe
+    ``build_free_joint_test``).  Only 5 steps at dt=0.01 — enough to observe
     the solver's immediate response without waiting for convergence.
     """
 

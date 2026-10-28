@@ -242,7 +242,8 @@ class ConstraintStabilizationConfig(ConfigBase):
     A container to hold configurations for global constraint stabilization parameters.
 
     PADMM and DVI share these settings. The recovery times are the spring-damper
-    time scales ``c / k`` [s], giving the positional bias ``phi / (dt + time)``.
+    time scales ``c / k`` [s], giving the Euler positional bias ``phi / (dt + time)``.
+    Compliant rows under Moreau use the midpoint violation and ``dt / 2 + time``.
     Their speed caps apply only to positional recovery. Bilateral joints remain
     hard; contacts and limits can opt into model stiffness/damping.
 
@@ -322,9 +323,14 @@ class ConstraintStabilizationConfig(ConfigBase):
 
     Positive per-contact stiffness takes precedence over the arithmetic mean of
     the two shape materials. Compliance is added only to the normal row as
-    ``1 / (dt * (k * dt + c))``. Non-positive or infinite stiffness retains hard contact.
+    ``1 / (dt * (k * position_dt + c))``, where ``position_dt`` is ``dt`` for
+    Euler and ``dt / 2`` for Moreau's remaining pose update. Moreau evaluates the
+    violation at the midpoint and requires the internal collision detector.
+    Non-positive or infinite stiffness retains hard contact.
     Compliant contacts obtain their bounce from the spring-damper and ignore
     material restitution. Tangential rows retain the existing Coulomb law.
+    This option supports PADMM and DVI. LOX's separate option uses per-contact
+    stiffness only and does not fall back to shape materials.
     """
 
     limit_compliance: bool = field(default=False, kw_only=True)
@@ -332,6 +338,8 @@ class ConstraintStabilizationConfig(ConfigBase):
 
     Non-positive or infinite stiffness retains hard limits. This setting does not change
     limit detection, drive gains, or passive joint damping.
+    Compliance uses the remaining pose-update interval: ``dt`` for Euler and
+    ``dt / 2`` for Moreau, whose limit violations are evaluated at the midpoint.
     """
 
     @override
@@ -1383,6 +1391,8 @@ class LOXSolverConfig:
     their penetration per step, and ignore restitution. Other contacts, and contacts
     detected by Kamino's own collision pipelines, remain hard. :class:`~newton.CollisionPipeline`
     provides per-contact stiffness only for hydroelastic contacts.
+    This option requires the LOX backend. For PADMM and DVI, use
+    ``constraints.contact_compliance``, which also falls back to shape materials.
     """
 
     contact_implicit_restitution: bool = False

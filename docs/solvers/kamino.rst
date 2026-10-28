@@ -142,6 +142,21 @@ signed constraint violation :math:`\phi`, backward Euler gives
    \tau = c/k, \qquad b = \frac{\phi}{h+\tau}, \qquad
    E = \frac{1}{k h(h+\tau)}.
 
+With ``integrator="moreau"``, constraints are evaluated at the midpoint and the
+remaining pose update spans :math:`h/2`. For compliant rows the coefficients are
+
+.. math::
+
+   b = \frac{\phi_{\mathrm{mid}}}{h/2+\tau}, \qquad
+   E = \frac{1}{k h(h/2+\tau)}.
+
+The impulse still spans the full timestep :math:`h`. These coefficients enforce
+the spring-damper law at the end of the step using the linearized constraint
+position. Moreau requires ``use_collision_detector=True`` so contacts are
+evaluated at the midpoint. The existing fallback to Euler for external contacts
+also uses Euler compliance coefficients. Hard-row recovery retains its existing
+full-step coefficients under either integrator.
+
 The solver adds :math:`E` to the physical constraint operator and adds the
 capped bias :math:`b` to the constraint velocity. A global
 ``contact_recovery_time`` or ``limit_recovery_time`` overrides :math:`\tau`
@@ -198,6 +213,11 @@ extensions for these settings are deferred to a separate change.
 The shared recovery/compliance settings currently support PADMM and DVI.
 LOX rejects non-default values for these new settings and retains its existing
 ``config.lox.contact_compliance`` option and recovery controls.
+LOX's option uses only positive per-contact stiffness; it does not fall back to
+shape materials, and its internal-pipeline contacts remain hard. PADMM and DVI
+reject ``config.lox.contact_compliance=True`` with guidance to use the shared
+option. Switching between these options can therefore change which contacts
+are compliant even when the model materials are unchanged.
 
 LOX prescribed bodies and shared settings
 -----------------------------------------
