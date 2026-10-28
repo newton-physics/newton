@@ -224,17 +224,16 @@ class CollisionDetectorConfig(ConfigBase):
         self.validate()
 
 
-_CONSTRAINT_RECOVERY_ATTRIBUTES = {
-    "joint_recovery_time": "jointRecoveryTime",
-    "joint_recovery_speed": "jointRecoverySpeed",
-    "limit_recovery_time": "limitRecoveryTime",
-    "limit_recovery_speed": "limitRecoverySpeed",
-    "limit_recovery_speed_angular": "limitRecoverySpeedAngular",
-    "contact_recovery_time": "contactRecoveryTime",
-    "contact_recovery_speed": "contactRecoverySpeed",
-    "contact_compliance": "contactCompliance",
-    "limit_compliance": "limitCompliance",
-}
+_CONSTRAINT_RECOVERY_FIELDS = (
+    "joint_recovery_time",
+    "joint_recovery_speed",
+    "limit_recovery_time",
+    "limit_recovery_speed",
+    "contact_recovery_time",
+    "contact_recovery_speed",
+    "contact_compliance",
+    "limit_compliance",
+)
 
 
 @dataclass
@@ -301,10 +300,11 @@ class ConstraintStabilizationConfig(ConfigBase):
     """
 
     limit_recovery_speed: float = field(default=math.inf, kw_only=True)
-    """Maximum linear limit recovery speed [m/s]; infinity leaves recovery uncapped."""
+    """Maximum limit recovery speed [m/s or rad/s], applied independently to each row.
 
-    limit_recovery_speed_angular: float = field(default=math.inf, kw_only=True)
-    """Maximum angular limit recovery speed [rad/s]; zero disables positional recovery."""
+    The same numerical cap applies to linear and angular limits. Zero disables
+    positional recovery; infinity leaves recovery uncapped.
+    """
 
     contact_recovery_time: float | None = field(default=None, kw_only=True)
     """Global contact recovery time [s], overriding model ``c / k`` when set.
@@ -385,21 +385,6 @@ class ConstraintStabilizationConfig(ConfigBase):
             )
         )
 
-        # Optional times use -1 only in storage; Python uses None for inheritance.
-        for name, usd_name in _CONSTRAINT_RECOVERY_ATTRIBUTES.items():
-            value = getattr(default_cfg, name)
-            builder.add_custom_attribute(
-                ModelBuilder.CustomAttribute(
-                    name=f"constraints_{name}",
-                    frequency=Model.AttributeFrequency.ONCE,
-                    assignment=Model.AttributeAssignment.MODEL,
-                    dtype=wp.bool if isinstance(value, bool) else wp.float32,
-                    default=-1.0 if value is None else value,
-                    namespace="kamino",
-                    usd_attribute_name=f"newton:kamino:constraints:{usd_name}",
-                )
-            )
-
     @override
     @staticmethod
     def from_model(model: Model, **kwargs: dict[str, Any]) -> ConstraintStabilizationConfig:
@@ -410,15 +395,14 @@ class ConstraintStabilizationConfig(ConfigBase):
         Args:
             model: The Newton model from which to parse configurations.
         """
-        values = {}
+        # Retain legacy model precedence; new recovery settings are Python-only.
+        values = dict(kwargs)
         kamino_attrs = getattr(model, "kamino", None)
         if kamino_attrs is not None:
-            for name in ("alpha", "beta", "gamma", *_CONSTRAINT_RECOVERY_ATTRIBUTES):
+            for name in ("alpha", "beta", "gamma"):
                 attribute = getattr(kamino_attrs, f"constraints_{name}", None)
                 if attribute is not None:
-                    value = attribute.numpy()[0].item()
-                    values[name] = None if name.endswith("_time") and value == -1.0 else value
-        values.update(kwargs)
+                    values[name] = float(attribute.numpy()[0])
         return ConstraintStabilizationConfig(**values)
 
     @override
@@ -434,7 +418,7 @@ class ConstraintStabilizationConfig(ConfigBase):
             raise ValueError(f"Invalid gamma: {self.gamma}. Must be in range [0, 1.0].")
         if not math.isfinite(self.delta) or self.delta < 0.0:
             raise ValueError(f"Invalid delta: {self.delta}. Must be non-negative.")
-        for name in _CONSTRAINT_RECOVERY_ATTRIBUTES:
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
             value = getattr(self, name)
             if name.endswith("_compliance"):
                 if not isinstance(value, bool):
@@ -447,7 +431,7 @@ class ConstraintStabilizationConfig(ConfigBase):
 
     def _has_recovery_settings(self) -> bool:
         """Identify opt-in shared recovery settings for backend validation."""
-        for name in _CONSTRAINT_RECOVERY_ATTRIBUTES:
+        for name in _CONSTRAINT_RECOVERY_FIELDS:
             value = getattr(self, name)
             if name.endswith("_time"):
                 if value is not None:

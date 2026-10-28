@@ -123,13 +123,12 @@ law using model stiffness and damping.
    config.constraints.limit_compliance = True
    config.constraints.limit_recovery_time = None  # Derive c / k per joint DoF.
    config.constraints.limit_recovery_speed = 0.5
-   config.constraints.limit_recovery_speed_angular = 1.0
    solver = newton.solvers.SolverKamino(model, config=config)
 
 Recovery times are in seconds. ``joint_recovery_speed`` supplies one numerical
-cap for all bilateral rows: m/s for linear rows and rad/s for angular rows.
-Contact and linear-limit caps are in m/s; ``limit_recovery_speed_angular`` is
-in rad/s. Caps apply independently to each constraint row. Their default is
+cap for all bilateral rows; ``limit_recovery_speed`` does the same for all
+limit rows. Each cap is in m/s for linear rows and rad/s for angular rows.
+The contact cap is in m/s. Caps apply independently to each constraint row. Their default is
 infinity (unlimited); zero disables positional recovery while retaining the
 velocity constraint and any physical compliance. They do not cap restitution,
 motor targets, or body velocities. These settings are configured before solver
@@ -176,8 +175,8 @@ Speculative contacts retain the positive-gap closing allowance
 :math:`\max(\phi,0)/h`; the cap does not slow approach before contact. Contact
 dead zones and the existing hard-contact restitution rules remain in effect.
 
-Compatibility and USD authoring
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Compatibility
+^^^^^^^^^^^^^
 
 By default, compliance is disabled, recovery times are ``None``, and caps are
 unlimited. Existing configurations retain their dimensionless ``alpha``
@@ -188,33 +187,13 @@ takes precedence. At a given timestep, the equivalent time is
 :math:`\tau=h(1/s-1)` for :math:`s>0`; this conversion changes with timestep.
 For example, a fraction of 0.01 at 240 Hz corresponds to 0.4125 s.
 For a zero fraction, set the corresponding recovery time and recovery-speed
-cap to zero; for limits, set both the linear and angular caps to zero.
+cap to zero.
 This conversion preserves rigid-row recovery. Enabling finite stiffness can
 introduce elastic deflection or bounce, so material gains must suit the intended
 motion rather than reproduce rigid-contact trajectories exactly.
 
-Call :meth:`~newton.solvers.SolverKamino.register_custom_attributes` on the
-builder before importing USD. The following custom PhysicsScene attributes
-use the prefix ``newton:kamino:constraints:``:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
-
-   * - Group
-     - Attribute suffixes
-   * - Joints
-     - ``jointRecoveryTime``, ``jointRecoverySpeed``
-   * - Limits
-     - ``limitRecoveryTime``, ``limitRecoverySpeed``, ``limitRecoverySpeedAngular``, ``limitCompliance``
-   * - Contacts
-     - ``contactRecoveryTime``, ``contactRecoverySpeed``, ``contactCompliance``
-
-Times and speeds use the same SI units as Python; compliance switches are
-booleans. An unauthored time, or the storage sentinel -1, means ``None``.
-Explicit Python configuration overrides imported values. Invalid values are
-rejected when resolving the configuration. Existing Newton material and
-joint-limit USD properties supply the per-constraint gains.
+The new settings are configured through Python. USD schema and importer
+extensions for these settings are deferred to a separate change.
 
 The shared recovery/compliance settings currently support PADMM and DVI.
 LOX rejects non-default values for these new settings and retains its existing

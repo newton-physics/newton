@@ -61,7 +61,6 @@ import warp as wp
 from .....core.types import override
 from ...config import ConfigBase, ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from ..core.data import DataKamino
-from ..core.joints import JointDoFType
 from ..core.math import FLOAT32_EPS, compute_gyroscopic_torque
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
@@ -114,7 +113,6 @@ class DualProblemConfigStruct:
     joint_recovery_speed: wp.float32
     limit_recovery_time: wp.float32
     limit_recovery_speed: wp.float32
-    limit_recovery_speed_angular: wp.float32
     contact_recovery_time: wp.float32
     contact_recovery_speed: wp.float32
     contact_compliance: wp.bool
@@ -597,15 +595,6 @@ def _build_free_velocity_bias_joint_dynamics(
 
 
 @wp.func
-def _num_linear_joint_dofs(dof_type: wp.int32) -> wp.int32:
-    if dof_type == JointDoFType.FREE or dof_type == JointDoFType.CARTESIAN:
-        return 3
-    if dof_type == JointDoFType.PRISMATIC or dof_type == JointDoFType.CYLINDRICAL:
-        return 1
-    return 0
-
-
-@wp.func
 def _constraint_recovery_parameters(
     stiffness: wp.float32,
     damping: wp.float32,
@@ -756,10 +745,7 @@ def _build_free_velocity_bias_limits(
     limits_wid: wp.array[wp.int32],
     limits_lid: wp.array[wp.int32],
     limits_r_q: wp.array[wp.float32],
-    limits_jid: wp.array[wp.int32],
     limits_dof: wp.array[wp.int32],
-    joint_dof_type: wp.array[wp.int32],
-    joint_dofs_offset: wp.array[wp.int32],
     joint_limit_ke: wp.array[wp.float32],
     joint_limit_kd: wp.array[wp.float32],
     problem_config: wp.array[DualProblemConfigStruct],
@@ -793,7 +779,6 @@ def _build_free_velocity_bias_limits(
     lcio_l = vio + lcio + lid
 
     # Compute the contact constraint stabilization bias
-    jid = limits_jid[tid]
     dof = limits_dof[tid]
     stiffness = wp.float32(0.0)
     damping = wp.float32(0.0)
@@ -803,10 +788,7 @@ def _build_free_velocity_bias_limits(
     coefficient, compliance = _constraint_recovery_parameters(
         stiffness, damping, config.limit_recovery_time, inv_dt, config.beta
     )
-    speed = config.limit_recovery_speed_angular
-    if dof - joint_dofs_offset[jid] < _num_linear_joint_dofs(joint_dof_type[jid]):
-        speed = config.limit_recovery_speed
-    problem_v_b[lcio_l] = wp.max(-speed, coefficient * wp.min(0.0, r_q))
+    problem_v_b[lcio_l] = wp.max(-config.limit_recovery_speed, coefficient * wp.min(0.0, r_q))
     if problem_compliance:
         problem_compliance[lcio_l] = compliance
 
@@ -1309,7 +1291,6 @@ class DualProblem:
             for name in (
                 "joint_recovery_speed",
                 "limit_recovery_speed",
-                "limit_recovery_speed_angular",
                 "contact_recovery_speed",
             ):
                 setattr(config_struct, name, wp.float32(getattr(self.constraints, name)))
@@ -1975,10 +1956,7 @@ class DualProblem:
                     limits.wid,
                     limits.lid,
                     limits.r_q,
-                    limits.jid,
                     limits.dof,
-                    model.joints.dof_type,
-                    model.joints.dofs_offset,
                     model.joints.limit_ke,
                     model.joints.limit_kd,
                     self._data.config,

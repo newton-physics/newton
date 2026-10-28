@@ -12,7 +12,6 @@ import warp as wp
 import newton
 from newton._src.solvers.kamino.config import ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from newton.solvers import SolverKamino
-from newton.tests.unittest_utils import USD_AVAILABLE
 
 
 class TestKaminoConstraintCompliance(unittest.TestCase):
@@ -24,12 +23,19 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         cls.device = wp.get_device()
 
     def _sphere(
-        self, *, stiffness=500.0, damping=20.0, gap=0.0, gravity=-10.0, velocity=0.0, restitution=0.0, stage=None
+        self,
+        *,
+        stiffness=500.0,
+        damping=20.0,
+        gap=0.0,
+        gravity=-10.0,
+        velocity=0.0,
+        restitution=0.0,
+        register_attributes=False,
     ):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, gravity))
-        if stage is not None:
+        if register_attributes:
             SolverKamino.register_custom_attributes(builder)
-            builder.add_usd(stage)
         shape = newton.ModelBuilder.ShapeConfig(
             density=0.0, margin=0.0, gap=0.05, mu=0.0, ke=stiffness, kd=damping, restitution=restitution
         )
@@ -187,7 +193,7 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
                 self.assertIsNone(solver._solver_kamino.problem_fd.data.compliance)
 
     def test_limit_implicit_response(self):
-        """Apply model limit gains with the correct linear/angular DOF and unilateral sign."""
+        """Apply one recovery-speed cap to both linear and angular compliant limits."""
         for angular in (False, True):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
@@ -198,19 +204,17 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
             builder.add_articulation([joint])
             model = builder.finalize(device=self.device)
             model.joint_q.assign([-0.02])
-            for backend, sparse in (("dvi", False), ("dvi", True), ("padmm", False), ("padmm", True)):
-                with self.subTest(angular=angular, backend=backend, sparse=sparse):
+            for backend, sparse, speed in product(("dvi", "padmm"), (False, True), (0.0, 0.1)):
+                with self.subTest(angular=angular, backend=backend, sparse=sparse, speed=speed):
                     constraints = ConstraintStabilizationConfig(
                         limit_compliance=True,
-                        limit_recovery_speed=0.1,
-                        limit_recovery_speed_angular=0.2,
+                        limit_recovery_speed=speed,
                     )
                     solver = self._solver(model, constraints, backend=backend, sparse=sparse)
                     state_in = model.state()
                     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
                     state = self._step(model, solver, state_in=state_in)
-                    cap = 0.2 if angular else 0.1
-                    expected = cap / (1.0 + 1.0 / (0.01 * (500.0 * 0.01 + 20.0)))
+                    expected = speed / (1.0 + 1.0 / (0.01 * (500.0 * 0.01 + 20.0)))
                     self.assertAlmostEqual(float(state.body_qd.numpy()[0, 3 if angular else 0]), expected, delta=2.0e-5)
 
     def test_configuration_validation(self):
@@ -222,7 +226,6 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         for field in (
             "joint_recovery_speed",
             "limit_recovery_speed",
-            "limit_recovery_speed_angular",
             "contact_recovery_speed",
         ):
             for value in (-1.0, float("nan")):
@@ -317,44 +320,28 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
         state = self._step(model, solver)
         self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), -0.08, delta=2.0e-5)
 
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_usd_recovery_parameters(self):
-        """Import recovery settings through registered USD attributes and match Python-authored physics."""
-        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-        scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
-        scene.CreateGravityMagnitudeAttr(10.0)
-        scene.CreateGravityDirectionAttr((0.0, 0.0, -1.0))
-        values = {
-            "contactCompliance": True,
-            "contactRecoveryTime": 0.1,
-            "contactRecoverySpeed": 0.2,
-            "jointRecoveryTime": 0.02,
-            "jointRecoverySpeed": 0.1,
-            "limitCompliance": True,
-            "limitRecoveryTime": 0.03,
-            "limitRecoverySpeed": 0.4,
-            "limitRecoverySpeedAngular": 0.5,
-        }
-        for name, value in values.items():
-            dtype = Sdf.ValueTypeNames.Bool if isinstance(value, bool) else Sdf.ValueTypeNames.Float
-            scene.GetPrim().CreateAttribute(f"newton:kamino:constraints:{name}", dtype, custom=True).Set(value)
-        model = self._sphere(stage=stage)
-        config = SolverKamino.Config.from_model(model, dynamics_solver="dvi", compute_solution_metrics=True)
-        self.assertTrue(config.constraints.contact_compliance)
-        self.assertTrue(config.constraints.limit_compliance)
-        self.assertAlmostEqual(config.constraints.joint_recovery_speed, 0.1)
-        self.assertAlmostEqual(config.constraints.contact_recovery_time, 0.1)
-        self.assertAlmostEqual(config.constraints.limit_recovery_speed_angular, 0.5)
+    def test_legacy_model_configuration(self):
+        """Preserve legacy model recovery fractions when Python supplies new recovery settings."""
+        model = self._sphere(gap=-0.02, gravity=0.0, register_attributes=True)
+        for name, value in (("alpha", 0.2), ("beta", 0.3), ("gamma", 0.25)):
+            getattr(model.kamino, f"constraints_{name}").fill_(value)
+        config = SolverKamino.Config.from_model(
+            model,
+            dynamics_solver="dvi",
+            compute_solution_metrics=True,
+            constraints=ConstraintStabilizationConfig(
+                joint_recovery_time=0.02, limit_recovery_speed=0.1, contact_recovery_speed=1.0, delta=0.0
+            ),
+        )
+        self.assertAlmostEqual(config.constraints.alpha, 0.2)
+        self.assertAlmostEqual(config.constraints.beta, 0.3)
+        self.assertAlmostEqual(config.constraints.gamma, 0.25)
+        self.assertEqual(config.constraints.joint_recovery_time, 0.02)
+        self.assertEqual(config.constraints.limit_recovery_speed, 0.1)
         solver = SolverKamino(model, config=config)
         state = self._step(model, solver)
-        expected = -0.1 / (1.0 + 500.0 * 0.01**2 + 500.0 * 0.1 * 0.01)
+        expected = 0.25 * 0.02 / 0.01
         self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-5)
-        overridden = ConstraintStabilizationConfig.from_model(model, contact_recovery_time=None)
-        self.assertIsNone(overridden.contact_recovery_time)
 
     def test_heterogeneous_worlds(self):
         """Keep different material laws and an empty world isolated in packed constraint storage."""
