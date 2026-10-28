@@ -455,6 +455,12 @@ viewport. The console receives Newton Python logging records, with level
 filtering; warnings and errors open it automatically. Explicit display choices
 survive example switches. A new scene keeps its authored camera pose.
 
+To use the previous sidebar GUI, construct the viewer with
+``ViewerGL(legacy_gui=True)``. This preserves the legacy panels, statistics
+overlay, floating image/plot windows, and UI callbacks without creating the
+docked inspection workspace. The keyword-only flag defaults to ``False`` and
+has no effect when ``headless=True``.
+
 Inspecting a custom simulation loop
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

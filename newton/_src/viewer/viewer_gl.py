@@ -234,6 +234,7 @@ class ViewerGL(ViewerBase):
         num_frames: int | None = None,
         *,
         enable_cuda_interop: ViewerGL.CudaInterop = CudaInterop.DYNAMIC_MESH,
+        legacy_gui: bool = False,
     ):
         """
         Initialize the OpenGL viewer and UI.
@@ -253,6 +254,9 @@ class ViewerGL(ViewerBase):
             enable_cuda_interop: Render-geometry categories that use CUDA-OpenGL
                 interoperability. Combine :class:`CudaInterop` flags with ``|``.
                 Defaults to :attr:`CudaInterop.DYNAMIC_MESH`.
+            legacy_gui: Use the legacy sidebar, statistics overlay, and floating
+                image/plot windows instead of the docked inspection workspace.
+                Defaults to False. Has no effect in headless mode.
         """
         self._plot_logger = PlotLogger(plot_history_size, get_window=lambda: self.renderer.window)
         if num_frames is not None:
@@ -308,7 +312,7 @@ class ViewerGL(ViewerBase):
 
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
-            self.gui = ViewerGui(self, self.renderer.window, workspace_enabled=True)
+            self.gui = ViewerGui(self, self.renderer.window, workspace_enabled=not legacy_gui)
             self.renderer.window.push_handlers(on_scale=self._on_window_scale)
         else:
             self.gui = None

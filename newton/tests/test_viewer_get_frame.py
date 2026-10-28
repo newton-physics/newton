@@ -4,7 +4,7 @@
 import ctypes
 import sys
 import unittest
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -180,6 +180,69 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    def test_gui_mode_and_legacy_callbacks(self) -> None:
+        """Render the default workspace and opt-in legacy panels with real ImGui callbacks."""
+        try:
+            from imgui_bundle import imgui
+        except ImportError as exc:
+            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+        _viewer_gl_unavailable_error_types(self)
+        initialize_renderer = RendererGL.__init__
+
+        def initialize_offscreen(renderer: RendererGL, **kwargs: object) -> None:
+            # Exercise ViewerGL's windowed GUI selection using a real hidden GL
+            # context, so the test works on CI without opening desktop windows.
+            kwargs["headless"] = True
+            initialize_renderer(renderer, **kwargs)
+
+        model = _make_box_model("cpu")
+        state = model.state()
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy):
+                options = {"legacy_gui": True} if legacy else {}
+                try:
+                    with wp.ScopedDevice("cpu"), mock.patch.object(RendererGL, "__init__", initialize_offscreen):
+                        viewer = ViewerGL(width=800, height=600, **options)
+                except Exception as exc:
+                    if _is_viewer_gl_unavailable_error(self, exc):
+                        self.skipTest(f"ViewerGL display/backend not available: {exc}")
+                    raise
+                try:
+                    viewer.set_model(model)
+                    gui = viewer.gui
+                    self.assertTrue(gui.is_available)
+                    calls = []
+                    for position in ("panel", "side", "free"):
+
+                        def callback(ui: ModuleType, position: str = position, calls: list[str] = calls) -> None:
+                            ui.text(f"Custom {position} callback")
+                            calls.append(position)
+
+                        viewer.register_ui_callback(callback, position=position)
+                    for frame in range(2):
+                        viewer.begin_frame(frame / 60)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                    self.assertFalse(gui.ui.section_errors)
+                    self.assertGreater(gui.ui.imgui.get_draw_data().total_vtx_count, 0)
+                    if legacy:
+                        self.assertIsNone(gui.workspace)
+                        self.assertIsNone(gui.console_capture)
+                        self.assertIsNone(viewer.renderer._workspace_rect)
+                        self.assertEqual(calls, ["panel", "side", "free"] * 2)
+                        self.assertIsNotNone(
+                            gui.ui.imgui.internal.find_window_by_name(f"Newton Viewer v{newton.__version__}")
+                        )
+                    else:
+                        self.assertIsNotNone(gui.workspace)
+                        self.assertIsNotNone(viewer.renderer._workspace_rect)
+                        self.assertIn("free", calls)
+                finally:
+                    viewer.gui.ui.shutdown()
+                    viewer.close()
+                    # Do not leak GUI fonts/style/time into other ImGui tests.
+                    imgui.destroy_context()
+
     def test_joint_stroke_outline_preserves_arc_color_and_occlusion(self) -> None:
         """Keep tilted angle arcs clear at different zooms without drawing through geometry."""
         with wp.ScopedDevice("cpu"):
