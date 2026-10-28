@@ -55,15 +55,8 @@ def _is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> 
     }
 
 
-def _reset_pyglet_event_loop_exit(test: unittest.TestCase) -> None:
-    _viewer_gl_unavailable_error_types(test)
-    pyglet = sys.modules.get("pyglet")
-    if pyglet is not None:
-        pyglet.app.event_loop.has_exit = False
-
-
 def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64, height: int = 48):
-    _reset_pyglet_event_loop_exit(test)
+    _viewer_gl_unavailable_error_types(test)
 
     try:
         return newton.viewer.ViewerGL(width=width, height=height, headless=True)
@@ -78,6 +71,70 @@ def _make_box_model(device: str | wp.Device):
     body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
     builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
     return builder.finalize(device=device)
+
+
+class TestRenderingPauseGL(unittest.TestCase):
+    def test_freeze_capture_resize_and_resume(self):
+        """Keep an image stable through logging, resize, and UI-driven toggles."""
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        model = _make_box_model("cpu")
+        viewer.set_model(model)
+        state = model.state()
+        before = np.zeros((48, 64, 3), dtype=np.uint8)
+        before[:24, :, 0] = 255
+        before[24:, :, 1] = 255
+        after = np.zeros_like(before)
+        after[:, :, 2] = 255
+
+        viewer.set_rendering_paused(True)
+        viewer.begin_frame(0.0)
+        viewer.end_frame()
+        with self.assertRaisesRegex(RuntimeError, "displayed frame"):
+            viewer.get_frame()
+        viewer.set_rendering_paused(False)
+        viewer.begin_frame(1.0)
+        viewer.log_image("sensor", before, fullscreen=True)
+        viewer.end_frame()
+        reference = viewer.get_frame().numpy().copy()
+        np.testing.assert_array_equal(reference, before)
+
+        gui = mock.Mock()
+        gui.prepare_frame.side_effect = lambda: viewer.set_rendering_paused(True)
+        viewer.gui = gui
+        viewer.begin_frame(2.0)
+        viewer.log_state(state)
+        with mock.patch.object(viewer.renderer, "render", wraps=viewer.renderer.render) as render:
+            viewer.end_frame()
+            render.assert_not_called()
+        np.testing.assert_array_equal(viewer.get_frame().numpy(), reference)
+        np.testing.assert_array_equal(viewer._displayed_frame.pixels()[::-1, :, :3], reference)
+        gui.render_prepared_frame.assert_called_once()
+        viewer.gui = None
+
+        viewer.renderer.window.set_size(128, 96)
+        viewer.renderer._on_window_resize(128, 96)
+        viewer.begin_frame(3.0)
+        viewer.log_image("sensor", after, fullscreen=True)
+        viewer.end_frame()
+        resized = viewer.get_frame().numpy()
+        self.assertEqual(resized.shape, (96, 128, 3))
+        np.testing.assert_array_equal(resized[10, 10], [255, 0, 0])
+        np.testing.assert_array_equal(resized[80, 10], [0, 255, 0])
+
+        viewer.set_rendering_paused(False)
+        viewer.begin_frame(4.0)
+        viewer.log_image("sensor", after, fullscreen=True)
+        viewer.end_frame()
+        np.testing.assert_array_equal(viewer.get_frame().numpy()[10, 10], [0, 0, 255])
+        viewer.set_rendering_paused(True)
+        viewer.clear_model()
+        viewer.begin_frame(5.0)
+        viewer.end_frame()
+        self.assertTrue(viewer.is_rendering_paused())
+        with self.assertRaises(RuntimeError):
+            viewer.get_frame()
 
 
 class _FakeGL:
@@ -164,7 +221,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertGreater(np.ptp(frame.numpy()), 0)
 
             target = wp.empty(shape=(48, 64, 3), dtype=wp.uint8, device=cpu_device)
-            self.assertIs(viewer.get_frame(target_image=target), target)
+            self.assertIs(viewer.get_frame(output=target), target)
 
             viewer._invalidate_pbo()
             self.assertEqual(viewer.get_frame().shape, (48, 64, 3))
@@ -182,6 +239,240 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 self.assertGreater(np.ptp(cuda_frame.numpy()), 0)
         finally:
             viewer.close()
+
+    def test_large_quad_is_stable_under_parallel_camera_translation(self):
+        """Keep a large uniform quad stable while translating the camera parallel to it."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+
+        try:
+            viewer.renderer.draw_sky = False
+            viewer.renderer.sky_upper = (0.0, 0.0, 0.0)
+            viewer.renderer.sky_lower = (0.0, 0.0, 0.0)
+            viewer.renderer.specular_scale = 0.0
+            viewer.renderer.spotlight_enabled = False
+
+            points = wp.array(
+                [(-0.5, -0.5, 0.0), (0.5, -0.5, 0.0), (0.5, 0.5, 0.0), (-0.5, 0.5, 0.0)],
+                dtype=wp.vec3,
+                device=viewer.device,
+            )
+            indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32, device=viewer.device)
+            normals = wp.array([(0.0, 0.0, 1.0)] * 4, dtype=wp.vec3, device=viewer.device)
+            # Deliberately offset the giant triangle pair from the camera. This mirrors
+            # imported USD ground assets and exposes clip-depth interpolation error that
+            # a perfectly centered quad can accidentally hide.
+            xforms = wp.array(
+                [wp.transform((-850000.0, 850000.0, 0.0), wp.quat_identity())],
+                dtype=wp.transform,
+                device=viewer.device,
+            )
+            scales = wp.array([(2.0e8, 2.0e8, 1.0)], dtype=wp.vec3, device=viewer.device)
+            colors = wp.array([(0.7, 0.7, 0.7)], dtype=wp.vec3, device=viewer.device)
+            materials = wp.array([(0.5, 0.0, 0.0, 0.0)], dtype=wp.vec4, device=viewer.device)
+            viewer.log_mesh("/test/quad", points, indices, normals, backface_culling=False)
+            viewer.log_instances("/test/ground", "/test/quad", xforms, scales, colors, materials)
+            viewer.log_geo("/test/box", newton.GeoType.BOX, (0.6, 0.6, 1.5), 0.0, True, hidden=True)
+            target_colors = wp.array(
+                [(0.9, 0.1, 0.1), (0.1, 0.9, 0.1), (0.1, 0.1, 0.9)], dtype=wp.vec3, device=viewer.device
+            )
+            target_materials = wp.array([(0.5, 0.0, 0.0, 0.0)] * 3, dtype=wp.vec4, device=viewer.device)
+            target_scales = wp.array([(1.0, 1.0, 1.0)] * 3, dtype=wp.vec3, device=viewer.device)
+
+            frames_by_render_mode = {}
+            for draw_shadows, draw_edges in ((False, False), (True, False), (False, True)):
+                viewer.renderer.draw_shadows = draw_shadows
+                viewer.renderer.draw_edges = draw_edges
+                viewer.renderer.diffuse_scale = 1.0
+                frames = []
+                for frame_index, offset in enumerate((0.0, 1.0)):
+                    target_xforms = wp.array(
+                        [
+                            wp.transform((offset, -1.0, 3.0), wp.quat_identity()),
+                            wp.transform((offset, 0.0, 3.0), wp.quat_identity()),
+                            wp.transform((offset, 1.0, 3.0), wp.quat_identity()),
+                        ],
+                        dtype=wp.transform,
+                        device=viewer.device,
+                    )
+                    viewer.log_instances(
+                        "/test/targets",
+                        "/test/box",
+                        target_xforms,
+                        target_scales,
+                        target_colors,
+                        target_materials,
+                    )
+                    viewer.set_camera(wp.vec3(offset + 8.0, -8.0, 6.0), pitch=0.0, yaw=0.0)
+                    viewer.camera.look_at((offset, 0.0, 0.0))
+                    for _ in range(2):
+                        viewer.begin_frame(float(frame_index))
+                        viewer.end_frame()
+                    frames.append(viewer.get_frame().numpy().copy())
+
+                delta = np.abs(frames[0].astype(np.int16) - frames[1].astype(np.int16))
+                changed_pixel_fraction = np.mean(np.any(delta > 2, axis=-1))
+                mean_absolute_delta = np.mean(delta)
+                message_suffix = f" with draw_shadows={draw_shadows}, draw_edges={draw_edges}"
+                self.assertLess(
+                    changed_pixel_fraction,
+                    0.01,
+                    f"camera translation changed {changed_pixel_fraction:.2%} of pixels{message_suffix}",
+                )
+                self.assertLess(
+                    mean_absolute_delta,
+                    2.0,
+                    f"mean absolute pixel delta was {mean_absolute_delta:.3f}{message_suffix}",
+                )
+                frames_by_render_mode[draw_shadows, draw_edges] = frames
+
+            shadow_delta = np.abs(
+                frames_by_render_mode[True, False][0].astype(np.int16)
+                - frames_by_render_mode[False, False][0].astype(np.int16)
+            )
+            shadow_changed_fraction = np.mean(np.any(shadow_delta > 2, axis=-1))
+            self.assertGreater(shadow_changed_fraction, 0.001, "the target boxes cast no visible shadows")
+            self.assertLess(
+                shadow_changed_fraction,
+                0.1,
+                f"shadows changed {shadow_changed_fraction:.2%} of the frame instead of remaining local",
+            )
+            edge_delta = np.abs(
+                frames_by_render_mode[False, True][0].astype(np.int16)
+                - frames_by_render_mode[False, False][0].astype(np.int16)
+            )
+            edge_changed_fraction = np.mean(np.any(edge_delta > 2, axis=-1))
+            self.assertGreater(edge_changed_fraction, 0.001, "the target boxes have no visible edge overlay")
+        finally:
+            viewer.close()
+
+    def test_contact_shadows_on_planar_and_concave_receivers(self):
+        """Keep box shadows attached without darkening unobstructed ramps or bowls."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+        try:
+            viewer.renderer.draw_sky = False
+            viewer.renderer.sky_upper = (0.0, 0.0, 0.0)
+            viewer.renderer.sky_lower = (0.0, 0.0, 0.0)
+            viewer.renderer.draw_edges = False
+            viewer.renderer.specular_scale = 0.0
+            viewer.renderer.spotlight_enabled = False
+            self._check_small_box_contact_shadows(viewer)
+            self._check_bowl_shadows(viewer)
+        finally:
+            viewer.close()
+
+    def _check_small_box_contact_shadows(self, viewer):
+        """Keep small shadows attached and bare receivers lit using the existing GL context."""
+        viewer.clear_model()
+        viewer.renderer.draw_edges = False
+        width = viewer.renderer._screen_width
+        height = viewer.renderer._screen_height
+        for slope in (20.0, 45.0):
+            with self.subTest(slope=slope):
+                rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(np.deg2rad(slope)))
+
+                def rotate(point, rotation=rotation):
+                    """Rotate a point into the ramp's coordinate system."""
+                    return wp.quat_rotate(rotation, wp.vec3(point))
+
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                # Keep the receiver inside the view: clipped triangles can vanish
+                # on software rasterizers. The large-quad test covers clipping.
+                builder.add_shape_box(
+                    -1,
+                    xform=wp.transform(rotate((0.0, 0.0, -0.005)), rotation),
+                    hx=0.12,
+                    hy=0.12,
+                    hz=0.005,
+                    color=(0.2, 0.5, 0.8),
+                )
+                # A 0.5 mm gap places the shadow immediately beside the small box.
+                builder.add_shape_box(
+                    -1,
+                    xform=wp.transform(rotate((0.0, 0.0, 0.0155)), rotation),
+                    hx=0.02,
+                    hy=0.02,
+                    hz=0.015,
+                    color=(0.9, 0.2, 0.1),
+                )
+                model = builder.finalize(device=viewer.device)
+                viewer.set_model(model)
+                viewer.renderer._sun_direction = np.array(rotate((0.0, -1.0, 1.0))) / np.sqrt(2.0)
+                viewer.set_camera(pos=rotate((0.0, 0.16, 0.35)), pitch=0.0, yaw=0.0)
+                viewer.camera.near = 0.005
+                viewer.camera.look_at((0.0, 0.0, 0.0))
+                frames = []
+                for shadows in (False, True):
+                    viewer.renderer.draw_shadows = shadows
+                    viewer.begin_frame(0.0)
+                    viewer.log_state(model.state())
+                    viewer.end_frame()
+                    frames.append(viewer.get_frame().numpy().astype(np.float32))
+
+                def sample_patch(frame, xmin, xmax, ymin, ymax):
+                    """Sample a rectangular patch on the ramp."""
+                    points = np.array(
+                        [
+                            (*rotate((x, y, 0.0)), 1.0)
+                            for x in np.linspace(xmin, xmax, 9)
+                            for y in np.linspace(ymin, ymax, 9)
+                        ]
+                    )
+                    view = viewer.camera.get_view_matrix().reshape(4, 4).T
+                    projection = viewer.camera.get_projection_matrix().reshape(4, 4).T
+                    clip = points @ (projection @ view).T
+                    ndc = clip[:, :2] / clip[:, 3:4]
+                    pixels = np.floor((ndc * (0.5, -0.5) + 0.5) * (width, height)).astype(int)
+                    return frame[pixels[:, 1], pixels[:, 0]]
+
+                near_contact = [sample_patch(frame, -0.005, 0.005, 0.024, 0.032) for frame in frames]
+                self.assertTrue(np.all(near_contact[0][:, 2] > near_contact[0][:, 0]), "patch misses the ramp")
+                self.assertGreater(
+                    float(np.mean(near_contact[0] - near_contact[1])),
+                    20.0,
+                    "the small box's shadow is detached from its contact with the ramp",
+                )
+                unoccluded = [sample_patch(frame, 0.07, 0.10, 0.04, 0.08) for frame in frames]
+                self.assertLess(
+                    float(np.mean(np.abs(unoccluded[0] - unoccluded[1]))),
+                    2.0,
+                    "the unobstructed receiver incorrectly shadows itself",
+                )
+
+    def _check_bowl_shadows(self, viewer):
+        """Keep an unobstructed bowl unchanged when shadows are enabled."""
+        viewer.clear_model()
+        coordinates = np.linspace(-0.25, 0.25, 65)
+        vertices = np.array([(x, y, 4.0 * (x * x + y * y)) for y in coordinates for x in coordinates], dtype=np.float32)
+        normals = np.column_stack((-8.0 * vertices[:, 0], -8.0 * vertices[:, 1], np.ones(len(vertices))))
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+        corners = np.array([y * 65 + x for y in range(64) for x in range(64)])
+        indices = np.column_stack((corners, corners + 1, corners + 66, corners, corners + 66, corners + 65))
+        mesh = newton.Mesh(vertices, indices.ravel(), normals=normals, compute_inertia=False)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_shape_mesh(-1, mesh=mesh, color=(0.2, 0.5, 0.8))
+        model = builder.finalize(device=viewer.device)
+        viewer.set_model(model)
+        # Every point on this bowl can see the light, despite its curvature.
+        viewer.renderer._sun_direction = np.array((0.0, -0.2, 1.0)) / np.sqrt(1.04)
+        viewer.set_camera(pos=wp.vec3(0.0, 0.65, 0.9), pitch=0.0, yaw=0.0)
+        viewer.camera.near = 0.005
+        viewer.camera.look_at((0.0, 0.0, 0.1))
+
+        frames = []
+        for shadows in (False, True):
+            viewer.renderer.draw_shadows = shadows
+            viewer.begin_frame(0.0)
+            viewer.log_state(model.state())
+            viewer.end_frame()
+            frames.append(viewer.get_frame().numpy().astype(np.float32))
+
+        bowl = frames[0][:, :, 2] > frames[0][:, :, 0]
+        self.assertTrue(np.any(bowl), "the bowl is not visible")
+        self.assertLess(
+            float(np.mean(np.abs(frames[0][bowl] - frames[1][bowl]))),
+            2.0,
+            "the unobstructed bowl incorrectly shadows itself",
+        )
 
     def test_headless_capture_main_image_frame(self):
         """Verify get_frame captures a main image rendered headlessly."""
@@ -211,6 +502,25 @@ class TestViewerGLGetFrame(unittest.TestCase):
             np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
         finally:
             viewer.close()
+
+    def test_recreated_viewer_renders_frame(self):
+        """Verify a viewer renders after a previous viewer was closed."""
+        for cycle in range(2):
+            with self.subTest(cycle=cycle):
+                viewer = _make_headless_viewer_gl_or_skip(self)
+                try:
+                    self.assertTrue(viewer.is_running())
+                    width = viewer.renderer._screen_width
+                    height = viewer.renderer._screen_height
+                    image = np.full((height, width, 3), (31, 127, 223), dtype=np.uint8)
+
+                    viewer.begin_frame(0.0)
+                    viewer.log_image("color", image, fullscreen=True)
+                    viewer.end_frame()
+
+                    np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
+                finally:
+                    viewer.close()
 
     def test_viewer_constructor_known_backend_error_skips(self):
         """Verify unavailable display/backend errors skip GL-dependent coverage."""
@@ -275,6 +585,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         ).reshape(-1)
         fake_gl = _FakeGL(pixels)
         viewer = ViewerGL.__new__(ViewerGL)
+        viewer._rendering_paused = False
         viewer.device = wp.get_device("cpu")
         viewer.renderer = SimpleNamespace(
             _screen_width=2,
@@ -295,6 +606,18 @@ class TestViewerGLGetFrame(unittest.TestCase):
             ),
         ):
             frame = viewer.get_frame()
+            output = wp.empty_like(frame)
+            self.assertIs(viewer.get_frame(output=output), output)
+            np.testing.assert_array_equal(output.numpy(), frame.numpy())
+
+            with self.assertWarnsRegex(DeprecationWarning, "target_image.*output"):
+                self.assertIs(viewer.get_frame(target_image=output), output)
+            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output' positionally"):
+                self.assertIs(viewer.get_frame(output), output)
+            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output', 'render_ui' positionally"):
+                self.assertIs(viewer.get_frame(output, False), output)
+            with self.assertRaisesRegex(TypeError, "output.*target_image"):
+                viewer.get_frame(output=output, target_image=output)
 
         np.testing.assert_array_equal(
             frame.numpy(),
@@ -307,7 +630,108 @@ class TestViewerGLGetFrame(unittest.TestCase):
             ),
         )
         self.assertEqual(frame.device, wp.get_device("cpu"))
-        self.assertEqual(fake_gl.readback_count, 1)
+        self.assertEqual(fake_gl.readback_count, 5)
+
+    def test_texture_affine_transform_matches_authored_coordinates(self):
+        """Apply a UsdTransform2d affine mapping exactly once before GL sampling."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=320, height=240)
+
+        try:
+            renderer = viewer.renderer
+            renderer.draw_sky = False
+            renderer.sky_upper = (0.0, 0.0, 0.0)
+            renderer.sky_lower = (0.0, 0.0, 0.0)
+            renderer.draw_shadows = False
+            renderer.diffuse_scale = 0.0
+            renderer.specular_scale = 0.0
+            renderer.spotlight_enabled = False
+            renderer.ambient_sky = (1.0, 1.0, 1.0)
+            renderer.ambient_ground = (1.0, 1.0, 1.0)
+            renderer.exposure = 1.0
+            viewer.set_camera(wp.vec3(0.0, -3.0, 2.5), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at((0.0, 0.0, 0.0))
+
+            points = np.array(
+                [(-1.0, -0.8, 0.0), (1.0, -0.8, 0.0), (1.0, 0.8, 0.0), (-1.0, 0.8, 0.0)],
+                dtype=np.float32,
+            )
+            indices = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
+            normals = np.array([(0.0, 0.0, 1.0)] * 4, dtype=np.float32)
+            source_uvs = np.array([(0.08, 0.13), (1.21, 0.19), (1.14, 1.08), (0.03, 1.02)], dtype=np.float32)
+            y, x = np.mgrid[:72, :96]
+            texture = np.stack(
+                (
+                    32 + 192 * ((x // 12 + 2 * (y // 18)) % 2),
+                    24 + 208 * ((y // 9) % 2),
+                    16 + ((5 * x + 3 * y) % 60) * 4,
+                ),
+                axis=-1,
+            ).astype(np.uint8)
+            xforms = wp.array([wp.transform_identity()], dtype=wp.transform, device=viewer.device)
+            scales = wp.array([(1.0, 1.0, 1.0)], dtype=wp.vec3, device=viewer.device)
+            colors = wp.array([(1.0, 1.0, 1.0)], dtype=wp.vec3, device=viewer.device)
+            materials = wp.array([(0.5, 0.0, 0.0, 1.0)], dtype=wp.vec4, device=viewer.device)
+
+            def render(uvs: np.ndarray, texture_transform=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0))) -> np.ndarray:
+                mesh = newton.Mesh(
+                    points,
+                    indices,
+                    normals=normals,
+                    uvs=uvs,
+                    compute_inertia=False,
+                    texture=texture,
+                    texture_transform=texture_transform,
+                )
+                viewer.log_geo(
+                    "/test/texture_transform",
+                    newton.GeoType.MESH,
+                    (1.0, 1.0, 1.0),
+                    0.0,
+                    True,
+                    geo_src=mesh,
+                    hidden=True,
+                )
+                viewer.log_instances(
+                    "/test/texture_transform_instance",
+                    "/test/texture_transform",
+                    xforms,
+                    scales,
+                    colors,
+                    materials,
+                )
+                for _ in range(2):
+                    viewer.begin_frame(0.0)
+                    viewer.end_frame()
+                return viewer.get_frame().numpy()
+
+            scale = np.array((0.7, 1.3), dtype=np.float32)
+            translate = np.array((0.13, 0.27), dtype=np.float32)
+            rotate = 37.0
+
+            angle = np.deg2rad(rotate)
+            cosine, sine = np.cos(angle), np.sin(angle)
+            scaled = source_uvs * scale
+            expected_uvs = (
+                np.column_stack(
+                    (
+                        cosine * scaled[:, 0] - sine * scaled[:, 1],
+                        sine * scaled[:, 0] + cosine * scaled[:, 1],
+                    )
+                )
+                + translate
+            )
+            texture_transform = (
+                (scale[0] * cosine, -scale[1] * sine, translate[0]),
+                (scale[0] * sine, scale[1] * cosine, translate[1]),
+            )
+            actual = render(source_uvs, texture_transform=texture_transform)
+            expected = render(expected_uvs.astype(np.float32))
+
+            visible = np.any(expected > 8, axis=2)
+            self.assertGreater(np.std(expected[visible]), 30.0, "the texture control was not visibly asymmetric")
+            self.assertLess(np.abs(actual.astype(np.int16) - expected.astype(np.int16))[visible].mean(), 2.0)
+        finally:
+            viewer.close()
 
 
 if __name__ == "__main__":

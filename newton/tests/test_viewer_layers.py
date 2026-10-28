@@ -4,9 +4,11 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import numpy as np
 import warp as wp
 
 import newton
+from newton._src.viewer.gl.frame_cache import FrameCache
 from newton._src.viewer.viewer import ViewerBase
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_viser import ViewerViser
@@ -26,7 +28,7 @@ class _RecordingViewer(ViewerNull):
         self.instance_xforms: list[tuple[str, object]] = []
         self.mesh_calls: list[tuple[str, bool]] = []
 
-    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False):
+    def log_instances(self, name, mesh, xforms, scales, colors, materials, hidden=False, opacities=None):
         self.instance_calls.append((name, hidden))
         if xforms is not None:
             self.instance_xforms.append((name, xforms.numpy().copy()))
@@ -44,6 +46,8 @@ class _RecordingViewer(ViewerNull):
         color=None,
         roughness=None,
         metallic=None,
+        dynamic=False,
+        opacity=None,
     ):
         self.mesh_calls.append((name, hidden))
 
@@ -74,8 +78,15 @@ class _MinimalRTXViewer(ViewerRTX):
         self.gui = None
         self._render_result = None
         self._render_products = None
-        self._transform_binding = None
+        self._displayed_frame = FrameCache()
         self._rtx = None
+        self._ovstage = None
+        self._ovstage_attached = False
+        self._ovstage_paths = None
+        self._ovstage_queries = {}
+        self._ovstage_ordinal = 0
+        self._ovstage_population_dirty = False
+        self._pending_transform_matrices = {}
         self._render_width = 640
         self._render_height = 480
         self._up_axis = "Z"
@@ -295,6 +306,41 @@ class TestViewerLayers(unittest.TestCase):
         self.assertIn("A", viewer.layers)
         self.assertIn("B", viewer.layers)
 
+    def test_rtx_borrowed_stage_disables_deformable_overlays(self):
+        """Leave a borrowed stage's deformable presentation visible by itself."""
+        viewer = _MinimalRTXViewer()
+        viewer._borrowed_stage = object()
+        viewer.clear_model()
+        self.assertFalse(viewer.show_triangles)
+        self.assertFalse(viewer.show_deformable_visual_meshes)
+
+    def test_rtx_deformable_state_hides_and_restores_geometry(self):
+        """Queue current skinned points when a hidden runtime mesh is shown again."""
+        builder = newton.ModelBuilder()
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        for point in vertices:
+            builder.add_particle(tuple(point), (0, 0, 0), mass=1.0)
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", parent=[0, 1, 2])
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        viewer = _MinimalRTXViewer()
+        viewer.clear_model()
+        viewer.model = model
+        viewer.device = model.device
+        viewer._phase = viewer._PHASE_RENDER
+        name = "/model/deformable_visual_meshes/mesh_0"
+        viewer._mesh_prim_paths[name] = "/root" + name
+        viewer._point_batch_paths["/model/particles"] = "/root/model/particles"
+        viewer.show_deformable_visual_meshes = False
+        viewer.log_state(state)
+        self.assertFalse(viewer._pending_mesh_visibility[name])
+        self.assertNotIn(name, viewer._pending_mesh_points)
+        state.particle_q.assign(vertices + np.array([0, 0, 2], dtype=np.float32))
+        viewer.show_deformable_visual_meshes = True
+        viewer.log_state(state)
+        self.assertTrue(viewer._pending_mesh_visibility[name])
+        np.testing.assert_array_equal(viewer._pending_mesh_points[name], [[0, 0, 2], [1, 0, 2], [0, 1, 2]])
+
     def test_rtx_clear_all_layers_allows_layered_scene_reset(self):
         """RTX can reset a complete layered scene while keeping single-layer clear guarded."""
         viewer = _MinimalRTXViewer()
@@ -361,6 +407,36 @@ class TestViewerLayerBackends(unittest.TestCase):
     def _make_viser_viewer(self):
         captured_calls = {}
 
+        class GuiHandle:
+            def __init__(self, value=None, disabled=False):
+                self.value = value
+                self.disabled = disabled
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                return False
+
+            def on_update(self, callback):
+                return callback
+
+            def on_click(self, callback):
+                return callback
+
+            def remove(self):
+                return None
+
+        class Gui:
+            def add_folder(self, _name, **_kwargs):
+                return GuiHandle()
+
+            def add_checkbox(self, _label, initial_value, **_kwargs):
+                return GuiHandle(initial_value)
+
+            def add_button(self, _label, **kwargs):
+                return GuiHandle(disabled=kwargs.get("disabled", False))
+
         def add_mesh_simple(name, vertices, faces, color, wireframe, side):
             captured_calls["add_mesh_simple"] = {
                 "name": name,
@@ -380,6 +456,8 @@ class TestViewerLayerBackends(unittest.TestCase):
             batched_wxyzs,
             batched_scales,
             batched_colors,
+            batched_opacities,
+            wireframe,
             lod,
         ):
             captured_calls["add_batched_meshes_simple"] = {
@@ -403,9 +481,11 @@ class TestViewerLayerBackends(unittest.TestCase):
 
         server = Mock()
         server.scene = scene
+        server.gui = Gui()
         server.on_client_connect = Mock()
         server.on_client_disconnect = Mock()
         server.get_scene_serializer = Mock(return_value=None)
+        server.get_clients = Mock(return_value={})
         server.stop = Mock()
 
         fake_viser = Mock()
@@ -453,6 +533,38 @@ class TestViewerLayerBackends(unittest.TestCase):
             scene.captured_calls["add_batched_meshes_simple"]["name"],
             "/layers/solverA/instances",
         )
+
+    def test_viser_set_camera_preserves_orientation_when_omitted(self):
+        """Verify set_camera keeps the last angle for each axis omitted as None.
+
+        Covers omitting both angles, omitting only one, and passing an
+        explicit 0.0 (which must be applied, not treated as missing).
+        """
+        viewer, _ = self._make_viser_viewer()
+
+        viewer.set_camera(wp.vec3(4.0, 5.0, 6.0), pitch=20.0, yaw=90.0)
+        self.assertEqual(viewer._camera_pitch, 20.0)
+        self.assertEqual(viewer._camera_yaw, 90.0)
+
+        viewer.set_camera(wp.vec3(7.0, 8.0, 9.0))
+        self.assertEqual(viewer._camera_pitch, 20.0)
+        self.assertEqual(viewer._camera_yaw, 90.0)
+
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), pitch=-15.0)
+        self.assertEqual(viewer._camera_pitch, -15.0)
+        self.assertEqual(viewer._camera_yaw, 90.0)
+
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), yaw=45.0)
+        self.assertEqual(viewer._camera_pitch, -15.0)
+        self.assertEqual(viewer._camera_yaw, 45.0)
+
+        viewer.set_camera(wp.vec3(0.0, 0.0, 0.0), pitch=0.0, yaw=0.0)
+        self.assertEqual(viewer._camera_pitch, 0.0)
+        self.assertEqual(viewer._camera_yaw, 0.0)
+
+        viewer.set_camera(wp.vec3(1.0, 1.0, 1.0))
+        self.assertEqual(viewer._camera_pitch, 0.0)
+        self.assertEqual(viewer._camera_yaw, 0.0)
 
 
 if __name__ == "__main__":

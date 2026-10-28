@@ -1,0 +1,1 @@
+Fix `ModelView.control()` returning the parent model's controls. Sub-solvers stepped by `SolverCoupled` with `control=None` read joint controls laid out like the parent model rather than like their compact entry view, which could crash when the view has joint DOFs the parent model lacks.

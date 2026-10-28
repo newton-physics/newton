@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import logging
+import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -12,6 +14,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
+from ...exceptions import NewtonDeprecationWarning
 from ...geometry.flags import ShapeFlags
 from ...math import quat_between_vectors_robust
 from ...sim import BodyFlags, JointType, ModelFlags, StateFlags
@@ -99,6 +102,8 @@ from .solver_coupled import (
 
 if TYPE_CHECKING:
     from ...sim import Contacts, Control, Model, ModelBuilder, State
+
+logger = logging.getLogger(__name__)
 
 
 @wp.kernel(enable_backward=False)
@@ -442,6 +447,11 @@ class SolverCoupledADMM(SolverCoupled):
         particle endpoints are owned by different solver entries into ADMM
         attachment constraints.
 
+        These custom rows are a legacy authoring path kept for importers that
+        already write them. Prefer :meth:`newton.ModelBuilder.add_attachment_particle_body`,
+        whose rows are read from the same place and additionally work inside a
+        single solver.
+
         Args:
             builder: Model builder receiving the custom frequency and attributes.
         """
@@ -525,7 +535,12 @@ class SolverCoupledADMM(SolverCoupled):
         damping: float = 0.0,
         enabled: bool = True,
     ) -> int:
-        """Add a model-level rigid-body-to-particle ADMM attachment.
+        """Add a model-level rigid-body-to-particle attachment.
+
+        .. deprecated:: 1.7
+            Use :meth:`newton.ModelBuilder.add_attachment_particle_body` instead. Attachments
+            authored there are applied inside :class:`~newton.solvers.SolverVBD` when one entry
+            owns both endpoints, and coupled by ADMM when the endpoints span two entries.
 
         Args:
             builder: Model builder that owns the body and particle.
@@ -533,19 +548,29 @@ class SolverCoupledADMM(SolverCoupled):
             particle: Particle index for the deformable endpoint.
             body_point: Body-local attachment point [m].
             stiffness: Quadratic ADMM attachment stiffness [N/m].
-            damping: Quadratic ADMM attachment damping [N*s/m].
+            damping: Quadratic ADMM attachment damping [N·s/m].
             enabled: Whether the attachment row is active.
 
         Returns:
-            The custom-frequency row index for the attachment.
+            Index of the attachment.
         """
-        cls.register_custom_attributes(builder)
-        point = wp.vec3(float(body_point[0]), float(body_point[1]), float(body_point[2]))
+        warnings.warn(
+            "SolverCoupledADMM.add_body_particle_attachment() is deprecated; use "
+            "ModelBuilder.add_attachment_particle_body() instead.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
+        if cls.BODY_PARTICLE_ATTACHMENT_FREQUENCY not in builder.custom_frequencies:
+            cls.register_custom_attributes(builder)
         indices = builder.add_custom_values(
             **{
                 cls.BODY_PARTICLE_ATTACHMENT_BODY_ATTR: int(body),
                 cls.BODY_PARTICLE_ATTACHMENT_PARTICLE_ATTR: int(particle),
-                cls.BODY_PARTICLE_ATTACHMENT_BODY_POINT_ATTR: point,
+                cls.BODY_PARTICLE_ATTACHMENT_BODY_POINT_ATTR: wp.vec3(
+                    body_point[0],
+                    body_point[1],
+                    body_point[2],
+                ),
                 cls.BODY_PARTICLE_ATTACHMENT_STIFFNESS_ATTR: float(stiffness),
                 cls.BODY_PARTICLE_ATTACHMENT_DAMPING_ATTR: float(damping),
                 cls.BODY_PARTICLE_ATTACHMENT_ENABLED_ATTR: bool(enabled),
@@ -644,6 +669,22 @@ class SolverCoupledADMM(SolverCoupled):
         contact_matching_force_scale: float = 0.9
         contact_pairs: Sequence[SolverCoupledADMM.ContactPair] = ()
 
+        contact_max_triangle_pairs: int | None = field(default=None, kw_only=True)
+        """Triangle-pair capacity for internal ADMM collision detection.
+
+        Must be positive and less than ``2**20`` when rigid contact matching is
+        enabled. Larger capacities are allowed when matching is disabled.
+        ``None`` preserves the :class:`CollisionPipeline` default.
+        """
+
+        contact_reduction_hashtable_size_factor: float | None = field(default=None, kw_only=True)
+        """Multiplier controlling the internal contact-reduction hash table size.
+
+        Must be finite and positive. Increase this independently of the
+        triangle-pair capacity when contact reduction needs more storage.
+        ``None`` preserves the :class:`CollisionPipeline` default.
+        """
+
     def __init__(
         self,
         model: Model,
@@ -688,6 +729,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     @classmethod
     def _validate_config(cls, coupling: SolverCoupledADMM.Config) -> None:
+        """Validate ADMM parameters and collision capacities before allocation."""
         cls._positive_integer(coupling.iterations, "ADMM iterations")
         cls._finite_scalar(coupling.rho, "ADMM rho", lower_bound=0.0, lower_inclusive=False)
         cls._finite_scalar(coupling.gamma, "ADMM gamma", lower_bound=0.0)
@@ -712,6 +754,19 @@ class SolverCoupledADMM(SolverCoupled):
             raise ValueError(
                 "ADMM rigid_contact_matching must be 'disabled', 'latest', or 'sticky', "
                 f"got {coupling.rigid_contact_matching!r}"
+            )
+        if coupling.contact_max_triangle_pairs is not None:
+            capacity = cls._positive_integer(coupling.contact_max_triangle_pairs, "ADMM contact_max_triangle_pairs")
+            if coupling.rigid_contact_matching != "disabled" and capacity >= 2**20:
+                raise ValueError(
+                    "ADMM contact_max_triangle_pairs must be less than 2**20 when rigid contact matching is enabled"
+                )
+        if coupling.contact_reduction_hashtable_size_factor is not None:
+            cls._finite_scalar(
+                coupling.contact_reduction_hashtable_size_factor,
+                "ADMM contact_reduction_hashtable_size_factor",
+                lower_bound=0.0,
+                lower_inclusive=False,
             )
         if coupling.contact_matching_pos_threshold is not None:
             cls._finite_scalar(
@@ -961,6 +1016,9 @@ class SolverCoupledADMM(SolverCoupled):
             self._refresh_admm_body_effective_mass_buffers()
             self._cache_admm_joint_proxy_effective_masses()
             self._apply_cached_admm_joint_proxy_effective_masses()
+        if int(flags) & int(ModelFlags.CONSTRAINT_PROPERTIES):
+            self._admm_rp_groups.clear()
+            self._build_admm_body_particle_attachment_groups()
 
     def _sum_active_count(self, attr: str) -> int:
         """Sum a per-group active-count array across all dynamic contact groups.
@@ -1021,6 +1079,7 @@ class SolverCoupledADMM(SolverCoupled):
             entry.view.disable_body_dynamics(entry.body_dynamics_disabled_local_indices)
 
     def _setup_admm(self, coupling: SolverCoupledADMM.Config) -> None:
+        """Initialize ADMM buffers, constraint groups, and internal collision detection."""
         for entry in self._entries.values():
             buf = _AdmmBuffers()
             buf.supports_dynamic_inertial_refresh = bool(entry.solver.coupling_supports_inertial_property_refresh())
@@ -1082,11 +1141,17 @@ class SolverCoupledADMM(SolverCoupled):
                 self._admm_dynamic_rr_contact_groups = self._build_collision_rigid_rigid_contact_groups()
             from ...sim import CollisionPipeline  # noqa: PLC0415
 
-            matching_kwargs = {}
+            collision_kwargs = {}
+            if coupling.contact_max_triangle_pairs is not None:
+                collision_kwargs["max_triangle_pairs"] = int(coupling.contact_max_triangle_pairs)
+            if coupling.contact_reduction_hashtable_size_factor is not None:
+                collision_kwargs["contact_reduction_hashtable_size_factor"] = float(
+                    coupling.contact_reduction_hashtable_size_factor
+                )
             if coupling.contact_matching_pos_threshold is not None:
-                matching_kwargs["contact_matching_pos_threshold"] = float(coupling.contact_matching_pos_threshold)
+                collision_kwargs["contact_matching_pos_threshold"] = float(coupling.contact_matching_pos_threshold)
             if coupling.contact_matching_normal_dot_threshold is not None:
-                matching_kwargs["contact_matching_normal_dot_threshold"] = float(
+                collision_kwargs["contact_matching_normal_dot_threshold"] = float(
                     coupling.contact_matching_normal_dot_threshold
                 )
 
@@ -1096,11 +1161,12 @@ class SolverCoupledADMM(SolverCoupled):
                 shape_pairs_filtered=admm_shape_pairs,
                 rigid_contact_max=rigid_contact_max,
                 soft_contact_max=None if self._admm_rigid_particle_contact_specs else 0,
-                soft_contact_margin=0.0,
+                soft_contact_gap=0.0,
+                publish_capacity=False,
                 contact_matching=(
                     coupling.rigid_contact_matching if self._admm_rigid_rigid_contact_specs else "disabled"
                 ),
-                **matching_kwargs,
+                **collision_kwargs,
             )
             if self._admm_rigid_particle_contact_specs:
                 self._admm_dynamic_rp_contact_groups = self._build_collision_rigid_particle_contact_groups()
@@ -1141,52 +1207,50 @@ class SolverCoupledADMM(SolverCoupled):
         ):
             return
 
-        joint_child = self.model.joint_child.numpy() if self.model.joint_child is not None else []
-        joint_articulation = self.model.joint_articulation.numpy() if self.model.joint_articulation is not None else []
-        joint_qd_start = self.model.joint_qd_start.numpy()
-        articulation_start = self.model.articulation_start.numpy() if self.model.articulation_start is not None else []
-        articulation_end = self.model.articulation_end.numpy() if self.model.articulation_end is not None else []
-        joint_dof_global_to_local = entry.joint_dof_global_to_local.numpy()
+        # Entry-local view arrays describe the articulations the sub-solver
+        # moves, including split subtrees headed by synthesized FREE joints.
+        view = entry.view
+        if view.joint_count == 0:
+            return
+        joint_child = view.joint_child.numpy()
+        joint_articulation = view.joint_articulation.numpy()
+        joint_qd_start = view.joint_qd_start.numpy()
+        articulation_start = view.articulation_start.numpy() if view.articulation_count else []
+        articulation_end = (
+            view.articulation_end.numpy() if view.articulation_count and view.articulation_end is not None else []
+        )
 
         incoming_joint_by_body: dict[int, int] = {}
         for joint, child in enumerate(joint_child):
-            incoming_joint_by_body.setdefault(int(child), joint)
+            # Prefer articulation tree joints over loop closures.
+            if int(joint_articulation[joint]) >= 0:
+                incoming_joint_by_body[int(child)] = joint
+            else:
+                incoming_joint_by_body.setdefault(int(child), joint)
 
         starts: list[int] = []
         counts: list[int] = []
         indices: list[int] = []
-        for global_body in entry.body_local_to_global.numpy():
+        for body in range(int(view.body_count)):
             starts.append(len(indices))
-            joint = incoming_joint_by_body.get(int(global_body))
+            joint = incoming_joint_by_body.get(body)
             if joint is None:
                 counts.append(0)
                 continue
 
             joint_start = joint
             joint_end = joint + 1
-            if len(joint_articulation) > joint:
-                articulation = int(joint_articulation[joint])
-                if articulation >= 0 and len(articulation_start) > articulation:
-                    joint_start = int(articulation_start[articulation])
-                    if len(articulation_end) > articulation:
-                        joint_end = int(articulation_end[articulation])
-                    elif len(articulation_start) > articulation + 1:
-                        joint_end = int(articulation_start[articulation + 1])
+            articulation = int(joint_articulation[joint])
+            if articulation >= 0:
+                joint_start = int(articulation_start[articulation])
+                if len(articulation_end) > articulation:
+                    joint_end = int(articulation_end[articulation])
+                else:
+                    joint_end = int(articulation_start[articulation + 1])
 
-            local_dofs: list[int] = []
-            for joint_id in range(joint_start, joint_end):
-                if joint_id < 0 or joint_id + 1 >= len(joint_qd_start):
-                    continue
-                for global_dof in range(int(joint_qd_start[joint_id]), int(joint_qd_start[joint_id + 1])):
-                    if global_dof < 0 or global_dof >= len(joint_dof_global_to_local):
-                        continue
-                    local_dof = int(joint_dof_global_to_local[global_dof])
-                    if local_dof >= 0:
-                        local_dofs.append(local_dof)
-
-            unique_dofs = sorted(set(local_dofs))
-            indices.extend(unique_dofs)
-            counts.append(len(unique_dofs))
+            dofs = range(int(joint_qd_start[joint_start]), int(joint_qd_start[joint_end]))
+            indices.extend(dofs)
+            counts.append(len(dofs))
 
         device = self.model.device
         buf.body_joint_qd_start = wp.array(starts, dtype=int, device=device)
@@ -2733,58 +2797,135 @@ class SolverCoupledADMM(SolverCoupled):
                 )
             )
 
-    def _build_admm_body_particle_attachment_groups(self) -> None:
-        """Build quadratic ADMM attachments from model custom attributes."""
-        count = int(self.model.custom_frequency_counts.get(self.BODY_PARTICLE_ATTACHMENT_FREQUENCY, 0))
-        if count == 0:
-            return
-
-        coupling_ns = getattr(self.model, "coupling", None)
-        required_attrs = (
-            "body_particle_attachment_body",
-            "body_particle_attachment_particle",
-            "body_particle_attachment_body_point",
-            "body_particle_attachment_stiffness",
-            "body_particle_attachment_damping",
-            "body_particle_attachment_enabled",
-        )
-        if coupling_ns is None or any(not hasattr(coupling_ns, attr) for attr in required_attrs):
-            raise ValueError(
-                "ADMM body-particle attachments require SolverCoupledADMM.register_custom_attributes(builder) "
-                "before finalizing the model"
+    def _collect_body_particle_attachment_rows(
+        self,
+    ) -> list[tuple[str, int, int, tuple[float, float, float], float, float]]:
+        """Collect enabled attachment rows from the model and the legacy coupling namespace."""
+        model = self.model
+        sources = []
+        if int(model.attachment_particle_body_count) > 0:
+            sources.append(
+                (
+                    "row",
+                    int(model.attachment_particle_body_count),
+                    model.attachment_particle_body_body,
+                    model.attachment_particle_body_particle,
+                    model.attachment_particle_body_body_point,
+                    model.attachment_particle_body_stiffness,
+                    model.attachment_particle_body_damping,
+                    model.attachment_particle_body_enabled,
+                )
             )
 
-        body_np = coupling_ns.body_particle_attachment_body.numpy()
-        particle_np = coupling_ns.body_particle_attachment_particle.numpy()
-        point_np = coupling_ns.body_particle_attachment_body_point.numpy()
-        stiffness_np = coupling_ns.body_particle_attachment_stiffness.numpy()
-        damping_np = coupling_ns.body_particle_attachment_damping.numpy()
-        enabled_np = coupling_ns.body_particle_attachment_enabled.numpy()
+        legacy_count = int(model.custom_frequency_counts.get(self.BODY_PARTICLE_ATTACHMENT_FREQUENCY, 0))
+        if legacy_count > 0:
+            coupling_ns = getattr(model, "coupling", None)
+            required_attrs = (
+                "body_particle_attachment_body",
+                "body_particle_attachment_particle",
+                "body_particle_attachment_body_point",
+                "body_particle_attachment_stiffness",
+                "body_particle_attachment_damping",
+                "body_particle_attachment_enabled",
+            )
+            if coupling_ns is None or any(not hasattr(coupling_ns, attr) for attr in required_attrs):
+                raise ValueError(
+                    "ADMM particle-body attachments require SolverCoupledADMM.register_custom_attributes(builder) "
+                    "before finalizing the model"
+                )
+            sources.append(
+                (
+                    "legacy row",
+                    legacy_count,
+                    coupling_ns.body_particle_attachment_body,
+                    coupling_ns.body_particle_attachment_particle,
+                    coupling_ns.body_particle_attachment_body_point,
+                    coupling_ns.body_particle_attachment_stiffness,
+                    coupling_ns.body_particle_attachment_damping,
+                    coupling_ns.body_particle_attachment_enabled,
+                )
+            )
+
+        rows = []
+        # An attachment migrated to the model arrays but still authored through the deprecated
+        # helper appears in both sources; applying it twice would double its stiffness. Identical
+        # rows within one source stay, since repeating a row there is an explicit choice.
+        model_keys = set()
+        duplicates = []
+        for source_index, (label, count, *arrays) in enumerate(sources):
+            is_model_source = source_index == 0 and label == "row"
+            body_np, particle_np, point_np, stiffness_np, damping_np, enabled_np = (array.numpy() for array in arrays)
+            for row in range(count):
+                if not bool(enabled_np[row]):
+                    continue
+                name = f"{label} {row}"
+                body = int(body_np[row])
+                particle = int(particle_np[row])
+                if body < 0 or body >= model.body_count:
+                    raise IndexError(f"ADMM particle-body attachment {name} has body index {body} out of range")
+                if particle < 0 or particle >= model.particle_count:
+                    raise IndexError(f"ADMM particle-body attachment {name} has particle index {particle} out of range")
+                stiffness = float(stiffness_np[row])
+                if stiffness < 0.0:
+                    raise ValueError(f"ADMM particle-body attachment {name} has negative stiffness")
+                damping = float(damping_np[row])
+                if damping < 0.0:
+                    raise ValueError(f"ADMM particle-body attachment {name} has negative damping")
+                point = (float(point_np[row][0]), float(point_np[row][1]), float(point_np[row][2]))
+                key = (body, particle, point, stiffness, damping)
+                if is_model_source:
+                    model_keys.add(key)
+                elif key in model_keys:
+                    duplicates.append(name)
+                    continue
+                rows.append((name, body, particle, point, stiffness, damping))
+
+        if duplicates:
+            logger.warning(
+                f"SolverCoupledADMM ignored particle-body attachment {', '.join(duplicates)} because an identical "
+                "attachment is already defined on the model; remove the deprecated "
+                "SolverCoupledADMM.add_body_particle_attachment() call.",
+            )
+        return rows
+
+    def _build_admm_body_particle_attachment_groups(self) -> None:
+        """Build quadratic ADMM attachments for cross-entry attachment rows."""
+        rows = self._collect_body_particle_attachment_rows()
+        if not rows:
+            return
 
         grouped: dict[tuple[str, str], list[tuple[int, tuple[float, float, float], int, float, float]]] = {}
-        for row in range(count):
-            if not bool(enabled_np[row]):
-                continue
-            body = int(body_np[row])
-            particle = int(particle_np[row])
-            if body < 0 or body >= self.model.body_count:
-                raise IndexError(f"ADMM body-particle attachment row {row} has body index {body} out of range")
-            if particle < 0 or particle >= self.model.particle_count:
-                raise IndexError(f"ADMM body-particle attachment row {row} has particle index {particle} out of range")
-            stiffness = float(stiffness_np[row])
-            if stiffness < 0.0:
-                raise ValueError(f"ADMM body-particle attachment row {row} has negative stiffness")
-            damping = float(damping_np[row])
-            if damping < 0.0:
-                raise ValueError(f"ADMM body-particle attachment row {row} has negative damping")
+        unowned: list[str] = []
+        unsupported_same_entry: list[tuple[str, str, str]] = []
+        from ..vbd.solver_vbd import SolverVBD  # noqa: PLC0415
 
+        for name, body, particle, point, stiffness, damping in rows:
             body_entry = self._entry_name_for_body(body)
             particle_entry = self._entry_name_for_particle(particle)
-            if body_entry is None or particle_entry is None or body_entry == particle_entry:
+            if body_entry is None or particle_entry is None:
+                unowned.append(name)
                 continue
-
-            point = (float(point_np[row][0]), float(point_np[row][1]), float(point_np[row][2]))
+            if body_entry == particle_entry:
+                solver = self._entries[body_entry].solver
+                if not isinstance(solver, SolverVBD):
+                    unsupported_same_entry.append((name, body_entry, type(solver).__name__))
+                continue
             grouped.setdefault((body_entry, particle_entry), []).append((body, point, particle, stiffness, damping))
+
+        if unowned:
+            logger.warning(
+                f"SolverCoupledADMM cannot couple particle-body attachment {', '.join(unowned)} because an endpoint "
+                "is not owned by any entry; these attachments apply no force.",
+            )
+        if unsupported_same_entry:
+            details = ", ".join(
+                f"{name} in entry {entry_name!r} ({solver_name})"
+                for name, entry_name, solver_name in unsupported_same_entry
+            )
+            logger.warning(
+                f"SolverCoupledADMM found same-entry particle-body attachment {details}, but only SolverVBD "
+                "applies same-entry attachments; these attachments apply no force.",
+            )
 
         device = self.model.device
         for (body_entry, particle_entry), items in grouped.items():

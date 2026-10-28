@@ -114,8 +114,7 @@ class Example:
         self.viewer.set_model(self.model)
 
         # Position camera for a 3/4 elevated view of the beam
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(2.5, -5.0, 2.5), pitch=-15.0, yaw=90.0)
+        self.viewer.set_camera(pos=wp.vec3(2.5, -5.0, 2.5), pitch=-15.0, yaw=90.0)
 
         if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
@@ -284,6 +283,12 @@ class Example:
 
         parser.add_argument("--max-iterations", "-it", type=int, default=250)
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
+        parser.add_argument(
+            "--carry-residual-strain",
+            choices=["none", "unconverged", "sampled"],
+            default="unconverged",
+            help="Keep the strain an unconverged solve leaves; suited to compliant elastic materials.",
+        )
         parser.add_argument("--voxel-size", "-dx", type=float, default=0.25)
 
         return parser

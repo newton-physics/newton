@@ -4,8 +4,8 @@
 ###########################################################################
 # Example Cable Y-Junction
 #
-# This example shows how to simulate a Y-junction using `builder.add_rod_graph(...)`
-# with a shared junction node.
+# This example shows how to simulate a Y-junction using `newton.Rod` with
+# explicit graph topology and a shared junction node.
 #
 # Run interactively:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
@@ -84,17 +84,15 @@ class Example:
                 edges.append((prev, cur))
                 prev = cur
 
-        self.graph_bodies, self.graph_joints = builder.add_rod_graph(
-            node_positions=node_positions,
-            edges=edges,
-            radius=cable_radius,
+        rod = newton.Rod(node_positions, edges=edges, radius=cable_radius)
+        self.graph_bodies, self.graph_joints = builder.add_rod(
+            rod=rod,
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             bend_stiffness=bend_stiffness,
             bend_damping=bend_damping,
             label="y_graph",
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
 
         # Pin one tip capsule (end of the first branch).
@@ -119,7 +117,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
         )
 
         self.state_0 = self.model.state()
@@ -132,13 +129,6 @@ class Example:
         self.pinned_body_q0 = self.state_0.body_q.numpy()[self.pinned_body].copy()
 
         self.viewer.set_model(self.model)
-
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            pick_state = picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = 0.1
-            pick_state[0]["pick_damping"] = 0.01
-            picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
             pos=wp.vec3(2.10, 0.0, z0 - 0.15),
@@ -183,9 +173,9 @@ class Example:
         # ---------------------------
         # Connectivity check
         # ---------------------------
-        # `add_rod_graph(wrap_in_articulation=True)` builds a joint forest over the edge bodies.
+        # Rod graph assembly builds a joint forest over the edge bodies when wrapped in articulations.
         # For this Y-junction (one connected component), all rod bodies should be connected via
-        # the joints returned by `add_rod_graph`.
+        # the joints returned by `add_rod`.
         joint_parent = self.model.joint_parent.numpy()
         joint_child = self.model.joint_child.numpy()
 

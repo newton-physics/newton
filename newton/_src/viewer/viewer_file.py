@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-import warnings
 from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -16,7 +17,9 @@ from warp._src import types as warp_types
 
 from ..core.types import override
 from ..geometry import Mesh
+from ..geometry.deformable_visual import DeformableVisualMesh
 from ..sim import Model, State
+from ..sim.shape_contact_pairs import _ShapeContactPairs
 from .viewer import ViewerBase
 
 # Optional CBOR2 support
@@ -26,6 +29,8 @@ try:
     HAS_CBOR2 = True
 except ImportError:
     HAS_CBOR2 = False
+
+logger = logging.getLogger(__name__)
 
 
 T = TypeVar("T")
@@ -270,12 +275,8 @@ def _warp_key(x) -> int:
     return _WARP_TAG + base
 
 
-def _mesh_key_from_vertices(vertices: np.ndarray, fallback_obj=None) -> int:
-    try:
-        base = _ptr_key_from_numpy(vertices)
-    except Exception:
-        base = int(id(fallback_obj)) if fallback_obj is not None else int(id(vertices))
-    return _MESH_TAG + base
+def _mesh_key_from_object(mesh: Mesh) -> int:
+    return _MESH_TAG + int(id(mesh))
 
 
 def serialize_ndarray(arr: np.ndarray, format_type: str = "json", cache: ArrayCache | None = None) -> dict:
@@ -458,7 +459,7 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
 
         # Iterables (like list, tuple, set)
         if isinstance(obj, Iterable) and not isinstance(obj, str | bytes | bytearray):
-            type_name = "set" if isinstance(obj, set) else type(obj).__name__
+            type_name = "set" if isinstance(obj, AbstractSet) else type(obj).__name__
             return {
                 "__type__": type_name,
                 "items": [
@@ -471,6 +472,22 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
 
         # Custom object — serialize attributes
         if hasattr(obj, "__dict__"):
+            attributes = vars(obj)
+            if isinstance(obj, DeformableVisualMesh):
+                # Read-only attributes are stored under private names; keep the public ones in the file.
+                attributes = {name.removeprefix("_"): value for name, value in attributes.items()}
+            if isinstance(obj, Model):
+                attributes = dict(attributes)
+                attributes["shape_contact_pairs"] = attributes.pop("_shape_contact_pairs", None)
+                pair_count = attributes.pop("_shape_contact_pair_count", None)
+                if pair_count is not None:
+                    attributes["shape_contact_pair_count"] = pair_count
+                attributes.pop("_shape_contact_pair_counts", None)
+                # Keep the public name in the file; the skinning batches are derived from the
+                # meshes and rebuilt on demand.
+                attributes["deformable_visual_meshes"] = attributes.pop("_deformable_visual_meshes", ())
+                attributes["deformable_visual_mesh_count"] = len(attributes["deformable_visual_meshes"])
+                attributes.pop("_deformable_visual_skin_batches", None)
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,
@@ -478,7 +495,7 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                     attr: serialize(
                         value, callback, _visited, f"{_path}.{attr}" if _path else attr, format_type, cache=cache
                     )
-                    for attr, value in vars(obj).items()
+                    for attr, value in attributes.items()
                 },
             }
 
@@ -604,12 +621,14 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 "is_solid": x.is_solid,
                 "has_inertia": x.has_inertia,
                 "maxhullvert": x.maxhullvert,
+                "color": None if x.color is None else [float(x.color[0]), float(x.color[1]), float(x.color[2])],
+                "opacity": x.opacity,
                 "mass": x.mass,
                 "com": [float(x.com[0]), float(x.com[1]), float(x.com[2])],
                 "inertia": serialize_ndarray(np.array(x.inertia), format_type, cache),
             }
             if cache is not None:
-                mesh_key = _mesh_key_from_vertices(x.vertices, fallback_obj=x)
+                mesh_key = _mesh_key_from_object(x)
                 idx = cache.try_register_pointer_and_value(mesh_key, x)
                 if idx > 0:
                     return {"__type__": "newton.geometry.Mesh_ref", "cache_index": int(idx)}
@@ -631,6 +650,30 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
 _MISSING = object()
 
 
+def _check_recorded_visual_meshes(source_dict: Mapping[str, Any], model: Model) -> None:
+    """Raise if a recording's visual meshes or their driver layout differ from a finalized model's.
+
+    A recording without visual meshes, whether it predates them or recorded a model that had
+    none, only has to match the element counts the kept meshes are bound to.
+    """
+    recorded = source_dict.get("deformable_visual_meshes")
+    current = model.deformable_visual_meshes
+    same_meshes = not recorded or (
+        len(current) == len(recorded)
+        and all(a.kind == b.kind and a.vertex_count == b.vertex_count for a, b in zip(current, recorded, strict=True))
+    )
+    same_drivers = all(
+        source_dict.get(name, getattr(model, name)) == getattr(model, name)
+        for name in ("particle_count", "body_count", "tri_count", "tet_count")
+    )
+    if not (same_meshes and same_drivers):
+        raise ValueError(
+            f"The recording does not match the {len(current)} deformable visual meshes of the finalized model or "
+            "the particle, body, triangle and tetrahedron counts they are bound to; load it into a model without "
+            "visual meshes"
+        )
+
+
 def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init_callback=None, _path=""):
     """
     Recursively transfer values from ``source_dict`` into ``target_obj``.
@@ -641,6 +684,7 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
     user-defined keys, so a namespace target accepts every source key. When the source
     carries a ``Model.AttributeNamespace`` (reconstructed by :func:`deserialize`) that the
     target lacks, it is installed wholesale so namespaces like ``model.mujoco`` roundtrip.
+    Model collision-edge storage also accepts private keys and their legacy public names.
 
     Args:
         source_dict: Mapping-like decoded values to transfer from deserialization.
@@ -655,15 +699,52 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
         return
 
     target_is_namespace = isinstance(target_obj, Model.AttributeNamespace)
+    target_is_model = isinstance(target_obj, Model)
+
+    if target_is_model and target_obj.deformable_visual_meshes:
+        # Visual meshes are fixed once set, so a finalized model keeps its own; the recording
+        # must then describe the same meshes over the same particle and body layout. Check
+        # this before anything is copied, so a mismatch leaves the model untouched.
+        _check_recorded_visual_meshes(source_dict, target_obj)
 
     for attr_name, source_value in source_dict.items():
-        if attr_name.startswith("_"):
+        if target_is_model and attr_name in {
+            "_shape_collision_filter_pairs",
+            "shape_collision_filter_pairs",
+        }:
+            target_obj._set_shape_collision_filter_pairs(source_value)  # pyright: ignore[reportPrivateUsage]
             continue
 
-        if isinstance(target_obj, Model) and attr_name == "shape_collision_filter_pairs":
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore", DeprecationWarning)
-                target_obj.shape_collision_filter_pairs = source_value
+        if target_is_model and attr_name in {
+            "shape_contact_pairs",
+            "_shape_contact_pairs",
+            "shape_contact_pair_count",
+            "_shape_contact_pair_count",
+        }:
+            continue
+
+        if target_is_model and attr_name == "deformable_visual_meshes":
+            # Only a model without visual meshes takes the recorded ones; skinning batches
+            # derived earlier, for example by finalizing an empty builder, are dropped. A
+            # finalized model keeps its own, checked above.
+            if not target_obj.deformable_visual_meshes:
+                target_obj._deformable_visual_meshes = tuple(source_value)
+                target_obj._deformable_visual_skin_batches = None
+            continue
+
+        if target_is_model and attr_name == "deformable_visual_mesh_count":
+            continue  # derived from the meshes the model ends up with
+
+        if target_is_model and attr_name.removeprefix("_") in {
+            "mesh_edge_indices",
+            "mesh_edge_centers",
+            "mesh_edge_halves",
+            "shape_edge_range",
+        }:
+            setattr(target_obj, f"_{attr_name.removeprefix('_')}", source_value)
+            continue
+
+        if attr_name.startswith("_"):
             continue
 
         target_value = getattr(target_obj, attr_name, _MISSING)
@@ -711,6 +792,23 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
         except (AttributeError, TypeError):
             pass
 
+    if target_is_model:
+        # Restore pair storage and topology; the count is derived from their contents.
+        pairs = source_dict.get("shape_contact_pairs", source_dict.get("_shape_contact_pairs", _MISSING))
+        if pairs is not _MISSING:
+            target_obj.shape_contact_pairs = pairs
+        data = source_dict.get("_shape_contact_pair_data")
+        if isinstance(data, Mapping):
+            target_obj._shape_contact_pair_data = _ShapeContactPairs(  # pyright: ignore[reportPrivateUsage]
+                data["shape_body"],
+                data["shape_world"],
+                data["shape_group"],
+                data["shape_flags"],
+                data["filter_pairs"],
+                data["world_count"],
+            )
+            target_obj._shape_contact_pair_count = int(target_obj._shape_contact_pair_data.counts.sum())  # pyright: ignore[reportPrivateUsage]
+
     if post_load_init_callback is not None:
         post_load_init_callback(target_obj, _path)
 
@@ -745,7 +843,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # NumPy scalar types
     if type_name.startswith("numpy."):
-        if type_name == "numpy.ndarray":
+        if type_name in ("numpy.ndarray", "numpy.ndarray_ref"):
             return deserialize_ndarray(data, format_type, cache)
 
         scalar_name = type_name.removeprefix("numpy.")
@@ -819,6 +917,26 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                     deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache),
                 )
             return ns
+
+        if type_name == "DeformableVisualMesh" and data.get("__module__") == DeformableVisualMesh.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            return DeformableVisualMesh(
+                kind=attributes["kind"],
+                rest_vertices=attributes["rest_vertices"],
+                indices=attributes["indices"],
+                parent=attributes["parent"],
+                weights=attributes.get("weights"),
+                local_offsets=attributes.get("local_offsets"),
+                uvs=attributes.get("uvs"),
+                texture=attributes.get("texture"),
+                world=attributes.get("world", -1),
+                label=attributes.get("label", ""),
+                index=attributes.get("index", -1),
+            )
+
         # Fallback: return a flat dict of decoded attributes for other custom classes.
         return {
             attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
@@ -954,11 +1072,11 @@ def _resolve_warp_dtype(
         suffix = _NUMPY_DTYPE_TO_SUFFIX.get(np_arr.dtype.type, "f")
         inferred = f"vec{vec_len}{suffix}"
         if hasattr(wp, inferred):
-            print(f"[Recorder] Info: Inferred dtype '{inferred}' from data shape for generic 'vec_t'")
+            logger.info("[Recorder] Inferred dtype '%s' from data shape for generic 'vec_t'", inferred)
             return getattr(wp, inferred)
         # For non-standard vector lengths (e.g., vec5), create dynamically
         scalar_type = _NUMPY_TO_WARP_SCALAR.get(np_arr.dtype.type, wp.float32)
-        print(f"[Recorder] Info: Creating dynamic vector type vec{vec_len} with {scalar_type.__name__}")
+        logger.info("[Recorder] Creating dynamic vector type vec%s with %s", vec_len, scalar_type.__name__)
         return wp.types.vector(vec_len, scalar_type)
 
     if dtype_str == "mat_t" and np_arr is not None and np_arr.ndim >= 2:
@@ -967,11 +1085,11 @@ def _resolve_warp_dtype(
         suffix = _NUMPY_DTYPE_TO_SUFFIX.get(np_arr.dtype.type, "f")
         inferred = f"mat{rows}{cols}{suffix}"
         if hasattr(wp, inferred):
-            print(f"[Recorder] Info: Inferred dtype '{inferred}' from data shape for generic 'mat_t'")
+            logger.info("[Recorder] Inferred dtype '%s' from data shape for generic 'mat_t'", inferred)
             return getattr(wp, inferred)
         # For non-standard matrix shapes, create dynamically
         scalar_type = _NUMPY_TO_WARP_SCALAR.get(np_arr.dtype.type, wp.float32)
-        print(f"[Recorder] Info: Creating dynamic matrix type mat{rows}x{cols} with {scalar_type.__name__}")
+        logger.info("[Recorder] Creating dynamic matrix type mat%sx%s with %s", rows, cols, scalar_type.__name__)
         return wp.types.matrix((rows, cols), scalar_type)
 
     # If dtype ends with 'f' or 'd', try without suffix (e.g., vec3f -> vec3)
@@ -1023,7 +1141,7 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
                     cache.try_register_pointer_and_value_and_index(key, result, int(cache_index))
                 return result
             except Exception as e:
-                print(f"[Recorder] Warning: Failed to deserialize warp.array at '{path}': {e}")
+                logger.warning("[Recorder] Failed to deserialize warp.array at '%s': %s", path, e)
                 return None
 
         elif x_type == "warp.HashGrid":
@@ -1058,6 +1176,8 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
                     compute_inertia=False,
                     is_solid=mesh_data["is_solid"],
                     maxhullvert=mesh_data["maxhullvert"],
+                    color=mesh_data.get("color"),
+                    opacity=mesh_data.get("opacity"),
                 )
 
                 # Restore the saved inertia properties
@@ -1072,11 +1192,11 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
                 # Optimization: single dict lookup
                 cache_index = x.get("cache_index")
                 if cache is not None and cache_index is not None:
-                    mesh_key = _mesh_key_from_vertices(vertices, fallback_obj=mesh)
+                    mesh_key = _mesh_key_from_object(mesh)
                     cache.try_register_pointer_and_value_and_index(mesh_key, mesh, int(cache_index))
                 return mesh
             except Exception as e:
-                print(f"[Recorder] Warning: Failed to deserialize Mesh at '{path}': {e}")
+                logger.warning("[Recorder] Failed to deserialize Mesh at '%s': %s", path, e)
                 return None
 
         elif x_type == "callable":
@@ -1173,6 +1293,12 @@ class ViewerFile(ViewerBase):
             self._model_recorded = True
 
     @override
+    def _log_deformable_visual_meshes(self, state: State):
+        # A recording holds simulation data only; display options are no-ops here, as for
+        # the other show_* flags, and playback skins the meshes when it renders them.
+        return
+
+    @override
     def log_state(self, state: State):
         """Record a state snapshot in addition to the base viewer processing.
 
@@ -1204,7 +1330,7 @@ class ViewerFile(ViewerBase):
         Args:
             file_path: Optional override for the output path. If omitted, uses
                 the ``output_path`` from construction.
-            verbose: If True, print status output on success/failure.
+            verbose: If True, log status output on success/failure.
         """
         effective_path = file_path if file_path is not None else str(self.output_path)
         self._save_recording(effective_path, verbose=verbose)
@@ -1215,10 +1341,10 @@ class ViewerFile(ViewerBase):
             effective_path = file_path if file_path is not None else str(self.output_path)
             self._save_to_file(effective_path)
             if verbose:
-                print(f"Recording saved to {effective_path} ({self._frame_count} frames)")
+                logger.info("Recording saved to %s (%s frames)", effective_path, self._frame_count)
         except Exception as e:
             if verbose:
-                print(f"Error saving recording: {e}")
+                logger.error("Failed to save recording: %s", e)
 
     def record(self, state: State):
         """Record a snapshot of the provided simulation state.
@@ -1240,7 +1366,7 @@ class ViewerFile(ViewerBase):
             frame_id: Frame index to load from history.
         """
         if not (0 <= frame_id < len(self.history)):
-            print(f"Warning: frame_id {frame_id} is out of bounds. Playback skipped.")
+            logger.warning("frame_id %s is out of bounds. Playback skipped.", frame_id)
             return
 
         state_data = self.history[frame_id]
@@ -1261,9 +1387,13 @@ class ViewerFile(ViewerBase):
 
         Args:
             model: Destination model object to populate.
+
+        Raises:
+            ValueError: If the model already has deformable visual meshes and the
+                recording's meshes or element counts do not match them.
         """
         if not self.deserialized_model:
-            print("Warning: No model data to playback.")
+            logger.warning("No model data to playback.")
             return
 
         def post_load_init_callback(target_obj, path):
@@ -1345,6 +1475,8 @@ class ViewerFile(ViewerBase):
         color: tuple[float, float, float] | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        dynamic: bool = False,
+        opacity: float | None = None,
     ):
         """File viewer does not render meshes.
 
@@ -1363,6 +1495,8 @@ class ViewerFile(ViewerBase):
                 smooth, ``1`` is fully rough.
             metallic: Metallicity in ``[0, 1]``. ``0`` is dielectric, ``1``
                 is metal.
+            dynamic: Whether mesh topology may change between frames.
+            opacity: Optional display opacity in [0, 1].
         """
         pass
 
@@ -1376,6 +1510,7 @@ class ViewerFile(ViewerBase):
         colors: wp.array[wp.vec3] | None,
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
+        opacities: wp.array[wp.float32] | None = None,
     ):
         """File viewer does not render instances.
 
@@ -1387,6 +1522,7 @@ class ViewerFile(ViewerBase):
             colors: Optional per-instance colors.
             materials: Optional per-instance material parameters.
             hidden: Whether the instance batch is hidden.
+            opacities: Optional per-instance opacity values.
         """
         pass
 
@@ -1474,7 +1610,7 @@ class ViewerFile(ViewerBase):
         if self._frame_count > 0:
             self._save_recording()
         self._running = False
-        print(f"ViewerFile closed. Total frames recorded: {self._frame_count}")
+        logger.info("ViewerFile closed. Total frames recorded: %s", self._frame_count)
 
     def load_recording(self, file_path: str | None = None, verbose: bool = False):
         """Load a previously recorded file for playback.
@@ -1485,13 +1621,13 @@ class ViewerFile(ViewerBase):
         Args:
             file_path: Optional override for the file path. If omitted, uses
                 the ``output_path`` from construction.
-            verbose: If True, print status output after loading.
+            verbose: If True, log status output after loading.
         """
         effective_path = file_path if file_path is not None else str(self.output_path)
         self._load_from_file(effective_path)
         self._frame_count = len(self.history)
         if verbose:
-            print(f"Loaded recording with {self._frame_count} frames from {effective_path}")
+            logger.info("Loaded recording with %s frames from %s", self._frame_count, effective_path)
 
     def get_frame_count(self) -> int:
         """Return the number of frames in the loaded or recorded session.
@@ -1513,10 +1649,17 @@ class ViewerFile(ViewerBase):
         """Restore a Model from the loaded recording.
 
         Must be called after load_recording(). The given model is populated
-        with the recorded model structure (bodies, shapes, etc.).
+        with the recorded model structure (bodies, shapes, etc.). A model that
+        already has deformable visual meshes keeps them; the recording must then
+        have the same particle, body, triangle and tetrahedron counts, and if it
+        holds visual meshes, the same ones (count, kind and vertex count).
 
         Args:
             model: A Newton Model instance to populate.
+
+        Raises:
+            ValueError: If the model already has deformable visual meshes and the
+                recording's meshes or element counts do not match them.
         """
         self.playback_model(model)
 

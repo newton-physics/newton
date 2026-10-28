@@ -95,9 +95,9 @@ class Example:
 
         for label, points in path_builders:
             points_np = self._points_array(points)
+            rod = newton.Rod(points, radius=self.CABLE_RADIUS)
             bodies, joints = builder.add_rod(
-                positions=points,
-                radius=self.CABLE_RADIUS,
+                rod=rod,
                 stretch_stiffness=self.STRETCH_STIFFNESS,
                 bend_stiffness=self.BEND_STIFFNESS,
                 bend_damping=self.BEND_DAMPING,
@@ -105,7 +105,6 @@ class Example:
                 twist_damping=self.TWIST_DAMPING,
                 label=f"twist_transfer_{label}",
                 wrap_in_articulation=False,
-                body_frame_origin="com",
             )
             root_body = int(bodies[0])
             tip_body = int(bodies[-1])
@@ -126,7 +125,7 @@ class Example:
 
         builder.color()
         self.model = builder.finalize()
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

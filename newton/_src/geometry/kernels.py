@@ -3,7 +3,14 @@
 
 import warp as wp
 
-from ..utils.heightfield import HeightfieldData, sample_sdf_grad_heightfield
+from ..utils.heightfield import (
+    HeightfieldData,
+    get_triangle_shape_from_heightfield,
+    heightfield_cell_range,
+    heightfield_point_below,
+    sample_sdf_grad_heightfield,
+    signed_heightfield_feature_distance,
+)
 from .broad_phase_common import binary_search
 from .flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from .types import (
@@ -178,6 +185,94 @@ def _sdf_capped_cone_z(bottom_radius: float, top_radius: float, half_height: flo
 
 
 @wp.func
+def _closest_point_on_segment_2d(a: wp.vec2, b: wp.vec2, q: wp.vec2) -> wp.vec2:
+    """Closest point to ``q`` on the segment ``a``-``b``."""
+    d = b - a
+    dd = wp.dot(d, d)
+    t = float(0.0)
+    if dd > 0.0:
+        t = wp.clamp(wp.dot(q - a, d) / dd, 0.0, 1.0)
+    return a + d * t
+
+
+@wp.func
+def _sdf_capped_cone_grad_z(
+    bottom_radius: float, top_radius: float, half_height: float, point_z_up: wp.vec3
+) -> wp.vec3:
+    """Exact outward gradient of :func:`_sdf_capped_cone_z`.
+
+    The closest boundary point lies in the query's meridian half-plane, on one of three
+    segments: the two cap radii and the lateral side. The gradient is the unit offset from
+    the nearest of them, flipped for interior queries.
+    """
+    if half_height < 0.0:
+        return wp.vec3(0.0, 0.0, wp.sign(point_z_up[2]))
+
+    extent = wp.abs(bottom_radius) + wp.abs(top_radius) + half_height
+    eps = 1.0e-6 * extent
+
+    rho = wp.length(wp.vec2(point_z_up[0], point_z_up[1]))
+    q = wp.vec2(rho, point_z_up[2])
+
+    bottom_inner = wp.vec2(0.0, -half_height)
+    bottom_rim = wp.vec2(bottom_radius, -half_height)
+    top_inner = wp.vec2(0.0, half_height)
+    top_rim = wp.vec2(top_radius, half_height)
+
+    m_lateral = _closest_point_on_segment_2d(bottom_rim, top_rim, q)
+    m_bottom = _closest_point_on_segment_2d(bottom_inner, bottom_rim, q)
+    m_top = _closest_point_on_segment_2d(top_inner, top_rim, q)
+
+    closest = m_lateral
+    best = wp.length_sq(q - m_lateral)
+    feature = int(0)
+    d_bottom = wp.length_sq(q - m_bottom)
+    if d_bottom < best:
+        closest = m_bottom
+        best = d_bottom
+        feature = int(1)
+    d_top = wp.length_sq(q - m_top)
+    if d_top < best:
+        closest = m_top
+        best = d_top
+        feature = int(2)
+
+    inside = False
+    if half_height > 0.0:
+        radius_at_z = bottom_radius + (top_radius - bottom_radius) * (point_z_up[2] + half_height) / (2.0 * half_height)
+        inside = wp.abs(point_z_up[2]) <= half_height and rho <= radius_at_z
+
+    offset = q - closest
+    offset_len = wp.length(offset)
+    direction = wp.vec2(0.0, 1.0)
+    if offset_len > eps:
+        direction = offset / offset_len
+        if inside:
+            direction = -direction
+    elif half_height == 0.0:
+        # A collapsed cone is a disk; its surface normal is axial.
+        direction = wp.vec2(0.0, wp.sign(point_z_up[2]))
+    elif feature == 1:
+        direction = wp.vec2(0.0, -1.0)
+    elif feature == 2:
+        direction = wp.vec2(0.0, 1.0)
+    else:
+        # lateral face normal
+        direction = wp.normalize(wp.vec2(2.0 * half_height, bottom_radius - top_radius))
+
+    radial_x = float(1.0)
+    radial_y = float(0.0)
+    if rho > eps:
+        radial_x = point_z_up[0] / rho
+        radial_y = point_z_up[1] / rho
+    grad = wp.vec3(direction[0] * radial_x, direction[0] * radial_y, direction[1])
+    grad_len = wp.length(grad)
+    if grad_len > 1.0e-8:
+        return grad / grad_len
+    return wp.vec3(0.0, 0.0, 1.0)
+
+
+@wp.func
 def sdf_sphere(point: wp.vec3, radius: float):
     """Compute signed distance to a sphere for ``Mesh.create_sphere`` geometry.
 
@@ -223,7 +318,7 @@ def sdf_box(point: wp.vec3, hx: float, hy: float, hz: float):
     Returns:
         Signed distance [m], negative inside, zero on surface, positive outside.
     """
-    # adapted from https://www.iquilezles.org/www/articles/distfunctions/distfunctions.htm
+    # adapted from https://iquilezles.org/articles/distfunctions/
     qx = abs(point[0]) - hx
     qy = abs(point[1]) - hy
     qz = abs(point[2]) - hz
@@ -477,47 +572,7 @@ def sdf_cylinder_grad(
         grad_z_up = _sdf_barrel_cylinder_grad_z(point_z_up, radius, half_height, barrel_radius)
         return _sdf_vector_from_z_up(grad_z_up, up_axis)
     if top_radius >= 0.0 and wp.abs(top_radius - radius) > 1.0e-6:
-        # Use finite-difference gradient of the tapered capped-cone SDF.
-        fd_eps = 1.0e-4
-        dx = _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up + wp.vec3(fd_eps, 0.0, 0.0),
-        ) - _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up - wp.vec3(fd_eps, 0.0, 0.0),
-        )
-        dy = _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up + wp.vec3(0.0, fd_eps, 0.0),
-        ) - _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up - wp.vec3(0.0, fd_eps, 0.0),
-        )
-        dz = _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up + wp.vec3(0.0, 0.0, fd_eps),
-        ) - _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up - wp.vec3(0.0, 0.0, fd_eps),
-        )
-        grad_z_up = wp.vec3(dx, dy, dz)
-        grad_len = wp.length(grad_z_up)
-        if grad_len > eps:
-            grad_z_up = grad_z_up / grad_len
-        else:
-            grad_z_up = wp.vec3(0.0, 0.0, 1.0)
+        grad_z_up = _sdf_capped_cone_grad_z(radius, top_radius, half_height, point_z_up)
         return _sdf_vector_from_z_up(grad_z_up, up_axis)
 
     v = wp.vec3(point_z_up[0], point_z_up[1], 0.0)
@@ -644,21 +699,7 @@ def sdf_cone_grad(point: wp.vec3, radius: float, half_height: float, up_axis: in
         return _sdf_vector_from_z_up(wp.vec3(0.0, 0.0, wp.sign(point_z_up[2])), up_axis)
 
     # Gradient for cone with apex at +half_height and base at -half_height
-    r = wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0))
-    dx = r - radius * (half_height - point_z_up[2]) / (2.0 * half_height)
-    dy = wp.abs(point_z_up[2]) - half_height
-    grad_z_up = wp.vec3()
-    if dx > dy:
-        # Closest to lateral surface
-        if r > 0.0:
-            radial_dir = wp.vec3(point_z_up[0], point_z_up[1], 0.0) / r
-            # Normal to cone surface
-            grad_z_up = wp.normalize(radial_dir + wp.vec3(0.0, 0.0, radius / (2.0 * half_height)))
-        else:
-            grad_z_up = wp.vec3(0.0, 0.0, 1.0)
-    else:
-        # Closest to cap
-        grad_z_up = wp.vec3(0.0, 0.0, wp.sign(point_z_up[2]))
+    grad_z_up = _sdf_capped_cone_grad_z(radius, 0.0, half_height, point_z_up)
     return _sdf_vector_from_z_up(grad_z_up, up_axis)
 
 
@@ -1099,6 +1140,46 @@ def counter_increment_replay(
     return -1
 
 
+@wp.func
+def closest_point_heightfield(
+    hfd: HeightfieldData,
+    elevation_data: wp.array[wp.float32],
+    pos: wp.vec3,
+    threshold: float,
+) -> tuple[float, wp.vec3]:
+    """Exact signed distance and contact normal of ``pos`` against nearby heightfield triangles.
+
+    Unlike :func:`sample_sdf_grad_heightfield`, the normal follows the closest-feature delta, so a
+    point beside a step lip is pushed away from the lip rather than along the riser's face normal.
+    Only triangles within ``threshold`` of ``pos`` in XY are searched; farther points return 1e10.
+    """
+    cells = heightfield_cell_range(pos, pos, pos, hfd, threshold)
+    best_sq = float(1.0e20)
+    closest = wp.vec3(0.0)
+    closest_normal = wp.vec3(0.0, 0.0, 1.0)
+    for row in range(cells[2], cells[3] + 1):
+        for col in range(cells[0], cells[1] + 1):
+            for sub in range(2):
+                tri_index = (row * (hfd.ncol - 1) + col) * 2 + sub
+                rigid_shape, u = get_triangle_shape_from_heightfield(
+                    hfd, elevation_data, wp.transform_identity(), tri_index
+                )
+                v = u + rigid_shape.scale
+                w = u + rigid_shape.auxiliary
+                y, _bary, _feature = triangle_closest_point(u, v, w, pos)
+                distance_sq = wp.length_sq(pos - y)
+                if distance_sq < best_sq:
+                    best_sq = distance_sq
+                    closest = y
+                    closest_normal = wp.cross(v - u, w - u)
+    if best_sq >= 1.0e20:
+        return float(1.0e10), wp.vec3(0.0, 0.0, 1.0)
+    best, best_normal = signed_heightfield_feature_distance(
+        pos, closest, wp.normalize(closest_normal), heightfield_point_below(hfd, elevation_data, pos)
+    )
+    return best, best_normal
+
+
 @wp.kernel
 def create_soft_contacts(
     soft_rigid_contact_pairs: wp.array[wp.vec2i],
@@ -1114,6 +1195,9 @@ def create_soft_contacts(
     shape_source_ptr: wp.array[wp.uint64],
     shape_mesh_properties: wp.array[wp.int32],
     shape_world: wp.array[int],  # World indices for shapes
+    shape_aabb_lower: wp.array[wp.vec3],
+    shape_aabb_upper: wp.array[wp.vec3],
+    shape_gap: wp.array[float],
     margin: float,
     shape_margin: wp.array[float],
     soft_contact_max: int,
@@ -1121,6 +1205,7 @@ def create_soft_contacts(
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     heightfield_elevations: wp.array[wp.float32],
+    exact_heightfield: bool,
     # outputs
     soft_contact_count: wp.array[int],
     soft_contact_particle: wp.array[int],
@@ -1154,6 +1239,28 @@ def create_soft_contacts(
     px = particle_q[particle_index]
     radius = particle_radius[particle_index]
 
+    geo_type = shape_type[shape_index]
+    geo_scale = shape_scale[shape_index]
+    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
+
+    # The rigid broad-phase AABB already includes its shape margin and rigid-contact gap. Expand it
+    # only by the particle radius and any additional soft-contact gap before doing shape-specific work.
+    # Plane distance is cheaper than this bound; heightfields also remain solid below their surface.
+    can_cull = shape_aabb_lower.shape[0] > 0 and geo_type != GeoType.PLANE and geo_type != GeoType.HFIELD
+    if can_cull:
+        extent = radius + wp.max(margin - shape_gap[shape_index], 0.0)
+        lower = shape_aabb_lower[shape_index] - wp.vec3(extent)
+        upper = shape_aabb_upper[shape_index] + wp.vec3(extent)
+        if (
+            px[0] < lower[0]
+            or px[0] > upper[0]
+            or px[1] < lower[1]
+            or px[1] > upper[1]
+            or px[2] < lower[2]
+            or px[2] > upper[2]
+        ):
+            return
+
     X_wb = wp.transform_identity()
     if rigid_index >= 0:
         X_wb = body_q[rigid_index]
@@ -1165,11 +1272,6 @@ def create_soft_contacts(
 
     # transform particle position to shape local space
     x_local = wp.transform_point(X_sw, px)
-
-    # geo description
-    geo_type = shape_type[shape_index]
-    geo_scale = shape_scale[shape_index]
-    s_margin = shape_margin[shape_index] if shape_margin.shape[0] > 0 else 0.0
 
     # evaluate shape sdf
     d = 1.0e6
@@ -1241,7 +1343,12 @@ def create_soft_contacts(
 
     if geo_type == GeoType.HFIELD:
         hfd = heightfield_data[shape_heightfield_index[shape_index]]
-        d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevations, x_local)
+        if exact_heightfield:
+            # Full-surface contacts rest cloth on step lips, so particles beside a lip need the
+            # closest-feature normal instead of the riser's nearly horizontal face normal.
+            d, n = closest_point_heightfield(hfd, heightfield_elevations, x_local, margin + s_margin + radius)
+        else:
+            d, n = sample_sdf_grad_heightfield(hfd, heightfield_elevations, x_local)
 
     if d < margin + s_margin + radius:
         index = counter_increment(soft_contact_count, 0, soft_contact_tids, tid)

@@ -160,10 +160,9 @@ class Example:
                 kd=self.contact_damping,
                 gap=self.contact_gap,
             )
+        rod = newton.Rod(points, radius=self.CABLE_RADIUS)
         bodies, joints = builder.add_rod(
-            positions=points,
-            quaternions=None,
-            radius=self.CABLE_RADIUS,
+            rod=rod,
             cfg=shape_cfg,
             stretch_stiffness=self.STRETCH_STIFFNESS,
             stretch_damping=0.0,
@@ -173,7 +172,6 @@ class Example:
             twist_damping=self.twist_damping,
             label="twist_buckling",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
 
         self.bodies = list(map(int, bodies))
@@ -199,7 +197,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
             rigid_contact_history=contact_history,
             rigid_body_contact_buffer_size=256,
         )

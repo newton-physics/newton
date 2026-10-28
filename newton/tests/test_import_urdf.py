@@ -3,10 +3,11 @@
 
 import base64
 import os
+import sys
 import tempfile
 import unittest
 import warnings
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -16,6 +17,8 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.utils.import_urdf import _resolve_urdf_uri
+from newton._src.utils.import_urdf import parse_urdf as direct_parse_urdf
 from newton._src.utils.mesh import load_meshes_from_file
 from newton.tests.unittest_utils import assert_np_equal
 
@@ -419,6 +422,49 @@ class TestImportUrdfBasic(unittest.TestCase):
         assert builder.shape_scale[0][0] == 0.5
         assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
 
+    def test_visual_material_rgba_preserves_opacity(self):
+        """Preserve the alpha channel from URDF visual materials."""
+        urdf = """
+        <robot name="rgba_test">
+            <link name="base_link">
+                <visual>
+                    <geometry>
+                        <sphere radius="0.5"/>
+                    </geometry>
+                    <material name="transparent_blue">
+                        <color rgba="0.1 0.2 0.8 0.35"/>
+                    </material>
+                </visual>
+            </link>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        parse_urdf(urdf, builder)
+
+        self.assertEqual(builder.shape_count, 1)
+        np.testing.assert_allclose(builder.shape_color[0], [0.1, 0.2, 0.8], atol=1e-6, rtol=1e-6)
+        self.assertAlmostEqual(builder.shape_opacity[0], 0.35, places=6)
+
+    def test_visual_material_rgba_clamps_invalid_opacity(self):
+        """Clamp invalid URDF visual alpha values with a warning."""
+        urdf = """
+        <robot name="rgba_test">
+            <link name="base_link">
+                <visual>
+                    <geometry><sphere radius="0.5"/></geometry>
+                    <material name="invalid_alpha"><color rgba="0.1 0.2 0.8 1.5"/></material>
+                </visual>
+            </link>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+
+        with self.assertWarnsRegex(UserWarning, "Clamping opacity"):
+            parse_urdf(urdf, builder)
+
+        self.assertEqual(builder.shape_count, 1)
+        self.assertAlmostEqual(builder.shape_opacity[0], 1.0, places=6)
+
     def test_mesh_urdf(self):
         # load a urdf containing a cube mesh with 8 verts and 12 faces
         for mesh_src in ("file", "http"):
@@ -440,6 +486,43 @@ class TestImportUrdfBasic(unittest.TestCase):
                 assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
                 assert builder.shape_source[0].vertices.shape[0] == 8
                 assert builder.shape_source[0].indices.shape[0] == 3 * 12
+
+    @unittest.skipIf(sys.platform == "win32", "trimesh's meshio loader reopens an open NamedTemporaryFile")
+    def test_gmsh_mesh_urdf(self):
+        """Keep Gmsh .msh files on the shared mesh loader's existing path."""
+        import meshio
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float64)
+        faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
+        mesh = meshio.Mesh(vertices, [("triangle", faces)])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "tetra.msh"
+            for binary in (False, True):
+                with self.subTest(binary=binary):
+                    meshio.write(path, mesh, file_format="gmsh22", binary=binary)
+                    builder = newton.ModelBuilder()
+                    parse_urdf(MESH_URDF.format(filename=path), builder)
+                    source = builder.shape_source[0]
+                    np.testing.assert_array_equal(source.vertices, vertices)
+                    np.testing.assert_array_equal(source.indices.reshape(-1, 3), faces)
+
+    def test_empty_mesh_reports_filename(self):
+        """Reject empty geometry before processing colors or material overrides."""
+        files = {
+            "empty.stl": bytes(84),
+            "broken.dae": TEXTURED_DAE.replace(
+                "<init_from>tex-image</init_from>", "<init_from>missing</init_from>"
+            ).encode(),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name, content in files.items():
+                path = Path(tmpdir) / name
+                path.write_bytes(content)
+                for color in (None, (1.0, 0.0, 0.0)):
+                    with self.subTest(file=name, color=color):
+                        with self.assertRaisesRegex(ValueError, "contains no triangles") as error:
+                            load_meshes_from_file(str(path), maxhullvert=0, override_color=color)
+                        self.assertIn(str(path), str(error.exception))
 
     def test_dae_visual_texture_urdf(self):
         """Verify URDF visual meshes preserve Collada texture bindings."""
@@ -1876,6 +1959,14 @@ class TestUrdfUriResolution(unittest.TestCase):
     SIMPLE_URDF = '<robot name="r"><link name="base"><visual><geometry>{geo}</geometry></visual></link></robot>'
     MESH_GEO = '<mesh filename="{filename}"/>'
     SPHERE_GEO = '<sphere radius="0.5"/>'
+    MESH_WITH_UVS = """v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+f 1/1 2/2 3/3
+"""
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1891,6 +1982,96 @@ class TestUrdfUriResolution(unittest.TestCase):
             (pkg / "meshes").mkdir(parents=True)
             (pkg / "meshes" / "link.obj").write_text(MESH_OBJ)
         return pkg
+
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
+    def test_asset_uri_resolution(self):
+        """Resolve file, package, and model URIs for sources, meshes, and textures."""
+        pkg = self._create_package("robot with spaces")
+        mesh_path = pkg / "meshes" / "link.obj"
+        mesh_path.write_text(self.MESH_WITH_UVS)
+        texture_path = pkg / "meshes" / "texture #1%.png"
+        texture_path.write_bytes(base64.b64decode(TEXTURE_PNG_BASE64))
+        source_path = self.base_path / "inputs" / "nested" / "urdf" / "robot.urdf"
+        source_path.parent.mkdir(parents=True)
+        package_dirs = [str(self.base_path)]
+
+        def uri(path, scheme):
+            return path.as_uri() if scheme == "file" else f"{scheme}://{path.relative_to(self.base_path).as_posix()}"
+
+        for scheme in ("file", "package", "model"):
+            urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri(mesh_path, scheme))).replace(
+                "</visual>", f'<material name="m"><texture filename="{uri(texture_path, scheme)}"/></material></visual>'
+            )
+            source_path.write_text(urdf)
+            for source in (uri(source_path, scheme), str(source_path), urdf):
+                with self.subTest(scheme=scheme, source=source):
+                    builder = newton.ModelBuilder()
+                    builder.add_urdf(source, package_dirs=package_dirs)
+                    self.assertEqual(builder.shape_count, 1)
+                    mesh = builder.shape_source[0]
+                    self.assertTrue(Path(mesh.texture).samefile(texture_path))
+                    np.testing.assert_array_equal(newton.utils.load_texture(mesh.texture)[0, 0, :3], [255, 0, 0])
+        self.assertEqual(package_dirs, [str(self.base_path)])
+
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
+    def test_file_uri_preserves_symlink_asset_directory(self):
+        """Load relative assets beside a symlinked URDF for both paths and URIs."""
+        source_path = self.base_path / "robot.urdf"
+        source_path.write_text(self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="link.obj")))
+        bundle = self.base_path / "bundle"
+        bundle.mkdir()
+        alias = bundle / "robot.urdf"
+        try:
+            alias.symlink_to(source_path)
+        except OSError as exc:
+            self.skipTest(f"Cannot create symlinks: {exc}")
+        (bundle / "link.obj").write_text(MESH_OBJ)
+        for source in (str(alias), alias.as_uri()):
+            with self.subTest(source=source):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(source)
+                self.assertEqual(builder.shape_count, 1)
+                self.assertEqual(builder.shape_type[0], GeoType.MESH)
+
+    def test_file_uri_rejects_windows_relative_paths(self):
+        """Validate converted Windows paths independently of the host platform."""
+        with (
+            patch("newton._src.utils.import_urdf.url2pathname", lambda path: path.replace("/", "\\")),
+            patch("newton._src.utils.import_urdf.PurePath", PureWindowsPath),
+            self.assertRaisesRegex(ValueError, "file URI"),
+        ):
+            _resolve_urdf_uri("file:///mesh.obj", [])
+
+    def test_invalid_file_uris(self):
+        """Reject remote or malformed file URIs instead of loading local paths."""
+        source_path = self.base_path / "robot.urdf"
+        source_path.write_text(self.SIMPLE_URDF.format(geo=self.SPHERE_GEO))
+        local_uri = source_path.as_uri()
+        for uri in (
+            local_uri.replace("file://", "file://remote.example"),
+            local_uri.replace("file://", "file://user@localhost"),
+            local_uri.replace("file://", "file://localhost:123"),
+            local_uri + "?query",
+            local_uri + "#fragment",
+            "file:relative.obj",
+            "file:////server/share/mesh.obj",
+            "file:///%5Cserver/share/mesh.obj",
+        ):
+            for source in (uri, self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri))):
+                with self.subTest(uri=uri, source=source):
+                    with self.assertRaisesRegex(ValueError, "file URI"):
+                        newton.ModelBuilder().add_urdf(source)
+
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
+    def test_missing_file_uri(self):
+        """Report missing file URI sources and skip missing assets with a warning."""
+        uri = (self.base_path / "missing.obj").as_uri()
+        with self.assertRaises(FileNotFoundError):
+            newton.ModelBuilder().add_urdf(uri)
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "Could not resolve URI"):
+            builder.add_urdf(self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri)))
+        self.assertEqual(builder.shape_count, 0)
 
     def test_package_uri_mesh_resolution(self):
         """Test package:// URI in mesh filename works with library and fallback."""
@@ -1918,31 +2099,39 @@ class TestUrdfUriResolution(unittest.TestCase):
 
     @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
     def test_source_uri_resolution(self):
-        """Test package:// URI in source parameter works."""
+        """Resolve package and local file URIs in the source parameter."""
         pkg = self._create_package("my_robot", with_mesh=False)
         urdf = self.SIMPLE_URDF.format(geo=self.SPHERE_GEO)
         (pkg / "urdf" / "robot.urdf").write_text(urdf)
 
         with patch.dict(os.environ, {"ROS_PACKAGE_PATH": str(self.base_path)}):
-            builder = newton.ModelBuilder()
-            builder.add_urdf("package://my_robot/urdf/robot.urdf", up_axis="Z")
-            self.assertEqual(builder.body_count, 1)
+            file_uri = (pkg / "urdf" / "robot.urdf").as_uri()
+            for source in (
+                "package://my_robot/urdf/robot.urdf",
+                file_uri.replace("file://", "file://localhost"),
+                file_uri.replace("file:", "FILE:"),
+            ):
+                with self.subTest(source=source):
+                    builder = newton.ModelBuilder()
+                    builder.add_urdf(source, up_axis="Z")
+                    self.assertEqual(builder.body_count, 1)
 
     def test_uri_requires_library_or_warns(self):
         """Test that missing library raises/warns appropriately."""
         with patch("newton._src.utils.import_urdf.resolve_robotics_uri", None):
             builder = newton.ModelBuilder()
 
-            # Source URI requires library - raises ImportError
-            with self.assertRaises(ImportError) as cm:
-                builder.add_urdf("package://pkg/robot.urdf", up_axis="Z")
-            self.assertIn("resolve-robotics-uri-py", str(cm.exception))
+            for uri in ("package://pkg/robot.urdf", (self.base_path / "robot.urdf").as_uri()):
+                with self.subTest(source=uri), self.assertRaisesRegex(ImportError, "resolve-robotics-uri-py"):
+                    builder.add_urdf(uri, up_axis="Z")
 
-            # model:// mesh URI warns
-            urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="model://m/mesh.obj"))
-            with self.assertWarns(UserWarning) as cm:
-                builder.add_urdf(urdf, up_axis="Z")
-            self.assertIn("resolve-robotics-uri-py", str(cm.warning))
+            for uri in ("model://m/mesh.obj", (self.base_path / "mesh.obj").as_uri()):
+                urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri))
+                with self.subTest(asset=uri), self.assertWarnsRegex(UserWarning, "resolve-robotics-uri-py"):
+                    builder.add_urdf(urdf, up_axis="Z")
+
+            with self.assertRaisesRegex(ImportError, "package_dirs"):
+                builder.add_urdf(self.SIMPLE_URDF.format(geo=self.SPHERE_GEO), package_dirs=[str(self.base_path)])
 
     def test_unresolved_package_warning(self):
         """Test warning when package cannot be found."""
@@ -1970,7 +2159,7 @@ class TestUrdfUriResolution(unittest.TestCase):
             builder = newton.ModelBuilder()
             with self.assertWarns(UserWarning) as cm:
                 builder.add_urdf(str(misleading / "urdf" / "robot.urdf"), up_axis="Z")
-            self.assertIn('could not resolve package "pkg"', str(cm.warning))
+            self.assertIn('Could not resolve package "pkg"', str(cm.warning))
             self.assertEqual(builder.shape_count, 0)
 
     @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
@@ -2027,34 +2216,161 @@ MIMIC_URDF = """
 """
 
 
+class TestUrdfVelocityLimits(unittest.TestCase):
+    """Tests for imported URDF joint velocity limits."""
+
+    def test_velocity_limits_preserve_units_and_scale(self):
+        """Import angular limits unchanged and scale linear limits."""
+        urdf = """
+        <robot name="velocity">
+            <link name="base"/><link name="hinge_link"/>
+            <link name="slider_link"/><link name="default_link"/>
+            <joint name="hinge" type="revolute">
+                <parent link="base"/><child link="hinge_link"/>
+                <limit lower="-1" upper="1" velocity="2.5"/>
+            </joint>
+            <joint name="slider" type="prismatic">
+                <parent link="hinge_link"/><child link="slider_link"/>
+                <limit lower="-1" upper="1" velocity="0.4"/>
+            </joint>
+            <joint name="default" type="continuous">
+                <parent link="slider_link"/><child link="default_link"/>
+            </joint>
+        </robot>
+        """
+        for scale in (1.0, 2.0):
+            with self.subTest(scale=scale):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, scale=scale)
+                limits = {
+                    label: builder.joint_velocity_limit[builder.joint_qd_start[i]]
+                    for i, label in enumerate(builder.joint_label)
+                    if builder.joint_qd_start[i] < len(builder.joint_velocity_limit)
+                }
+                self.assertAlmostEqual(limits["velocity/hinge"], 2.5)
+                self.assertAlmostEqual(limits["velocity/slider"], 0.4 * scale)
+                self.assertEqual(limits["velocity/default"], builder.default_joint_cfg.velocity_limit)
+
+
 class TestMimicConstraints(unittest.TestCase):
     """Tests for URDF mimic joint parsing."""
 
+    def test_mimic_chain_flattens_to_independent_reference(self):
+        """Verify affine mimic chains resolve to an independent joint."""
+        urdf = """
+        <robot name="chain">
+            <link name="base"/><link name="l1"/><link name="l2"/><link name="l3"/>
+            <joint name="j1" type="revolute">
+                <parent link="base"/><child link="l1"/>
+                <limit lower="-2" upper="2"/>
+            </joint>
+            <joint name="j2" type="revolute">
+                <parent link="l1"/><child link="l2"/>
+                <limit lower="-2" upper="2"/>
+                <mimic joint="j1" multiplier="2" offset="0.1"/>
+            </joint>
+            <joint name="j3" type="revolute">
+                <parent link="l2"/><child link="l3"/>
+                <limit lower="-2" upper="2"/>
+                <mimic joint="j2" multiplier="3" offset="0.2"/>
+            </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_urdf(urdf)
+        model = builder.finalize(device="cpu")
+        j1 = model.joint_label.index("chain/j1")
+        j3 = model.joint_label.index("chain/j3")
+        self.assertEqual(model.joint_mimic_joint.numpy()[j3], j1)
+        np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[j3], (0.5, 6.0))
+
+    def test_scaled_mimic_chain_converts_joint_units(self):
+        """Scale a flattened chain for its follower and reference coordinates."""
+        cases = (
+            ("prismatic", "prismatic", (1.0, 6.0)),
+            ("revolute", "prismatic", (1.0, 12.0)),
+            ("prismatic", "revolute", (0.5, 3.0)),
+        )
+        for reference_type, follower_type, expected in cases:
+            with self.subTest(reference_type=reference_type, follower_type=follower_type):
+                urdf = f"""
+                <robot name="scaled_chain">
+                    <link name="base"/><link name="l1"/><link name="l2"/><link name="l3"/>
+                    <joint name="j1" type="{reference_type}">
+                        <parent link="base"/><child link="l1"/>
+                        <limit lower="-2" upper="2"/>
+                    </joint>
+                    <joint name="j2" type="{follower_type}">
+                        <parent link="l1"/><child link="l2"/>
+                        <limit lower="-2" upper="2"/>
+                        <mimic joint="j1" multiplier="2" offset="0.1"/>
+                    </joint>
+                    <joint name="j3" type="{follower_type}">
+                        <parent link="l2"/><child link="l3"/>
+                        <limit lower="-2" upper="2"/>
+                        <mimic joint="j2" multiplier="3" offset="0.2"/>
+                    </joint>
+                </robot>
+                """
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, scale=2.0)
+                model = builder.finalize(device="cpu")
+                j1 = model.joint_label.index("scaled_chain/j1")
+                j3 = model.joint_label.index("scaled_chain/j3")
+                self.assertEqual(model.joint_mimic_joint.numpy()[j3], j1)
+                np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[j3], expected)
+
+    def test_zero_scale_prismatic_mimic_reference_reports_error(self):
+        """Avoid dividing by a collapsed prismatic coordinate scale."""
+        urdf = """
+        <robot name="zero_scale">
+            <link name="base"/><link name="l1"/><link name="l2"/>
+            <joint name="j1" type="prismatic">
+                <parent link="base"/><child link="l1"/>
+                <limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="j2" type="prismatic">
+                <parent link="l1"/><child link="l2"/>
+                <limit lower="-1" upper="1"/>
+                <mimic joint="j1"/>
+            </joint>
+        </robot>
+        """
+        with self.assertRaisesRegex(ValueError, "scale must be nonzero"):
+            newton.ModelBuilder().add_urdf(urdf, scale=0.0)
+
+    def test_mimic_cycle_reports_joint_names(self):
+        """Reject cyclic URDF mimic references with named joints."""
+        urdf = """
+        <robot name="cycle">
+            <link name="base"/><link name="l1"/><link name="l2"/>
+            <joint name="j1" type="revolute">
+                <parent link="base"/><child link="l1"/>
+                <mimic joint="j2"/>
+            </joint>
+            <joint name="j2" type="revolute">
+                <parent link="l1"/><child link="l2"/>
+                <mimic joint="j1"/>
+            </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "[Cc]yclic.*j1.*j2"):
+            builder.add_urdf(urdf)
+
     def test_mimic_constraint_basic(self):
-        """Test that mimic constraints are created from URDF mimic tags."""
+        """Verify URDF mimic tags create joint-owned mimic metadata."""
         builder = newton.ModelBuilder()
         builder.add_urdf(MIMIC_URDF)
         model = builder.finalize()
-
-        # Should have 1 mimic constraint
-        self.assertEqual(model.constraint_mimic_count, 1)
-
-        # Check the constraint values
-        joint0 = model.constraint_mimic_joint0.numpy()[0]
-        joint1 = model.constraint_mimic_joint1.numpy()[0]
-        coef0 = model.constraint_mimic_coef0.numpy()[0]
-        coef1 = model.constraint_mimic_coef1.numpy()[0]
-        enabled = model.constraint_mimic_enabled.numpy()[0]
 
         # Find joint indices by name
         leader_idx = model.joint_label.index("mimic_test/leader_joint")
         follower_idx = model.joint_label.index("mimic_test/follower_joint")
 
-        self.assertEqual(joint0, follower_idx)  # follower joint (joint0)
-        self.assertEqual(joint1, leader_idx)  # leader joint (joint1)
-        self.assertAlmostEqual(coef0, 0.5, places=5)
-        self.assertAlmostEqual(coef1, 2.0, places=5)
-        self.assertTrue(enabled)
+        self.assertEqual(model.constraint_mimic_count, 0)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
+        np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[follower_idx], (0.5, 2.0))
 
     def test_mimic_constraint_default_values(self):
         """Test mimic constraints with default coef1 and coef0."""
@@ -2078,13 +2394,14 @@ class TestMimicConstraints(unittest.TestCase):
         builder.add_urdf(urdf)
         model = builder.finalize()
 
-        self.assertEqual(model.constraint_mimic_count, 1)
-        coef0 = model.constraint_mimic_coef0.numpy()[0]
-        coef1 = model.constraint_mimic_coef1.numpy()[0]
+        leader_idx = model.joint_label.index("mimic_defaults/j1")
+        follower_idx = model.joint_label.index("mimic_defaults/j2")
+        coeffs = model.joint_mimic_coeffs.numpy()[follower_idx]
 
         # Default values from URDF spec
-        self.assertAlmostEqual(coef0, 0.0, places=5)
-        self.assertAlmostEqual(coef1, 1.0, places=5)
+        self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
+        self.assertAlmostEqual(coeffs[0], 0.0, places=5)
+        self.assertAlmostEqual(coeffs[1], 1.0, places=5)
 
     def test_mimic_joint_skipped_child_does_not_mismatch(self):
         """Regression test: skipped joints must not be included in name->index mapping."""
@@ -2122,8 +2439,9 @@ class TestMimicConstraints(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "was not created, skipping mimic constraint"):
             builder.add_urdf(urdf, joint_ordering=None)
 
-        # No mimic constraint should be created because the follower joint was skipped.
+        # No mimic relationship should be created because the follower joint was skipped.
         self.assertEqual(len(builder.constraint_mimic_joint0), 0)
+        self.assertTrue(all(reference == -1 for reference in builder.joint_mimic_joint))
 
 
 class TestOverrideRootXformURDF(unittest.TestCase):
@@ -2260,10 +2578,152 @@ FRICTION_URDF = """
 
 
 class TestUrdfJointFriction(unittest.TestCase):
+    def test_joint_damping_mode_default_is_passive(self):
+        """Import passive damping by default through both entry points."""
+        for source, expected in (
+            (FRICTION_URDF, [1.0, 2.0]),
+            (
+                FRICTION_URDF.replace('damping="1.0"', 'damping="0.0"').replace('damping="2.0"', 'damping="0.0"'),
+                [0.0, 0.0],
+            ),
+            (FRICTION_URDF.replace(' damping="1.0"', "").replace(' damping="2.0"', ""), [0.5, 0.5]),
+        ):
+            for importer in (newton.ModelBuilder.add_urdf, direct_parse_urdf):
+                with self.subTest(expected=expected, importer=importer.__qualname__):
+                    builder = newton.ModelBuilder()
+                    builder.default_joint_cfg.damping = 0.5
+                    builder.default_joint_cfg.target_kd = 3.0
+                    importer(builder, source)
+                    model = builder.finalize(device="cpu")
+                    np.testing.assert_allclose(model.joint_damping.numpy(), expected)
+                    np.testing.assert_allclose(model.joint_target_kd.numpy(), [3.0, 3.0])
+                    np.testing.assert_allclose(model.joint_friction.numpy(), [0.25, 0.75])
+
+    def test_joint_damping_mode_invalid_does_not_modify_builder(self):
+        """Reject unknown damping modes before importing any bodies."""
+        for mode in ("unknown", None):
+            for importer in (newton.ModelBuilder.add_urdf, direct_parse_urdf):
+                with self.subTest(mode=mode, importer=importer.__qualname__):
+                    builder = newton.ModelBuilder()
+                    with self.assertRaisesRegex(ValueError, "joint_damping_mode"):
+                        importer(builder, FRICTION_URDF, joint_damping_mode=mode)
+                    self.assertEqual(builder.body_count, 0)
+
+    def test_drive_joint_damping_mapping(self):
+        """Import drive damping without doubling passive damping."""
+        for urdf, expected in (
+            (FRICTION_URDF, [1.0, 2.0]),
+            (FRICTION_URDF.replace('damping="1.0"', 'damping="0.0"'), [0.0, 2.0]),
+            (FRICTION_URDF.replace(' damping="1.0"', "").replace(' damping="2.0"', ""), [3.0, 3.0]),
+        ):
+            with self.subTest(expected=expected):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = 0.5
+                builder.default_joint_cfg.target_kd = 3.0
+                parse_urdf(urdf, builder, joint_damping_mode="drive")
+                model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), expected)
+                np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5])
+                np.testing.assert_allclose(model.joint_friction.numpy(), [0.25, 0.75])
+
+    def test_drive_planar_joint_damping_mapping(self):
+        """Apply configured passive damping to both planar axes in drive mode."""
+        urdf = """
+<robot name="planar_damping_test">
+    <link name="base_link"/>
+    <link name="child_link"/>
+    <joint name="planar_joint" type="planar">
+        <parent link="base_link"/>
+        <child link="child_link"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="4.0"/>
+    </joint>
+</robot>
+"""
+        for source, expected in ((urdf, 4.0), (urdf.replace('<dynamics damping="4.0"/>', ""), 3.0)):
+            with self.subTest(expected=expected):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = 0.5
+                builder.default_joint_cfg.target_kd = 3.0
+                parse_urdf(source, builder, joint_damping_mode="drive")
+                model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), [expected, expected])
+                np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5])
+
+    def test_joint_damping_mode_is_per_import(self):
+        """An opt-in import must not change defaults for the next asset."""
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 0.5
+        builder.default_joint_cfg.target_kd = 3.0
+        parse_urdf(FRICTION_URDF, builder, joint_damping_mode="drive")
+        parse_urdf(FRICTION_URDF, builder)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), [1.0, 2.0, 3.0, 3.0])
+        np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5, 1.0, 2.0])
+
+    def test_joint_damping_parsed_as_passive_damping(self):
+        """Verify URDF joint damping populates passive damping, not drive damping."""
+        builder = newton.ModelBuilder()
+        parse_urdf(FRICTION_URDF, builder, joint_damping_mode="passive")
+        model = builder.finalize()
+
+        damping_values = model.joint_damping.numpy()
+        target_kd_values = model.joint_target_kd.numpy()
+
+        revolute_idx = builder.joint_label.index("friction_test/revolute_joint")
+        prismatic_idx = builder.joint_label.index("friction_test/prismatic_joint")
+        revolute_dof = builder.joint_qd_start[revolute_idx]
+        prismatic_dof = builder.joint_qd_start[prismatic_idx]
+
+        self.assertAlmostEqual(float(damping_values[revolute_dof]), 1.0, places=5)
+        self.assertAlmostEqual(float(damping_values[prismatic_dof]), 2.0, places=5)
+        self.assertAlmostEqual(float(target_kd_values[revolute_dof]), 0.0, places=5)
+        self.assertAlmostEqual(float(target_kd_values[prismatic_dof]), 0.0, places=5)
+
+    def test_joint_damping_uses_builder_default(self):
+        """Use the passive damping default when URDF dynamics are absent."""
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 0.5
+        builder.default_joint_cfg.target_kd = 3.0
+        parse_urdf(JOINT_URDF, builder, joint_damping_mode="passive")
+        model = builder.finalize()
+
+        joint_idx = builder.joint_label.index("joint_test/test_joint")
+        dof_idx = builder.joint_qd_start[joint_idx]
+
+        self.assertAlmostEqual(float(model.joint_damping.numpy()[dof_idx]), 0.5, places=5)
+        self.assertAlmostEqual(float(model.joint_target_kd.numpy()[dof_idx]), 3.0, places=5)
+
+    def test_planar_joint_damping_parsed_as_passive_damping(self):
+        """Keep passive and target damping separate for both planar joint axes."""
+        urdf = """
+<robot name="planar_damping_test">
+    <link name="base_link"/>
+    <link name="child_link"/>
+    <joint name="planar_joint" type="planar">
+        <parent link="base_link"/>
+        <child link="child_link"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="4.0"/>
+        <limit lower="-1.0" upper="1.0"/>
+    </joint>
+</robot>
+"""
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.target_kd = 3.0
+        parse_urdf(urdf, builder, joint_damping_mode="passive")
+        model = builder.finalize()
+
+        joint_idx = builder.joint_label.index("planar_damping_test/planar_joint")
+        dof_start = builder.joint_qd_start[joint_idx]
+
+        np.testing.assert_allclose(model.joint_damping.numpy()[dof_start : dof_start + 2], [4.0, 4.0])
+        np.testing.assert_allclose(model.joint_target_kd.numpy()[dof_start : dof_start + 2], [3.0, 3.0])
+
     def test_joint_friction_parsed_from_urdf(self):
         """Joint friction values from <dynamics friction='...'> should be forwarded to the model."""
         builder = newton.ModelBuilder()
-        parse_urdf(FRICTION_URDF, builder)
+        parse_urdf(FRICTION_URDF, builder, joint_damping_mode="passive")
         model = builder.finalize()
 
         friction_values = model.joint_friction.numpy()

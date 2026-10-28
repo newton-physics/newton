@@ -173,7 +173,7 @@ def is_shape_pair_immovable_filtered(
     """Return whether a shape pair should be skipped by immovable-body filtering."""
     # Empty shape metadata is the expert-call opt-out. An empty body array,
     # however, is valid for an all-static model and must still filter the pair.
-    if include_static_kinematic_pairs or shape_body.shape[0] == 0:
+    if shape_body.shape[0] == 0:
         return False
 
     body_a = shape_body[shape_a]
@@ -182,8 +182,12 @@ def is_shape_pair_immovable_filtered(
     static_a = body_a < 0
     static_b = body_b < 0
 
+    # World-static shapes have no body identity and never generate contacts.
     if static_a and static_b:
         return True
+
+    if include_static_kinematic_pairs:
+        return False
 
     # Without body metadata we cannot distinguish dynamic from kinematic.
     if body_flags.shape[0] == 0:
@@ -199,6 +203,16 @@ def is_shape_pair_immovable_filtered(
     immovable_a = static_a or kinematic_a
     immovable_b = static_b or kinematic_b
     return immovable_a and immovable_b
+
+
+@wp.func
+def is_shape_pair_same_body_filtered(shape_a: int, shape_b: int, shape_body: wp.array[int]) -> bool:
+    """Return whether two shapes are attached to the same non-static body."""
+    if shape_body.shape[0] == 0:
+        return False
+
+    body_a = shape_body[shape_a]
+    return body_a >= 0 and body_a == shape_body[shape_b]
 
 
 @wp.func

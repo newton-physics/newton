@@ -5,13 +5,13 @@ import os
 import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import cast, overload
 from urllib.parse import urlparse
 
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from ..geometry.types import Mesh
 
 
@@ -103,6 +103,8 @@ def compute_vertex_normals(
                 raise ValueError("indices must be flat or (N, 3) for NumPy inputs.")
             indices_wp = wp.array(indices_np, dtype=wp.int32, device=device_obj)
         indices_wp = cast(wp.array, indices_wp)
+        if not wp.types.type_is_int(indices_wp.dtype):
+            raise TypeError(f"Warp indices must use an integer scalar dtype, got {indices_wp.dtype}.")
         if indices_wp.ndim == 2:
             if indices_wp.shape[1] != 3:
                 raise ValueError("indices must be flat or (N, 3) for Warp inputs.")
@@ -116,7 +118,11 @@ def compute_vertex_normals(
             normals_wp.zero_()
         if len(indices_wp) == 0 or len(points) == 0:
             return normals_wp
-        indices_i32 = indices_wp if indices_wp.dtype == wp.int32 else indices_wp.view(dtype=wp.int32)
+        if indices_wp.dtype == wp.int32:
+            indices_i32 = indices_wp
+        else:
+            indices_i32 = wp.empty(indices_wp.shape, dtype=wp.int32, device=indices_wp.device)
+            wp.utils.array_cast(in_array=indices_wp, out_array=indices_i32)
         wp.launch(
             accumulate_vertex_normals,
             dim=len(indices_i32) // 3,
@@ -370,23 +376,7 @@ class MeshAdjacency:
             :meth:`init_vertex_adjacency` returns early when this is already ``True``.
         indices, spring_indices, tet_indices: The triangle / spring / tetrahedron topology this
             adjacency is built over, kept from the constructor for :meth:`init_vertex_adjacency`.
-
-    .. note::
-        The :attr:`edges` dict is a deprecated compatibility shim (it emits a
-        ``DeprecationWarning``); use the ``edge_indices`` / ``edge_tri_indices`` arrays instead.
     """
-
-    @dataclass(slots=True)
-    class Edge:
-        """Legacy per-edge record: edge ``(v0, v1)`` with opposite vertices
-        ``o0``/``o1`` and adjacent triangles ``f0``/``f1`` (``-1`` if boundary)."""
-
-        v0: int
-        v1: int
-        o0: int
-        o1: int
-        f0: int
-        f1: int
 
     def __init__(
         self,
@@ -394,7 +384,6 @@ class MeshAdjacency:
         edge_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
         spring_indices: Sequence[int] | np.ndarray | None = None,
         tet_indices: Sequence[Sequence[int]] | np.ndarray | None = None,
-        indices: Sequence[Sequence[int]] | np.ndarray | None = None,
     ):
         """Build edge adjacency from triangles and store the element topology as members.
 
@@ -410,19 +399,7 @@ class MeshAdjacency:
                 stored for :meth:`init_vertex_adjacency`.
             tet_indices: Tetrahedron vertex ids, shape ``[tet_count, 4]``; stored for
                 :meth:`init_vertex_adjacency`.
-            indices: Deprecated alias for ``tri_indices``.
         """
-        # `indices` is a deprecated alias for `tri_indices`, kept for backward compatibility.
-        if indices is not None:
-            if tri_indices is not None and not np.array_equal(_numpy_int_array(indices), _numpy_int_array(tri_indices)):
-                raise ValueError("Pass `tri_indices` or the deprecated `indices`, not both with different values.")
-            warnings.warn(
-                "MeshAdjacency `indices` argument is deprecated; use `tri_indices`.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-            tri_indices = indices
-
         # Element topology kept as members (owned int32 copies, detached from any mutable input
         # list so a finalized model's adjacency can't drift if the builder is modified after
         # finalize()); init_vertex_adjacency builds the CSR from these.
@@ -454,74 +431,6 @@ class MeshAdjacency:
         # Set once init_vertex_adjacency has built the CSR tables; guards recomputation.
         self.vertex_adjacency_initialized = False
 
-    @property
-    def edges(self) -> dict[tuple[int, int], "MeshAdjacency.Edge"]:
-        """Deprecated legacy edge dict, rebuilt on access from ``edge_indices``.
-
-        Maps ``(min(v0, v1), max(v0, v1))`` to an :class:`Edge`. Recomputed on
-        every access and never cached; prefer the ``edge_indices`` /
-        ``edge_tri_indices`` arrays directly.
-        """
-        warnings.warn(
-            "MeshAdjacency.edges is deprecated; use the edge_indices/edge_tri_indices arrays.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        edge_indices = _numpy_int_rows(self.edge_indices, 4)
-        edge_tri_indices = _numpy_int_rows(self.edge_tri_indices, 2)
-        return {
-            (min(int(v0), int(v1)), max(int(v0), int(v1))): MeshAdjacency.Edge(
-                int(v0), int(v1), int(o0), int(o1), int(f0), int(f1)
-            )
-            for (o0, o1, v0, v1), (f0, f1) in zip(edge_indices, edge_tri_indices, strict=True)
-        }
-
-    def add_edge(self, i0: int, i1: int, o: int, f: int) -> None:
-        """Add or update one edge (deprecated; build via ``edge_indices`` instead).
-
-        Legacy incremental API: edge ``(i0, i1)`` with opposite vertex ``o`` in triangle ``f``.
-        The first call for an edge fills ``o0``/``f0``, the second fills ``o1``/``f1``; a third
-        warns (non-manifold). Updates :attr:`edge_indices` / :attr:`edge_tri_indices` (so
-        :attr:`edges` reflects it) and invalidates the vertex-adjacency CSR. It does **not**
-        update :attr:`tri_edge_indices`, so an edge added this way will not appear in the
-        per-triangle edge map; users can reconstruct via the constructor if they need that. O(edge_count)
-        per call -- a compatibility shim, not a hot path.
-
-        Args:
-            i0: First edge endpoint.
-            i1: Second edge endpoint.
-            o: Opposite vertex in triangle ``f``.
-            f: Triangle containing this edge.
-        """
-        warnings.warn(
-            "MeshAdjacency.add_edge is deprecated; construct with edge_indices ([o0, o1, v0, v1] rows) instead. "
-            "The added edge is not reflected in tri_edge_indices.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        edge_rows = _numpy_int_rows(self.edge_indices, 4)
-        tri_rows = _numpy_int_rows(self.edge_tri_indices, 2)
-        lo, hi = (i0, i1) if i0 <= i1 else (i1, i0)
-        match = -1
-        for e in range(edge_rows.shape[0]):
-            if (
-                min(int(edge_rows[e, 2]), int(edge_rows[e, 3])) == lo
-                and max(int(edge_rows[e, 2]), int(edge_rows[e, 3])) == hi
-            ):
-                match = e
-                break
-        if match == -1:
-            self.edge_indices = np.concatenate((edge_rows, np.array([[o, -1, i0, i1]], dtype=np.int32)))
-            self.edge_tri_indices = np.concatenate((tri_rows, np.array([[f, -1]], dtype=np.int32)))
-        elif int(tri_rows[match, 1]) == -1:
-            edge_rows[match, 1] = o
-            tri_rows[match, 1] = f
-            self.edge_indices, self.edge_tri_indices = edge_rows, tri_rows
-        else:
-            warnings.warn("Detected non-manifold edge", stacklevel=2)
-            return
-        self.vertex_adjacency_initialized = False
-
     def to(self, device) -> MeshAdjacencyData:
         """Upload the device-facing adjacency arrays onto ``device`` as a pure data struct.
 
@@ -539,6 +448,7 @@ class MeshAdjacency:
             warnings.warn(
                 "MeshAdjacency.to(): vertex adjacency not initialized; v_adj_* are None -- call "
                 "init_vertex_adjacency(particle_count) first if your kernels need them.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return data
@@ -613,7 +523,7 @@ class MeshAdjacency:
                 edge_indices[edge_id, 1] = entry_opposite[entry_id]
                 edge_tri_indices[edge_id, 1] = tri_start + entry_tri[entry_id]
             else:
-                warnings.warn("Detected non-manifold edge", stacklevel=2)
+                warnings.warn("Detected non-manifold edge", NewtonWarning, stacklevel=2)
 
             fill_counts[edge_id] += 1
 
@@ -655,15 +565,21 @@ class MeshAdjacency:
         cand = order[pos]  # (tri_count, 3)
         found = edge_key[cand] == slot_key
 
-        # Link a slot to its candidate only if the opposite vertex matches a stored
-        # opposite (o0 -> side 0, o1 -> side 1), mirroring _compute_edge_adjacency.
-        side0 = found & (slot_opp == edges[cand, 0])
-        side1 = found & ~side0 & (slot_opp == edges[cand, 1])
-
-        tri_edge_indices = np.where(side0 | side1, cand, -1).astype(np.int32)
+        # Link a slot to its candidate only if the opposite vertex matches a stored opposite
+        # (o0 -> side 0, o1 -> side 1). Coincident or duplicated faces can match one side more
+        # than once, so each side resolves to the first matching triangle in traversal order,
+        # never reusing the triangle that holds side 0, as _compute_edge_adjacency does.
+        match0 = found & (slot_opp == edges[cand, 0])
+        match1 = found & (slot_opp == edges[cand, 1])
         tri_ids = np.broadcast_to(np.arange(tri_count, dtype=np.int32)[:, None], (tri_count, 3))
-        edge_tri_indices[cand[side0], 0] = tri_ids[side0]
-        edge_tri_indices[cand[side1], 1] = tri_ids[side1]
+
+        # Reduce triangle ids directly: sorting every hit is unnecessary even when faces coincide.
+        edge_tri_indices.fill(tri_count)
+        np.minimum.at(edge_tri_indices[:, 0], cand[match0], tri_ids[match0])
+        side1 = match1 & (tri_ids != edge_tri_indices[cand, 0])
+        np.minimum.at(edge_tri_indices[:, 1], cand[side1], tri_ids[side1])
+        edge_tri_indices[edge_tri_indices == tri_count] = -1
+        tri_edge_indices = np.where(match0 | match1, cand, -1).astype(np.int32)
         return edge_tri_indices, tri_edge_indices
 
     @staticmethod
@@ -698,7 +614,7 @@ class MeshAdjacency:
             return self
 
         if _has_entries(self.edge_indices):
-            self.v_adj_edges, self.v_adj_edges_offsets = _build_vertex_adjacency_with_warp(
+            self.v_adj_edges, self.v_adj_edges_offsets = build_vertex_adjacency_with_warp(
                 _as_cpu_int_array2d(self.edge_indices, 4),
                 particle_count,
                 count_kernel=_count_num_adjacent_edges,
@@ -709,7 +625,7 @@ class MeshAdjacency:
             self.v_adj_edges, self.v_adj_edges_offsets = _empty_vertex_adjacency()
 
         if _has_entries(self.indices):
-            self.v_adj_tris, self.v_adj_tris_offsets = _build_vertex_adjacency_with_warp(
+            self.v_adj_tris, self.v_adj_tris_offsets = build_vertex_adjacency_with_warp(
                 _as_cpu_int_array2d(self.indices, 3),
                 particle_count,
                 count_kernel=_count_num_adjacent_tris,
@@ -720,7 +636,7 @@ class MeshAdjacency:
             self.v_adj_tris, self.v_adj_tris_offsets = _empty_vertex_adjacency()
 
         if _has_entries(self.tet_indices):
-            self.v_adj_tets, self.v_adj_tets_offsets = _build_vertex_adjacency_with_warp(
+            self.v_adj_tets, self.v_adj_tets_offsets = build_vertex_adjacency_with_warp(
                 _as_cpu_int_array2d(self.tet_indices, 4),
                 particle_count,
                 count_kernel=_count_num_adjacent_tets,
@@ -731,7 +647,7 @@ class MeshAdjacency:
             self.v_adj_tets, self.v_adj_tets_offsets = _empty_vertex_adjacency()
 
         if _has_entries(self.spring_indices):
-            self.v_adj_springs, self.v_adj_springs_offsets = _build_vertex_adjacency_with_warp(
+            self.v_adj_springs, self.v_adj_springs_offsets = build_vertex_adjacency_with_warp(
                 _as_cpu_int_array1d(self.spring_indices),
                 particle_count,
                 count_kernel=_count_num_adjacent_springs,
@@ -986,7 +902,7 @@ def _empty_vertex_adjacency() -> tuple[np.ndarray, np.ndarray]:
     return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
 
 
-def _build_vertex_adjacency_with_warp(
+def build_vertex_adjacency_with_warp(
     topology: wp.array,
     particle_count: int,
     *,
@@ -994,10 +910,15 @@ def _build_vertex_adjacency_with_warp(
     fill_kernel,
     values_per_entry: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build vertex-adjacency CSR arrays (NumPy) using the VBD count/fill Warp kernels on CPU.
+    """Build a CSR adjacency (NumPy) from ``particle_count`` buckets to topology entries.
 
-    The kernels run on CPU; results are copied out to NumPy so the host
-    ``MeshAdjacency`` stays free of Warp arrays (``to`` re-uploads on demand).
+    Generic count/fill driver: ``count_kernel`` and ``fill_kernel`` interpret ``topology``
+    and write per-bucket counts/values; this function turns those into offsets and a values
+    array via a prefix sum. Used for mesh vertex adjacency (edges/triangles/tets/springs) and
+    for other topology-to-bucket adjacency structures outside of mesh vertex data.
+
+    The kernels run on CPU; results are copied out to NumPy so the caller stays free of
+    Warp arrays (``wp.array(..., device=...)`` re-uploads on demand).
     """
     with wp.ScopedDevice("cpu"):
         counts = wp.zeros(shape=(particle_count,), dtype=wp.int32, device="cpu")
@@ -1455,6 +1376,10 @@ def load_meshes_from_file(
 
     meshes = []
     for tri_mesh in tri_meshes:
+        if len(tri_mesh.faces) == 0:
+            raise ValueError(
+                f"Mesh file '{filename}' contains no triangles; check its geometry and material references."
+            )
         vertices = np.array(tri_mesh.vertices, dtype=np.float32) * scale
         faces = np.array(tri_mesh.faces, dtype=np.int32)
         normals = np.array(tri_mesh.vertex_normals, dtype=np.float32) if tri_mesh.vertex_normals is not None else None
@@ -1654,7 +1579,7 @@ def create_mesh_capsule(
     compute_normals: bool = True,
     compute_uvs: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
-    """Create capsule geometry data with optional normals and UVs."""
+    """Create a closed capsule with shared equator rings and single pole vertices."""
     positions = []
     normals = [] if compute_normals else None
     uvs = [] if compute_uvs else None
@@ -1662,47 +1587,53 @@ def create_mesh_capsule(
 
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
+    if segments < 3:
+        raise ValueError("segments must be at least 3")
+    if radius < 0.0 or half_height < 0.0:
+        raise ValueError("radius and half_height must be nonnegative")
 
     x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
-    up_vector = np.zeros(3, dtype=np.float32)
-    up_vector[up_axis] = half_height
 
-    for i in range(segments + 1):
-        theta = i * np.pi / segments
-        sin_theta = np.sin(theta)
-        cos_theta = np.cos(theta)
+    def add_vertex(x: float, y: float, z: float, offset: float) -> None:
+        normal = np.array((x, y, z), dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        pos = radius * normal
+        pos[up_axis] += offset
+        positions.append(pos.tolist())
+        if compute_normals:
+            normals.append(normal.tolist())
+        if compute_uvs:
+            # Preserve the existing seam-free projected UV convention.
+            uvs.append([y * 0.5 + 0.5, z * 0.5 + 0.5])
 
-        for j in range(segments + 1):
-            phi = j * 2 * np.pi / segments
-            sin_phi = np.sin(phi)
-            cos_phi = np.cos(phi)
-
-            z = cos_phi * sin_theta
-            y = cos_theta
-            x = sin_phi * sin_theta
-
-            xyz = np.array((x, y, z), dtype=np.float32)
-            normal = xyz[[x_dir, y_dir, z_dir]]
-            pos = normal * radius
-            if normal[up_axis] >= 0.0:
-                pos += up_vector
-            else:
-                pos -= up_vector
-
-            positions.append(pos.tolist())
-            if compute_normals:
-                normals.append(normal.tolist())
-            if compute_uvs:
-                u = cos_theta * 0.5 + 0.5
-                v = cos_phi * sin_theta * 0.5 + 0.5
-                uvs.append([u, v])
-
-    nv = len(positions)
-    for i in range(segments):
+    add_vertex(0.0, 1.0, 0.0, half_height)
+    cap_segments = max(1, segments // 2)
+    profile = []
+    for i in range(1, cap_segments):
+        theta = i * np.pi / (2 * cap_segments)
+        profile.append((np.sin(theta), np.cos(theta), half_height))
+    profile.append((1.0, 0.0, half_height))
+    if half_height > 0.0:
+        profile.append((1.0, 0.0, -half_height))
+    for i in range(1, cap_segments):
+        theta = i * np.pi / (2 * cap_segments)
+        profile.append((np.cos(theta), -np.sin(theta), -half_height))
+    for ring_radius, y, offset in profile:
         for j in range(segments):
-            first = (i * (segments + 1) + j) % nv
-            second = (first + segments + 1) % nv
-            indices.extend([first, second, (first + 1) % nv, second, (second + 1) % nv, (first + 1) % nv])
+            phi = j * 2 * np.pi / segments
+            add_vertex(ring_radius * np.sin(phi), y, ring_radius * np.cos(phi), offset)
+    bottom = len(positions)
+    add_vertex(0.0, -1.0, 0.0, -half_height)
+
+    for j in range(segments):
+        next_j = (j + 1) % segments
+        indices.extend((0, 1 + j, 1 + next_j))
+        for ring in range(len(profile) - 1):
+            upper = 1 + ring * segments
+            lower = upper + segments
+            indices.extend((upper + j, lower + j, upper + next_j))
+            indices.extend((lower + j, lower + next_j, upper + next_j))
+        last = 1 + (len(profile) - 1) * segments
+        indices.extend((last + j, bottom, last + next_j))
 
     return (
         np.asarray(positions, dtype=np.float32),
@@ -2303,7 +2234,7 @@ def validate_triangle_mesh(
     construction and is built by every builder path that accepts a
     triangle mesh, so going through ``add_cloth_mesh`` /
     ``add_soft_mesh`` already covers it. Standalone callers who need a
-    non-manifold check should construct ``MeshAdjacency(indices)``
+    non-manifold check should construct ``MeshAdjacency(tri_indices)``
     themselves. Each detected problem is reported via
     :func:`warnings.warn`.
 
@@ -2325,22 +2256,22 @@ def validate_triangle_mesh(
     vertices = np.asarray(vertices, dtype=float)
     raw = np.asarray(indices, dtype=np.intp)
     if raw.size > 0 and raw.ndim == 1 and raw.size % 3 != 0:
-        warnings.warn("Triangle index array length is not a multiple of 3.", stacklevel=stacklevel)
+        warnings.warn("Triangle index array length is not a multiple of 3.", NewtonWarning, stacklevel=stacklevel)
         return
     try:
         indices = raw.reshape(-1, 3)
     except ValueError:
-        warnings.warn("Triangle index array must be flat or have shape (N, 3).", stacklevel=stacklevel)
+        warnings.warn("Triangle index array must be flat or have shape (N, 3).", NewtonWarning, stacklevel=stacklevel)
         return
     n_verts = len(vertices)
     n_faces = len(indices)
 
     if n_faces == 0:
-        warnings.warn("Cloth mesh has no triangles.", stacklevel=stacklevel)
+        warnings.warn("Cloth mesh has no triangles.", NewtonWarning, stacklevel=stacklevel)
         return
 
     if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
-        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", NewtonWarning, stacklevel=stacklevel)
         return
 
     v0 = vertices[indices[:, 0]]
@@ -2401,7 +2332,7 @@ def validate_triangle_mesh(
         + "\n".join(f"  - {issue}" for issue in issues)
         + "\nConsider remeshing the input geometry."
     )
-    warnings.warn(msg, stacklevel=stacklevel)
+    warnings.warn(msg, NewtonWarning, stacklevel=stacklevel)
 
 
 def validate_tet_mesh(
@@ -2443,22 +2374,22 @@ def validate_tet_mesh(
     vertices = np.asarray(vertices, dtype=float)
     raw = np.asarray(indices, dtype=np.intp)
     if raw.size > 0 and raw.ndim == 1 and raw.size % 4 != 0:
-        warnings.warn("Tet index array length is not a multiple of 4.", stacklevel=stacklevel)
+        warnings.warn("Tet index array length is not a multiple of 4.", NewtonWarning, stacklevel=stacklevel)
         return
     try:
         indices = raw.reshape(-1, 4)
     except ValueError:
-        warnings.warn("Tet index array must be flat or have shape (N, 4).", stacklevel=stacklevel)
+        warnings.warn("Tet index array must be flat or have shape (N, 4).", NewtonWarning, stacklevel=stacklevel)
         return
     n_tets = len(indices)
 
     if n_tets == 0:
-        warnings.warn("Soft mesh has no tetrahedra.", stacklevel=stacklevel)
+        warnings.warn("Soft mesh has no tetrahedra.", NewtonWarning, stacklevel=stacklevel)
         return
 
     n_verts = len(vertices)
     if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
-        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", NewtonWarning, stacklevel=stacklevel)
         return
 
     v0 = vertices[indices[:, 0]]
@@ -2518,4 +2449,4 @@ def validate_tet_mesh(
     if label is not None:
         prefix += f" [{label}]"
     msg = f"{prefix} ({len(vertices)} vertices, {n_tets} tetrahedra):\n" + "\n".join(f"  - {issue}" for issue in issues)
-    warnings.warn(msg, stacklevel=stacklevel)
+    warnings.warn(msg, NewtonWarning, stacklevel=stacklevel)

@@ -131,12 +131,13 @@ class Example:
 
                 cable_length = float(self.cable_length)
                 start0 = start - 0.5 * cable_length * dir_vec
-                pts = newton.utils.cable_straight_points(
+                rod = newton.Rod.create_straight(
                     start=start0,
                     direction=dir_vec,
                     length=cable_length,
-                    num_segments=int(self.num_elements),
+                    segment_count=int(self.num_elements),
                 )
+                pts = [wp.vec3(*(float(value) for value in point)) for point in rod.points]
 
                 # Sinusoidal waviness along orthogonal axis
                 cycles = 2.0
@@ -148,18 +149,16 @@ class Example:
                         amp = wav * cable_length * waviness_scale
                         pts[i] = pts[i] + ortho_vec * (amp * math.sin(phase))
 
-                edge_q = newton.utils.rod_parallel_transport_quaternions(pts, twist_total=float(twist))
+                rod = newton.Rod(pts, radius=cable_radius)
+                rod.compute_frames(twist_total=float(twist))
 
                 builder.add_rod(
-                    positions=pts,
-                    quaternions=edge_q,
-                    radius=cable_radius,
+                    rod=rod,
                     cfg=cable_shape_cfg,
                     stretch_stiffness=stretch_stiffness,
                     bend_stiffness=bend_stiffness,
                     bend_damping=2.0e1,
                     label=f"cable_l{layer}_{lane}",
-                    body_frame_origin="com",
                 )
 
         builder.color()
@@ -172,7 +171,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
             rigid_body_contact_buffer_size=256,
             rigid_contact_history=True,
         )
@@ -184,13 +182,6 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = 40.0
-
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            ps = picking.pick_state.numpy()
-            ps[0]["pick_stiffness"] = 100.0
-            ps[0]["pick_damping"] = 0.0
-            picking.pick_state.assign(ps)
 
         self.capture()
 

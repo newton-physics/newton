@@ -32,7 +32,6 @@ class Example:
     """Snow ball rolling down a heightfield slope with per-particle snow rheology."""
 
     def __init__(self, viewer, options):
-        newton.use_coord_layout_targets = True
         # setup simulation parameters first
         self.fps = options.fps
         self.frame_dt = 1.0 / self.fps
@@ -110,8 +109,7 @@ class Example:
         self.viewer.set_model(self.model)
 
         # Position camera for an elevated side view showing the slope and rolling ball
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(12.0, -8.0, 14.0), pitch=-30.0, yaw=145.0)
+        self.viewer.set_camera(pos=wp.vec3(12.0, -8.0, 14.0), pitch=-30.0, yaw=145.0)
 
         if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
@@ -397,6 +395,12 @@ class Example:
         parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
         parser.add_argument("--max-iterations", "-it", type=int, default=150)
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-4)
+        parser.add_argument(
+            "--carry-residual-strain",
+            choices=["none", "unconverged", "sampled"],
+            default="unconverged",
+            help="Keep the strain an unconverged solve leaves; suited to compliant elastic materials.",
+        )
         parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)  # Increased voxel size for larger domain
 
         return parser

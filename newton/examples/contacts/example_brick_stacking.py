@@ -390,7 +390,6 @@ def advance_task_kernel(
 
 class Example:
     def __init__(self, viewer, args=None):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -478,11 +477,6 @@ class Example:
         self.setup_tasks()
 
         self.viewer.set_model(self.model)
-        if hasattr(self.viewer, "picking"):
-            ps = self.viewer.picking.pick_state.numpy()
-            ps[0]["pick_stiffness"] = 0.1
-            ps[0]["pick_damping"] = 0.01
-            self.viewer.picking.pick_state.assign(ps)
 
         cam_pos = self.table_top_center + wp.vec3(0.22, -0.18, 0.15)
         self.viewer.set_camera(pos=cam_pos, pitch=-30.0, yaw=135.0)
@@ -502,6 +496,7 @@ class Example:
             floating=False,
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
+            joint_damping_mode="passive",
         )
 
         builder.joint_q[:9] = [

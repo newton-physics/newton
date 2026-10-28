@@ -108,7 +108,6 @@ def _quat_from_x_axis(direction: np.ndarray) -> wp.quat:
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.sim_time = 0.0
         self.fps = 60
@@ -127,7 +126,7 @@ class Example:
         joints_per_world = template.joint_count
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        builder.replicate(template, world_count=self.world_count)
+        builder.replicate(template, copy_count=self.world_count)
         builder.add_ground_plane()
         self._expand_world_indices(bodies_per_world, joints_per_world)
 

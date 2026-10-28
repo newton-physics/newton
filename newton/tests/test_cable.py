@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
 import unittest
 import warnings
+from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -300,6 +300,57 @@ def _run_sim_loop(simulate_fn, num_steps, device):
 # -----------------------------------------------------------------------------
 
 
+def _rod_pose_lists(rod: newton.Rod) -> tuple[list[wp.vec3], list[wp.quat]]:
+    """Convert a Rod pose to the list form used by legacy-focused test fixtures."""
+    points = [wp.vec3(*(float(value) for value in point)) for point in rod.points]
+    quaternions = [wp.quat(*(float(value) for value in frame)) for frame in rod.quaternions]
+    return points, quaternions
+
+
+def _make_rod_frames(points) -> list[wp.quat]:
+    """Compute Rod frames while keeping legacy-focused fixtures in list form."""
+    return _rod_pose_lists(newton.Rod(points))[1]
+
+
+def _make_straight_rod_pose(start, direction, length, num_segments, *, twist_total: float = 0.0):
+    """Create a straight Rod and return its pose in legacy list form."""
+    rod = newton.Rod.create_straight(
+        start,
+        direction,
+        length,
+        segment_count=num_segments,
+        twist_total=twist_total,
+    )
+    return _rod_pose_lists(rod)
+
+
+def _add_prepared_rod(
+    builder: newton.ModelBuilder,
+    points,
+    *,
+    edges=None,
+    quaternions=None,
+    rest_points=None,
+    rest_quaternions=None,
+    rest_straight=False,
+    radius: float | None = None,
+    closed: bool = False,
+    **assembly_kwargs,
+) -> tuple[list[int], list[int]]:
+    """Construct a Rod from prepared geometry and add it to a builder."""
+    rod = newton.Rod(
+        points,
+        edges=edges,
+        quaternions=quaternions,
+        rest_points=rest_points,
+        rest_quaternions=rest_quaternions,
+        rest_straight=rest_straight,
+        radius=radius,
+        closed=closed,
+    )
+    return builder.add_rod(rod=rod, **assembly_kwargs)
+
+
 def _make_straight_cable_along_x(num_elements: int, segment_length: float, z_height: float):
     """Create points/quats for `ModelBuilder.add_rod()` with a straight cable along +X.
 
@@ -309,11 +360,11 @@ def _make_straight_cable_along_x(num_elements: int, segment_length: float, z_hei
     """
     length = float(num_elements * segment_length)
     start = wp.vec3(-0.5 * length, 0.0, float(z_height))
-    return newton.utils.rod_straight_points_and_quaternions(
-        start=start,
-        direction=wp.vec3(1.0, 0.0, 0.0),
-        length=length,
-        num_segments=int(num_elements),
+    return _make_straight_rod_pose(
+        start,
+        wp.vec3(1.0, 0.0, 0.0),
+        length,
+        int(num_elements),
     )
 
 
@@ -326,11 +377,11 @@ def _make_straight_cable_along_y(num_elements: int, segment_length: float, z_hei
     """
     length = float(num_elements * segment_length)
     start = wp.vec3(0.0, -0.5 * length, float(z_height))
-    return newton.utils.rod_straight_points_and_quaternions(
-        start=start,
-        direction=wp.vec3(0.0, 1.0, 0.0),
-        length=length,
-        num_segments=int(num_elements),
+    return _make_straight_rod_pose(
+        start,
+        wp.vec3(0.0, 1.0, 0.0),
+        length,
+        int(num_elements),
     )
 
 
@@ -368,8 +419,9 @@ def _build_cable_chain(
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=3.0)
 
     # Create a rod-based cable
-    rod_bodies, _rod_joints = builder.add_rod(
-        positions=points,
+    rod_bodies, _rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=0.05,
         bend_stiffness=bend_stiffness,
@@ -417,10 +469,11 @@ def _build_cable_loop(device, num_links: int = 6):
         y = radius * wp.sin(angle)
         points.append(wp.vec3(x, y, z_height))
 
-    edge_q = newton.utils.rod_parallel_transport_quaternions(points, twist_total=0.0)
+    edge_q = _make_rod_frames(points)
 
-    _rod_bodies, _rod_joints = builder.add_rod(
-        positions=points,
+    _rod_bodies, _rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=0.05,
         bend_stiffness=1.0e1,
@@ -761,8 +814,9 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device, rigid_compliant_
         points, edge_q = _make_straight_cable_along_x(num_links, segment_length, z_height=3.0)
         points = [wp.vec3(p[0], p[1] + y0, p[2]) for p in points]
 
-        rod_bodies, _rod_joints = builder.add_rod(
-            positions=points,
+        rod_bodies, _rod_joints = _add_prepared_rod(
+            builder,
+            points,
             quaternions=edge_q,
             radius=0.05,
             bend_stiffness=k,
@@ -786,7 +840,8 @@ def _cable_bend_stiffness_impl(test: unittest.TestCase, device, rigid_compliant_
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -910,8 +965,9 @@ def _cable_twist_response_impl(test: unittest.TestCase, device, rigid_compliant_
     q1 = wp.quat_between_vectors(local_z, dir1)
     quats = [q0, q1]
 
-    rod_bodies, _rod_joints = builder.add_rod(
-        positions=positions,
+    rod_bodies, _rod_joints = _add_prepared_rod(
+        builder,
+        positions,
         quaternions=quats,
         radius=0.05,
         bend_stiffness=5.0e4,
@@ -932,7 +988,8 @@ def _cable_twist_response_impl(test: unittest.TestCase, device, rigid_compliant_
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     # Disable gravity to isolate twist response
     model.set_gravity((0.0, 0.0, 0.0))
@@ -1121,8 +1178,9 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device, rigid_
             rot = wp.quat_between_vectors(local_axis, cable_direction)
             edge_q = [rot] * num_elements
 
-            rod_bodies, _rod_joints = builder.add_rod(
-                positions=points,
+            rod_bodies, _rod_joints = _add_prepared_rod(
+                builder,
+                points,
                 quaternions=edge_q,
                 radius=cable_radius,
                 bend_stiffness=bend_stiffness,
@@ -1142,12 +1200,13 @@ def _two_layer_cable_pile_collision_impl(test: unittest.TestCase, device, rigid_
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(
-        model,
-        iterations=10,
-        friction_epsilon=0.1,
-        rigid_compliant_alm=rigid_compliant_alm,
-    )
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=10,
+            friction_epsilon=0.1,
+            rigid_compliant_alm=rigid_compliant_alm,
+        )
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
     sim_dt = frame_dt / sim_substeps
@@ -1239,7 +1298,7 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
 
     # Kinematic anchor body at the rod start point.
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     # Anchor marker sphere.
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
@@ -1266,8 +1325,9 @@ def _cable_ball_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device
     offset = anchor_world_attach - p0
     points = [p + offset for p in points]
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1397,7 +1457,7 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation (can't match rotation to two different cables).
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -1420,8 +1480,9 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     offset_x = anchor_world_attach_x - p0_x
     points_x = [p + offset_x for p in points_x]
 
-    rod_bodies_x, rod_joints_x = builder.add_rod(
-        positions=points_x,
+    rod_bodies_x, rod_joints_x = _add_prepared_rod(
+        builder,
+        points_x,
         quaternions=edge_q_x,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1447,8 +1508,9 @@ def _cable_fixed_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
     offset_y = anchor_world_attach_y - p0_y
     points_y = [p + offset_y for p in points_y]
 
-    rod_bodies_y, rod_joints_y = builder.add_rod(
-        positions=points_y,
+    rod_bodies_y, rod_joints_y = _add_prepared_rod(
+        builder,
+        points_y,
         quaternions=edge_q_y,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1590,7 +1652,7 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -1613,8 +1675,9 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     offset_x = anchor_world_attach_x - p0_x
     points_x = [p + offset_x for p in points_x]
 
-    rod_bodies_x, rod_joints_x = builder.add_rod(
-        positions=points_x,
+    rod_bodies_x, rod_joints_x = _add_prepared_rod(
+        builder,
+        points_x,
         quaternions=edge_q_x,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1643,8 +1706,9 @@ def _cable_revolute_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, de
     offset_y = anchor_world_attach_y - p0_y
     points_y = [p + offset_y for p in points_y]
 
-    rod_bodies_y, rod_joints_y = builder.add_rod(
-        positions=points_y,
+    rod_bodies_y, rod_joints_y = _add_prepared_rod(
+        builder,
+        points_y,
         quaternions=edge_q_y,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -1799,7 +1863,7 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     anchor_radius = 0.1
 
     # Kinematic anchor body.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -1811,15 +1875,16 @@ def _cable_revolute_drive_tracks_target_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -1925,7 +1990,7 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -1937,15 +2002,16 @@ def _cable_revolute_drive_limit_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -2062,7 +2128,7 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
 
     # Kinematic anchor body with identity rotation (matching ball/fixed/revolute).
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -2083,8 +2149,9 @@ def _cable_prismatic_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, d
     offset = anchor_world_attach - p0
     points = [p + offset for p in points]
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -2206,7 +2273,7 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     anchor_radius = 0.1
 
     # Kinematic anchor body.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2218,15 +2285,16 @@ def _cable_prismatic_drive_tracks_target_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -2332,7 +2400,7 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2344,15 +2412,16 @@ def _cable_prismatic_drive_limit_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -2474,7 +2543,7 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2489,15 +2558,16 @@ def _cable_d6_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, device):
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -2629,7 +2699,7 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2642,15 +2712,16 @@ def _cable_d6_joint_all_locked_impl(test: unittest.TestCase, device):
     cable_width = 2.0 * rod_radius
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -2759,7 +2830,7 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2774,15 +2845,16 @@ def _cable_d6_joint_locked_x_impl(test: unittest.TestCase, device):
     JointDofConfig = newton.ModelBuilder.JointDofConfig
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -2923,7 +2995,7 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     anchor_radius = 0.1
 
     # Kinematic anchor body.
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -2935,15 +3007,16 @@ def _cable_d6_drive_tracks_target_impl(test: unittest.TestCase, device):
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -3065,7 +3138,7 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
     anchor_radius = 0.1
 
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -3077,15 +3150,16 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
     rod_radius = 0.01
 
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -anchor_radius)
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements * segment_length),
         num_segments=num_elements,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -3157,7 +3231,8 @@ def _cable_d6_drive_limit_impl(test: unittest.TestCase, device, rigid_compliant_
     tp[qd_s + 1] = target_angle
     control.joint_target_q = wp.array(tp, dtype=float, device=device)
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     frame_dt = 1.0 / 60.0
     sim_substeps = 10
@@ -3413,8 +3488,9 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
 
     cable_radius = 0.05
     cable_width = 2.0 * cable_radius
-    rod_bodies, rod_joints = builder.add_rod_graph(
-        node_positions=node_positions_any,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        node_positions_any,
         edges=edges,
         radius=cable_radius,
         cfg=builder.default_shape_cfg.copy(),
@@ -3514,11 +3590,42 @@ def _cable_graph_y_junction_spanning_tree_impl(test: unittest.TestCase, device):
     _assert_bodies_above_ground(test, qf, rod_bodies, context="y-junction", margin=0.25 * cable_width)
 
 
-def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
-    """Verify eval_fk does not reconstruct ROD child poses from unsupported joint coordinates."""
+def _rod_articulation_has_free_root_joint_impl(test: unittest.TestCase, _device):
+    """A rod articulation has one free joint to the world."""
     builder = newton.ModelBuilder()
-    rod_bodies, rod_joints = builder.add_rod_graph(
-        node_positions=[
+    rod = newton.Rod(
+        [
+            wp.vec3(0.0, 0.0, 1.0),
+            wp.vec3(0.1, 0.0, 1.0),
+            wp.vec3(0.2, 0.0, 1.0),
+        ],
+        radius=0.01,
+    )
+    rod_bodies, rod_joints = builder.add_rod(
+        rod=rod,
+        label="rooted_rod",
+        wrap_in_articulation=True,
+        body_frame_origin="com",
+    )
+
+    test.assertEqual(builder.articulation_count, 1)
+    articulation_joints = [joint for joint, articulation in enumerate(builder.joint_articulation) if articulation == 0]
+    root_joints = [joint for joint in articulation_joints if builder.joint_parent[joint] == -1]
+    test.assertEqual(len(root_joints), 1)
+    test.assertEqual(builder.joint_type[root_joints[0]], newton.JointType.FREE)
+    test.assertEqual(builder.joint_child[root_joints[0]], rod_bodies[0])
+    test.assertNotIn(root_joints[0], rod_joints)
+    test.assertTrue(all(builder.joint_articulation[joint] == 0 for joint in rod_joints))
+    test.assertTrue(builder.validate_joint_ordering())
+
+
+def _rod_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device):
+    """Reconstruct Rod body state with FK and round-trip through IK."""
+
+    builder = newton.ModelBuilder()
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        [
             wp.vec3(0.0, 0.0, 0.0),
             wp.vec3(0.5, 0.0, 0.0),
             wp.vec3(1.0, 0.0, 0.0),
@@ -3537,35 +3644,125 @@ def _cable_eval_fk_preserves_body_state_impl(test: unittest.TestCase, device):
     state = model.state()
 
     joint_types = model.joint_type.numpy()
-    test.assertTrue(np.all(joint_types == int(newton.JointType.ROD)), msg="expected only ROD joints")
+    test.assertEqual(np.count_nonzero(joint_types == int(newton.JointType.FREE)), 1)
+    test.assertEqual(np.count_nonzero(joint_types == int(newton.JointType.ROD)), len(rod_joints))
 
     child_body = int(rod_bodies[1])
 
-    body_q = state.body_q.numpy().copy()
+    # The as-built pose is the configuration encoded in joint_q at construction.
+    built_body_q = state.body_q.numpy().copy()
+    built_body_qd = state.body_qd.numpy().copy()
+
+    # Perturb the child away from its built pose while leaving joint_q unchanged.
+    body_q = built_body_q.copy()
     body_q[child_body, 0] += 1.0
     body_q[child_body, 2] -= 0.7
     state.body_q.assign(body_q)
 
-    body_qd = state.body_qd.numpy().copy()
+    body_qd = built_body_qd.copy()
     body_qd[child_body] = np.array([0.3, -0.2, 0.1, 0.4, -0.5, 0.6], dtype=body_qd.dtype)
     state.body_qd.assign(body_qd)
 
+    # eval_fk rebuilds the rod from joint_q, restoring the built child state.
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
 
     np.testing.assert_allclose(
         state.body_q.numpy()[child_body],
-        body_q[child_body],
+        built_body_q[child_body],
+        rtol=0.0,
+        atol=1.0e-5,
+        err_msg="eval_fk should reconstruct the ROD body transform from joint_q",
+    )
+    np.testing.assert_allclose(
+        state.body_qd.numpy()[child_body],
+        built_body_qd[child_body],
         rtol=0.0,
         atol=1.0e-6,
-        err_msg="eval_fk should preserve VBD-owned ROD body transform",
+        err_msg="eval_fk should overwrite the ROD body velocity from kinematic recurrence",
+    )
+
+    state.body_q.assign(body_q)
+    state.body_qd.assign(body_qd)
+    newton.eval_ik(model, state, state.joint_q, state.joint_qd)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    np.testing.assert_allclose(
+        state.body_q.numpy()[child_body],
+        body_q[child_body],
+        rtol=0.0,
+        atol=1.0e-5,
+        err_msg="IK synchronization followed by FK must preserve a maximal-coordinate rod pose",
     )
     np.testing.assert_allclose(
         state.body_qd.numpy()[child_body],
         body_qd[child_body],
         rtol=0.0,
-        atol=1.0e-6,
-        err_msg="eval_fk should preserve VBD-owned ROD body velocity",
+        atol=1.0e-5,
+        err_msg="IK synchronization followed by FK must preserve a maximal-coordinate rod twist",
     )
+
+
+def _rod_vbd_joint_f_applies_six_dof_wrench_impl(test: unittest.TestCase, device):
+    """Verify VBD applies a Rod wrench and its reaction at each body's COM."""
+
+    child_mass = 2.0
+    force_x, torque_y = 12.0, 6.0
+    dt = 1.0 / 60.0
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0, 0.0, 0.0))
+    parent = builder.add_link(
+        xform=wp.transform(wp.vec3(0.0, 0.0, -1.0), wp.quat_identity()),
+        com=wp.vec3(0.0, 0.0, -0.5),
+        mass=child_mass,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    child = builder.add_link(com=wp.vec3(0.0, 0.0, 0.5), mass=child_mass, inertia=wp.mat33(np.eye(3)))
+    rod = builder.add_joint_rod(
+        parent,
+        child,
+        stretch_stiffness=0.0,
+        bend_stiffness=0.0,
+    )
+    builder.add_articulation([rod])
+    builder.color()
+    model = builder.finalize(device=device)
+
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+
+    dof_start = int(model.joint_qd_start.numpy()[rod])
+    joint_f = np.zeros(model.joint_dof_count, dtype=np.float32)
+    joint_f[dof_start + 0] = force_x
+    joint_f[dof_start + 4] = torque_y
+    control.joint_f.assign(joint_f)
+
+    state_0.clear_forces()
+    solver.step(state_0, state_1, control, None, dt)
+
+    body_qd = state_1.body_qd.numpy()
+    np.testing.assert_allclose(
+        body_qd[child],
+        [force_x * dt / child_mass, 0.0, 0.0, 0.0, torque_y * dt, 0.0],
+        atol=1.0e-5,
+    )
+    # The COMs are 2 m apart along Z, so the force adds a parent reaction torque about Y.
+    np.testing.assert_allclose(
+        body_qd[parent],
+        [-force_x * dt / child_mass, 0.0, 0.0, 0.0, -(torque_y + 2.0 * force_x) * dt, 0.0],
+        atol=1.0e-5,
+    )
+    # Internal actuation must not create angular momentum about the world origin.
+    body_q = state_1.body_q.numpy()
+    body_com = model.body_com.numpy()
+    body_mass = model.body_mass.numpy()
+    body_inertia = model.body_inertia.numpy()
+    angular_momentum = np.zeros(3)
+    for body in (parent, child):
+        com_world = np.asarray(wp.transform_point(wp.transform(*body_q[body]), wp.vec3(*body_com[body])))
+        angular_momentum += body_inertia[body] @ body_qd[body][3:] + body_mass[body] * np.cross(
+            com_world, body_qd[body][:3]
+        )
+    np.testing.assert_allclose(angular_momentum, 0.0, atol=1.0e-5)
 
 
 def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device):
@@ -3581,7 +3778,7 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
     z0 = 0.5
     theta = np.linspace(0.0, 2.0 * np.pi, num_segments + 1, endpoint=True)
     points = [wp.vec3(float(radius * np.cos(t)), float(radius * np.sin(t)), float(z0)) for t in theta]
-    quats = newton.utils.rod_parallel_transport_quaternions(points)
+    quats = _make_rod_frames(points)
 
     # Avoid list[Vec3] invariance issues in static checking.
     points_any: list[Any] = points
@@ -3589,8 +3786,9 @@ def _cable_rod_ring_closed_in_articulation_impl(test: unittest.TestCase, device)
 
     cable_radius = 0.05
     cable_width = 2.0 * cable_radius
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points_any,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points_any,
         quaternions=quats_any,
         radius=cable_radius,
         cfg=builder.default_shape_cfg.copy(),
@@ -3667,8 +3865,9 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
     # Use wp.vec3 at runtime but avoid list[Vec3] invariance issues in static checking.
     node_positions_any: list[Any] = node_positions
 
-    rod_bodies, rod_joints = builder.add_rod_graph(
-        node_positions=node_positions_any,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        node_positions_any,
         edges=edges,
         radius=0.05,
         cfg=builder.default_shape_cfg.copy(),
@@ -3682,6 +3881,16 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
     test.assertEqual(len(rod_bodies), 1)
     test.assertEqual(len(rod_joints), 0)
 
+    anti_parallel_bodies, anti_parallel_joints = _add_prepared_rod(
+        builder,
+        [wp.vec3(1.0, 0.0, 3.0), wp.vec3(1.0, 0.0, 2.5)],
+        edges=[(0, 1)],
+        radius=0.05,
+        body_frame_origin="com",
+    )
+    test.assertEqual(len(anti_parallel_bodies), 1)
+    test.assertEqual(len(anti_parallel_joints), 0)
+
     builder.color()
     model = builder.finalize(device=device)
 
@@ -3694,22 +3903,29 @@ def _cable_graph_default_quat_aligns_z_impl(test: unittest.TestCase, device):
     dot = float(wp.dot(z_world, d_hat))
     test.assertGreater(dot, 0.999, msg=f"Default quaternion does not align +Z with edge direction (dot={dot:.6f})")
 
+    anti_parallel_rot = wp.quat(*q0[anti_parallel_bodies[0]][3:7])
+    anti_parallel_z = wp.quat_rotate(anti_parallel_rot, wp.vec3(0.0, 0.0, 1.0))
+    test.assertGreater(float(wp.dot(anti_parallel_z, wp.vec3(0.0, 0.0, -1.0))), 0.999)
 
-def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device):
-    """Omitting body_frame_origin should warn while preserving the legacy start-node frame."""
+
+def _cable_rod_origin_matches_start_impl(test: unittest.TestCase, device):
+    """Preserve explicitly selected start-node body frames without a warning."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    with test.assertWarnsRegex(DeprecationWarning, "body_frame_origin"):
-        rod_bodies, rod_joints = builder.add_rod(
-            positions=points,
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        rod_bodies, rod_joints = _add_prepared_rod(
+            builder,
+            points,
             quaternions=edge_q,
             radius=0.01,
             bend_stiffness=1.0,
             label="ut_cable_start_origin",
+            body_frame_origin="start",
         )
 
     builder.color()
@@ -3739,22 +3955,24 @@ def _cable_rod_default_origin_matches_start_impl(test: unittest.TestCase, device
     np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.zeros(3), atol=1.0e-6)
 
 
-def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
-    """Verify rods support opt-in COM-centered body frames."""
+def _cable_rod_default_origin_matches_com_impl(test: unittest.TestCase, device):
+    """Build COM-centered body frames without a warning when body_frame_origin is omitted."""
     builder = newton.ModelBuilder()
 
     num_elements = 2
     segment_length = 0.2
     points, edge_q = _make_straight_cable_along_x(num_elements, segment_length, z_height=1.0)
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points,
-        quaternions=edge_q,
-        radius=0.01,
-        bend_stiffness=1.0,
-        label="ut_cable_com_origin",
-        body_frame_origin="com",
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        rod_bodies, rod_joints = _add_prepared_rod(
+            builder,
+            points,
+            quaternions=edge_q,
+            radius=0.01,
+            bend_stiffness=1.0,
+            label="ut_cable_com_origin",
+        )
 
     builder.color()
     model = builder.finalize(device=device)
@@ -3786,11 +4004,455 @@ def _cable_rod_origin_matches_com_impl(test: unittest.TestCase, device):
     np.testing.assert_allclose(joint_X_c[rod_joints[0], :3], np.array([0.0, 0.0, -half_length]), atol=1.0e-6)
 
 
+def _cable_rod_graph_body_frame_origin_impl(test: unittest.TestCase, device):
+    """Place branched-rod body frames at the edge start node or the edge midpoint."""
+    del device
+    points = np.array([[0.0, 0.0, 0.0], [0.2, 0.0, 0.0], [0.0, 0.2, 0.0], [-0.2, 0.0, 0.0]])
+    edges = [(0, 1), (0, 2), (0, 3)]
+    expected = {
+        "start": (points[[0, 0, 0]], [0.0, 0.0, 0.1]),
+        "com": (0.5 * points[1:], [0.0, 0.0, 0.0]),
+    }
+
+    for origin, (body_origins, body_com) in expected.items():
+        with test.subTest(body_frame_origin=origin):
+            builder = newton.ModelBuilder()
+            bodies, _ = _add_prepared_rod(builder, points, edges=edges, body_frame_origin=origin)
+            for body, body_origin in zip(bodies, body_origins, strict=True):
+                np.testing.assert_allclose(builder.body_q[body].p, body_origin, atol=1.0e-6)
+                np.testing.assert_allclose(builder.body_com[body], body_com, atol=1.0e-6)
+
+
+def _rod_control_target_q_does_not_override_structural_rest_impl(test: unittest.TestCase, device):
+    """Verify Control.joint_target_q does not override Model-owned Rod structural rest."""
+    rest_rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.35)
+    initial_position = wp.vec3(0.08, 0.04, 0.12)
+    initial_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2) * rest_rotation
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    child = builder.add_link(
+        xform=wp.transform(initial_position, initial_rotation),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    joint = builder.add_joint_rod(
+        -1,
+        child,
+        rest_rotation=rest_rotation,
+        stretch_stiffness=500.0,
+        bend_stiffness=20.0,
+    )
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+
+    # An initial-pose Control target must not replace Model-owned rest.
+    control = model.control()
+    control_target = control.joint_target_q.numpy()
+    target_start = int(model.joint_target_q_start.numpy()[joint])
+    np.testing.assert_array_equal(control_target[target_start : target_start + 3], 0.0)
+    control_target[target_start : target_start + 3] = np.asarray(initial_position)
+    control_target[target_start + 3 : target_start + 7] = np.asarray(initial_rotation)
+    control.joint_target_q.assign(control_target)
+
+    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
+    state_0, state_1 = model.state(), model.state()
+    solver.step(state_0, state_1, control, None, 1.0 / 600.0)
+
+    body_qd = state_1.body_qd.numpy()[child]
+    test.assertLess(float(np.dot(body_qd[:3], np.asarray(initial_position))), 0.0)
+    test.assertGreater(float(np.linalg.norm(body_qd[3:])), 1.0e-5)
+
+
+def _rod_notify_joint_properties_refreshes_structural_rest_impl(test: unittest.TestCase, device):
+    """Refresh Rod rest through reference-pose and compatible broad flags."""
+    for flags in (
+        newton.ModelFlags.JOINT_PROPERTIES,
+        newton.ModelFlags.JOINT_DOF_PROPERTIES,
+        newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
+    ):
+        builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+        child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_rod(-1, child, bend_stiffness=20.0, twist_stiffness=10.0)
+        builder.add_articulation([joint])
+        builder.color()
+        model = builder.finalize(device=device)
+
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+        bend_before = solver.joint_rod_rest_kb_local.numpy().copy()
+        twist_before = solver.joint_rod_rest_twist.numpy().copy()
+
+        rest_rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.25) * wp.quat_from_axis_angle(
+            wp.vec3(0.0, 0.0, 1.0), 0.3
+        )
+        target = model.joint_target_q.numpy()
+        target_start = int(model.joint_target_q_start.numpy()[joint])
+        target[target_start + 3 : target_start + 7] = np.asarray(rest_rotation)
+        model.joint_target_q.assign(target)
+        if flags == newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES:
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+            np.testing.assert_array_equal(solver.joint_rod_rest_kb_local.numpy(), bend_before)
+            np.testing.assert_array_equal(solver.joint_rod_rest_twist.numpy(), twist_before)
+        solver.notify_model_changed(flags)
+
+        bend_after = solver.joint_rod_rest_kb_local.numpy()
+        twist_after = solver.joint_rod_rest_twist.numpy()
+        test.assertGreater(float(np.linalg.norm(bend_after - bend_before)), 1.0e-5)
+        test.assertGreater(float(np.linalg.norm(twist_after - twist_before)), 1.0e-5)
+
+        rebuilt_solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+        np.testing.assert_allclose(bend_after, rebuilt_solver.joint_rod_rest_kb_local.numpy(), atol=1.0e-6)
+        np.testing.assert_allclose(twist_after, rebuilt_solver.joint_rod_rest_twist.numpy(), atol=1.0e-6)
+
+
+def _cable_generic_target_pose_is_structural_rest_impl(test: unittest.TestCase, device):
+    """Verify generic Rod angular targets produce zero wrench at structural rest."""
+    rest_angles = wp.vec3(0.21, -0.16, 0.13)
+    rest_rotation = wp.quat_from_euler(rest_angles, 2, 1, 0)
+    parent_pose = wp.transform(
+        wp.vec3(-0.3, 0.4, 0.2),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -2.0, 0.5)), 0.4),
+    )
+    parent_xform = wp.transform(
+        wp.vec3(0.17, -0.09, 0.05),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.5, 1.0, -0.3)), 0.28),
+    )
+    child_xform = wp.transform(
+        wp.vec3(-0.08, 0.11, -0.04),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.2, 0.4, 1.0)), -0.31),
+    )
+    child_pose = (
+        parent_pose * parent_xform * wp.transform(wp.vec3(0.0), rest_rotation) * wp.transform_inverse(child_xform)
+    )
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    parent = builder.add_link(
+        xform=parent_pose,
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+        com=wp.vec3(0.06, -0.03, 0.02),
+    )
+    child = builder.add_link(
+        xform=child_pose,
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+        com=wp.vec3(-0.04, 0.05, -0.01),
+    )
+    axes = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
+    linear_axes = [
+        newton.ModelBuilder.JointDofConfig(
+            axis=axis,
+            target_ke=(300.0, 300.0, 500.0)[i],
+            actuator_mode=newton.JointTargetMode.NONE,
+        )
+        for i, axis in enumerate(axes)
+    ]
+    angular_axes = [
+        newton.ModelBuilder.JointDofConfig(
+            axis=axis,
+            target_pos=float(rest_angles[i]),
+            target_ke=(20.0, 20.0, 12.0)[i],
+            actuator_mode=newton.JointTargetMode.NONE,
+        )
+        for i, axis in enumerate(axes)
+    ]
+    joint = builder.add_joint(
+        newton.JointType.ROD,
+        parent,
+        child,
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        linear_axes=linear_axes,
+        angular_axes=angular_axes,
+    )
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+
+    state_0, state_1 = model.state(), model.state()
+    newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True).step(
+        state_0, state_1, model.control(), None, 1.0 / 240.0
+    )
+    np.testing.assert_allclose(
+        state_1.body_qd.numpy()[[parent, child]],
+        0.0,
+        atol=2.0e-5,
+        err_msg="a rod at structural rest must apply zero wrench",
+    )
+
+
+def _cable_rod_separate_rest_and_initial_pose_impl(test: unittest.TestCase, device):
+    """Verify rod rest geometry is independent and authored frames are aligned."""
+
+    def builder_target_rotation(builder: newton.ModelBuilder, joint: int) -> wp.quat:
+        start = builder.joint_q_start[joint]
+        return wp.quat(*builder.joint_target_q[start + 3 : start + 7])
+
+    initial_points = [
+        wp.vec3(0.0, 0.0, 1.0),
+        wp.vec3(1.0, 0.0, 1.0),
+        wp.vec3(1.5, 0.8660254, 1.0),
+    ]
+    rest_points = [
+        wp.vec3(0.0, 0.0, 0.0),
+        wp.vec3(0.0, 0.0, 0.8),
+        wp.vec3(0.0, 0.0, 2.0),
+    ]
+    expected_initial_quaternions = _rod_pose_lists(newton.Rod(initial_points))[1]
+    initial_tilt = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.02)
+    initial_quaternions = [initial_tilt * q for q in expected_initial_quaternions]
+    rest_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3)
+    expected_rest_quaternions = [wp.quat_identity(), rest_rotation]
+    rest_tilt = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.02)
+    rest_quaternions = [rest_tilt * q for q in expected_rest_quaternions]
+
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points=initial_points,
+        quaternions=initial_quaternions,
+        rest_points=rest_points,
+        rest_quaternions=rest_quaternions,
+        radius=0.01,
+        stretch_stiffness=200.0,
+        bend_stiffness=20.0,
+        body_frame_origin="com",
+    )
+
+    start_builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    start_bodies, start_joints = _add_prepared_rod(
+        start_builder,
+        points=initial_points,
+        quaternions=initial_quaternions,
+        rest_points=rest_points,
+        rest_quaternions=rest_quaternions,
+        radius=0.01,
+        stretch_stiffness=200.0,
+        bend_stiffness=20.0,
+        body_frame_origin="start",
+    )
+
+    def transform_values(xform: wp.transform) -> np.ndarray:
+        return np.asarray([float(xform[i]) for i in range(7)])
+
+    identity = wp.quat_identity()
+    for com_body, start_body in zip(rod_bodies, start_bodies, strict=True):
+        com_world = builder.body_q[com_body] * wp.transform(builder.body_com[com_body], identity)
+        start_world = start_builder.body_q[start_body] * wp.transform(start_builder.body_com[start_body], identity)
+        np.testing.assert_allclose(transform_values(start_world), transform_values(com_world), rtol=0, atol=1.0e-6)
+
+        com_shape = builder.shape_body.index(com_body)
+        start_shape = start_builder.shape_body.index(start_body)
+        com_shape_world = builder.body_q[com_body] * builder.shape_transform[com_shape]
+        start_shape_world = start_builder.body_q[start_body] * start_builder.shape_transform[start_shape]
+        np.testing.assert_allclose(
+            transform_values(start_shape_world), transform_values(com_shape_world), rtol=0, atol=1.0e-6
+        )
+
+    for com_joint, start_joint in zip(rod_joints, start_joints, strict=True):
+        for body_attr, anchor_attr in (("joint_parent", "joint_X_p"), ("joint_child", "joint_X_c")):
+            com_body = getattr(builder, body_attr)[com_joint]
+            start_body = getattr(start_builder, body_attr)[start_joint]
+            com_anchor = builder.body_q[com_body] * getattr(builder, anchor_attr)[com_joint]
+            start_anchor = start_builder.body_q[start_body] * getattr(start_builder, anchor_attr)[start_joint]
+            np.testing.assert_allclose(
+                transform_values(start_anchor), transform_values(com_anchor), rtol=0, atol=1.0e-6
+            )
+
+    target_rotation = builder_target_rotation(builder, rod_joints[0])
+    test.assertAlmostEqual(
+        abs(float(np.dot(np.asarray(target_rotation), np.asarray(rest_rotation)))),
+        1.0,
+        places=5,
+    )
+    target_start = builder.joint_q_start[rod_joints[0]]
+    np.testing.assert_array_equal(builder.joint_target_q[target_start : target_start + 3], [0.0, 0.0, 0.0])
+
+    transported_builder = newton.ModelBuilder()
+    initial_rolls = [
+        wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.2),
+        wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), -0.3),
+    ]
+    _, transported_joints = _add_prepared_rod(
+        transported_builder,
+        points=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 2.0)],
+        quaternions=initial_rolls,
+        rest_points=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 0.0)],
+        body_frame_origin="com",
+    )
+    expected_rest_frames = [
+        wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5 * np.pi) * initial_rolls[0],
+        wp.quat_from_axis_angle(wp.vec3(-1.0, 0.0, 0.0), 0.5 * np.pi) * initial_rolls[1],
+    ]
+    expected_transport_rotation = wp.quat_inverse(expected_rest_frames[0]) * expected_rest_frames[1]
+    transported_target_rotation = builder_target_rotation(transported_builder, transported_joints[0])
+    test.assertAlmostEqual(
+        abs(float(np.dot(np.asarray(transported_target_rotation), np.asarray(expected_transport_rotation)))),
+        1.0,
+        places=5,
+    )
+
+    with test.assertRaisesRegex(ValueError, "closed rods require the first and last points to coincide"):
+        newton.Rod(
+            [
+                wp.vec3(0.0, 0.0, 0.0),
+                wp.vec3(1.0, 0.0, 0.0),
+                wp.vec3(1.0, 1.0, 0.0),
+            ],
+            closed=True,
+        )
+
+    closed_builder = newton.ModelBuilder()
+    _, closed_joints = _add_prepared_rod(
+        closed_builder,
+        points=[
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.vec3(1.0, 1.0, 0.0),
+            wp.vec3(0.0, 1.0, 0.0),
+        ],
+        rest_points=[
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.vec3(1.0, 1.0, 0.0),
+            wp.vec3(0.0, 0.0, 0.0),
+        ],
+        closed=True,
+        body_frame_origin="com",
+    )
+    for joint in closed_joints:
+        target_start = closed_builder.joint_q_start[joint]
+        np.testing.assert_array_equal(
+            closed_builder.joint_target_q[target_start : target_start + 3],
+            0.0,
+        )
+
+    for body, start, end, expected_rotation in zip(
+        rod_bodies,
+        initial_points[:-1],
+        initial_points[1:],
+        expected_initial_quaternions,
+        strict=True,
+    ):
+        rotation = wp.transform_get_rotation(builder.body_q[body])
+        tangent = wp.normalize(end - start)
+        aligned_z = wp.quat_rotate(rotation, wp.vec3(0.0, 0.0, 1.0))
+        test.assertAlmostEqual(float(wp.dot(aligned_z, tangent)), 1.0, places=6)
+        test.assertAlmostEqual(abs(float(np.dot(np.asarray(rotation), np.asarray(expected_rotation)))), 1.0, places=6)
+
+    invalid_builder = newton.ModelBuilder()
+    invalid_quaternion = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.1)
+    with test.assertRaisesRegex(ValueError, r"must align local \+Z"):
+        _add_prepared_rod(
+            invalid_builder,
+            points=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 2.0)],
+            quaternions=[invalid_quaternion, invalid_quaternion],
+            body_frame_origin="com",
+        )
+
+    with test.assertRaisesRegex(ValueError, "finite"):
+        _add_prepared_rod(
+            newton.ModelBuilder(),
+            points=[wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 2.0)],
+            quaternions=[wp.quat(float("nan"), 0.0, 0.0, 1.0), wp.quat_identity()],
+            body_frame_origin="com",
+        )
+
+    builder.body_flags[rod_bodies[0]] = int(newton.BodyFlags.KINEMATIC)
+    builder.color()
+    model = builder.finalize(device=device)
+
+    body_q = model.body_q.numpy()
+    for body, start, end in zip(rod_bodies, initial_points[:-1], initial_points[1:], strict=True):
+        np.testing.assert_allclose(body_q[body, :3], np.asarray(0.5 * (start + end)), atol=1.0e-6)
+    shape_body = model.shape_body.numpy()
+    shape_scale = model.shape_scale.numpy()
+    for body, expected_half_length in zip(rod_bodies, (0.4, 0.6), strict=True):
+        shape_ids = np.where(shape_body == body)[0]
+        test.assertEqual(len(shape_ids), 1)
+        test.assertAlmostEqual(float(shape_scale[shape_ids[0], 1]), expected_half_length, places=6)
+
+    state_0, state_1 = model.state(), model.state()
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+    solver.step(state_0, state_1, model.control(), None, 1.0 / 600.0)
+    test.assertGreater(float(np.linalg.norm(state_1.body_qd.numpy()[rod_bodies[1]])), 1.0e-5)
+
+
+def _cable_rod_rest_straight_impl(test: unittest.TestCase, _device):
+    """Verify rest_straight changes only generated Rod rest rotations."""
+    positions = [
+        wp.vec3(0.0, 0.0, 0.0),
+        wp.vec3(1.0, 0.0, 0.0),
+        wp.vec3(1.0, 1.0, 0.0),
+        wp.vec3(0.0, 0.0, 0.0),
+    ]
+    quaternions = _rod_pose_lists(newton.Rod(positions))[1]
+    quaternions = [
+        wp.quat_from_axis_angle(wp.normalize(end - start), roll) * rotation
+        for start, end, rotation, roll in zip(
+            positions[:-1],
+            positions[1:],
+            quaternions,
+            (0.0, 0.3, -0.2),
+            strict=True,
+        )
+    ]
+
+    for closed in (False, True):
+        with test.subTest(closed=closed):
+            baseline = newton.ModelBuilder()
+            _, baseline_joints = _add_prepared_rod(
+                baseline,
+                positions,
+                quaternions=quaternions,
+                closed=closed,
+                body_frame_origin="com",
+            )
+            builder = newton.ModelBuilder()
+            _, joints = _add_prepared_rod(
+                builder,
+                positions,
+                quaternions=quaternions,
+                rest_straight=True,
+                closed=closed,
+                body_frame_origin="com",
+            )
+
+            np.testing.assert_array_equal(np.asarray(builder.body_q), np.asarray(baseline.body_q))
+            np.testing.assert_array_equal(builder.joint_q, baseline.joint_q)
+            for joint, baseline_joint in zip(joints, baseline_joints, strict=True):
+                q_start = builder.joint_q_start[joint]
+                baseline_q_start = baseline.joint_q_start[baseline_joint]
+                np.testing.assert_array_equal(
+                    builder.joint_target_q[q_start : q_start + 3],
+                    baseline.joint_target_q[baseline_q_start : baseline_q_start + 3],
+                )
+                np.testing.assert_array_equal(
+                    builder.joint_target_q[q_start + 3 : q_start + 7],
+                    [0.0, 0.0, 0.0, 1.0],
+                )
+
+    for rest_kwargs in (
+        {"rest_points": positions},
+        {"rest_quaternions": quaternions},
+    ):
+        with test.subTest(rest_kwargs=rest_kwargs):
+            with test.assertRaisesRegex(ValueError, "cannot be combined with explicit rest_points or rest_quaternions"):
+                _add_prepared_rod(
+                    newton.ModelBuilder(),
+                    positions,
+                    rest_straight=True,
+                    body_frame_origin="com",
+                    **rest_kwargs,
+                )
+
+
 def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
     """Cable graph: collision filtering should be applied at junctions.
 
     For a Y-junction (degree-3 node): two pairs are jointed; the remaining sibling pair should also be
-    collision-filtered automatically by `add_rod_graph()`'s junction filtering.
+    collision-filtered automatically by the rod graph assembly's junction filtering.
     """
 
     def assert_body_pair_filtered(builder: newton.ModelBuilder, model: newton.Model, body_a: int, body_b: int):
@@ -3816,8 +4478,9 @@ def _cable_graph_collision_filter_pairs_impl(test: unittest.TestCase, device):
     edges = [(0, 1), (0, 2), (0, 3)]
     node_positions_any = node_positions
 
-    rod_bodies, rod_joints = builder.add_rod_graph(
-        node_positions=node_positions_any,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        node_positions_any,
         edges=edges,
         radius=0.05,
         cfg=builder.default_shape_cfg.copy(),
@@ -3953,8 +4616,9 @@ def _cable_world_joint_attaches_rod_endpoint_impl(test: unittest.TestCase, devic
         offset = attach_pos - points[0]
         points = [p + offset for p in points]
 
-        rod_bodies, rod_joints = builder.add_rod(
-            positions=points,
+        rod_bodies, rod_joints = _add_prepared_rod(
+            builder,
+            points,
             quaternions=edge_q,
             radius=rod_radius,
             bend_stiffness=2.0e0,
@@ -4111,7 +4775,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
 
     # Kinematic anchor sphere at height.
     anchor_pos = wp.vec3(0.0, 0.0, 3.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     anchor_radius = 0.1
     builder.add_shape_sphere(anchor, radius=anchor_radius)
     builder.body_mass[anchor] = 0.0
@@ -4126,7 +4790,7 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
     attach_offset = anchor_radius + rod_radius
     cable_start = anchor_pos + wp.vec3(0.0, 0.0, -attach_offset)
 
-    rod_points, rod_quats = newton.utils.rod_straight_points_and_quaternions(
+    rod_points, rod_quats = _make_straight_rod_pose(
         start=cable_start,
         direction=wp.vec3(0.0, 0.0, -1.0),
         length=float(num_elements) * segment_length,
@@ -4134,8 +4798,9 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
         twist_total=0.0,
     )
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=rod_points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        rod_points,
         quaternions=rod_quats,
         radius=rod_radius,
         bend_stiffness=2.0e2,
@@ -4166,7 +4831,8 @@ def _joint_enabled_toggle_impl(test: unittest.TestCase, device, rigid_compliant_
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
 
-    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
+    with test.assertWarns(DeprecationWarning) if not rigid_compliant_alm else nullcontext():
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=rigid_compliant_alm)
 
     sim_dt = 1.0 / 60.0 / 4
 
@@ -4215,7 +4881,7 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
     builder = newton.ModelBuilder()
 
     anchor_pos = wp.vec3(0.0, 0.0, 1.0)
-    anchor = builder.add_body(xform=wp.transform(anchor_pos, wp.quat_identity()))
+    anchor = builder.add_link(xform=wp.transform(anchor_pos, wp.quat_identity()))
     builder.add_shape_sphere(anchor, radius=0.05)
     builder.body_mass[anchor] = 0.0
     builder.body_inv_mass[anchor] = 0.0
@@ -4233,8 +4899,9 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
     offset = anchor_world_attach - points[0]
     points = [p + offset for p in points]
 
-    rod_bodies, rod_joints = builder.add_rod(
-        positions=points,
+    rod_bodies, rod_joints = _add_prepared_rod(
+        builder,
+        points,
         quaternions=edge_q,
         radius=rod_radius,
         bend_stiffness=2.0e0,
@@ -4324,7 +4991,7 @@ def _cable_fixed_joint_tracks_moving_kinematic_impl(test: unittest.TestCase, dev
 
 
 @wp.kernel
-def _eval_cable_stretch_shear_parent_hessian_error(errors: wp.array[wp.vec2]):
+def _eval_rod_stretch_shear_parent_hessian_error(errors: wp.array[wp.vec2]):
     parent_pose = wp.transform(
         wp.vec3(-0.31, 0.44, -0.19),
         wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.4, 0.9, 0.2)), 1.1),
@@ -5178,7 +5845,7 @@ def _split_cable_angular_slot_layout(test, device):
             model = builder.finalize(device=device)
             solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
 
-            np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [2, 2])
+            np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [3, 3])
             test.assertEqual(int(solver.joint_constraint_dim.numpy()[joint]), 4)
             start = int(solver.joint_constraint_start.numpy()[joint])
             np.testing.assert_allclose(solver.joint_material_k.numpy()[start : start + 4], expected_k)
@@ -5191,186 +5858,408 @@ def _split_cable_angular_slot_layout(test, device):
         builder.add_joint_rod(-1, body, bend_stiffness=10.0, twist_stiffness=-1.0)
 
 
-def _rod_stiffness_helper_returns_physical_twist(test, device):
-    """Verify the elastic-moduli helper returns GJ/L with a shear modulus source."""
+def _rod_material_validates_inputs(test, device):
+    """Verify Rod rejects invalid material and section-rigidity inputs."""
+    del device
     E = 200.0
     radius = 0.5
-    length = 2.0
-    stretch, bend, twist = newton.utils.rod_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25)
-
-    area = np.pi * radius * radius
-    inertia = 0.25 * np.pi * radius**4
-    polar_inertia = 0.5 * np.pi * radius**4
     G = E / (2.0 * (1.0 + 0.25))
-    np.testing.assert_allclose(
-        [stretch, bend, twist], [E * area / length, E * inertia / length, G * polar_inertia / length]
+    points = [wp.vec3(0.0), wp.vec3(0.0, 0.0, 1.0)]
+
+    invalid_cases = (
+        ({"youngs_modulus": E, "poissons_ratio": 0.25}, "radius"),
+        ({"radius": radius, "poissons_ratio": 0.25}, "youngs_modulus"),
+        ({"radius": radius, "youngs_modulus": np.nan, "poissons_ratio": 0.25}, "youngs_modulus"),
+        ({"radius": 0.0, "youngs_modulus": E, "poissons_ratio": 0.25}, "radius"),
+        ({"radius": radius, "youngs_modulus": E}, "exactly one"),
+        ({"radius": radius, "youngs_modulus": E, "shear_modulus": -1.0}, "shear_modulus"),
+        ({"radius": radius, "youngs_modulus": E, "poissons_ratio": 0.25, "shear_modulus": G}, "exactly one"),
+        ({"radius": radius, "youngs_modulus": E, "poissons_ratio": -1.0}, "poissons_ratio"),
+        ({"radius": radius, "youngs_modulus": E, "poissons_ratio": 0.5}, "poissons_ratio"),
+        (
+            {
+                "radius": radius,
+                "youngs_modulus": E,
+                "poissons_ratio": 0.25,
+                "stretch_rigidity": 1.0,
+            },
+            "mutually exclusive",
+        ),
+        ({"stretch_rigidity": 1.0}, "must be supplied together"),
+        ({"stretch_rigidity": np.nan}, "stretch_rigidity"),
     )
-
-    with test.assertRaisesRegex(ValueError, "mutually exclusive"):
-        newton.utils.rod_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.25, shear_modulus=G)
-    with test.assertRaisesRegex(ValueError, "poissons_ratio"):
-        newton.utils.rod_stiffness_from_elastic_moduli(E, radius, length, poissons_ratio=0.5)
-
-
-def _joint_rod_api_deprecates_cable_names(test, device):
-    """Verify deprecated cable joint names forward to the rod API."""
-    test.assertEqual(newton.JointType.ROD.value, 7)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        names = dir(newton.JointType)
-        members = newton.JointType.__members__
-        test.assertIn("CABLE", names)
-        test.assertIn("ROD", names)
-        test.assertIs(members["CABLE"], members["ROD"])
-
-    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD") as caught:
-        deprecated_joint_type = newton.JointType.CABLE
-    test.assertIs(deprecated_joint_type, newton.JointType.ROD)
-    # Caller attribution ensures the example runner exposes in-tree misuse.
-    test.assertEqual(caught.filename, __file__)
-
-    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD") as caught:
-        deprecated_by_name = newton.JointType["CABLE"]
-    test.assertIs(deprecated_by_name, newton.JointType.ROD)
-    test.assertEqual(caught.filename, __file__)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        rod_type = newton.JointType(7)
-        test.assertIs(rod_type, newton.JointType.ROD)
-        test.assertIs(newton.JointType["ROD"], rod_type)
-        test.assertEqual(rod_type.name, "CABLE")
-        test.assertIn("CABLE", repr(rod_type))
-        test.assertEqual([member.name for member in newton.JointType if member.value == 7], ["CABLE"])
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        child = builder.add_link()
-        joint = builder.add_joint_rod(parent=-1, child=child)
-    test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    child = builder.add_link()
-    with test.assertWarnsRegex(DeprecationWarning, r"add_joint_cable.*add_joint_rod") as caught:
-        joint = builder.add_joint_cable(parent=-1, child=child)
-    test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
-    test.assertEqual(caught.filename, __file__)
+    for kwargs, message in invalid_cases:
+        with test.subTest(kwargs=kwargs):
+            with test.assertRaisesRegex(ValueError, message):
+                newton.Rod(points, **kwargs)
 
 
-def _cable_legacy_positional_arguments_preserve_binding(test, device):
-    """Verify Newton 1.5 cable arguments retain their positional meaning."""
-    test.assertEqual(
-        inspect.signature(newton.ModelBuilder.add_joint_cable),
-        inspect.signature(newton.ModelBuilder.add_joint_rod),
-    )
-
-    released_stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
-    expected_ke = [11.0, 22.0, 33.0, 44.0]
-    expected_kd = [0.1, 0.2, 0.3, 0.4]
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    child = builder.add_link()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        builder.add_joint_cable(-1, child, None, None, *released_stiffness_args)
-    test.assertEqual(len(caught), 2)
-    test.assertTrue(all(issubclass(item.category, DeprecationWarning) for item in caught))
-    test.assertTrue(all(item.filename == __file__ for item in caught))
-    warning_messages = [str(item.message) for item in caught]
-    test.assertTrue(any("Passing" in message for message in warning_messages))
-    test.assertTrue(any("add_joint_cable" in message for message in warning_messages))
-    np.testing.assert_allclose(builder.joint_target_ke, expected_ke)
-    np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
-
-    points = [wp.vec3(0.0, 0.0, float(i)) for i in range(3)]
-    quaternions = [wp.quat_identity(), wp.quat_identity()]
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertWarnsRegex(DeprecationWarning, r"Passing .* positionally to ModelBuilder\.add_rod"):
-        builder.add_rod(
-            points,
-            quaternions,
-            0.05,
-            None,
-            *released_stiffness_args,
-            body_frame_origin="com",
-        )
-    np.testing.assert_allclose(builder.joint_target_ke, expected_ke)
-    np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    with test.assertWarnsRegex(DeprecationWarning, r"Passing .* positionally to ModelBuilder\.add_rod_graph"):
-        builder.add_rod_graph(
-            points,
-            [(0, 1), (1, 2)],
-            0.05,
-            None,
-            *released_stiffness_args,
-            body_frame_origin="com",
-        )
-    np.testing.assert_allclose(builder.joint_target_ke, expected_ke)
-    np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
-
-
-def _cable_rod_helper_api_deprecates_create_names(test, device):
-    """Verify deprecated create names forward to prefix-first cable/rod APIs."""
-    helper_renames = (
-        ("create_cable_stiffness_from_elastic_moduli", "rod_stiffness_from_elastic_moduli"),
-        ("create_parallel_transport_cable_quaternions", "rod_parallel_transport_quaternions"),
-        ("create_straight_cable_points", "cable_straight_points"),
-        ("create_straight_cable_points_and_quaternions", "rod_straight_points_and_quaternions"),
-    )
-    for deprecated_name, canonical_name in helper_renames:
-        with test.subTest(deprecated_name=deprecated_name):
-            deprecated = getattr(newton.utils, deprecated_name)
-            canonical = getattr(newton.utils, canonical_name)
-            test.assertEqual(inspect.signature(deprecated), inspect.signature(canonical))
-
+def _rod_geometry_api_validates_inputs(test, device):
+    """Verify Rod normalizes valid geometry and rejects malformed inputs."""
+    del device
     start = wp.vec3(0.0, 0.0, 0.0)
-    direction = wp.vec3(1.0, 0.0, 0.0)
+    direction = wp.vec3(0.0, 0.0, 1.0)
 
-    expected_points = newton.utils.cable_straight_points(start, direction, 1.0, 2)
-    with test.assertWarnsRegex(DeprecationWarning, "cable_straight_points") as caught:
-        points = newton.utils.create_straight_cable_points(start, direction, 1.0, 2)
-    np.testing.assert_allclose(np.asarray(points), np.asarray(expected_points))
-    # Deprecation warnings should point to the caller.
-    test.assertEqual(caught.filename, __file__)
+    rod = newton.Rod.create_straight(
+        start,
+        direction,
+        3.0,
+        segment_count=3,
+        twist_total=0.6,
+    )
+    expected_frames = [np.asarray(wp.quat_from_axis_angle(direction, angle)) for angle in (0.2, 0.4, 0.6)]
+    np.testing.assert_allclose(rod.quaternions, expected_frames, rtol=1.0e-6, atol=1.0e-6)
 
-    expected_quaternions = newton.utils.rod_parallel_transport_quaternions(expected_points)
-    with test.assertWarnsRegex(DeprecationWarning, "rod_parallel_transport_quaternions"):
-        quaternions = newton.utils.create_parallel_transport_cable_quaternions(expected_points)
-    np.testing.assert_allclose(np.asarray(quaternions), np.asarray(expected_quaternions))
+    rod.points[:] = np.asarray([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0), (3.0, 0.0, 0.0)])
+    points_array = rod.points
+    edges_array = rod.edges
+    rod.compute_frames()
+    test.assertIs(rod.points, points_array)
+    test.assertIs(rod.edges, edges_array)
+    for frame in rod.quaternions:
+        quaternion = wp.quat(*(float(value) for value in frame))
+        np.testing.assert_allclose(wp.quat_rotate(quaternion, direction), [1.0, 0.0, 0.0], atol=1.0e-6)
 
-    with test.assertWarnsRegex(DeprecationWarning, "rod_straight_points_and_quaternions"):
-        combined_points, combined_quaternions = newton.utils.create_straight_cable_points_and_quaternions(
-            start, direction, 1.0, 2
+    graph = newton.Rod(
+        [start, wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0)],
+        edges=[(0, 1), (0, 2)],
+    )
+    with test.assertRaisesRegex(ValueError, "ordered chain"):
+        graph.compute_frames(twist_total=0.1)
+
+    chain_points = [start, direction, wp.vec3(0.0, 0.0, 2.0)]
+    resized_points = [*chain_points, wp.vec3(0.0, 0.0, 3.0)]
+
+    implicit_chain = newton.Rod(chain_points)
+    implicit_chain.points = resized_points
+    np.testing.assert_array_equal(implicit_chain.edges, [(0, 1), (1, 2), (2, 3)])
+    implicit_chain.compute_frames()
+    test.assertEqual(implicit_chain.segment_count, 3)
+
+    explicit_chain = newton.Rod(chain_points)
+    explicit_chain.edges = explicit_chain.edges.copy()
+    copied_explicit_chain = explicit_chain.copy()
+    for chain in (explicit_chain, copied_explicit_chain):
+        chain.points = resized_points
+        np.testing.assert_array_equal(chain.edges, [(0, 1), (1, 2)])
+
+    invalid_calls = (
+        (lambda: newton.Rod.create_straight(start, direction, 1.0, segment_count=0), "segment_count"),
+        (lambda: newton.Rod.create_straight(start, direction, 1.0, segment_count=1, twist_total=np.nan), "twist_total"),
+        (lambda: newton.Rod.create_straight(start, direction, np.nan, segment_count=1), "length"),
+        (lambda: newton.Rod.create_straight(start, direction, -1.0, segment_count=1), "length"),
+        (lambda: newton.Rod.create_straight(start, wp.vec3(0.0), 1.0, segment_count=1), "direction"),
+        (lambda: newton.Rod([start]), "points"),
+        (lambda: newton.Rod([start, wp.vec3(np.nan, 0.0, 1.0)]), "finite"),
+        (lambda: newton.Rod(np.zeros(6, dtype=np.float32)), "shape"),
+        (lambda: newton.Rod([start, start]), "segments"),
+        (lambda: newton.Rod([start, direction], edges=np.empty((0, 2), dtype=np.int32)), "at least 1 edge"),
+        (lambda: newton.Rod([start, direction], edges=[0, 1]), "edges"),
+        (lambda: newton.Rod([start, direction], edges=[(0.0, 1.0)]), "integer"),
+        (lambda: newton.Rod([start, direction], edges=[(0, 2)]), "indices"),
+        (lambda: newton.Rod([start, direction], edges=[(0, 0)]), "itself"),
+        (lambda: newton.Rod([start, direction], edges=[(0, 1), (1, 0)]), "duplicates"),
+        (lambda: newton.Rod([start, direction], quaternions=[0.0, 0.0, 0.0, 1.0]), "quaternions"),
+        (lambda: newton.Rod([start, direction], quaternions=[[0.0, 0.0, np.nan, 1.0]]), "finite"),
+        (lambda: newton.Rod([start, direction], quaternions=[[0.0, 0.0, 0.0, 0.0]]), "non-zero"),
+        (
+            lambda: newton.Rod(
+                [start, direction],
+                quaternions=[wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * np.pi)],
+            ),
+            "align local \\+Z",
+        ),
+        (
+            lambda: newton.Rod(
+                [start, direction, wp.vec3(0.0, 0.0, 2.0)],
+                quaternions=[[0.0, 0.0, 0.0, 1.0]],
+            ),
+            "2 frames",
+        ),
+        (lambda: newton.Rod([start, direction], edges=[(0, 1)], closed=True), "closed"),
+        (lambda: newton.Rod([start, direction], closed=True), "at least 2 segments"),
+        (
+            lambda: newton.Rod(
+                [start, wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), direction],
+                closed=True,
+            ),
+            "coincide",
+        ),
+    )
+    for function, message in invalid_calls:
+        with test.subTest(message=message):
+            with test.assertRaisesRegex(ValueError, message):
+                function()
+
+
+def _rod_copy_and_closed_topology_preserve_contract(test, device):
+    """Verify Rod copies are independent and closed chains remain explicit."""
+    del device
+    rod = newton.Rod(
+        [
+            wp.vec3(0.0),
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.vec3(0.0, 1.0, 0.0),
+            wp.vec3(0.0),
+        ],
+        closed=True,
+        rest_straight=True,
+        radius=0.2,
+        youngs_modulus=100.0,
+        poissons_ratio=0.25,
+    )
+    copied = rod.copy()
+    test.assertTrue(copied.closed)
+    test.assertTrue(copied.rest_straight)
+    np.testing.assert_array_equal(copied.points, rod.points)
+    np.testing.assert_array_equal(copied.edges, rod.edges)
+    np.testing.assert_array_equal(copied.quaternions, rod.quaternions)
+    test.assertFalse(np.shares_memory(copied.points, rod.points))
+    test.assertFalse(np.shares_memory(copied.edges, rod.edges))
+    test.assertFalse(np.shares_memory(copied.quaternions, rod.quaternions))
+    test.assertEqual(copied.radius, rod.radius)
+    test.assertEqual(copied.youngs_modulus, rod.youngs_modulus)
+    test.assertEqual(copied.poissons_ratio, rod.poissons_ratio)
+
+    edited = newton.Rod([wp.vec3(0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(2.0, 0.0, 0.0)])
+    edited.edges[0] = (0, 2)
+    edited_copy = edited.copy()
+    np.testing.assert_array_equal(edited_copy.edges, edited.edges)
+    test.assertFalse(np.shares_memory(edited_copy.edges, edited.edges))
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    bodies, joints = builder.add_rod(rod=copied, body_frame_origin="com")
+    test.assertEqual((len(bodies), len(joints)), (3, 3))
+
+    two_segment_loop = newton.Rod([wp.vec3(0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0)], closed=True)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    with test.assertWarnsRegex(UserWarning, "Parallel joints between the same pair of bodies"):
+        bodies, joints = builder.add_rod(rod=two_segment_loop, body_frame_origin="com")
+    test.assertEqual((len(bodies), len(joints)), (2, 2))
+
+
+def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
+    """Verify invalid Rod inputs do not leave partially assembled builder data."""
+    del device
+    graph = newton.Rod(
+        [wp.vec3(0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0)],
+        edges=[(0, 1), (0, 2)],
+        radius=0.1,
+        youngs_modulus=200.0,
+        poissons_ratio=0.25,
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    with test.assertRaisesRegex(TypeError, "rod must be a Rod"):
+        builder.add_rod(rod=object())
+    test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), (0, 0, 0))
+
+    invalid_calls = (
+        (graph, {"stretch_stiffness": -1.0, "body_frame_origin": "com"}, "add_rod: stretch_stiffness"),
+        (
+            graph,
+            {"stretch_stiffness": np.nan, "body_frame_origin": "com"},
+            "add_rod: stretch_stiffness must be finite and >= 0",
+        ),
+        (
+            graph,
+            {"shear_stiffness": np.inf, "body_frame_origin": "com"},
+            "add_rod: shear_stiffness must be finite and >= 0",
+        ),
+        (
+            graph,
+            {"bend_stiffness": np.nan, "body_frame_origin": "com"},
+            "add_rod: bend_stiffness must be finite and >= 0",
+        ),
+        (
+            graph,
+            {"twist_stiffness": np.inf, "body_frame_origin": "com"},
+            "add_rod: twist_stiffness must be finite and >= 0",
+        ),
+        (graph, {"body_frame_origin": "invalid"}, "add_rod: body_frame_origin"),
+        (graph, {"body_frame_origin": None}, "add_rod: body_frame_origin"),
+    )
+    for rod, kwargs, message in invalid_calls:
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        before = (builder.body_count, builder.shape_count, builder.joint_count)
+        with test.subTest(message=message):
+            with test.assertRaisesRegex(ValueError, message):
+                builder.add_rod(rod=rod, **kwargs)
+        test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), before)
+
+    misaligned = graph.copy()
+    misaligned.quaternions[0] = np.asarray(
+        wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * np.pi),
+        dtype=np.float32,
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    before = (builder.body_count, builder.shape_count, builder.joint_count)
+    with test.assertRaisesRegex(ValueError, "quaternion at segment index 0"):
+        builder.add_rod(rod=misaligned, body_frame_origin="com")
+    test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), before)
+
+    branched = newton.Rod(
+        [
+            wp.vec3(0.0),
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.vec3(0.0, 1.0, 0.0),
+            wp.vec3(0.0, 0.0, 1.0),
+        ],
+        edges=[(0, 1), (0, 2), (0, 3)],
+        stretch_rigidity=1.0,
+        shear_rigidity=0.0,
+        bend_rigidity=0.0,
+        twist_rigidity=0.0,
+    )
+    cycle = newton.Rod(
+        [wp.vec3(0.0), wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0)],
+        edges=[(0, 1), (1, 2), (2, 0)],
+        stretch_rigidity=0.0,
+        shear_rigidity=0.0,
+        bend_rigidity=1.0,
+        twist_rigidity=0.0,
+    )
+    for invalid_rod, message in ((branched, "at most 2 incident"), (cycle, "cyclic graph")):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        before = (builder.body_count, builder.shape_count, builder.joint_count)
+        with test.subTest(message=message):
+            with test.assertRaisesRegex(ValueError, message):
+                builder.add_rod(rod=invalid_rod, body_frame_origin="com")
+        test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), before)
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    bodies, joints = builder.add_rod(rod=cycle, wrap_in_articulation=False, body_frame_origin="com")
+    test.assertEqual((len(bodies), len(joints)), (3, 3))
+
+
+def _rod_builder_assembles_topology_and_constitutive_data(test, device):
+    """Verify ModelBuilder.add_rod() assembles Rod topology and constitutive data."""
+    del device
+    single = newton.Rod.create_straight(wp.vec3(0.0), wp.vec3(0.0, 0.0, 1.0), 1.0, segment_count=1)
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    bodies, joints = builder.add_rod(rod=single, body_frame_origin="com")
+    test.assertEqual((len(bodies), len(joints)), (1, 0))
+
+    youngs = 200.0
+    radius = 0.5
+    poisson = 0.25
+    shear = youngs / (2.0 * (1.0 + poisson))
+    points = [wp.vec3(0.0, 0.0, value) for value in (0.0, 1.0, 3.0, 6.0)]
+    rod = newton.Rod(
+        points,
+        radius=radius,
+        youngs_modulus=youngs,
+        poissons_ratio=poisson,
+    )
+    points_array = rod.points
+    edges_array = rod.edges
+    quaternion_array = rod.quaternions
+
+    expected_damping = [0.1, 0.2, 0.3, 0.4]
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    bodies, joints = builder.add_rod(
+        rod=rod,
+        stretch_damping=expected_damping[0],
+        shear_damping=expected_damping[1],
+        bend_damping=expected_damping[2],
+        twist_damping=expected_damping[3],
+        body_frame_origin="com",
+    )
+    test.assertIs(rod.points, points_array)
+    test.assertIs(rod.edges, edges_array)
+    test.assertIs(rod.quaternions, quaternion_array)
+    test.assertEqual(len(bodies), 3)
+    test.assertEqual(len(joints), 2)
+
+    area = np.pi * radius**2
+    area_moment = 0.25 * np.pi * radius**4
+    polar_moment = 0.5 * np.pi * radius**4
+    for joint, dual_length in zip(joints, (1.5, 2.5), strict=True):
+        dof_start = builder.joint_qd_start[joint]
+        np.testing.assert_allclose(
+            builder.joint_target_ke[dof_start : dof_start + 6],
+            [
+                0.9 * shear * area / dual_length,
+                0.9 * shear * area / dual_length,
+                youngs * area / dual_length,
+                youngs * area_moment / dual_length,
+                youngs * area_moment / dual_length,
+                shear * polar_moment / dual_length,
+            ],
         )
-    np.testing.assert_allclose(np.asarray(combined_points), np.asarray(expected_points))
-    np.testing.assert_allclose(np.asarray(combined_quaternions), np.asarray(expected_quaternions))
+        np.testing.assert_allclose(builder.joint_target_kd[dof_start : dof_start + 6], [0.2, 0.2, 0.1, 0.3, 0.3, 0.4])
 
-    expected_stiffness = newton.utils.rod_stiffness_from_elastic_moduli(100.0, 0.1, 0.5)
-    with test.assertWarnsRegex(DeprecationWarning, "rod_stiffness_from_elastic_moduli"):
-        stiffness = newton.utils.create_cable_stiffness_from_elastic_moduli(100.0, 0.1, 0.5)
-    np.testing.assert_allclose(stiffness, expected_stiffness)
+    rigidity_rod = newton.Rod(
+        points,
+        radius=radius,
+        stretch_rigidity=10.0,
+        shear_rigidity=20.0,
+        bend_rigidity=30.0,
+        twist_rigidity=40.0,
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    _bodies, joints = builder.add_rod(
+        rod=rigidity_rod,
+        bend_stiffness=7.0,
+        body_frame_origin="com",
+    )
+    for joint, dual_length in zip(joints, (1.5, 2.5), strict=True):
+        dof_start = builder.joint_qd_start[joint]
+        np.testing.assert_allclose(
+            builder.joint_target_ke[dof_start : dof_start + 6],
+            [20.0 / dual_length, 20.0 / dual_length, 10.0 / dual_length, 7.0, 7.0, 40.0 / dual_length],
+        )
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        names = dir(newton.utils)
-        test.assertIn("CableStiffness", names)
-        test.assertIn("RodStiffness", names)
-        rod_stiffness = newton.utils.rod_stiffness_from_elastic_moduli(100.0, 0.1, 0.5, poissons_ratio=0.25)
-        test.assertIs(type(rod_stiffness), newton.utils.RodStiffness)
-        test.assertEqual(type(rod_stiffness).__name__, "RodStiffness")
-        newton.utils.cable_straight_points(start, direction, 1.0, 2)
-        newton.utils.rod_parallel_transport_quaternions(expected_points)
-        newton.utils.rod_straight_points_and_quaternions(start, direction, 1.0, 2)
-        newton.utils.rod_stiffness_from_elastic_moduli(100.0, 0.1, 0.5)
+    graph = newton.Rod(
+        [
+            wp.vec3(0.0, 0.0, 0.0),
+            wp.vec3(1.0, 0.0, 0.0),
+            wp.vec3(0.0, 1.0, 0.0),
+            wp.vec3(0.0, 0.0, 1.0),
+        ],
+        edges=[(0, 1), (0, 2), (0, 3)],
+        radius=0.1,
+        youngs_modulus=200.0,
+        poissons_ratio=0.25,
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    bodies, joints = builder.add_rod(
+        rod=graph,
+        stretch_stiffness=11.0,
+        shear_stiffness=12.0,
+        bend_stiffness=22.0,
+        twist_stiffness=33.0,
+        body_frame_origin="com",
+    )
+    test.assertEqual(len(bodies), 3)
+    test.assertEqual(len(joints), 2)
+    for joint in joints:
+        dof_start = builder.joint_qd_start[joint]
+        np.testing.assert_allclose(
+            builder.joint_target_ke[dof_start : dof_start + 6], [12.0, 12.0, 11.0, 22.0, 22.0, 33.0]
+        )
 
-    with test.assertWarnsRegex(DeprecationWarning, r"CableStiffness.*RodStiffness") as caught:
-        deprecated_stiffness_type = newton.utils.CableStiffness
-    test.assertIs(deprecated_stiffness_type, newton.utils.RodStiffness)
+    zero_rigidity_graph = newton.Rod(
+        graph.points,
+        edges=graph.edges,
+        stretch_rigidity=0.0,
+        shear_rigidity=0.0,
+        bend_rigidity=0.0,
+        twist_rigidity=0.0,
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    _bodies, joints = builder.add_rod(rod=zero_rigidity_graph, body_frame_origin="com")
+    for joint in joints:
+        dof_start = builder.joint_qd_start[joint]
+        np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 6], [0.0] * 6)
+
+    cycle_graph = newton.Rod(
+        graph.points[:3],
+        edges=[(0, 1), (1, 2), (2, 0)],
+    )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    with test.assertWarnsRegex(UserWarning, "retain every cycle adjacency joint") as caught:
+        bodies, joints = builder.add_rod(rod=cycle_graph, body_frame_origin="com")
+    test.assertEqual((len(bodies), len(joints)), (3, 2))
     test.assertEqual(caught.filename, __file__)
 
 
@@ -5633,6 +6522,7 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
 
 def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     """Explicit shear stiffness/damping must land in the split shear slot."""
+
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
     joint = builder.add_joint_rod(
@@ -5652,18 +6542,429 @@ def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
 
-    np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [2, 2])
+    np.testing.assert_array_equal(model.joint_dof_dim.numpy()[joint], [3, 3])
+    np.testing.assert_array_equal(
+        model.joint_target_mode.numpy(),
+        np.full(model.joint_dof_count, int(newton.JointTargetMode.NONE)),
+    )
     test.assertEqual(int(solver.joint_constraint_dim.numpy()[joint]), 4)
     start = int(solver.joint_constraint_start.numpy()[joint])
     np.testing.assert_allclose(solver.joint_material_k.numpy()[start : start + 4], [100.0, 40.0, 10.0, 3.0])
     np.testing.assert_allclose(solver.joint_penalty_kd.numpy()[start : start + 4], [0.2, 0.7, 0.5, 0.25])
+
+    target_ke = model.joint_target_ke.numpy()
+    dof_start = int(model.joint_qd_start.numpy()[joint])
+    target_ke[dof_start + 1] = 41.0
+    model.joint_target_ke.assign(target_ke)
+    for flags in (newton.ModelFlags.JOINT_DOF_PROPERTIES, newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+        with test.assertRaisesRegex(ValueError, "requires isotropic ROD shear and bend"):
+            solver.notify_model_changed(flags)
+    with test.assertRaisesRegex(ValueError, "requires isotropic ROD shear and bend"):
+        newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+
+
+def _assert_rod_dof_property_refresh(
+    test,
+    device,
+    *,
+    build_param,
+    target_array,
+    before,
+    after,
+    pointer_stable_arrays=(),
+):
+    """Assert a live ROD ``joint_target_*`` edit reaches the solve, matching a from-scratch build.
+
+    Builds a cable chain with ``build_param`` set to ``before``, captures its step graph where
+    the device allows it, then rewrites ``target_array``'s bend and twist DOFs to ``after`` and
+    notifies with ``JOINT_DOF_PROPERTIES`` -- all before any replay, so the refresh has to reach
+    the already-captured graph. Compares that trajectory against from-scratch builds at both
+    ``after`` (must match bit-for-bit) and ``before`` (must differ, or the comparison is vacuous).
+
+    Args:
+        build_param: :func:`_build_cable_chain` keyword to vary (e.g. ``"bend_stiffness"``).
+        target_array: ``Model`` array to edit live (e.g. ``"joint_target_ke"``).
+        before: Value built with, and reinit'd away from.
+        after: Value reinit'd to.
+        pointer_stable_arrays: Solver array names required to keep their address across the
+            refresh -- a captured graph holds pointers, so reallocation would leave it reading
+            stale memory.
+    """
+    fixed = {"bend_stiffness": 5.0e1, "bend_damping": 1.0}
+    sim_substeps = 10
+    sim_dt = (1.0 / 60.0) / sim_substeps
+    num_steps = 20
+
+    def build_and_run(value, retarget_to=None):
+        model, state0, state1, control, _rod_bodies = _build_cable_chain(
+            device,
+            num_links=6,
+            segment_length=0.2,
+            **{**fixed, build_param: value},
+        )
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=True)
+
+        state = {"s0": state0, "s1": state1}
+
+        def simulate():
+            for _substep in range(sim_substeps):
+                state["s0"].clear_forces()
+                collision_pipeline.collide(state["s0"], contacts)
+                solver.step(state["s0"], state["s1"], control, contacts, sim_dt)
+                state["s0"], state["s1"] = state["s1"], state["s0"]
+
+        graph = None
+        if is_graph_capture_allocation_enabled(device):
+            with wp.ScopedCapture(device) as capture:
+                simulate()
+            graph = capture.graph
+
+        if retarget_to is not None:
+            ptrs_before = {name: getattr(solver, name).ptr for name in pointer_stable_arrays}
+
+            values = getattr(model, target_array).numpy()
+            joint_qd_start = model.joint_qd_start.numpy()
+            joint_type = model.joint_type.numpy()
+            for j in range(model.joint_count):
+                if joint_type[j] == int(newton.JointType.ROD):
+                    d0 = joint_qd_start[j]
+                    values[d0 + 3] = retarget_to  # bend X
+                    values[d0 + 4] = retarget_to  # bend Y
+                    values[d0 + 5] = retarget_to  # twist Z
+            getattr(model, target_array).assign(values)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+            for name, ptr in ptrs_before.items():
+                test.assertEqual(
+                    getattr(solver, name).ptr,
+                    ptr,
+                    msg=f"{name} was reallocated by notify_model_changed -- "
+                    "a captured graph would now read stale memory",
+                )
+
+        for _ in range(num_steps):
+            if graph is not None:
+                wp.capture_launch(graph)
+            else:
+                simulate()
+
+        return state["s0"].body_q.numpy().copy()
+
+    reinit_q = build_and_run(before, retarget_to=after)
+    reference_q = build_and_run(after)
+    unrefreshed_q = build_and_run(before)
+
+    test.assertFalse(
+        np.array_equal(unrefreshed_q, reference_q),
+        msg=f"test is vacuous: {build_param}={before} and {build_param}={after} yield identical "
+        "trajectories, so matching the latter proves nothing about the refresh",
+    )
+
+    np.testing.assert_array_equal(
+        reinit_q,
+        reference_q,
+        err_msg=f"a rod chain reinit'd via {target_array} + "
+        "notify_model_changed(JOINT_DOF_PROPERTIES) should reproduce a from-scratch build "
+        "bit-for-bit",
+    )
+
+
+def _notify_joint_dof_properties_refreshes_rod_material_k(test, device):
+    """Verify a live rod stiffness edit applied after graph capture matches a from-scratch build."""
+    _assert_rod_dof_property_refresh(
+        test,
+        device,
+        build_param="bend_stiffness",
+        target_array="joint_target_ke",
+        before=5.0e1,
+        after=5.0e2,
+        pointer_stable_arrays=("joint_material_k", "joint_penalty_k", "joint_penalty_k_min"),
+    )
+
+
+def _notify_without_joint_dof_properties_leaves_rod_material_k_stale(test, device):
+    """Verify the rod material-k refresh is gated on ``JOINT_DOF_PROPERTIES``.
+
+    An unrelated flag (``BODY_PROPERTIES``) must not trigger it.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link()
+    joint = builder.add_joint_rod(-1, body, bend_stiffness=10.0, twist_stiffness=3.0)
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+
+    start = int(solver.joint_constraint_start.numpy()[joint])
+    before = solver.joint_material_k.numpy()[start : start + 4].copy()
+
+    dof0 = int(model.joint_qd_start.numpy()[joint])
+    joint_target_ke = model.joint_target_ke.numpy()
+    joint_target_ke[dof0 + 3] = 999.0
+    joint_target_ke[dof0 + 4] = 999.0
+    joint_target_ke[dof0 + 5] = 999.0
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+    after = solver.joint_material_k.numpy()[start : start + 4]
+    np.testing.assert_array_equal(
+        before,
+        after,
+        err_msg="joint_material_k changed without JOINT_DOF_PROPERTIES in the flags",
+    )
+
+    # Sanity: JOINT_DOF_PROPERTIES does refresh it, so the guard above is meaningful.
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+    after_refresh = solver.joint_material_k.numpy()[start : start + 4]
+    np.testing.assert_allclose(after_refresh[2:], [999.0, 999.0])
+
+    model.joint_target_ke.fill_(1001.0)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+    np.testing.assert_allclose(solver.joint_material_k.numpy()[start + 2 : start + 4], [999.0, 999.0])
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+    np.testing.assert_allclose(solver.joint_material_k.numpy()[start + 2 : start + 4], [1001.0, 1001.0])
+
+
+def _notify_joint_dof_properties_refreshes_drive_limit_material_k(test, device):
+    """Verify REVOLUTE/PRISMATIC/D6 drive/limit slots refresh to ``max(target_ke, limit_ke)``.
+
+    Both inputs to that maximum are covered by ``JOINT_DOF_PROPERTIES``, so editing either
+    ``joint_target_ke`` or ``joint_limit_ke`` alone must propagate. Built on the legacy AVBD
+    path because it is the only formulation that reads these cached slots -- compliant ALM
+    gathers the same coefficients live from the model each solve (see
+    ``_load_joint_axis_drive_limit``) and needs no notification.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    JointDofConfig = newton.ModelBuilder.JointDofConfig
+
+    body_revolute = builder.add_link()
+    j_revolute = builder.add_joint_revolute(-1, body_revolute, target_ke=50.0, limit_ke=10.0)
+
+    body_prismatic = builder.add_link()
+    j_prismatic = builder.add_joint_prismatic(-1, body_prismatic, target_ke=60.0, limit_ke=20.0)
+
+    body_d6 = builder.add_link()
+    j_d6 = builder.add_joint_d6(
+        -1,
+        body_d6,
+        linear_axes=[JointDofConfig(axis=(1, 0, 0), target_ke=70.0, limit_ke=30.0)],
+        angular_axes=[JointDofConfig(axis=(0, 1, 0), target_ke=80.0, limit_ke=40.0)],
+    )
+    builder.add_articulation([j_revolute, j_prismatic, j_d6])
+    builder.color()
+    model = builder.finalize(device=device)
+    with test.assertWarns(DeprecationWarning):
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=False)
+
+    def material_k_at(joint, slot_offset):
+        start = int(solver.joint_constraint_start.numpy()[joint])
+        return float(solver.joint_material_k.numpy()[start + slot_offset])
+
+    # Construction-time value: slot 2 is the (only) drive/limit slot for REVOLUTE/PRISMATIC;
+    # D6 here has one linear axis (slot 2) and one angular axis (slot 3).
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(50.0, 10.0))
+    test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(60.0, 20.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 2), max(70.0, 30.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 3), max(80.0, 40.0))
+
+    joint_target_ke = model.joint_target_ke.numpy()
+    joint_qd_start = model.joint_qd_start.numpy()
+    joint_target_ke[joint_qd_start[j_revolute]] = 500.0
+    joint_target_ke[joint_qd_start[j_prismatic]] = 600.0
+    joint_target_ke[joint_qd_start[j_d6] + 0] = 700.0  # linear axis
+    joint_target_ke[joint_qd_start[j_d6] + 1] = 800.0  # angular axis
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(500.0, 10.0))
+    test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(600.0, 20.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 30.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 40.0))
+
+    # joint_limit_ke is the other half of the slot's max() and is likewise covered by
+    # JOINT_DOF_PROPERTIES, so editing it alone must propagate too. Raise each above the
+    # target_ke set above so the maximum switches over to the limit side.
+    joint_limit_ke = model.joint_limit_ke.numpy()
+    joint_limit_ke[joint_qd_start[j_revolute]] = 5000.0
+    joint_limit_ke[joint_qd_start[j_prismatic]] = 6000.0
+    joint_limit_ke[joint_qd_start[j_d6] + 0] = 7000.0  # linear axis
+    joint_limit_ke[joint_qd_start[j_d6] + 1] = 8000.0  # angular axis
+    model.joint_limit_ke.assign(joint_limit_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(500.0, 5000.0))
+    test.assertAlmostEqual(material_k_at(j_prismatic, 2), max(600.0, 6000.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 2), max(700.0, 7000.0))
+    test.assertAlmostEqual(material_k_at(j_d6, 3), max(800.0, 8000.0))
+
+    joint_target_ke[joint_qd_start[j_revolute]] = 100.0  # below limit_ke of 5000
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(material_k_at(j_revolute, 2), max(100.0, 5000.0))
+
+
+def _notify_joint_dof_properties_preserves_unchanged_penalty_ramp(test, device):
+    """Verify only slots whose effective stiffness changed are reseeded.
+
+    ``ModelFlags`` documents the notification as updating only the necessary components, so a
+    slot the caller did not touch must keep whatever legacy AVBD ramping has accumulated in
+    ``joint_penalty_k`` -- including slots on other joints.
+    """
+    model, state0, state1, control, _rod_bodies = _build_cable_chain(
+        device,
+        num_links=6,
+        bend_stiffness=5.0e1,
+        bend_damping=1.0,
+        segment_length=0.2,
+    )
+    collision_pipeline = newton.CollisionPipeline(model)
+    contacts = collision_pipeline.contacts()
+    # beta > 0 enables the legacy AVBD ramp; it is the state this selective reseed protects.
+    with test.assertWarns(DeprecationWarning):
+        solver = newton.solvers.SolverVBD(model, iterations=10, rigid_compliant_alm=False, rigid_avbd_beta=5.0)
+
+    sim_substeps = 10
+    sim_dt = (1.0 / 60.0) / sim_substeps
+    for _ in range(10):
+        for _substep in range(sim_substeps):
+            state0.clear_forces()
+            collision_pipeline.collide(state0, contacts)
+            solver.step(state0, state1, control, contacts, sim_dt)
+            state0, state1 = state1, state0
+
+    ramped = solver.joint_penalty_k.numpy().copy()
+    ramped_min = solver.joint_penalty_k_min.numpy().copy()
+    test.assertTrue(
+        np.any(ramped > ramped_min + 1.0e-6),
+        msg="precondition: stepping should have ramped joint_penalty_k above its floor",
+    )
+
+    joint_type = model.joint_type.numpy()
+    rod_joints = [j for j in range(model.joint_count) if joint_type[j] == int(newton.JointType.ROD)]
+    test.assertGreater(len(rod_joints), 1, msg="need several joints to check cross-joint preservation")
+
+    edited = rod_joints[0]
+    bend_slot = int(solver.joint_constraint_start.numpy()[edited]) + 2
+    ang_seed = solver.rigid_joint_angular_k_start
+    new_ke = 5.0e2
+    expected = min(ang_seed, new_ke)
+    test.assertGreater(
+        float(ramped[bend_slot]),
+        expected + 1.0e-6,
+        msg="precondition: the edited slot must have ramped, so reseeding it is observable",
+    )
+
+    dof0 = int(model.joint_qd_start.numpy()[edited])
+    joint_target_ke = model.joint_target_ke.numpy()
+    joint_target_ke[dof0 + 3] = new_ke  # bend X on the first rod joint only
+    joint_target_ke[dof0 + 4] = new_ke  # bend Y remains isotropic
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    refreshed = solver.joint_penalty_k.numpy()
+    refreshed_min = solver.joint_penalty_k_min.numpy()
+    test.assertAlmostEqual(float(refreshed[bend_slot]), expected)
+
+    others = [i for i in range(len(refreshed)) if i != bend_slot]
+    np.testing.assert_array_equal(
+        refreshed[others],
+        ramped[others],
+        err_msg="slots whose stiffness did not change must keep their ramped joint_penalty_k",
+    )
+    np.testing.assert_array_equal(
+        refreshed_min[others],
+        ramped_min[others],
+        err_msg="slots whose stiffness did not change must keep their joint_penalty_k_min",
+    )
+
+
+def _notify_joint_dof_properties_validates_compliant_materials(test, device):
+    """Verify a live edit to invalid coefficients is rejected under compliant ALM.
+
+    The constructor validates these arrays, so the refresh path must too -- otherwise a live
+    edit would slip non-finite or negative values straight into ``joint_material_k``.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link()
+    joint = builder.add_joint_rod(-1, body, bend_stiffness=10.0)
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+
+    dof0 = int(model.joint_qd_start.numpy()[joint])
+    start = int(solver.joint_constraint_start.numpy()[joint])
+
+    valid_target_ke = model.joint_target_ke.numpy().copy()
+
+    for bad_value in (float("inf"), float("nan"), -1.0):
+        joint_target_ke = valid_target_ke.copy()
+        joint_target_ke[dof0 + 5] = bad_value
+        model.joint_target_ke.assign(joint_target_ke)
+        with test.assertRaisesRegex(ValueError, r"model\.joint_target_ke"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+        test.assertAlmostEqual(float(solver.joint_material_k.numpy()[start + 3]), 10.0)
+
+
+def _notify_joint_dof_properties_refreshes_rod_penalty_kd(test, device):
+    """Verify a live rod damping edit reaches the solve and matches a from-scratch build.
+
+    ROD damping is cached in ``joint_penalty_kd`` at construction (unlike other joint types,
+    whose drive damping is read live), so it needs the same refresh as stiffness.
+    """
+    _assert_rod_dof_property_refresh(
+        test,
+        device,
+        build_param="bend_damping",
+        target_array="joint_target_kd",
+        before=1.0e-1,
+        after=5.0e1,
+        pointer_stable_arrays=("joint_penalty_kd",),
+    )
+
+
+def _notify_joint_dof_properties_refreshes_rod_structural_k(test, device):
+    """Verify a ROD stretch/shear edit also refreshes ``body_structural_k``.
+
+    That summary is derived from ``joint_material_k``'s stretch/shear slots, so it would
+    otherwise go stale behind a ``JOINT_DOF_PROPERTIES`` refresh.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link()
+    joint = builder.add_joint_rod(-1, body, stretch_stiffness=100.0, bend_stiffness=10.0)
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+
+    test.assertAlmostEqual(float(solver.body_structural_k.numpy()[body]), 100.0)
+
+    dof0 = int(model.joint_qd_start.numpy()[joint])
+    joint_target_ke = model.joint_target_ke.numpy()
+    joint_target_ke[dof0 + 2] = 999.0  # stretch Z, now the larger of the two
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(float(solver.body_structural_k.numpy()[body]), 999.0)
+
+    # The summary is max(stretch, shear), so raise shear above stretch to confirm the shear
+    # slot feeds it too -- an edit that left shear stale would be masked while stretch leads.
+    joint_target_ke[dof0 + 0] = 2500.0  # shear X
+    joint_target_ke[dof0 + 1] = 2500.0  # shear Y remains isotropic
+    model.joint_target_ke.assign(joint_target_ke)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
+    test.assertAlmostEqual(float(solver.body_structural_k.numpy()[body]), 2500.0)
 
 
 def _split_cable_parent_hessian_separates_elastic_and_damping_arms(test, device):
     """Verify isotropic elasticity and damping use their intended parent lever arms."""
     errors = wp.zeros(1, dtype=wp.vec2, device=device)
     wp.launch(
-        _eval_cable_stretch_shear_parent_hessian_error,
+        _eval_rod_stretch_shear_parent_hessian_error,
         dim=1,
         outputs=[errors],
         device=device,
@@ -5679,12 +6980,11 @@ def _split_cable_material_force_law_matches_ei_gj(test, device):
     poissons_ratio = 0.25
     angle = 0.031
 
-    _stretch, bend_stiffness, twist_stiffness = newton.utils.rod_stiffness_from_elastic_moduli(
-        youngs_modulus,
-        radius,
-        segment_length,
-        poissons_ratio=poissons_ratio,
-    )
+    area_moment = 0.25 * np.pi * radius**4
+    polar_moment = 0.5 * np.pi * radius**4
+    shear_modulus = youngs_modulus / (2.0 * (1.0 + poissons_ratio))
+    bend_stiffness = youngs_modulus * area_moment / segment_length
+    twist_stiffness = shear_modulus * polar_moment / segment_length
 
     torque_magnitudes = wp.zeros(2, dtype=float, device=device)
     leakage_errors = wp.zeros(4, dtype=float, device=device)
@@ -5812,17 +7112,15 @@ def _split_cable_kinematic_arc_yields_uniform_curvature(test, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverVBD.register_custom_attributes(builder)
 
-    points = newton.utils.cable_straight_points(
+    rod = newton.Rod.create_straight(
         start=wp.vec3(0.0, 0.0, 0.0),
         direction=wp.vec3(1.0, 0.0, 0.0),
         length=cable_length,
-        num_segments=num_segments,
-    )
-    quats = newton.utils.rod_parallel_transport_quaternions(points)
-    rod_bodies, _rod_joints = builder.add_rod(
-        positions=points,
-        quaternions=quats,
+        segment_count=num_segments,
         radius=0.010,
+    )
+    rod_bodies, _rod_joints = builder.add_rod(
+        rod=rod,
         stretch_stiffness=1.0e6,
         bend_stiffness=bend_stiffness,
         bend_damping=10.0,
@@ -6126,8 +7424,273 @@ def _split_cable_dahl_full_step_state_stays_in_active_subspace(test, device):
     np.testing.assert_allclose(d_kappa[twist_joint, :2], [0.0, 0.0], atol=1.0e-6)
 
 
+@wp.kernel
+def _quat_between_vectors_robust_antiparallel_kernel(direction: wp.vec3, errors: wp.array[float]):
+    rotation = newton.math.quat_between_vectors_robust(direction, -direction)
+    errors[0] = wp.length(wp.quat_rotate(rotation, direction) + direction)
+
+
 class TestCable(unittest.TestCase):
-    pass
+    def test_semi_implicit_rejects_rod_joints(self):
+        """Reject Rod models at SemiImplicit construction."""
+        builder = newton.ModelBuilder()
+        joint = builder.add_joint_rod(-1, builder.add_link())
+        builder.add_articulation([joint])
+        with self.assertRaisesRegex(ValueError, "SolverSemiImplicit does not support JointType.ROD"):
+            newton.solvers.SolverSemiImplicit(builder.finalize(device="cpu"))
+
+    def test_quat_between_vectors_robust_antiparallel(self):
+        """Rotate a diagonal direction onto its opposite on host and devices."""
+        direction = wp.normalize(wp.vec3(1.0, 1.0, 1.0))
+        rotation = newton.math.quat_between_vectors_robust(direction, -direction)
+        error = wp.length(wp.quat_rotate(rotation, direction) + direction)
+        self.assertLess(error, 1.0e-6)
+
+        for device in devices:
+            with self.subTest(device=str(device)):
+                errors = wp.empty(1, dtype=float, device=device)
+                wp.launch(
+                    _quat_between_vectors_robust_antiparallel_kernel,
+                    dim=1,
+                    inputs=[direction],
+                    outputs=[errors],
+                    device=device,
+                )
+                self.assertLess(errors.numpy()[0], 1.0e-6)
+
+    def test_prepared_rod_closed_rest_allows_open_initial_seam(self):
+        """Preserve a closed rest shape and open initial seam through frame updates and copying."""
+        rest = newton.Rod([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 0, 0)])
+        initial_points = rest.points.copy()
+        initial_points[-1] = (0, 1, 0)
+        with self.assertRaisesRegex(ValueError, "rest_points to coincide"):
+            newton.Rod(initial_points, closed=True, rest_points=initial_points)
+        rod = newton.Rod(initial_points, closed=True, rest_points=rest.points, rest_quaternions=rest.quaternions)
+        rod.compute_frames()
+        np.testing.assert_array_equal(rod.rest_quaternions, rest.quaternions)
+        copied = rod.copy()
+        builder = newton.ModelBuilder()
+        bodies, joints = builder.add_rod(rod=copied, body_frame_origin="com")
+        self.assertEqual((len(bodies), len(joints)), (3, 3))
+        for edge, body in enumerate(bodies):
+            np.testing.assert_allclose(
+                np.asarray(builder.body_q[body])[:3], (initial_points[edge] + initial_points[edge + 1]) * 0.5
+            )
+            shape = builder.body_shapes[body][0]
+            self.assertAlmostEqual(2.0 * builder.shape_scale[shape][1], rest.segment_lengths[edge])
+
+    def test_prepared_rod_validates_rest_before_assembly(self):
+        """Reject invalid rest data before creating any builder bodies."""
+        points = np.array([(0, 0, 0), (0, 0, 1), (0, 0, 2)], dtype=np.float32)
+        invalid_rest = (
+            {"rest_points": points[:2]},
+            {"rest_points": np.zeros_like(points)},
+            {"rest_points": points * np.nan},
+            {"rest_quaternions": [wp.quat_identity()]},
+            {"rest_quaternions": [wp.quat(0.0)] * 2},
+            {"rest_quaternions": [wp.quat_from_axis_angle(wp.vec3(1, 0, 0), 1.0)] * 2},
+        )
+        for rest_kwargs in invalid_rest:
+            with self.subTest(rest_kwargs=rest_kwargs), self.assertRaisesRegex(ValueError, "rest"):
+                newton.Rod(points, **rest_kwargs)
+
+        rod = newton.Rod(points, rest_points=points)
+        builder = newton.ModelBuilder()
+        rod.rest_points[1] = rod.rest_points[0]
+        with self.assertRaisesRegex(ValueError, "rest_points"):
+            builder.add_rod(rod=rod, body_frame_origin="com")
+        self.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), (0, 0, 0))
+
+    def test_closed_rod_validates_snapped_rest_before_assembly(self):
+        """Reject invalid snapped rest geometry before creating rod bodies."""
+        points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 0, 0)]
+        rest_points = [(0, 0, 0), (1, 0, 0), (5.0e-10, 0, 0), (0, 9.0e-10, 0)]
+
+        # Closing the accepted endpoint gap shortens the final edge below 1e-9 m.
+        with self.assertRaisesRegex(ValueError, "rest.*length"):
+            newton.Rod(points, closed=True, rest_points=rest_points)
+
+        rod = newton.Rod(points, closed=True, rest_points=points)
+        rod.rest_points[:] = rest_points
+        builder = newton.ModelBuilder()
+        builder.add_link()
+        counts_before = (builder.body_count, builder.shape_count, builder.joint_count)
+        with self.assertRaisesRegex(ValueError, "rest.*length"):
+            builder.add_rod(rod=rod, body_frame_origin="com")
+        self.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), counts_before)
+
+    def test_prepared_rod_rest_geometry(self):
+        """Use separate rest frames and lengths for prepared chains and graphs."""
+        initial_points = np.array([(0.0, 0.0, z) for z in (0.0, 1.0, 3.0, 6.0)])
+        rest_points = initial_points * 0.5
+        frames = [wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), roll) for roll in (0.0, 0.1, 0.3)]
+        for edges in (None, [(1, 2), (0, 1), (2, 3)]):
+            with self.subTest(edges=edges):
+                rod = newton.Rod(
+                    initial_points,
+                    edges=edges,
+                    rest_points=rest_points,
+                    rest_quaternions=frames,
+                    stretch_rigidity=10.0,
+                    shear_rigidity=20.0,
+                    bend_rigidity=30.0,
+                    twist_rigidity=40.0,
+                )
+                builder = newton.ModelBuilder()
+                copied = rod.copy()
+                self.assertFalse(np.shares_memory(copied.rest_points, rod.rest_points))
+                self.assertFalse(np.shares_memory(copied.rest_quaternions, rod.rest_quaternions))
+                bodies, joints = builder.add_rod(rod=copied, body_frame_origin="com")
+                rest_lengths = np.linalg.norm(rest_points[rod.edges[:, 1]] - rest_points[rod.edges[:, 0]], axis=1)
+                edge_by_body = {body: edge for edge, body in enumerate(bodies)}
+                for edge, body in enumerate(bodies):
+                    start, end = rod.edges[edge]
+                    np.testing.assert_allclose(
+                        np.asarray(builder.body_q[body])[:3], (initial_points[start] + initial_points[end]) * 0.5
+                    )
+                    shape = builder.body_shapes[body][0]
+                    self.assertAlmostEqual(2.0 * builder.shape_scale[shape][1], rest_lengths[edge])
+                for joint in joints:
+                    parent_edge = edge_by_body[builder.joint_parent[joint]]
+                    child_edge = edge_by_body[builder.joint_child[joint]]
+                    dual_length = 0.5 * (rest_lengths[parent_edge] + rest_lengths[child_edge])
+                    dof = builder.joint_qd_start[joint]
+                    np.testing.assert_allclose(
+                        builder.joint_target_ke[dof : dof + 6],
+                        np.array([20.0, 20.0, 10.0, 30.0, 30.0, 40.0]) / dual_length,
+                    )
+                    q_start = builder.joint_q_start[joint]
+                    q_wp_rest = frames[parent_edge] * wp.transform_get_rotation(builder.joint_X_p[joint])
+                    q_wc_rest = frames[child_edge] * wp.transform_get_rotation(builder.joint_X_c[joint])
+                    np.testing.assert_allclose(
+                        builder.joint_target_q[q_start + 3 : q_start + 7],
+                        np.asarray(wp.quat_inverse(q_wp_rest) * q_wc_rest),
+                        atol=1.0e-6,
+                    )
+                np.testing.assert_array_equal(rod.points, initial_points)
+                if edges is not None:
+                    with self.assertRaisesRegex(ValueError, "rest_straight requires an ordered chain"):
+                        newton.Rod(initial_points, edges=edges, rest_straight=True)
+
+    def test_cable_omitted_rest_snapshots_initial_rotation(self):
+        """Use the authored initial relative rotation when Rod angular rest is omitted."""
+        parent_pose = wp.transform(
+            wp.vec3(-0.3, 0.2, 0.4),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.4),
+        )
+        child_pose = wp.transform(
+            wp.vec3(0.5, -0.1, 0.9),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(-1.0, 0.5, 2.0)), -0.3),
+        )
+        parent_xform = wp.transform(
+            wp.vec3(0.1, -0.05, 0.08),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2),
+        )
+        child_xform = wp.transform(
+            wp.vec3(-0.04, 0.07, -0.02),
+            wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -0.15),
+        )
+
+        builder = newton.ModelBuilder()
+        parent = builder.add_link(xform=parent_pose)
+        child = builder.add_link(xform=child_pose)
+        joint = builder.add_joint_rod(
+            parent,
+            child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
+
+        expected = wp.transform_inverse(parent_pose * parent_xform) * child_pose * child_xform
+        target_start = builder.joint_q_start[joint]
+        target_position = wp.vec3(*builder.joint_target_q[target_start : target_start + 3])
+        target_rotation = wp.quat(*builder.joint_target_q[target_start + 3 : target_start + 7])
+
+        np.testing.assert_allclose(target_position, np.zeros(3), atol=1.0e-6)
+        self.assertAlmostEqual(
+            abs(
+                float(
+                    np.dot(
+                        np.asarray(target_rotation),
+                        np.asarray(wp.transform_get_rotation(expected)),
+                    )
+                )
+            ),
+            1.0,
+            places=5,
+        )
+
+    def test_cable_builder_validation(self):
+        """Reject malformed generic layouts and invalid explicit rest rotations."""
+
+        def axes(*values, actuator_mode=None):
+            return [
+                newton.ModelBuilder.JointDofConfig(axis=value, actuator_mode=actuator_mode if i == 0 else None)
+                for i, value in enumerate(values)
+            ]
+
+        canonical = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
+        builder = newton.ModelBuilder()
+        child = builder.add_link()
+
+        with self.assertRaisesRegex(ValueError, "exactly three linear and three angular axes"):
+            builder.add_joint(
+                newton.JointType.ROD,
+                -1,
+                child,
+                linear_axes=axes(newton.Axis.X, newton.Axis.Y),
+                angular_axes=axes(*canonical),
+            )
+
+        for invalid_linear in (
+            axes(newton.Axis.Y, newton.Axis.X, newton.Axis.Z),
+            axes((-1.0, 0.0, 0.0), newton.Axis.Y, newton.Axis.Z),
+            axes((float("nan"), 0.0, 0.0), newton.Axis.Y, newton.Axis.Z),
+        ):
+            with self.subTest(axis=np.asarray(invalid_linear[0].axis)):
+                with self.assertRaisesRegex(ValueError, "canonical XYZ"):
+                    builder.add_joint(
+                        newton.JointType.ROD,
+                        -1,
+                        child,
+                        linear_axes=invalid_linear,
+                        angular_axes=axes(*canonical),
+                    )
+
+        with self.assertRaisesRegex(ValueError, "actuator_mode=JointTargetMode.NONE"):
+            builder.add_joint(
+                newton.JointType.ROD,
+                -1,
+                child,
+                linear_axes=axes(*canonical, actuator_mode=newton.JointTargetMode.POSITION),
+                angular_axes=axes(*canonical),
+            )
+
+        nonzero_linear_targets = [
+            newton.ModelBuilder.JointDofConfig(axis=axis, target_pos=0.1 if i == 0 else 0.0)
+            for i, axis in enumerate(canonical)
+        ]
+        with self.assertRaisesRegex(ValueError, "zero linear target_pos values"):
+            builder.add_joint(
+                newton.JointType.ROD,
+                -1,
+                child,
+                linear_axes=nonzero_linear_targets,
+                angular_axes=axes(*canonical),
+            )
+
+        with self.assertRaisesRegex(ValueError, "finite values"):
+            builder.add_joint_rod(
+                -1,
+                child,
+                rest_rotation=wp.quat(float("nan"), 0.0, 0.0, 1.0),
+            )
+        with self.assertRaisesRegex(ValueError, "nonzero quaternion"):
+            builder.add_joint_rod(
+                -1,
+                child,
+                rest_rotation=wp.quat(0.0, 0.0, 0.0, 0.0),
+            )
 
 
 add_function_test(
@@ -6270,8 +7833,20 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_eval_fk_preserves_body_state",
-    _cable_eval_fk_preserves_body_state_impl,
+    "test_rod_articulation_has_free_root_joint",
+    _rod_articulation_has_free_root_joint_impl,
+    devices=None,
+)
+add_function_test(
+    TestCable,
+    "test_rod_eval_fk_reconstructs_body_state",
+    _rod_eval_fk_reconstructs_body_state_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_rod_vbd_joint_f_applies_six_dof_wrench",
+    _rod_vbd_joint_f_applies_six_dof_wrench_impl,
     devices=devices,
 )
 add_function_test(
@@ -6288,15 +7863,50 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_rod_default_origin_matches_start",
-    _cable_rod_default_origin_matches_start_impl,
+    "test_cable_rod_origin_matches_start",
+    _cable_rod_origin_matches_start_impl,
     devices=devices,
 )
 add_function_test(
     TestCable,
-    "test_cable_rod_origin_matches_com",
-    _cable_rod_origin_matches_com_impl,
+    "test_cable_rod_default_origin_matches_com",
+    _cable_rod_default_origin_matches_com_impl,
     devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rod_graph_body_frame_origin",
+    _cable_rod_graph_body_frame_origin_impl,
+    devices=None,
+)
+add_function_test(
+    TestCable,
+    "test_rod_control_target_q_does_not_override_structural_rest",
+    _rod_control_target_q_does_not_override_structural_rest_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_rod_notify_joint_properties_refreshes_structural_rest",
+    _rod_notify_joint_properties_refreshes_structural_rest_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_generic_target_pose_is_structural_rest",
+    _cable_generic_target_pose_is_structural_rest_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rod_separate_rest_and_initial_pose",
+    _cable_rod_separate_rest_and_initial_pose_impl,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_cable_rod_rest_straight",
+    _cable_rod_rest_straight_impl,
 )
 add_function_test(
     TestCable,
@@ -6324,26 +7934,32 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_rod_stiffness_helper_returns_physical_twist",
-    _rod_stiffness_helper_returns_physical_twist,
-    devices=devices,
-)
-add_function_test(
-    TestCable,
-    "test_joint_rod_api_deprecates_cable_names",
-    _joint_rod_api_deprecates_cable_names,
+    "test_rod_material_validates_inputs",
+    _rod_material_validates_inputs,
     devices=None,
 )
 add_function_test(
     TestCable,
-    "test_cable_legacy_positional_arguments_preserve_binding",
-    _cable_legacy_positional_arguments_preserve_binding,
+    "test_rod_geometry_api_validates_inputs",
+    _rod_geometry_api_validates_inputs,
     devices=None,
 )
 add_function_test(
     TestCable,
-    "test_cable_rod_helper_api_deprecates_create_names",
-    _cable_rod_helper_api_deprecates_create_names,
+    "test_rod_copy_and_closed_topology_preserve_contract",
+    _rod_copy_and_closed_topology_preserve_contract,
+    devices=None,
+)
+add_function_test(
+    TestCable,
+    "test_rod_builder_rejects_invalid_inputs_without_partial_assembly",
+    _rod_builder_rejects_invalid_inputs_without_partial_assembly,
+    devices=None,
+)
+add_function_test(
+    TestCable,
+    "test_rod_builder_assembles_topology_and_constitutive_data",
+    _rod_builder_assembles_topology_and_constitutive_data,
     devices=None,
 )
 add_function_test(
@@ -6368,6 +7984,48 @@ add_function_test(
     TestCable,
     "test_split_cable_routes_explicit_shear_to_second_slot",
     _split_cable_routes_explicit_shear_to_second_slot,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_refreshes_rod_material_k",
+    _notify_joint_dof_properties_refreshes_rod_material_k,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_without_joint_dof_properties_leaves_rod_material_k_stale",
+    _notify_without_joint_dof_properties_leaves_rod_material_k_stale,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_refreshes_drive_limit_material_k",
+    _notify_joint_dof_properties_refreshes_drive_limit_material_k,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_preserves_unchanged_penalty_ramp",
+    _notify_joint_dof_properties_preserves_unchanged_penalty_ramp,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_validates_compliant_materials",
+    _notify_joint_dof_properties_validates_compliant_materials,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_refreshes_rod_penalty_kd",
+    _notify_joint_dof_properties_refreshes_rod_penalty_kd,
+    devices=devices,
+)
+add_function_test(
+    TestCable,
+    "test_notify_joint_dof_properties_refreshes_rod_structural_k",
+    _notify_joint_dof_properties_refreshes_rod_structural_k,
     devices=devices,
 )
 add_function_test(
