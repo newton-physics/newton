@@ -725,7 +725,7 @@ class ViewerGL(ViewerBase):
                 if isinstance(mesh, MeshGL) and (
                     instancer is None or instancer.mesh is not mesh or instancer.num_instances < n
                 ):
-                    # Slot rows change batch sizes on prototype assignment; grow geometrically.
+                    # Variant rows change batch sizes on selection; grow geometrically.
                     grown = 2 * instancer.num_instances if instancer is not None and instancer.mesh is mesh else 0
                     instancer = MeshInstancerGL(
                         max(n, grown, 1),

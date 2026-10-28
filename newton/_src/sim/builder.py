@@ -92,7 +92,7 @@ from .graph_coloring import (
     construct_particle_graph,
 )
 from .joint_mimic import _SUPPORTED_JOINT_TYPES
-from .model import _SHAPE_PROTOTYPE_ATTRIBUTES, Model, _pack_shape_pair_codes
+from .model import _SHAPE_VARIANT_ATTRIBUTES, Model, _pack_shape_pair_codes
 from .rod import Rod
 from .shape_contact_pairs import _ShapeContactPairs
 from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
@@ -589,97 +589,64 @@ def _combine_inertial_properties(
     return mass, com, inertia
 
 
-def _subtract_inertial_properties(
-    total: tuple[float, np.ndarray, np.ndarray], part: tuple[float, np.ndarray, np.ndarray]
-) -> tuple[float, np.ndarray, np.ndarray]:
-    """Remove ``part`` from ``total``; both are ``(mass, com, inertia about com)`` in the same frame."""
-
-    def about_origin(mass: float, com: np.ndarray, inertia: np.ndarray) -> np.ndarray:
-        return inertia + mass * (np.dot(com, com) * np.eye(3) - np.outer(com, com))
-
-    mass = total[0] - part[0]
-    if mass <= 1.0e-12 * max(total[0], 1.0):
-        return 0.0, np.zeros(3), np.zeros((3, 3))
-    com = (total[0] * total[1] - part[0] * part[1]) / mass
-    inertia = about_origin(*total) - about_origin(*part) - mass * (np.dot(com, com) * np.eye(3) - np.outer(com, com))
-    return mass, com, inertia
-
-
-def _shape_prototype_mass_properties(
-    values: dict[str, Any], placement: wp.transform
-) -> tuple[float, np.ndarray, np.ndarray]:
-    """Mass, center of mass, and inertia about it of a prototype placed at ``placement`` in its body frame."""
-    density = float(values["shape_density"])
-    if density <= 0.0:
-        return 0.0, np.zeros(3), np.zeros((3, 3))
-    mass, com, inertia = compute_inertia_shape(
-        values["shape_type"],
-        values["shape_scale"],
-        values["shape_source"],
-        density,
-        values["shape_is_solid"],
-        values["shape_margin"],
-    )
-    xform = wp.transform_multiply(placement, wp.transform(*values["shape_transform"]))
-    rotation = np.asarray(wp.quat_to_matrix(xform.q), dtype=np.float64).reshape(3, 3)
-    com_body = np.asarray(wp.transform_point(xform, com), dtype=np.float64)
-    inertia_body = rotation @ np.asarray(inertia, dtype=np.float64).reshape(3, 3) @ rotation.T
-    return float(mass), com_body, inertia_body
-
-
 @dataclass(frozen=True, eq=False)
-class _PrototypeShape:
-    """One shape of a shape prototype: its builder attributes, finalized once as a prototype shape."""
+class _VariantShape:
+    """One shape of a body variant: its builder attributes, finalized once for every body that selects it."""
 
     label: str
-    """Prototype shape label."""
+    """Shape label in the variant builder."""
     values: dict[str, Any]
-    """Generic SHAPE builder attribute values: geometry, flags, density, and the defaults of new slot rows."""
+    """Generic SHAPE builder attribute values: geometry, flags, materials, and appearance."""
     custom: tuple[tuple[str, Any, Any], ...]
     """Custom SHAPE attributes as ``(key, declaration, value)``."""
 
 
-@dataclass(frozen=True, eq=False)
-class _ShapePrototype:
-    """An asset declared with :meth:`ModelBuilder.add_shape_prototype`: shapes with shared inertial properties."""
+@dataclass(frozen=True)
+class _Variant:
+    """A body variant: the shapes and mass properties of a single-body builder."""
 
     label: str
-    """Prototype label."""
-    shapes: tuple[_PrototypeShape, ...]
-    """Shapes of the prototype, in slot row order."""
+    """Variant label."""
+    shapes: tuple[_VariantShape, ...]
+    """Shapes of the variant, in row order."""
     mass: float
-    """Mass [kg] the prototype adds to the body that holds it."""
+    """Mass [kg] of the variant body."""
     com: tuple[float, float, float]
-    """Center of mass [m] in the prototype frame."""
+    """Center of mass [m] of the variant body, in its frame."""
     inertia: tuple[float, ...]
-    """Flattened inertia [kg·m²] about the center of mass, in the prototype frame."""
+    """Flattened inertia [kg·m²] of the variant body about its center of mass."""
+
+
+@dataclass(frozen=True, eq=False)
+class _VariantSet:
+    """Variants declared together by :meth:`ModelBuilder.add_body_variants`.
+
+    Bodies copied by :meth:`ModelBuilder.add_builder` or :meth:`ModelBuilder.replicate` share the
+    set by identity, so its shapes are finalized and stored once.
+    """
+
+    variants: tuple[_Variant, ...]
+    """The variants, indexed by variant id."""
+
+    @property
+    def row_count(self) -> int:
+        """Shape rows a body needs to hold any of the variants."""
+        return max(len(variant.shapes) for variant in self.variants)
 
 
 @dataclass(frozen=True)
-class _ShapeSlot:
-    """A shape slot declared with :meth:`ModelBuilder.add_shape_slot`."""
+class _BodyVariants:
+    """Variants declared on one body by :meth:`ModelBuilder.add_body_variants`."""
 
-    body: int
-    """Body the slot is attached to, or ``-1``."""
-    shapes: tuple[int, ...]
-    """Shape rows reserved by the slot, in row order."""
+    variant_set: _VariantSet
+    """The variants the body can select."""
+    row_start: int
+    """First of the body's contiguous variant shape rows."""
     initial: int
-    """Prototype held in the finalized model, or ``-1`` for an empty slot."""
-    reference: int
-    """Prototype whose shapes the rows were built from."""
-    marked: bool
-    """Whether the rows are existing shapes, whose prototype's mass properties are part of the body's."""
-    label: str
-    """Slot label."""
+    """Variant selected in the finalized model."""
 
-    def shifted(self, shape_offset: int, body_offset: int, prototype_ids: np.ndarray) -> _ShapeSlot:
-        return replace(
-            self,
-            body=self.body + body_offset if self.body >= 0 else -1,
-            shapes=tuple(shape + shape_offset for shape in self.shapes),
-            initial=int(prototype_ids[self.initial]) if self.initial >= 0 else -1,
-            reference=int(prototype_ids[self.reference]),
-        )
+    def shifted(self, shape_offset: int) -> _BodyVariants:
+        return replace(self, row_start=self.row_start + shape_offset)
 
 
 @dataclass(frozen=True)
@@ -891,7 +858,6 @@ class ModelBuilder:
         "shape_sdf_target_voxel_size": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_texture_format": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_padding": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
-        "shape_density": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "muscle_start": Model.AttributeSpec("muscle", references="muscle_point", compaction_policy="start"),
         "muscle_params": Model.AttributeSpec("muscle"),
         "muscle_activations": Model.AttributeSpec("muscle"),
@@ -2059,11 +2025,6 @@ class ModelBuilder:
         self.shape_sdf_padding: list[float | None] = []
         """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
         When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
-        self.shape_density: list[float] = []
-        """Per-shape densities [kg/m³] as authored in :attr:`ShapeConfig.density`, retained until
-        :meth:`finalize <ModelBuilder.finalize>`. They define the mass properties of shape prototypes
-        (see :meth:`add_shape_prototype`); editing them does not change body masses already
-        accumulated by :meth:`add_shape`."""
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
         # filtering to ignore certain collision pairs
@@ -2211,12 +2172,8 @@ class ModelBuilder:
         """Body flags accumulated for :attr:`Model.body_flags`."""
         self.body_shapes: dict[int, list[int]] = {-1: []}
         """Mapping from body index to attached shape indices, finalized into :attr:`Model.body_shapes`."""
-        self._shape_prototypes: dict[int, _ShapePrototype] = {}
-        """Shape prototypes declared with :meth:`add_shape_prototype`, by prototype index."""
-        self._shape_prototype_index: dict[int, int] = {}
-        """Prototype index by prototype identity, so prototypes merged from replicated builders stay shared."""
-        self._shape_slots: dict[int, _ShapeSlot] = {}
-        """Shape slots declared with :meth:`add_shape_slot`, by slot index."""
+        self._body_variants: dict[int, _BodyVariants] = {}
+        """Shape variants by body index, declared with :meth:`add_body_variants`."""
         self.body_world: list[int] = []
         """World indices accumulated for :attr:`Model.body_world`."""
         self.body_color_groups: list[Any] = []
@@ -4034,10 +3991,6 @@ class ModelBuilder:
                 for target, vector in zip(targets, transformed.tolist(), strict=True):
                     values[target] = tuple(vector)
 
-        # Prototypes are shared by identity, not copied per world; slots refer to them.
-        prototype_ids = np.array(
-            [self._add_shape_prototype(prototype) for prototype in builder._shape_prototypes.values()], dtype=np.int64
-        )
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():
                 translated_shapes = [shape + int(shape_start) for shape in shapes]
@@ -4045,10 +3998,9 @@ class ModelBuilder:
                     self.body_shapes[-1].extend(translated_shapes)
                 else:
                     self.body_shapes[body + int(body_start)] = translated_shapes
-            for slot in builder._shape_slots.values():
-                self._shape_slots[len(self._shape_slots)] = slot.shifted(
-                    int(shape_start), int(body_start), prototype_ids
-                )
+            # Copies share the variant sets by identity.
+            for body, body_variants in builder._body_variants.items():
+                self._body_variants[body + int(body_start)] = body_variants.shifted(int(shape_start))
 
         joint_starts = starts("joint")
         joint_coord_starts = starts("joint_coord")
@@ -6018,260 +5970,135 @@ class ModelBuilder:
 
         return body_id
 
-    def add_shape_prototype(self, source: ModelBuilder, *, label: str | None = None) -> int:
-        """Declare the shapes of ``source`` as one shape prototype that shape slots can hold.
-
-        A prototype is an asset: one or more shapes with shared inertial properties. Each of its
-        shapes keeps its geometry (type, source, scale, transform relative to the ``source`` body,
-        margin, gap, SDF settings), flags, color, and shape custom attributes; :meth:`finalize`
-        precomputes their collision data once for every slot that holds the prototype. The prototype's mass, center of mass, and
-        inertia are those of the ``source`` body, including authored values. If ``source`` has no
-        body, they are those of its shapes at their :attr:`shape_density`.
-
-        A prototype is not part of the scene by itself: a slot added with :meth:`add_shape_slot`
-        holds it, and :meth:`Model.assign_shape_prototypes <newton.Model.assign_shape_prototypes>`
-        changes which prototype a slot holds at runtime. ``source`` is copied at declaration, so
-        later edits to it have no effect. Prototypes declared in a builder that is added with
-        :meth:`add_builder` or :meth:`replicate` are shared by every copy rather than duplicated.
-
-        .. experimental::
-
-            Shape prototypes may change without a deprecation period.
-
-        Args:
-            source: Builder with at most one body, such as an asset loaded with :meth:`add_usd` or
-                :meth:`add_mjcf`. Its shapes become the prototype's shapes; its joints, other
-                entities, and body custom attributes are ignored, as are shape custom attributes
-                that reference other entities or are not assigned to the model.
-            label: Prototype label. Defaults to the ``source`` body label, or ``"prototype_<index>"``.
-
-        Returns:
-            The prototype index. Prototypes keep their declaration order in the finalized model, see
-            :attr:`Model.shape_prototype_label <newton.Model.shape_prototype_label>`.
-
-        Raises:
-            ValueError: If ``source`` is this builder, declares prototypes or slots itself, uses a
-                different up axis, has more than one body or shapes not attached to its body, has no
-                shapes, or contains planes, heightfields, Gaussians, or hydroelastic shapes.
-        """
-        if source is self or source._shape_prototypes or source._shape_slots:
-            raise ValueError("Prototype sources must not be this builder or declare prototypes or slots themselves.")
-        if source.up_axis != self.up_axis:
-            raise ValueError("Prototype sources must use the same up axis as this builder.")
-        if source.body_count > 1:
-            raise ValueError(f"Prototype sources must have at most one body, got {source.body_count}.")
-        if source.shape_count == 0:
-            raise ValueError("Prototype sources must have at least one shape.")
-        if source.body_count == 1 and source.body_shapes.get(-1):
-            raise ValueError("Prototype sources with a body must not contain shapes that are not attached to it.")
-        self._validate_prototype_shapes(source, range(source.shape_count))
-
-        shapes = self._snapshot_prototype_shapes(source, range(source.shape_count))
-        if source.body_count == 1:
-            mass, com, inertia = (
-                float(source.body_mass[0]),
-                np.asarray(source.body_com[0], dtype=np.float64),
-                np.asarray(source.body_inertia[0], dtype=np.float64).reshape(3, 3),
-            )
-            label = label or source.body_label[0]
-        else:
-            mass, com, inertia = self._prototype_shape_mass_properties(shapes)
-        return self._add_shape_prototype(
-            _ShapePrototype(
-                label or f"prototype_{len(self._shape_prototypes)}",
-                shapes,
-                float(mass),
-                tuple(float(x) for x in com),
-                tuple(float(x) for x in np.asarray(inertia).flatten()),
-            )
-        )
-
-    @staticmethod
-    def _validate_prototype_shapes(builder: ModelBuilder, shapes: Iterable[int]) -> None:
-        """Reject shapes that cannot be prototype shapes."""
-        for shape in shapes:
-            if builder.shape_type[shape] in (GeoType.PLANE, GeoType.HFIELD, GeoType.GAUSSIAN):
-                raise ValueError("Prototype shapes must not be planes, heightfields, or Gaussians.")
-            if builder.shape_flags[shape] & ShapeFlags.HYDROELASTIC:
-                # The hydroelastic pipeline caches per-shape SDF descriptors at construction.
-                raise ValueError("Prototype shapes must not be hydroelastic.")
-
-    def _snapshot_prototype_shapes(self, builder: ModelBuilder, shapes: Iterable[int]) -> tuple[_PrototypeShape, ...]:
-        """Copy the attributes of ``shapes`` of ``builder`` as prototype shapes."""
-        shape_attributes = self._shape_row_attributes()
-        return tuple(
-            _PrototypeShape(
-                builder.shape_label[shape],
-                {name: getattr(builder, name)[shape] for name in shape_attributes},
-                tuple(
-                    (key, replace(attribute, values=None), value)
-                    for key, attribute in builder.custom_attributes.items()
-                    if attribute.frequency == Model.AttributeFrequency.SHAPE
-                    and attribute.references is None
-                    and (value := _custom_shape_value(attribute, shape)) is not None
-                ),
-            )
-            for shape in shapes
-        )
-
-    @staticmethod
-    def _prototype_shape_mass_properties(
-        shapes: Sequence[_PrototypeShape],
-    ) -> tuple[float, np.ndarray, np.ndarray]:
-        """Combined mass properties of prototype shapes at their densities."""
-        total = (0.0, np.zeros(3), np.zeros((3, 3)))
-        for shape in shapes:
-            part = _shape_prototype_mass_properties(shape.values, wp.transform_identity())
-            if part[0] > 0.0:
-                total = _combine_inertial_properties(total, part)
-        return total
-
-    def _add_shape_prototype(self, prototype: _ShapePrototype) -> int:
-        """Index of ``prototype``, appending it on first use."""
-        index = self._shape_prototype_index.get(id(prototype))
-        if index is None:
-            index = self._shape_prototype_index[id(prototype)] = len(self._shape_prototypes)
-            self._shape_prototypes[index] = prototype
-        return index
-
-    def add_shape_slot(
+    def add_body_variants(
         self,
-        body: int | None = None,
+        body: int,
+        variants: Sequence[ModelBuilder],
         *,
-        shapes: Sequence[int] | None = None,
-        capacity: int | None = None,
-        initial: int = -1,
-        xform: Transform | None = None,
-        label: str | None = None,
-    ) -> int:
-        """Add a shape slot: shape rows of a body that hold one shape prototype at a time, or none.
+        initial: int = 0,
+        labels: Sequence[str] | None = None,
+    ) -> None:
+        """Declare alternative shape sets for a body, one of which is selected at a time.
 
-        A slot reserves ``capacity`` shape rows. A prototype with ``n`` shapes fills the first ``n``
-        rows, placed at ``xform`` in the body frame, and empties the others; an empty row neither
-        collides nor renders. :meth:`Model.assign_shape_prototypes
-        <newton.Model.assign_shape_prototypes>` changes the prototype per world at runtime, and any
-        prototype with at most ``capacity`` shapes fits any slot. The rows are regular shapes: each
-        keeps its own label, world, collision group, filter pairs, materials, and opacity. Collision
-        detection, sensors, and viewers are sized for every prototype a row can hold.
+        Each variant is a builder with exactly one body, such as an asset loaded with
+        :meth:`add_usd` or :meth:`add_mjcf`: its shapes, colliders and visuals of any type and count,
+        and its body's mass, center of mass, and inertia. ``body`` gets as many shape rows as the
+        largest variant has shapes. Selecting a variant with :meth:`Model.select_body_variants
+        <newton.Model.select_body_variants>` copies its shapes into the first rows, empties the
+        others, and sets the body's mass properties to those of the body as built plus the
+        variant's. Shapes added to ``body`` directly stay in place for every variant.
 
-        Either add new rows to ``body``, initialized from the ``initial`` prototype, or pass existing
-        ``shapes`` of one body, for example after :meth:`add_usd`, to make them replaceable. In that
-        case their current geometry becomes a new prototype that the slot holds initially, so it can
-        be assigned back. If ``shapes`` are all the shapes of their body, that prototype takes the
-        body's mass properties; otherwise it takes those of the shapes at their :attr:`shape_density`.
+        A row takes everything authored on the variant shape it holds: geometry, flags, color,
+        materials, and shape custom attributes. It keeps its label, world, collision group, filter
+        pairs, and opacity. An empty row has its collision and visibility flags cleared, so it
+        neither collides nor renders. Variant shapes are expressed in the variant body's frame,
+        which maps onto ``body``'s frame; the variant body's pose, joints, and other entities are
+        ignored, as are body custom attributes and shape custom attributes that reference other
+        entities. The variants are copied at declaration, so later edits to the variant builders
+        have no effect.
 
-        The body's mass properties are those of its other shapes plus the prototypes its slots
-        hold, see :meth:`Model.assign_shape_prototypes <newton.Model.assign_shape_prototypes>`.
+        Bodies copied with :meth:`add_builder` or :meth:`replicate` share the variants, which
+        :meth:`finalize` stores once, and select independently per world. Variant ids are positions
+        in ``variants`` and are the same for every copy.
 
         .. experimental::
 
-            Shape slots may change without a deprecation period.
+            Body variants may change without a deprecation period.
 
         Args:
-            body: Body the new rows are attached to, or ``-1`` for a static slot. Inferred from
-                ``shapes`` when they are given.
-            shapes: Existing shapes of one body that become the slot's first rows.
-            capacity: Number of shape rows. Defaults to the largest number of shapes of a prototype
-                declared so far, or of ``shapes``.
-            initial: Prototype held in the finalized model, or ``-1`` for an empty slot. Ignored
-                with ``shapes``, whose own prototype the slot holds initially.
-            xform: Placement of the prototypes in the body frame; defaults to the identity, which
-                keeps the transforms the prototype shapes were declared with. Not allowed with
-                ``shapes``, which keep their placement.
-            label: Slot label, prefix of the row labels. Defaults to ``"<body label>/slot_<index>"``.
-
-        Returns:
-            The slot index, see :attr:`Model.shape_slot_label <newton.Model.shape_slot_label>`.
+            body: Index of the body that receives the variants.
+            variants: Single-body builders defining the variants.
+            initial: Index of the variant selected in the finalized model.
+            labels: Variant labels. Defaults to each variant's body label.
 
         Raises:
-            IndexError: If ``body``, a shape, or ``initial`` is out of range.
-            ValueError: If neither ``body`` nor ``shapes`` is given, ``xform`` is given with ``shapes``, no prototype
-                was declared before a slot with new rows, ``capacity`` is smaller than ``initial``'s
-                shape count or ``shapes``, or ``shapes`` are already slot rows, belong to different
-                bodies, or cannot be prototype shapes.
+            IndexError: If ``body`` or ``initial`` is out of range.
+            ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
+                or a variant builder is this builder, declares variants itself, uses a different
+                up axis, does not contain exactly one body, contains shapes not attached to it, or
+                contains planes, heightfields, Gaussians, or hydroelastic shapes.
         """
-        index = len(self._shape_slots)
-        if shapes is not None and xform is not None:
-            raise ValueError("Slots of existing shapes keep their placement; xform must be None.")
-        xform = wp.transform_identity() if xform is None else wp.transform(*xform)
-        if shapes is not None:
-            shapes = tuple(int(shape) for shape in shapes)
-            if not shapes or len(set(shapes)) != len(shapes):
-                raise ValueError("add_shape_slot() requires distinct shapes.")
-            for shape in shapes:
-                if not 0 <= shape < self.shape_count:
-                    raise IndexError(f"Shape index {shape} out of range [0, {self.shape_count}).")
-            slot_rows = {row for slot in self._shape_slots.values() for row in slot.shapes}
-            if slot_rows.intersection(shapes):
-                raise ValueError("Shapes are already rows of a shape slot.")
-            bodies = {self.shape_body[shape] for shape in shapes}
-            if len(bodies) != 1 or (body is not None and body not in bodies):
-                raise ValueError("Slot shapes must belong to one body, matching body if given.")
-            body = bodies.pop()
-            self._validate_prototype_shapes(self, shapes)
-        elif body is None:
-            raise ValueError("add_shape_slot() requires a body or shapes.")
-        elif not -1 <= body < self.body_count:
-            raise IndexError(f"Body index {body} out of range [-1, {self.body_count}).")
-        label = label or f"{self.body_label[body] if body >= 0 else 'world'}/slot_{index}"
+        if not 0 <= body < self.body_count:
+            raise IndexError(f"Body index {body} out of range [0, {self.body_count}).")
+        if body in self._body_variants:
+            raise ValueError(f"Body {body} already has variants.")
+        variants = tuple(variants)
+        if not variants:
+            raise ValueError("add_body_variants() requires at least one variant.")
+        labels = (
+            tuple(variant.body_label[0] if variant.body_count else "" for variant in variants)
+            if labels is None
+            else tuple(labels)
+        )
+        if len(labels) != len(variants):
+            raise ValueError(f"Expected {len(variants)} labels, got {len(labels)}.")
+        if not 0 <= initial < len(variants):
+            raise IndexError(f"Initial variant {initial} out of range [0, {len(variants)}).")
+        for variant in variants:
+            if variant is self or variant._body_variants:
+                raise ValueError("Variant builders must not be this builder or declare variants themselves.")
+            if variant.up_axis != self.up_axis:
+                raise ValueError("Variant builders must use the same up axis as this builder.")
+            if variant.body_count != 1:
+                raise ValueError(f"Each variant builder must contain exactly one body, got {variant.body_count}.")
+            if variant.body_shapes.get(-1):
+                raise ValueError("Variant builders must not contain shapes that are not attached to their body.")
+            for shape in variant.body_shapes.get(0, ()):
+                if variant.shape_type[shape] in (GeoType.PLANE, GeoType.HFIELD, GeoType.GAUSSIAN):
+                    raise ValueError("Variant shapes must not be planes, heightfields, or Gaussians.")
+                if variant.shape_flags[shape] & ShapeFlags.HYDROELASTIC:
+                    # The hydroelastic pipeline caches per-shape SDF descriptors at construction.
+                    raise ValueError("Variant shapes must not be hydroelastic.")
 
-        if shapes is not None:
-            # The shapes' current geometry becomes the slot's initial prototype.
-            prototype_shapes = self._snapshot_prototype_shapes(self, shapes)
-            if body >= 0 and set(shapes) == set(self.body_shapes[body]):
-                mass, com, inertia = (
-                    float(self.body_mass[body]),
-                    np.asarray(self.body_com[body], dtype=np.float64),
-                    np.asarray(self.body_inertia[body], dtype=np.float64).reshape(3, 3),
+        shape_attributes = self._shape_row_attributes()
+        variant_set = _VariantSet(
+            tuple(
+                _Variant(
+                    label,
+                    tuple(
+                        _VariantShape(
+                            variant.shape_label[shape],
+                            {name: getattr(variant, name)[shape] for name in shape_attributes},
+                            tuple(
+                                (key, replace(attribute, values=None), value)
+                                for key, attribute in variant.custom_attributes.items()
+                                if attribute.frequency == Model.AttributeFrequency.SHAPE
+                                and attribute.references is None
+                                and (value := _custom_shape_value(attribute, shape)) is not None
+                            ),
+                        )
+                        for shape in variant.body_shapes.get(0, ())
+                    ),
+                    float(variant.body_mass[0]),
+                    tuple(float(x) for x in variant.body_com[0]),
+                    tuple(float(x) for x in np.asarray(variant.body_inertia[0]).flatten()),
                 )
-            elif body >= 0 and not self.body_lock_inertia[body]:
-                mass, com, inertia = self._prototype_shape_mass_properties(prototype_shapes)
-            else:
-                mass, com, inertia = 0.0, np.zeros(3), np.zeros((3, 3))
-            reference = self._add_shape_prototype(
-                _ShapePrototype(
-                    f"{label}/initial",
-                    prototype_shapes,
-                    float(mass),
-                    tuple(float(x) for x in com),
-                    tuple(float(x) for x in np.asarray(inertia).flatten()),
-                )
+                for variant, label in zip(variants, labels, strict=True)
             )
-            capacity = len(shapes) if capacity is None else capacity
-            if capacity < len(shapes):
-                raise ValueError(f"capacity {capacity} is smaller than the {len(shapes)} slot shapes.")
-            initial = reference
-            rows = list(shapes)
-        else:
-            if not self._shape_prototypes:
-                raise ValueError("Declare a prototype with add_shape_prototype() before adding a slot with new rows.")
-            if not -1 <= initial < len(self._shape_prototypes):
-                raise IndexError(f"Initial prototype {initial} out of range [-1, {len(self._shape_prototypes)}).")
-            largest = max(self._shape_prototypes, key=lambda p: len(self._shape_prototypes[p].shapes))
-            capacity = len(self._shape_prototypes[largest].shapes) if capacity is None else capacity
-            reference = initial if initial >= 0 else largest
-            if capacity < 1 or len(self._shape_prototypes[reference].shapes) > capacity:
-                raise ValueError(f"capacity {capacity} cannot hold prototype {reference}.")
-            rows = []
+        )
 
-        # Rows beyond the given shapes copy a shape of the reference prototype until assigned.
-        reference_shapes = self._shape_prototypes[reference].shapes
-        world = self.body_world[body] if body >= 0 else self.current_world
-        for r in range(len(rows), capacity):
-            prototype_shape = reference_shapes[min(r, len(reference_shapes) - 1)]
-            row = self._append_shape_row(prototype_shape, body, world, f"{label}/{r}")
-            self.shape_transform[row] = wp.transform_multiply(
-                xform, wp.transform(*prototype_shape.values["shape_transform"])
+        # Row r is built from shape r of the initial variant, or of the first variant that has one,
+        # until the first selection. Its builder flags are the union over the shapes it can hold,
+        # so contact pairs and joint filters include every one of them.
+        row_start = self.shape_count
+        world = self.body_world[body]
+        for r in range(variant_set.row_count):
+            candidates = [variant.shapes[r] for variant in variant_set.variants if r < len(variant.shapes)]
+            initial_shapes = variant_set.variants[initial].shapes
+            row = self._append_shape_row(
+                initial_shapes[r] if r < len(initial_shapes) else candidates[0],
+                body,
+                world,
+                f"{self.body_label[body]}/variant_shape_{r}",
             )
+            flags = 0
+            for candidate in candidates:
+                flags |= int(candidate.values["shape_flags"])
+            self.shape_flags[row] = flags
             self.body_shapes[body].append(row)
-            rows.append(row)
-        # Any row may hold a colliding shape: contact pairs and joint filters must include it.
-        for row in rows:
-            if body >= 0 and not self.shape_flags[row] & ShapeFlags.COLLIDE_SHAPES:
+            if flags & ShapeFlags.COLLIDE_SHAPES:
                 self._add_joint_collision_filter_pairs(row, body)
-            self.shape_flags[row] = int(self.shape_flags[row]) | int(ShapeFlags.COLLIDE_SHAPES)
-        self._shape_slots[index] = _ShapeSlot(body, tuple(rows), initial, reference, shapes is not None, label)
-        return index
+        self._body_variants[body] = _BodyVariants(variant_set, row_start, initial)
 
     def _shape_row_attributes(self) -> list[str]:
         """Builder SHAPE attributes copied verbatim between shapes."""
@@ -6281,7 +6108,7 @@ class ModelBuilder:
             if spec.frequency == Model.AttributeFrequency.SHAPE and spec.compaction_policy == "generic"
         ]
 
-    def _append_shape_row(self, row: _PrototypeShape, body: int, world: int, label: str) -> int:
+    def _append_shape_row(self, row: _VariantShape, body: int, world: int, label: str) -> int:
         """Append a shape with the attributes of ``row``, attached to ``body`` in ``world``."""
         shape = self.shape_count
         for name, value in row.values.items():
@@ -7908,8 +7735,8 @@ class ModelBuilder:
             through ``joints_to_keep`` to preserve the original segment layout.
             Curve-removal warnings are emitted after collapse completes.
         """
-        if self._shape_slots:
-            raise NotImplementedError("collapse_fixed_joints() does not support shape slots.")
+        if self._body_variants:
+            raise NotImplementedError("collapse_fixed_joints() does not support bodies with variants.")
         joints_to_keep = set(joints_to_keep or ())
 
         original_counts = self._builder_merge_counts(self)
@@ -9077,8 +8904,6 @@ class ModelBuilder:
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             self._add_joint_collision_filter_pairs(shape, body)
-
-        self.shape_density.append(cfg.density)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, inertia) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
@@ -14807,12 +14632,12 @@ class ModelBuilder:
             if not skip_all_validations and not skip_validation_joint_ordering:
                 self.validate_joint_ordering()
 
-            prototype_start = self._append_shape_prototype_rows()
+            variant_start = self._append_variant_shape_rows()
             try:
                 with self._raw_array_access():
                     return self._finalize_impl(device=device, requires_grad=requires_grad)
             finally:
-                self._remove_shape_prototype_rows(prototype_start)
+                self._remove_variant_shape_rows(variant_start)
         finally:
             if gc_was_enabled:
                 gc.enable()
@@ -15815,9 +15640,9 @@ class ModelBuilder:
                 else wp.zeros(1, dtype=wp.vec4, device=device)
             )
 
-            # Prototype rows got their collision data above like shapes; move them to the prototype
+            # Variant shape rows got their collision data above like shapes; move them to the variant
             # table so that the shape arrays, counts, and labels hold real shapes only.
-            shape_count = self._split_shape_prototype_rows(m)
+            shape_count = self._split_variant_shape_rows(m)
 
             # ---------------------
             # springs
@@ -16187,7 +16012,7 @@ class ModelBuilder:
             # per-world start indices
             m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
             m.body_world_start = wp.array(self.body_world_start, dtype=wp.int32)
-            # Prototype rows were counted as trailing global shapes.
+            # Variant shape rows were counted as trailing global shapes.
             m.shape_world_start = wp.array([*self.shape_world_start[:-1], shape_count], dtype=wp.int32)
             m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
             m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
@@ -16361,7 +16186,7 @@ class ModelBuilder:
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
-            self._finalize_shape_prototypes(m)
+            self._finalize_body_variants(m)
 
             m.bvh_build_shapes(
                 m,
@@ -16371,24 +16196,30 @@ class ModelBuilder:
             m.bvh_build_particles(m)
             return m
 
-    def _append_shape_prototype_rows(self) -> int | None:
-        """Append every prototype shape as a detached shape row, so that :meth:`_finalize_impl`
-        derives its collision data (SDFs, convex support, edges, bounds) like a shape's.
+    def _append_variant_shape_rows(self) -> int | None:
+        """Append the shapes of every distinct variant set as detached shape rows, so that
+        :meth:`_finalize_impl` derives their collision data (SDFs, convex support, edges, bounds)
+        like a shape's.
 
         Returns:
-            Index of the first prototype row, or ``None`` without prototypes.
+            Index of the first variant shape row, or ``None`` without variants.
         """
-        self._shape_prototype_row_start = self.shape_count
-        if not self._shape_prototypes:
+        self._variant_row_start = self.shape_count
+        self._variant_sets: dict[int, _VariantSet] = {}
+        for body in sorted(self._body_variants):
+            variant_set = self._body_variants[body].variant_set
+            self._variant_sets.setdefault(id(variant_set), variant_set)
+        if not self._variant_sets:
             return None
-        for prototype in self._shape_prototypes.values():
-            for shape in prototype.shapes:
-                self._append_shape_row(shape, -1, -1, f"{prototype.label}/{shape.label}")
-        return self._shape_prototype_row_start
+        for variant_set in self._variant_sets.values():
+            for variant in variant_set.variants:
+                for shape in variant.shapes:
+                    self._append_shape_row(shape, -1, -1, f"{variant.label}/{shape.label}")
+        return self._variant_row_start
 
-    def _remove_shape_prototype_rows(self, start: int | None) -> None:
-        """Remove the rows appended by :meth:`_append_shape_prototype_rows`."""
-        del self._shape_prototype_row_start
+    def _remove_variant_shape_rows(self, start: int | None) -> None:
+        """Remove the rows appended by :meth:`_append_variant_shape_rows`."""
+        del self._variant_row_start, self._variant_sets
         if start is None:
             return
         for name in self._shape_row_attributes():
@@ -16398,13 +16229,13 @@ class ModelBuilder:
                 for key in [k for k in attribute.values if k >= start]:
                     del attribute.values[key]
 
-    def _split_shape_prototype_rows(self, m: Model) -> int:
-        """Move the prototype rows out of the per-shape arrays of ``m``.
+    def _split_variant_shape_rows(self, m: Model) -> int:
+        """Move the variant shape rows out of the per-shape arrays of ``m``.
 
         Returns:
             The number of shapes.
         """
-        start = self._shape_prototype_row_start
+        start = self._variant_row_start
         total = len(self.shape_type)
         rows: dict[str, Any] = {}
         if start < total:
@@ -16418,156 +16249,119 @@ class ModelBuilder:
             rows["shape_source"] = list(self.shape_source[start:])
             m.shape_label = list(self.shape_label[:start])
             m.shape_source = list(self.shape_source[:start])
-        m._shape_prototype_rows = rows
+        m._variant_shape_rows = rows
         return start
 
-    def _finalize_shape_prototypes(self, m: Model) -> None:
-        """Build the prototype, slot, and slot-body tables of ``m`` and assign the initial prototypes."""
+    def _finalize_body_variants(self, m: Model) -> None:
+        """Build the variant tables of ``m`` and select the initial variants."""
         device = m.device
         shape_count = m.shape_count
-        prototype_rows = m.__dict__.pop("_shape_prototype_rows")
-        prototypes = list(self._shape_prototypes.values())
-        slots = list(self._shape_slots.values())
+        rows = m.__dict__.pop("_variant_shape_rows")
+        variant_sets = list(self._variant_sets.values())
+        set_index = {id(variant_set): k for k, variant_set in enumerate(variant_sets)}
 
-        # Prototypes and their shapes.
-        shape_counts = [len(prototype.shapes) for prototype in prototypes]
-        prototype_shape_start = np.concatenate(([0], np.cumsum(shape_counts, dtype=np.int64))).astype(np.int32)
-        m.shape_prototype_count = len(prototypes)
-        m.shape_prototype_label = [prototype.label for prototype in prototypes]
-        m.shape_prototype_shape_start = wp.array(prototype_shape_start, dtype=wp.int32, device=device)
-        m.shape_prototype_mass = wp.array([p.mass for p in prototypes], dtype=wp.float32, device=device)
-        m.shape_prototype_com = wp.array([p.com for p in prototypes], dtype=wp.vec3, device=device)
-        m.shape_prototype_inertia = wp.array(
-            np.array([p.inertia for p in prototypes], dtype=np.float32).reshape(-1, 3, 3), dtype=wp.mat33, device=device
-        )
-        m.shape_prototype_shape_count = int(prototype_shape_start[-1])
-        m.shape_prototype_shape_label = [shape.label for prototype in prototypes for shape in prototype.shapes]
-        m.shape_prototype_shape_source = prototype_rows.get("shape_source", [])
-        m._shape_prototype_geometry = {
-            name: (
-                prototype_rows[name]
-                if name in prototype_rows
-                else wp.empty((0, *getattr(m, name).shape[1:]), dtype=getattr(m, name).dtype, device=device)
-            )
-            for name in _SHAPE_PROTOTYPE_ATTRIBUTES
-        }
-        for name in ("type", "scale", "transform", "margin", "is_solid", "flags", "color"):
-            setattr(m, f"shape_prototype_shape_{name}", m._shape_prototype_geometry[f"shape_{name}"])
-
-        # Slots and their rows.
-        rows = [slot.shapes for slot in slots]
-        slot_shape_start = np.concatenate(([0], np.cumsum([len(r) for r in rows], dtype=np.int64))).astype(np.int32)
-        slot_shapes = np.array([row for r in rows for row in r], dtype=np.int32)
-        shape_slot = np.full(shape_count, -1, dtype=np.int32)
-        shape_slot_row = np.zeros(shape_count, dtype=np.int32)
-        for k, r in enumerate(rows):
-            shape_slot[list(r)] = k
-            shape_slot_row[list(r)] = np.arange(len(r))
-        # A slot places its prototype in the body frame. Its first row was built from the reference
-        # prototype's first shape and may since have been moved, e.g. a static slot by add_builder().
-        prototype_transform = m._shape_prototype_geometry["shape_transform"].numpy()
-        shape_transform = m.shape_transform.numpy()
-        slot_xform = transform_multiply_rows(
-            shape_transform[[slot.shapes[0] for slot in slots]].reshape(-1, 7),
-            transform_inverse_rows(
-                prototype_transform[[prototype_shape_start[s.reference] for s in slots]].reshape(-1, 7)
-            ),
-        )
-        if slots:
-            # Builder flags let every row collide for contact pairs; rows hold their reference shapes' flags now.
-            shape_flags = m.shape_flags.numpy().copy()
-            prototype_flags = m._shape_prototype_geometry["shape_flags"].numpy()
-            for slot in slots:
-                start, count = prototype_shape_start[slot.reference], shape_counts[slot.reference]
-                for r, row in enumerate(slot.shapes):
-                    shape_flags[row] = prototype_flags[start + min(r, count - 1)]
-            m.shape_flags.assign(shape_flags)
-
-        m.shape_slot_count = len(slots)
-        m.shape_slot_label = [slot.label for slot in slots]
-        m.shape_slot_body = wp.array([slot.body for slot in slots], dtype=wp.int32, device=device)
-        m.shape_slot_xform = wp.array(slot_xform.reshape(-1, 7), dtype=wp.transform, device=device)
-        m.shape_slot_shape_start = wp.array(slot_shape_start, dtype=wp.int32, device=device)
-        m.shape_slot_shapes = wp.array(slot_shapes, dtype=wp.int32, device=device)
-        m.shape_slot_prototype = wp.full(len(slots), -1, dtype=wp.int32, device=device)
-        m.shape_slot = wp.array(shape_slot, dtype=wp.int32, device=device)
-        m._shape_slot_row = wp.array(shape_slot_row, dtype=wp.int32, device=device)
-        m._shape_slot_capacity_max = max((len(r) for r in rows), default=0)
-        m._shape_prototype_shape_held = wp.full(shape_count, -1, dtype=wp.int32, device=device)
-
-        # Bodies with slots recompute their inertia from a base and the prototypes their slots hold.
-        # Existing shapes made into a slot carried their prototype's mass properties into the body.
-        body_slots: dict[int, list[int]] = {}
-        for k, slot in enumerate(slots):
-            if slot.body >= 0:
-                body_slots.setdefault(slot.body, []).append(k)
-        body_slot_range = np.zeros((self.body_count, 2), dtype=np.int32)
-        body_slot_list = []
-        body_prototype_inertia = np.zeros(self.body_count, dtype=bool)
-        base_mass = np.zeros(self.body_count, dtype=np.float32)
-        base_com = np.zeros((self.body_count, 3), dtype=np.float32)
-        base_inertia = np.zeros((self.body_count, 3, 3), dtype=np.float32)
-        for body, slot_indices in body_slots.items():
-            body_slot_range[body] = (len(body_slot_list), len(slot_indices))
-            body_slot_list.extend(slot_indices)
-            if self.body_lock_inertia[body]:
-                continue
-            base = (
-                float(self.body_mass[body]),
-                np.asarray(self.body_com[body], dtype=np.float64),
-                np.asarray(self.body_inertia[body], dtype=np.float64).reshape(3, 3),
-            )
-            for k in slot_indices:
-                if slots[k].marked:
-                    prototype = prototypes[slots[k].reference]
-                    part = (
-                        prototype.mass,
-                        np.asarray(prototype.com, dtype=np.float64),
-                        np.asarray(prototype.inertia, dtype=np.float64).reshape(3, 3),
-                    )
-                    if part[0] > 0.0:
-                        base = _subtract_inertial_properties(base, part)
-            body_prototype_inertia[body] = True
-            base_mass[body], base_com[body], base_inertia[body] = base
-        m._body_slot_range = wp.array(body_slot_range, dtype=wp.vec2i, device=device)
-        m._body_slots = wp.array(body_slot_list, dtype=wp.int32, device=device)
-        m._body_prototype_inertia = wp.array(body_prototype_inertia, dtype=wp.bool, device=device)
-        m._body_prototype_inertia_count = int(np.count_nonzero(body_prototype_inertia))
-        m._body_base_mass = wp.array(base_mass, dtype=wp.float32, device=device)
-        m._body_base_com = wp.array(base_com, dtype=wp.vec3, device=device)
-        m._body_base_inertia = wp.array(base_inertia, dtype=wp.mat33, device=device)
-
-        # Shape custom attributes of the prototype shapes, copied into slot rows on assignment.
-        # The prototype rows were appended after the shapes, in prototype shape order.
-        m._shape_prototype_custom = {}
-        prototype_start = self._shape_prototype_row_start
+        # Variant shapes of all sets, finalized once: geometry, materials, and custom attributes.
+        variants = [variant for variant_set in variant_sets for variant in variant_set.variants]
+        variant_shape_start = np.concatenate(([0], np.cumsum([len(v.shapes) for v in variants]))).astype(np.int32)
+        set_variant_start = np.concatenate(([0], np.cumsum([len(s.variants) for s in variant_sets]))).astype(np.int32)
+        m._variant_shape_count = int(variant_shape_start[-1])
+        m._variant_shape_geometry = {name: rows[name] for name in _SHAPE_VARIANT_ATTRIBUTES if name in rows}
+        m._variant_shape_source = rows.get("shape_source", [])
+        m._variant_shape_start = wp.array(variant_shape_start, dtype=wp.int32, device=device)
+        m._variant_set_labels = [[variant.label for variant in variant_set.variants] for variant_set in variant_sets]
+        m._variant_shape_custom = {}
         for key, attribute in self.custom_attributes.items():
             if (
                 attribute.frequency != Model.AttributeFrequency.SHAPE
                 or attribute.assignment != Model.AttributeAssignment.MODEL
                 or attribute.references is not None
-                or m.shape_prototype_shape_count == 0
+                or m._variant_shape_count == 0
             ):
                 continue
             owner = getattr(m, attribute.namespace, None) if attribute.namespace else m
             values = getattr(owner, attribute.name, None)
             if not isinstance(values, wp.array) or values.ndim != 1:
                 continue
-            prototype_values = {
-                q: attribute.values[prototype_start + q]
-                for q in range(m.shape_prototype_shape_count)
-                if attribute.values and prototype_start + q in attribute.values
+            start = self._variant_row_start
+            variant_values = {
+                q: attribute.values[start + q]
+                for q in range(m._variant_shape_count)
+                if attribute.values and start + q in attribute.values
             }
-            m._shape_prototype_custom[key] = (
-                replace(attribute, values=prototype_values).build_array(m.shape_prototype_shape_count, device=device),
+            m._variant_shape_custom[key] = (
+                replace(attribute, values=variant_values).build_array(m._variant_shape_count, device=device),
                 values,
             )
 
-        if slots:
-            m.assign_shape_prototypes(
-                wp.array(np.arange(len(slots), dtype=np.int32), dtype=wp.int32, device=device),
-                wp.array([slot.initial for slot in slots], dtype=wp.int32, device=device),
+        # Per body: its variant set, rows, and validated mass properties of the body as built plus
+        # each variant. Bodies with the same set and the same base share the validated values.
+        body_set = np.full(self.body_count, -1, dtype=np.int32)
+        body_count = np.zeros(self.body_count, dtype=np.int32)
+        body_first = np.zeros(self.body_count, dtype=np.int32)
+        body_rows = np.zeros((self.body_count, 2), dtype=np.int32)
+        body_inertia_start = np.zeros(self.body_count, dtype=np.int32)
+        initial = np.full(self.body_count, -1, dtype=np.int32)
+        shape_variant_row = np.zeros(shape_count, dtype=bool)
+        masses, coms, inertias = [], [], []
+        inertia_start = {}
+        for body in sorted(self._body_variants):
+            body_variants = self._body_variants[body]
+            k = set_index[id(body_variants.variant_set)]
+            body_set[body] = k
+            body_count[body] = len(body_variants.variant_set.variants)
+            body_first[body] = set_variant_start[k]
+            body_rows[body] = (body_variants.row_start, body_variants.variant_set.row_count)
+            shape_variant_row[
+                body_variants.row_start : body_variants.row_start + body_variants.variant_set.row_count
+            ] = True
+            initial[body] = body_variants.initial
+            base = (
+                float(self.body_mass[body]),
+                np.asarray(self.body_com[body], dtype=np.float64),
+                np.asarray(self.body_inertia[body], dtype=np.float64).reshape(3, 3),
             )
+            key = (k, base[0], base[1].tobytes(), base[2].tobytes())
+            if key not in inertia_start:
+                inertia_start[key] = len(masses)
+                for variant in body_variants.variant_set.variants:
+                    mass, com, inertia = _combine_inertial_properties(
+                        base,
+                        (
+                            variant.mass,
+                            np.asarray(variant.com, dtype=np.float64),
+                            np.asarray(variant.inertia, dtype=np.float64).reshape(3, 3),
+                        ),
+                    )
+                    mass, inertia, _ = verify_and_correct_inertia(
+                        mass,
+                        wp.mat33(*inertia.flatten()),
+                        self.balance_inertia,
+                        self.bound_mass,
+                        self.bound_inertia,
+                        f"{self.body_label[body]}/{variant.label}",
+                    )
+                    masses.append(mass)
+                    coms.append(com)
+                    inertias.append(np.asarray(inertia, dtype=np.float32).reshape(3, 3))
+            body_inertia_start[body] = inertia_start[key]
+
+        m._body_variant_set = body_set
+        m._body_variant_count = wp.array(body_count, dtype=wp.int32, device=device)
+        m._body_variant_first = wp.array(body_first, dtype=wp.int32, device=device)
+        m._body_variant_rows = wp.array(body_rows, dtype=wp.vec2i, device=device)
+        m._body_variant_inertia_start = wp.array(body_inertia_start, dtype=wp.int32, device=device)
+        m._variant_mass = wp.array(masses, dtype=wp.float32, device=device)
+        m._variant_com = wp.array(np.asarray(coms, dtype=np.float32).reshape(-1, 3), dtype=wp.vec3, device=device)
+        m._variant_inertia = wp.array(
+            np.asarray(inertias, dtype=np.float32).reshape(-1, 3, 3), dtype=wp.mat33, device=device
+        )
+        m._variant_row_max = max((variant_set.row_count for variant_set in variant_sets), default=0)
+        m._variant_row_shapes = wp.array(np.flatnonzero(shape_variant_row), dtype=wp.int32, device=device)
+        m._shape_variant_row = wp.array(shape_variant_row, dtype=wp.bool, device=device)
+        m._shape_variant_shape = wp.full(shape_count, -1, dtype=wp.int32, device=device)
+        m.body_variant = wp.full(self.body_count, -1, dtype=wp.int32, device=device)
+        if self._body_variants:
+            m.select_body_variants(wp.array(initial, dtype=wp.int32, device=device))
 
     def _iter_validated_shape_collision_filter_pairs(self, pairs):
         shape_count = len(self.shape_type)

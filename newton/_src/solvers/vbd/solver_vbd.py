@@ -3169,12 +3169,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         shape_collision_radius = model.shape_collision_radius.numpy()
         body_com = model.body_com.numpy()
         bounding_radius = np.zeros(model.body_count, dtype=np.float32)
-        # Slot rows hold the geometry of their current prototype shape; empty rows have no surface.
+        # Variant rows hold the geometry of their current variant shape; empty rows have no surface.
         shape_source = model.shape_source
         shape_empty = np.zeros(model.shape_count, dtype=bool)
-        if model.shape_slot_count:
+        if model._variant_row_max:
             shape_source = model._shape_current_sources()
-            shape_empty = (model.shape_slot.numpy() >= 0) & (model._shape_prototype_shape_held.numpy() < 0)
+            shape_empty = model._shape_variant_row.numpy() & (model._shape_variant_shape.numpy() < 0)
 
         def shape_local_reach(shape_index: int, com_shape: wp.vec3) -> float:
             """Return a conservative upper bound on the shape's distance about the body COM."""

@@ -22,23 +22,27 @@ DEFAULT_AMBIENT_GROUND_COLOR = (0.05, 0.05, 0.06)
 
 
 @wp.kernel(enable_backward=False)
-def _gather_slot_render_data(
-    slot_shapes: wp.array[wp.int32],
-    shape_prototype_shape_held: wp.array[wp.int32],
-    prototype_render_type: wp.array[wp.int32],
-    prototype_texture_ids: wp.array[wp.int32],
-    prototype_mesh_data_ids: wp.array[wp.int32],
+def _gather_variant_render_data(
+    row_shapes: wp.array[wp.int32],
+    shape_variant_shape: wp.array[wp.int32],
+    variant_render_type: wp.array[wp.int32],
+    variant_texture_ids: wp.array[wp.int32],
+    variant_mesh_data_ids: wp.array[wp.int32],
+    shape_texture_override: wp.array[wp.int32],
     # outputs
     shape_render_type: wp.array[wp.int32],
     shape_texture_ids: wp.array[wp.int32],
     shape_mesh_data_ids: wp.array[wp.int32],
 ):
-    shape = slot_shapes[wp.tid()]
-    prototype_shape = shape_prototype_shape_held[shape]
-    if prototype_shape >= 0:
-        shape_render_type[shape] = prototype_render_type[prototype_shape]
-        shape_texture_ids[shape] = prototype_texture_ids[prototype_shape]
-        shape_mesh_data_ids[shape] = prototype_mesh_data_ids[prototype_shape]
+    shape = row_shapes[wp.tid()]
+    variant_shape = shape_variant_shape[shape]
+    if variant_shape >= 0:
+        shape_render_type[shape] = variant_render_type[variant_shape]
+        shape_mesh_data_ids[shape] = variant_mesh_data_ids[variant_shape]
+        if shape_texture_override.shape[0] > 0:
+            shape_texture_ids[shape] = shape_texture_override[shape]
+        else:
+            shape_texture_ids[shape] = variant_texture_ids[variant_shape]
 
 
 def _render_types(shape_types: np.ndarray) -> np.ndarray:
@@ -125,11 +129,12 @@ class RenderContext:
         # kernels entirely (no extra shape-type branch, so no register/occupancy
         # cost). The remapped type array is what the render kernel dispatches on;
         # model.shape_type is left untouched for collision and BVH bounds.
-        # Slot rows render the prototype shape they hold; their per-shape data is gathered before each render.
-        self._slots = model.shape_slot_shapes if getattr(model, "shape_slot_count", 0) > 0 else None
+        # Variant rows render the variant shape they hold; their per-shape data is gathered before each render.
+        self._variant_rows = model._variant_row_shapes if getattr(model, "_variant_row_max", 0) > 0 else None
+        self._shape_texture_override: wp.array[wp.int32] | None = None
         if model.shape_type is not None:
             shape_type_np = model.shape_type.numpy()
-            if self._slots is not None or np.any(_render_types(shape_type_np) != shape_type_np):
+            if self._variant_rows is not None or np.any(_render_types(shape_type_np) != shape_type_np):
                 self._shape_render_type = wp.array(
                     _render_types(shape_type_np), dtype=wp.int32, device=model.shape_type.device
                 )
@@ -184,19 +189,21 @@ class RenderContext:
             self._empty_triangle_colors = wp.zeros(0, dtype=wp.vec3f, device=self.device)
         return self._empty_triangle_colors
 
-    def _gather_slot_render_data(self) -> None:
-        """Copy the render type, texture, and mesh data of the prototype shape each slot row holds."""
-        if self._slots is None:
+    def _gather_variant_render_data(self) -> None:
+        """Copy the render type, texture, and mesh data of the variant shape each variant row holds."""
+        if self._variant_rows is None:
             return
+        override = self._shape_texture_override
         wp.launch(
-            _gather_slot_render_data,
-            dim=self._slots.shape[0],
+            _gather_variant_render_data,
+            dim=self._variant_rows.shape[0],
             inputs=[
-                self._slots,
-                self.model._shape_prototype_shape_held,
-                self._prototype_render_type,
-                self._prototype_texture_ids,
-                self._prototype_mesh_data_ids,
+                self._variant_rows,
+                self.model._shape_variant_shape,
+                self._variant_render_type,
+                self._variant_texture_ids,
+                self._variant_mesh_data_ids,
+                wp.empty(0, dtype=wp.int32, device=self.device) if override is None else override,
             ],
             outputs=[self._shape_render_type, self._shape_texture_ids, self._shape_mesh_data_ids],
             device=self.device,
@@ -335,6 +342,10 @@ class RenderContext:
         self._texture_data_source = [checkerboard_data]
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
         self._shape_texture_ids = wp.array(texture_ids, dtype=wp.int32, device=self.device)
+        if self._variant_rows is not None:
+            # The variant shapes' texture ids index the replaced texture table; variant rows keep
+            # the checkerboard assignment whichever variant they hold.
+            self._shape_texture_override = wp.array(texture_ids, dtype=wp.int32, device=self.device)
 
     def render(
         self,
@@ -517,7 +528,7 @@ class RenderContext:
                 tiles_y = (height + config.tile_height - 1) // config.tile_height
                 pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
 
-            self._gather_slot_render_data()
+            self._gather_variant_render_data()
             wp.launch(
                 kernel=render_kernel,
                 dim=(view_count * pixels_per_view),
@@ -684,12 +695,12 @@ class RenderContext:
 
         shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
         texture_data_ids, mesh_data_ids = ids(model.shape_source, shape_types)
-        if self._slots is not None:
-            prototype_types = model.shape_prototype_shape_type.numpy()
-            prototype_texture_ids, prototype_mesh_data_ids = ids(model.shape_prototype_shape_source, prototype_types)
-            self._prototype_render_type = wp.array(_render_types(prototype_types), dtype=wp.int32, device=self.device)
-            self._prototype_texture_ids = wp.array(prototype_texture_ids, dtype=wp.int32, device=self.device)
-            self._prototype_mesh_data_ids = wp.array(prototype_mesh_data_ids, dtype=wp.int32, device=self.device)
+        if self._variant_rows is not None:
+            variant_types = model._variant_shape_geometry["shape_type"].numpy()
+            variant_texture_ids, variant_mesh_data_ids = ids(model._variant_shape_source, variant_types)
+            self._variant_render_type = wp.array(_render_types(variant_types), dtype=wp.int32, device=self.device)
+            self._variant_texture_ids = wp.array(variant_texture_ids, dtype=wp.int32, device=self.device)
+            self._variant_mesh_data_ids = wp.array(variant_mesh_data_ids, dtype=wp.int32, device=self.device)
 
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
         self._shape_texture_ids = wp.array(texture_data_ids, dtype=wp.int32, device=self.device)

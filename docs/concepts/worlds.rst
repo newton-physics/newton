@@ -416,29 +416,23 @@ updates for world ``0`` therefore continue to affect their global entities.
    Gravity shape: (3,)
 
 
-.. _Shape prototypes:
+.. _Body shape variants:
 
-Per-World Shape Prototypes
---------------------------
+Per-World Body Shape Variants
+-----------------------------
 
 .. experimental::
 
-   Shape prototypes and shape slots may change without a deprecation period.
+   Body variants may change without a deprecation period.
 
-A *shape prototype* is an asset: one or more shapes with shared inertial properties, such as an
-object of an asset catalog. A *shape slot* reserves shape rows on a body and holds one prototype
-at a time, independently in every world. This serves workloads such as reset-time asset
-catalogs, where each world picks one object of a catalog.
-
-Declare prototypes with :meth:`~newton.ModelBuilder.add_shape_prototype`, passing a builder with
-at most one body, such as an asset loaded with :meth:`~newton.ModelBuilder.add_usd`. Its shapes
-become the prototype's shapes, and its body's mass, center of mass, and inertia become the
-prototype's. Add slots with :meth:`~newton.ModelBuilder.add_shape_slot`: either new rows on a body,
-sized for the largest prototype, or existing shapes of a body that become replaceable. At runtime,
-:meth:`~newton.Model.assign_shape_prototypes` switches the prototype of any slots on the device
-without host synchronization: a prototype with ``n`` shapes fills the slot's first ``n`` rows and
-empties the others, and the body's mass properties follow. It returns the
-:class:`~newton.ModelFlags` to pass to solvers and viewers:
+A body can carry several alternative shape sets, such as the objects of an asset catalog, and
+each world can select a different one at reset. Declare the variants with
+:meth:`~newton.ModelBuilder.add_body_variants`, passing one single-body builder per variant, such
+as an asset loaded with :meth:`~newton.ModelBuilder.add_usd`. The body gets as many shape rows as
+its largest variant has shapes. At runtime, :meth:`~newton.Model.select_body_variants` copies the
+selected variant's shapes into those rows on the device, without host synchronization, empties the
+rows it does not use, and sets the body's mass properties to those of the body as built plus the
+variant. It returns the :class:`~newton.ModelFlags` to pass to solvers and viewers:
 
 .. testcode::
 
@@ -451,49 +445,48 @@ empties the others, and the body's mass properties follow. It returns the
    ball.add_shape_sphere(ball.add_body(label="ball"), radius=0.1)
 
    env = newton.ModelBuilder()
-   cube_id = env.add_shape_prototype(cube)
-   ball_id = env.add_shape_prototype(ball)
    body = env.add_body(label="object")
-   env.add_shape_slot(body, initial=cube_id)
+   env.add_body_variants(body, [cube, ball])
 
    scene = newton.ModelBuilder()
-   scene.replicate(env, world_count=2)
+   scene.replicate(env, copy_count=2)
    model = scene.finalize()
 
    # World 1 switches to the ball; world 0 keeps the cube.
-   flags = model.assign_shape_prototypes(
-       wp.array([1], dtype=wp.int32, device=model.device),
-       wp.array([ball_id], dtype=wp.int32, device=model.device),
-   )
+   flags = model.select_body_variants(wp.array([0, 1], dtype=wp.int32, device=model.device))
    # solver.notify_model_changed(flags)
    # viewer.notify_model_changed(flags)
-   print(model.shape_prototype_label, model.shape_slot_prototype.numpy())
+   print(model.body_variant_labels(0), model.body_variant.numpy())
 
 .. testoutput::
 
    ['cube', 'ball'] [0 1]
 
-Each slot row is a regular shape: it keeps its own label, world, collision group, filter pairs,
-materials, and opacity, and copies the geometry and shape custom attributes of the prototype shape
-it holds into its per-shape arrays. Prototypes declared in a replicated builder are shared by all worlds, so model
-memory grows with the number of slot rows, not with the catalog size. The ``shape_prototype_*``,
-``shape_prototype_shape_*``, and ``shape_slot_*`` attributes of :class:`~newton.Model` describe the
-prototypes, their shapes, and the slots.
+Variant ids are positions in the list passed to :meth:`~newton.ModelBuilder.add_body_variants`;
+they are the same in every world. Bodies copied with :meth:`~newton.ModelBuilder.add_builder` or
+:meth:`~newton.ModelBuilder.replicate` share their variants, which :meth:`~newton.ModelBuilder.finalize`
+stores once, so model memory grows with the number of rows, not with the catalog size.
 
-Collision detection, sensors, and viewers are sized at construction for every prototype shape a
-slot row can hold. Current limitations:
+A row takes everything authored on the variant shape it holds: geometry, the collision data derived
+from it, flags, color, materials, and shape custom attributes. Apply domain randomization after
+selecting. A row keeps its label, world, collision group, filter pairs, and opacity. Empty rows have
+their collision and visibility flags cleared. Shapes added to the body directly stay in place for
+every variant.
 
-- Contacts must come from :class:`~newton.CollisionPipeline` for models with slots:
+Collision detection, sensors, and viewers are sized at construction for every variant a body can
+select. Current limitations:
+
+- Contacts must come from :class:`~newton.CollisionPipeline` for models with variants:
   ``SolverMuJoCo`` requires ``use_mujoco_contacts=False``, ``SolverKamino`` requires
   ``use_collision_detector=False``, and ``SolverImplicitMPM`` is unsupported. ``SolverMuJoCo``
-  compiles one geom layout for all worlds, so construct it before assigning different prototypes
-  per world. It follows per-world ``solref``, ``solimp``, ``solmix``, and friction after an
-  assignment, but ``condim`` and ``priority`` stay as compiled.
-- Prototype shapes cannot be planes, heightfields, Gaussians, or hydroelastic shapes.
-- :class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` follow assignments
-  after the next :meth:`~newton.Model.bvh_refit_shapes`. The deprecated ``SensorTiledCamera`` raises
-  for models with slots.
-- ``ViewerGL``, ``ViewerViser``, and ``ViewerNull`` follow assignments through
+  compiles one geom layout for all worlds, so construct it before selecting different variants per
+  world. It follows per-world ``solref``, ``solimp``, ``solmix``, and friction after a selection, but
+  ``condim`` and ``priority`` stay as compiled.
+- Variant shapes cannot be planes, heightfields, Gaussians, or hydroelastic shapes.
+- :class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` follow selections after
+  the next :meth:`~newton.Model.bvh_refit_shapes`. The deprecated ``SensorTiledCamera`` raises for
+  models with variants.
+- ``ViewerGL``, ``ViewerViser``, and ``ViewerNull`` follow selections through
   :meth:`~newton.viewer.ViewerBase.notify_model_changed`; ``ViewerUSD``, ``ViewerRerun``,
   ``ViewerFile``, and ``ViewerRTX`` raise :class:`NotImplementedError` when notified of one.
 

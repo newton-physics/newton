@@ -68,80 +68,85 @@ def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndar
 
 
 @dataclasses.dataclass(frozen=True)
-class _SlotOptions:
-    """The prototype shapes that slot rows can hold, so that routing and capacities cover all of them.
+class _VariantOptions:
+    """The variant shapes that variant rows can hold, so that routing and capacities cover all of them.
 
-    Row ``r`` of a slot can hold shape ``r`` of any prototype.
+    Row ``r`` of a body can hold shape ``r`` of any of the body's variants.
     """
 
     shape_count: int
-    slot_shapes: np.ndarray
-    """Shape of each slot row."""
-    slot_rows: np.ndarray
-    """Row index of each slot row within its slot."""
-    prototype_rows: np.ndarray
-    """Row index of each prototype shape within its prototype."""
-    prototype_types: np.ndarray
-    """Shape type of each prototype shape."""
-    prototype_collides: np.ndarray
-    """Whether each prototype shape collides with shapes."""
-    slot_mask: np.ndarray
-    """Whether each shape is a slot row."""
+    row_shapes: np.ndarray
+    """Variant row of each option."""
+    variant_shapes: np.ndarray
+    """Variant shape of each option."""
+    variant_types: np.ndarray
+    """Shape type of each variant shape."""
+    variant_collides: np.ndarray
+    """Whether each variant shape collides with shapes."""
+    row_mask: np.ndarray
+    """Whether each shape is a variant row."""
 
-    def any(self, prototype_mask: np.ndarray) -> np.ndarray:
-        """Per shape, whether it is a slot row that can hold a prototype shape in ``prototype_mask``."""
-        row_mask = np.zeros(int(self.slot_rows.max(initial=0)) + 1, dtype=bool)
-        rows = self.prototype_rows[prototype_mask]
-        row_mask[rows[rows < len(row_mask)]] = True
+    def any(self, variant_mask: np.ndarray) -> np.ndarray:
+        """Per shape, whether it is a variant row that can hold a variant shape in ``variant_mask``."""
         mask = np.zeros(self.shape_count, dtype=bool)
-        mask[self.slot_shapes[row_mask[self.slot_rows]]] = True
+        mask[self.row_shapes[variant_mask[self.variant_shapes]]] = True
         return mask
 
     def may_be(self, shape_types: np.ndarray, types: tuple[int, ...]) -> np.ndarray:
-        """Per shape, whether it is or can become one of ``types``, counting only colliding prototype shapes."""
-        return np.isin(shape_types, types) | self.any(self.prototype_collides & np.isin(self.prototype_types, types))
+        """Per shape, whether it is or can become one of ``types``, counting only colliding variant shapes."""
+        return np.isin(shape_types, types) | self.any(self.variant_collides & np.isin(self.variant_types, types))
 
     def reachable(self, shape_mask: np.ndarray) -> np.ndarray:
-        """Per prototype shape, whether a slot row in ``shape_mask`` can hold it."""
-        return np.isin(self.prototype_rows, self.slot_rows[shape_mask[self.slot_shapes]])
+        """Per variant shape, whether a variant row in ``shape_mask`` can hold it."""
+        mask = np.zeros(len(self.variant_types), dtype=bool)
+        mask[self.variant_shapes[shape_mask[self.row_shapes]]] = True
+        return mask
 
     def type_bits(self) -> tuple[np.ndarray, np.ndarray]:
-        """Slot rows and, for each, a bit per type of the colliding prototype shapes it can hold."""
-        row_bits = np.zeros(int(self.slot_rows.max(initial=0)) + 1, dtype=np.int64)
-        rows = self.prototype_rows < len(row_bits)
-        bits = np.where(self.prototype_collides, np.left_shift(1, self.prototype_types.astype(np.int64)), 0)
-        np.bitwise_or.at(row_bits, self.prototype_rows[rows], bits[rows])
-        return self.slot_shapes, row_bits[self.slot_rows]
+        """Variant rows and, for each, a bit per type of the colliding variant shapes it can hold."""
+        bits = np.zeros(self.shape_count, dtype=np.int64)
+        option_bits = np.where(
+            self.variant_collides[self.variant_shapes],
+            np.left_shift(1, self.variant_types[self.variant_shapes].astype(np.int64)),
+            0,
+        )
+        np.bitwise_or.at(bits, self.row_shapes, option_bits)
+        rows = np.flatnonzero(self.row_mask)
+        return rows, bits[rows]
 
 
-def _slot_options(model: Model) -> _SlotOptions | None:
-    """The prototype shapes the model's slot rows can hold, or ``None`` without slots."""
-    if getattr(model, "shape_slot_count", 0) == 0:
+def _variant_options(model: Model) -> _VariantOptions | None:
+    """The variant shapes the model's variant rows can hold, or ``None`` without variant rows."""
+    if getattr(model, "_variant_row_max", 0) == 0:
         return None
-    slot_shapes, slot_rows = model._shape_slot_rows()
-    slot_mask = np.zeros(model.shape_count, dtype=bool)
-    slot_mask[slot_shapes] = True
-    return _SlotOptions(
+    row_shapes, variant_shapes = model._variant_row_options()
+    row_mask = np.zeros(model.shape_count, dtype=bool)
+    row_mask[row_shapes] = True
+    geometry = model._variant_shape_geometry
+    return _VariantOptions(
         shape_count=model.shape_count,
-        slot_shapes=slot_shapes,
-        slot_rows=slot_rows,
-        prototype_rows=model._prototype_shape_row(),
-        prototype_types=model.shape_prototype_shape_type.numpy(),
-        prototype_collides=(model.shape_prototype_shape_flags.numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0,
-        slot_mask=slot_mask,
+        row_shapes=row_shapes,
+        variant_shapes=variant_shapes,
+        variant_types=geometry["shape_type"].numpy(),
+        variant_collides=(geometry["shape_flags"].numpy() & int(ShapeFlags.COLLIDE_SHAPES)) != 0,
+        row_mask=row_mask,
     )
 
 
-def _shape_may_collide_mask(model: Model, slots: _SlotOptions | None, shape_count: int | None = None) -> np.ndarray:
-    """:func:`_shape_collide_mask`, also counting slot rows that can hold a colliding prototype shape."""
+def _shape_may_collide_mask(
+    model: Model, variant_options: _VariantOptions | None, shape_count: int | None = None
+) -> np.ndarray:
+    """:func:`_shape_collide_mask`, also counting variant rows that can hold a colliding variant shape."""
     mask = _shape_collide_mask(model, shape_count)
-    return mask if slots is None else mask | slots.any(slots.prototype_collides)
+    return mask if variant_options is None else mask | variant_options.any(variant_options.variant_collides)
 
 
-def _shape_may_be_mesh(model: Model, shape_types: np.ndarray, slots: _SlotOptions | None) -> np.ndarray:
-    """Shapes that are, or as slot rows can become, meshes or heightfields."""
+def _shape_may_be_mesh(model: Model, shape_types: np.ndarray, variant_options: _VariantOptions | None) -> np.ndarray:
+    """Shapes that are, or as variant rows can become, meshes or heightfields."""
     mesh_types = (int(GeoType.MESH), int(GeoType.HFIELD))
-    return np.isin(shape_types, mesh_types) if slots is None else slots.may_be(shape_types, mesh_types)
+    return (
+        np.isin(shape_types, mesh_types) if variant_options is None else variant_options.may_be(shape_types, mesh_types)
+    )
 
 
 _ANALYTIC_PRIMITIVE_PAIRS = frozenset(
@@ -433,8 +438,7 @@ def compute_shape_aabbs(
     shape_collision_aabb_lower: wp.array[wp.vec3],
     shape_collision_aabb_upper: wp.array[wp.vec3],
     shape_flags: wp.array[wp.int32],
-    shape_slot: wp.array[wp.int32],
-    shape_prototype_shape_held: wp.array[wp.int32],
+    shape_variant_row: wp.array[wp.bool],
     # Fused counter arrays — zeroed by thread 0 to avoid separate kernel launches.
     contact_counters: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
@@ -466,13 +470,10 @@ def compute_shape_aabbs(
         contact_generation[0] = g
         broad_phase_pair_count[0] = 0
 
-    # Empty slot rows get an empty AABB so that no broad phase pairs them. Broad phases pair a row
-    # if any prototype shape it can hold collides, so a row whose current one does not is skipped too.
-    if shape_slot.shape[0] > 0 and shape_slot[shape_id] >= 0:
-        if (
-            shape_prototype_shape_held[shape_id] < 0
-            or (shape_flags[shape_id] & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) == 0
-        ):
+    # Empty variant rows have their collision flags cleared; give them an empty AABB because broad
+    # phases include every row that could hold a colliding variant shape.
+    if shape_variant_row.shape[0] > 0 and shape_variant_row[shape_id]:
+        if (shape_flags[shape_id] & (ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES)) == 0:
             aabb_lower[shape_id] = wp.vec3(_EMPTY_AABB_EXTENT)
             aabb_upper[shape_id] = wp.vec3(-_EMPTY_AABB_EXTENT)
             return
@@ -755,10 +756,10 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
 
     shape_types = model.shape_type.numpy()
     # Slot rows count as meshes if they can hold one.
-    slots = _slot_options(model)
-    colliding_mask = _shape_may_collide_mask(model, slots, len(shape_types))
+    variant_options = _variant_options(model)
+    colliding_mask = _shape_may_collide_mask(model, variant_options, len(shape_types))
 
-    mesh_mask = colliding_mask & _shape_may_be_mesh(model, shape_types, slots)
+    mesh_mask = colliding_mask & _shape_may_be_mesh(model, shape_types, variant_options)
     plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
     non_plane_mask = colliding_mask & ~plane_mask
     num_meshes = int(np.count_nonzero(mesh_mask))
@@ -899,7 +900,7 @@ def _estimate_rigid_contact_max_per_world(model: Model | ModelView, rigid_contac
         return 0
 
     counts = _shape_contact_pair_counts(model)
-    is_mesh = _shape_may_be_mesh(model, model.shape_type.numpy(), _slot_options(model))
+    is_mesh = _shape_may_be_mesh(model, model.shape_type.numpy(), _variant_options(model))
     primitive_counts = _shape_contact_pair_counts(model, shape_mask=~is_mesh) if is_mesh.any() else counts
     contacts = (
         primitive_counts * _RIGID_CONTACTS_PER_PRIMITIVE_PAIR
@@ -937,7 +938,7 @@ def _estimate_triangle_pair_details(
     mesh_like_mask: np.ndarray,
     planar_sdf_mask: np.ndarray,
     hydroelastic: bool,
-    slot_mask: np.ndarray | None = None,
+    variant_row_mask: np.ndarray | None = None,
 ) -> _TrianglePairCountEstimate:
     """Estimate the triangle-pair and global contact-reducer capacity from the model.
 
@@ -969,7 +970,7 @@ def _estimate_triangle_pair_details(
         mesh_like_mask: Routed mesh and heightfield shapes.
         planar_sdf_mask: Routed shapes with SDF edge data.
         hydroelastic: Whether hydroelastic-hydroelastic pairs use their own reducer.
-        slot_mask: Shape slots, whose current type does not limit the pairs they can route.
+        variant_row_mask: Variant rows, whose current type does not limit the pairs they can route.
 
     Returns:
         The estimated capacity, never below ``_TRIANGLE_PAIRS_MIN_CAPACITY``, and its inputs.
@@ -986,7 +987,7 @@ def _estimate_triangle_pair_details(
 
     if shape_pairs is not None:
         pairs_per_bucket, participants_per_bucket = _count_routed_pairs(
-            model, shape_pairs, shape_world, mesh_like_mask, planar_sdf_mask, hydroelastic, slot_mask
+            model, shape_pairs, shape_world, mesh_like_mask, planar_sdf_mask, hydroelastic, variant_row_mask
         )
         source = "shape pairs"
     else:
@@ -1020,7 +1021,7 @@ def _count_routed_pairs(
     mesh_like_mask: np.ndarray,
     planar_sdf_mask: np.ndarray,
     hydroelastic: bool,
-    slot_mask: np.ndarray | None = None,
+    variant_row_mask: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Count routed pairs and their participating shapes per bucket from an explicit pair list.
 
@@ -1037,8 +1038,8 @@ def _count_routed_pairs(
     shape_b = shape_b[valid]
     heightfield = shape_types == int(GeoType.HFIELD)
     box = shape_types == int(GeoType.BOX)
-    if slot_mask is not None:
-        box &= ~slot_mask
+    if variant_row_mask is not None:
+        box &= ~variant_row_mask
     routed = (mesh_like_mask[shape_a] | mesh_like_mask[shape_b]) & ~(heightfield[shape_a] & heightfield[shape_b])
     routed |= planar_sdf_mask[shape_a] & planar_sdf_mask[shape_b] & ~(box[shape_a] & box[shape_b])
     if hydroelastic:
@@ -1272,23 +1273,23 @@ def _compute_generic_convex_pair_stats(
     shape_pairs_filtered: wp.array[wp.vec2i] | np.ndarray | None,
     candidate_pair_work_estimate: int,
     shape_pairs_host: np.ndarray | None = None,
-    slots: _SlotOptions | None = None,
+    variant_options: _VariantOptions | None = None,
 ) -> tuple[bool, int]:
     """Determine whether generic convex pairs exist and estimate their work.
 
     ``shape_pairs_host`` is an optional ``(N, 2)`` host copy of
     ``shape_pairs_filtered`` that spares another device-to-host read. With
-    ``slots``, a shape slot counts as every colliding prototype it can hold.
+    ``variant_options``, a variant row counts as every colliding variant shape it can hold.
     """
     shape_types_array = getattr(model, "shape_type", None)
     if shape_types_array is None:
         return True, candidate_pair_work_estimate
     shape_types = shape_types_array.numpy()
-    # Bit t of a shape's entry is set if the shape is, or as a slot can become, of type t.
+    # Bit t of a shape's entry is set if the shape is, or as a variant row can become, of type t.
     type_bits = np.left_shift(1, shape_types.astype(np.int64))
-    if slots is not None:
-        slot_shapes, slot_bits = slots.type_bits()
-        type_bits[slot_shapes] |= slot_bits
+    if variant_options is not None:
+        row_shapes, row_bits = variant_options.type_bits()
+        type_bits[row_shapes] |= row_bits
 
     if broad_phase_mode == "explicit":
         if shape_pairs_filtered is None:
@@ -1303,7 +1304,7 @@ def _compute_generic_convex_pair_stats(
             )
         if len(explicit_pairs) == 0:
             return False, 0
-        if slots is None:
+        if variant_options is None:
             pair_types = shape_types[explicit_pairs]
             generic = _GENERIC_CONVEX_PAIR_LOOKUP[pair_types[:, 0], pair_types[:, 1]]
         else:
@@ -1315,7 +1316,7 @@ def _compute_generic_convex_pair_stats(
         generic_pair_count = int(np.count_nonzero(generic))
         return generic_pair_count > 0, min(candidate_pair_work_estimate, generic_pair_count)
 
-    colliding_mask = _shape_may_collide_mask(model, slots, len(shape_types))
+    colliding_mask = _shape_may_collide_mask(model, variant_options, len(shape_types))
     has_generic_convex_pairs = False
     generic_pair_bound = 0
     unique_types = [t for t in range(len(GeoType)) if np.any(colliding_mask & ((type_bits >> t) & 1).astype(bool))]
@@ -1877,9 +1878,9 @@ class CollisionPipeline:
 
         shape_world = getattr(model, "shape_world", None)
         shape_flags = getattr(model, "shape_flags", None)
-        # Slot rows can hold prototype shapes with other types and flags; routing and capacities cover all.
-        slots = _slot_options(model)
-        if slots is not None:
+        # Variant rows can hold variant shapes with other types and flags; routing and capacities cover all.
+        variant_options = _variant_options(model)
+        if variant_options is not None:
             shape_flags = model._shape_option_flags()
         with wp.ScopedDevice(device):
             shape_aabb_lower = wp.zeros(shape_count, dtype=wp.vec3, device=device)
@@ -2024,7 +2025,7 @@ class CollisionPipeline:
             if hasattr(model, "shape_type") and model.shape_type is not None:
                 shape_types = model.shape_type.numpy()
                 shape_count_routed = len(shape_types)
-                route_mask = _shape_may_collide_mask(model, slots, shape_count_routed)
+                route_mask = _shape_may_collide_mask(model, variant_options, shape_count_routed)
                 # Shapes that can reach the narrow phase decide which stages it builds.
                 # NXN/SAP pair only shapes that collide with shapes. The explicit list is
                 # authoritative: every listed shape reaches the narrow phase, including
@@ -2033,33 +2034,33 @@ class CollisionPipeline:
                     route_mask = np.zeros(len(shape_types), dtype=bool)
                     pair_shapes = explicit_pairs_host.ravel()
                     route_mask[pair_shapes[(pair_shapes >= 0) & (pair_shapes < len(shape_types))]] = True
-                # A slot row can take the geometry of any prototype shape it can hold at runtime, so
-                # the stages cover every prototype shape a routed row can hold, appended as extra
+                # A variant row can take the geometry of any variant shape it can hold at runtime, so
+                # the stages cover every variant shape a routed row can hold, appended as extra
                 # rows, and capacities count each row as any of them.
-                routed_prototype_shapes = np.zeros(0, dtype=np.int64)
-                if slots is not None:
-                    reachable = slots.reachable(route_mask)
+                routed_variant_shapes = np.zeros(0, dtype=np.int64)
+                if variant_options is not None:
+                    reachable = variant_options.reachable(route_mask)
                     if self.broad_phase_mode != "explicit" or self.shape_pairs_filtered is None:
-                        reachable &= slots.prototype_collides
-                    routed_prototype_shapes = np.flatnonzero(reachable)
+                        reachable &= variant_options.variant_collides
+                    routed_variant_shapes = np.flatnonzero(reachable)
 
-                def with_prototypes(name: str, shape_values: np.ndarray) -> np.ndarray:
-                    """Per-shape values followed by those of the reachable prototype shapes."""
-                    if slots is None:
+                def with_variant_shapes(name: str, shape_values: np.ndarray) -> np.ndarray:
+                    """Per-shape values followed by those of the reachable variant shapes."""
+                    if variant_options is None:
                         return shape_values
-                    prototype_values = model._shape_prototype_geometry[name].numpy()[routed_prototype_shapes]
-                    return np.concatenate((shape_values[:shape_count_routed], prototype_values))
+                    variant_values = model._variant_shape_geometry[name].numpy()[routed_variant_shapes]
+                    return np.concatenate((shape_values[:shape_count_routed], variant_values))
 
                 def capacity(mask: np.ndarray) -> np.ndarray:
-                    """Per shape, whether it or a prototype shape it can hold as a routed slot row is in ``mask``."""
-                    if slots is None:
+                    """Per shape, whether it or a variant shape it can hold as a routed variant row is in ``mask``."""
+                    if variant_options is None:
                         return mask
-                    prototype_mask = np.zeros(len(slots.prototype_types), dtype=bool)
-                    prototype_mask[routed_prototype_shapes] = mask[shape_count_routed:]
-                    return mask[:shape_count_routed] | (route_mask & slots.any(prototype_mask))
+                    variant_mask = np.zeros(len(variant_options.variant_types), dtype=bool)
+                    variant_mask[routed_variant_shapes] = mask[shape_count_routed:]
+                    return mask[:shape_count_routed] | (route_mask & variant_options.any(variant_mask))
 
-                route_types = with_prototypes("shape_type", shape_types)
-                route_rows = np.concatenate((route_mask, np.ones(len(routed_prototype_shapes), dtype=bool)))
+                route_types = with_variant_shapes("shape_type", shape_types)
+                route_rows = np.concatenate((route_mask, np.ones(len(routed_variant_shapes), dtype=bool)))
                 route_shape_types = route_types[route_rows]
                 mesh_mask = route_rows & (route_types == int(GeoType.MESH))
                 heightfield_mask = route_rows & (route_types == int(GeoType.HFIELD))
@@ -2074,8 +2075,8 @@ class CollisionPipeline:
                     and hasattr(model, "_shape_edge_range")
                     and model._shape_edge_range is not None
                 ):
-                    shape_sdf_index = with_prototypes("_shape_sdf_index", model._shape_sdf_index.numpy())
-                    shape_edge_range = with_prototypes("_shape_edge_range", model._shape_edge_range.numpy())
+                    shape_sdf_index = with_variant_shapes("_shape_sdf_index", model._shape_sdf_index.numpy())
+                    shape_edge_range = with_variant_shapes("_shape_edge_range", model._shape_edge_range.numpy())
                     planar_sdf_mask = route_rows & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
                     has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
@@ -2106,19 +2107,21 @@ class CollisionPipeline:
                         if dynamic_shape_scale:
                             mesh_sdf_identity_scale_only = runtime_scale_sdf_shapes.size == 0
                         else:
-                            shape_scale = with_prototypes("shape_scale", model.shape_scale.numpy())
+                            shape_scale = with_variant_shapes("shape_scale", model.shape_scale.numpy())
                             mesh_sdf_identity_scale_only = bool(
                                 np.all(shape_scale[runtime_scale_sdf_shapes] == np.float32(1.0))
                             )
-                            # Slots change scale with their prototype, which the unit-scale check would
+                            # Variant rows change scale with their variant, which the unit-scale check would
                             # report as a rescale.
-                            if slots is not None:
+                            if variant_options is not None:
                                 on_shapes = runtime_scale_sdf_shapes[runtime_scale_sdf_shapes < shape_count_routed]
-                                if on_shapes.size < runtime_scale_sdf_shapes.size or np.any(slots.slot_mask[on_shapes]):
+                                if on_shapes.size < runtime_scale_sdf_shapes.size or np.any(
+                                    variant_options.row_mask[on_shapes]
+                                ):
                                     mesh_sdf_identity_scale_only = False
                             if mesh_sdf_identity_scale_only and runtime_scale_sdf_shapes.size > 0:
                                 unit_scale_sdf_shapes = runtime_scale_sdf_shapes
-                # Per-shape capacity masks: a slot counts as any prototype it can hold.
+                # Per-shape capacity masks: a variant row counts as any variant shape it can hold.
                 mesh_capacity = capacity(mesh_mask)
                 heightfield_capacity = heightfield_mask[:shape_count_routed]
                 plane_capacity = plane_mask[:shape_count_routed]
@@ -2134,8 +2137,8 @@ class CollisionPipeline:
                         shape_a = explicit_pairs_host[:, 0]
                         shape_b = explicit_pairs_host[:, 1]
                         box_mask = route_mask & (shape_types == int(GeoType.BOX))
-                        if slots is not None:
-                            box_mask &= ~slots.slot_mask
+                        if variant_options is not None:
+                            box_mask &= ~variant_options.row_mask
                         mesh_mesh_routes = (
                             (mesh_capacity[shape_a] & mesh_capacity[shape_b])
                             | (heightfield_capacity[shape_a] & mesh_capacity[shape_b])
@@ -2182,7 +2185,7 @@ class CollisionPipeline:
                         mesh_capacity | heightfield_capacity,
                         planar_sdf_capacity,
                         hydroelastic=hydroelastic_sdf is not None,
-                        slot_mask=None if slots is None else slots.slot_mask,
+                        variant_row_mask=None if variant_options is None else variant_options.row_mask,
                     )
                     max_triangle_pairs = _resolve_auto_triangle_pairs(
                         triangle_pair_estimate,
@@ -2205,7 +2208,7 @@ class CollisionPipeline:
                 shape_pairs_filtered=self.shape_pairs_filtered,
                 candidate_pair_work_estimate=candidate_pair_work_estimate,
                 shape_pairs_host=explicit_pairs_host,
-                slots=slots,
+                variant_options=variant_options,
             )
             split_pair_count_threshold = (
                 _SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD
@@ -2290,11 +2293,10 @@ class CollisionPipeline:
             self.broad_phase_shape_pairs = wp.zeros(self.shape_pairs_max, dtype=wp.vec2i, device=device)
             self.geom_data = wp.zeros(shape_count, dtype=wp.vec4, device=device)
             self.geom_transform = wp.zeros(shape_count, dtype=wp.transform, device=device)
-            # Updated in place by Model.assign_shape_prototypes(); skipped for models without slots.
-            has_slots = getattr(model, "shape_slot_count", 0) > 0
-            self._shape_slot = model.shape_slot if has_slots else wp.empty(0, dtype=wp.int32, device=device)
-            self._shape_prototype_shape_held = (
-                model._shape_prototype_shape_held if has_slots else wp.empty(0, dtype=wp.int32, device=device)
+            # Updated in place by Model.select_body_variants(); skipped for models without variants.
+            has_variant_rows = getattr(model, "_variant_row_max", 0) > 0
+            self._shape_variant_row = (
+                model._shape_variant_row if has_variant_rows else wp.empty(0, dtype=wp.bool, device=device)
             )
             if self._speculative_enabled:
                 self._shape_linear_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
@@ -2419,11 +2421,15 @@ class CollisionPipeline:
         model._validate_contact_capacity(rigid_contact_max, soft_contact_max)
 
         self.requires_grad = requires_grad
-        if (requires_grad or enable_rigid_soft_full_surface_contact) and slots is not None and model.particle_count > 0:
+        if (
+            (requires_grad or enable_rigid_soft_full_surface_contact)
+            and variant_options is not None
+            and model.particle_count > 0
+        ):
             # Differentiable and full-surface soft contacts do not cull shapes by their AABBs.
             raise NotImplementedError(
                 "Soft contacts with requires_grad=True or enable_rigid_soft_full_surface_contact=True "
-                "do not support shape slots."
+                "do not support body variants."
             )
         self.deterministic = deterministic
         per_contact_props = self.narrow_phase.hydroelastic_sdf is not None
@@ -2928,8 +2934,7 @@ class CollisionPipeline:
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
                 model.shape_flags,
-                self._shape_slot,
-                self._shape_prototype_shape_held,
+                self._shape_variant_row,
                 contacts.contact_counters,
                 contacts.contact_generation,
                 self.broad_phase_pair_count,

@@ -798,12 +798,12 @@ class ViewerBase(ABC):
         layer._slot_to_shape: np.ndarray | None = None
         layer._slot_to_shape_wp: wp.array | None = None
         layer._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
-        # Render geometry of each prototype shape and the slot rows, cached for prototype assignments.
-        layer._prototype_shape_render: list[tuple[int, str, int, wp.vec4, bool]] | None = None
-        layer._prototype_shape_types: np.ndarray | None = None
-        layer._slot_row_shapes: np.ndarray | None = None
-        layer._slot_row_body: np.ndarray | None = None
-        layer._slot_row_world: np.ndarray | None = None
+        # Render geometry of each variant shape and the variant rows, cached for variant selections.
+        layer._variant_shape_render: list[tuple[int, str, int, wp.vec4, bool]] | None = None
+        layer._variant_shape_types: np.ndarray | None = None
+        layer._variant_row_shapes: np.ndarray | None = None
+        layer._variant_row_body: np.ndarray | None = None
+        layer._variant_row_world: np.ndarray | None = None
         layer._texture_sdf_host: np.ndarray | None = None
         layer._shape_transparent_mask: np.ndarray | None = None
         layer._shape_batches_have_transparency: bool = False
@@ -951,9 +951,9 @@ class ViewerBase(ABC):
         """Notify the viewer that parts of its :class:`~newton.Model` were modified.
 
         The viewer refreshes the cached data affected by ``flags``. It currently handles only
-        :attr:`ModelFlags.SHAPE_GEOMETRY <newton.ModelFlags.SHAPE_GEOMETRY>`, such as a prototype
-        assignment by :meth:`~newton.Model.assign_shape_prototypes`, by regrouping the slot rows by
-        the prototype shape they hold, without recompiling geometry. Other flags are ignored; call
+        :attr:`ModelFlags.SHAPE_GEOMETRY <newton.ModelFlags.SHAPE_GEOMETRY>`, such as a body variant
+        selection by :meth:`~newton.Model.select_body_variants`, by regrouping the variant rows by
+        the variant shape they hold, without recompiling geometry. Other flags are ignored; call
         :meth:`set_model` again after changing shape data such as transforms, scales, or sources.
 
         .. experimental::
@@ -980,8 +980,8 @@ class ViewerBase(ABC):
         self.model_changed = True
 
     def _shape_geometry_changed(self) -> bool:
-        """Whether the model's shapes may differ from their finalized geometry, i.e. it has shape slots."""
-        return self.model is not None and self.model.shape_slot_count > 0
+        """Whether the model's shapes may differ from their finalized geometry, i.e. it has body variants."""
+        return self.model is not None and self.model._has_body_variants
 
     def _rebuild_shapes(self) -> None:
         """Regroup the model shapes into instance batches, preserving the geometry cache."""
@@ -2500,7 +2500,7 @@ class ViewerBase(ABC):
             self.model_shapes.append(shape_index)
 
         def _freeze_populated(self):
-            """Store the instances added at population; slot rows are added to them on every selection."""
+            """Store the instances added at population; variant rows are added to them on every selection."""
             self._populated = {
                 "parents": np.asarray(self.parents, dtype=np.int32),
                 "xforms": np.asarray(self.xforms, dtype=np.float32).reshape(-1, 7),
@@ -2854,13 +2854,15 @@ class ViewerBase(ABC):
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
         shape_transparent_mask = np.zeros(shape_count, dtype=bool)
-        # Slot rows are instanced per notify from the prototype shape they hold, see _slot_instances().
-        shape_slot = self.model.shape_slot.numpy() if self.model.shape_slot_count else np.full(shape_count, -1)
+        # Variant rows are instanced per notify from the variant shape they hold, see _variant_instances().
+        variant_row = (
+            self.model._shape_variant_row.numpy() if self.model._variant_row_max else np.zeros(shape_count, bool)
+        )
 
         # loop over shapes
         for s in range(shape_count):
-            # skip shapes from non-visible worlds and slot rows
-            if not self._should_render_world(shape_world[s]) or shape_slot[s] >= 0:
+            # skip shapes from non-visible worlds and variant rows
+            if not self._should_render_world(shape_world[s]) or variant_row[s]:
                 continue
 
             geo_type = shape_geo_type[s]
@@ -2938,63 +2940,64 @@ class ViewerBase(ABC):
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch
-        self._prototype_shape_render = None
+        self._variant_shape_render = None
         self._select_shape_instances()
 
-    def _slot_instances(self) -> tuple[dict[str, np.ndarray], np.ndarray] | None:
-        """Instances of the slot rows that hold a prototype shape, and the batch ordinal of each.
+    def _variant_instances(self) -> tuple[dict[str, np.ndarray], np.ndarray] | None:
+        """Instances of the variant rows that hold a variant shape, and the batch ordinal of each.
 
-        Prototype shapes get their render geometry once; every call groups the rows by the
-        prototype shape they hold, creating batches on first use, so its cost does not depend on
-        the number of prototypes.
+        Variant shapes get their render geometry once; every call groups the rows by the variant
+        shape they hold, creating batches on first use, so its cost does not depend on the number
+        of variants.
         """
         model = self.model
-        if model.shape_slot_count == 0:
+        if model._variant_row_max == 0:
             return None
-        if self._prototype_shape_render is None:
-            types = model.shape_prototype_shape_type.numpy()
-            scales = model.shape_prototype_shape_scale.numpy()
-            margins = model.shape_prototype_shape_margin.numpy()
-            solids = model.shape_prototype_shape_is_solid.numpy()
-            flags = model.shape_prototype_shape_flags.numpy()
-            sdf_index = model._shape_prototype_geometry["_shape_sdf_index"].numpy()
-            site_size = model._shape_prototype_custom.get("mujoco:site_size_is_display")
+        if self._variant_shape_render is None:
+            geometry = model._variant_shape_geometry
+            types = geometry["shape_type"].numpy()
+            scales = geometry["shape_scale"].numpy()
+            margins = geometry["shape_margin"].numpy()
+            solids = geometry["shape_is_solid"].numpy()
+            flags = geometry["shape_flags"].numpy()
+            sdf_index = geometry["_shape_sdf_index"].numpy()
+            site_size = model._variant_shape_custom.get("mujoco:site_size_is_display")
             site_size = site_size[0].numpy() if site_size is not None else np.zeros(len(types), dtype=bool)
             # Display-sized cylinder sites render without their half-height, as regular shapes do.
             scales = np.where(
                 ((types == newton.GeoType.CYLINDER) & site_size.astype(bool))[:, None], scales * (1.0, 1.0, 0.0), scales
             )
-            self._prototype_shape_render = [
+            self._variant_shape_render = [
                 self._shape_render_geometry(
                     types[q],
                     [float(v) for v in scales[q]],
                     float(margins[q]),
                     bool(solids[q]),
-                    model.shape_prototype_shape_source[q],
+                    model._variant_shape_source[q],
                     int(flags[q]),
                     int(sdf_index[q]),
                 )
-                for q in range(model.shape_prototype_shape_count)
+                for q in range(model._variant_shape_count)
             ]
-            self._prototype_shape_types = types
-            rows = model.shape_slot_shapes.numpy()
-            self._slot_row_shapes = rows
-            self._slot_row_body = model.shape_body.numpy()[rows]
-            self._slot_row_world = model.shape_world.numpy()[rows]
-        rows = self._slot_row_shapes
-        held = model._shape_prototype_shape_held.numpy()[rows]
+            self._variant_shape_types = types
+            rows = model._variant_row_shapes.numpy()
+            self._variant_row_shapes = rows
+            self._variant_row_body = model.shape_body.numpy()[rows]
+            self._variant_row_world = model.shape_world.numpy()[rows]
+        rows = self._variant_row_shapes
+        held = model._shape_variant_shape.numpy()[rows]
         opacity = np.clip(model.shape_opacity.numpy()[rows], 0.0, 1.0)
         keep = held >= 0
         if self._visible_worlds is not None:
             visible = np.zeros(model.world_count + 1, dtype=bool)
             visible[[w for w in self._visible_worlds if 0 <= w < model.world_count]] = True
             visible[-1] = True
-            keep &= visible[self._slot_row_world]
+            keep &= visible[self._variant_row_world]
         rows, held, opacity = rows[keep], held[keep], opacity[keep]
-        static = self._slot_row_body[keep] < 0
+        static = self._variant_row_body[keep] < 0
         transparent = opacity < OPAQUE_OPACITY_THRESHOLD
 
-        # One batch per held prototype shape and render pass.
+        # One batch per held variant shape and render pass.
         combos, inverse = np.unique(held * 4 + static * 2 + transparent, return_inverse=True)
         batch_index = {id(b): i for i, b in enumerate(self._shape_instances.values())}
         ordinals = np.empty(len(combos), dtype=np.int64)
@@ -3002,9 +3005,9 @@ class ViewerBase(ABC):
         uses_scale = np.empty(len(combos), dtype=bool)
         for c, combo in enumerate(combos.tolist()):
             q = combo // 4
-            geo_hash, mesh_name, flags, material, scaled = self._prototype_shape_render[q]
+            geo_hash, mesh_name, flags, material, scaled = self._variant_shape_render[q]
             batch = self._shape_batch(
-                geo_hash, mesh_name, self._prototype_shape_types[q], bool(combo & 2), flags, bool(combo & 1)
+                geo_hash, mesh_name, self._variant_shape_types[q], bool(combo & 2), flags, bool(combo & 1)
             )
             ordinals[c] = batch_index.setdefault(id(batch), len(batch_index))
             materials[c] = np.asarray(material, dtype=np.float32)
@@ -3014,30 +3017,30 @@ class ViewerBase(ABC):
         )
         self._shape_transparent_mask[rows] = transparent
         instances = {
-            "parents": self._slot_row_body[keep].astype(np.int32),
+            "parents": self._variant_row_body[keep].astype(np.int32),
             "xforms": model.shape_transform.numpy()[rows],
             "scales": scales.astype(np.float32),
             "colors": model.shape_color.numpy()[rows],
             "opacities": opacity.astype(np.float32),
             "materials": materials[inverse],
-            "worlds": self._slot_row_world[keep].astype(np.int32),
+            "worlds": self._variant_row_world[keep].astype(np.int32),
             "model_shapes": rows.astype(np.int32),
         }
         return instances, ordinals[inverse]
 
     def _select_shape_instances(self) -> None:
-        """Upload the instances of every batch and rebuild the slot maps.
+        """Upload the instances of every batch and rebuild the instance maps.
 
-        Regular shapes keep the instances added at population. Slot rows are grouped by the
-        prototype shape they hold on every call, without recompiling geometry. All batches are
+        Regular shapes keep the instances added at population. Variant rows are grouped by the
+        variant shape they hold on every call, without recompiling geometry. All batches are
         uploaded together with one transfer per attribute; each batch views its slice of the
         packed arrays.
         """
-        slot_instances = self._slot_instances()
+        variant_instances = self._variant_instances()
         batches = list(self._shape_instances.values())
         for batch in batches:
             if getattr(batch, "_populated", None) is None:
-                # Created for slot rows after population.
+                # Created for variant rows after population.
                 batch._freeze_populated()
         if not batches:
             self.model_shape_color = None
@@ -3050,8 +3053,8 @@ class ViewerBase(ABC):
             name: np.concatenate([batch._populated[name] for batch in batches]) for name in batches[0]._populated
         }
         ordinals = np.repeat(np.arange(len(batches)), [batch._populated_count for batch in batches])
-        if slot_instances is not None:
-            instances, instance_ordinals = slot_instances
+        if variant_instances is not None:
+            instances, instance_ordinals = variant_instances
             all_instances = {name: np.concatenate((values, instances[name])) for name, values in all_instances.items()}
             ordinals = np.concatenate((ordinals, instance_ordinals))
             order = np.argsort(ordinals, kind="stable")
@@ -3146,11 +3149,13 @@ class ViewerBase(ABC):
         )
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
-        shape_slot = self.model.shape_slot.numpy() if self.model.shape_slot_count else np.full(shape_count, -1)
+        variant_row = (
+            self.model._shape_variant_row.numpy() if self.model._variant_row_max else np.zeros(shape_count, bool)
+        )
 
         for s in range(shape_count):
-            # skip shapes from non-visible worlds; slot rows follow their prototype shapes
-            if not self._should_render_world(shape_world[s]) or shape_slot[s] >= 0:
+            # skip shapes from non-visible worlds; variant rows follow their variant shapes
+            if not self._should_render_world(shape_world[s]) or variant_row[s]:
                 continue
 
             # Only process collision shapes with texture SDFs
@@ -3178,13 +3183,13 @@ class ViewerBase(ABC):
         self._select_isomesh_instances()
 
     def _select_isomesh_instances(self) -> None:
-        """Set the instances of every SDF isomesh batch: its regular shapes plus the slot rows that
-        hold a colliding prototype shape with a texture SDF."""
-        slot_instances: dict[int, list[int]] = {}
+        """Set the instances of every SDF isomesh batch: its regular shapes plus the variant rows that
+        hold a colliding variant shape with a texture SDF."""
+        row_instances: dict[int, list[int]] = {}
         uses_scale: dict[int, bool] = {}
-        if self.model.shape_slot_count:
-            rows = self.model.shape_slot_shapes.numpy()
-            held = self.model._shape_prototype_shape_held.numpy()
+        if self.model._variant_row_max:
+            rows = self.model._variant_row_shapes.numpy()
+            held = self.model._shape_variant_shape.numpy()
             flags = self.model.shape_flags.numpy()
             sdf_index = self.model._shape_sdf_index.numpy()
             body = self.model.shape_body.numpy()
@@ -3194,19 +3199,19 @@ class ViewerBase(ABC):
                     continue
                 batch, scaled = self._isomesh_batch(int(sdf_index[s]), body[s] == -1, int(flags[s]))
                 if batch is not None:
-                    slot_instances.setdefault(id(batch), []).append(s)
+                    row_instances.setdefault(id(batch), []).append(s)
                     uses_scale[id(batch)] = scaled
-        if slot_instances:
+        if row_instances:
             shape_body = self.model.shape_body.numpy()
             shape_world = self.model.shape_world.numpy()
             shape_transform = self.model.shape_transform.numpy()
             shape_scale = self.model.shape_scale.numpy()
         for batch in self._sdf_isomesh_instances.values():
             if getattr(batch, "_populated", None) is None:
-                # Created for slot rows after population.
+                # Created for variant rows after population.
                 batch._freeze_populated()
             arrays = dict(batch._populated)
-            shapes = slot_instances.get(id(batch))
+            shapes = row_instances.get(id(batch))
             if shapes:
                 shapes = np.asarray(shapes, dtype=np.int32)
                 extra = {
@@ -3394,15 +3399,15 @@ class ViewerBase(ABC):
         scale_np = self.model.shape_scale.numpy()
         shape_count = len(shape_body)
 
-        slot_rows = self.model.shape_slot.numpy() >= 0 if self.model.shape_slot_count else None
-        held = self.model._shape_prototype_shape_held.numpy() if slot_rows is not None else None
-        sources = self.model._shape_current_sources() if slot_rows is not None else None
+        variant_rows = self.model._shape_variant_row.numpy() if self.model._variant_row_max else None
+        held = self.model._shape_variant_shape.numpy() if variant_rows is not None else None
+        sources = self.model._shape_current_sources() if variant_rows is not None else None
         for s in range(shape_count):
             if not self._should_render_world(shape_world[s]):
                 continue
             if not (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)):
                 continue
-            if slot_rows is not None and slot_rows[s] and held[s] < 0:
+            if variant_rows is not None and variant_rows[s] and held[s] < 0:
                 continue
 
             offset_mesh = self._compute_shape_offset_mesh(

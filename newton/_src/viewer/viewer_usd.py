@@ -575,7 +575,7 @@ class ViewerUSD(ViewerBase):
     def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
         if flags & newton.ModelFlags.SHAPE_GEOMETRY and self._shape_geometry_changed():
             raise NotImplementedError(
-                "ViewerUSD does not support shape geometry changes such as shape prototype assignment."
+                "ViewerUSD does not support shape geometry changes such as body variant selection."
             )
         super().notify_model_changed(flags)
 

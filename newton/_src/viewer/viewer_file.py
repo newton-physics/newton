@@ -1504,7 +1504,7 @@ class ViewerFile(ViewerBase):
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         if flags & ModelFlags.SHAPE_GEOMETRY and self._shape_geometry_changed():
             raise NotImplementedError(
-                "ViewerFile does not support shape geometry changes such as shape prototype assignment."
+                "ViewerFile does not support shape geometry changes such as body variant selection."
             )
         super().notify_model_changed(flags)
 
