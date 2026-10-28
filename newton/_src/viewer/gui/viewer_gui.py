@@ -52,6 +52,7 @@ class ViewerGui:
         self._viewer = viewer
         self.ui = ImGuiBackend(window)
         self.ui.key_press_filter = self._filter_gui_key_press
+        window.push_handlers(on_deactivate=self.on_window_deactivated)
 
         # UI callback registry. Backend viewers (GL/RTX) register their
         # ``_ui_populate_rendering_panel`` here, examples register their
@@ -72,11 +73,10 @@ class ViewerGui:
         self._follow_held = False
         self._follow_latched = False
         self._follow_center = None
-        window.push_handlers(on_deactivate=self._release_camera_keys)
         self._camera_drag_buttons = 0
 
-        # Gizmo active-frame tracking (handles snap_to on release)
-        self._gizmo_active = {}
+        # Active operation IDs support release snapping and cancellation.
+        self._gizmo_active: dict[str, int] = {}
         self._gizmo_hovered = False
         self._frame_prepared = False
         self.workspace = None
@@ -164,9 +164,32 @@ class ViewerGui:
         return bool(self.ui.io.want_capture_keyboard)
 
     def on_rendering_paused(self) -> None:
-        """Release camera motion and gizmos when the displayed image freezes."""
+        """Cancel interactions, keeping the current pose when the image freezes."""
+        self._cancel_mouse_interaction()
+
+    def on_window_deactivated(self) -> None:
+        """Cancel interactions when the viewer loses focus."""
+        self._cancel_mouse_interaction()
+        if self.is_available:
+            self.ui.io.clear_input_keys()
+
+    def _cancel_mouse_interaction(self) -> None:
+        """Keep the current pose; only a normal gizmo release applies snap_to."""
         self._cam_vel.fill(0.0)
         self._camera_drag_buttons = 0
+        self.release_picking()
+        if self.is_available:
+            giz = self.ui.giz
+            # Recent ImGuizmo versions only cancel under the editing ID.
+            for gid, op in self._gizmo_active.items():
+                if op:
+                    giz.push_id(str(gid))
+                    giz.push_id(op)
+                    giz.enable(False)
+                    giz.enable(True)
+                    giz.pop_id()
+                    giz.pop_id()
+            self.ui.cancel_mouse_interaction()
         self._gizmo_active.clear()
         self._gizmo_hovered = False
         self._selection_press = None
@@ -580,25 +603,36 @@ class ViewerGui:
             self._viewer._camera_dirty = True
 
     def handle_mouse_press(self, x: float, y: float, button: int, to_framebuffer_coords, modifiers: int = 0) -> None:
-        """Handle mouse button press: start camera navigation or right-click picking."""
+        """Choose camera, picking, or workspace selection ownership after processing the current UI frame."""
         self._camera_drag_buttons &= ~button
-        if self.should_ignore_mouse_input():
+        if self._viewer.is_rendering_paused() or self._loading_splash_active:
             return
-        import pyglet
+        from pyglet.window import key, mouse
 
+        if self.is_available:
+            mouse_index = {mouse.LEFT: 0, mouse.RIGHT: 1, mouse.MIDDLE: 2}
+            workspace = getattr(self, "workspace", None)
+            dockspace = getattr(workspace, "dockspace", None)
+            in_viewport = self.show_ui and dockspace is not None and dockspace.viewport_hovered
+            # The docked viewport is an ImGui image, but its presses belong to
+            # the scene unless the current frame gave them to a gizmo.
+            if (self.ui.io.mouse_down_owned[mouse_index[button]] and not in_viewport) or (
+                self.show_ui and (self._gizmo_hovered or getattr(self._viewer, "gizmo_is_using", False))
+            ):
+                return
         viewer = self._viewer
-        if button == pyglet.window.mouse.LEFT and getattr(self, "workspace", None) is not None:
+        if button == mouse.LEFT and getattr(self, "workspace", None) is not None:
             self._selection_press = (
                 x,
                 y,
                 to_framebuffer_coords,
-                bool(modifiers & pyglet.window.key.MOD_ALT),
-                bool(modifiers & (pyglet.window.key.MOD_CTRL | pyglet.window.key.MOD_SHIFT)),
+                bool(modifiers & key.MOD_ALT),
+                bool(modifiers & (key.MOD_CTRL | key.MOD_SHIFT)),
             )
-        if button in (pyglet.window.mouse.LEFT, pyglet.window.mouse.MIDDLE):
+        if button in (mouse.LEFT, mouse.MIDDLE):
             self._camera_drag_buttons |= button
         if (
-            button == pyglet.window.mouse.RIGHT
+            button == mouse.RIGHT
             and getattr(viewer, "picking_enabled", False)
             and getattr(viewer, "picking", None) is not None
         ):
@@ -606,9 +640,9 @@ class ViewerGui:
 
     def handle_mouse_release(self, x: float, y: float, button: int) -> None:
         """Handle mouse button release: end camera navigation or right-click picking."""
-        import pyglet
+        from pyglet.window import mouse
 
-        if button == pyglet.window.mouse.LEFT:
+        if button == mouse.LEFT:
             press = getattr(self, "_selection_press", None)
             self._selection_press = None
             if press is not None and not self.should_ignore_mouse_input():
@@ -616,7 +650,7 @@ class ViewerGui:
                 if (x - px) ** 2 + (y - py) ** 2 <= 16:
                     self.workspace.select_from_screen(x, y, convert, shape=shape, toggle=toggle)
         self._camera_drag_buttons &= ~button
-        if button == pyglet.window.mouse.RIGHT and getattr(self._viewer, "picking", None) is not None:
+        if button == mouse.RIGHT and getattr(self._viewer, "picking", None) is not None:
             self.release_picking()
 
     def _camera_pan_scale(self) -> float:
@@ -651,17 +685,15 @@ class ViewerGui:
         modifiers: int = 0,
     ) -> None:
         """Handle mouse drag: middle-click orbit/pan/dolly, left-click look, right-click pick."""
-        import pyglet
+        from pyglet.window import key, mouse
 
         press = getattr(self, "_selection_press", None)
         if press is not None:
-            if buttons & pyglet.window.mouse.LEFT and (x - press[0]) ** 2 + (y - press[1]) ** 2 <= 16:
+            if buttons & mouse.LEFT and (x - press[0]) ** 2 + (y - press[1]) ** 2 <= 16:
                 return
             self._selection_press = None
         allow_active_pick_drag = (
-            bool(buttons & pyglet.window.mouse.RIGHT)
-            and getattr(self._viewer, "picking_enabled", False)
-            and self.is_pick_active()
+            bool(buttons & mouse.RIGHT) and getattr(self._viewer, "picking_enabled", False) and self.is_pick_active()
         )
         camera_buttons = buttons & self._camera_drag_buttons
         # ImGuizmo can request ImGui mouse capture even when only hovered.
@@ -674,10 +706,10 @@ class ViewerGui:
         viewer = self._viewer
         camera = getattr(viewer, "camera", None)
 
-        if camera_buttons & pyglet.window.mouse.MIDDLE and camera is not None:
-            if modifiers & pyglet.window.key.MOD_CTRL:
+        if camera_buttons & mouse.MIDDLE and camera is not None:
+            if modifiers & key.MOD_CTRL:
                 camera.dolly(dy * self._camera_dolly_drag_sensitivity)
-            elif modifiers & pyglet.window.key.MOD_SHIFT:
+            elif modifiers & key.MOD_SHIFT:
                 scale = self._camera_pan_scale()
                 camera.pan(-dx * scale, -dy * scale)
             else:
@@ -689,7 +721,7 @@ class ViewerGui:
                 viewer._camera_dirty = True
             return
 
-        if camera_buttons & pyglet.window.mouse.LEFT:
+        if camera_buttons & mouse.LEFT:
             if camera is not None and self.following_selection:
                 camera.orbit(-dx * self._camera_orbit_sensitivity, dy * self._camera_orbit_sensitivity)
                 if hasattr(viewer, "_camera_dirty"):
@@ -699,7 +731,7 @@ class ViewerGui:
                 if camera is not None:
                     camera.sync_pivot_to_view()
         if (
-            buttons & pyglet.window.mouse.RIGHT
+            buttons & mouse.RIGHT
             and getattr(viewer, "picking_enabled", False)
             and getattr(viewer, "picking", None) is not None
         ):
@@ -790,18 +822,19 @@ class ViewerGui:
             return
         if self.workspace is not None and self.workspace.console.poll_warnings():
             self.show_ui = True
+        if (not self.show_ui or self._loading_splash_active) and any(self._gizmo_active.values()):
+            self._cancel_mouse_interaction()
         if not self.show_ui and self.workspace is not None:
             self.workspace.collision.contacts_tab = False
             self.workspace.collision.overlays()
-        if not self.show_ui and not self._loading_splash_active:
-            return
         self.ui.begin_frame()
         try:
+            # Advance owned camera drags before drawing/projecting gizmo handles.
+            self._process_mouse_drag()
             if self.show_ui:
                 loading = self._loading_splash_active
                 if loading:
-                    # Block interaction without making panel backgrounds transparent;
-                    # the foreground overlay dims the whole composed GUI uniformly.
+                    # Keep panel backgrounds opaque beneath the foreground loading overlay.
                     self.ui.imgui.push_style_var(self.ui.imgui.StyleVar_.disabled_alpha, 1.0)
                     self.ui.imgui.begin_disabled()
                 try:
@@ -813,11 +846,67 @@ class ViewerGui:
                         self.ui.imgui.pop_style_var()
             if self._loading_splash_active:
                 self._render_loading_splash()
+            self._process_mouse_input()
             self.ui.end_frame()
-        except (Exception, SystemExit):
+        except BaseException:
+            # Restore unfinished callback stacks before the original error propagates.
             self.ui.abort_frame()
             raise
         self._frame_prepared = True
+
+    def _process_mouse_input(self) -> None:
+        """Route the same processed mouse events used by ImGui and ImGuizmo."""
+        io = self.ui.io
+        if not (any(io.mouse_clicked) or any(io.mouse_released) or io.mouse_wheel):
+            return
+
+        from pyglet.window import key, mouse
+
+        imgui = self.ui.imgui
+        x, y = io.mouse_pos.x, io.display_size.y - io.mouse_pos.y
+        to_framebuffer_coords = self._viewer._to_framebuffer_coords
+        modifiers = (
+            (key.MOD_CTRL if io.key_ctrl else 0)
+            | (key.MOD_SHIFT if io.key_shift else 0)
+            | (key.MOD_ALT if io.key_alt else 0)
+        )
+        for index, button in enumerate((mouse.LEFT, mouse.RIGHT, mouse.MIDDLE)):
+            clicked, released = imgui.is_mouse_clicked(index), imgui.is_mouse_released(index)
+            if released and (not clicked or io.mouse_down[index]):
+                self.handle_mouse_release(x, y, button)
+            if clicked:
+                self.handle_mouse_press(x, y, button, to_framebuffer_coords, modifiers)
+            if released and clicked and not io.mouse_down[index]:
+                # A complete click can be queued between two displayed frames.
+                self.handle_mouse_release(x, y, button)
+        if io.mouse_wheel:
+            self.handle_mouse_scroll(io.mouse_wheel, is_ctrl_down=io.key_ctrl)
+
+    def _process_mouse_drag(self) -> None:
+        """Advance existing drags using the current ImGui input frame."""
+        io = self.ui.io
+        if not any(io.mouse_down) or not (io.mouse_delta.x or io.mouse_delta.y):
+            return
+
+        from pyglet.window import key, mouse
+
+        imgui = self.ui.imgui
+        buttons = 0
+        for index, button in enumerate((mouse.LEFT, mouse.RIGHT, mouse.MIDDLE)):
+            if imgui.is_mouse_down(index) and not imgui.is_mouse_clicked(index):
+                # Movement preceding a press is not part of the new drag.
+                buttons |= button
+        if buttons:
+            modifiers = (key.MOD_CTRL if io.key_ctrl else 0) | (key.MOD_SHIFT if io.key_shift else 0)
+            self.handle_mouse_drag(
+                io.mouse_pos.x,
+                io.display_size.y - io.mouse_pos.y,
+                io.mouse_delta.x,
+                -io.mouse_delta.y,
+                buttons,
+                self._viewer._to_framebuffer_coords,
+                modifiers,
+            )
 
     def render_prepared_frame(self):
         """Draw the prepared UI over the scene without processing actions twice."""
@@ -883,10 +972,17 @@ class ViewerGui:
         self._gizmo_hovered = False
         if not self.is_available:
             return
-        if viewer.is_rendering_paused() or self._loading_splash_active:
+        if (
+            viewer.is_rendering_paused()
+            or self._loading_splash_active
+            or (self.workspace_enabled and self.workspace is not None and not self.workspace.dockspace.viewport_visible)
+        ):
+            if any(self._gizmo_active.values()):
+                self._cancel_mouse_interaction()
             return
-        if self.workspace_enabled and self.workspace is not None and not self.workspace.dockspace.viewport_visible:
-            return
+        gizmo_log = getattr(viewer, "_gizmo_log", None) or {}
+        if any(op and gid not in gizmo_log for gid, op in self._gizmo_active.items()):
+            self._cancel_mouse_interaction()
         if not hasattr(viewer, "_gizmo_log") or not viewer._gizmo_log:
             self._gizmo_active.clear()
             if hasattr(viewer, "gizmo_is_using"):
@@ -983,11 +1079,12 @@ class ViewerGui:
                 r_ops = tuple(axis_rotate[a] for a in rotate)
 
             ops = t_ops + r_ops
-            was_active = self._gizmo_active.get(gid, False)
+            was_active = self._gizmo_active.get(gid, 0)
+            if was_active and was_active not in ops:
+                self._cancel_mouse_interaction()
+                was_active = 0
             if not ops:
-                if was_active and snap_to is not None:
-                    transform_assign(transform, snap_to)
-                self._gizmo_active[gid] = False
+                self._gizmo_active[gid] = 0
                 continue
 
             giz.push_id(str(gid))
@@ -997,21 +1094,24 @@ class ViewerGui:
 
             # The binding requires named operations, so render each separately.
             # Use stable per-operation IDs and retain state before the next call.
-            op_modified = is_active = False
+            active_op = 0
             for op in ops:
                 giz.push_id(int(op))
-                op_modified |= safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None))
+                giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)
                 self._gizmo_hovered |= safe_bool(giz.is_over(op))
-                is_active |= safe_bool(giz.is_using())
+                if giz.is_using():
+                    active_op = int(op)
                 giz.pop_id()
 
-            if was_active and not is_active and snap_to is not None:
+            modified_matrix = M_.values.reshape(4, 4, order="F")
+            if was_active and not active_op and snap_to is not None:
                 transform_assign(transform, snap_to)
-            elif op_modified:
-                M[:] = M_.values.reshape(4, 4, order="F")
-                transform_assign_matrix(transform, M)
+            elif not np.array_equal(M, modified_matrix):
+                # ImGuizmo can return False for repeated translation deltas
+                # even though it updated the matrix.
+                transform_assign_matrix(transform, modified_matrix)
 
-            self._gizmo_active[gid] = is_active
+            self._gizmo_active[gid] = active_op
 
             giz.pop_id()
 
@@ -1190,9 +1290,7 @@ class ViewerGui:
 
             # Run controls — shown once a model is loaded
             if viewer.model is not None:
-                _changed, viewer._paused = imgui.checkbox("Pause", viewer._paused)
-                if _changed:
-                    viewer._display_options_user["_paused"] = viewer._paused
+                viewer._edit_display_option(viewer, "_paused", imgui.checkbox, "Pause")
                 imgui.same_line()
                 imgui.begin_disabled(not viewer._paused)
                 if imgui.button("Step"):
@@ -1229,47 +1327,31 @@ class ViewerGui:
                 if imgui.collapsing_header("Visualization", flags=header_flags):
                     imgui.separator()
                     renderer = getattr(viewer, "renderer", None)
-                    _changed, viewer.show_joints = imgui.checkbox("Show Joints", viewer.show_joints)
-                    if _changed:
-                        viewer._display_options_user["show_joints"] = viewer.show_joints
+                    viewer._edit_display_option(viewer, "show_joints", imgui.checkbox, "Show Joints")
                     if viewer.show_joints and renderer is not None and hasattr(renderer, "joint_scale"):
-                        _changed, renderer.joint_scale = imgui.slider_float(
-                            "Joint Scale", renderer.joint_scale, 0.25, 5.0
+                        viewer._edit_display_option(
+                            renderer, "joint_scale", imgui.slider_float, "Joint Scale", 0.25, 5.0
                         )
-                        if _changed:
-                            viewer._display_options_user["joint_scale"] = renderer.joint_scale
-                    _changed, viewer.show_contacts = imgui.checkbox("Show Contacts", viewer.show_contacts)
-                    if _changed:
-                        viewer._display_options_user["show_contacts"] = viewer.show_contacts
+                    viewer._edit_display_option(viewer, "show_contacts", imgui.checkbox, "Show Contacts")
                     if viewer.show_contacts and renderer is not None:
                         imgui.indent()
-                        _changed, viewer.show_contact_normals = imgui.checkbox(
-                            "Normal", bool(viewer.show_contact_normals)
-                        )
-                        if _changed:
-                            viewer._display_options_user["show_contact_normals"] = viewer.show_contact_normals
-                        _changed, viewer.show_contact_disks = imgui.checkbox(
-                            "Contact Mode", bool(viewer.show_contact_disks)
-                        )
-                        if _changed:
-                            viewer._display_options_user["show_contact_disks"] = viewer.show_contact_disks
-                        _changed, viewer.show_contact_forces = imgui.checkbox("Force", bool(viewer.show_contact_forces))
-                        if _changed:
-                            viewer._display_options_user["show_contact_forces"] = viewer.show_contact_forces
+                        viewer._edit_display_option(viewer, "show_contact_normals", imgui.checkbox, "Normal")
+                        viewer._edit_display_option(viewer, "show_contact_disks", imgui.checkbox, "Contact Mode")
+                        viewer._edit_display_option(viewer, "show_contact_forces", imgui.checkbox, "Force")
                         imgui.unindent()
 
                         log_flag = imgui.SliderFlags_.logarithmic.value
                         base = float(viewer._contact_viz_scale_default) or 1.0
-                        _changed, viewer.contact_viz_scale = imgui.slider_float(
+                        viewer._edit_display_option(
+                            viewer,
+                            "contact_viz_scale",
+                            imgui.slider_float,
                             "Contact Relative Scale",
-                            float(viewer.contact_viz_scale),
                             base * 0.01,
                             base * 100.0,
                             "%.4g",
                             log_flag,
                         )
-                        if _changed:
-                            viewer._display_options_user["contact_viz_scale"] = viewer.contact_viz_scale
                         if viewer.show_contact_forces:
                             base = float(viewer._contact_force_scale_default) or 0.5
                             _changed, viewer.contact_force_scale = imgui.slider_float(
@@ -1287,34 +1369,18 @@ class ViewerGui:
                         if hasattr(renderer, "arrow_scale") and (
                             viewer.show_contact_normals or viewer.show_contact_forces
                         ):
-                            _changed, renderer.arrow_scale = imgui.slider_float(
-                                "Arrow Thickness", renderer.arrow_scale, 0.25, 5.0
+                            viewer._edit_display_option(
+                                renderer, "arrow_scale", imgui.slider_float, "Arrow Thickness", 0.25, 5.0
                             )
-                            if _changed:
-                                viewer._display_options_user["arrow_scale"] = renderer.arrow_scale
-                    _changed, viewer.show_particles = imgui.checkbox("Show Particles", viewer.show_particles)
-                    if _changed:
-                        viewer._display_options_user["show_particles"] = viewer.show_particles
-                    _changed, viewer.show_springs = imgui.checkbox("Show Springs", viewer.show_springs)
-                    if _changed:
-                        viewer._display_options_user["show_springs"] = viewer.show_springs
-                    _changed, viewer.show_com = imgui.checkbox("Show Center of Mass", viewer.show_com)
-                    if _changed:
-                        viewer._display_options_user["show_com"] = viewer.show_com
+                    viewer._edit_display_option(viewer, "show_particles", imgui.checkbox, "Show Particles")
+                    viewer._edit_display_option(viewer, "show_springs", imgui.checkbox, "Show Springs")
+                    viewer._edit_display_option(viewer, "show_com", imgui.checkbox, "Show Center of Mass")
                     if viewer.show_com and renderer is not None and hasattr(renderer, "com_scale"):
-                        _changed, renderer.com_scale = imgui.slider_float("COM Scale", renderer.com_scale, 0.25, 5.0)
-                        if _changed:
-                            viewer._display_options_user["com_scale"] = renderer.com_scale
-                    _changed, viewer.show_triangles = imgui.checkbox("Show Cloth", viewer.show_triangles)
-                    if _changed:
-                        viewer._display_options_user["show_triangles"] = viewer.show_triangles
-                    _changed, viewer.show_collision = imgui.checkbox("Show Collision", viewer.show_collision)
-                    if _changed:
-                        viewer._display_options_user["show_collision"] = viewer.show_collision
+                        viewer._edit_display_option(renderer, "com_scale", imgui.slider_float, "COM Scale", 0.25, 5.0)
+                    viewer._edit_display_option(viewer, "show_triangles", imgui.checkbox, "Show Cloth")
+                    viewer._edit_display_option(viewer, "show_collision", imgui.checkbox, "Show Collision")
                     if renderer is not None and hasattr(renderer, "draw_edges"):
-                        _changed, renderer.draw_edges = imgui.checkbox("Show Edges", renderer.draw_edges)
-                        if _changed:
-                            viewer._display_options_user["draw_edges"] = renderer.draw_edges
+                        viewer._edit_display_option(renderer, "draw_edges", imgui.checkbox, "Show Edges")
                     sdf_margin_mode = getattr(viewer, "sdf_margin_mode", None)
                     SDFMarginMode = getattr(type(viewer), "SDFMarginMode", None)
                     if sdf_margin_mode is not None and SDFMarginMode is not None:
@@ -1324,22 +1390,12 @@ class ViewerGui:
                         if _changed:
                             viewer._display_options_user["sdf_margin_mode"] = viewer.sdf_margin_mode
                         if viewer.sdf_margin_mode != SDFMarginMode.OFF and renderer is not None:
-                            _changed, renderer.wireframe_line_width = imgui.slider_float(
-                                "Wireframe Width (px)", renderer.wireframe_line_width, 0.5, 5.0
+                            viewer._edit_display_option(
+                                renderer, "wireframe_line_width", imgui.slider_float, "Wireframe Width (px)", 0.5, 5.0
                             )
-                            if _changed:
-                                viewer._display_options_user["wireframe_line_width"] = renderer.wireframe_line_width
-                    _changed, viewer.show_visual = imgui.checkbox("Show Visual", viewer.show_visual)
-                    if _changed:
-                        viewer._display_options_user["show_visual"] = viewer.show_visual
-                    _changed, viewer.show_ground = imgui.checkbox("Show Ground", viewer.show_ground)
-                    if _changed:
-                        viewer._display_options_user["show_ground"] = viewer.show_ground
-                    _changed, viewer.show_inertia_boxes = imgui.checkbox(
-                        "Show Inertia Boxes", viewer.show_inertia_boxes
-                    )
-                    if _changed:
-                        viewer._display_options_user["show_inertia_boxes"] = viewer.show_inertia_boxes
+                    viewer._edit_display_option(viewer, "show_visual", imgui.checkbox, "Show Visual")
+                    viewer._edit_display_option(viewer, "show_ground", imgui.checkbox, "Show Ground")
+                    viewer._edit_display_option(viewer, "show_inertia_boxes", imgui.checkbox, "Show Inertia Boxes")
 
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Example Options"):
@@ -1349,9 +1405,7 @@ class ViewerGui:
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Rendering Options"):
                 imgui.separator()
-                _changed, viewer.vsync = imgui.checkbox("VSync", viewer.vsync)
-                if _changed:
-                    viewer._display_options_user["vsync"] = viewer.vsync
+                viewer._edit_display_option(viewer, "vsync", imgui.checkbox, "VSync")
                 # Viewer-specific rendering options (e.g. GL sky/shadows/wireframe)
                 for callback in self._ui_callbacks.get("rendering", []):
                     callback(self.ui.imgui)

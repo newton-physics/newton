@@ -39,14 +39,29 @@ Layers:
     activated layer's model.
 """
 
+import importlib
+from typing import TYPE_CHECKING
+
 from .viewer import Layer, ViewerBase
-from .viewer_file import ViewerFile
-from .viewer_gl import ViewerGL
-from .viewer_null import ViewerNull
-from .viewer_rerun import ViewerRerun
-from .viewer_rtx import ViewerRTX
-from .viewer_usd import ViewerUSD
-from .viewer_viser import ViewerViser
+
+if TYPE_CHECKING:
+    from .viewer_file import ViewerFile
+    from .viewer_gl import ViewerGL
+    from .viewer_null import ViewerNull
+    from .viewer_rerun import ViewerRerun
+    from .viewer_rtx import ViewerRTX
+    from .viewer_usd import ViewerUSD
+    from .viewer_viser import ViewerViser
+
+_BACKEND_MODULES = {
+    "ViewerFile": ".viewer_file",
+    "ViewerGL": ".viewer_gl",
+    "ViewerNull": ".viewer_null",
+    "ViewerRerun": ".viewer_rerun",
+    "ViewerRTX": ".viewer_rtx",
+    "ViewerUSD": ".viewer_usd",
+    "ViewerViser": ".viewer_viser",
+}
 
 __all__ = [
     "Layer",
@@ -59,3 +74,16 @@ __all__ = [
     "ViewerUSD",
     "ViewerViser",
 ]
+
+
+def __getattr__(name: str):
+    module_name = _BACKEND_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
+    value = getattr(importlib.import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

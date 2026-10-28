@@ -56,6 +56,10 @@ published citation when available and retain an accessible preprint link.
 
 - **RigPI: Dynamic Parameter Identification of Rigid Body via VLM-Seeded Differentiable Simulation**. *X. He, R. Zhang, W. Jiang, W. Xu*. June 2026. [arXiv:2606.25212](https://arxiv.org/abs/2606.25212)
 
+- **RoboMMT: Learning Stable Tracking of Modulated Expressive and Interactive Robot Motion**. *T. Hielscher, K. O. Arras*. October 2026. [arXiv:2610.26414](https://arxiv.org/abs/2610.26414)
+
+- **Probabilistic Physics Digital Twin for Human-Robot Interaction**. *Y. Hu, H. Chandirasekar, A. Kushwaha, J. King, Z.-T. Chen*. October 2026. [arXiv:2610.19336](https://arxiv.org/abs/2610.19336)
+
 - **GM-Loco: Terrain-Adaptive Humanoid Locomotion on Granular Media**. *J. Kamohara, F. Wu, A. N. Zong, D. I. Goldman, Y. Nakka, S. Hutchinson, Y. Zhao*. September 2026. [arXiv:2609.10286](https://arxiv.org/abs/2609.10286)
 
 - **LUMO: Designing Luminous Contact Morphology for Repeatable Whole-Finger Contact Observation**. *D. H. Kang, Y. Ko, L. Sentis*. September 2026. [arXiv:2609.18165](https://arxiv.org/abs/2609.18165)
@@ -73,6 +77,8 @@ published citation when available and retain an accessible preprint link.
 - **PersistGS: Differentiable Physics for Object Permanence in 4D Gaussian Splatting**. *A. Ramlal, J. S. Zelek*. CVPR Workshops, 2026. [arXiv:2606.03479](https://arxiv.org/abs/2606.03479)
 
 - **Informationally Decoupled Trajectory Design for Sim-to-Real System Identification**. *S. Shin, A. Anilkumar, R. Gao, J. P. Hanna*. October 2026. [arXiv:2610.10905](https://arxiv.org/abs/2610.10905)
+
+- **DefFlow: Goal-Conditioned Deformable Object Manipulation using 3D Point Flows**. *G. Singh, S. Orozco, R. Duong, M. T. Akbulut, G. Konidaris, S. Sridhar*. October 2026. [arXiv:2610.22827](https://arxiv.org/abs/2610.22827)
 
 - **A Splitting Architecture for Exact Reduced Coulomb Friction**. *H. Song, Y. Fan, U. M. Ascher, D. K. Pai*. Computer Graphics Forum 45(8), 2026. [DOI:10.1111/cgf.70576](https://doi.org/10.1111/cgf.70576), [arXiv:2607.19599](https://arxiv.org/abs/2607.19599)
 

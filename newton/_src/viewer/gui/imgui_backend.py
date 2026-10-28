@@ -122,6 +122,13 @@ class ImGuiBackend:
                 return event.EVENT_HANDLED
 
         self.impl.on_key_press = on_key_press
+
+        # Button transitions belong to press/release events. The backend also
+        # sends a press on every drag motion, which restarts cancelled drags.
+        def on_mouse_drag(x, y, dx, dy, buttons, modifiers):
+            io.add_mouse_pos_event(x, io.display_size.y - y)
+
+        self.impl.on_mouse_drag = on_mouse_drag
         self.impl._attach_callbacks(self.window)
 
         # Set up proper DPI scaling for high-DPI displays.
@@ -437,6 +444,14 @@ class ImGuiBackend:
         }
         for name, color in palette.items():
             style.set_color_(getattr(self.imgui.Col_, name), self.imgui.ImVec4(*color))
+
+    def cancel_mouse_interaction(self) -> None:
+        """Discard pending input and release widgets without completing a click."""
+        self.io.clear_events_queue()
+        self.io.clear_input_mouse()
+        self.imgui.internal.clear_active_id()
+        self.imgui.get_current_context().want_capture_mouse_next_frame = -1
+        self.io.want_capture_mouse = False
 
     def begin_frame(self) -> None:
         """Renders a single frame of the UI. This should be called from the main render loop."""

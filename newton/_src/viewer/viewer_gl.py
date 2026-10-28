@@ -28,7 +28,7 @@ from .gui.viewer_gui import ViewerGui
 from .image_logger import ImageLogger
 from .picking import Picking
 from .plot_logger import PlotLogger
-from .utils import OPAQUE_OPACITY_THRESHOLD
+from .utils import OPAQUE_OPACITY_THRESHOLD, gaussian_display_colors
 from .viewer import _DEFAULT_LAYER_ID, Layer, ViewerBase
 from .wind import Wind
 
@@ -478,7 +478,9 @@ class ViewerGL(ViewerBase):
                 to hide all rotation rings.
             snap_to: Optional world transform with translation [m] and a
                 unitless rotation quaternion to apply when this gizmo is
-                released by the user.
+                released by the user. Cancelling a drag by removing its handle,
+                hiding the UI, pausing rendering, or losing window focus keeps
+                the current pose instead.
         """
         axis_order = (Axis.X, Axis.Y, Axis.Z)
 
@@ -1566,8 +1568,6 @@ class ViewerGL(ViewerBase):
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
-    _SH_C0 = 0.28209479177387814
-
     def _create_gaussian_mesh(self):
         """Create a very low-poly sphere mesh dedicated to Gaussian splat rendering."""
         mesh = nt.Mesh.create_sphere(1.0, num_latitudes=3, num_longitudes=4, compute_inertia=False)
@@ -1642,7 +1642,7 @@ class ViewerGL(ViewerBase):
             vbo[:, 15] = 1.0
 
             if sh is not None and sh.shape[1] >= 3:
-                colors = np.ascontiguousarray((self._SH_C0 * sh[:, :3] + 0.5).clip(0.0, 1.0).astype(np.float32))
+                colors = np.ascontiguousarray(gaussian_display_colors(sh, gaussian.sh_color_space))
             else:
                 colors = np.ones((n, 3), dtype=np.float32)
 
@@ -2406,7 +2406,9 @@ class ViewerGL(ViewerBase):
             scroll_x: Horizontal scroll delta.
             scroll_y: Vertical scroll delta.
         """
-        if self.gui:
+        # With ImGui, mouse input is routed during prepare_frame() so the
+        # camera and gizmos see the same processed events and hover state.
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_scroll(scroll_y, is_ctrl_down=self._is_ctrl_down())
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
@@ -2429,8 +2431,8 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
-            self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords, modifiers)
+        if self.gui and not self.gui.is_available:
+            self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
     def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
         """
@@ -2442,7 +2444,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button released.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_release(x, y, button)
 
     def on_mouse_drag(
@@ -2465,7 +2467,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords, modifiers)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
@@ -2580,10 +2582,7 @@ class ViewerGL(ViewerBase):
         """Render GL-specific items inside the Rendering Options panel section."""
         if not self.gui or not self.gui.workspace_enabled:
             for name, label in (("draw_sky", "Sky"), ("draw_shadows", "Shadows"), ("draw_wireframe", "Wireframe")):
-                changed, value = imgui.checkbox(label, getattr(self.renderer, name))
-                if changed:
-                    setattr(self.renderer, name, value)
-                    self._display_options_user[name] = value
+                self._edit_display_option(self.renderer, name, imgui.checkbox, label)
 
         def _edit_color3(label: str, color: tuple[float, float, float]) -> tuple[bool, tuple[float, float, float]]:
             """Normalize color_edit3 input/output across imgui_bundle versions."""
@@ -2595,17 +2594,11 @@ class ViewerGL(ViewerBase):
             return changed, (updated_color[0], updated_color[1], updated_color[2])
 
         # Light color
-        _changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
-        if _changed:
-            self._display_options_user["_light_color"] = self.renderer._light_color
+        self._edit_display_option(self.renderer, "_light_color", _edit_color3, "Light Color")
         # Sky color
-        _changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
-        if _changed:
-            self._display_options_user["sky_upper"] = self.renderer.sky_upper
+        self._edit_display_option(self.renderer, "sky_upper", _edit_color3, "Sky Color")
         # Ground color
-        _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
-        if _changed:
-            self._display_options_user["sky_lower"] = self.renderer.sky_lower
+        self._edit_display_option(self.renderer, "sky_lower", _edit_color3, "Ground Color")
 
     def _ui_populate_layers_panel(self, imgui):
         """Top-level Layers panel — toggle visibility of overlaid solvers/models.

@@ -9,6 +9,7 @@ import inspect
 import logging
 import os
 import queue
+import re
 import time
 import warnings
 from collections.abc import Callable, Iterator, Sequence
@@ -40,7 +41,7 @@ from .image_logger import (
     _validate,
 )
 from .picking import Picking
-from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
+from .utils import gaussian_display_colors, prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 
 if TYPE_CHECKING:
@@ -76,7 +77,6 @@ class ViewerViser(ViewerBase):
 
     _viser_module = None
     _IMAGE_JPEG_QUALITY = 90
-    _SH_C0 = 0.28209479177387814
 
     class _ImmediateGuiAdapter:
         """Translate the examples' immediate-mode controls to native Viser GUI handles."""
@@ -209,7 +209,8 @@ class ViewerViser(ViewerBase):
             return max(abs(float(maximum) - float(minimum)) / 100.0, 1.0e-6)
 
         def text(self, value: Any) -> None:
-            content = str(value)
+            # ImGui text is literal; retain that behavior in Markdown widgets.
+            content = re.sub(r"([\\`*_{}\[\]<>()#+.!|~-])", r"\\\1", str(value)).replace("\n", "  \n")
 
             def create(_key):
                 return self._add(lambda: self._viewer._server.gui.add_markdown(content))
@@ -650,8 +651,7 @@ class ViewerViser(ViewerBase):
                 for client_id, client in self._server.get_clients().items():
                     if client_id in client_cameras:
                         with client.atomic():
-                            for name, value in client_cameras[client_id].items():
-                                setattr(client.camera, name, value)
+                            self._apply_attrs(client.camera, client_cameras[client_id])
             self._sync_gui_controls()
 
     @override
@@ -3127,7 +3127,7 @@ class ViewerViser(ViewerBase):
 
             sh_coeffs = to_numpy(gaussian.sh_coeffs)
             if sh_coeffs is not None and sh_coeffs.shape[1] >= 3:
-                rgbs = np.clip(self._SH_C0 * sh_coeffs[:, :3] + 0.5, 0.0, 1.0).astype(np.float32)
+                rgbs = gaussian_display_colors(sh_coeffs, gaussian.sh_color_space)
             else:
                 rgbs = np.ones((gaussian.count, 3), dtype=np.float32)
 

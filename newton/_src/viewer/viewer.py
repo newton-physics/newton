@@ -11,7 +11,7 @@ import os
 import sys
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -243,6 +243,19 @@ class ViewerBase(ABC):
                         value /= max(self._contact_force_scale_default, 1e-12)
                     self._display_options_user[name] = copy.deepcopy(value)
 
+    @staticmethod
+    def _apply_attrs(target: Any, values: dict[str, Any]) -> None:
+        """Apply a saved set of display attributes to its owner."""
+        for name, value in values.items():
+            setattr(target, name, value)
+
+    def _edit_display_option(self, target: Any, name: str, widget: Callable, label: str, *args) -> None:
+        """Apply a widget's value and remember only explicit user edits."""
+        changed, value = widget(label, getattr(target, name), *args)
+        setattr(target, name, value)
+        if changed:
+            self._display_options_user[name] = value
+
     @contextmanager
     def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
         """Restore reset state, or explicit display choices when entering a new example."""
@@ -271,7 +284,7 @@ class ViewerBase(ABC):
         active_id = self.layer.layer_id
         defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
         globals_saved = {
-            name: user_options.get(name, getattr(self, name)) if switching else getattr(self, name)
+            name: user_options[name] if switching else getattr(self, name)
             for name in (
                 "show_ui",
                 "vsync",
@@ -285,12 +298,11 @@ class ViewerBase(ABC):
             if hasattr(self, name) and (not switching or name in user_options)
         }
         camera = getattr(self, "camera", None)
-        # Keep explicitly edited projection settings, but let a new scene choose
-        # its camera position and orientation.
+        # Reset keeps the navigated view; switching retains only explicit projection edits.
         camera_saved = {
-            name: user_options.get(name, getattr(camera, name)) if switching else getattr(camera, name)
-            for name in ("fov", "near", "far")
-            if hasattr(camera, name) and (not switching or name in user_options)
+            name: copy.deepcopy(user_options[name] if switching else getattr(camera, name))
+            for name in ("fov", "near", "far", "pos", "pitch", "yaw", "pivot")
+            if hasattr(camera, name) and (not switching or (name in ("fov", "near", "far") and name in user_options))
         }
         renderer = getattr(self, "renderer", None)
         # Include recorded names directly so new controls need no switch allowlist.
@@ -338,15 +350,11 @@ class ViewerBase(ABC):
                 layer.model_changed = True
                 if layer is self.layer:
                     self.model_changed = True
-            for name, value in globals_saved.items():
-                setattr(self, name, value)
+            self._apply_attrs(self, globals_saved)
             camera = getattr(self, "camera", None)
-            for name, value in camera_saved.items():
-                if hasattr(camera, name):
-                    setattr(camera, name, value)
-            renderer = getattr(self, "renderer", None)
-            for name, value in render_saved.items():
-                setattr(renderer, name, value)
+            if camera is not None:
+                self._apply_attrs(camera, camera_saved)
+            self._apply_attrs(getattr(self, "renderer", None), render_saved)
 
     @staticmethod
     def _snapshot_layer_runtime_fields(layer: Layer) -> frozenset[str]:

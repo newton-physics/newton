@@ -52,6 +52,13 @@ def _component_arrays(component: object | None, *, model: Model | None = None) -
     return arrays
 
 
+def _snapshot_array(array: wp.array[Any]) -> np.ndarray:
+    """Retain independent host storage without recopying CUDA readbacks."""
+    values = array.numpy()
+    # CPU conversion aliases the live array; CUDA conversion already owns a host copy.
+    return values.copy() if array.device.is_cpu else values
+
+
 def _restore_component(component: object, live: object, fields: dict[str, np.ndarray]) -> None:
     for qualified, values in fields.items():
         name = qualified
@@ -344,14 +351,14 @@ class FrameHistory:
             self.message = "State and contacts exceed the 64 MiB snapshot limit. Recording stopped."
             self._recording_blocked = True
             return
-        saved_state = {name: array.numpy().copy() for name, array in arrays.items()}
-        saved_control = {name: array.numpy().copy() for name, array in control_arrays.items()}
-        saved_contact_state = {name: array.numpy().copy() for name, array in contact_state_arrays.items()}
+        saved_state = {name: _snapshot_array(array) for name, array in arrays.items()}
+        saved_control = {name: _snapshot_array(array) for name, array in control_arrays.items()}
+        saved_contact_state = {name: _snapshot_array(array) for name, array in contact_state_arrays.items()}
         saved_particle_states = {
-            name: {field: array.numpy().copy() for field, array in fields.items()}
+            name: {field: _snapshot_array(array) for field, array in fields.items()}
             for name, fields in particle_states.items()
         }
-        saved_contacts = {name: array[:n].numpy().copy() for name, (array, n) in contact_arrays.items()}
+        saved_contacts = {name: _snapshot_array(array[:n]) for name, (array, n) in contact_arrays.items()}
         saved_observables = {
             name: self._snapshot_observable(array, ranges) for name, (array, ranges) in observable_arrays.items()
         }

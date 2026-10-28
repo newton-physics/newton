@@ -22,8 +22,10 @@ import newton
 import newton.utils
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
+from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
+from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
@@ -38,6 +40,65 @@ def _eq_set_value(builder, name, idx, value):
 
 
 class TestModelAttributeSpecs(unittest.TestCase):
+    def test_collision_edge_aliases_preserve_reads_and_writes(self):
+        """Warn on legacy edge-cache access while preserving array identity and writes."""
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+        model = builder.finalize(device="cpu")
+        for name in ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range"):
+            with self.subTest(attribute=name):
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}.*Newton 1\.8") as warning:
+                    original = getattr(model, name)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(original, getattr(model, f"_{name}"))
+                replacement = wp.clone(original)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    setattr(model, name, replacement)
+                self.assertIs(getattr(model, f"_{name}"), replacement)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    getattr(model, name).zero_()
+                np.testing.assert_array_equal(getattr(model, f"_{name}").numpy(), 0)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    setattr(model, name, None)
+                self.assertIsNone(getattr(model, f"_{name}"))
+
+    def test_collision_edge_aliases_follow_model_view_overrides(self):
+        """Resolve legacy edge-cache aliases through view-local canonical storage."""
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+        model = builder.finalize(device="cpu")
+        view = ModelView(model, "test")
+        for name in ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range"):
+            with self.subTest(attribute=name):
+                private_name = f"_{name}"
+                original = getattr(model, private_name)
+                replacement = wp.clone(original)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}") as warning:
+                    setattr(view, name, replacement)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(getattr(view, private_name), replacement)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}") as warning:
+                    self.assertIs(getattr(view, name), replacement)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(getattr(model, private_name), original)
+                self.assertNotIn(name, dict(model._iter_attribute_specs()))
+                self.assertIn(private_name, dict(model._iter_attribute_specs()))
+                self.assertEqual(model.get_attribute_frequency(name), model.get_attribute_frequency(private_name))
+
+    def test_collision_edge_internal_access_does_not_warn(self):
+        """Finalize and collide with packed edges without triggering legacy aliases."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", NewtonDeprecationWarning)
+            builder = ModelBuilder()
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+            builder.add_shape_mesh(body=body, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+            model = builder.finalize(device="cpu")
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
     def test_attribute_namespace_deprecated_alias_api(self):
         """Retain deprecated namespace aliases through their compatibility window."""
         namespace = newton.Model.AttributeNamespace("test")
@@ -234,6 +295,20 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
             gaussian.finalize(device="cpu", bvh_constructor="sah")
 
         self.assertEqual(wp_bvh.call_args.kwargs["constructor"], "sah")
+
+
+class TestGaussian(unittest.TestCase):
+    def test_gaussian_sh_color_space_affects_identity(self):
+        """Default to sRGB and include the SH color space in Gaussian equality and hash."""
+        kwargs = {
+            "positions": np.zeros((1, 3), dtype=np.float32),
+            "sh_coeffs": np.zeros((1, 3), dtype=np.float32),
+        }
+        self.assertEqual(newton.Gaussian(**kwargs).sh_color_space, newton.utils.ColorSpace.SRGB)
+        srgb = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.SRGB)
+        linear = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.LINEAR)
+        self.assertNotEqual(srgb, linear)
+        self.assertNotEqual(hash(srgb), hash(linear))
 
 
 class TestModelMesh(unittest.TestCase):
@@ -532,8 +607,8 @@ class TestModelMesh(unittest.TestCase):
             collision_mesh.indices.numpy(),
             np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
         )
-        edge_start, edge_count = model.shape_edge_range.numpy()[0]
-        collision_edges = model.mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
+        edge_start, edge_count = model._shape_edge_range.numpy()[0]
+        collision_edges = model._mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
         np.testing.assert_array_equal(
             collision_edges,
             np.array([[0, 1], [1, 2], [0, 2], [2, 3], [0, 3]], dtype=np.int32),
@@ -1083,6 +1158,41 @@ class TestModelMesh(unittest.TestCase):
         for shape in range(builder.shape_count):
             mesh = builder.shape_source[shape]
             self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
+
+    def test_mesh_approximation_coacd_is_repeatable(self):
+        """Decompose a nonconvex mesh with CoACD repeatedly and get identical hulls."""
+        try:
+            import coacd  # noqa: F401
+        except ImportError:
+            self.skipTest("Requires coacd")
+
+        # A torus is nonconvex, so CoACD's parallel tree search has several cuts to choose from.
+        rings, sides = 32, 12
+        u, v = np.meshgrid(
+            np.linspace(0.0, 2.0 * np.pi, rings, endpoint=False),
+            np.linspace(0.0, 2.0 * np.pi, sides, endpoint=False),
+            indexing="ij",
+        )
+        radius = 0.05 + 0.015 * np.cos(v)
+        vertices = np.stack((radius * np.cos(u), radius * np.sin(u), 0.015 * np.sin(v)), axis=-1).reshape(-1, 3)
+        i, j = np.meshgrid(np.arange(rings), np.arange(sides), indexing="ij")
+        a, b = i * sides + j, (i + 1) % rings * sides + j
+        c, d = (i + 1) % rings * sides + (j + 1) % sides, i * sides + (j + 1) % sides
+        indices = np.stack((a, b, c, a, c, d), axis=-1).reshape(-1)
+        torus = newton.Mesh(vertices, indices, compute_inertia=False)
+
+        def decompose():
+            builder = ModelBuilder()
+            builder.add_shape_mesh(body=-1, mesh=torus)
+            builder.approximate_meshes(method="coacd", raise_on_failure=True)
+            return [np.concatenate((m.vertices.ravel(), m.indices.ravel())) for m in builder.shape_source]
+
+        first = decompose()
+        for _ in range(2):
+            again = decompose()
+            self.assertEqual(len(again), len(first))
+            for part, expected in zip(again, first, strict=True):
+                np.testing.assert_array_equal(part, expected)
 
     def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
         builder = ModelBuilder()

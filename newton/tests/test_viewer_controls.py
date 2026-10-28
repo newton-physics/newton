@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import gc
+import importlib.util
 import inspect
+import sys
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -15,6 +18,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton import Axis
 from newton._src.geometry.sdf_texture import TextureSDFData, create_empty_texture_sdf_data
 from newton._src.geometry.sdf_utils import SDF, SDFData
 from newton._src.viewer.camera import Camera
@@ -35,7 +39,7 @@ from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_history import FrameHistory
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_null import ViewerNull
-from newton.tests.unittest_utils import patch_sys_module
+from newton.tests.unittest_utils import get_test_devices, patch_sys_module
 
 
 class TestViewerUI(unittest.TestCase):
@@ -112,6 +116,52 @@ class TestViewerBaseShouldStep(unittest.TestCase):
         viewer = ViewerNull()
         for _ in range(3):
             self.assertTrue(viewer.should_step())
+
+
+@unittest.skipUnless(importlib.util.find_spec("imgui_bundle"), "Requires imgui_bundle")
+class TestViewerGuiRecovery(unittest.TestCase):
+    def test_callback_failure_leaves_next_frame_usable(self):
+        """Unwind real ImGui windows and styles without a renderer or model."""
+        from imgui_bundle import imgui, imguizmo
+
+        context = imgui.create_context()
+        self.addCleanup(imgui.destroy_context, context)
+        io = imgui.get_io()
+        io.set_ini_filename("")
+        io.display_size = (320, 320)
+        io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+        gui = ViewerGui.__new__(ViewerGui)
+        gui._viewer = ViewerNull()
+        gui._viewer.show_ui = True
+        gui.workspace = None
+        gui.workspace_enabled = False
+        gui._gizmo_active = {}
+        gui._loading_splash_active = False
+        # Exercise the real backend's stack snapshots and recovery without OpenGL.
+        gui.ui = ImGuiBackend.__new__(ImGuiBackend)
+        gui.ui.is_available = True
+        gui.ui.imgui = imgui
+        gui.ui.io = io
+        gui.ui.giz = imguizmo.im_guizmo
+        gui.ui._frame_time = None
+        gui.ui._pending_file_dialog = None
+        error = RuntimeError("GUI callback failed")
+
+        def fail():
+            imgui.begin("Example")
+            imgui.begin_child("Nested")
+            imgui.push_style_color(imgui.Col_.text, (1.0, 0.0, 0.0, 1.0))
+            raise error
+
+        gui._render_ui = fail
+        with self.assertRaises(RuntimeError) as raised:
+            gui.prepare_frame(update_fps=False)
+        self.assertIs(raised.exception, error)
+        self.assertFalse(gui._frame_prepared)
+        self.assertTrue(io.config_error_recovery_enable_assert)
+        gui._render_ui = lambda: imgui.text("Retry")
+        gui.prepare_frame(update_fps=False)
+        self.assertTrue(gui._frame_prepared)
 
 
 class TestViewerCameraSpeed(unittest.TestCase):
@@ -802,6 +852,7 @@ class TestViewerProperties(unittest.TestCase):
             self.assertEqual(list(domain.indices), [1])
 
     def test_history_without_top_level_example_model(self) -> None:
+        """Preserve independent host snapshots and replay for nested CPU and CUDA models."""
         builder = newton.ModelBuilder()
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
@@ -811,6 +862,16 @@ class TestViewerProperties(unittest.TestCase):
                 frequency=Frequency.ONCE,
                 dtype=float,
                 default=3.0,
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="drive",
+                namespace="probe",
+                assignment=Assignment.CONTROL,
+                frequency=Frequency.ONCE,
+                dtype=float,
+                default=5.0,
             )
         )
         model = builder.finalize(device="cpu")
@@ -823,22 +884,52 @@ class TestViewerProperties(unittest.TestCase):
         example.render.assert_called_once_with()
 
         # A nested model must also work when the example exposes a recordable
-        # state. Replay allocations use the displayed model, too.
-        example.state_0 = model.state()
-        example.control = model.control()
-        example.state_0.solver_scratch = wp.zeros(1, device="cpu")
-        history = FrameHistory(example)
-        history.capture()
-        self.assertNotIn("solver_scratch", history.frames[0].state)
-        np.testing.assert_array_equal(history.frames[0].state["probe:sample"], [3.0])
-        example.sim_time = 1.0
-        history.capture()
-        history.index = 0
-        live_state = example.state_0
-        example.render = Mock(side_effect=lambda: self.assertIsNot(example.state_0, live_state))
-        history.render()
-        example.render.assert_called_once_with()
-        self.assertIs(example.state_0, live_state)
+        # state. CPU NumPy views alias live storage; CUDA readbacks own host storage.
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                current = model if device.is_cpu else builder.finalize(device=device)
+                example = SimpleNamespace(
+                    viewer=SimpleNamespace(model=current), state_0=current.state(), control=current.control()
+                )
+                example.state_0.solver_scratch = wp.zeros(1, device=device)
+                history = FrameHistory(example)
+                history.capture()
+                snapshot = history.frames[0]
+                self.assertNotIn("solver_scratch", snapshot.state)
+                example.state_0.probe.sample.fill_(7.0)
+                example.control.probe.drive.fill_(11.0)
+                if device.is_cuda:
+                    gc.collect()
+                np.testing.assert_array_equal(snapshot.state["probe:sample"], [3.0])
+                np.testing.assert_array_equal(snapshot.control["probe:drive"], [5.0])
+                example.sim_time = 1.0
+                history.capture()
+                history.index = 0
+                live_state, live_control = example.state_0, example.control
+                displayed = []
+
+                def render_snapshot(
+                    example=example,
+                    history=history,
+                    live_state=live_state,
+                    live_control=live_control,
+                    displayed=displayed,
+                ):
+                    self.assertIsNot(example.state_0, live_state)
+                    self.assertIs(example.control, live_control)
+                    displayed.append(
+                        (example.state_0.probe.sample.numpy(), history.display_control.probe.drive.numpy())
+                    )
+
+                example.render = render_snapshot
+                history.render()
+                self.assertEqual(len(displayed), 1)
+                np.testing.assert_array_equal(displayed[0][0], [3.0])
+                np.testing.assert_array_equal(displayed[0][1], [5.0])
+                self.assertIs(example.state_0, live_state)
+                self.assertIs(example.control, live_control)
+                np.testing.assert_array_equal(live_state.probe.sample.numpy(), [7.0])
+                np.testing.assert_array_equal(live_control.probe.drive.numpy(), [11.0])
 
     def test_sparse_properties_and_joint_editor_ranges(self) -> None:
         builder = newton.ModelBuilder()
@@ -1330,6 +1421,270 @@ class TestCollisionInspector(unittest.TestCase):
                 high = np.minimum(offset + measure(text), other + measure(other_text))
                 low = np.maximum(offset, other)
                 self.assertTrue(np.any(high <= low))
+
+
+class TestViewerGizmos(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            from imgui_bundle import imgui, imguizmo
+        except ImportError:
+            self.skipTest("imgui_bundle is required")
+
+        self.imgui = imgui
+        self.giz = imguizmo.im_guizmo
+        context = imgui.create_context()
+        self.addCleanup(imgui.destroy_context, context)
+        self.io = imgui.get_io()
+        self.io.set_ini_filename("")
+        self.io.display_size = (800, 600)
+        self.io.delta_time = 1.0 / 60.0
+        # Build draw lists without a window or GPU renderer.
+        self.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+        self.viewer = ViewerGL.__new__(ViewerGL)
+        # Initialize real shared viewer/layer state without a native GL renderer.
+        self.viewer.__dict__.update(vars(ViewerNull()))
+        self.viewer.camera = Camera(width=800, height=600, pos=(0.0, 0.0, 5.0), up_axis="Y")
+        self.viewer.camera.yaw = -90.0
+        self.viewer._rendering_paused = False
+        self.viewer._gizmo_log = {}
+        self.viewer.gizmo_is_using = False
+        self.viewer.show_ui = True
+        self.gui = ViewerGui.__new__(ViewerGui)
+        self.gui._viewer = self.viewer
+        self.gui.workspace = None
+        self.gui.workspace_enabled = False
+        self.gui._frame_key_down = self.gui._follow_held = self.gui._follow_latched = False
+        self.gui._follow_center = None
+        self.gui.ui = ImGuiBackend.__new__(ImGuiBackend)
+        self.gui.ui.is_available = True
+        self.gui.ui.imgui = imgui
+        self.gui.ui.io = self.io
+        self.gui.ui.giz = self.giz
+        self.gui.ui._frame_time = None
+        self.gui.ui._pending_file_dialog = None
+        self.gui._loading_splash_active = False
+        # Exercise the real frame/input pipeline without unrelated panels.
+        self.gui._render_ui = self.gui._render_gizmos
+        self.viewer.gui = self.gui
+        self.viewer.picking = None
+        self.viewer.picking_enabled = False
+        self.viewer._to_framebuffer_coords = lambda x, y: (x, y)
+        self.gui._camera_drag_buttons = 0
+        self.gui._cam_vel = np.zeros(3)
+        self.gui._camera_orbit_sensitivity = 0.1
+        self.gui._camera_dolly_drag_sensitivity = 0.01
+        # Import input constants without creating Pyglet's shadow GL window.
+        import pyglet
+
+        shadow_window = pyglet.options["shadow_window"]
+        pyglet.options["shadow_window"] = False
+        try:
+            from pyglet.window import mouse
+        finally:
+            pyglet.options["shadow_window"] = shadow_window
+        self.mouse = mouse
+        self.gui._gizmo_active = {}
+        self.gui._gizmo_hovered = False
+        self.gui._camera_dolly_scroll_sensitivity = 0.15
+        # ImGuizmo owns global drag state; always release it before destroying ImGui.
+        self.addCleanup(self.frame, 0.0, 0.0, False)
+        self.frame(0.0, 0.0, False)
+
+    def frame(self, x: float, y: float, down: bool) -> None:
+        self.io.add_mouse_pos_event(x, y)
+        self.io.add_mouse_button_event(0, down)
+        self.gui.prepare_frame(update_fps=False)
+
+    def native_press(self, x: float, y: float) -> None:
+        self.io.add_mouse_pos_event(x, y)
+        self.io.add_mouse_button_event(0, True)
+        self.viewer.on_mouse_press(x, 600 - y, self.mouse.LEFT, 0)
+
+    def native_drag(self, x: float, y: float, dx: float, dy: float) -> None:
+        self.io.add_mouse_pos_event(x, y)
+        self.viewer.on_mouse_drag(x, 600 - y, dx, -dy, self.mouse.LEFT, 0)
+        self.gui.prepare_frame(update_fps=False)
+
+    def test_move_and_press_ownership(self) -> None:
+        """Choose camera or gizmo ownership from a move and press in one event batch."""
+        for onto_handle in (True, False):
+            with self.subTest(onto_handle=onto_handle):
+                self.viewer.camera.yaw = -90.0
+                target = wp.transform_identity()
+                original = np.asarray(target).copy()
+                self.viewer.log_gizmo("target", target)
+                old_x, press_x = (700, 420) if onto_handle else (420, 700)
+                self.frame(old_x, 300, False)
+                self.frame(old_x, 300, False)
+                self.native_press(press_x, 300)
+                self.gui.prepare_frame(update_fps=False)
+                self.native_drag(press_x + 20, 300, 20, 0)
+                if onto_handle:
+                    self.assertEqual(self.viewer.camera.yaw, -90.0)
+                    self.assertGreater(target[0], 0.0)
+                else:
+                    self.assertLess(self.viewer.camera.yaw, -90.0)
+                    np.testing.assert_array_equal(target, original)
+                self.frame(700, 300, False)
+
+        # RTX does not define the optional viewer activity flag. Scene presses
+        # must still navigate through the shared GUI path without a gizmo.
+        del self.viewer.gizmo_is_using
+        self.viewer._gizmo_log.clear()
+        self.frame(700, 300, False)
+        self.native_press(700, 300)
+        self.gui.prepare_frame(update_fps=False)
+        yaw = self.viewer.camera.yaw
+        self.native_drag(720, 300, 20, 0)
+        self.assertLess(self.viewer.camera.yaw, yaw)
+        self.frame(720, 300, False)
+
+    def test_cancel_drag(self) -> None:
+        """Keep the pose and clear ownership on removal, pause, and focus loss."""
+        for reason in ("remove", "disable", "hide", "pause", "focus"):
+            with self.subTest(reason=reason):
+                target = wp.transform_identity()
+                other = wp.transform((1, 1, 0), wp.quat_identity())
+                snap = wp.transform((0.1, 0.2, 0.3), wp.quat_identity())
+                self.viewer.log_gizmo("target", target, snap_to=snap)
+                self.viewer.log_gizmo("other", other)
+                self.frame(420, 300, False)
+                self.frame(420, 300, True)
+                self.frame(440, 300, True)
+                self.assertTrue(self.viewer.gizmo_is_using)
+                held_pose = np.asarray(target).copy()
+                if reason == "remove":
+                    del self.viewer._gizmo_log["target"]
+                    self.gui.prepare_frame(update_fps=False)
+                elif reason == "disable":
+                    self.viewer.log_gizmo("target", target, translate=(), rotate=(), snap_to=snap)
+                    self.gui.prepare_frame(update_fps=False)
+                elif reason == "hide":
+                    self.viewer.show_ui = False
+                    self.gui.prepare_frame(update_fps=False)
+                    self.viewer.show_ui = True
+                elif reason == "pause":
+                    self.viewer.set_rendering_paused(True)
+                    self.viewer.set_rendering_paused(False)
+                else:
+                    self.gui.on_window_deactivated()
+                self.assertFalse(self.giz.is_using_any())
+                self.assertFalse(self.viewer.gizmo_is_using)
+                self.assertEqual(self.gui._camera_drag_buttons, 0)
+                self.assertFalse(any(self.io.mouse_down))
+                self.viewer.log_gizmo("target", target, snap_to=snap)
+                self.native_drag(460, 300, 20, 0)
+                np.testing.assert_array_equal(target, held_pose)
+                self.frame(700, 300, False)
+                self.frame(700, 300, False)
+                self.assertFalse(self.gui.is_mouse_capturing())
+                # A fresh press can navigate again.
+                self.native_press(700, 300)
+                self.gui.prepare_frame(update_fps=False)
+                yaw = self.viewer.camera.yaw
+                self.native_drag(720, 300, 20, 0)
+                self.assertLess(self.viewer.camera.yaw, yaw)
+                # Cancelling camera navigation also requires a new press.
+                self.gui.on_rendering_paused()
+                yaw = self.viewer.camera.yaw
+                self.native_drag(740, 300, 20, 0)
+                self.assertEqual(self.viewer.camera.yaw, yaw)
+                self.frame(740, 300, False)
+                self.viewer.camera.yaw = -90.0
+
+    def test_drag_and_snap_with_multiple_operations(self) -> None:
+        """Capture handles, preserve drags across idle operations, and snap only on release."""
+        for translate in (None, (Axis.X, Axis.Y)):
+            with self.subTest(translate=translate):
+                target = wp.transform((0.0, 0.0, 0.0), wp.quat_identity())
+                snap = wp.transform((0.1, 0.2, 0.3), wp.quat_identity())
+                other = wp.transform((1.0, 1.0, 0.0), wp.quat_identity())
+                self.viewer._gizmo_log.clear()
+                self.viewer.log_gizmo("target", target, translate=translate, snap_to=snap)
+                self.viewer.log_gizmo("other", other)
+                self.frame(0.0, 0.0, False)
+                # The X arrow is right of the origin at (400, 300).
+                self.frame(420.0, 300.0, False)
+                camera_pos = tuple(self.viewer.camera.pos)
+                self.gui.handle_mouse_scroll(1.0)
+                self.assertEqual(tuple(self.viewer.camera.pos), camera_pos)
+                self.assertTrue(self.gui.is_mouse_capturing())
+
+                self.frame(420.0, 300.0, True)
+                self.frame(440.0, 300.0, True)
+                self.assertTrue(self.viewer.gizmo_is_using)
+                self.assertTrue(self.gui._gizmo_active["target"])
+                self.assertFalse(self.gui._gizmo_active["other"])
+                first_x = float(target[0])
+                self.assertGreater(first_x, 0.0)
+                np.testing.assert_allclose(np.asarray(target)[1:], (0.0, 0.0, 0.0, 0.0, 0.0, 1.0), atol=1e-6)
+                np.testing.assert_array_equal(other, (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+
+                # Stable names must survive a different logging order.
+                self.viewer._gizmo_log = dict(reversed(tuple(self.viewer._gizmo_log.items())))
+                self.frame(440.0, 300.0, True)
+                self.assertAlmostEqual(target[0], first_x, places=5)
+                self.assertTrue(self.gui._gizmo_active["target"])
+                self.frame(460.0, 300.0, True)
+                self.assertGreater(target[0], first_x)
+                self.frame(460.0, 300.0, False)
+                np.testing.assert_array_equal(target, snap)
+                self.assertFalse(self.viewer.gizmo_is_using)
+                self.assertFalse(self.gui._gizmo_active["target"])
+
+                # A later idle frame must not snap again.
+                snap[0] = 2.0
+                self.frame(0.0, 0.0, False)
+                self.assertAlmostEqual(target[0], 0.1)
+                self.viewer._gizmo_log.clear()
+                self.frame(0.0, 0.0, False)
+                self.frame(0.0, 0.0, False)
+                self.assertEqual(self.gui._gizmo_active, {})
+                self.assertFalse(self.gui.is_mouse_capturing())
+
+    def test_rotation_with_restricted_axes(self) -> None:
+        """Rotate around the enabled axis and snap after releasing the ring."""
+        target = wp.transform((0.0, 0.0, 0.0), wp.quat_identity())
+        snap = wp.transform((0.1, 0.2, 0.3), wp.quat_identity())
+        self.viewer.log_gizmo("target", target, translate=(Axis.X, Axis.Y), rotate=(Axis.Z,), snap_to=snap)
+        # The Z ring crosses the upper-right quadrant around the origin.
+        self.frame(420.0, 280.0, False)
+        self.assertTrue(self.gui.is_mouse_capturing())
+        self.frame(420.0, 280.0, True)
+        self.frame(430.0, 300.0, True)
+        self.assertTrue(self.gui._gizmo_active["target"])
+        np.testing.assert_allclose(np.asarray(target)[:5], 0.0, atol=1e-6)
+        self.assertGreater(abs(target[5]), 0.1)
+        self.assertAlmostEqual(float(np.linalg.norm(np.asarray(target)[3:])), 1.0, places=5)
+        self.frame(430.0, 300.0, False)
+        np.testing.assert_array_equal(target, snap)
+        self.assertFalse(self.viewer.gizmo_is_using)
+
+    def test_idle_transform_is_unchanged(self) -> None:
+        """Preserve the caller's quaternion representation when no handle modifies it."""
+        target = wp.transform((0.0, 0.0, 0.0), wp.quat(0.0, 0.0, 0.0, -1.0))
+        original = np.asarray(target).copy()
+        # Also exercise the legacy raw-transform entry.
+        self.viewer._gizmo_log["target"] = target
+        self.frame(0.0, 0.0, False)
+        np.testing.assert_array_equal(target, original)
+
+    def test_mouse_input_without_pyglet_window_mouse_attribute(self) -> None:
+        """Route mouse input when ``pyglet.window`` lacks its ``mouse`` attribute.
+
+        A failed ``import pyglet.window`` (e.g. without a display) keeps
+        ``pyglet.window.mouse`` in ``sys.modules``, and a later re-import of
+        ``pyglet.window`` does not bind it as a package attribute again.
+        """
+        window = sys.modules["pyglet.window"]
+        with mock.patch.dict(vars(window)):
+            vars(window).pop("mouse", None)
+            yaw = self.viewer.camera.yaw
+            self.frame(700.0, 300.0, True)
+            self.frame(720.0, 300.0, True)
+            self.assertNotEqual(self.viewer.camera.yaw, yaw)
+            self.frame(720.0, 300.0, False)
+        self.assertEqual(self.gui._camera_drag_buttons, 0)
 
 
 if __name__ == "__main__":

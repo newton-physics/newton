@@ -1,2 +1,1 @@
 Add a keyword-only `joint_mask` to `newton.eval_fk()` and `newton.selection.ArticulationView.eval_fk()` for selective joint-state updates that preserve unselected bodies' poses and velocities, compose with articulation and body filters, and support autodiff and CUDA graph capture.
-Masked CUDA evaluation can use tiled FK for branching articulations; chain-only models and autodiff retain serial traversal.

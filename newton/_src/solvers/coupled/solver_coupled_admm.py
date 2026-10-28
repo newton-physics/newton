@@ -1207,52 +1207,50 @@ class SolverCoupledADMM(SolverCoupled):
         ):
             return
 
-        joint_child = self.model.joint_child.numpy() if self.model.joint_child is not None else []
-        joint_articulation = self.model.joint_articulation.numpy() if self.model.joint_articulation is not None else []
-        joint_qd_start = self.model.joint_qd_start.numpy()
-        articulation_start = self.model.articulation_start.numpy() if self.model.articulation_start is not None else []
-        articulation_end = self.model.articulation_end.numpy() if self.model.articulation_end is not None else []
-        joint_dof_global_to_local = entry.joint_dof_global_to_local.numpy()
+        # Entry-local view arrays describe the articulations the sub-solver
+        # moves, including split subtrees headed by synthesized FREE joints.
+        view = entry.view
+        if view.joint_count == 0:
+            return
+        joint_child = view.joint_child.numpy()
+        joint_articulation = view.joint_articulation.numpy()
+        joint_qd_start = view.joint_qd_start.numpy()
+        articulation_start = view.articulation_start.numpy() if view.articulation_count else []
+        articulation_end = (
+            view.articulation_end.numpy() if view.articulation_count and view.articulation_end is not None else []
+        )
 
         incoming_joint_by_body: dict[int, int] = {}
         for joint, child in enumerate(joint_child):
-            incoming_joint_by_body.setdefault(int(child), joint)
+            # Prefer articulation tree joints over loop closures.
+            if int(joint_articulation[joint]) >= 0:
+                incoming_joint_by_body[int(child)] = joint
+            else:
+                incoming_joint_by_body.setdefault(int(child), joint)
 
         starts: list[int] = []
         counts: list[int] = []
         indices: list[int] = []
-        for global_body in entry.body_local_to_global.numpy():
+        for body in range(int(view.body_count)):
             starts.append(len(indices))
-            joint = incoming_joint_by_body.get(int(global_body))
+            joint = incoming_joint_by_body.get(body)
             if joint is None:
                 counts.append(0)
                 continue
 
             joint_start = joint
             joint_end = joint + 1
-            if len(joint_articulation) > joint:
-                articulation = int(joint_articulation[joint])
-                if articulation >= 0 and len(articulation_start) > articulation:
-                    joint_start = int(articulation_start[articulation])
-                    if len(articulation_end) > articulation:
-                        joint_end = int(articulation_end[articulation])
-                    elif len(articulation_start) > articulation + 1:
-                        joint_end = int(articulation_start[articulation + 1])
+            articulation = int(joint_articulation[joint])
+            if articulation >= 0:
+                joint_start = int(articulation_start[articulation])
+                if len(articulation_end) > articulation:
+                    joint_end = int(articulation_end[articulation])
+                else:
+                    joint_end = int(articulation_start[articulation + 1])
 
-            local_dofs: list[int] = []
-            for joint_id in range(joint_start, joint_end):
-                if joint_id < 0 or joint_id + 1 >= len(joint_qd_start):
-                    continue
-                for global_dof in range(int(joint_qd_start[joint_id]), int(joint_qd_start[joint_id + 1])):
-                    if global_dof < 0 or global_dof >= len(joint_dof_global_to_local):
-                        continue
-                    local_dof = int(joint_dof_global_to_local[global_dof])
-                    if local_dof >= 0:
-                        local_dofs.append(local_dof)
-
-            unique_dofs = sorted(set(local_dofs))
-            indices.extend(unique_dofs)
-            counts.append(len(unique_dofs))
+            dofs = range(int(joint_qd_start[joint_start]), int(joint_qd_start[joint_end]))
+            indices.extend(dofs)
+            counts.append(len(dofs))
 
         device = self.model.device
         buf.body_joint_qd_start = wp.array(starts, dtype=int, device=device)

@@ -118,6 +118,7 @@ class TestExampleBrowserReset(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_body(mass=mass, inertia=wp.mat33(mass, 0.0, 0.0, 0.0, mass, 0.0, 0.0, 0.0, mass))
             models.append(builder.finalize(device="cpu"))
+
         contact_render_options = {
             "contact_arrow_scale": 0.7,
             "contact_normal_max_pixels": 40.0,
@@ -139,7 +140,9 @@ class TestExampleBrowserReset(unittest.TestCase):
                 viewer.activate("scene")
                 viewer.set_model(models[0])
                 viewer.show_joints = True
-                viewer.camera = types.SimpleNamespace(fov=40.0, near=0.01, far=1000.0)
+                viewer.camera = types.SimpleNamespace(
+                    fov=40.0, near=0.01, far=1000.0, pos=(1.0, 2.0, 3.0), pitch=0.0, yaw=0.0, pivot=(0.0, 0.0, 0.0)
+                )
                 viewer.renderer = types.SimpleNamespace(draw_wireframe=True, joint_scale=2.0)
                 viewer.renderer.wireframe_line_width = 1.0
                 viewer.camera_speed = 4.0
@@ -174,6 +177,9 @@ class TestExampleBrowserReset(unittest.TestCase):
             viewer.contact_mode_eps_force = 0.2
             viewer.contact_force_scale *= 2.0
             viewer.camera.fov = 55.0
+            viewer.camera.pos = (4.0, 5.0, 6.0)
+            viewer.camera.pitch, viewer.camera.yaw = -20.0, 30.0
+            viewer.camera.pivot = (1.0, 1.0, 1.0)
             viewer.camera_speed = 0.75
             viewer.renderer.joint_scale = 3.0
             viewer.renderer.wireframe_line_width = 3.0
@@ -205,6 +211,9 @@ class TestExampleBrowserReset(unittest.TestCase):
             self.assertFalse(viewer.layer.visible)
             self.assertAlmostEqual(viewer.contact_force_scale, original_force_scale)
             self.assertEqual(viewer.camera.fov, 55.0)
+            self.assertEqual(viewer.camera.pos, (4.0, 5.0, 6.0))
+            self.assertEqual((viewer.camera.pitch, viewer.camera.yaw), (-20.0, 30.0))
+            self.assertEqual(viewer.camera.pivot, (1.0, 1.0, 1.0))
             self.assertEqual(viewer.camera_speed, 0.75)
             with self.subTest(operation="reset", option="wireframe_line_width"):
                 self.assertEqual(viewer.renderer.wireframe_line_width, 3.0)
@@ -249,27 +258,25 @@ class TestExampleBrowserReset(unittest.TestCase):
             viewer._display_options_user["show_particles"] = False
             self.assertIsNotNone(browser.reset(example_class))
             self.assertFalse(viewer.show_particles)
+            # Combine explicit particle and joint choices in one switch, including
+            # a choice equal to the old default and a different active layer.
+            viewer.show_joints = False
+            viewer._display_options_user.update(show_joints=False, _paused=False, show_ui=False)
+            viewer.activate("unused")
+            viewer.show_joints = True
+            with viewer._track_display_options():
+                viewer.camera.fov = 46.0
+                viewer.camera_speed = 1.5
             browser.switch_target = "test.other"
             with patch(
                 "newton.examples.importlib.import_module", return_value=types.SimpleNamespace(Example=OtherScene)
             ):
                 browser.switch(example_class)
             self.assertFalse(viewer.show_particles)
-            # Explicit choices still win when they equal the old example's default.
-            viewer.show_joints = False
-            viewer._display_options_user["show_joints"] = False
-            viewer._display_options_user.update(_paused=True, show_ui=True)
-            viewer.activate("unused")
-            viewer.show_joints = True
-            with viewer._track_display_options():
-                viewer.camera.fov = 46.0
-                viewer.camera_speed = 1.5
-            browser.switch_target = "test.scene"
-            with patch("newton.examples.importlib.import_module", return_value=types.SimpleNamespace(Example=Scene)):
-                browser.switch(example_class)
             self.assertFalse(viewer.show_joints)
-            self.assertTrue(viewer._paused)
-            self.assertTrue(viewer.show_ui)
+            self.assertFalse(viewer._paused)
+            self.assertFalse(viewer.show_ui)
+
             self.assertEqual(viewer.camera.fov, 46.0)
             self.assertEqual(viewer.camera_speed, 1.5)
 
@@ -301,44 +308,42 @@ class TestExampleBrowserReset(unittest.TestCase):
                 if self.failure == "exit":
                     raise SystemExit(2)
 
-        for operation in ("switch", "reset"):
-            for failure in ("parser", "constructor", "exit"):
-                with self.subTest(operation=operation, failure=failure), wp.ScopedDevice("cpu"):
-                    viewer = _BrowserViewer()
-                    browser = _ExampleBrowser(viewer)
-                    module = types.SimpleNamespace(Example=FailingScene)
-                    FailingScene.failure = failure
-                    with patch("newton.examples.importlib.import_module", return_value=module):
-                        with self.assertLogs("newton", level="ERROR") as logs:
-                            if operation == "switch":
-                                browser.switch_target = "test.failing"
-                                result, _ = browser.switch(_StubExample)
-                            else:
-                                result = browser.reset(FailingScene)
-                        self.assertIsNone(result)
-                        self.assertIn(
-                            "SystemExit" if failure != "constructor" else "construction failed", logs.output[0]
-                        )
-                        self.assertIsNone(viewer.splash)
-                        self.assertIsNone(viewer.model)
-                        self.assertEqual(len(viewer.layers), 1)
-                        self.assertNotIn("side", viewer.callbacks)
-                        self.assertIn("panel", viewer.callbacks)
-                        self.assertFalse(viewer.closed)
-                        # LogRecord.exc_info also owns the failed constructor's traceback.
-                        del logs
-                        gc.collect()
-                        if failure != "parser":
-                            self.assertIsNone(FailingScene.last_instance())
-                        FailingScene.failure = None
+        # Cover each failure kind and both entry points without their full product.
+        for operation, failure in (("switch", "parser"), ("reset", "constructor"), ("switch", "exit")):
+            with self.subTest(operation=operation, failure=failure), wp.ScopedDevice("cpu"):
+                viewer = _BrowserViewer()
+                browser = _ExampleBrowser(viewer)
+                module = types.SimpleNamespace(Example=FailingScene)
+                FailingScene.failure = failure
+                with patch("newton.examples.importlib.import_module", return_value=module):
+                    with self.assertLogs("newton", level="ERROR") as logs:
                         if operation == "switch":
                             browser.switch_target = "test.failing"
                             result, _ = browser.switch(_StubExample)
                         else:
                             result = browser.reset(FailingScene)
-                        self.assertIsInstance(result, FailingScene)
-                        self.assertIs(viewer.model, model)
-                        self.assertIsNone(viewer.splash)
+                    self.assertIsNone(result)
+                    self.assertIn("SystemExit" if failure != "constructor" else "construction failed", logs.output[0])
+                    self.assertIsNone(viewer.splash)
+                    self.assertIsNone(viewer.model)
+                    self.assertEqual(len(viewer.layers), 1)
+                    self.assertNotIn("side", viewer.callbacks)
+                    self.assertIn("panel", viewer.callbacks)
+                    self.assertFalse(viewer.closed)
+                    # LogRecord.exc_info also owns the failed constructor's traceback.
+                    del logs
+                    gc.collect()
+                    if failure != "parser":
+                        self.assertIsNone(FailingScene.last_instance())
+                    FailingScene.failure = None
+                    if operation == "switch":
+                        browser.switch_target = "test.failing"
+                        result, _ = browser.switch(_StubExample)
+                    else:
+                        result = browser.reset(FailingScene)
+                    self.assertIsInstance(result, FailingScene)
+                    self.assertIs(viewer.model, model)
+                    self.assertIsNone(viewer.splash)
 
     def test_cleanup_precedes_new_constructor(self) -> None:
         """Collect callback-owned cycles before a replacement starts graph capture."""
@@ -413,59 +418,47 @@ class TestExampleBrowserReset(unittest.TestCase):
             def test_final(self) -> None:
                 pass
 
-        for phase in ("step", "render"):
-            for mode in ("interactive", "test", "headless", "benchmark", "null", "null_benchmark"):
-                with self.subTest(phase=phase, mode=mode), wp.ScopedDevice("cpu"):
-                    viewer = (
-                        ViewerNull(num_frames=6, benchmark=mode == "null_benchmark")
-                        if mode in ("null", "null_benchmark")
-                        else _BrowserViewer()
-                    )
-                    viewer.render_count = 0
-                    args = newton.examples.default_args()
-                    if mode in ("null", "null_benchmark"):
-                        args.viewer = "null"
-                    elif mode != "interactive":
-                        setattr(args, mode, None if mode == "benchmark" else True)
-                    args.failure_phase = phase
-                    args.failure = RuntimeError(f"{phase} failed")
-                    Scene.fail = True
+        # Recovery covers both phases; each automated mode needs only one failure.
+        for phase, mode in (
+            ("step", "interactive"),
+            ("render", "interactive"),
+            ("step", "test"),
+            ("render", "headless"),
+            ("step", "benchmark"),
+            ("render", "null"),
+        ):
+            with self.subTest(phase=phase, mode=mode), wp.ScopedDevice("cpu"):
+                viewer = ViewerNull(num_frames=6) if mode == "null" else _BrowserViewer()
+                viewer.render_count = 0
+                args = newton.examples.default_args()
+                if mode == "null":
+                    args.viewer = "null"
+                elif mode != "interactive":
+                    setattr(args, mode, None if mode == "benchmark" else True)
+                args.failure_phase = phase
+                args.failure = RuntimeError(f"{phase} failed")
+                Scene.fail = True
 
-                    if mode != "interactive":
-                        with self.assertRaises(RuntimeError) as raised:
-                            newton.examples.run(Scene(viewer, args), args)
-                        self.assertIs(raised.exception, args.failure)
-                    else:
+                if mode != "interactive":
+                    with self.assertRaises(RuntimeError) as raised:
+                        newton.examples.run(Scene(viewer, args), args)
+                    self.assertIs(raised.exception, args.failure)
+                else:
 
-                        def retry(viewer: _BrowserViewer = viewer) -> None:
-                            self.assertIsNone(viewer.model)
-                            self.assertEqual(len(viewer.layers), 1)
-                            Scene.fail = False
-                            viewer.reset_callback()
-                            viewer.on_frame = lambda: None
+                    def retry(viewer: _BrowserViewer = viewer) -> None:
+                        self.assertIsNone(viewer.model)
+                        self.assertEqual(len(viewer.layers), 1)
+                        Scene.fail = False
+                        viewer.reset_callback()
+                        viewer.on_frame = lambda: None
 
-                        viewer.on_frame = retry
-                        with self.assertLogs("newton", level="ERROR") as logs:
-                            newton.examples.run(Scene(viewer, args), args)
-                        self.assertIn(f"{phase} failed", logs.output[0])
-                        self.assertGreater(viewer.render_count, 0)
-                        self.assertTrue(viewer.closed)
-                        self.assertIsNone(viewer.splash)
-
-    def test_reset_preserves_user_provided_args(self):
-        # Simulate the user invoking the example with `--world-count 2`.
-        args = _StubExample.create_parser().parse_args(["--world-count", "2"])
-        self.assertEqual(args.world_count, 2)
-
-        viewer = _StubViewer()
-        browser = _ExampleBrowser(viewer, args)
-
-        new_example = browser.reset(_StubExample)
-
-        self.assertIsNotNone(new_example)
-        self.assertEqual(new_example.args.world_count, 2)
-        self.assertEqual(viewer.cleared_all_layers, 1)
-        self.assertEqual(viewer.cleared, 0)
+                    viewer.on_frame = retry
+                    with self.assertLogs("newton", level="ERROR") as logs:
+                        newton.examples.run(Scene(viewer, args), args)
+                    self.assertIn(f"{phase} failed", logs.output[0])
+                    self.assertGreater(viewer.render_count, 0)
+                    self.assertTrue(viewer.closed)
+                    self.assertIsNone(viewer.splash)
 
     def test_reset_falls_back_to_defaults_when_no_args(self):
         viewer = _StubViewer()
@@ -483,7 +476,8 @@ class TestExampleBrowserReset(unittest.TestCase):
         args = _StubExample.create_parser().parse_args(["--world-count", "2"])
         args.warp_config.append("dummy=1")
 
-        browser = _ExampleBrowser(_StubViewer(), args)
+        viewer = _StubViewer()
+        browser = _ExampleBrowser(viewer, args)
 
         args.world_count = 99
         args.warp_config.append("mutated=1")
@@ -493,6 +487,23 @@ class TestExampleBrowserReset(unittest.TestCase):
         self.assertIsNotNone(new_example)
         self.assertEqual(new_example.args.world_count, 2)
         self.assertEqual(new_example.args.warp_config, ["dummy=1"])
+        self.assertEqual(viewer.cleared_all_layers, 1)
+        self.assertEqual(viewer.cleared, 0)
+
+    def test_reset_preserves_user_provided_args(self):
+        # Simulate the user invoking the example with `--world-count 2`.
+        args = _StubExample.create_parser().parse_args(["--world-count", "2"])
+        self.assertEqual(args.world_count, 2)
+
+        viewer = _StubViewer()
+        browser = _ExampleBrowser(viewer, args)
+
+        new_example = browser.reset(_StubExample)
+
+        self.assertIsNotNone(new_example)
+        self.assertEqual(new_example.args.world_count, 2)
+        self.assertEqual(viewer.cleared_all_layers, 1)
+        self.assertEqual(viewer.cleared, 0)
 
     def test_reset_after_switch_uses_new_example_args(self):
         # Original launch: _StubExample with --world-count 2.

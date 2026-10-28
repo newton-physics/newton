@@ -20,6 +20,10 @@ env:
   AWS_ROLE_ARN: arn:aws:iam::968945269301:role/newton-physics-newton-ec2-github-runner-role
   AWS_ROLE_DURATION: 7200
   AWS_RUNNER_RESOURCE_TAG: newton-github-runner
+  # Codecov only tracks main, so other runs skip coverage collection and the
+  # report artifact. pull_request_target runs on the base ref, so the event
+  # check is required. Keep in sync with the codecov-upload job condition.
+  UPLOAD_TO_CODECOV: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
 
 on:
   workflow_call:
@@ -103,7 +107,7 @@ jobs:
       instance-type: ${{ steps.start-ec2-runner.outputs.instance-type }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -162,9 +166,10 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:
-          version: "0.12.23"
+          version: "0.13.5"
+          prune-cache: true
 
       - name: Set up Python
         run: uv python install
@@ -224,7 +229,7 @@ jobs:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
-        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --parallel-timeout 4500 --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --parallel-timeout 4500 --no-cache-clear --junit-report-xml rspec.xml ${{ env.UPLOAD_TO_CODECOV == 'true' && '--coverage --coverage-xml coverage.xml' || '' }}
 
       - name: Save OVRTX shader cache
         if: github.event_name != 'merge_group' && steps.restore-ovrtx-shader-cache.outputs.cache-hit != 'true'
@@ -254,7 +259,7 @@ jobs:
           show: "fail"
 
       - name: Upload coverage artifact
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && env.UPLOAD_TO_CODECOV == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-gpu
@@ -305,7 +310,15 @@ jobs:
     needs:
       - start-runner
       - gpu-unit-tests
-    if: ${{ !cancelled() && needs.gpu-unit-tests.result != 'skipped' }}
+    # Codecov only tracks main: pull request (pull_request_target runs on the
+    # base ref, so github.ref alone is not enough), merge queue, release
+    # branch, and tag runs skip the upload. Nightly dispatches on main upload.
+    # Mirrors UPLOAD_TO_CODECOV, which a job-level condition cannot read.
+    if: >-
+      !cancelled() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      needs.gpu-unit-tests.result != 'skipped'
     runs-on: ubuntu-latest
     env:
       AWS_INSTANCE_TYPE: ${{ needs.start-runner.outputs.instance-type }}
@@ -318,7 +331,7 @@ jobs:
       # uses rotating productionresultssaN hosts and harden-runner only supports
       # leading full-label wildcards.
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -346,10 +359,14 @@ jobs:
           name: coverage-gpu
       - name: Upload coverage reports to Codecov
         if: ${{ steps.download-coverage.outcome == 'success' }}
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        # A Codecov error should not fail the nightly run and trigger its
+        # failure notification. Pushes to main still fail visibly.
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           disable_search: true
           env_vars: AWS_INSTANCE_TYPE
+          fail_ci_if_error: true
           files: ./coverage.xml
           flags: unittests
           plugins: noop
@@ -368,7 +385,7 @@ jobs:
     if: always() && needs.start-runner.result != 'skipped' && github.repository == 'newton-physics/newton'
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 

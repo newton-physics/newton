@@ -163,6 +163,7 @@ class TestLogContacts(unittest.TestCase):
         viewer.log_contacts(contacts, model.state(), observables=observables)
         unloaded_colors = viewer._contact_disk_colors.numpy().copy()
         self.assertFalse(np.allclose(unknown_colors, unloaded_colors))
+        self.assertFalse(np.allclose(unknown_colors, loaded_colors))
         self.assertFalse(np.allclose(loaded_colors, unloaded_colors))
         with self.subTest(eps_force=0.0):
             viewer.contact_mode_eps_force = 0.0

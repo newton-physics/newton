@@ -38,6 +38,7 @@ CUDA_REQUIRED_EXAMPLES = {
     "nut_bolt_hydro",
     "nut_bolt_sdf",
     "robot_panda_hydro",
+    "steel_sleeping",
 }
 
 
