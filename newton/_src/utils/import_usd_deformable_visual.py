@@ -187,7 +187,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             # Proposal bind pose (or the mesh points), in the common world frame the
             # simulation geometry was imported in.
             try:
-                mesh, source_point_indices = usd.get_mesh(prim, load_uvs=True, return_source_point_indices=True)
+                mesh, _, source_point_indices = usd.get_mesh(prim, load_uvs=True, return_source_point_indices=True)
                 points = usd.get_deformable_bind_pose(prim)[source_point_indices]
             except ValueError as exc:
                 logger.warning("%s: invalid visual mesh, material, or bind pose; skipping (%s)", path, exc)

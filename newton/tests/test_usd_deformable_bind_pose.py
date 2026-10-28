@@ -101,7 +101,7 @@ class TestUsdDeformableBindPose(unittest.TestCase):
         _author_pose(source.GetPrim(), "reference", [(0, 0, 0), (2, 0, 0), (0, 2, 0), (0, 0, 1), (-2, 0, 0)])
         before = stage.GetRootLayer().ExportToString()
 
-        mesh, point_indices = newton.usd.get_mesh(
+        mesh, _, point_indices = newton.usd.get_mesh(
             source.GetPrim(), load_uvs=True, return_source_point_indices=True, compute_inertia=False
         )
         bind_points = newton.usd.get_deformable_bind_pose(source.GetPrim())[point_indices]

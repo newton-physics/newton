@@ -123,14 +123,18 @@ vertices; the indices preserve that relationship.
 
 .. code-block:: python
 
-   mesh, point_indices = newton.usd.get_mesh(
+   mesh, _, point_indices = newton.usd.get_mesh(
        visual_prim, load_uvs=True, return_source_point_indices=True
    )
    vertex_data = authored_point_data[point_indices]
 
+This option always returns ``(mesh, uv_indices, source_point_indices)``.
+The second item is ``None`` unless UV indices are requested and available.
+The source-point mapping is always third, including when both mappings are
+requested. Without this option, existing return values are unchanged.
+
 This option requires a single mesh prim. It is not available when merging a
-stage or file. Without it, existing return values are unchanged. See the
-function's return table when also requesting UV indices.
+stage or file. See the function's return table for all combinations.
 
 Deformable Bodies
 -----------------

@@ -172,7 +172,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
                 source = _define_folded_mesh(stage, scheme=scheme)
                 mesh = newton.usd.get_mesh(source.GetPrim(), load_normals=True, compute_inertia=False)
                 self.assertIsNotNone(mesh.normals)
-                mapped, point_indices = newton.usd.get_mesh(
+                mapped, _, point_indices = newton.usd.get_mesh(
                     source.GetPrim(), load_normals=True, return_source_point_indices=True, compute_inertia=False
                 )
                 np.testing.assert_array_equal(mapped.vertices, mesh.vertices)
@@ -232,7 +232,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
                 }
                 mesh = newton.usd.get_mesh(source.GetPrim(), **options)
                 self.assertEqual(len(mesh.vertices), vertices)
-                mapped, point_indices = newton.usd.get_mesh(
+                mapped, _, point_indices = newton.usd.get_mesh(
                     source.GetPrim(), return_source_point_indices=True, **options
                 )
                 np.testing.assert_array_equal(mapped.vertices, mesh.vertices)
@@ -430,22 +430,30 @@ class TestUsdMeshHelpers(unittest.TestCase):
         source.CreatePointsAttr(points)
         source.CreateFaceVertexCountsAttr([4])
         source.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
-        UsdGeom.PrimvarsAPI(source).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, "faceVarying").Set(
-            [(0, 0), (1, 0), (1, 1), (0, 1)]
-        )
+        uvs = [(0, 0), (1, 0), (1, 1), (0, 1)]
+        UsdGeom.PrimvarsAPI(source).CreatePrimvar("st", Sdf.ValueTypeNames.TexCoord2fArray, "faceVarying").Set(uvs)
         for orientation, corners in (("rightHanded", [0, 1, 2, 0, 2, 3]), ("leftHanded", [2, 1, 0, 3, 2, 0])):
             source.CreateOrientationAttr(orientation)
             for load_uvs in (False, True):
-                with self.subTest(orientation=orientation, load_uvs=load_uvs):
-                    mesh, point_indices = newton.usd.get_mesh(
-                        source.GetPrim(), load_uvs=load_uvs, return_source_point_indices=True, compute_inertia=False
-                    )
-                    self.assertEqual(point_indices.dtype, np.dtype(np.int32))
-                    np.testing.assert_array_equal(point_indices[mesh.indices], corners)
-                    np.testing.assert_array_equal(mesh.vertices, np.asarray(points)[point_indices])
-                    if not load_uvs:
-                        # No split: include even the unused point in the identity map.
-                        np.testing.assert_array_equal(point_indices, [0, 1, 2, 3, 4])
+                for return_uv_indices in (False, True):
+                    with self.subTest(orientation=orientation, load_uvs=load_uvs, return_uv_indices=return_uv_indices):
+                        mesh, uv_indices, point_indices = newton.usd.get_mesh(
+                            source.GetPrim(),
+                            load_uvs=load_uvs,
+                            return_uv_indices=return_uv_indices,
+                            return_source_point_indices=True,
+                            compute_inertia=False,
+                        )
+                        self.assertEqual(point_indices.dtype, np.dtype(np.int32))
+                        np.testing.assert_array_equal(point_indices[mesh.indices], corners)
+                        np.testing.assert_array_equal(mesh.vertices, np.asarray(points)[point_indices])
+                        if load_uvs and return_uv_indices:
+                            np.testing.assert_array_equal(mesh.uvs[uv_indices], np.asarray(uvs)[corners])
+                        else:
+                            self.assertIsNone(uv_indices)
+                        if not load_uvs:
+                            # No split: include even the unused point in the identity map.
+                            np.testing.assert_array_equal(point_indices, [0, 1, 2, 3, 4])
 
         mesh, uv_indices, point_indices = newton.usd.get_mesh(
             prim=source.GetPrim(), return_uv_indices=True, return_source_point_indices=True, compute_inertia=False
