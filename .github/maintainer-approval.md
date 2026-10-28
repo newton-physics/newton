@@ -129,8 +129,9 @@ GitHub's ruleset enforcement. Before rollout, record sandbox evidence for:
 - Required CI running on the merge group and failed queue CI preventing a merge.
 - A workflow on a PR branch failing to obtain the environment key.
 
-Requests for the same PR are serialized by workflow concurrency. Pending runs
-may be replaced by newer pending runs under GitHub concurrency semantics; post a
+Approval jobs for the same PR are serialized by job concurrency. Ordinary
+comments are skipped before entering that group. Pending commands may be
+replaced by newer pending commands under GitHub concurrency semantics; post a
 fresh command if yours was cancelled. The script does not retry failed approval
 API calls: if a response is lost, inspect reviews before posting another command.
 Membership changes after a completed approval do not automatically revoke it.

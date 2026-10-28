@@ -7,10 +7,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: maintainer-approve-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   approve:
     if: >-
@@ -19,6 +15,9 @@ jobs:
       github.run_attempt == 1 &&
       github.event.issue.pull_request &&
       startsWith(github.event.comment.body, '/maintainer-approve ')
+    concurrency:
+      group: maintainer-approve-${{ github.event.issue.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: maintainer-approval
