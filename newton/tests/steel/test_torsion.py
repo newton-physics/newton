@@ -815,9 +815,16 @@ def test_contact_input_overflow_is_rejected(test, device):
 
 
 def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
-    """Give a patch over two shape pairs the larger radius in either contact order, for every preparation."""
+    """Give a patch over two shape pairs the larger radius, or no row when one pair has none, on both responses.
+
+    Covers either contact order and every preparation; propagation prepares on the device only.
+    """
+    radius_cases = {"positive": [0.0, 0.001, 0.04], "zero_member": [0.0, 0.0, 0.04]}
+    cases = [("positive", preparation, "immediate") for preparation in ("host", "patch_segments", "world_scan")]
+    cases += [("positive", "patch_segments", "propagation"), ("zero_member", "patch_segments", "immediate")]
+    cases += [("zero_member", preparation, "propagation") for preparation in ("patch_segments", "world_scan")]
     results = {}
-    for preparation, reverse in itertools.product(("host", "patch_segments", "world_scan"), (False, True)):
+    for (radii, preparation, response), reverse in itertools.product(cases, (False, True)):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
         pose = wp.transform(wp.vec3(0.0, 0.0, 0.0199), wp.quat_identity())
@@ -837,14 +844,16 @@ def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
                 cfg=newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.5),
             )
         model = builder.finalize(device=device)
-        set_torsion_radius(model, np.array([0.0, 0.001, 0.04], dtype=np.float32))
+        set_torsion_radius(model, np.array(radius_cases[radii], dtype=np.float32))
         solver = SolverSteel(
             model,
+            articulated_contact_response=response,
             contact_torsion_device=preparation != "host",
             iterations=128,
             friction_anchor_beta=0.2,
             cfm=0.0,
-            articulation_constraint_max=128,
+            articulation_constraint_max=64,
+            free_body_constraint_max=16,
         )
         solver._rigid_body_angular_damping.zero_()
         if preparation == "world_scan":
@@ -868,15 +877,24 @@ def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
             shape1[:count] = shape1[:count][::-1]
             contacts.rigid_contact_shape1.assign(shape1)
         test.assertEqual(sorted(set(contacts.rigid_contact_shape1.numpy()[:count].tolist())), [1, 2])
-        solver.step(state, output, model.control(), contacts, 0.0025)
-        solver.check_constraint_capacity()
-        stats = solver._torsion_stats if preparation == "host" else solver._device_torsion.read_stats()
-        test.assertEqual(stats["rows"], 1)
-        test.assertAlmostEqual(stats["groups"][0]["effective_radius_m"], 0.04, places=6)
-        results[preparation, reverse] = output.joint_qd.numpy()
-    for key, joint_qd in results.items():
-        with test.subTest(preparation=key[0], reverse=key[1]):
-            np.testing.assert_allclose(joint_qd, results["host", False], rtol=0.0, atol=1.0e-4)
+        with test.subTest(radii=radii, preparation=preparation, response=response, reverse=reverse):
+            solver.step(state, output, model.control(), contacts, 0.0025)
+            solver.check_constraint_capacity()
+            test.assertTrue(np.all(solver._contact_path.numpy()[:count] == (2 if response == "propagation" else 0)))
+            stats = solver._torsion_stats if preparation == "host" else solver._device_torsion.read_stats()
+            if radii == "positive":
+                test.assertEqual(stats["rows"], 1)
+                test.assertAlmostEqual(stats["groups"][0]["effective_radius_m"], 0.04, places=6)
+            else:
+                # The zero-radius pair rejects the whole region.
+                test.assertEqual(stats["rows"], 0)
+            if response == "propagation":
+                test.assertEqual(len(_propagation_torsion_rows(solver)), stats["rows"])
+        results[radii, preparation, response, reverse] = output.joint_qd.numpy()
+    for (radii, preparation, response, reverse), joint_qd in results.items():
+        with test.subTest(radii=radii, preparation=preparation, response=response, reverse=reverse):
+            reference = results[radii, "host" if radii == "positive" else "patch_segments", "immediate", False]
+            np.testing.assert_allclose(joint_qd, reference, rtol=0.0, atol=1.0e-4)
 
 
 class TestContactTorsionRegressions(unittest.TestCase):

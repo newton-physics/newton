@@ -20,6 +20,7 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_TORSION,
     WARP_DETERMINISM_OFF,
+    _has_torsion_radius,
     contact_base_rows,
 )
 
@@ -175,6 +176,9 @@ def _gather(
     if paths[c] == 0:
         family = _DENSE
     elif paths[c] == 2 and rows > base_rows:
+        family = _PROPAGATION
+    elif paths[c] == 2 and patch_mode != 0 and not _has_torsion_radius(shape_a[c], shape_b[c], shape_radius):
+        # A contact without a radius reserves no spare, but it still rejects its patch, as on dense rows.
         family = _PROPAGATION
     if family < 0:
         return
