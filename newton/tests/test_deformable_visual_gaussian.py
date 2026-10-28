@@ -308,6 +308,10 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         np.testing.assert_allclose(visual.weights.numpy(), [[0.7, 0.1, 0.1, 0.1], [0.3, 0.4, 0.2, 0.1]])
         self.assertEqual(result["path_shape_map"], {"/World/Bear/Gaussian": visual.shape})
 
+        subtree = newton.ModelBuilder()
+        subtree.add_usd(stage, root_path="/World/Bear/Sim")
+        self.assertEqual(subtree.finalize(device="cpu").deformable_visual_gaussian_count, 0)
+
     def test_local_tet_indices_rebase_across_multiple_volume_bodies(self):
         """Rebase each field's local USD tet indices into the shared builder."""
         stage = self._stage()
@@ -335,6 +339,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         self._add_gaussian(stage, "/World/Bear/Gaussian", [(0.25, 0.25, 0.25)])
 
         builder = newton.ModelBuilder()
+        builder.add_particle(wp.vec3(10.0), wp.vec3(0.0), 1.0)
         builder.add_usd(stage, root_path="/World")
         visual = builder.finalize().deformable_visual_gaussians[0]
 
