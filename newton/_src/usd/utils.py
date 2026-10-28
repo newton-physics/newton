@@ -1589,7 +1589,7 @@ def get_physics_scenes(
     return _get_physics_scenes_from_results(stage, physics_results)
 
 
-def find_deformable_visual_prims(body_prim: Usd.Prim) -> list[Usd.Prim]:
+def find_deformable_visual_prims(prim: Usd.Prim) -> list[Usd.Prim]:
     """Find the visual geometry owned by one USD deformable body.
 
     .. experimental::
@@ -1606,28 +1606,51 @@ def find_deformable_visual_prims(body_prim: Usd.Prim) -> list[Usd.Prim]:
     when collision is disabled.
 
     This reads ownership only. It does not filter visibility or create a
-    simulation, binding, or render mesh. Mesh prims can be read with
-    :func:`get_mesh`; bind-pose points with :func:`get_deformable_bind_pose`.
+    simulation, embedding, or render mesh. Mesh prims can be read with
+    :func:`get_mesh`.
 
     Args:
-        body_prim: Prim with ``PhysicsDeformableBodyAPI`` applied.
+        prim: Prim with ``PhysicsDeformableBodyAPI`` applied.
 
     Returns:
         Visual prims belonging to this body, not to nested bodies.
 
     Raises:
-        ValueError: If ``body_prim`` is invalid or lacks the deformable body API.
+        ValueError: If ``prim`` is invalid or lacks the deformable body API.
     """
-    if not body_prim:
+    if not prim:
         raise ValueError("Expected a valid prim with PhysicsDeformableBodyAPI")
-    if not has_applied_api_schema(body_prim, "PhysicsDeformableBodyAPI"):
-        raise ValueError(f"{body_prim.GetPath()}: expected a prim with PhysicsDeformableBodyAPI")
+    if not has_applied_api_schema(prim, "PhysicsDeformableBodyAPI"):
+        raise ValueError(f"{prim.GetPath()}: expected a prim with PhysicsDeformableBodyAPI")
     return [
-        prim
-        for prim in _iter_deformable_pointbased_prims(body_prim)
-        if not _prim_has_collision_api(prim)
-        and not (_is_aousd_deformable_sim_prim(prim) or _is_particle_sim_prim(prim))
+        child
+        for child in _iter_deformable_pointbased_prims(prim)
+        if not _prim_has_collision_api(child)
+        and not (_is_aousd_deformable_sim_prim(child) or _is_particle_sim_prim(child))
     ]
+
+
+def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
+    """Find all prims with the ``UsdGeom.TetMesh`` schema in a USD stage.
+
+    Example:
+
+        .. code-block:: python
+
+            from pxr import Usd
+            import newton.usd
+
+            stage = Usd.Stage.Open("scene.usda")
+            prims = newton.usd.find_tetmesh_prims(stage)
+            tetmeshes = [newton.usd.get_tetmesh(p) for p in prims]
+
+    Args:
+        stage: The USD stage to search.
+
+    Returns:
+        list[Usd.Prim]: All prims in the stage that have the TetMesh schema.
+    """
+    return [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.TetMesh)]
 
 
 def get_deformable_bind_pose(prim: Usd.Prim) -> np.ndarray:
@@ -1641,15 +1664,15 @@ def get_deformable_bind_pose(prim: Usd.Prim) -> np.ndarray:
     its ``physics:deformablePose:<instance>:points``, as the proposal's examples
     author them. If no such instance exists, use the geometry's default-time
     ``points``.
-    Do not substitute a rest shape or an animated sample for that fallback.
+    Do not substitute a rest shape or an animated sample for that fallback. An
+    explicit bind pose is also accepted when the geometry's ``points`` exist
+    only as time samples; :func:`get_mesh` cannot load such a mesh.
     Newton rejects multiple bind poses rather than choosing one by schema order.
 
     Points remain in USD vertex order and the prim's local coordinates.
     Transforms and stage-unit conversion are left to the caller. The result
-    owns its storage; changing it does not edit the stage. Loading a render
-    mesh with :func:`get_mesh` may split vertices for UVs or normals; request
-    ``return_source_point_indices=True`` there and index this array with the
-    result to get one bind position per loaded vertex.
+    owns its storage; changing it does not edit the stage. These are authored
+    points, not render vertices split at UV or normal seams.
 
     Args:
         prim: A ``UsdGeom.PointBased`` prim, such as a Mesh, BasisCurves, or TetMesh.
@@ -1706,29 +1729,6 @@ def get_deformable_bind_pose(prim: Usd.Prim) -> np.ndarray:
         if len(points) != len(geometry_points):
             raise ValueError(f"{path}: {pose_attr} point count must match the geometry's points")
     return points
-
-
-def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
-    """Find all prims with the ``UsdGeom.TetMesh`` schema in a USD stage.
-
-    Example:
-
-        .. code-block:: python
-
-            from pxr import Usd
-            import newton.usd
-
-            stage = Usd.Stage.Open("scene.usda")
-            prims = newton.usd.find_tetmesh_prims(stage)
-            tetmeshes = [newton.usd.get_tetmesh(p) for p in prims]
-
-    Args:
-        stage: The USD stage to search.
-
-    Returns:
-        list[Usd.Prim]: All prims in the stage that have the TetMesh schema.
-    """
-    return [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.TetMesh)]
 
 
 def _resolve_asset_path(

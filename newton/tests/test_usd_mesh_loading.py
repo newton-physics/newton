@@ -362,6 +362,7 @@ class TestUsdMeshHelpers(unittest.TestCase):
             stage.GetRootLayer().Save()
 
             mesh = newton.usd.get_mesh(stage_path, root_path="/Root", compute_inertia=False)
+            # The positional shim maps arguments by position; a new trailing option must not shift them.
             for source in (stage_path, stage.GetPrimAtPath("/Root/A")):
                 with self.subTest(source=type(source).__name__), self.assertWarns(NewtonDeprecationWarning):
                     positional = newton.usd.get_mesh(

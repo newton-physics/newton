@@ -110,6 +110,28 @@ The authored workflow is demonstrated by
 ``python -m newton.examples mpm_granular --from-usd`` and
 ``newton/examples/assets/mpm_sand.usda``.
 
+Mapping loaded vertices to authored points
+------------------------------------------
+
+.. experimental::
+   The ``return_source_point_indices`` option of :func:`newton.usd.get_mesh`
+   may change without a formal deprecation cycle.
+
+:func:`newton.usd.get_mesh` can return the source point index for each loaded
+vertex. UV seams and normals can split one authored point into several render
+vertices; the indices preserve that relationship.
+
+.. code-block:: python
+
+   mesh, point_indices = newton.usd.get_mesh(
+       visual_prim, load_uvs=True, return_source_point_indices=True
+   )
+   vertex_data = authored_point_data[point_indices]
+
+This option requires a single mesh prim. It is not available when merging a
+stage or file. Without it, existing return values are unchanged. See the
+function's return table when also requesting UV indices.
+
 Deformable Bodies
 -----------------
 
@@ -313,7 +335,29 @@ deformables are skipped, malformed topology or curves are skipped, and compliant
 imported. Dynamic and static friction belong to collision geometry and are not mapped onto
 the deformable collision approximation yet.
 
-.. _usd-deformable-limitations:
+Reading a deformable bind pose
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   :func:`newton.usd.get_deformable_bind_pose` follows the AOUSD proposal.
+
+Read the reference points used to bind visual geometry:
+
+.. code-block:: python
+
+   import newton.usd
+
+   visual = stage.GetPrimAtPath("/World/SoftBody/Visual")
+   points = newton.usd.get_deformable_bind_pose(visual)
+
+The reader uses a ``PhysicsDeformablePoseAPI`` instance with purpose
+``bindPose``, or the geometry's default-time points when none is authored.
+It does not substitute rest-shape points or an animated sample. Multiple
+bind poses and malformed data raise an error.
+
+The returned array owns its storage. Points remain in authored order, local
+coordinates, and stage length units. Apply transforms and unit conversion
+separately. These are not render vertices split at UV or normal seams.
 
 Limitations
 ~~~~~~~~~~~
@@ -523,126 +567,26 @@ see :ref:`deformable-objects-welded-usd-graphs` for per-curve lookup.
    Solver tuning that is not part of the supported AOUSD schemas or a documented Newton schema
    extension is not imported; supply it on the builder or model after import.
 
-Reading deformable visual geometry
+Finding deformable visual geometry
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 .. experimental::
+   :func:`newton.usd.find_deformable_visual_prims` follows the AOUSD proposal.
 
-   :func:`~newton.usd.find_deformable_visual_prims` and
-   :func:`~newton.usd.get_deformable_bind_pose` follow the AOUSD deformable proposal.
-   They read data without creating bindings or changing
-   :meth:`~newton.ModelBuilder.add_usd`. Automatic visual binding will follow the
-   native visual-mesh API (tracked in
-   `#3223 <https://github.com/newton-physics/newton/issues/3223>`__). See
-   :ref:`usd-deformable-limitations` for current cable, cloth, and volume import
-   behavior. Under a particle body, untagged meshes still load as static visuals.
+Use this reader to inspect visual geometry without creating a simulation:
 
-Use :func:`~newton.usd.find_deformable_visual_prims` to find the visual geometry of
-one ``PhysicsDeformableBodyAPI`` prim. The proposal calls these *graphics geometries*.
-They are ``UsdGeom.PointBased`` prims without a simulation or collision API.
-Simulation geometry includes the AOUSD families and Points prims with
-``NewtonPointsDeformableSimAPI``. A TetMesh without those APIs is visual geometry.
-Disabled colliders are still excluded. The search includes instance proxies,
-stops at nested deformable bodies, rigid bodies, and articulation roots, and does
-not filter visibility.
-
-:func:`~newton.usd.get_deformable_bind_pose` reads the applied
-``PhysicsDeformablePoseAPI`` instance with ``bindPose`` in its ``purposes``.
-Without that instance, it uses the geometry's default-time ``points``.
-It never substitutes rest-shape points or animated samples for this fallback.
-Missing points, mismatched counts, non-finite coordinates, and multiple bind poses
-raise ``ValueError``. These checks prevent silently binding against the wrong pose.
-
-.. testsetup:: deformable_visual_data
-
-   from pxr import Sdf, Usd, UsdGeom
-   import newton.usd
-
-   stage = Usd.Stage.CreateInMemory()
-   body = UsdGeom.Xform.Define(stage, "/Toy").GetPrim()
-   body.AddAppliedSchema("PhysicsDeformableBodyAPI")
-   mesh = UsdGeom.Mesh.Define(stage, "/Toy/VisualMesh")
-   mesh.CreatePointsAttr([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)])
-   mesh.CreateFaceVertexCountsAttr([3, 3])
-   mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 0, 2, 3])
-   UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
-       "st", Sdf.ValueTypeNames.TexCoord2fArray, "faceVarying"
-   ).Set([(0, 0), (1, 0), (1, 1), (0.5, 0), (0.5, 1), (0, 1)])
-   mesh.GetPrim().AddAppliedSchema("PhysicsDeformablePoseAPI:reference")
-   mesh.GetPrim().CreateAttribute(
-       "physics:deformablePose:reference:purposes", Sdf.ValueTypeNames.TokenArray
-   ).Set(["bindPose"])
-   mesh.GetPrim().CreateAttribute(
-       "physics:deformablePose:reference:points", Sdf.ValueTypeNames.Point3fArray
-   ).Set([(0, 0, 0), (2, 0, 0), (2, 2, 0), (0, 2, 0)])
-
-.. testcode:: deformable_visual_data
+.. code-block:: python
 
    import newton.usd
 
-   body = stage.GetPrimAtPath("/Toy")
+   body = stage.GetPrimAtPath("/World/SoftBody")
    visuals = newton.usd.find_deformable_visual_prims(body)
-   visual_prim = visuals[0]
-   bind_points = newton.usd.get_deformable_bind_pose(visual_prim)
-   print(str(visual_prim.GetPath()), bind_points.shape)
 
-.. testoutput:: deformable_visual_data
-
-   /Toy/VisualMesh (4, 3)
-
-The returned points use the authored vertex order, local coordinates, and stage
-length units. They are a copy, so changing them does not edit the stage. Apply
-the geometry's transform and ``metersPerUnit`` when converting them to meters.
-
-For a Mesh prim, :func:`~newton.usd.get_mesh` already reads topology, UVs, and visual
-materials. It reads the geometry's default-time points, not its bind pose, and raises
-when no default-time points are authored. Loading normals or
-UVs can split vertices, so the loaded mesh and the bind-pose array need not have
-the same vertex indices. Request ``return_source_point_indices=True`` to keep the
-connection to the authored points:
-
-.. testcode:: deformable_visual_data
-
-   mesh, source_point_indices = newton.usd.get_mesh(
-       visual_prim,
-       load_normals=True,
-       load_uvs=True,
-       return_source_point_indices=True,
-       compute_inertia=False,
-   )
-   render_bind_points = bind_points[source_point_indices]
-   print(source_point_indices.tolist())
-   print(render_bind_points.shape)
-
-.. testoutput:: deformable_visual_data
-
-   [0, 1, 2, 0, 2, 3]
-   (6, 3)
-
-Each entry names the original USD point for one render vertex. Here points 0 and
-2 are duplicated at a UV seam. Indexing the bind pose with this array gives all
-six render vertices the correct bind position. It does not change ``mesh.vertices``.
-
-This experimental option is limited to a single Mesh prim with no ``root_path``;
-point indices from several merged meshes would be ambiguous. The mapping is only
-computed when requested. To request both index arrays, unpack them in this order:
-
-.. testcode:: deformable_visual_data
-
-   mesh, uv_indices, source_point_indices = newton.usd.get_mesh(
-       visual_prim,
-       load_uvs=True,
-       return_uv_indices=True,
-       return_source_point_indices=True,
-       compute_inertia=False,
-   )
-   render_bind_points = bind_points[source_point_indices]
-   assert len(uv_indices) == len(mesh.indices)
-   assert len(render_bind_points) == len(mesh.vertices)
-
-UV indices refer to the loaded mesh's UV array. Source point indices refer to
-the original USD ``points`` array. Computing skinning weights and connecting
-visual geometry to simulation remain separate steps.
+The reader returns PointBased prims in traversal order, including instance
+proxies. It excludes simulation geometry and colliders, even disabled ones.
+It stops at nested deformable bodies, rigid bodies, and articulation roots.
+Visibility is not a filter. The reader does not edit the stage or compute
+embeddings; it only reports which prims the body owns.
 
 Material Color Spaces
 ---------------------
