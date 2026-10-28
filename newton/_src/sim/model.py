@@ -1417,6 +1417,8 @@ class Model:
         """Variant shape each variant row holds, or ``-1`` for an empty row, shape [shape_count], int."""
         self._bvh_variant_bounds: wp.array2d[wp.vec3f] | None = None
         """Local BVH bounds of each variant shape, built with :attr:`bvh_shape_bounds`."""
+        self._variant_copy_cache: tuple[tuple[int, ...], list[wp.Launch]] | None = None
+        """Recorded variant shape copies, keyed by their arrays."""
 
         self.joint_q: wp.array[wp.float32] | None = None
         """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
@@ -2697,17 +2699,13 @@ class Model:
         )
         if self._variant_row_max == 0:
             return flags
-        # One copy per attribute keeps the copied set in one list; this runs at reset, not per step.
-        copies = [(self._variant_shape_geometry[name], getattr(self, name)) for name in _SHAPE_VARIANT_ATTRIBUTES]
-        copies.extend(self._variant_shape_custom.values())
-        for variant_values, values in copies:
-            wp.launch(
-                _copy_variant_shape_kernel,
-                dim=dim,
-                inputs=[*selection, self._shape_variant_shape, variant_values],
-                outputs=[values],
-                device=self.device,
-            )
+        # One copy per attribute keeps the copied set in one list. The launches are recorded once and
+        # replayed, since resolving the generic kernel costs more than the copy itself.
+        for launch in self._variant_copy_launches():
+            launch.set_dim(dim)
+            launch.set_param_at_index(0, variants)
+            launch.set_param_at_index(1, bodies)
+            launch.launch()
         if self.bvh_shape_bounds is not None and self._bvh_variant_bounds is not None:
             wp.launch(
                 _copy_variant_shape_bounds_kernel,
@@ -2722,6 +2720,37 @@ class Model:
     def _has_body_variants(self) -> bool:
         """Whether any body has shape variants."""
         return self._body_variant_set is not None and bool(np.any(self._body_variant_set >= 0))
+
+    def _variant_copy_launches(self) -> list[wp.Launch]:
+        """Recorded copies of every variant shape attribute into the variant rows, rebuilt when an
+        array is replaced; :meth:`select_body_variants` sets the selection and dimension."""
+        copies = [(self._variant_shape_geometry[name], getattr(self, name)) for name in _SHAPE_VARIANT_ATTRIBUTES]
+        copies.extend(self._variant_shape_custom.values())
+        key = tuple(id(array) for pair in copies for array in pair)
+        if self._variant_copy_cache is not None and self._variant_copy_cache[0] == key:
+            return self._variant_copy_cache[1]
+        empty = wp.empty(0, dtype=wp.int32, device=self.device)
+        launches = [
+            wp.launch(
+                _copy_variant_shape_kernel,
+                dim=(1, 1),
+                inputs=[
+                    empty,
+                    empty,
+                    self._body_variant_count,
+                    self._body_variant_rows,
+                    self._shape_variant_shape,
+                    variant_values,
+                ],
+                outputs=[values],
+                device=self.device,
+                record_cmd=True,
+            )
+            for variant_values, values in copies
+        ]
+        # The key holds ids only; the launches keep the arrays alive, so the ids stay unique.
+        self._variant_copy_cache = (key, launches)
+        return launches
 
     def body_variant_labels(self, body: int) -> list[str]:
         """Labels of the shape variants of a body, indexed like :attr:`body_variant`.
