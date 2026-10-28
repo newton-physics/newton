@@ -452,6 +452,7 @@ class TestSelection(unittest.TestCase):
                 )
 
     def test_eval_fk_translated_joint_chain_uses_view_mask(self):
+        """Intersect view and joint masks while preserving unselected parent and articulation state."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
 
         def add_translated_chain(label: str, x_offset: float):
@@ -527,9 +528,9 @@ class TestSelection(unittest.TestCase):
         state_next.joint_qd.assign(qd)
         view.eval_fk(state_next)
 
-        body_q = state.body_q.numpy().reshape(-1, 7)
+        body_q = state.body_q.numpy().reshape(-1, 7).copy()
         body_q_next = state_next.body_q.numpy().reshape(-1, 7)
-        body_qd = state.body_qd.numpy().reshape(-1, 6)
+        body_qd = state.body_qd.numpy().reshape(-1, 6).copy()
 
         origin_vel_fd = (body_q_next[target_slider, :3] - body_q[target_slider, :3]) / dt
         origin_vel_from_body_qd = origin_velocity_from_body_qd(model, body_q, body_qd, target_slider)
@@ -540,6 +541,22 @@ class TestSelection(unittest.TestCase):
         assert_np_equal(body_q[other_slider], sentinel_q[other_slider], tol=0.0)
         assert_np_equal(body_qd[other_base], sentinel_qd[other_base], tol=0.0)
         assert_np_equal(body_qd[other_slider], sentinel_qd[other_slider], tol=0.0)
+
+        # Stale root coordinates must not overwrite its current body state.
+        q[q_start[target_j0]] = -1.2
+        qd[qd_start[target_j0]] = -2.0
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        state.body_q.assign(sentinel_q)
+        state.body_qd.assign(sentinel_qd)
+        state.body_q[target_base : target_base + 1].assign(body_q[target_base : target_base + 1])
+        state.body_qd[target_base : target_base + 1].assign(body_qd[target_base : target_base + 1])
+        joint_mask = wp.array(
+            [joint != target_j0 for joint in range(model.joint_count)], dtype=bool, device=model.device
+        )
+        view.eval_fk(state, joint_mask=joint_mask)
+        assert_np_equal(state.body_q.numpy(), body_q, tol=1.0e-6)
+        assert_np_equal(state.body_qd.numpy(), body_qd, tol=1.0e-6)
 
     def test_selection_mask(self):
         # load articulation

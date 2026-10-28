@@ -1,0 +1,55 @@
+name: Maintainer delegated approval
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  approve:
+    if: >-
+      github.repository == 'newton-physics/newton' &&
+      vars.MAINTAINER_APPROVAL_ENABLED == 'true' &&
+      github.run_attempt == 1 &&
+      github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/maintainer-approve ')
+    concurrency:
+      group: maintainer-approve-${{ github.event.issue.number }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: maintainer-approval
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        with:
+          egress-policy: audit
+
+      # Security invariant: issue_comment uses the default branch. Never check
+      # out a PR ref, run PR code, or put comment text into a shell expression.
+      - name: Check out trusted workflow commit
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Create short-lived approval token
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510  # v3.3.0
+        with:
+          client-id: ${{ vars.MAINTAINER_APPROVAL_APP_CLIENT_ID }}
+          private-key: ${{ secrets.MAINTAINER_APPROVAL_APP_PRIVATE_KEY }}
+          owner: newton-physics
+          repositories: newton
+          # Inherit only the App's configured PR write, Contents read, and
+          # organization Members read. No contents write, admin, or rule bypass.
+
+      - name: Validate command and submit delegated approval
+        # Use only runner-owned Python and imports: repository virtualenvs,
+        # uv configuration, and Python startup hooks must not see the App token.
+        run: /usr/bin/python3 -I scripts/ci/maintainer_approve.py
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_BOT_LOGIN: ${{ steps.app.outputs.app-slug }}[bot]
