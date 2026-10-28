@@ -204,9 +204,11 @@ class DeformableVisuals:
         """Evaluate the current points and normals from a simulation state.
 
         This reuses the buffers allocated at construction and performs no
-        structural allocation, so it can be captured in a CUDA graph after a
-        warm-up call; replay the graph before consuming the output. Different
-        states can share one result when updates and consumers are ordered.
+        structural allocation, so it can be captured in a CUDA graph. An eager
+        warm-up call is recommended to load kernels before capture; it is not
+        required when Warp can load them during capture. Replay the graph before
+        consuming the output. Different states can share one result when updates
+        and consumers are ordered.
         The caller keeps the data current; the output does not track its source
         State. Keep captured arrays alive and change their contents, not their
         storage, between replays.

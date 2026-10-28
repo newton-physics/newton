@@ -613,7 +613,7 @@ class TestDeformableVisualEvaluation(unittest.TestCase):
                 self.assertEqual((result.points.ptr, result.normals.ptr), pointers)
 
     def test_capture_and_wait(self):
-        """Replay alternating states into shared output and read it from another stream."""
+        """Capture the first update, replay alternating states, and read from another stream."""
         if not wp.is_cuda_available():
             self.skipTest("CUDA graph capture requires CUDA")
         builder = _particle_mesh()
@@ -622,8 +622,9 @@ class TestDeformableVisualEvaluation(unittest.TestCase):
         states = [model.state(), model.state()]
         result = newton.geometry.DeformableVisuals(model)
         graphs = []
-        for state in states:
-            result.update(state)
+        for i, state in enumerate(states):
+            if i:
+                result.update(state)
             with wp.ScopedCapture(model.device) as capture:
                 result.update(state)
             graphs.append(capture.graph)
