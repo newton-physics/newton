@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import glob
+import logging
 import os
 import threading
 from collections.abc import Callable
@@ -51,8 +52,9 @@ from types import MethodType
 
 import warp as wp
 
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.viewer import ViewerBase
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["add_recording_args", "enable_recording", "enable_recording_from_args"]
 
@@ -151,13 +153,13 @@ def enable_recording(
 
     get_frame = getattr(viewer, "get_frame", None)
     if get_frame is None or getattr(get_frame, "__func__", None) is ViewerBase.get_frame:
-        msg.warning(
-            f"enable_recording: viewer {type(viewer).__name__} does not support frame capture; recording disabled."
+        logger.warning(
+            "enable_recording: viewer %s does not support frame capture; recording disabled.", type(viewer).__name__
         )
         return False
 
     if getattr(viewer, "_recording", False):
-        msg.warning("enable_recording: viewer already has recording enabled; skipping re-config.")
+        logger.warning("enable_recording: viewer already has recording enabled; skipping re-config.")
         return False
 
     viewer._recording = _VideoRecording(
@@ -246,7 +248,7 @@ def _finish_clip(self):
     captured = recording.img_idx - recording.num_skipped_frames
     recording.recording_active = False
     recording.recording_stopped = True
-    msg.notif(f"Clip captured: {captured} frames")
+    logger.info("Clip captured: %s frames", captured)
 
     _flush_save_futures(recording)
 
@@ -256,7 +258,7 @@ def _finish_clip(self):
         fps=recording.clip_fps,
         keep_frames=recording.clip_keep_frames,
     ):
-        msg.notif(f"Video saved: {out_path}")
+        logger.info("Video saved: %s", out_path)
 
     on_done = recording.clip_on_done
     recording.clip_max_frames = None
@@ -289,7 +291,7 @@ def _reset_recording(self, video_folder: str | None = None) -> None:
 
     removed = _clear_pngs(recording.default_video_folder)
     if removed:
-        msg.info(f"reset_recording: cleared {removed} PNG frames in {recording.default_video_folder}")
+        logger.info("reset_recording: cleared %s PNG frames in %s", removed, recording.default_video_folder)
 
     recording.img_idx = 0
     recording.recording_stopped = False
@@ -334,7 +336,7 @@ def _start_clip(
     recording.clip_fps = fps
     recording.recording_active = True
     frame_limit = f"{max_frames} frames" if max_frames is not None else "until viewer close"
-    msg.notif(f"Recording started: {output_path} ({frame_limit} -> {recording.default_video_folder})")
+    logger.info("Recording started: %s (%s -> %s)", output_path, frame_limit, recording.default_video_folder)
 
 
 def _close_with_record(self):
@@ -364,8 +366,8 @@ def _capture_frame(viewer, recording: _VideoRecording) -> bool:
     try:
         from PIL import Image
     except ImportError:
-        msg.warning("PIL not installed. Frames cannot be saved as images.")
-        msg.info("Install with: pip install pillow")
+        logger.warning("PIL not installed. Frames cannot be saved as images.")
+        logger.info("Install with: pip install pillow")
         return False
 
     if recording.img_idx >= recording.num_skipped_frames:
@@ -431,21 +433,21 @@ def _generate_video(
     try:
         import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
     except ImportError:
-        msg.warning("imageio-ffmpeg not installed. Frames saved but video not generated.")
-        msg.info("Install with: pip install imageio-ffmpeg")
+        logger.warning("imageio-ffmpeg not installed. Frames saved but video not generated.")
+        logger.info("Install with: pip install imageio-ffmpeg")
         return False
     try:
         from PIL import Image
     except ImportError:
-        msg.warning("PIL not installed. Frames saved but video not generated.")
-        msg.info("Install with: pip install pillow")
+        logger.warning("PIL not installed. Frames saved but video not generated.")
+        logger.info("Install with: pip install pillow")
         return False
     import numpy as np  # noqa: PLC0415
 
     recording = self._recording
 
     if not recording.record_video or recording.img_idx <= recording.num_skipped_frames:
-        msg.warning("No frames recorded, cannot generate video")
+        logger.warning("No frames recorded, cannot generate video")
         return False
 
     _flush_save_futures(recording)
@@ -455,13 +457,16 @@ def _generate_video(
     frame_files = [os.path.join(recording.default_video_folder, f"{i:05d}.png") for i in range(num_captured)]
     missing = [f for f in frame_files if not os.path.exists(f)]
     if missing:
-        msg.warning(
-            f"Expected {num_captured} PNG frames in {recording.default_video_folder} "
-            f"but {len(missing)} are missing (first missing: {os.path.basename(missing[0])})"
+        logger.warning(
+            "Expected %s PNG frames in %s but %s are missing (first missing: %s)",
+            num_captured,
+            recording.default_video_folder,
+            len(missing),
+            os.path.basename(missing[0]),
         )
         return False
 
-    msg.info(f"Generating video from {num_captured} frames...")
+    logger.info("Generating video from %s frames...", num_captured)
     try:
         with Image.open(frame_files[0]) as first_frame:
             size = first_frame.size
@@ -481,10 +486,10 @@ def _generate_video(
             writer.send(frame_array)
 
         writer.close()
-        msg.info(f"Video generated successfully: {output_filename}")
+        logger.info("Video generated successfully: %s", output_filename)
 
         if not keep_frames:
-            msg.info("Deleting png frames...")
+            logger.info("Deleting png frames...")
             for frame_path in frame_files:
                 os.remove(frame_path)
             if recording.created_video_folder:
@@ -492,12 +497,12 @@ def _generate_video(
                     os.rmdir(recording.default_video_folder)
                 except OSError:
                     pass
-            msg.info("Frames deleted")
+            logger.info("Frames deleted")
 
         return True
 
     except Exception as e:
-        msg.warning(f"Failed to generate video: {e}")
+        logger.warning("Failed to generate video: %s", e)
         return False
 
 

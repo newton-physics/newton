@@ -15,6 +15,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton._src.solvers.kamino._src.utils.logger import enable_console_logging
 from newton._src.solvers.kamino._src.utils.sim.viewer_recording import (
     add_recording_args,
     enable_recording_from_args,
@@ -146,6 +147,7 @@ class Example:
 
 
 if __name__ == "__main__":
+    enable_console_logging()
     parser = Example.create_parser()
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)

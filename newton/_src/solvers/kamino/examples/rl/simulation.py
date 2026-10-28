@@ -14,6 +14,7 @@ from __future__ import annotations
 
 # Python
 import glob
+import logging
 import os
 import threading
 
@@ -30,11 +31,12 @@ from newton._src.solvers.kamino._src.geometry import CollisionDetector
 from newton._src.solvers.kamino._src.geometry.aggregation import ContactAggregation
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino, convert_contacts_newton_to_kamino
 from newton._src.solvers.kamino._src.solver_kamino_impl import SolverKaminoImpl
-from newton._src.solvers.kamino._src.utils import logger as msg
 from newton._src.solvers.kamino._src.utils.sim import Simulator
 from newton._src.solvers.kamino._src.utils.viewer import Color3, ViewerConfig
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton._src.viewer import ViewerGL
+
+logger = logging.getLogger(__name__)
 
 
 def _require_torch():
@@ -285,7 +287,7 @@ class RigidBodySim:
             settings = self.default_settings(sim_dt)
 
         # ----- Build Newton model (needed for ViewerGL) -----
-        msg.notif("Constructing builder from imported USD ...")
+        logger.info("Constructing builder from imported USD ...")
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
@@ -322,7 +324,7 @@ class RigidBodySim:
             self._newton_model.set_gravity((0.0, 0.0, -9.81))
 
         # ----- Create Kamino simulator from Newton model -----
-        msg.notif("Building Kamino simulator ...")
+        logger.info("Building Kamino simulator ...")
 
         # Cap contact counts to limit Delassus matrix size
         if max_contacts_per_pair is not None:
@@ -339,8 +341,8 @@ class RigidBodySim:
             use_newton_collisions=use_newton_cd,
         )
         self.model: ModelKamino = self.sim.model
-        msg.info(f"Model size: {self.sim.model.size}")
-        msg.info(f"Contacts capacity: {self.sim.contacts.model_max_contacts_host}")
+        logger.debug("Model size: %s", self.sim.model.size)
+        logger.debug("Contacts capacity: %s", self.sim.contacts.model_max_contacts_host)
 
         # Apply body pose offset to initial body poses (affects all resets).
         # Kamino q_i stores COM positions, so we offset the COM directly.
@@ -366,7 +368,7 @@ class RigidBodySim:
         self._newton_state: newton.State | None = None
         self._render_config = render_config or ViewerConfig()
         if not headless:
-            msg.notif("Creating the 3D viewer ...")
+            logger.info("Creating the 3D viewer ...")
             self.viewer = ViewerGL()
             self.viewer.set_model(self._newton_model)
             # Newton state used only for rendering (body_q synced from Kamino each frame)
@@ -593,7 +595,7 @@ class RigidBodySim:
                 self._actuated_dof_indices, device=self._device, dtype=wp.int32
             )
 
-        msg.info(f"Actuated joints ({self.num_actuated}): {self._actuated_joint_names}")
+        logger.debug("Actuated joints (%s): %s", self.num_actuated, self._actuated_joint_names)
 
         # Body names
         self._body_names: list[str] = [lbl.rsplit("/", 1)[-1] for lbl in self.sim.model.bodies.label[:max_bodies]]
@@ -615,10 +617,10 @@ class RigidBodySim:
         if not self._use_cuda_graph:
             return
         if not (self._device.is_cuda and wp.is_mempool_enabled(self._device)):
-            msg.warning("CUDA graphs requested but not available (need CUDA device with mempool). Using kernels.")
+            logger.warning("CUDA graphs requested but not available (need CUDA device with mempool). Using kernels.")
             return
 
-        msg.notif("Capturing CUDA graphs ...")
+        logger.info("Capturing CUDA graphs ...")
         with wp.ScopedCapture(device=self._device) as reset_capture:
             self._reset_worlds()
         self._reset_graph = reset_capture.graph
@@ -711,7 +713,7 @@ class RigidBodySim:
             # Thirdparty
             from PIL import Image
         except ImportError:
-            msg.warning("PIL not installed. Install with: pip install pillow")
+            logger.warning("PIL not installed. Install with: pip install pillow")
             return
 
         renderer = self.viewer.renderer
@@ -763,20 +765,20 @@ class RigidBodySim:
             # Thirdparty
             import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
         except ImportError:
-            msg.warning("imageio-ffmpeg not installed. Install with: pip install imageio-ffmpeg")
+            logger.warning("imageio-ffmpeg not installed. Install with: pip install imageio-ffmpeg")
             return False
         try:
             # Thirdparty
             from PIL import Image
         except ImportError:
-            msg.warning("PIL not installed. Install with: pip install pillow")
+            logger.warning("PIL not installed. Install with: pip install pillow")
             return False
         # Thirdparty
         import numpy as np  # noqa: PLC0415
 
         frame_files = sorted(glob.glob(os.path.join(self._video_folder, "*.png")))
         if not frame_files:
-            msg.warning(f"No PNG frames found in {self._video_folder}")
+            logger.warning("No PNG frames found in %s", self._video_folder)
             return False
 
         # Read first frame to get dimensions; ensure even for libx264 yuv420p
@@ -788,7 +790,7 @@ class RigidBodySim:
         needs_pad = even_w != w or even_h != h
         size = (even_w, even_h)
 
-        msg.info(f"Generating video from {len(frame_files)} frames at {even_w}x{even_h}...")
+        logger.info("Generating video from %s frames at %sx%s...", len(frame_files), even_w, even_h)
         try:
             writer = ffmpeg.write_frames(
                 output_filename,
@@ -808,16 +810,16 @@ class RigidBodySim:
                     frame = padded
                 writer.send(frame)
             writer.close()
-            msg.info(f"Video generated: {output_filename}")
+            logger.info("Video generated: %s", output_filename)
 
             if not keep_frames:
                 for frame_path in frame_files:
                     os.remove(frame_path)
-                msg.info("Frames deleted")
+                logger.info("Frames deleted")
 
             return True
         except Exception as e:
-            msg.warning(f"Failed to generate video: {e}")
+            logger.warning("Failed to generate video: %s", e)
             return False
 
     @property

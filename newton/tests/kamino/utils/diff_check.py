@@ -7,9 +7,12 @@ KAMINO: UNIT TESTS: Utils for running derivative checks with finite differences
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 ###
 # Module interface
@@ -111,16 +114,18 @@ def diff_check(
     success = abs_test or rel_test
 
     if not success:
-        print("DIFF CHECK FAILED")
-        print("DERIVATIVE: ")
-        print(derivative)
-        print("DERIVATIVE_FD")
-        print(derivative_fd)
+        logger.debug("DIFF CHECK FAILED")
+        logger.debug("DERIVATIVE: ")
+        logger.debug(derivative)
+        logger.debug("DERIVATIVE_FD")
+        logger.debug(derivative_fd)
         if not abs_test:
-            print(f"Absolute test failed, error={np.max(np.abs(error))}, tolerance={tolerance_abs}")
+            logger.debug("Absolute test failed, error=%s, tolerance=%s", np.max(np.abs(error)), tolerance_abs)
         if not rel_test:
-            print(
-                f"Relative test failed, error={np.linalg.norm(error)}, tolerance={tolerance_rel * np.linalg.norm(derivative_fd)}"
+            logger.debug(
+                "Relative test failed, error=%s, tolerance=%s",
+                np.linalg.norm(error),
+                tolerance_rel * np.linalg.norm(derivative_fd),
             )
 
     return success
