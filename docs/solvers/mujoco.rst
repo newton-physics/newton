@@ -1219,15 +1219,17 @@ Errors and warnings
 - Making a non-root body kinematic raises :class:`ValueError`, as does making
   a massless kinematic root dynamic or, with ``kinematic_switchable_roots=False``,
   making a root kinematic that was dynamic in every world at creation.
-- Making a root kinematic that was dynamic in every world at creation issues a
-  :class:`~newton.exceptions.NewtonDeprecationWarning`.
+- Switching a root to kinematic that was dynamic in every world at creation
+  issues a :class:`~newton.exceptions.NewtonDeprecationWarning`.
 - An explicit ``njmax`` too small for the welds that are inactive in the
-  first world, or kinematic roots needing more weld rows than ``njmax`` has
-  room for, issues a :class:`~newton.exceptions.NewtonWarning`; constraints
-  may overflow.
+  first world, or a switch that leaves kinematic roots needing more weld rows
+  than ``njmax`` has room for, issues a
+  :class:`~newton.exceptions.NewtonWarning`; constraints may overflow.
 
-These checks run on eager notifications; inside CUDA graph capture an invalid
-flag is not detected.
+Warnings fire once per switch, comparing against the flags of the previous
+notification. These checks run on the host for eager notifications only:
+notifications replayed from a CUDA graph neither warn nor detect invalid
+flags.
 
 
 Updating joint force properties

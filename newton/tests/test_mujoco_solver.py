@@ -2796,6 +2796,25 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     xpos = solver.mjw_data.xpos.numpy()[0, mjc_body]
                 np.testing.assert_allclose(xpos, 0.0, atol=1.0e-4)
 
+    def test_late_kinematic_switch_warns_once_per_switch(self):
+        """Warn when a root dynamic at creation switches to kinematic, not on later notifications."""
+        model, root_body = self._build_model(root_kinematic=False)
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        body_flags = model.body_flags.numpy().copy()
+
+        def notify(flag):
+            body_flags[root_body] = int(flag)
+            model.body_flags.assign(body_flags)
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+            return sum(issubclass(w.category, NewtonDeprecationWarning) for w in caught)
+
+        self.assertEqual(notify(BodyFlags.KINEMATIC), 1)
+        self.assertEqual(notify(BodyFlags.KINEMATIC), 0)
+        self.assertEqual(notify(BodyFlags.DYNAMIC), 0)
+        self.assertEqual(notify(BodyFlags.KINEMATIC), 1)
+
     def test_non_switchable_roots_export_no_welds(self):
         """Without switchable roots, dynamic roots get no weld and cannot turn kinematic."""
         model, root_body = self._build_model(root_kinematic=False)

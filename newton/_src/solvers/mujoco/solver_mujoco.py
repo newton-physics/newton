@@ -5617,8 +5617,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if flags & ModelFlags.JOINT_PROPERTIES:
             self._update_joint_properties()
         if flags & ModelFlags.BODY_PROPERTIES:
+            # Host checks compare against the last published flags; graph replays cannot warn or raise.
+            previous_flags = None if self.model.device.is_capturing else self._notify_body_flags.numpy().copy()
             wp.copy(self._notify_body_flags, self.model.body_flags)
-            self._update_kinematic_weld_active()
+            self._update_kinematic_weld_active(previous_flags)
             if self._kinematic_lock_armature is not None:
                 # Constraint regularization treats kinematic roots as locked.
                 self._invalidate_contact_fast_path()
@@ -9605,10 +9607,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _update_kinematic_weld_active(self):
-        """Validate body flags and weld exactly the kinematic roots."""
-        if not self.model.device.is_capturing:
+    def _update_kinematic_weld_active(self, previous_flags: np.ndarray | None):
+        """Validate body flags and weld exactly the kinematic roots.
+
+        Args:
+            previous_flags: The flags published before this notification, or ``None`` to skip host checks.
+        """
+        if previous_flags is not None:
             kinematic = (self._notify_body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
+            switched = kinematic & ((previous_flags & int(BodyFlags.KINEMATIC)) == 0)
             mocap_roots = self._kinematic_mocap_root_bodies
             dynamic_mocap_root = np.flatnonzero(~kinematic & mocap_roots) if mocap_roots is not None else []
             if len(dynamic_mocap_root):
@@ -9631,7 +9638,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     "the body kinematic before creating the solver; it can then be switched to dynamic and back."
                 )
             late = (
-                np.flatnonzero(kinematic & self._kinematic_late_roots) if self._kinematic_late_roots is not None else []
+                np.flatnonzero(switched & self._kinematic_late_roots) if self._kinematic_late_roots is not None else []
             )
             if len(late):
                 warnings.warn(
@@ -9642,8 +9649,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     stacklevel=_external_warning_stacklevel(),
                 )
             if self._kinematic_weld_capacity is not None and self._kinematic_weld_body is not None:
-                active = int(kinematic[self._kinematic_weld_body].sum(axis=1).max())
-                if active > self._kinematic_weld_capacity:
+                active = kinematic[self._kinematic_weld_body].sum(axis=1)
+                newly_short = (active > self._kinematic_weld_capacity) & switched[self._kinematic_weld_body].any(axis=1)
+                active = int(active[newly_short].max(initial=0))
+                if active:
                     warnings.warn(
                         f"{active} kinematic roots in one world need {6 * active} weld constraint rows, but njmax only "
                         f"has room for {6 * self._kinematic_weld_capacity}; constraints may overflow. Mark these roots "
