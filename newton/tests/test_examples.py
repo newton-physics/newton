@@ -107,7 +107,7 @@ _KAMINO_NON_FLOATING_ROOT_WARNING_RE = (
     r"disabling floating base resets for those worlds\..*\n?"
 )
 _ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
-    r"^.*newton[/\\]_src[/\\]utils[/\\]import_urdf\.py:\d+: UserWarning: Warning: mesh "
+    r"^.*newton[/\\]_src[/\\]utils[/\\]import_urdf\.py:\d+: NewtonWarning: Mesh "
     r"[^\n]*[/\\]base\.dae has a texture but no UVs; texture will be ignored\.\n"
     r"  parse_shapes\(link, visuals, density=0\.0, just_visual=True, visible=not hide_visuals\)\n?"
 )
@@ -882,6 +882,14 @@ add_example_test(
     test_options={"num-frames": 360},
     use_viewer=True,
 )
+add_example_test(
+    TestClothExamples,
+    name="vbd.example_vbd_gripper_soft_grid",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 360, "finger-mesh": True},
+    use_viewer=True,
+    test_suffix="finger_mesh",
+)
 
 
 class TestRobotExamples(unittest.TestCase):
@@ -1145,6 +1153,19 @@ add_example_test(
     name="mujoco.example_mujoco_sleeping",
     devices=cuda_test_devices,
     test_options={"stack-count": 2, "num-frames": 300},
+    use_viewer=True,
+)
+
+
+class TestSteelExamples(NewtonTestCase):
+    pass
+
+
+add_example_test(
+    TestSteelExamples,
+    name="steel.example_steel_sleeping",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 340},
     use_viewer=True,
 )
 
@@ -1420,6 +1441,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_pinch_carry",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 300, "spacing": 0.002, "substeps": 2, "travel-scale": 0.25},
+    use_viewer=True,
+)
+
 
 add_basic_example_test(
     name="basic.example_basic_plotting",
@@ -1437,7 +1466,13 @@ class TestContactsExamples(NewtonTestCase):
 
 def test_pyramid_kamino_impact(test, device):
     """Check Kamino pyramid ground clearance through the wrecking-ball impact."""
-    from newton.examples.contacts.example_pyramid import CUBE_HALF, Y_STACK, Example  # noqa: PLC0415
+    from newton.examples.contacts.example_pyramid import (  # noqa: PLC0415
+        CUBE_HALF,
+        RAMP_THICKNESS,
+        WRECKING_BALL_RADIUS,
+        Y_STACK,
+        Example,
+    )
 
     with contextlib.redirect_stdout(io.StringIO()), wp.ScopedDevice(device):
         example = Example(
@@ -1451,16 +1486,29 @@ def test_pyramid_kamino_impact(test, device):
                 broad_phase="sap",
             ),
         )
-        # Allow the refined-step trajectory to finish crossing the pyramid,
-        # checking ground clearance throughout the full five-second impact.
-        num_frames = 500
+        # Start near the ramp's foot at approximately the normal impact speed.
+        # Retain the post-impact rollout while skipping the ramp traversal.
+        ramp = example.model.shape_transform.numpy()[-1]
+        ramp_pose = wp.transform(wp.vec3(*ramp[:3]), wp.quat(*ramp[3:]))
+        poses = example.state_0.body_q.numpy()
+        velocities = example.state_0.body_qd.numpy()
+        ball_speed = 9.5
+        poses[example.box_count, :3] = wp.transform_point(
+            ramp_pose, wp.vec3(0.0, -7.0, WRECKING_BALL_RADIUS + 0.5 * RAMP_THICKNESS)
+        )
+        velocities[example.box_count, :3] = wp.transform_vector(ramp_pose, wp.vec3(0.0, -ball_speed, 0.0))
+        velocities[example.box_count, 3:] = (ball_speed / WRECKING_BALL_RADIUS, 0.0, 0.0)
+        example.state_0.body_q.assign(poses)
+        example.state_0.body_qd.assign(velocities)
+
+        num_frames = 160
         for frame in range(num_frames + 1):
             poses = example.state_0.body_q.numpy()[: example.box_count]
             bottom = min(
                 pose[2] - CUBE_HALF * np.abs(np.asarray(wp.quat_to_matrix(wp.quat(*pose[3:7]))).reshape(3, 3)[2]).sum()
                 for pose in poses
             )
-            test.assertGreater(bottom, -0.1, f"Frame {frame}: a cube penetrated the ground by {-bottom:.3f} m")
+            test.assertGreater(bottom, -0.05, f"Frame {frame}: a cube penetrated the ground by {-bottom:.3f} m")
             if frame < num_frames:
                 example.step()
         ball_y = example.state_0.body_q.numpy()[example.box_count, 1]
@@ -1774,6 +1822,25 @@ class TestKaminoExamples(unittest.TestCase):
 
 add_example_test(
     TestKaminoExamples,
+    name="kamino.example_kamino_earworm_flowers",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    variants=[
+        {
+            "test_suffix": "original",
+            # Two full-height flowers exercise world indexing and variations.
+            "test_options": {"num-frames": 120, "world-count": 2},
+        },
+        {
+            "test_suffix": "fine",
+            # Exercise the finer rings' adapted compaction stroke on a short tower.
+            # At 220 frames the opening is about -0.15 rad, past the 0.04 rad check.
+            "test_options": {"num-frames": 220, "world-count": 1, "stage-count": 2, "flower-resolution": 3},
+        },
+    ],
+)
+add_example_test(
+    TestKaminoExamples,
     name="kamino.example_kamino_basic_fourbar",
     devices=cuda_test_devices,
     test_options={"num-frames": 120},
@@ -1807,6 +1874,18 @@ add_example_test(
     test_options={"num-frames": 500},
     use_viewer=True,
 )
+for example_name, num_frames in (
+    ("kamino.example_kamino_robot_dr_legs", 120),
+    ("kamino.example_kamino_robot_anymal_d", 500),
+):
+    add_example_test(
+        TestKaminoExamples,
+        name=example_name,
+        devices=cuda_test_devices,
+        test_options={"num-frames": num_frames, "dynamics-solver": "lox"},
+        use_viewer=True,
+        test_suffix="lox",
+    )
 
 
 class TestControllersExamples(unittest.TestCase):

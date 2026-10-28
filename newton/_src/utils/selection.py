@@ -3,17 +3,20 @@
 
 from __future__ import annotations
 
+import logging
+import operator
 import re
 import warnings
 import weakref
 from fnmatch import fnmatch
 from types import NoneType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import warp as wp
-from warp.types import is_array
+from warp.types import is_array, type_size, type_size_in_bytes
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim import (
     Control,
     JointType,
@@ -29,6 +32,8 @@ from ..solvers.solver import SolverBase
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+
+logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -219,78 +224,45 @@ for _dtype in [float, wp.transform, wp.spatial_vector]:
 
 
 @wp.kernel
-def build_actuator_dof_mapping_slice_kernel(
-    actuator_input_indices: wp.array[wp.uint32],
-    actuators_per_world: int,
-    base_offset: int,
-    slice_start: int,
-    slice_stop: int,
-    stride_within_worlds: int,
-    count_per_world: int,
-    dofs_per_arti: int,
-    dofs_per_world: int,
-    num_worlds: int,
-    mapping: wp.array[int],
-):
-    """Build DOF-to-actuator mapping for slice-based view selection.
+def _build_actuator_dof_lookup_kernel(actuator_dofs: wp.array[wp.uint32], lookup: wp.array[int]):
+    """Scatter ``lookup[actuator_dofs[i]] = i``, skipping DOFs beyond the lookup range.
 
-    Iterates over first world's actuators only, replicates pattern to all worlds.
-    For each actuator, checks all articulations in the view to find matching DOF ranges.
+    ``lookup`` must be filled with -1. If an actuator lists a DOF more than once, the last entry wins.
     """
-    local_idx = wp.tid()  # 0 to actuators_per_world-1
-
-    # Get global DOF from first world's actuator entry
-    global_dof = int(actuator_input_indices[local_idx])
-
-    for arti_idx in range(count_per_world):
-        arti_global_start = base_offset + arti_idx * stride_within_worlds + slice_start
-        arti_global_stop = base_offset + arti_idx * stride_within_worlds + slice_stop
-        if global_dof >= arti_global_start and global_dof < arti_global_stop:
-            view_local_pos = arti_idx * dofs_per_arti + (global_dof - arti_global_start)
-
-            # Replicate to all worlds
-            for world_idx in range(num_worlds):
-                view_pos = world_idx * dofs_per_world + view_local_pos
-                actuator_idx = world_idx * actuators_per_world + local_idx
-                mapping[view_pos] = actuator_idx
-            break
+    i = wp.tid()
+    dof = int(actuator_dofs[i])
+    if dof < lookup.shape[0]:
+        wp.atomic_max(lookup, dof, i)
 
 
 @wp.kernel
-def build_actuator_dof_mapping_indices_kernel(
-    actuator_input_indices: wp.array[wp.uint32],
-    view_dof_indices: wp.array[int],
-    base_offset: int,
+def _map_regular_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    offset: int,
+    stride_between_worlds: int,
     stride_within_worlds: int,
-    count_per_world: int,
-    actuators_per_world: int,
-    dofs_per_arti: int,
-    dofs_per_world: int,
-    num_worlds: int,
-    mapping: wp.array[int],
+    slice_start: int,
+    local_indices: wp.array[int],
+    use_local_indices: int,
+    mapping: wp.array3d[int],
 ):
-    """Build DOF-to-actuator mapping for index-array-based view selection.
+    """Gather ``mapping[world, arti, value] = lookup[dof]`` for the view's regular-layout DOF rows."""
+    world, arti, value = wp.tid()
+    local = slice_start + value
+    if use_local_indices != 0:
+        local = local_indices[value]
+    mapping[world, arti, value] = lookup[offset + world * stride_between_worlds + arti * stride_within_worlds + local]
 
-    Iterates over first world's actuators only, replicates pattern to all worlds.
-    For each actuator, checks all articulations in the view to find matching DOF indices.
-    """
-    local_idx = wp.tid()  # 0 to actuators_per_world-1
 
-    global_dof = int(actuator_input_indices[local_idx])
-
-    for arti_idx in range(count_per_world):
-        arti_base = base_offset + arti_idx * stride_within_worlds
-        for i in range(dofs_per_arti):
-            # view_dof_indices[i] is local within the articulation, add arti_base to get global
-            if arti_base + view_dof_indices[i] == global_dof:
-                view_local_pos = arti_idx * dofs_per_arti + i
-
-                # Replicate to all worlds
-                for world_idx in range(num_worlds):
-                    view_pos = world_idx * dofs_per_world + view_local_pos
-                    actuator_idx = world_idx * actuators_per_world + local_idx
-                    mapping[view_pos] = actuator_idx
-                break
+@wp.kernel
+def _map_explicit_dofs_to_actuator_kernel(
+    lookup: wp.array[int],
+    model_indices: wp.array3d[int],
+    mapping: wp.array3d[int],
+):
+    """Gather ``mapping[world, arti, value] = lookup[model_indices[world, arti, value]]``."""
+    world, arti, value = wp.tid()
+    mapping[world, arti, value] = lookup[model_indices[world, arti, value]]
 
 
 @wp.kernel
@@ -325,6 +297,111 @@ def _scatter_masked_2d_kernel(
             dst[dst_idx] = values[row, col]
 
 
+# ========================================================================================
+# Gather/scatter kernels for layouts addressed through explicit model indices
+
+
+@wp.kernel
+def _gather_explicit_2d_kernel(src: Any, indices: wp.array2d[int], dst: Any):
+    world, arti = wp.tid()
+    dst[world, arti] = src[indices[world, arti]]
+
+
+@wp.kernel
+def _gather_explicit_3d_kernel(src: Any, indices: wp.array3d[int], dst: Any):
+    world, arti, value = wp.tid()
+    dst[world, arti, value] = src[indices[world, arti, value]]
+
+
+@wp.kernel
+def _gather_explicit_3d_trailing_kernel(src: Any, indices: wp.array2d[int], dst: Any):
+    world, arti, trailing = wp.tid()
+    dst[world, arti, trailing] = src[indices[world, arti], trailing]
+
+
+@wp.kernel
+def _gather_explicit_4d_kernel(src: Any, indices: wp.array3d[int], dst: Any):
+    world, arti, value, trailing = wp.tid()
+    dst[world, arti, value, trailing] = src[indices[world, arti, value], trailing]
+
+
+@wp.kernel
+def _scatter_explicit_2d_world_kernel(values: Any, indices: wp.array2d[int], mask: wp.array[bool], dst: Any):
+    world, arti = wp.tid()
+    if mask[world]:
+        dst[indices[world, arti]] = values[world, arti]
+
+
+@wp.kernel
+def _scatter_explicit_2d_articulation_kernel(values: Any, indices: wp.array2d[int], mask: wp.array2d[bool], dst: Any):
+    world, arti = wp.tid()
+    if mask[world, arti]:
+        dst[indices[world, arti]] = values[world, arti]
+
+
+@wp.kernel
+def _scatter_explicit_3d_world_kernel(values: Any, indices: wp.array3d[int], mask: wp.array[bool], dst: Any):
+    world, arti, value = wp.tid()
+    if mask[world]:
+        dst[indices[world, arti, value]] = values[world, arti, value]
+
+
+@wp.kernel
+def _scatter_explicit_3d_articulation_kernel(values: Any, indices: wp.array3d[int], mask: wp.array2d[bool], dst: Any):
+    world, arti, value = wp.tid()
+    if mask[world, arti]:
+        dst[indices[world, arti, value]] = values[world, arti, value]
+
+
+@wp.kernel
+def _scatter_explicit_3d_trailing_world_kernel(values: Any, indices: wp.array2d[int], mask: wp.array[bool], dst: Any):
+    world, arti, trailing = wp.tid()
+    if mask[world]:
+        dst[indices[world, arti], trailing] = values[world, arti, trailing]
+
+
+@wp.kernel
+def _scatter_explicit_3d_trailing_articulation_kernel(
+    values: Any, indices: wp.array2d[int], mask: wp.array2d[bool], dst: Any
+):
+    world, arti, trailing = wp.tid()
+    if mask[world, arti]:
+        dst[indices[world, arti], trailing] = values[world, arti, trailing]
+
+
+@wp.kernel
+def _scatter_explicit_4d_world_kernel(values: Any, indices: wp.array3d[int], mask: wp.array[bool], dst: Any):
+    world, arti, value, trailing = wp.tid()
+    if mask[world]:
+        dst[indices[world, arti, value], trailing] = values[world, arti, value, trailing]
+
+
+@wp.kernel
+def _scatter_explicit_4d_articulation_kernel(values: Any, indices: wp.array3d[int], mask: wp.array2d[bool], dst: Any):
+    world, arti, value, trailing = wp.tid()
+    if mask[world, arti]:
+        dst[indices[world, arti, value], trailing] = values[world, arti, value, trailing]
+
+
+# (index ndim, source ndim) -> gather kernel; (index ndim, source ndim, mask ndim) -> scatter kernel
+_EXPLICIT_GATHER_KERNELS = {
+    (2, 1): _gather_explicit_2d_kernel,
+    (3, 1): _gather_explicit_3d_kernel,
+    (2, 2): _gather_explicit_3d_trailing_kernel,
+    (3, 2): _gather_explicit_4d_kernel,
+}
+_EXPLICIT_SCATTER_KERNELS = {
+    (2, 1, 1): _scatter_explicit_2d_world_kernel,
+    (2, 1, 2): _scatter_explicit_2d_articulation_kernel,
+    (3, 1, 1): _scatter_explicit_3d_world_kernel,
+    (3, 1, 2): _scatter_explicit_3d_articulation_kernel,
+    (2, 2, 1): _scatter_explicit_3d_trailing_world_kernel,
+    (2, 2, 2): _scatter_explicit_3d_trailing_articulation_kernel,
+    (3, 2, 1): _scatter_explicit_4d_world_kernel,
+    (3, 2, 2): _scatter_explicit_4d_articulation_kernel,
+}
+
+
 # NOTE: Python slice objects are not hashable in Python < 3.12, so we use this instead.
 class Slice:
     def __init__(self, start=None, stop=None):
@@ -345,6 +422,18 @@ class Slice:
 
 
 class FrequencyLayout:
+    """Placement of one attribute frequency's selected rows in the model arrays.
+
+    A regular layout addresses row ``offset + world * stride_between_worlds + articulation *
+    stride_within_worlds + index`` for each selected ``index``. When the articulations' start rows
+    are not regularly spaced across worlds, ``model_starts`` gives the absolute start row of each
+    ``(world, articulation)`` instead, and attributes are gathered and scattered through
+    :meth:`get_model_indices`. When the selected values are not at the same offsets in every
+    articulation, ``model_indices`` gives the absolute row of each selected value of each
+    ``(world, articulation)`` instead. The stride fields of such a layout describe only the first
+    articulations and do not address the others.
+    """
+
     def __init__(
         self,
         offset: int,
@@ -353,11 +442,20 @@ class FrequencyLayout:
         value_count: int,
         indices: list[int],
         device,
+        *,
+        model_starts: np.ndarray | list[list[int]] | None = None,
+        model_indices: np.ndarray | None = None,
     ):
         self.offset = offset  # number of values to skip at the beginning of attribute array
         self.stride_between_worlds = stride_between_worlds
         self.stride_within_worlds = stride_within_worlds
         self.value_count = value_count
+        self._selected_indices = list(indices)
+        self._device = device
+        self._model_starts = None if model_starts is None else np.asarray(model_starts, dtype=np.int64)
+        # absolute row of every selected value, shaped (world_count, count_per_world, len(indices))
+        self._model_value_indices = None if model_indices is None else np.asarray(model_indices, dtype=np.int64)
+        self._model_index_cache = {}
         self.slice = None
         self.indices = None
         if len(indices) == 0:
@@ -369,7 +467,110 @@ class FrequencyLayout:
 
     @property
     def is_contiguous(self):
-        return self.slice is not None
+        return self.slice is not None and not self.uses_explicit_model_indices
+
+    @property
+    def uses_explicit_model_indices(self) -> bool:
+        """Whether attributes are gathered and scattered through absolute model indices."""
+        return self._model_starts is not None or self._model_value_indices is not None
+
+    def _local_indices(self, value_slice: Slice | slice | int | None) -> tuple[list[int], bool]:
+        """Return the selected value positions and whether the value axis is dropped."""
+        if isinstance(value_slice, Slice):
+            value_slice = value_slice.get()
+        if value_slice is None:
+            return self._selected_indices, False
+        if isinstance(value_slice, int):
+            return [value_slice], True
+        if isinstance(value_slice, slice):
+            start, stop, step = value_slice.indices(self.value_count)
+            if step != 1:
+                raise ValueError("ArticulationView attribute slices must have step 1")
+            return list(range(start, stop)), False
+        raise ValueError(f"Invalid slice type: expected slice or int, got {type(value_slice)}")
+
+    def _selected_positions(self, local_indices: list[int]) -> list[int]:
+        """Map value offsets of the first articulation to positions among its selected values."""
+        positions = {index: position for position, index in enumerate(self._selected_indices)}
+        missing = [index for index in local_indices if index not in positions]
+        if missing:
+            raise ValueError(
+                f"Values {missing} are not selected; this layout addresses only its selected values per articulation"
+            )
+        return [positions[index] for index in local_indices]
+
+    def get_model_indices(self, value_slice: Slice | slice | int | None = None) -> wp.array2d[int] | wp.array3d[int]:
+        """Return the absolute model row of every selected value of an explicit layout.
+
+        Args:
+            value_slice: Positions within each articulation's rows, as for an attribute slice.
+                ``None`` selects the layout's selected values; an integer drops the value axis.
+
+        Returns:
+            An integer array shaped ``(world_count, count_per_world, value_count)``, or
+            ``(world_count, count_per_world)`` for an integer ``value_slice``, on the layout's device.
+
+        Raises:
+            RuntimeError: If the layout is regular (see ``uses_explicit_model_indices``).
+        """
+        if not self.uses_explicit_model_indices:
+            raise RuntimeError("Explicit model indices are unavailable for this regular layout")
+        # native slices are unhashable before Python 3.12
+        if isinstance(value_slice, Slice):
+            value_slice = value_slice.get()
+        key = (value_slice.start, value_slice.stop, value_slice.step) if isinstance(value_slice, slice) else value_slice
+        model_indices = self._model_index_cache.get(key)
+        if model_indices is None:
+            device = wp.get_device(self._device)
+            if device.is_cuda and wp.get_stream(device).is_capturing:
+                raise RuntimeError(
+                    "Explicit model indices for this attribute slice are copied to the device on first access, "
+                    "which cannot run during CUDA graph capture. Access the attribute once before capturing."
+                )
+            local_indices, drop_value_axis = self._local_indices(value_slice)
+            if self._model_value_indices is not None:
+                host_indices = np.ascontiguousarray(
+                    self._model_value_indices[..., self._selected_positions(local_indices)]
+                )
+            else:
+                host_indices = self._model_starts[..., None] + np.asarray(local_indices, dtype=np.int64)
+            if drop_value_axis:
+                host_indices = host_indices[..., 0]
+            model_indices = wp.array(host_indices, dtype=int, device=self._device)
+            self._model_index_cache[key] = model_indices
+        return model_indices
+
+    def get_absolute_indices(self, world_count: int, count_per_world: int) -> np.ndarray:
+        """Return host absolute model rows shaped ``(world_count, count_per_world, selected_value_count)``.
+
+        Works for regular and explicit layouts and does not read device memory.
+        """
+        selected = np.asarray(self._selected_indices, dtype=np.int64)
+        if self._model_value_indices is not None:
+            return self._model_value_indices.copy()
+        if self.uses_explicit_model_indices:
+            return self._model_starts[..., None] + selected
+        world_offsets = np.arange(world_count, dtype=np.int64) * self.stride_between_worlds
+        articulation_offsets = np.arange(count_per_world, dtype=np.int64) * self.stride_within_worlds
+        return self.offset + world_offsets[:, None, None] + articulation_offsets[None, :, None] + selected
+
+    def max_model_index(self, world_count: int, count_per_world: int) -> int:
+        """Return the largest absolute model row the layout selects, or -1 if it selects none.
+
+        Computed from host layout metadata only, without reading device memory.
+        """
+        if not self._selected_indices or world_count == 0 or count_per_world == 0:
+            return -1
+        if self._model_value_indices is not None:
+            return int(self._model_value_indices.max(initial=-1))
+        if self._model_starts is not None:
+            return int(self._model_starts.max()) + max(self._selected_indices)
+        return (
+            self.offset
+            + (world_count - 1) * self.stride_between_worlds
+            + (count_per_world - 1) * self.stride_within_worlds
+            + max(self._selected_indices)
+        )
 
     @property
     def selected_value_count(self):
@@ -391,7 +592,16 @@ class FrequencyLayout:
 
     def __str__(self):
         indices = self.indices if self.indices is not None else self.slice
-        return f"FrequencyLayout(\n    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n)"
+        if self._model_value_indices is not None:
+            rows = f"    model_indices: shape {self._model_value_indices.shape}\n"
+        elif self._model_starts is not None:
+            rows = f"    model_starts: shape {self._model_starts.shape}\n    indices: {indices}\n"
+        else:
+            rows = (
+                f"    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n"
+                f"    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n"
+            )
+        return f"FrequencyLayout(\n{rows})"
 
 
 def get_name_from_label(label: str):
@@ -415,12 +625,12 @@ def find_matching_ids(
     matching_ids = match_labels(labels, pattern)
 
     if isinstance(pattern, list) and pattern and isinstance(pattern[0], int):
-        # ArticulationView derives its layouts from model order. String patterns already produce this order.
+        # Views derive their layouts from model order. String patterns already produce this order.
         for idx in range(1, len(matching_ids)):
             if matching_ids[idx] <= matching_ids[idx - 1]:
-                raise ValueError("Articulation indices must be unique and in ascending order")
+                raise ValueError("Selection indices must be unique and in ascending order")
         if matching_ids[0] < 0 or matching_ids[-1] >= len(labels):
-            raise ValueError(f"Articulation indices must be in range [0, {len(labels)})")
+            raise ValueError(f"Selection indices must be in range [0, {len(labels)})")
 
     grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
@@ -509,12 +719,20 @@ def _select_positions(positions, selected):
     return lookup[positions]
 
 
-def _check_layout(slots, offsets, owners, origins, world_count, count_per_world, device):
+def _check_layout(
+    slots, offsets, owners, origins, world_count, count_per_world, device, homogeneous, explicit_values=False
+):
     """Check one frequency of every selected articulation against the first one.
 
     Each articulation (slot) must select the same number of values, with the same offsets from its
-    origin and the same owning joint or link, and origins must be uniformly strided within and
-    between worlds.
+    origin and the same owning joint or link, and origins must be uniformly strided within worlds.
+    Origins that are not uniformly strided between worlds yield a layout with explicit model indices,
+    or, with ``homogeneous``, make the frequency unavailable.
+
+    With ``explicit_values``, matching counts and owners suffice: when the offsets differ between
+    articulations or the origins are irregular within worlds, the layout records the absolute row
+    of every selected value instead. With ``homogeneous``, these rows must repeat in every world at a
+    uniform stride; otherwise the frequency is unavailable.
 
     Returns:
         The layout, or ``None`` with the reason it is unavailable, and whether selected counts match.
@@ -525,22 +743,45 @@ def _check_layout(slots, offsets, owners, origins, world_count, count_per_world,
     failed = counts != count
     uniform_count = not failed.any()
     reasons = [] if uniform_count else ["selected count differs between articulations"]
+    offset_mismatch = False
     if uniform_count:
-        failed = np.zeros(slot_count, dtype=bool)
-        for values in (offsets.reshape(slot_count, count), owners.reshape(slot_count, count)):
-            mismatch = values != values[0]
-            if mismatch.any():
-                failed |= mismatch.any(axis=1)
+        slot_offsets = offsets.reshape(slot_count, count)
+        owner_mismatch = (owners.reshape(slot_count, count) != owners[:count]).any(axis=1)
+        offset_mismatch = (slot_offsets != slot_offsets[0]).any(axis=1)
+        failed = owner_mismatch if explicit_values else owner_mismatch | offset_mismatch
+        offset_mismatch = bool(offset_mismatch.any())
         if failed.any():
             reasons.append("selected values or their owners differ between articulations")
+    # rows can be addressed one value at a time when only their offsets or origins are irregular
+    index_values = explicit_values and not reasons
     grid = origins.reshape(world_count, count_per_world)
     between = int(grid[1, 0] - grid[0, 0]) if world_count > 1 else 0
     within = int(grid[0, 1] - grid[0, 0]) if count_per_world > 1 else 0
+    model_starts = None
+    model_indices = None
     if count:
-        misplaced = grid != grid[0, 0] + between * np.arange(world_count)[:, None] + within * np.arange(count_per_world)
-        if misplaced.any():
-            reasons.append("start indices are not uniformly strided")
-            failed |= misplaced.ravel()
+        within_offsets = within * np.arange(count_per_world)
+        misplaced = grid != grid[0, 0] + between * np.arange(world_count)[:, None] + within_offsets
+        regular_within = np.array_equal(grid - grid[:, :1], np.broadcast_to(within_offsets, grid.shape))
+        if index_values and (offset_mismatch or not regular_within):
+            # e.g. shapes of other bodies interleaved differently between the selected ones
+            model_indices = (origins[:, None] + offsets.reshape(slot_count, count)).reshape(
+                world_count, count_per_world, count
+            )
+            if homogeneous:
+                periodic = model_indices == model_indices[0] + between * np.arange(world_count)[:, None, None]
+                irregular_worlds = ~periodic.all(axis=(1, 2))
+                if irregular_worlds.any():
+                    reasons.append("selected rows differ between worlds")
+                    failed |= np.repeat(irregular_worlds, count_per_world)
+        elif misplaced.any():
+            if regular_within and not homogeneous:
+                # only the world origins are irregular (e.g. worlds holding different articulations):
+                # address every articulation's rows through explicit model indices
+                model_starts = grid
+            else:
+                reasons.append("start indices are not uniformly strided")
+                failed |= misplaced.ravel()
     if reasons:
         world, articulation = divmod(int(np.argmax(failed)), count_per_world)
         return None, f"{'; '.join(reasons)} (first at world {world}, articulation {articulation})", uniform_count
@@ -551,7 +792,17 @@ def _check_layout(slots, offsets, owners, origins, world_count, count_per_world,
         within = extent
     if world_count == 1:
         between = within * count_per_world
-    return FrequencyLayout(int(grid[0, 0]), between, within, extent, offsets, device), None, True
+    layout = FrequencyLayout(
+        int(grid[0, 0]),
+        between,
+        within,
+        extent,
+        offsets,
+        device,
+        model_starts=model_starts,
+        model_indices=model_indices,
+    )
+    return layout, None, True
 
 
 def _validate_layouts(
@@ -567,12 +818,14 @@ def _validate_layouts(
     selected_joints,
     selected_links,
     include_loop_closing_joints,
+    homogeneous,
 ):
     """Check each frequency layout of the selected articulations independently.
 
     ``articulation_ids`` has shape ``(world_count, count_per_world)``. ``selected_joints`` and
     ``selected_links`` are template positions, or ``None`` to select all
     positions of every articulation. Links are the children of the joints an articulation owns.
+    With ``homogeneous``, layouts must repeat in every world at a uniform stride.
 
     Returns:
         The :func:`_check_layout` result for each built-in frequency and for the root joint,
@@ -585,8 +838,10 @@ def _validate_layouts(
     ends = articulation_start[ids + 1] if include_loop_closing_joints else articulation_end[ids]
     zeros = np.zeros(slot_count, dtype=int)
 
-    def check(slots, offsets, owners, origins):
-        return _check_layout(slots, offsets, owners, origins, world_count, count_per_world, model.device)
+    def check(slots, offsets, owners, origins, explicit_values=False):
+        return _check_layout(
+            slots, offsets, owners, origins, world_count, count_per_world, model.device, homogeneous, explicit_values
+        )
 
     def selected_origins(slots, rows, fallback):
         """Return each slot's first selected row, retaining its fallback when no rows are selected."""
@@ -644,7 +899,9 @@ def _validate_layouts(
         selected_link_origins,
     )
 
-    # shapes belong to the articulation that owns their link and are ordered by ID within it
+    # shapes belong to the articulation that owns their link and are ordered by ID within it; other
+    # shapes may be interleaved between them differently in each articulation, so matching shape counts
+    # and owning links suffice and irregular rows are addressed one by one
     link_slot = np.full(model.body_count, -1)
     link_slot[links] = link_slots
     link_owner = np.full(model.body_count, -1)
@@ -665,6 +922,7 @@ def _validate_layouts(
         selected_shapes - selected_shape_origins[selected_shape_slots],
         owners[selected],
         selected_shape_origins,
+        explicit_values=True,
     )
     return results
 
@@ -691,10 +949,12 @@ class ArticulationView:
     subsets of articulations and their joints, links, and shapes within a Model.
     It supports pattern-based selection, inclusion/exclusion filters, and convenient
     attribute access and modification for simulation and control. By default,
-    construction fails when any selected data cannot share one batched layout. Set
-    ``allow_partial_layouts=True`` to keep using the data that does share a layout.
+    construction fails when any selected data cannot share one batched layout. Shapes
+    interleaved with or appended after other shapes share one through explicit model indices
+    when every match has the same shape count and owning links and the rows repeat in every world.
+    Set ``homogeneous=False`` to keep using the data that does share a layout.
 
-    With ``allow_partial_layouts=True``, public metadata is ``None`` when it cannot
+    With ``homogeneous=False``, public metadata is ``None`` when it cannot
     describe every selected articulation consistently:
 
     - A frequency count and its corresponding names and labels are ``None`` when
@@ -723,6 +983,18 @@ class ArticulationView:
     ``(world_count, count_per_world)``. Per-world masks select all articulations
     in each selected world. :meth:`set_actuator_parameter` accepts only the
     per-world layout. Masks provided as Warp arrays must be on the view's device.
+
+    With ``homogeneous=False``, the view's world axis holds only the model worlds that contain matching
+    articulations, in model order, so worlds holding other articulations are skipped
+    (``is_sparse``). ``world_ids`` maps each view world to its model world, and
+    masks and returned arrays use the view's world axis. When the selected articulations'
+    rows are not regularly spaced between worlds, for example when worlds hold different
+    articulations, the affected attributes are addressed through explicit absolute model
+    indices (``uses_explicit_model_indices``).
+
+    Getters may return a copy instead of a view of the source array, for example when a joint or link filter leaves
+    gaps in the selection or rows are addressed through explicit model indices. Write changes back with the matching
+    setter.
 
     Example:
 
@@ -769,10 +1041,22 @@ class ArticulationView:
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
-        allow_partial_layouts: If True, construct the view when only some selected
-            data has a common layout. Access to data without a common layout raises
-            :class:`AttributeError`.
-        verbose: If True, prints selection summary.
+        homogeneous: If True, require matches in every world, the same layout of every frequency
+            for every match, and a fixed stride between worlds. Shapes interleaved with or appended
+            after other shapes are addressed through explicit model indices when every match has the
+            same shape count and owning links and the rows repeat in every world. If False, allow sparse
+            views and irregular layouts, and make frequencies whose layout differs between matches unavailable.
+        allow_partial_layouts: Deprecated; use ``homogeneous=False`` instead. If True,
+            construct the view when only some selected data has a common layout. Access
+            to data without a common layout raises :class:`AttributeError`. If given, it overrides
+            ``homogeneous`` with ``not allow_partial_layouts``; combining ``allow_partial_layouts=False`` with
+            ``homogeneous=False`` raises :class:`ValueError`.
+        verbose: If True, logs selection summary.
+
+    .. deprecated:: 1.8
+        ``allow_partial_layouts`` is deprecated. Use ``homogeneous=False`` instead,
+        which allows both sparse views and access to individual frequencies that share
+        a common layout, when others don't.
     """
 
     def __init__(
@@ -787,9 +1071,21 @@ class ArticulationView:
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
-        allow_partial_layouts: bool = False,
+        homogeneous: bool = True,
         verbose: bool | None = None,
+        allow_partial_layouts: bool | None = None,
     ):
+        if allow_partial_layouts is not None:
+            warnings.warn(
+                "`allow_partial_layouts` is deprecated. Use `homogeneous` instead.",
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
+            if not homogeneous and not allow_partial_layouts:
+                raise ValueError("`homogeneous=False` implies `allow_partial_layouts=True`.")
+            homogeneous = not allow_partial_layouts
+            del allow_partial_layouts
+
         self.model = model
         self.device = model.device
         # Per-view caches. Sources and actuators are held weakly, so the view does not keep them alive.
@@ -823,14 +1119,10 @@ class ArticulationView:
             pattern, model.articulation_label, model_articulation_world, model.world_count
         )
 
-        # determine articulation counts per world
-        world_count = model.world_count
-        articulation_count = 0
-        counts_per_world = [0] * world_count
-        for world_id in range(world_count):
-            count = len(articulation_ids[world_id])
-            counts_per_world[world_id] += count
-            articulation_count += count
+        # The view's world axis holds only the worlds that contain matching articulations, in model order;
+        # ``world_ids`` maps it back to model worlds. Worlds holding other articulations are skipped.
+        articulation_count = sum(len(ids) for ids in articulation_ids)
+        selected_world_ids = [world_id for world_id, ids in enumerate(articulation_ids) if ids]
 
         # can't mix global and per-world articulations in the same view
         if articulation_count > 0 and global_articulation_ids:
@@ -840,17 +1132,24 @@ class ArticulationView:
 
         # handle scenes with only global articulations
         if articulation_count == 0 and global_articulation_ids:
-            world_count = 1
             articulation_count = len(global_articulation_ids)
-            counts_per_world = [articulation_count]
+            selected_world_ids = [-1]
             articulation_ids = [global_articulation_ids]
+        else:
+            articulation_ids = [articulation_ids[world_id] for world_id in selected_world_ids]
 
         if articulation_count == 0:
             raise KeyError(f"No articulations matching pattern '{pattern}'")
 
-        if not all_equal(counts_per_world):
-            raise ValueError("Varying articulation counts per world are not supported")
+        is_sparse = selected_world_ids not in ([-1], list(range(model.world_count)))
+        if homogeneous and is_sparse:
+            raise ValueError(f"Articulation pattern '{pattern}' does not match articulations in every world")
 
+        counts_per_world = [len(ids) for ids in articulation_ids]
+        if not all_equal(counts_per_world):
+            raise ValueError("Varying articulation counts per selected world are not supported")
+
+        world_count = len(selected_world_ids)
         count_per_world = counts_per_world[0]
 
         # use the first articulation as a "template"
@@ -1050,6 +1349,7 @@ class ArticulationView:
             None if all_joints else selected_joint_indices,
             None if all_links else selected_link_indices,
             include_loop_closing_joints,
+            homogeneous,
         )
         frequencies = (
             AttributeFrequency.JOINT,
@@ -1079,7 +1379,7 @@ class ArticulationView:
         else:
             self._root_unavailable_reason = "; ".join(validations[k][1] for k in root_keys if validations[k][1]) or None
 
-        if not allow_partial_layouts:
+        if homogeneous:
             for frequency, reason in self._unavailable_reasons.items():
                 raise ValueError(f"Articulation {frequency.name} layout is unavailable: {reason}")
             if self._root_unavailable_reason or self.root_joint_type is None or self.is_fixed_base is None:
@@ -1124,7 +1424,7 @@ class ArticulationView:
             flat_row_counts = [count for world_counts in row_counts for count in world_counts]
             if not all_equal(flat_row_counts):
                 reason = f"Articulations have different row counts for custom frequency '{frequency}': {row_counts}"
-                if not allow_partial_layouts:
+                if homogeneous:
                     raise ValueError(reason)
                 self._unavailable_reasons[frequency] = reason
                 self.custom_frequency_counts[frequency] = None
@@ -1144,6 +1444,7 @@ class ArticulationView:
             value_extent = template_rows[-1] - offset + 1
             starts = [[rows[0] for rows in world_rows] for world_rows in articulation_rows]
             reason = None
+            model_starts = None
 
             if count_per_world > 1:
                 inner_strides = [
@@ -1160,7 +1461,14 @@ class ArticulationView:
             if world_count > 1:
                 outer_strides = [starts[world][0] - starts[world - 1][0] for world in range(1, world_count)]
                 if not all_equal(outer_strides):
-                    reason = f"Non-uniform strides between worlds for custom frequency '{frequency}' are not supported"
+                    if homogeneous:
+                        reason = (
+                            f"Custom frequency '{frequency}' has non-uniform strides between worlds, "
+                            "which requires `homogeneous=False`"
+                        )
+                    else:
+                        # irregular world origins are addressed through explicit model indices
+                        model_starts = starts
                 outer_stride = outer_strides[0]
             else:
                 outer_stride = inner_stride * count_per_world
@@ -1181,8 +1489,9 @@ class ArticulationView:
                     value_extent,
                     selected_indices,
                     self.device,
+                    model_starts=model_starts,
                 )
-            elif allow_partial_layouts:
+            elif not homogeneous:
                 self._unavailable_reasons[frequency] = reason
             else:
                 raise ValueError(reason)
@@ -1210,6 +1519,27 @@ class ArticulationView:
 
         # articulation ids grouped by world
         self.articulation_ids = wp.array(articulation_id_grid, dtype=int, device=self.device)
+        #: Model world of each view world, or -1 for a view of global articulations.
+        self.world_ids: wp.array[int] = wp.array(selected_world_ids, dtype=int, device=self.device)
+        #: Whether the view skips model worlds that contain no matching articulation.
+        self.is_sparse: bool = is_sparse
+        #: Whether any layout gathers and scatters through explicit model indices instead of strided views.
+        self.uses_explicit_model_indices: bool = any(
+            layout is not None and layout.uses_explicit_model_indices
+            for layout in (*self.frequency_layouts.values(), *self._root_layouts)
+        )
+        # copy the explicit indices used by the getters and setters to the device now, outside any graph capture
+        for layout in self.frequency_layouts.values():
+            if layout.uses_explicit_model_indices:
+                layout.get_model_indices()
+        if self._root_unavailable_reason is None:
+            if self.is_floating_base:
+                root_slices = ((self._root_layouts[0], Slice(0, 7)), (self._root_layouts[-1], Slice(0, 6)))
+            else:
+                root_slices = ((self._root_layouts[0], 0), (self._root_layouts[0], Slice(0, 1)))
+            for layout, root_slice in root_slices:
+                if layout.uses_explicit_model_indices:
+                    layout.get_model_indices(root_slice)
 
         # default mask includes all articulations in all worlds
         self.full_mask = wp.full(world_count, True, dtype=bool, device=self.device)
@@ -1224,25 +1554,26 @@ class ArticulationView:
         )
 
         if verbose:
-            print(f"Articulation '{pattern}': {self.count}")
-            print(f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)")
-            print(f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)")
-            print(f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)")
-            print(
-                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)"
-            )
-            print(f"  Fixed base?     {self.is_fixed_base}")
-            print(f"  Floating base?  {self.is_floating_base}")
-            print("Link names:")
-            print(f"  {self.link_names}")
-            print("Joint names:")
-            print(f"  {self.joint_names}")
-            print("Joint DOF names:")
-            print(f"  {self.joint_dof_names}")
-            print("Shapes:")
+            lines = [
+                f"Articulation '{pattern}': {self.count}",
+                f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)",
+                f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)",
+                f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)",
+                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)",
+                f"  Fixed base?     {self.is_fixed_base}",
+                f"  Floating base?  {self.is_floating_base}",
+                "Link names:",
+                f"  {self.link_names}",
+                "Joint names:",
+                f"  {self.joint_names}",
+                "Joint DOF names:",
+                f"  {self.joint_dof_names}",
+                "Shapes:",
+            ]
             for link_idx in range(len(self.link_shapes or [])):
                 shape_names = [self.shape_names[shape_idx] for shape_idx in self.link_shapes[link_idx]]
-                print(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+                lines.append(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+            logger.info("%s", "\n".join(lines))
 
     @property
     def body_names(self):
@@ -1298,6 +1629,8 @@ class ArticulationView:
 
         Entries are keyed weakly on ``source``, so they are dropped with the source and with the view.
         An entry is reused only while ``source.<name>`` and its gradient are the arrays it was built from.
+        An array built during graph capture is used by that graph alone, since its staging storage
+        exists only once the graph runs.
         """
         source_array, _ = self._resolve_attribute(name, source)
         source_grad = source_array.grad if source_array.requires_grad else None
@@ -1315,7 +1648,8 @@ class ArticulationView:
         if entry is not None and entry[1] is source_array and entry[2] is source_grad:
             return entry[0]
         attrib = self._create_attribute_array(name, source, _slice, layout)
-        entries[key] = (attrib, source_array, source_grad)
+        if not wp.get_device(self.device).is_capturing:
+            entries[key] = (attrib, source_array, source_grad)
         return attrib
 
     def _create_attribute_array(
@@ -1366,6 +1700,29 @@ class ArticulationView:
             _slice = _slice.get()
         elif not isinstance(_slice, (NoneType, int, slice)):
             raise ValueError(f"Invalid slice type: expected slice or int, got {type(_slice)}")
+
+        # Rows that one pointer and regular strides cannot address are gathered into a staging array,
+        # and written back by scattering through the absolute row map (see _get/_set_attribute_values).
+        if layout.uses_explicit_model_indices:
+            trailing_shape = attrib.shape[1:]
+            if len(trailing_shape) > 1:
+                raise NotImplementedError(
+                    f"Attributes with {len(trailing_shape)} trailing axes are not supported for layouts with "
+                    "explicit model indices"
+                )
+            model_indices = layout.get_model_indices(_slice)
+            staging = wp.empty(
+                (*model_indices.shape, *trailing_shape),
+                dtype=attrib.dtype,
+                device=attrib.device,
+                requires_grad=attrib.requires_grad,
+            )
+            if attrib.ptr is None or staging.size == 0:
+                staging.ptr = None
+                return staging
+            staging._explicit_source = attrib
+            staging._explicit_model_indices = model_indices
+            return staging
 
         if _slice is None:
             value_slice = layout.indices if is_indexed else layout.slice
@@ -1451,6 +1808,17 @@ class ArticulationView:
         layout=None,
     ):
         attrib = self._get_attribute_array(name, source, _slice=_slice, layout=layout)
+        if hasattr(attrib, "_explicit_source"):
+            src = attrib._explicit_source
+            indices = attrib._explicit_model_indices
+            wp.launch(
+                _EXPLICIT_GATHER_KERNELS[(indices.ndim, src.ndim)],
+                dim=attrib.shape,
+                inputs=[src, indices],
+                outputs=[attrib],
+                device=self.device,
+            )
+            return attrib
         if hasattr(attrib, "_staging_array"):
             if hasattr(attrib, "_gather_src"):
                 kernel = _gather_indexed_4d_kernel if attrib.ndim == 4 else _gather_indexed_3d_kernel
@@ -1486,6 +1854,20 @@ class ArticulationView:
             values = wp.array(values, dtype=attrib.dtype, shape=attrib.shape, device=self.device, copy=False)
         assert values.shape == attrib.shape
         assert values.dtype == attrib.dtype
+
+        # staging arrays of explicit layouts are copies: scatter through their absolute row map
+        if hasattr(attrib, "_explicit_source"):
+            mask = self.full_mask if mask is None else self._resolve_mask(mask)
+            indices = attrib._explicit_model_indices
+            dst = attrib._explicit_source
+            wp.launch(
+                _EXPLICIT_SCATTER_KERNELS[(indices.ndim, dst.ndim, mask.ndim)],
+                dim=attrib.shape,
+                inputs=[values, indices, mask],
+                outputs=[dst],
+                device=self.device,
+            )
+            return
 
         # early out for in-place modifications
         if isinstance(attrib, wp.array) and isinstance(values, wp.array):
@@ -1874,6 +2256,8 @@ class ArticulationView:
         self,
         target: Model | State,
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
+        *,
+        joint_mask: wp.array[bool] | None = None,
     ) -> None:
         """
         Evaluates forward kinematics given the joint coordinates and updates the body information.
@@ -1884,10 +2268,14 @@ class ArticulationView:
         Args:
             target: The target where to evaluate forward kinematics (Model or State).
             mask: Mask of articulations in this ArticulationView (all by default).
+            joint_mask: Optional model-wide joint write mask on ``model.device``, shape [model.joint_count].
+                Uses model joint indices, not view indices, and intersects with this view's articulation mask.
+                This allows the same branch selection to be reused with :func:`newton.eval_fk` and across views.
+                See :func:`newton.eval_fk` for branch-editing and state-preservation semantics.
         """
         # translate view mask to Model articulation mask
         articulation_mask = self.get_model_articulation_mask(mask=mask)
-        eval_fk(self.model, target.joint_q, target.joint_qd, target, mask=articulation_mask)
+        eval_fk(self.model, target.joint_q, target.joint_qd, target, mask=articulation_mask, joint_mask=joint_mask)
 
     def eval_jacobian(self, state: State, J=None, joint_S_s=None, mask=None):
         """Evaluate spatial Jacobian for articulations in this view.
@@ -1924,14 +2312,14 @@ class ArticulationView:
             state: The state containing body transforms (body_q).
             H: Optional output array for mass matrix, shape (articulation_count, max_dofs, max_dofs).
                If None, allocates internally.
-            J: Optional pre-computed Jacobian. If None, computes internally.
+            J: Optional pre-computed Jacobian. If None, see :func:`~newton.eval_mass_matrix`.
             body_I_s: Optional pre-allocated temp array for spatial inertias.
             joint_S_s: Optional pre-allocated temp array for motion subspaces.
             mask: Optional mask of articulations in this ArticulationView (all by default).
             include_armature: Deprecated in Newton 1.8. If True (default), add
                :attr:`~newton.Model.joint_armature` to the diagonal. Passing
                False returns the rigid-body matrix and emits a
-               :class:`DeprecationWarning`. This argument will be removed in a
+               :class:`NewtonDeprecationWarning`. This argument will be removed in a
                future minor release.
 
         Returns:
@@ -1940,7 +2328,7 @@ class ArticulationView:
         if not include_armature:
             warnings.warn(
                 _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="ArticulationView.eval_mass_matrix()"),
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
         articulation_mask = self.get_model_articulation_mask(mask=mask)
@@ -2063,9 +2451,10 @@ class ArticulationView:
     # Actuator parameter access
 
     def _get_actuator_dof_mapping(self, actuator: Actuator):
-        """Return the cached DOF mapping for ``actuator``, built on first use.
+        """Return the DOF mapping for ``actuator``, cached when it is built outside graph capture.
 
-        The cache belongs to the view and holds actuators weakly.
+        The cache belongs to the view and holds actuators weakly. A mapping built during graph
+        capture is initialized only when that graph runs, so it is used by that graph alone.
         """
         # views that borrow the actuator methods may not define the cache
         cache = getattr(self, "_actuator_dof_mapping_cache", None)
@@ -2075,14 +2464,23 @@ class ArticulationView:
             mapping = cache.get(actuator)
         except TypeError:
             # the actuator cannot be weakly referenced; build an uncached mapping
-            return self._create_actuator_dof_mapping(actuator)
+            cache = None
+            mapping = None
         if mapping is None:
-            mapping = cache[actuator] = self._create_actuator_dof_mapping(actuator)
+            mapping = self._create_actuator_dof_mapping(actuator)
+            if cache is not None and not wp.get_device(self.device).is_capturing:
+                cache[actuator] = mapping
         return mapping
 
     def _create_actuator_dof_mapping(self, actuator: Actuator):
         """
         Build mapping from view DOF positions to actuator parameter indices.
+
+        The mapping matches absolute model DOF indices, so it holds for every layout, including
+        sparse world selections, explicit model indices, and actuators whose entries are not
+        ordered as equal per-world blocks. It is built with device kernels only (a lookup from model
+        DOF to actuator entry, then a gather over the view's DOF rows), so a first access may run
+        during CUDA graph capture when the device's memory pool is enabled.
 
         Note:
             Assumes one DOF per actuator.
@@ -2091,60 +2489,67 @@ class ArticulationView:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
-        num_actuators = actuator.indices.shape[0]
-        actuators_per_world = num_actuators // self.world_count
-
+        # views that borrow the actuator methods may store the device as an alias string
+        device = wp.get_device(self.device)
         dof_layout = self.frequency_layouts.get(AttributeFrequency.JOINT_DOF)
         if dof_layout is None:
-            reason = self._unavailable_reasons[AttributeFrequency.JOINT_DOF]
+            reason = getattr(self, "_unavailable_reasons", {}).get(
+                AttributeFrequency.JOINT_DOF, "the view has no DOF layout"
+            )
             raise AttributeError(f"Actuator parameter access is unavailable: {reason}")
-        dofs_per_arti = dof_layout.selected_value_count
-        dofs_per_world = dofs_per_arti * self.count_per_world
+        mapping_shape = (self.world_count, self.count_per_world, dof_layout.selected_value_count)
 
-        if dofs_per_world == 0:
-            return wp.empty(0, dtype=int, device=self.device)
+        if self.world_count * self.count_per_world * dof_layout.selected_value_count == 0:
+            return wp.empty(0, dtype=int, device=device)
 
-        mapping = wp.full(self.world_count * dofs_per_world, -1, dtype=int, device=self.device)
+        if device.is_cuda and wp.get_stream(device).is_capturing and not wp.is_mempool_enabled(device):
+            raise RuntimeError(
+                "Building the view's DOF mapping for this actuator allocates device memory, which requires "
+                "the CUDA memory pool during graph capture. Enable the memory pool, or call "
+                "set_actuator_parameter() for this actuator once before capturing it; "
+                "get_actuator_parameter() allocates its result on every call and always requires the pool."
+            )
 
-        if dof_layout.is_contiguous:
+        lookup = wp.full(
+            dof_layout.max_model_index(self.world_count, self.count_per_world) + 1, -1, dtype=int, device=device
+        )
+        if actuator.indices.shape[0] > 0:
             wp.launch(
-                build_actuator_dof_mapping_slice_kernel,
-                dim=actuators_per_world,
-                inputs=[
-                    actuator.indices,
-                    actuators_per_world,
-                    dof_layout.offset,
-                    dof_layout.slice.start,
-                    dof_layout.slice.stop,
-                    dof_layout.stride_within_worlds,
-                    self.count_per_world,
-                    dofs_per_arti,
-                    dofs_per_world,
-                    self.world_count,
-                ],
+                _build_actuator_dof_lookup_kernel,
+                dim=actuator.indices.shape[0],
+                inputs=[actuator.indices],
+                outputs=[lookup],
+                device=device,
+            )
+
+        mapping = wp.empty(mapping_shape, dtype=int, device=device)
+        if dof_layout.uses_explicit_model_indices:
+            # prepared at view construction; raises a clear error if a borrowing view did not prepare it
+            wp.launch(
+                _map_explicit_dofs_to_actuator_kernel,
+                dim=mapping_shape,
+                inputs=[lookup, dof_layout.get_model_indices()],
                 outputs=[mapping],
-                device=self.device,
+                device=device,
             )
         else:
+            use_local_indices = dof_layout.indices is not None
             wp.launch(
-                build_actuator_dof_mapping_indices_kernel,
-                dim=actuators_per_world,
+                _map_regular_dofs_to_actuator_kernel,
+                dim=mapping_shape,
                 inputs=[
-                    actuator.indices,
-                    dof_layout.indices,
+                    lookup,
                     dof_layout.offset,
+                    dof_layout.stride_between_worlds,
                     dof_layout.stride_within_worlds,
-                    self.count_per_world,
-                    actuators_per_world,
-                    dofs_per_arti,
-                    dofs_per_world,
-                    self.world_count,
+                    0 if use_local_indices else dof_layout.slice.start,
+                    dof_layout.indices,
+                    int(use_local_indices),
                 ],
                 outputs=[mapping],
-                device=self.device,
+                device=device,
             )
-
-        return mapping
+        return mapping.flatten()
 
     def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
         """Read an actuator-component parameter for every DOF in this view.
@@ -2153,6 +2558,13 @@ class ArticulationView:
         per DOF, one row per world).  DOFs that are not driven by
         *actuator* are left at zero; driven DOFs contain the
         corresponding value gathered from ``component.<name>``.
+
+        The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
+        an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
+        captured in a CUDA graph before then builds a mapping that only that graph uses: it
+        requires the device's memory pool, and every replay rebuilds it. Call either method once
+        before capturing to keep the build out of the graph. This method allocates its result on
+        every call, so capturing it always requires the memory pool.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which
@@ -2200,6 +2612,12 @@ class ArticulationView:
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
 
+        The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
+        an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
+        captured in a CUDA graph before then builds a mapping that only that graph uses: it
+        requires the device's memory pool, and every replay rebuilds it. Call either method once
+        before capturing to keep the build out of the graph.
+
         Args:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
@@ -2235,3 +2653,902 @@ class ArticulationView:
             outputs=[dst],
             device=self.device,
         )
+
+
+@wp.kernel
+def _gather_object_kernel(
+    src: wp.array[Any],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[Any],
+):
+    object_index, i = wp.tid()
+    out[object_index, i] = src[starts[object_index] + i]
+
+
+_gather_object_float_kernel = wp.overload(
+    _gather_object_kernel, {"src": wp.array[wp.float32], "out": wp.array2d[wp.float32]}
+)
+_gather_object_vec3_kernel = wp.overload(_gather_object_kernel, {"src": wp.array[wp.vec3], "out": wp.array2d[wp.vec3]})
+_gather_object_transform_kernel = wp.overload(
+    _gather_object_kernel, {"src": wp.array[wp.transform], "out": wp.array2d[wp.transform]}
+)
+_gather_object_spatial_kernel = wp.overload(
+    _gather_object_kernel, {"src": wp.array[wp.spatial_vector], "out": wp.array2d[wp.spatial_vector]}
+)
+
+
+@wp.kernel(enable_backward=False)
+def _gather_object_int_kernel(
+    src: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[wp.int32],
+):
+    object_index, i = wp.tid()
+    out[object_index, i] = src[starts[object_index] + i]
+
+
+@wp.kernel(enable_backward=False)
+def _mark_object_membership_kernel(indices: wp.array[wp.int32], membership: wp.array[wp.int32]):
+    i = indices[wp.tid()]
+    if i >= 0 and i < membership.shape[0]:
+        wp.atomic_max(membership, i, 1)
+
+
+@wp.kernel(enable_backward=False)
+def _object_membership_to_mask_kernel(membership: wp.array[wp.int32], mask: wp.array[wp.bool]):
+    i = wp.tid()
+    mask[i] = membership[i] != 0
+
+
+@wp.kernel
+def _scatter_object_kernel(
+    values: wp.array2d[Any],
+    starts: wp.array[wp.int32],
+    mask: wp.array[wp.bool],
+    dst: wp.array[Any],
+):
+    i, j = wp.tid()
+    if mask and not mask[i]:
+        return
+    dst[starts[i] + j] = values[i, j]
+
+
+_scatter_object_vec3_kernel = wp.overload(
+    _scatter_object_kernel, {"values": wp.array2d[wp.vec3], "dst": wp.array[wp.vec3]}
+)
+_scatter_object_transform_kernel = wp.overload(
+    _scatter_object_kernel, {"values": wp.array2d[wp.transform], "dst": wp.array[wp.transform]}
+)
+_scatter_object_spatial_kernel = wp.overload(
+    _scatter_object_kernel, {"values": wp.array2d[wp.spatial_vector], "dst": wp.array[wp.spatial_vector]}
+)
+
+
+class _DeformableViewBase:
+    """Share family-filtered selection, element ranges, and state-array access."""
+
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str] | list[int],
+        *,
+        family: Literal["curve", "surface", "volume"],
+        verbose: bool | None = None,
+    ) -> None:
+        self.model = model
+        self.device = model.device
+
+        if verbose is None:
+            verbose = wp.config.log_level <= wp.LOG_DEBUG
+
+        labels = getattr(model, f"{family}_label")
+        object_worlds = getattr(model, f"{family}_world").numpy().tolist()
+
+        object_ids, global_object_ids = find_matching_ids(pattern, labels, object_worlds, model.world_count)
+
+        # Keep every model world in the partition, including worlds without a
+        # match. Equal adjacent offsets make empty worlds explicit to consumers.
+        counts_per_world = [len(ids) for ids in object_ids]
+        object_count = sum(counts_per_world)
+
+        # Global deformable objects have no real model-world rows, so mixing them would make
+        # the flat selection's world partition ambiguous.
+        if object_count > 0 and global_object_ids:
+            raise ValueError(
+                f"Deformable pattern '{pattern}' matches global and per-world deformable objects, which is not supported"
+            )
+
+        if object_count == 0 and global_object_ids:
+            object_count = len(global_object_ids)
+            counts_per_world = [object_count]
+            object_ids = [global_object_ids]
+
+        if object_count == 0:
+            raise KeyError(f"{type(self).__name__}: No {family} deformable objects matching pattern '{pattern}'")
+
+        self.count = object_count
+        """Number of selected deformable objects across all worlds."""
+        self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
+        """Selected deformable objects per model world, or None when the counts vary.
+
+        Empty model worlds count as zero, so counts of ``[1, 0, 1]`` give ``None``.
+        A global-only selection has one partition and returns :attr:`count`.
+        """
+        flat_ids = [i for ids in object_ids for i in ids]
+        self.family = family
+        """Geometric family selected by this view."""
+        self.labels = [labels[i] for i in flat_ids]
+        """Label of each selected deformable object, ordered world by world."""
+        self.worlds = [object_worlds[i] for i in flat_ids]
+        """Read-only Python list of model world indices, one per selected deformable object.
+
+        :attr:`worlds_device` holds the same mapping on the model's device.
+        Both are created with the view; editing either does not update the other.
+        """
+        deformable_object_boundaries = [0]
+        for count in counts_per_world:
+            deformable_object_boundaries.append(deformable_object_boundaries[-1] + count)
+        self._deformable_object_boundaries = deformable_object_boundaries
+        self.deformable_object_boundaries: wp.array[wp.int32] = wp.array(
+            deformable_object_boundaries, dtype=wp.int32, device=self.device
+        )
+        """Device-side deformable-object boundaries by world.
+
+        There is one boundary per model world plus a final end boundary.
+        A global-only selection has two boundaries.
+
+        World ``i`` spans selected deformable object indices from ``deformable_object_boundaries[i]`` to
+        ``deformable_object_boundaries[i + 1]``, excluding the end. The final entry is the
+        selected deformable object count. Treat this array as read-only. See :meth:`deformable_object_ranges`
+        for the corresponding Python ranges and the global-only case.
+        """
+        self.worlds_device: wp.array[wp.int32] = wp.array(self.worlds, dtype=wp.int32, device=self.device)
+        """Read-only device copy of :attr:`worlds`, shape ``(count,)``.
+
+        Created on the model's device with the view. Each entry is the model world
+        of that selected deformable object, or -1 for a global object.
+        """
+
+        # Element ranges are always available; only rectangular operations require homogeneity.
+        self._mask_membership = wp.empty(self.count, dtype=wp.int32, device=self.device)
+        self._ranges: dict[str, list[tuple[int, int]]] = {}
+        self._starts: dict[str, wp.array[wp.int32]] = {}
+        self._counts: dict[str, int | None] = {}
+        self._required_lengths: dict[str, int] = {}
+        # Key by the container, not the array: cached array views retain their backing arrays.
+        self._attribute_arrays = weakref.WeakKeyDictionary()
+        range_attributes = {
+            "curve": {"body": "body", "joint": "joint"},
+            "surface": {"particle": "particle", "triangle": "tri", "edge": "edge"},
+            "volume": {"particle": "particle", "tetrahedron": "tet"},
+        }[family]
+        self._kinds = tuple(range_attributes)
+        for kind, attribute in range_attributes.items():
+            starts = getattr(model, f"{family}_{attribute}_start").numpy()
+            ends = getattr(model, f"{family}_{attribute}_end").numpy()
+            kind_ranges = [(int(starts[i]), int(ends[i])) for i in flat_ids]
+            sizes = {end - start for start, end in kind_ranges}
+            self._counts[kind] = sizes.pop() if len(sizes) == 1 else None
+            self._ranges[kind] = kind_ranges
+            self._required_lengths[kind] = max((end for _start, end in kind_ranges), default=0)
+            self._starts[kind] = wp.array([start for start, _end in kind_ranges], dtype=wp.int32, device=self.device)
+
+        if verbose:
+            elements = ", ".join(
+                f"{self._counts[k] if self._counts[k] is not None else 'ragged'} {k}(s)" for k in self._kinds
+            )
+            logger.info(
+                "%s '%s' (%s): %s deformable object(s) x [%s]",
+                type(self).__name__,
+                pattern,
+                family,
+                self.count,
+                elements,
+            )
+
+    # raw ranges -------------------------------------------------------------
+
+    def deformable_object_ranges(self) -> list[tuple[int, int]]:
+        """Return one range of selected deformable-object indices per world.
+
+        Each ``(start, end)`` pair slices :attr:`labels` or rows of batched state
+        returned by this view. Use ``deformable_object_ranges()[world_id]`` to
+        look up a world. The end is excluded. Empty worlds have equal start and
+        end values. These are selected deformable object indices, not the simulation element
+        indices returned by :meth:`ranges`.
+
+        A global-only selection has one range, ``(0, count)``, and its
+        :attr:`worlds_device` entries are all ``-1``. This single range is not indexed by a
+        model world ID.
+
+        Returns:
+            One range per model world, including empty worlds, or one range for
+            a global-only selection.
+        """
+        boundaries = self._deformable_object_boundaries
+        return [(boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1)]
+
+    def element_count(
+        self,
+        kind: AttributeFrequency | Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+    ) -> int | None:
+        """Elements of ``kind`` per selected deformable object, or ``None`` when counts differ.
+
+        Current rods record ``body``/``joint`` ranges, triangle surfaces record
+        ``particle``/``triangle``/``edge`` ranges, and tetrahedral volumes record
+        ``particle``/``tetrahedron`` ranges. Batched reads and writes require a
+        common count; :meth:`ranges` remains available when counts differ.
+        ``particle_count`` and ``body_count`` are convenience properties for
+        this query on their corresponding state element kinds.
+
+        Args:
+            kind: Element kind recorded by every selected deformable object: a
+                :class:`~newton.Model.AttributeFrequency` member such as ``PARTICLE``
+                or its lowercase name.
+
+        Returns:
+            Common number of elements per selected deformable object, or ``None``.
+
+        Raises:
+            TypeError: If ``kind`` is not an AttributeFrequency member or a string.
+            ValueError: If the selected deformable objects do not record ``kind``.
+        """
+        return self._counts[self._validate_kind(kind)]
+
+    def ranges(
+        self,
+        kind: AttributeFrequency | Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+    ) -> list[tuple[int, int]]:
+        """``[start, end)`` element ranges of the selected deformable objects, in selection order.
+
+        For consumers that need each deformable object's raw slice of the flat model arrays, e.g. to
+        hand per-instance offsets to a renderer sync or to custom kernels. See
+        :meth:`element_count` for the valid ``kind`` values.
+
+        Native and USD curves include their construction-time root joints.
+        After fixed-joint collapse, only surviving bodies and joints are exposed.
+        A welded USD graph is one deformable object with the whole graph's
+        body and joint ranges. Its per-curve import maps are separate and keep
+        empty joint lists. See :ref:`deformable-objects-welded-usd-graphs`.
+
+        Args:
+            kind: Element kind recorded by every selected deformable object: a
+                :class:`~newton.Model.AttributeFrequency` member or its lowercase name.
+
+        Returns:
+            One ``[start, end)`` range per selected deformable object.
+
+        Raises:
+            TypeError: If ``kind`` is not an AttributeFrequency member or a string.
+            ValueError: If the selected deformable objects do not record ``kind``.
+        """
+        kind = self._validate_kind(kind)
+        return list(self._ranges[kind])
+
+    def starts(
+        self,
+        kind: AttributeFrequency | Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+    ) -> wp.array[wp.int32]:
+        """Device-side element-range starts of the selected deformable objects, shape ``(count,)``.
+
+        Together with :meth:`element_count` this drives custom kernels over the
+        selection without a host round-trip; the view's own gather/scatter kernels use
+        the same array. Treat the returned internal array as read-only.
+
+        Args:
+            kind: Element kind recorded by every selected deformable object: a
+                :class:`~newton.Model.AttributeFrequency` member or its lowercase name.
+
+        Returns:
+            Device array containing one start index per selected deformable object.
+
+        Raises:
+            TypeError: If ``kind`` is not an AttributeFrequency member or a string.
+            ValueError: If the selected deformable objects do not record ``kind``.
+        """
+        kind = self._validate_kind(kind)
+        return self._starts[kind]
+
+    # generic gather/scatter -------------------------------------------------
+
+    def _validate_kind(self, kind: AttributeFrequency | str) -> str:
+        """Return the element kind as the lowercase name used by the view's range tables."""
+        if isinstance(kind, AttributeFrequency):
+            kind = kind.name.lower()
+        elif not isinstance(kind, str):
+            raise TypeError("kind must be a Model.AttributeFrequency member or its lowercase name")
+        if kind not in self._kinds:
+            raise ValueError(
+                f"Selected {self.family} deformable objects record {', '.join(self._kinds)} elements, not {kind!r}"
+            )
+        return kind
+
+    def _element_count(self, kind: AttributeFrequency | str) -> int:
+        kind = self._validate_kind(kind)
+        count = self._counts[kind]
+        if count is None:
+            sizes = sorted({end - start for start, end in self._ranges[kind]})
+            raise ValueError(
+                f"Varying {kind} counts per {self.family} deformable object cannot form a batched array "
+                f"(got {sizes}); use ranges({kind!r}) and direct slices instead"
+            )
+        return count
+
+    def _validate_state_array(self, kind: str, array: wp.array[Any], dtype: Any) -> None:
+        if not isinstance(array, wp.array) or array.ndim != 1:
+            raise ValueError("Expected a one-dimensional Warp state array")
+        if not wp.types.types_equal(array.dtype, dtype):
+            raise ValueError(f"Expected state array dtype {dtype.__name__}, got {array.dtype.__name__}")
+        if array.device != self.device:
+            raise ValueError(f"Expected state array on device {self.device}, got {array.device}")
+        required = self._required_lengths[kind]
+        if array.shape[0] < required:
+            raise ValueError(f"Expected state array with at least {required} {kind} elements, got {array.shape[0]}")
+
+    def _get_attribute_array(self, kind: str, name: str, source: Model | State) -> tuple[wp.array2d[Any], bool]:
+        """Cache per source container and follow its current data and gradient arrays."""
+        src = getattr(source, name)
+        src_grad = src.grad if src.requires_grad else None
+        key = (kind, name)
+        try:
+            entries = self._attribute_arrays.get(source)
+            if entries is None:
+                entries = self._attribute_arrays[source] = {}
+        except TypeError:
+            # Match ArticulationView for containers that cannot be weakly referenced.
+            return self._create_attribute_array(kind, src)
+        entry = entries.get(key)
+        if entry is not None and entry[1] is src and entry[2] is src_grad:
+            return entry[0]
+        result = self._create_attribute_array(kind, src)
+        # Captured allocations belong to their graph, not the ordinary getter cache.
+        if not wp.get_device(self.device).is_capturing:
+            entries[key] = (result, src, src_grad)
+        return result
+
+    def _create_attribute_array(self, kind: str, src: wp.array[Any]) -> tuple[wp.array2d[Any], bool]:
+        """Return the read buffer and whether it needs a gather on each read."""
+        count = self._element_count(kind)
+        shape = (self.count, count)
+        if count == 0:
+            return wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad), False
+
+        starts = [start for start, _end in self._ranges[kind]]
+
+        def make_view(data: wp.array[Any], start: int, row_count: int, row_stride: int):
+            value_stride = data.strides[0]
+            result = wp.array(
+                ptr=int(data.ptr) + start * value_stride,
+                dtype=data.dtype,
+                shape=(row_count, count),
+                strides=(row_stride * value_stride, value_stride),
+                device=data.device,
+                copy=False,
+            )
+            result._ref = data
+            return result
+
+        row_stride = count if self.count == 1 else starts[1] - starts[0]
+        if all(start == starts[0] + row * row_stride for row, start in enumerate(starts)):
+            grad = None if src.grad is None else make_view(src.grad, starts[0], self.count, row_stride)
+            result = make_view(src, starts[0], self.count, row_stride)
+            result.grad = grad
+            return result, False
+
+        return wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad), True
+
+    def _gather(
+        self,
+        kind: str,
+        name: str,
+        source: Model | State,
+        kernel: Any,
+        dtype: Any,
+    ) -> wp.array2d[Any]:
+        count = self._element_count(kind)
+        src = getattr(source, name)
+        self._validate_state_array(kind, src, dtype)
+        out, needs_gather = self._get_attribute_array(kind, name, source)
+        if needs_gather:
+            wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
+        return out
+
+    def set_mask_from_indices(
+        self,
+        mask: wp.array[wp.bool],
+        deformable_object_indices: Any,
+    ) -> None:
+        """Replace a caller-owned mask with the selected deformable objects.
+
+        Indices refer to rows of this view, not model-global IDs. Their order
+        does not reorder values passed to setters. Repeats select an object
+        once. An empty selector clears the mask. Device inputs need no host
+        copy or temporary allocation and can change between CUDA graph replays.
+
+        Args:
+            mask: Output Boolean array with shape ``(count,)`` on the view's
+                device. Non-overlapping strided arrays are supported.
+            deformable_object_indices: Host integer sequence outside capture,
+                or a one-dimensional ``int32`` Warp array on the view's device.
+                Invalid host indices raise; invalid device indices are ignored,
+                so fixed-capacity device selectors may use ``-1`` for unused entries.
+
+        Raises:
+            TypeError: If the output is not a Warp array or a host index is not
+                an integer. Booleans are not indices.
+            ValueError: If shapes, dtypes, devices, host bounds, or output strides
+                are invalid. Validation failures leave the output unchanged.
+            RuntimeError: If host indices are passed during CUDA capture.
+        """
+        if not isinstance(mask, wp.array):
+            raise TypeError("Expected mask to be a caller-owned Warp array")
+        self._resolve_mask(mask)
+        if self.count > 1 and abs(mask.strides[0]) < type_size_in_bytes(wp.bool):
+            raise ValueError("Output mask entries must not overlap")
+        indices = deformable_object_indices
+        if isinstance(indices, wp.array):
+            if indices.ndim != 1 or indices.dtype is not wp.int32:
+                raise ValueError("Expected deformable_object_indices to be a one-dimensional int32 array")
+            if indices.device != self.device:
+                raise ValueError(f"Expected deformable_object_indices on device {self.device}, got {indices.device}")
+        else:
+            if self.device.is_capturing:
+                raise RuntimeError("Create indices as a Warp array on the view's device before CUDA capture")
+            validated = []
+            for value in indices:
+                if isinstance(value, (bool, np.bool_)):
+                    raise TypeError("deformable_object_indices entries must be integers, not booleans")
+                index = operator.index(value)
+                if not 0 <= index < self.count:
+                    raise ValueError(f"deformable_object_indices entries must be in [0, {self.count})")
+                validated.append(index)
+            indices = wp.array(validated, dtype=wp.int32, device=self.device)
+
+        # Atomic integer marking handles duplicate indices safely. Backward reads
+        # the caller's Boolean mask, never this reusable conversion scratch.
+        self._mask_membership.zero_()
+        wp.launch(
+            _mark_object_membership_kernel,
+            dim=indices.size,
+            inputs=[indices],
+            outputs=[self._mask_membership],
+            device=self.device,
+            record_tape=False,
+        )
+        wp.launch(
+            _object_membership_to_mask_kernel,
+            dim=self.count,
+            inputs=[self._mask_membership],
+            outputs=[mask],
+            device=self.device,
+            record_tape=False,
+        )
+
+    def _resolve_mask(self, mask: Any) -> wp.array[wp.bool] | None:
+        if mask is None:
+            return None
+        if not isinstance(mask, wp.array):
+            if self.device.is_capturing:
+                raise RuntimeError("Create mask as a Warp array on the view's device before CUDA capture")
+            mask = np.asarray(mask)
+            if mask.dtype != np.bool_:
+                raise ValueError("Expected Boolean mask")
+            mask = wp.array(mask, dtype=wp.bool, device=self.device)
+        if mask.dtype is not wp.bool:
+            raise ValueError(f"Expected Boolean mask, got dtype {mask.dtype}")
+        if mask.shape != (self.count,):
+            raise ValueError(f"Expected mask shape ({self.count},), got {mask.shape}")
+        if mask.device != self.device:
+            raise ValueError(f"Expected mask on device {self.device}, got {mask.device}")
+        return mask
+
+    def _scatter(
+        self,
+        kind: str,
+        values: Any,
+        kernel: Any,
+        dst: wp.array[Any],
+        dtype: Any,
+        mask: Any = None,
+    ) -> None:
+        count = self._element_count(kind)
+        self._validate_state_array(kind, dst, dtype)
+        if self.device.is_capturing and not isinstance(values, wp.array):
+            raise RuntimeError("Create values as a Warp array on the view's device before CUDA capture")
+        if values is None:
+            raise ValueError("Expected values, got None")
+        expected_shape = (self.count, count)
+        if not isinstance(values, wp.array):
+            expected_host_shape = (*expected_shape, type_size(dtype))
+            try:
+                values = np.asarray(values, dtype=np.float32).reshape(expected_host_shape)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Expected numeric values that can be reshaped to {expected_host_shape}") from error
+            values = wp.array(values, dtype=dtype, shape=expected_shape, device=self.device)
+        if values.shape != expected_shape:
+            raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
+        if not wp.types.types_equal(values.dtype, dtype):
+            raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
+        if values.device != self.device:
+            raise ValueError(f"Expected values on device {self.device}, got {values.device}")
+        mask = self._resolve_mask(mask)
+        if self.count and count and values.size and dst.size:
+            # Strided getters may alias the target even when their pointers differ.
+            # Reject overlap without a device readback or a hidden copy.
+            def byte_bounds(array):
+                offsets = [(size - 1) * stride for size, stride in zip(array.shape, array.strides, strict=True)]
+                return (
+                    array.ptr + sum(min(0, offset) for offset in offsets),
+                    array.ptr + sum(max(0, offset) for offset in offsets) + type_size_in_bytes(array.dtype),
+                )
+
+            values_start, values_end = byte_bounds(values)
+            dst_start, dst_end = byte_bounds(dst)
+            if values_start < dst_end and dst_start < values_end:
+                raise ValueError("values must not overlap the target state array; use wp.clone() to copy them first")
+        wp.launch(
+            kernel,
+            dim=(self.count, count),
+            inputs=[values, self._starts[kind], mask],
+            outputs=[dst],
+            device=self.device,
+        )
+
+
+class _DeformableParticleView(_DeformableViewBase):
+    """Share particle state and property access without prescribing a geometric family."""
+
+    @property
+    def particle_count(self) -> int | None:
+        """Particles per selected deformable object, or ``None`` when counts differ."""
+        return self._counts["particle"]
+
+    def get_particle_inv_masses(self, source: Model) -> wp.array2d[wp.float32]:
+        """Return particle inverse masses [1/kg] for the selected deformable objects.
+
+        The result shares Model storage or uses a reusable read buffer. Use
+        ``wp.clone()`` to save an independent snapshot; do not edit the result.
+
+        Args:
+            source: Model whose particle numbering matches this view.
+                This property is not stored on State.
+
+        Returns:
+            Inverse masses with shape ``(count, particle_count)``.
+
+        Raises:
+            AttributeError: If the source does not provide particle inverse masses.
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
+        """
+        return self._gather("particle", "particle_inv_mass", source, _gather_object_float_kernel, wp.float32)
+
+    def get_particle_flags(self, source: Model) -> wp.array2d[wp.int32]:
+        """Return :class:`~newton.ParticleFlags` bitmasks for the selected deformable objects.
+
+        The result shares Model storage or uses a reusable read buffer. Use
+        ``wp.clone()`` to save an independent snapshot; do not edit the result.
+
+        Args:
+            source: Model whose particle numbering matches this view.
+                This property is not stored on State.
+
+        Returns:
+            Integer bitmasks with shape ``(count, particle_count)``.
+
+        Raises:
+            AttributeError: If the source does not provide particle flags.
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
+        """
+        return self._gather("particle", "particle_flags", source, _gather_object_int_kernel, wp.int32)
+
+    def get_particle_positions(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.vec3]:
+        """Return particle positions [m] for the selected deformable objects.
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Particle positions with shape ``(count, particle_count)``.
+
+        Raises:
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
+        """
+        return self._gather("particle", "particle_q", source, _gather_object_vec3_kernel, wp.vec3)
+
+    def set_particle_positions(
+        self,
+        target: Model | State,
+        values: Any,
+        *,
+        mask: Any = None,
+    ) -> None:
+        """Write particle positions for the masked deformable objects.
+
+        Values stay in view order, including rows that are masked off. Keep
+        values and masks unchanged until backward completes when using a tape.
+        Preallocated device inputs require no temporary arrays during capture.
+
+        Args:
+            target: Model initial state or simulation state to update.
+            values: Particle positions [m], shape
+                ``(count, particle_count)``. Must not share storage
+                with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 3. None is invalid.
+            mask: Boolean array of shape ``(count,)`` on the view's device, or
+                a host Boolean sequence outside capture. True updates that
+                selected deformable object. None updates the whole selection.
+
+        Raises:
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
+            RuntimeError: If host values or a host mask are passed during CUDA capture.
+        """
+        self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_q, wp.vec3, mask)
+
+    def get_particle_velocities(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.vec3]:
+        """Return particle velocities [m/s] for the selected deformable objects.
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Particle velocities with shape ``(count, particle_count)``.
+
+        Raises:
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
+        """
+        return self._gather("particle", "particle_qd", source, _gather_object_vec3_kernel, wp.vec3)
+
+    def set_particle_velocities(
+        self,
+        target: Model | State,
+        values: Any,
+        *,
+        mask: Any = None,
+    ) -> None:
+        """Write particle velocities for the masked deformable objects.
+
+        Values stay in view order, including rows that are masked off. Keep
+        values and masks unchanged until backward completes when using a tape.
+        Preallocated device inputs require no temporary arrays during capture.
+
+        Args:
+            target: Model initial state or simulation state to update.
+            values: Particle velocities [m/s], shape
+                ``(count, particle_count)``. Must not share storage
+                with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 3. None is invalid.
+            mask: Boolean array of shape ``(count,)`` on the view's device, or
+                a host Boolean sequence outside capture. True updates that
+                selected deformable object. None updates the whole selection.
+
+        Raises:
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
+            RuntimeError: If host values or a host mask are passed during CUDA capture.
+        """
+        self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_qd, wp.vec3, mask)
+
+
+class _DeformableBodyView(_DeformableViewBase):
+    """Read and write body state for selected deformable objects."""
+
+    @property
+    def body_count(self) -> int | None:
+        """Bodies per selected deformable object, or ``None`` when counts differ."""
+        return self._counts["body"]
+
+    def get_body_transforms(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.transform]:
+        """Body transforms, shape ``(count, body_count)``.
+
+        Each transform contains a world-space translation [m] and a unitless
+        quaternion.
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Body transforms with shape ``(count, body_count)``.
+
+        Raises:
+            ValueError: If body counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
+        """
+        return self._gather("body", "body_q", source, _gather_object_transform_kernel, wp.transform)
+
+    def set_body_transforms(
+        self,
+        target: Model | State,
+        values: Any,
+        *,
+        mask: Any = None,
+    ) -> None:
+        """Write body transforms for the masked deformable objects.
+
+        Values stay in view order, including rows that are masked off. Keep
+        values and masks unchanged until backward completes when using a tape.
+        Preallocated device inputs require no temporary arrays during capture.
+
+        Args:
+            target: Model initial state or simulation state to update.
+            values: Body transforms with world-space translation [m] and a unitless quaternion, shape
+                ``(count, body_count)``. Must not share storage
+                with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 7. None is invalid.
+            mask: Boolean array of shape ``(count,)`` on the view's device, or
+                a host Boolean sequence outside capture. True updates that
+                selected deformable object. None updates the whole selection.
+
+        Raises:
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
+            RuntimeError: If host values or a host mask are passed during CUDA capture.
+        """
+        self._scatter("body", values, _scatter_object_transform_kernel, target.body_q, wp.transform, mask)
+
+    def get_body_velocities(
+        self,
+        source: Model | State,
+    ) -> wp.array2d[wp.spatial_vector]:
+        """Body velocities, shape ``(count, body_count)``.
+
+        Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
+        followed by angular velocity [rad/s].
+
+        Args:
+            source: Model initial state or simulation state to read.
+
+        Returns:
+            Body velocities with shape ``(count, body_count)``.
+
+        Raises:
+            ValueError: If body counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
+        """
+        return self._gather("body", "body_qd", source, _gather_object_spatial_kernel, wp.spatial_vector)
+
+    def set_body_velocities(
+        self,
+        target: Model | State,
+        values: Any,
+        *,
+        mask: Any = None,
+    ) -> None:
+        """Write body velocities for the masked deformable objects.
+
+        Values stay in view order, including rows that are masked off. Keep
+        values and masks unchanged until backward completes when using a tape.
+        Preallocated device inputs require no temporary arrays during capture.
+
+        Args:
+            target: Model initial state or simulation state to update.
+            values: Body velocities in (v_com_world, omega_world) order [m/s, rad/s], shape
+                ``(count, body_count)``. Must not share storage
+                with the target array; clone live getter results before writing.
+                Host inputs are reshaped with a final axis of length 6. None is invalid.
+            mask: Boolean array of shape ``(count,)`` on the view's device, or
+                a host Boolean sequence outside capture. True updates that
+                selected deformable object. None updates the whole selection.
+
+        Raises:
+            ValueError: If element counts, array shapes/dtypes/devices, mask,
+                target capacity, or non-overlap requirements are not satisfied.
+            RuntimeError: If host values or a host mask are passed during CUDA capture.
+        """
+        self._scatter("body", values, _scatter_object_spatial_kernel, target.body_qd, wp.spatial_vector, mask)
+
+
+class DeformableCurveView(_DeformableBodyView):
+    """Select curves by label and read or update their segment body state.
+
+    .. experimental::
+
+       This API may change while deformable selection is developed.
+
+    Currently supports rod-backed curves with body and joint ranges. The family
+    describes geometry, not a solver: particle-based curves are not supported yet.
+    Matching surfaces and volumes are excluded from the selection.
+
+    After fixed-joint collapse, the view describes the curve's surviving segment
+    bodies and joints. Curves with no remaining bodies are omitted. Use
+    :meth:`~newton.ModelBuilder.collapse_fixed_joints` with ``joints_to_keep``
+    to preserve the original segment layout.
+
+    See :ref:`deformable-selection` for world layout, getter-result lifetime,
+    masked writes, and CUDA graph capture.
+
+    Args:
+        model: Model containing the finalized deformable objects.
+        pattern: Label glob, list of label globs, compiled regular expression,
+            or unique ascending indices into :attr:`~newton.Model.curve_label`.
+        verbose: If True, log a short selection summary. If None, follow Warp's
+            logging level.
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str] | list[int],
+        *,
+        verbose: bool | None = None,
+    ) -> None:
+        super().__init__(model, pattern, family="curve", verbose=verbose)
+
+
+class DeformableSurfaceView(_DeformableParticleView):
+    """Select surfaces by label and read or update their particle state.
+
+    .. experimental::
+
+       This API may change while deformable selection is developed.
+
+    Currently supports triangle surfaces with particle, triangle, and edge ranges.
+    Particle getters also read inverse masses and flags from the Model.
+    The family describes geometry, not a solver. Matching curves and volumes are
+    excluded from the selection.
+
+    See :ref:`deformable-selection` for world layout, getter-result lifetime,
+    masked writes, and CUDA graph capture.
+
+    Args:
+        model: Model containing the finalized deformable objects.
+        pattern: Label glob, list of label globs, compiled regular expression,
+            or unique ascending indices into :attr:`~newton.Model.surface_label`.
+        verbose: If True, log a short selection summary. If None, follow Warp's
+            logging level.
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str] | list[int],
+        *,
+        verbose: bool | None = None,
+    ) -> None:
+        super().__init__(model, pattern, family="surface", verbose=verbose)
+
+
+class DeformableVolumeView(_DeformableParticleView):
+    """Select volumes by label and read or update their particle state.
+
+    .. experimental::
+
+       This API may change while deformable selection is developed.
+
+    Currently supports tetrahedral volumes with particle and tetrahedron ranges.
+    Particle getters also read inverse masses and flags from the Model.
+    The family describes geometry, not a solver: solver-owned MPM data is not
+    supported. Matching curves and surfaces are excluded from the selection.
+
+    See :ref:`deformable-selection` for world layout, getter-result lifetime,
+    masked writes, and CUDA graph capture.
+
+    Args:
+        model: Model containing the finalized deformable objects.
+        pattern: Label glob, list of label globs, compiled regular expression,
+            or unique ascending indices into :attr:`~newton.Model.volume_label`.
+        verbose: If True, log a short selection summary. If None, follow Warp's
+            logging level.
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        pattern: str | list[str] | re.Pattern[str] | list[int],
+        *,
+        verbose: bool | None = None,
+    ) -> None:
+        super().__init__(model, pattern, family="volume", verbose=verbose)

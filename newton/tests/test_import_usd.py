@@ -12,7 +12,7 @@ import tempfile
 import types
 import unittest
 import warnings
-from contextlib import nullcontext
+from typing import ClassVar
 from unittest import mock
 from urllib.parse import urlparse
 
@@ -44,36 +44,10 @@ devices = get_test_devices()
 _MIRRORED_BODY_WARNING = (
     r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\."
 )
-_PARTIAL_EQ_SOLREF_WARNING = (
-    r"Custom attribute 'mujoco:eq_solref' has 1 values but frequency 'mujoco:equality_constraint' expects 2\."
-)
+_PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ values but frequency"
 
 
 class TestImportUsdPhysics(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_unit_flags_warn_when_enabled(self):
-        """Deprecate each enabled legacy unit flag without warning for defaults."""
-        from pxr import Usd
-
-        for kwargs, expected_flags in (
-            ({}, ()),
-            ({"legacy_angular_velocity_units": False, "legacy_springref_units": False}, ()),
-            ({"legacy_angular_velocity_units": True}, ("legacy_angular_velocity_units",)),
-            ({"legacy_springref_units": True}, ("legacy_springref_units",)),
-            (
-                {"legacy_angular_velocity_units": True, "legacy_springref_units": True},
-                ("legacy_angular_velocity_units", "legacy_springref_units"),
-            ),
-        ):
-            with self.subTest(kwargs=kwargs):
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always", DeprecationWarning)
-                    newton.ModelBuilder().add_usd(Usd.Stage.CreateInMemory(), **kwargs)
-                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
-                self.assertEqual(len(deprecations), len(expected_flags))
-                for warning, flag in zip(deprecations, expected_flags, strict=True):
-                    self.assertRegex(str(warning.message), rf"{flag}.*deprecated.*1\.8")
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_binding_outside_import_root(self):
         """Import shared physics materials without importing unrelated bodies."""
@@ -149,12 +123,6 @@ class TestImportUsdPhysics(unittest.TestCase):
         for bodies_follow_joint_ordering in (False, True):
             with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
                 self._check_rigid_body_velocity(bodies_follow_joint_ordering=bodies_follow_joint_ordering)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_rigid_body_velocity_units(self):
-        """Keep rigid-body velocity conversion unchanged by the deprecated flag."""
-        with self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8"):
-            self._check_rigid_body_velocity(legacy_angular_velocity_units=True)
 
     def _check_rigid_body_velocity(self, **import_kwargs):
         """Import a rotated body and check its body and joint velocities."""
@@ -237,36 +205,23 @@ class TestImportUsdPhysics(unittest.TestCase):
         merged_hinge.CreateBody1Rel().SetTargets(["/World/Merged"])
         set_state(merged_hinge.GetPrim(), "angular", 90.0, 180.0)
 
-        # Reuse the stage and builder to catch options leaking across imports.
         builder = newton.ModelBuilder()
-        for kwargs, angular_velocity in (
-            ({"legacy_angular_velocity_units": True}, 180.0),
-            ({}, np.pi),
-            ({"legacy_angular_velocity_units": False}, np.pi),
+        result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()])
+        joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
+        for path, offset, position, velocity in (
+            ("/World/Revolute", 0, 0.5 * np.pi, np.pi),
+            ("/World/Prismatic", 0, 0.25, 0.5),
+            ("/World/D6", 0, 0.5 * np.pi, np.pi),
         ):
-            with self.subTest(kwargs=kwargs):
-                warning = (
-                    self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8")
-                    if kwargs.get("legacy_angular_velocity_units")
-                    else nullcontext()
-                )
-                with warning:
-                    result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()], **kwargs)
-                joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
-                for path, offset, position, velocity in (
-                    ("/World/Revolute", 0, 0.5 * np.pi, angular_velocity),
-                    ("/World/Prismatic", 0, 0.25, 0.5),
-                    ("/World/D6", 0, 0.5 * np.pi, angular_velocity),
-                ):
-                    with self.subTest(joint=path):
-                        joint = result["path_joint_map"][path]
-                        self.assertAlmostEqual(joint_q[builder.joint_q_start[joint] + offset], position, places=5)
-                        self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint] + offset], velocity, places=5)
+            with self.subTest(joint=path):
+                joint = result["path_joint_map"][path]
+                self.assertAlmostEqual(joint_q[builder.joint_q_start[joint] + offset], position, places=5)
+                self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint] + offset], velocity, places=5)
 
-                merged = result["path_joint_map"]["/World/MergedHinge"]
-                self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
-                qd_start = builder.joint_qd_start[merged]
-                np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, angular_velocity], atol=1e-5)
+        merged = result["path_joint_map"]["/World/MergedHinge"]
+        self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
+        qd_start = builder.joint_qd_start[merged]
+        np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, np.pi], atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
@@ -668,7 +623,7 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         fake_coacd.run_coacd = run_coacd
 
-        with patch_sys_module("coacd", fake_coacd):
+        with patch_sys_module("coacd", fake_coacd), mock.patch.object(newton.config, "cache_dir_meshes", None):
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.05)
@@ -678,6 +633,103 @@ class TestImportUsdPhysics(unittest.TestCase):
             builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_convex_decomposition_limits(self):
+        """Import opt-in PhysX limits without merging disconnected components."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        class LaterHullResolver(usd.SchemaResolver):
+            name = "later"
+            mapping: ClassVar[dict] = {
+                usd.PrimType.SHAPE: {"max_hull_vertices": usd.SchemaResolver.SchemaAttribute("later:hullVertexLimit")}
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        source = newton.Mesh.create_sphere(
+            num_latitudes=8, num_longitudes=12, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        for name in ("/Plain", "/Physx", "/Default", "/Other", "/Hull"):
+            vertices, indices = source.vertices, source.indices
+            if name == "/Physx":
+                vertices = np.concatenate((vertices, vertices + np.array([10.0, 0.0, 0.0])))
+                indices = np.concatenate((indices, indices + len(source.vertices)))
+            mesh = UsdGeom.Mesh.Define(stage, name)
+            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(indices) // 3))
+            mesh.CreateFaceVertexIndicesAttr().Set(indices.tolist())
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in vertices.tolist()])
+            prim = mesh.GetPrim()
+            prim.CreateAttribute("later:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(12)
+            UsdPhysics.CollisionAPI.Apply(prim)
+            approximation = UsdPhysics.Tokens.convexHull if name == "/Hull" else UsdPhysics.Tokens.convexDecomposition
+            UsdPhysics.MeshCollisionAPI.Apply(prim).GetApproximationAttr().Set(approximation)
+            if name != "/Plain":
+                prim.AddAppliedSchema("PhysxConvexDecompositionCollisionAPI")
+            if name in ("/Plain", "/Physx", "/Other", "/Hull"):
+                hulls, vertices = (1, 8) if name == "/Physx" else (2, 16)
+                prim.CreateAttribute("physxConvexDecompositionCollision:maxConvexHulls", Sdf.ValueTypeNames.Int).Set(
+                    hulls
+                )
+                prim.CreateAttribute("physxConvexDecompositionCollision:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(
+                    vertices
+                )
+                prim.CreateAttribute("physxConvexHullCollision:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(
+                    4 if name == "/Other" else 32
+                )
+        calls = []
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            calls.append(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+        for physx_resolver, later_resolver in ((False, False), (True, False), (True, True)):
+            for load_visual_shapes in (False, True):
+                with self.subTest(
+                    physx_resolver=physx_resolver, later_resolver=later_resolver, load_visual_shapes=load_visual_shapes
+                ):
+                    calls.clear()
+                    builder = newton.ModelBuilder()
+                    resolvers = [usd.SchemaResolverPhysx()] if physx_resolver else []
+                    if later_resolver:
+                        resolvers.append(LaterHullResolver())
+                    with patch_sys_module("coacd", fake_coacd):
+                        builder.add_usd(
+                            stage,
+                            load_visual_shapes=load_visual_shapes,
+                            schema_resolvers=resolvers,
+                        )
+                    merged = [call for call in calls if call["merge"]]
+                    self.assertEqual(
+                        sorted(call["max_convex_hull"] for call in merged), [1, 1, 2, 32] if physx_resolver else []
+                    )
+                    self.assertTrue(all(not call.get("decimate", False) for call in calls))
+                    self.assertTrue(all("max_ch_vertex" not in call for call in calls))
+                    hulls = [i for i, kind in enumerate(builder.shape_type) if kind == newton.GeoType.CONVEX_MESH]
+                    self.assertEqual(len(hulls), 6)
+                    expected = {"/Plain": 32, "/Physx": 8, "/Default": 64, "/Other": 16, "/Hull": 32}
+                    if later_resolver:
+                        expected["/Default"] = 12
+                    for shape in hulls:
+                        label = builder.shape_label[shape]
+                        path = next(path for path in expected if label.startswith(path))
+                        limit = expected[path] if physx_resolver else newton.Mesh.MAX_HULL_VERTICES
+                        self.assertEqual(builder.shape_source[shape].maxhullvert, limit)
+                        self.assertLessEqual(len(builder.shape_source[shape].vertices), limit)
+                        if path == "/Physx":
+                            # Each separated component keeps its own hull, even with a budget of one.
+                            extent = builder.shape_source[shape].vertices[:, 0]
+                            self.assertLess(float(np.ptp(extent)), 3.0)
+                    for device in devices:
+                        with self.subTest(device=device):
+                            model = builder.finalize(device=device)
+                            self.assertEqual(model.shape_count, builder.shape_count)
+                            self.assertTrue(np.isfinite(model.shape_scale.numpy()).all())
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_mesh_collider_skips_approximation(self):
@@ -3110,6 +3162,167 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         )
         self.assertNotIn(gaussian.GetPath().pathString, result_no_visuals["path_shape_map"])
 
+    @staticmethod
+    def _define_gaussian_prim(
+        stage,
+        path,
+        *,
+        attribute_color_space=None,
+        prim_type="ParticleField3DGaussianSplat",
+        half=False,
+        radiance=(0.0, 0.0, 0.0),
+    ):
+        """Define a one-splat Gaussian prim, optionally tagging its SH coefficient attribute's color space."""
+        from pxr import Sdf
+
+        prim = stage.GetPrimAtPath(path) or stage.DefinePrim(path, prim_type)
+        prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+        name = "radiance:sphericalHarmonicsCoefficients" + ("h" if half else "")
+        value_type = Sdf.ValueTypeNames.Half3Array if half else Sdf.ValueTypeNames.Float3Array
+        sh = prim.CreateAttribute(name, value_type)
+        sh.Set([radiance])
+        if attribute_color_space is not None:
+            sh.SetColorSpace(attribute_color_space)
+        return prim
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_sh_color_space_follows_usd_schema(self):
+        """Resolve the SH color space from the coefficient attribute and ignore prim and inherited color spaces."""
+        from pxr import Usd
+
+        color_space = newton.utils.ColorSpace
+        stage = Usd.Stage.CreateInMemory()
+        for name, token, expected in (
+            ("Untagged", None, color_space.SRGB),
+            ("Display", "srgb_rec709_scene", color_space.SRGB),
+            ("DisplayReferred", "srgb_rec709_display", color_space.SRGB),
+            ("Linear", "lin_rec709_scene", color_space.LINEAR),
+            ("Raw", "raw", color_space.LINEAR),
+        ):
+            with self.subTest(name=name):
+                prim = self._define_gaussian_prim(stage, f"/World/{name}", attribute_color_space=token)
+                # Missing and supported color spaces import silently.
+                with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+                    gaussian = newton.Gaussian.create_from_usd(prim)
+                self.assertEqual(gaussian.sh_color_space, expected)
+
+        # A color space applied on the prim or inherited from a parent does not apply to the coefficients.
+        parent = stage.DefinePrim("/Scene", "Xform")
+        Usd.ColorSpaceAPI.Apply(parent).CreateColorSpaceNameAttr().Set("lin_rec709_scene")
+        for prim_type in ("ParticleField", "ParticleField3DGaussianSplat"):
+            with self.subTest(prim_type=prim_type):
+                prim = self._define_gaussian_prim(stage, f"/Scene/Inherited{prim_type}", prim_type=prim_type)
+                self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, color_space.SRGB)
+                prim = self._define_gaussian_prim(stage, f"/World/PrimTagged{prim_type}", prim_type=prim_type)
+                Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set("lin_rec709_scene")
+                self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, color_space.SRGB)
+                # The coefficient attribute's own color space still wins over the prim's.
+                prim = self._define_gaussian_prim(
+                    stage,
+                    f"/World/AttributeTagged{prim_type}",
+                    prim_type=prim_type,
+                    attribute_color_space="lin_rec709_scene",
+                )
+                Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set("srgb_rec709_display")
+                self.assertEqual(newton.Gaussian.create_from_usd(prim).sh_color_space, color_space.LINEAR)
+
+        prim = self._define_gaussian_prim(stage, "/World/AP1", attribute_color_space="lin_ap1_scene")
+        with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
+            gaussian = newton.Gaussian.create_from_usd(prim)
+        self.assertEqual(gaussian.sh_color_space, color_space.LINEAR)
+        self.assertIn("lin_ap1_scene", logs.output[0])
+        self.assertIn("/World/AP1", logs.output[0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_sh_color_space_follows_the_loaded_coefficient_attribute(self):
+        """Use the color space of the single- or half-precision coefficient attribute that supplies the radiance."""
+        from pxr import Usd
+
+        color_space = newton.utils.ColorSpace
+        stage = Usd.Stage.CreateInMemory()
+        single_radiance, half_radiance = (1.0, 2.0, 3.0), (4.0, 5.0, 6.0)
+
+        # Only the half-precision attribute is authored: its color space and values are used.
+        prim = self._define_gaussian_prim(
+            stage, "/World/HalfOnly", attribute_color_space="lin_rec709_scene", half=True, radiance=half_radiance
+        )
+        gaussian = newton.Gaussian.create_from_usd(prim)
+        self.assertEqual(gaussian.sh_color_space, color_space.LINEAR)
+        np.testing.assert_allclose(gaussian.sh_coeffs, [half_radiance])
+
+        # Both are authored: the single-precision attribute supplies the radiance and its color space wins.
+        for name, single_cs, half_cs, expected in (
+            ("SingleLinear", "lin_rec709_scene", "srgb_rec709_scene", color_space.LINEAR),
+            ("SingleSrgb", "srgb_rec709_scene", "lin_rec709_scene", color_space.SRGB),
+        ):
+            with self.subTest(name=name):
+                path = f"/World/{name}"
+                self._define_gaussian_prim(stage, path, attribute_color_space=single_cs, radiance=single_radiance)
+                prim = self._define_gaussian_prim(
+                    stage, path, attribute_color_space=half_cs, half=True, radiance=half_radiance
+                )
+                gaussian = newton.Gaussian.create_from_usd(prim)
+                self.assertEqual(gaussian.sh_color_space, expected)
+                np.testing.assert_allclose(gaussian.sh_coeffs, [single_radiance])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_sh_color_space_allowlist(self):
+        """Map supported Rec.709 color-space names exactly and warn for every other name."""
+        from pxr import Usd
+
+        color_space = newton.utils.ColorSpace
+        supported = {
+            "srgb_rec709_scene": color_space.SRGB,
+            "srgb_rec709_display": color_space.SRGB,
+            "sRGB": color_space.SRGB,
+            "srgb_texture": color_space.SRGB,
+            "lin_rec709_scene": color_space.LINEAR,
+            "lin_rec709": color_space.LINEAR,
+            "lin_srgb": color_space.LINEAR,
+            "raw": color_space.LINEAR,
+            "data": color_space.LINEAR,
+            "identity": color_space.LINEAR,
+            "linear": color_space.LINEAR,
+        }
+        unsupported = {
+            "lin_ap1_scene": color_space.LINEAR,
+            "acescg": color_space.LINEAR,
+            "srgb_ap1_scene": color_space.SRGB,
+            "g22_rec709_scene": color_space.SRGB,
+        }
+
+        stage = Usd.Stage.CreateInMemory()
+
+        for token, expected in supported.items():
+            with self.subTest(token=token):
+                prim = self._define_gaussian_prim(stage, f"/World/{token}", attribute_color_space=token)
+                with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+                    gaussian = newton.Gaussian.create_from_usd(prim)
+                self.assertEqual(gaussian.sh_color_space, expected)
+
+        for token, expected in unsupported.items():
+            with self.subTest(token=token):
+                prim = self._define_gaussian_prim(stage, f"/World/{token}", attribute_color_space=token)
+                with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
+                    gaussian = newton.Gaussian.create_from_usd(prim)
+                self.assertEqual(gaussian.sh_color_space, expected)
+                self.assertIn(token, logs.output[0])
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_with_non_rec709_linear_radiance_does_not_abort_import(self):
+        """Import every splat of a stage whose radiance is tagged with a non-Rec.709 linear color space."""
+        from pxr import Usd, UsdGeom
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.Xform.Define(stage, "/World")
+        for name in ("A", "B"):
+            self._define_gaussian_prim(stage, f"/World/{name}", attribute_color_space="lin_ap1_scene")
+
+        with self.assertLogs("newton._src.usd.utils", level="WARNING"):
+            result = newton.ModelBuilder().add_usd(stage, root_path="/World")
+        self.assertIn("/World/A", result["path_shape_map"])
+        self.assertIn("/World/B", result["path_shape_map"])
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_static_collider_has_no_collision_flags(self):
         """Disable shape and particle collisions regardless of visual loading."""
@@ -4084,8 +4297,7 @@ def Xform "Articulation" (
                 builder = newton.ModelBuilder()
                 SolverMuJoCo.register_custom_attributes(builder)
                 builder.add_usd(stage, schema_resolvers=[resolver_type() for resolver_type in resolver_types])
-                with mock.patch("newton.use_coord_layout_targets", True):
-                    model = builder.finalize()
+                model = builder.finalize()
 
                 joint_index = model.joint_label.index("/World/Articulation/Joint")
                 dof_start = int(model.joint_qd_start.numpy()[joint_index])
@@ -4119,8 +4331,7 @@ def Xform "Articulation" (
         builder.default_joint_cfg.damping = 99.0
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
-        with mock.patch("newton.use_coord_layout_targets", True):
-            model = builder.finalize()
+        model = builder.finalize()
 
         joint_index = model.joint_label.index("/World/Articulation/Joint")
         dof_start = int(model.joint_qd_start.numpy()[joint_index])
@@ -4217,8 +4428,7 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.damping = 99.0
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
-        with mock.patch("newton.use_coord_layout_targets", True):
-            model = builder.finalize()
+        model = builder.finalize()
 
         joint_index = model.joint_label.index("/World/Articulation/Joint")
         self.assertEqual(builder.joint_dof_dim[joint_index], (1, 1))
@@ -4791,14 +5001,15 @@ def Xform "World"
         from pxr import Usd
 
         test_cases = [
-            ("integrator", "0", 0),  # Euler
-            ("solver", "2", 2),  # Newton
-            ("cone", "1", 1),  # elliptic
-            ("jacobian", "1", 1),  # sparse
+            ("integrator", "int", "0", 0),  # Euler
+            ("integrator", "uniform token", '"discrete"', 4),
+            ("solver", "int", "2", 2),  # Newton
+            ("cone", "int", "1", 1),  # elliptic
+            ("jacobian", "int", "1", 1),  # sparse
         ]
 
-        for option_name, usd_value, expected_int in test_cases:
-            with self.subTest(option=option_name):
+        for option_name, usd_type, usd_value, expected_int in test_cases:
+            with self.subTest(option=option_name, value=usd_value):
                 usd_content = f"""#usda 1.0
 (
     defaultPrim = "World"
@@ -4812,7 +5023,7 @@ def Xform "World"
         prepend apiSchemas = ["MjcSceneAPI"]
     )
     {{
-        int mjc:option:{option_name} = {usd_value}
+        {usd_type} mjc:option:{option_name} = {usd_value}
     }}
 
     def Xform "Articulation" (
@@ -5022,8 +5233,8 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.joint_target_q.numpy()[target_idx], np.deg2rad(20.0), places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_springref_units(self):
-        """Restore raw springrefs without changing refs, lengths, or later imports."""
+    def test_springref_compiler_angle_units(self):
+        """Convert revolute springrefs using compiler units, including merged D6 joints."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         for angle_units in (None, "degree", "radian", "no_scene"):
@@ -5056,37 +5267,24 @@ def Xform "Articulation" (
 
             builder = newton.ModelBuilder()
             SolverMuJoCo.register_custom_attributes(builder)
-            for kwargs, legacy in (
-                ({"legacy_springref_units": True}, True),
-                ({}, False),
-                ({"legacy_springref_units": False}, False),
-            ):
-                with self.subTest(angle_units=angle_units, kwargs=kwargs):
-                    warning = (
-                        self.assertWarnsRegex(DeprecationWarning, r"legacy_springref_units.*1\.8")
-                        if legacy
-                        else nullcontext()
-                    )
-                    with warning:
-                        result = builder.add_usd(stage, **kwargs)
-                    model = builder.finalize(device="cpu")
-                    springref = model.mujoco.dof_springref.numpy()
-                    reference = model.mujoco.dof_ref.numpy()
-                    angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
-                    expected_springref = 30.0 if legacy else 30.0 * angular_factor
+            with self.subTest(angle_units=angle_units):
+                result = builder.add_usd(stage)
+                model = builder.finalize(device="cpu")
+                springref = model.mujoco.dof_springref.numpy()
+                reference = model.mujoco.dof_ref.numpy()
+                angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
+                expected_springref = 30.0 * angular_factor
 
-                    for path, offset, expected_spring, expected_ref in (
-                        ("Revolute", 0, expected_springref, 15.0 * angular_factor),
-                        ("Prismatic", 0, 0.25, 0.1),
-                        ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
-                        ("MergedSlide", 0, 0.25, 0.1),
-                    ):
-                        joint = result["path_joint_map"][f"/World/{path}"]
-                        dof = builder.joint_qd_start[joint] + offset
-                        self.assertAlmostEqual(springref[dof], expected_spring, places=5)
-                        self.assertAlmostEqual(reference[dof], expected_ref, places=5)
-
-                    self.assertEqual(stage.GetPrimAtPath("/World/Revolute").GetAttribute("mjc:springref").Get(), 30.0)
+                for path, offset, expected_spring, expected_ref in (
+                    ("Revolute", 0, expected_springref, 15.0 * angular_factor),
+                    ("Prismatic", 0, 0.25, 0.1),
+                    ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
+                    ("MergedSlide", 0, 0.25, 0.1),
+                ):
+                    joint = result["path_joint_map"][f"/World/{path}"]
+                    dof = builder.joint_qd_start[joint] + offset
+                    self.assertAlmostEqual(springref[dof], expected_spring, places=5)
+                    self.assertAlmostEqual(reference[dof], expected_ref, places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
@@ -5661,14 +5859,16 @@ def Xform "Articulation" (
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
         builder = newton.ModelBuilder()
 
-        with self.assertLogs("newton", level=logging.INFO) as log_ctx:
+        with self.assertLogs("newton", level=logging.DEBUG) as log_ctx:
             result = builder.add_usd(stage)
 
         mesh = builder.shape_source[result["path_shape_map"][shape_path]]
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
+        self.assertEqual(
+            {r.levelno for r in log_ctx.records if "texture sampling is disabled" in r.getMessage()}, {logging.DEBUG}
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uvless_textured_visual_mesh_subset_disables_uv_sampling(self):
@@ -5676,14 +5876,16 @@ def Xform "Articulation" (
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=True)
         builder = newton.ModelBuilder()
 
-        with self.assertLogs("newton", level=logging.INFO) as log_ctx:
+        with self.assertLogs("newton", level=logging.DEBUG) as log_ctx:
             result = builder.add_usd(stage)
 
         mesh = builder.shape_source[result["path_shape_map"][shape_path]]
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
+        self.assertEqual(
+            {r.levelno for r in log_ctx.records if "texture sampling is disabled" in r.getMessage()}, {logging.DEBUG}
+        )
 
     def _build_custom_shader_mesh_stage(self, *, with_diffuse: bool):
         """Build a stage whose mesh binds a non-UsdPreviewSurface shader with map inputs.
@@ -6169,7 +6371,10 @@ def Xform "Articulation" (
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
 
         builder = newton.ModelBuilder()
-        with _warnings.catch_warnings(record=True) as caught, self.assertLogs("newton", level=_logging.INFO) as log_ctx:
+        with (
+            _warnings.catch_warnings(record=True) as caught,
+            self.assertLogs("newton", level=_logging.DEBUG) as log_ctx,
+        ):
             _warnings.simplefilter("always")
             builder.add_usd(stage)
         uv_warnings = [
@@ -6177,9 +6382,8 @@ def Xform "Articulation" (
         ]
         self.assertEqual(uv_warnings, [], f"unexpected UV warnings: {[str(w.message) for w in uv_warnings]}")
 
-        joined = "\n".join(log_ctx.output)
-        self.assertIn("UV primvar length", joined)
-        self.assertIn("texture sampling is disabled", joined)
+        for text in ("UV primvar length", "texture sampling is disabled"):
+            self.assertEqual({r.levelno for r in log_ctx.records if text in r.getMessage()}, {_logging.DEBUG})
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):
@@ -6637,7 +6841,7 @@ def Xform "Articulation" (
             result = builder.add_usd(stage)
 
         self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, UserWarning)
+        self.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
         self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
 
         for case_name, _scale, _angle, _com, include_partial in cases:
@@ -8346,13 +8550,11 @@ def Xform "Articulation" (
         self.assertEqual(builder.joint_coord_count, 14)
         with warnings.catch_warnings(record=True) as caught:
             # The body-to-world row intentionally omits solref to exercise the
-            # registered default. Keep all unrelated warnings under the ambient policy.
+            # registered default, which must not be reported as a missed row.
             warnings.filterwarnings("always", message=_PARTIAL_EQ_SOLREF_WARNING, category=UserWarning)
             model = builder.finalize()
 
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, UserWarning)
-        self.assertRegex(str(caught[0].message), _PARTIAL_EQ_SOLREF_WARNING)
+        self.assertEqual(caught, [])
 
         self.assertNotIn("/World/EqualityConnect", result["path_joint_map"])
         self.assertNotIn("/World/EqualityConnectBodyToWorld", result["path_joint_map"])
@@ -8704,6 +8906,7 @@ def Xform "Articulation" (
             np.testing.assert_allclose(converted_row[6], legacy_row[6], atol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_joint_ordering_cycle_raises(self):
         """Reject invalid joint graphs and propagate topological sort errors."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -14205,6 +14408,107 @@ class TestUsdMaterialColorSpaces(unittest.TestCase):
             display_color,
             atol=1e-6,
         )
+
+    @staticmethod
+    def _define_material_mesh(stage, name: str, color_space: str, *, texture_asset: str | None = None):
+        """Define a mesh bound to a preview surface whose color or texture file is tagged with ``color_space``."""
+        from pxr import Gf, Sdf, UsdGeom, UsdShade
+
+        mesh = UsdGeom.Mesh.Define(stage, f"/World/{name}")
+        mesh.GetPointsAttr().Set([Gf.Vec3f(0.0, 0.0, 0.0), Gf.Vec3f(1.0, 0.0, 0.0), Gf.Vec3f(0.0, 1.0, 0.0)])
+        mesh.GetFaceVertexCountsAttr().Set([3])
+        mesh.GetFaceVertexIndicesAttr().Set([0, 1, 2])
+
+        material = UsdShade.Material.Define(stage, f"/World/Looks/{name}")
+        shader = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/PreviewSurface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        color_input = shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f)
+        if texture_asset is None:
+            color_input.Set(Gf.Vec3f(0.25, 0.5, 0.75))
+            color_input.GetAttr().SetColorSpace(color_space)
+        else:
+            texture = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/Albedo")
+            texture.CreateIdAttr("UsdUVTexture")
+            file_input = texture.CreateInput("file", Sdf.ValueTypeNames.Asset)
+            file_input.Set(Sdf.AssetPath(texture_asset))
+            file_input.GetAttr().SetColorSpace(color_space)
+            color_input.ConnectToSource(texture.ConnectableAPI(), "rgb")
+        material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
+        return mesh.GetPrim()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_acescg_color_and_texture_are_converted_from_linear(self):
+        """Treat ``acescg`` scalar colors and textures as linear and convert them to display/sRGB."""
+        from PIL import Image
+        from pxr import Usd
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        for token in ("acescg", "ACEScg"):
+            with self.subTest(token=token):
+                prim = self._define_material_mesh(stage, f"Color_{token}", token)
+                with self.assertLogs("newton._src.usd.utils", level="WARNING"):
+                    material_props = resolve_material_properties_for_prim(prim)
+                np.testing.assert_allclose(material_props["color"], color_linear_to_srgb((0.25, 0.5, 0.75)), atol=1e-6)
+
+        source_rgba = np.array([[[64, 128, 255, 200]]], dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            texture_path = os.path.join(tmpdir, "acescg.png")
+            Image.fromarray(source_rgba).save(texture_path)
+            prim = self._define_material_mesh(stage, "Texture", "acescg", texture_asset=texture_path)
+            with self.assertLogs("newton._src.usd.utils", level="WARNING"):
+                mesh = usd.get_mesh(prim)
+
+        self.assertIsInstance(mesh.texture, np.ndarray)
+        expected_rgb = np.round(np.asarray(color_linear_to_srgb(source_rgba[0, 0, :3] / 255.0)) * 255.0)
+        np.testing.assert_array_equal(np.asarray(mesh.texture)[0, 0, :3], expected_rgb.astype(np.uint8))
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_non_rec709_color_spaces_warn_for_colors_textures_and_gaussians(self):
+        """Log the same warning for scalar colors, textures and Gaussians in spaces Newton does not convert."""
+        from PIL import Image
+        from pxr import Sdf, Usd
+
+        from newton._src.usd.utils import resolve_material_properties_for_prim  # noqa: PLC0415
+
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        texture_path = os.path.join(tmpdir.name, "texture.png")
+        Image.fromarray(np.zeros((1, 1, 4), dtype=np.uint8)).save(texture_path)
+
+        stage = Usd.Stage.CreateInMemory()
+        for token in ("lin_ap1_scene", "srgb_ap1_scene"):
+            color_prim = self._define_material_mesh(stage, f"Color_{token}", token)
+            texture_prim = self._define_material_mesh(stage, f"Texture_{token}", token, texture_asset=texture_path)
+            gaussian_prim = stage.DefinePrim(f"/World/Gaussian_{token}", "ParticleField3DGaussianSplat")
+            gaussian_prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+            sh = gaussian_prim.CreateAttribute(
+                "radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array
+            )
+            sh.Set([(0.0, 0.0, 0.0)])
+            sh.SetColorSpace(token)
+
+            for what, load in (
+                ("Color", lambda prim=color_prim: resolve_material_properties_for_prim(prim)),
+                ("Color texture", lambda prim=texture_prim: usd.get_mesh(prim)),
+                ("Gaussian SH radiance", lambda prim=gaussian_prim: newton.Gaussian.create_from_usd(prim)),
+            ):
+                with self.subTest(token=token, what=what):
+                    with self.assertLogs("newton._src.usd.utils", level="WARNING") as logs:
+                        load()
+                    self.assertEqual(len(logs.output), 1)
+                    self.assertIn(f"{what} of ", logs.output[0])
+                    self.assertIn(f"unsupported color space '{token}'", logs.output[0])
+
+        prim = self._define_material_mesh(stage, "Supported", "lin_rec709_scene")
+        with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+            resolve_material_properties_for_prim(prim)
+        # Omniverse assets tag texture files with ``auto``, which means untagged.
+        prim = self._define_material_mesh(stage, "Auto", "auto", texture_asset=texture_path)
+        with self.assertNoLogs("newton._src.usd.utils", level="WARNING"):
+            self.assertEqual(usd.get_mesh(prim).texture, texture_path)
 
 
 if __name__ == "__main__":

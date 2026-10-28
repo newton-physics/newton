@@ -1,0 +1,1 @@
+Fix `newton.geometry.collide_box_box` writing past its eight-entry candidate buffers when nearly aligned boxes produce more than eight face-clipping candidates, and keep the face axis when an edge axis ties it within float32 rounding.

@@ -22,8 +22,10 @@ import newton
 import newton.utils
 from newton import ModelBuilder
 from newton._src.geometry.utils import transform_points
+from newton._src.solvers.coupled.model_view import ModelView
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.viewer.viewer_file import depointer_as_key, pointer_as_key, transfer_to_model
+from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import assert_np_equal, patch_sys_module
 
 
@@ -38,6 +40,65 @@ def _eq_set_value(builder, name, idx, value):
 
 
 class TestModelAttributeSpecs(unittest.TestCase):
+    def test_collision_edge_aliases_preserve_reads_and_writes(self):
+        """Warn on legacy edge-cache access while preserving array identity and writes."""
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+        model = builder.finalize(device="cpu")
+        for name in ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range"):
+            with self.subTest(attribute=name):
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}.*Newton 1\.8") as warning:
+                    original = getattr(model, name)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(original, getattr(model, f"_{name}"))
+                replacement = wp.clone(original)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    setattr(model, name, replacement)
+                self.assertIs(getattr(model, f"_{name}"), replacement)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    getattr(model, name).zero_()
+                np.testing.assert_array_equal(getattr(model, f"_{name}").numpy(), 0)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}"):
+                    setattr(model, name, None)
+                self.assertIsNone(getattr(model, f"_{name}"))
+
+    def test_collision_edge_aliases_follow_model_view_overrides(self):
+        """Resolve legacy edge-cache aliases through view-local canonical storage."""
+        builder = ModelBuilder()
+        builder.add_shape_mesh(body=-1, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+        model = builder.finalize(device="cpu")
+        view = ModelView(model, "test")
+        for name in ("mesh_edge_indices", "mesh_edge_centers", "mesh_edge_halves", "shape_edge_range"):
+            with self.subTest(attribute=name):
+                private_name = f"_{name}"
+                original = getattr(model, private_name)
+                replacement = wp.clone(original)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}") as warning:
+                    setattr(view, name, replacement)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(getattr(view, private_name), replacement)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, rf"Model\.{name}") as warning:
+                    self.assertIs(getattr(view, name), replacement)
+                self.assertEqual(warning.filename, __file__)
+                self.assertIs(getattr(model, private_name), original)
+                self.assertNotIn(name, dict(model._iter_attribute_specs()))
+                self.assertIn(private_name, dict(model._iter_attribute_specs()))
+                self.assertEqual(model.get_attribute_frequency(name), model.get_attribute_frequency(private_name))
+
+    def test_collision_edge_internal_access_does_not_warn(self):
+        """Finalize and collide with packed edges without triggering legacy aliases."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", NewtonDeprecationWarning)
+            builder = ModelBuilder()
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()))
+            builder.add_shape_mesh(body=body, mesh=newton.Mesh.create_box(0.1, 0.1, 0.1))
+            model = builder.finalize(device="cpu")
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
     def test_attribute_namespace_deprecated_alias_api(self):
         """Retain deprecated namespace aliases through their compatibility window."""
         namespace = newton.Model.AttributeNamespace("test")
@@ -84,6 +145,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
                 )
 
     def test_core_attribute_specs_cover_entity_indexed_storage(self):
+        """Require metadata for entity-indexed storage, excluding lazy implementation details."""
         model = newton.Model(device="cpu")
 
         prefixes = tuple(
@@ -116,13 +178,29 @@ class TestModelAttributeSpecs(unittest.TestCase):
             if name.startswith(prefixes + private_prefixes) and is_indexed_container:
                 indexed_attributes.add(name)
 
-        missing = sorted(indexed_attributes.difference(model.attribute_specs))
+        excluded_attributes = {
+            "_shape_contact_pairs",  # Covered by the public shape_contact_pairs specification.
+            "_shape_contact_pair_counts",  # Summary cache, not entity-indexed storage.
+        }
+        missing = sorted(indexed_attributes.difference(model.attribute_specs, excluded_attributes))
         self.assertEqual(
             missing,
             [],
             "Model attributes are missing AttributeSpec metadata. Add each listed attribute to "
             "Model._CORE_ATTRIBUTE_SPECS with the correct frequency, references, row width, and compaction policy.",
         )
+
+        # The shared registry also describes built-in State and Control storage.
+        frequency = newton.Model.AttributeFrequency
+        for name, expected_frequency in (
+            ("particle_q", frequency.PARTICLE),
+            ("particle_qd", frequency.PARTICLE),
+            ("particle_f", frequency.PARTICLE),
+            ("body_f", frequency.BODY),
+            ("joint_f", frequency.JOINT_DOF),
+        ):
+            with self.subTest(attribute=name):
+                self.assertEqual(model.get_attribute_frequency(name), expected_frequency)
 
 
 class TestParallelJointWarning(unittest.TestCase):
@@ -219,7 +297,27 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         self.assertEqual(wp_bvh.call_args.kwargs["constructor"], "sah")
 
 
+class TestGaussian(unittest.TestCase):
+    def test_gaussian_sh_color_space_affects_identity(self):
+        """Default to sRGB and include the SH color space in Gaussian equality and hash."""
+        kwargs = {
+            "positions": np.zeros((1, 3), dtype=np.float32),
+            "sh_coeffs": np.zeros((1, 3), dtype=np.float32),
+        }
+        self.assertEqual(newton.Gaussian(**kwargs).sh_color_space, newton.utils.ColorSpace.SRGB)
+        srgb = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.SRGB)
+        linear = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.LINEAR)
+        self.assertNotEqual(srgb, linear)
+        self.assertNotEqual(hash(srgb), hash(linear))
+
+
 class TestModelMesh(unittest.TestCase):
+    def setUp(self):
+        """Keep backend stubs isolated from persistent mesh caches."""
+        cache_setting = mock.patch.object(newton.config, "cache_dir_meshes", None)
+        cache_setting.start()
+        self.addCleanup(cache_setting.stop)
+
     class _FakeDecompositionMesh:
         """Store mesh data passed to a fake decomposition backend."""
 
@@ -509,8 +607,8 @@ class TestModelMesh(unittest.TestCase):
             collision_mesh.indices.numpy(),
             np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
         )
-        edge_start, edge_count = model.shape_edge_range.numpy()[0]
-        collision_edges = model.mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
+        edge_start, edge_count = model._shape_edge_range.numpy()[0]
+        collision_edges = model._mesh_edge_indices.numpy()[edge_start : edge_start + edge_count]
         np.testing.assert_array_equal(
             collision_edges,
             np.array([[0, 1], [1, 2], [0, 2], [2, 3], [0, 3]], dtype=np.int32),
@@ -850,6 +948,39 @@ class TestModelMesh(unittest.TestCase):
         )
         self.assertEqual(set(adj.edge_tri_indices[shared].tolist()), {0, 1})
 
+    def test_mesh_adjacency_coincident_faces(self):
+        """Keep the first two incident triangles when pre-numbered edges have equal opposite vertices."""
+        cases = {
+            "same_winding": ([[0, 1, 2], [0, 1, 2], [3, 4, 5]], 0),
+            "flipped_winding": ([[0, 1, 2], [0, 2, 1], [3, 4, 5]], 0),
+            # A duplicated face on a non-manifold edge: traversal order decides which two faces win.
+            "duplicate_then_third": ([[0, 1, 2], [0, 1, 2], [0, 1, 3]], 1),
+            "duplicate_around_third": ([[0, 1, 2], [0, 1, 3], [0, 2, 1]], 1),
+        }
+        for case, (tris, non_manifold_edges) in cases.items():
+            with self.subTest(case=case):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    derived = newton.utils.MeshAdjacency(tris)
+                self.assertEqual(sum("non-manifold" in str(w.message) for w in caught), non_manifold_edges)
+                # The first two faces in traversal order own the doubled edge (0, 1).
+                doubled = next(i for i, e in enumerate(derived.edge_indices) if {int(e[2]), int(e[3])} == {0, 1})
+                np.testing.assert_array_equal(derived.edge_tri_indices[doubled], [0, 1])
+                # Interleave the edges and swap their endpoints to exercise caller-owned numbering.
+                order = np.arange(len(derived.edge_indices))[::-1]
+                edges = derived.edge_indices[order].copy()
+                edges[:, 2:4] = edges[:, 2:4][:, ::-1]
+                rebuilt = newton.utils.MeshAdjacency(tris, edge_indices=edges)
+                np.testing.assert_array_equal(rebuilt.edge_indices, edges)
+                np.testing.assert_array_equal(rebuilt.edge_tri_indices, derived.edge_tri_indices[order])
+                # Pre-numbered edges link a slot by its opposite vertex, so only the slots whose
+                # triangle holds one of the edge's two sides must agree with the derived maps.
+                sides = derived.edge_tri_indices[derived.tri_edge_indices]
+                owned = (derived.tri_edge_indices >= 0) & (sides == np.arange(len(tris))[:, None, None]).any(axis=2)
+                np.testing.assert_array_equal(
+                    rebuilt.tri_edge_indices[owned], np.argsort(order)[derived.tri_edge_indices[owned]]
+                )
+
     def test_mesh_adjacency_legacy_api_removed(self):
         # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
         # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
@@ -1027,6 +1158,41 @@ class TestModelMesh(unittest.TestCase):
         for shape in range(builder.shape_count):
             mesh = builder.shape_source[shape]
             self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
+
+    def test_mesh_approximation_coacd_is_repeatable(self):
+        """Decompose a nonconvex mesh with CoACD repeatedly and get identical hulls."""
+        try:
+            import coacd  # noqa: F401
+        except ImportError:
+            self.skipTest("Requires coacd")
+
+        # A torus is nonconvex, so CoACD's parallel tree search has several cuts to choose from.
+        rings, sides = 32, 12
+        u, v = np.meshgrid(
+            np.linspace(0.0, 2.0 * np.pi, rings, endpoint=False),
+            np.linspace(0.0, 2.0 * np.pi, sides, endpoint=False),
+            indexing="ij",
+        )
+        radius = 0.05 + 0.015 * np.cos(v)
+        vertices = np.stack((radius * np.cos(u), radius * np.sin(u), 0.015 * np.sin(v)), axis=-1).reshape(-1, 3)
+        i, j = np.meshgrid(np.arange(rings), np.arange(sides), indexing="ij")
+        a, b = i * sides + j, (i + 1) % rings * sides + j
+        c, d = (i + 1) % rings * sides + (j + 1) % sides, i * sides + (j + 1) % sides
+        indices = np.stack((a, b, c, a, c, d), axis=-1).reshape(-1)
+        torus = newton.Mesh(vertices, indices, compute_inertia=False)
+
+        def decompose():
+            builder = ModelBuilder()
+            builder.add_shape_mesh(body=-1, mesh=torus)
+            builder.approximate_meshes(method="coacd", raise_on_failure=True)
+            return [np.concatenate((m.vertices.ravel(), m.indices.ravel())) for m in builder.shape_source]
+
+        first = decompose()
+        for _ in range(2):
+            again = decompose()
+            self.assertEqual(len(again), len(first))
+            for part, expected in zip(again, first, strict=True):
+                np.testing.assert_array_equal(part, expected)
 
     def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
         builder = ModelBuilder()
@@ -2403,11 +2569,11 @@ class TestModelJoints(unittest.TestCase):
         assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-5)
 
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
-        """``joint_target_q`` follows ``joint_q`` (coord) under
-        ``use_coord_layout_targets``; ``joint_target_qd`` always follows
-        ``joint_qd`` (DOF). Free and ball joints are where the two layouts
-        diverge. Multi-articulation builder also exercises the per-env start
-        arrays."""
+        """Match position targets to coordinates and velocity targets to DOFs.
+
+        Free and ball joints distinguish the coordinate and DOF counts;
+        multiple articulations also exercise the per-articulation start arrays.
+        """
         builder = ModelBuilder()
         # env 0: free + revolute (7 coords / 6 DOFs from free)
         b0 = builder.add_link(mass=1.0)
@@ -2442,112 +2608,12 @@ class TestModelJoints(unittest.TestCase):
         # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
         self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
 
-    def test_legacy_target_layout_warning_uses_finalize_call_site(self):
-        """Verify the legacy target-layout warning and its call-site attribution."""
-        previous_flag = newton.use_coord_layout_targets
-        newton.use_coord_layout_targets = False
-        try:
-            unaffected_builder = ModelBuilder()
-            child = unaffected_builder.add_link(mass=1.0)
-            joint = unaffected_builder.add_joint_revolute(parent=-1, child=child, axis=newton.Axis.Z)
-            unaffected_builder.add_articulation([joint])
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", DeprecationWarning)
-                unaffected_builder.finalize()
-            layout_warnings = [
-                warning
-                for warning in caught
-                if issubclass(warning.category, DeprecationWarning)
-                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
-            ]
-            self.assertEqual(layout_warnings, [])
-
-            affected_builder = ModelBuilder()
-            child = affected_builder.add_link(mass=1.0)
-            joint = affected_builder.add_joint_free(child=child)
-            affected_builder.add_articulation([joint])
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", DeprecationWarning)
-                warning_line = inspect.currentframe().f_lineno + 1
-                affected_builder.finalize()
-
-            layout_warnings = [
-                warning
-                for warning in caught
-                if issubclass(warning.category, DeprecationWarning)
-                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
-            ]
-            self.assertEqual(len(layout_warnings), 1)
-            self.assertEqual(layout_warnings[0].filename, __file__)
-            self.assertEqual(layout_warnings[0].lineno, warning_line)
-        finally:
-            newton.use_coord_layout_targets = previous_flag
-
-    def test_legacy_target_layout_shapes_and_values(self):
-        """Verify legacy DOF target layout behavior."""
-        lin_targets = (1.5, -2.5, 3.5)
-        ang_targets = (0.1, 0.2, -0.3)
-
-        def _axes(targets):
-            return [
-                ModelBuilder.JointDofConfig(axis=axis, target_pos=target)
-                for axis, target in zip((newton.Axis.X, newton.Axis.Y, newton.Axis.Z), targets, strict=True)
-            ]
-
-        previous_flag = newton.use_coord_layout_targets
-        newton.use_coord_layout_targets = False
-        try:
-            builder = ModelBuilder()
-            b_free = builder.add_link(mass=1.0)
-            j_free = builder.add_joint(
-                newton.JointType.FREE,
-                parent=-1,
-                child=b_free,
-                linear_axes=_axes(lin_targets),
-                angular_axes=_axes(ang_targets),
-            )
-            b_ball = builder.add_link(mass=1.0)
-            j_ball = builder.add_joint(
-                newton.JointType.BALL,
-                parent=b_free,
-                child=b_ball,
-                angular_axes=_axes(ang_targets),
-            )
-            b_rev = builder.add_link(mass=1.0)
-            j_rev = builder.add_joint_revolute(parent=b_ball, child=b_rev, axis=newton.Axis.Z, target_pos=0.7)
-            builder.add_articulation([j_free, j_ball, j_rev])
-            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
-                model = builder.finalize()
-        finally:
-            newton.use_coord_layout_targets = previous_flag
-
-        self.assertEqual(model.joint_coord_count, 7 + 4 + 1)
-        self.assertEqual(model.joint_dof_count, 6 + 3 + 1)
-        self.assertEqual(model.joint_target_q.shape[0], model.joint_dof_count)
-        self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
-
-        control = model.control()
-        self.assertEqual(control.joint_target_q.shape[0], model.joint_dof_count)
-        self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
-
-        np.testing.assert_array_equal(model.joint_target_q_start.numpy(), model.joint_qd_start.numpy())
-
-        # The quat-w padding slot is dropped: angular targets stay raw per-axis angles.
-        target_q = model.joint_target_q.numpy()
-        qd_starts = model.joint_qd_start.numpy()
-        f = int(qd_starts[j_free])
-        np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
-        np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
-        b = int(qd_starts[j_ball])
-        np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
-        self.assertAlmostEqual(float(target_q[int(qd_starts[j_rev])]), 0.7, places=6)
-
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are
         interpreted as extrinsic ZYX Euler angles and converted to a unit
-        quaternion via :meth:`ModelBuilder._quat_from_euler_zyx`, matching
-        kamino's DOF→coord conversion. FREE linear targets fill the position
+        quaternion via :meth:`ModelBuilder._quat_from_axis_targets`.
+        FREE linear targets fill the position
         slice verbatim."""
         ang_targets = (0.1, 0.2, -0.3)
 

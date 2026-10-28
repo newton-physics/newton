@@ -77,7 +77,6 @@ def random_forces_kernel(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
 
@@ -115,7 +114,7 @@ class Example:
         scene.default_shape_cfg.gap = 0.0
 
         scene.add_ground_plane()
-        scene.replicate(world, world_count=self.world_count)
+        scene.replicate(world, copy_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import warnings
@@ -13,9 +14,10 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, AxisType
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry import Gaussian
 from ..sim.model import Model
-from ..utils.color import color_linear_to_srgb
+from ..utils.color import ColorSpace, color_linear_to_srgb
 from ..utils.import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
@@ -29,6 +31,8 @@ from ._mesh_loading import (  # noqa: F401
     fan_triangulate_faces,
     get_mesh,
 )
+
+logger = logging.getLogger(__name__)
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
@@ -574,14 +578,14 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
                 assignment_val = AttributeAssignment[assignment_meta.upper()]
                 frequency_val = AttributeFrequency[frequency_meta.upper()]
             except KeyError:
-                print(
-                    f"Warning: Custom attribute '{attr_name}' has invalid assignment or frequency in customData. Skipping."
+                logger.warning(
+                    "Custom attribute '%s' has invalid assignment or frequency in customData. Skipping.", attr_name
                 )
                 continue
         else:
             # No metadata found - skip with warning
-            print(
-                f"Warning: Custom attribute '{attr_name}' is missing required customData (assignment and frequency). Skipping."
+            logger.warning(
+                "Custom attribute '%s' is missing required customData (assignment and frequency). Skipping.", attr_name
             )
             continue
 
@@ -776,6 +780,7 @@ def _resolve_deformable_poissons_ratio(value: float, path: str, *, attr_namespac
             )
         warnings.warn(
             f"{path}: {attr_namespace}:poissonsRatio={value:g} {message}.",
+            NewtonWarning,
             stacklevel=2,
         )
         return incompressible_approximation
@@ -783,6 +788,7 @@ def _resolve_deformable_poissons_ratio(value: float, path: str, *, attr_namespac
     warnings.warn(
         f"{path}: invalid {attr_namespace}:poissonsRatio {value:g} "
         "(expected a finite value with -1 < value <= 0.5); treating it as unauthored.",
+        NewtonWarning,
         stacklevel=2,
     )
     return None
@@ -928,7 +934,7 @@ def _get_tetmesh(
                 "PhysicsVolumeDeformableMaterialAPI. Pass compat_namespaces=() to adopt the "
                 "canonical-only behavior now, or compat_namespaces="
                 "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep the current behavior explicitly.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
         compat_namespaces = DEFORMABLE_LEGACY_NAMESPACES
@@ -962,6 +968,7 @@ def _get_tetmesh(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid physics:youngsModulus {authored_youngs:g} "
                     f"(outside the finite USD float range); treating it as unauthored.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 youngs = None
@@ -976,6 +983,7 @@ def _get_tetmesh(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid physics:youngsModulus {E:g} "
                     f"(expected a finite value or the -inf sentinel); treating it as unauthored.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 E = None
@@ -995,6 +1003,7 @@ def _get_tetmesh(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid volume material density "
                     f"{authored_density}; expected a positive value in the finite USD float range, ignoring it.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -1052,10 +1061,8 @@ def _get_tetmesh(
             continue
         if name.startswith("primvars:") or name.startswith("xformOp:"):
             continue
-        # Deformable physics-schema attributes are handled by the deformable importer
-        # where supported (e.g. physics:masses) or intentionally skipped (e.g.
-        # physics:restShapePoints, whose rest-shape import is not yet supported and is
-        # warned about by the importer); none are carried as generic mesh data here.
+        # Deformable physics-schema attributes (e.g. physics:masses, physics:restShapePoints)
+        # are handled by the deformable importer; none are carried as generic mesh data here.
         if name.startswith(("physics:", "omniphysics:", "physxDeformableBody:")):
             continue
         if not attr.HasAuthoredValue():
@@ -1081,6 +1088,7 @@ def _get_tetmesh(
         if name in result._RESERVED_ATTR_KEYS:
             warnings.warn(
                 f"{prim.GetPath()}: custom attribute '{name}' uses a reserved TetMesh name; skipping the attribute.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -1091,7 +1099,7 @@ def _get_tetmesh(
             try:
                 frequency = result._infer_frequency(arr, result.vertex_count, result.tet_count, tri_count, name)
             except ValueError as exc:
-                warnings.warn(f"{prim.GetPath()}: {exc}; skipping the attribute.", stacklevel=2)
+                warnings.warn(f"{prim.GetPath()}: {exc}; skipping the attribute.", NewtonWarning, stacklevel=2)
                 continue
         result.custom_attributes[name] = (np.asarray(arr), frequency)
     return result
@@ -1146,6 +1154,7 @@ def _coerce_deformable_float(
         warnings.warn(
             f"{prim.GetPath()}: invalid {attr_namespace}:{name} {value!r} (expected a numeric scalar); "
             "treating it as unauthored.",
+            NewtonWarning,
             stacklevel=2,
         )
     return result
@@ -1240,6 +1249,7 @@ def _read_deformable_material(
             warnings.warn(
                 f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} (expected {expected}); "
                 f"treating it as unauthored.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -1247,6 +1257,7 @@ def _read_deformable_material(
             warnings.warn(
                 f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} "
                 f"(outside the finite USD float range); treating it as unauthored.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -1265,6 +1276,7 @@ def _read_deformable_material(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} (expected > 0); "
                     f"treating it as unauthored.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         elif val >= 0.0:
@@ -1273,6 +1285,7 @@ def _read_deformable_material(
             warnings.warn(
                 f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} "
                 f"(expected >= 0); treating it as unauthored.",
+                NewtonWarning,
                 stacklevel=2,
             )
     return out
@@ -1437,6 +1450,7 @@ def _get_physics_material_density(material_prim) -> float | None:
         warnings.warn(
             f"{material_prim.GetPath()}: invalid physics material density {density}; "
             f"expected a positive value in the finite USD float range, ignoring it.",
+            NewtonWarning,
             stacklevel=2,
         )
     return None
@@ -1491,6 +1505,7 @@ def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
                     f"{prim.GetPath()}: PhysicsDeformableBodyAPI on ancestor {p.GetPath()} does not "
                     f"govern this simulation geometry (the deformable proposal allows the body API "
                     f"only on the geometry itself or its direct parent); ignoring it.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 break
@@ -1526,6 +1541,7 @@ def _get_deformable_body_overrides(
         warnings.warn(
             f"{body_prim.GetPath()}: invalid physics:{name} {value:g} "
             "(expected a finite positive value or the zero sentinel); treating it as unauthored.",
+            NewtonWarning,
             stacklevel=2,
         )
         return None
@@ -1719,9 +1735,58 @@ def _get_texture_source_color_space(shader: UsdShade.Shader | None, file_attr: U
     return str(source_color_space or "")
 
 
-def _texture_source_is_linear(color_space: str) -> bool:
-    token = color_space.strip().lower()
-    return token in ("identity", "raw", "data", "linear", "lin_rec709_scene") or token.startswith("lin_")
+# USD color-space names Newton handles exactly: Rec.709 primaries with an sRGB or linear transfer function.
+_SRGB_COLOR_SPACES = frozenset({"srgb", "srgb_texture", "srgb_rec709_scene", "srgb_rec709_display"})
+_LINEAR_COLOR_SPACES = frozenset({"lin_rec709_scene", "lin_rec709", "lin_srgb", "raw", "data", "identity", "linear"})
+
+
+def _classify_color_space(name: str, default: ColorSpace) -> tuple[ColorSpace, bool]:
+    """Classify a USD color-space name as sRGB or linear.
+
+    Args:
+        name: Authored or inherited color-space name; empty or ``auto`` for untagged data.
+        default: Color space of untagged data.
+
+    Returns:
+        The color space and whether Newton handles it exactly (Rec.709 primaries with an sRGB or
+        linear transfer function). Any other name is classified as linear if it looks linear
+        (``lin_*`` or ``acescg``) and as sRGB otherwise.
+    """
+    token = name.strip().lower()
+    if not token or token == "auto":
+        return default, True
+    if token in _LINEAR_COLOR_SPACES:
+        return ColorSpace.LINEAR, True
+    if token in _SRGB_COLOR_SPACES:
+        return ColorSpace.SRGB, True
+    if token.startswith("lin_") or token == "acescg":
+        return ColorSpace.LINEAR, False
+    return ColorSpace.SRGB, False
+
+
+def _resolve_color_space(name: str, default: ColorSpace, what: str, path: Any) -> ColorSpace:
+    """Classify a USD color-space name and warn if Newton imports it without conversion.
+
+    Args:
+        name: Authored or inherited color-space name; empty for untagged data.
+        default: Color space of untagged data.
+        what: Description of the imported data for the warning, e.g. ``"Color texture"``.
+        path: USD path of the prim or attribute the data comes from, for the warning.
+
+    Returns:
+        The color space the data is imported as.
+    """
+    color_space, exact = _classify_color_space(name, default)
+    if not exact:
+        logger.warning(
+            "%s of %s uses unsupported color space '%s'; importing it as %s "
+            "without converting color primaries or transfer function",
+            what,
+            path,
+            name,
+            color_space.name,
+        )
+    return color_space
 
 
 def _color_to_display_space(
@@ -1729,8 +1794,11 @@ def _color_to_display_space(
     attr: Usd.Attribute | None,
 ) -> tuple[float, float, float]:
     """Normalize a USD scalar color to Newton's display/sRGB model color space."""
-    color_space = _get_attribute_color_space(attr)
-    if not color_space or _texture_source_is_linear(color_space):
+    if attr is None:
+        return color_linear_to_srgb(color)
+    # Untagged scalar colors follow USD Preview Surface and are linear.
+    color_space = _resolve_color_space(_get_attribute_color_space(attr), ColorSpace.LINEAR, "Color", attr.GetPath())
+    if color_space == ColorSpace.LINEAR:
         return color_linear_to_srgb(color)
     return color
 
@@ -1745,7 +1813,14 @@ def _resolve_color_texture_asset(
     if not texture:
         return None
 
-    if not _texture_source_is_linear(_get_texture_source_color_space(shader, asset_attr)):
+    # Untagged color textures (``sourceColorSpace="auto"``) are display-encoded.
+    color_space = _resolve_color_space(
+        _get_texture_source_color_space(shader, asset_attr),
+        ColorSpace.SRGB,
+        "Color texture",
+        asset_attr.GetPath() if asset_attr is not None else prim.GetPath(),
+    )
+    if color_space == ColorSpace.SRGB:
         return texture
 
     pixels = load_texture(texture)
@@ -1874,16 +1949,18 @@ def _coerce_opacity(value: Any, *, warn_on_multiple: bool = False) -> float | No
     if value_np.size > 1 and warn_on_multiple:
         warnings.warn(
             f"Opacity data contains {value_np.size} values; using the first value as the shape opacity.",
+            NewtonWarning,
             stacklevel=2,
         )
     opacity = float(value_np[0])
     if not np.isfinite(opacity):
-        warnings.warn(f"Ignoring non-finite imported opacity {opacity!r}.", stacklevel=2)
+        warnings.warn(f"Ignoring non-finite imported opacity {opacity!r}.", NewtonWarning, stacklevel=2)
         return None
     clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
     if clamped_opacity != opacity:
         warnings.warn(
             f"Clamping imported opacity {opacity!r} to {clamped_opacity!r}.",
+            NewtonWarning,
             stacklevel=2,
         )
     return clamped_opacity
@@ -2047,6 +2124,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
             if properties["metallic"] is None:
                 warnings.warn(
                     "Metallic texture inputs are not yet supported; using scalar fallback.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         else:
@@ -2069,6 +2147,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
             if properties["roughness"] is None:
                 warnings.warn(
                     "Roughness texture inputs are not yet supported; using scalar fallback.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         else:
@@ -2414,7 +2493,14 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
 def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     """Load Gaussian splat data from a USD prim.
 
-    Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+    Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and
+    `radiance:sphericalHarmonicsCoefficients`, or its half-precision `h` variant when only that one
+    has a value. The color-space name of the coefficient attribute that is read (its own metadata or
+    its schema fallback; inherited color spaces are ignored) selects :attr:`Gaussian.sh_color_space`: untagged, `srgb`,
+    `srgb_texture`, `srgb_rec709_scene` and `srgb_rec709_display` radiance is sRGB, and
+    `lin_rec709_scene`, `lin_rec709`, `lin_srgb`, `raw`, `data`, `identity` and `linear` radiance is
+    linear. Any other name is imported as linear if it looks linear (`lin_*` or `acescg`) and as sRGB
+    otherwise, without converting primaries or transfer function, and a warning is logged.
 
     Args:
         prim: A USD prim containing Gaussian splat data.
@@ -2424,16 +2510,18 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         A new :class:`Gaussian` instance.
     """
 
-    def _get_float_array_attr(name):
-        attr = prim.GetAttribute(name)
-        if attr and attr.HasValue():
-            return np.array(attr.Get(), dtype=np.float32)
-
-        attr = prim.GetAttribute(f"{name}h")
-        if attr and attr.HasValue():
-            return np.array(attr.Get(), dtype=np.float32)
-
+    def _get_valued_attr(name):
+        for candidate in (name, f"{name}h"):
+            attr = prim.GetAttribute(candidate)
+            if attr and attr.HasValue():
+                return attr
         return None
+
+    def _get_float_array_from(attr):
+        return None if attr is None else np.array(attr.Get(), dtype=np.float32)
+
+    def _get_float_array_attr(name):
+        return _get_float_array_from(_get_valued_attr(name))
 
     positions = _get_float_array_attr("positions")
     if positions is None:
@@ -2450,13 +2538,24 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         else:
             raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
 
+    # The color space follows the coefficient attribute that supplies the radiance (single or half precision).
+    # Untagged radiance is display-referred (sRGB).
+    sh_attr = _get_valued_attr("radiance:sphericalHarmonicsCoefficients")
+    sh_color_space = _resolve_color_space(
+        (sh_attr.GetColorSpace() if sh_attr is not None else None) or "",
+        ColorSpace.SRGB,
+        "Gaussian SH radiance",
+        prim.GetPath(),
+    )
+
     return Gaussian(
         positions=positions,
         rotations=_get_float_array_attr("orientations"),
         scales=_get_float_array_attr("scales"),
         opacities=_get_float_array_attr("opacities"),
-        sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
+        sh_coeffs=_get_float_array_from(sh_attr),
         sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
+        sh_color_space=sh_color_space,
         min_response=min_response,
         sorting_mode=sorting_mode,
     )

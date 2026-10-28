@@ -3,6 +3,9 @@ permissions:
   contents: read
 env:
   PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
+  # Codecov only tracks main, so other runs skip coverage collection and the
+  # report artifacts. Keep in sync with the codecov-upload job condition.
+  UPLOAD_TO_CODECOV: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
 
 on:
   workflow_call:
@@ -20,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -36,9 +39,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:
-          version: "0.12.23"
+          version: "0.13.5"
+          prune-cache: true
       - name: Test CI tooling
         run: uv run --no-project --with packaging==26.2 -m unittest discover -s scripts/ci/tests
       - name: Check deprecation allowlists
@@ -70,16 +74,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:
-          version: "0.12.23"
+          version: "0.13.5"
+          prune-cache: true
       - name: Test dependency resolution (Python 3.10)
         run: uv sync --dry-run --python 3.10 --extra dev
       - name: Test dependency resolution (Python 3.11)
@@ -106,7 +111,7 @@ jobs:
 
     steps: &unittest-steps
       - name: Harden the runner (Audit all outbound calls)
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -118,13 +123,31 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
       - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e  # v10.3.2
         with:
-          version: "0.12.23"
+          version: "0.13.5"
+          prune-cache: true
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: ".python-version"
+      # Warp names CPU objects after the host's ISA features (-march=native), which
+      # vary across hosted runners.
+      - name: Compute Warp kernel cache key
+        id: warp-cache-key
+        shell: bash
+        env:
+          SHARD: shard${{ matrix.shard-index }}of${{ matrix.shard-count }}
+        run: |
+          uv run --extra dev python - <<'EOF'
+          import os
+          import warp as wp
+
+          prefix = f"warp-kernels-{wp.get_cpu_kernel_cache_key()}-{os.environ['SHARD']}-"
+          print(f"Warp kernel cache key prefix: {prefix}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"prefix={prefix}\n")
+          EOF
       # Post-submit (push) runs start cold to catch stale-cache issues without
       # slowing the merge queue.
       - name: Restore Warp kernel cache
@@ -136,9 +159,9 @@ jobs:
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: ${{ steps.warp-cache-key.outputs.prefix }}${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-${{ runner.os }}-${{ runner.arch }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}-
+            ${{ steps.warp-cache-key.outputs.prefix }}
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
@@ -153,8 +176,7 @@ jobs:
           --shard-count ${{ matrix.shard-count }}
           --shard-index ${{ matrix.shard-index }}
           --junit-report-xml rspec.xml
-          --coverage
-          --coverage-xml coverage.xml
+          ${{ env.UPLOAD_TO_CODECOV == 'true' && '--coverage --coverage-xml coverage.xml' || '' }}
       - name: Run ASV harness unit tests
         run: >
           uv run --no-sync -m newton.tests
@@ -174,17 +196,16 @@ jobs:
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: ${{ steps.warp-cache-key.outputs.prefix }}${{ hashFiles('uv.lock', 'newton/**/*.py') }}
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
-          paths: |
-            rspec.xml
-            asv-rspec.xml
+          # A failed Newton test step skips ASV, so match only reports that exist.
+          paths: "*rspec.xml"
           show: "fail"
         if: always()
       - name: Upload test results artifact
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && env.UPLOAD_TO_CODECOV == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: test-results-${{ matrix.os }}-shard${{ matrix.shard-index }}
@@ -194,7 +215,7 @@ jobs:
           retention-days: 1
           overwrite: true
       - name: Upload coverage artifact
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && env.UPLOAD_TO_CODECOV == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: coverage-${{ matrix.os }}-shard${{ matrix.shard-index }}
@@ -267,7 +288,14 @@ jobs:
   codecov-upload:
     name: Upload reports to Codecov
     needs: [newton-unittests, newton-unittests-ubuntu, newton-unittests-windows]
-    if: ${{ !cancelled() && (needs.newton-unittests.result != 'skipped' || needs.newton-unittests-ubuntu.result != 'skipped' || needs.newton-unittests-windows.result != 'skipped') }}
+    # Codecov only tracks main: pull request, merge queue, release branch, and
+    # tag runs skip the upload. Mirrors UPLOAD_TO_CODECOV, which a job-level
+    # condition cannot read.
+    if: >-
+      !cancelled() &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (needs.newton-unittests.result != 'skipped' || needs.newton-unittests-ubuntu.result != 'skipped' || needs.newton-unittests-windows.result != 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -290,7 +318,7 @@ jobs:
       # uses rotating productionresultssaN hosts and harden-runner only supports
       # leading full-label wildcards.
       - name: Harden Runner
-        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: block
           allowed-endpoints: >
@@ -325,18 +353,21 @@ jobs:
           name: coverage-${{ matrix.os }}-shard${{ matrix.shard-index }}
       - name: Upload test results to Codecov
         if: ${{ steps.download-test-results.outcome == 'success' }}
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           disable_search: true
+          fail_ci_if_error: true
           files: ./rspec.xml,./asv-rspec.xml
           report_type: test_results
           token: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload coverage reports to Codecov
-        if: ${{ steps.download-coverage.outcome == 'success' }}
-        uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3
+        # Run even if the test results upload failed.
+        if: ${{ !cancelled() && steps.download-coverage.outcome == 'success' }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5  # v7.1.1
         with:
           disable_search: true
           env_vars: OS
+          fail_ci_if_error: true
           files: ./coverage.xml
           flags: unittests
           plugins: noop
