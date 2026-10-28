@@ -1960,14 +1960,15 @@ class SolverSteel(SolverBase):
                 carry no spin history; free-body contacts get none. Supported geometry is
                 sphere, box, capsule, cylinder, cone, ellipsoid, plane and convex mesh.
                 Requires ``contact_warmstart=False``; contacts with hydroelastic stiffness are
-                rejected, and running out of ``articulation_constraint_max`` raises instead of
-                dropping rows. ``contact_torsion_device`` prepares the torsion rows on the
-                device instead of on the host. The host preparation is the reference implementation; it reads
+                rejected, and with the immediate response, running out of
+                ``articulation_constraint_max`` raises instead of dropping rows.
+                ``contact_torsion_device`` prepares the torsion rows on the device instead of
+                on the host. The host preparation is the reference implementation; it reads
                 the contacts back every step and cannot be captured in a CUDA graph. The
                 device preparation builds the same groups and rows with preallocated
                 buffers and supports CUDA graph capture of :meth:`step`. Invalid torsion
-                input (for example rows beyond the capacity or hydroelastic contacts) makes
-                an eager step raise before it applies torsion rows. In a captured step the
+                input (for example dense rows beyond the capacity or hydroelastic contacts)
+                makes an eager step raise before it applies torsion rows. In a captured step the
                 error is deferred: the failing step restores its output motion arrays
                 (``joint_q``, ``joint_qd``, ``body_q``, ``body_qd``, ``body_qdd``) to the input
                 values, while other outputs, observables and solver history still advance,
@@ -1976,14 +1977,16 @@ class SolverSteel(SolverBase):
                 :meth:`reset`. The error is solver-wide: any reset clears it, and a cause
                 that persists latches it again on the next step. Grouping runs serially per world with
                 worst-case quadratic cost in the contacts of a world. No effect without
-                contact torsion. With ``articulated_contact_response="propagation"``, the
-                contacts that the immediate response would solve as articulated rows reserve
-                one more propagation row each, a group's row takes the spare of its
-                highest-index contact, and every sweep solves the torsion rows after the other
-                rows with the same budget. That response requires
-                ``contact_torsion_device=True`` and ``velocity_iterations=0``; when propagation
-                rows overflow, a group keeps the contacts that received rows.
-                ``"propagation_colored"`` rejects contact torsion.
+                contact torsion. With ``articulated_contact_response="propagation"``, every
+                contact with a positive radius that the immediate response would solve as an
+                articulated row reserves one more propagation row for torsion, so size
+                ``articulation_constraint_max`` and ``free_body_constraint_max`` for it; each
+                sweep solves the torsion rows after the other rows with the same budget. That
+                response requires ``contact_torsion_device=True`` and ``velocity_iterations=0``.
+                When propagation rows overflow, a group keeps the contacts that received rows
+                and the step does not raise: it sets :attr:`constraint_overflow`, warns when
+                ``warn_constraint_overflow`` is set, and :meth:`check_constraint_capacity`
+                raises. ``"propagation_colored"`` rejects contact torsion.
             contact_compliance: Experimental: solve contacts that carry a positive
                 :attr:`~newton.Contacts.rigid_contact_stiffness` [N/m] with an implicit
                 unilateral spring-damper law instead of the rigid normal law. The material
