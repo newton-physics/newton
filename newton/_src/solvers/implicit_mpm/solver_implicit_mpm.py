@@ -1838,6 +1838,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             The collider's query range is derived at setup from the largest margin among its materials.
             Setting a margin above that construction-time maximum can lead to unexpected failures,
             such as missed contacts; call :meth:`setup_collider` again with larger ``collider_margins`` instead.
+
+            The contact face is selected by geometric distance, so margins that differ between nearby
+            faces apply to the nearest face only; a face with a larger margin can be missed when a
+            closer face has a smaller one.
         """
         first, count = self._mpm_model.collider_material_ranges[collider_id]
         collider = self._mpm_model.collider
