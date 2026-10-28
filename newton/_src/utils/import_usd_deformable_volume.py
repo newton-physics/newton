@@ -359,8 +359,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             "tet": (soft_t0, builder.tet_count),
         }
         # Marked proposal deformables always supply the resolved density explicitly;
-        # bare TetMeshes retain their legacy material-then-builder-default behavior. A
-        # neutral weight used to distribute a body-mass total is not reported as density.
+        # bare TetMeshes retain their legacy material-then-builder-default behavior.
         effective_density = add_soft_mesh_kwargs.get("density", tetmesh_for_builder.density)
         if effective_density is None:
             effective_density = builder.default_tet_density
