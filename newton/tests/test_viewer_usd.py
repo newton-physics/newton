@@ -205,8 +205,8 @@ class TestViewerUSD(unittest.TestCase):
         self.assertFalse(prim_after.IsValid())
         self.assertTrue(os.path.exists(temp_file.name))
 
-    def test_partial_texture_rewrite_keeps_published_png_intact(self):
-        """A crash mid-write must not corrupt the previously published PNG."""
+    def test_partial_texture_write_can_be_retried(self):
+        """Keep failed exports unpublished so a retry writes a complete image."""
         from PIL import Image
 
         viewer = self._make_viewer()
@@ -253,6 +253,15 @@ class TestViewerUSD(unittest.TestCase):
             self.assertEqual(published_file.read(), published)
         leaked = sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".tmp"))
         self.assertEqual(leaked, [])
+        self.assertEqual(
+            sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".png")),
+            [os.path.basename(tex_path)],
+        )
+        viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=replacement)
+        replacement_path = self._logged_texture_path(viewer, mesh_name)
+        self.assertNotEqual(replacement_path, tex_path)
+        with Image.open(replacement_path) as image:
+            np.testing.assert_array_equal(np.asarray(image), replacement)
 
     def test_save_texture_atomic_cleans_up_tmp_on_failure(self):
         """A failure during the temp-file write must not leave a `.tmp` sibling behind."""
