@@ -44,7 +44,7 @@ DENSE_PATH = 0
 PROPAGATION_PATH = 2
 
 
-RESPONSES = ("propagation", "propagation_fused", "propagation_colored")
+RESPONSES = ("propagation", "propagation_colored")
 
 
 def _chain(builder, x, n_links, root_z, joint="revolute"):
@@ -124,9 +124,9 @@ def _step(model, solver, steps=1, dt=1.0 / 240.0):
 
 
 def test_contact_effective_mass_matches_dense_response(test, device):
-    """Give each propagation row the effective mass ``J H^-1 J^T`` of its dense immediate row, mass-split.
+    """Match each propagation row's exact response to its dense immediate row, and step it with the split response.
 
-    The response of a body is scaled by the row-bearing bodies of its coupling group. Covers the native 0/1-DOF and free-root tree kernels, the generic kernels and
+    Covers the native 0/1-DOF and free-root tree kernels, the generic kernels and
     multi-DOF (ball) joints. The rows of contacts between an articulated body and the
     ground are compared at the same state, before any solve.
     """
@@ -163,17 +163,24 @@ def test_contact_effective_mass_matches_dense_response(test, device):
             world = solver._contact_world.numpy()[:count]
             dense_diag = reference._diag.numpy()
             eff_mass_inv = solver._propagation_eff_mass_inv.numpy()
+            body_a = solver._propagation_body_a.numpy()
+            J_a = solver._propagation_J_a.numpy()
+            J_b = solver._propagation_J_b.numpy()
             # Each compared row has the ground on one side.
-            row_body = np.maximum(solver._propagation_body_a.numpy(), solver._propagation_body_b.numpy())
-            split = solver._propagation_coupling_group_body_count.numpy()[
-                solver._propagation_body_coupling_group.numpy()
-            ]
+            row_body = np.maximum(body_a, solver._propagation_body_b.numpy())
+            response = solver._propagation_body_response.numpy()
+            response_split = solver._propagation_body_response_split.numpy()
             checked = 0
             # Contacts between links of one articulation stay dense in both responses.
             for c in np.flatnonzero((ref_path == DENSE_PATH) & (ref_slot >= 0) & (path == PROPAGATION_PATH)):
                 for row in range(3):
-                    expected = float(dense_diag[world[c], ref_slot[c] + row]) * split[row_body[world[c], slot[c] + row]]
-                    got = 1.0 / float(eff_mass_inv[world[c], slot[c] + row])
+                    w, s = world[c], slot[c] + row
+                    body = row_body[w, s]
+                    J = J_a[w, s] if body_a[w, s] >= 0 else J_b[w, s]
+                    dense = float(dense_diag[w, ref_slot[c] + row])
+                    test.assertAlmostEqual(float(J @ response[body] @ J) + solver.cfm, dense, delta=2.0e-4 * dense)
+                    expected = float(J @ response_split[body] @ J) + solver.cfm
+                    got = 1.0 / float(eff_mass_inv[w, s])
                     test.assertAlmostEqual(got, expected, delta=2.0e-4 * expected)
                     checked += 1
             test.assertGreater(checked, 0, "no articulated contact rows were compared")
@@ -209,7 +216,7 @@ def test_propagation_row_overflow_is_flagged_and_reset(test, device):
     for response, capacity in (
         # Dense rows hold the two rows of each joint limit; one contact's three rows fit.
         ("propagation", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
-        ("propagation_fused", {"articulation_constraint_max": 4}),
+        ("propagation_colored", {"free_body_constraint_max": 1, "articulation_constraint_max": 4}),
     ):
         with test.subTest(response=response):
             solver = SolverSteel(
@@ -1202,7 +1209,7 @@ def test_regularization_weights_reach_the_propagation_rows(test, device):
     A row regularizes against its unsplit diagonal ``d``: ``w = 1 / (1 + g d / d_s)`` for the split diagonal ``d_s``.
     """
     model = _combination_scene(device)
-    state = _settled_state(model, 60)
+    state = _settled_state(model, 90)
     for response in RESPONSES:
         with test.subTest(response=response):
             solver, _, _ = _one_step(
@@ -1288,7 +1295,7 @@ for _fn in (
     add_function_test(TestSteelPropagationCombinations, _fn.__name__, _fn, devices=devices)
 
 
-PROPAGATION_RESPONSES = ("propagation", "propagation_fused", "propagation_colored")
+PROPAGATION_RESPONSES = ("propagation", "propagation_colored")
 
 
 REGULARIZED = {"baumgarte": 0.0, "cfm": 0.0, "contact_regularization": 3.0}
@@ -1297,7 +1304,6 @@ REGULARIZED = {"baumgarte": 0.0, "cfm": 0.0, "contact_regularization": 3.0}
 # (articulated_contact_response, propagation_cached_response)
 PROPAGATION_ROUTES = (
     ("propagation", False),
-    ("propagation_fused", False),
     ("propagation", True),
     ("propagation_colored", False),
     ("propagation_colored", True),
@@ -1353,6 +1359,64 @@ def _three_foot_slider_model(device):
     return builder.finalize(device=device)
 
 
+def _linkage_gripper_model(device):
+    """Two pads on passive mimic linkages of one soft, effort-limited driver, under a stiff lift, around a box."""
+    builder = newton.ModelBuilder()
+    lift = builder.add_link(mass=5.0, inertia=wp.mat33(np.eye(3) * 0.05))
+    joints = [
+        builder.add_joint_prismatic(
+            -1,
+            lift,
+            axis=(0.0, 0.0, 1.0),
+            parent_xform=wp.transform((0.0, 0.0, 0.175), wp.quat_identity()),
+            target_ke=5.0e4,
+            target_kd=500.0,
+        )
+    ]
+    palm = builder.add_link(mass=0.7, inertia=wp.mat33(np.eye(3) * 1.0e-3))
+    joints.append(builder.add_joint_revolute(lift, palm, axis=(0.0, 0.0, 1.0), target_ke=5.0e4, target_kd=50.0))
+    pad_cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=5.0, gap=0.005)
+    knuckles, fingers = {}, {}
+    for side in (-1.0, 1.0):
+        driven = side < 0.0
+        knuckle = builder.add_link(mass=0.013, inertia=wp.mat33(np.eye(3) * 2.0e-6))
+        knuckles[side] = builder.add_joint_revolute(
+            palm,
+            knuckle,
+            axis=(0.0, side, 0.0),
+            parent_xform=wp.transform((side * 0.0532, 0.0, -0.03), wp.quat_identity()),
+            target_ke=100.0 if driven else 0.0,
+            target_kd=10.0 if driven else 0.0,
+            effort_limit=10.0 if driven else 1.0e6,
+            limit_lower=-0.1,
+            limit_upper=0.9,
+        )
+        pad = builder.add_link(mass=0.04, inertia=wp.mat33(np.eye(3) * 1.0e-5))
+        builder.add_shape_box(
+            pad, xform=wp.transform((0.0, 0.0, -0.03), wp.quat_identity()), hx=0.006, hy=0.012, hz=0.03, cfg=pad_cfg
+        )
+        fingers[side] = builder.add_joint_revolute(
+            knuckle,
+            pad,
+            axis=(0.0, side, 0.0),
+            parent_xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()),
+            limit_lower=-0.9,
+            limit_upper=0.1,
+        )
+        joints += [knuckles[side], fingers[side]]
+    builder.add_articulation(joints)
+    # The left knuckle drives the right knuckle and both pad joints.
+    builder.set_joint_mimic(knuckles[1.0], knuckles[-1.0], coeffs=(0.0, 1.0))
+    for finger in fingers.values():
+        builder.set_joint_mimic(finger, knuckles[-1.0], coeffs=(0.0, -1.0))
+    box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.0305), wp.quat_identity()))
+    builder.add_shape_box(
+        box, hx=0.03, hy=0.024, hz=0.03, cfg=newton.ModelBuilder.ShapeConfig(density=0.3 / 1.728e-4, mu=0.5, gap=0.005)
+    )
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+    return builder.finalize(device=device), palm, box
+
+
 def _coupled_solver(model, response, iterations, cached=False, **kwargs):
     options = {
         "articulated_contact_response": response,
@@ -1391,6 +1455,43 @@ def test_shared_dof_feet_reach_rest(test, device):
                 test.assertLess(abs(float(qd[0])), 1.0e-3)
 
 
+def test_shared_dof_feet_split_their_whole_response(test, device):
+    """Split all of the response of feet whose only mobility is one shared DOF, on the native and generic kernels."""
+    model = _three_foot_slider_model(device)
+    feet = [1, 2, 3]
+    for tree_kernel in ("auto", "generic"):
+        with test.subTest(tree_kernel=tree_kernel):
+            with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
+                solver = _coupled_solver(model, "propagation", 1, baumgarte=0.0, cfm=0.0)
+            test.assertEqual(solver._propagation_native_tree[solver._propagation_tree_sizes[0]], tree_kernel == "auto")
+            list(_rollout(model, solver, np.array([-1.0], dtype=np.float32), 1))
+            exact = solver._propagation_body_response.numpy()[feet]
+            split = solver._propagation_body_response_split.numpy()[feet]
+            test.assertGreater(float(np.abs(exact).max()), 0.0)
+            np.testing.assert_allclose(split, 3.0 * exact, rtol=1.0e-5, atol=1.0e-7)
+
+
+def test_shared_root_split_matches_across_kernels(test, device):
+    """Split only the shared free root of four feet with private leg joints, alike on the native and generic kernels."""
+    model = _quadruped_model(device)
+    feet = [1, 2, 3, 4]
+    responses = []
+    for tree_kernel in ("auto", "generic"):
+        with kernel_overrides({"propagation_tree_kernel": tree_kernel}):
+            solver = _coupled_solver(model, "propagation", 1)
+        test.assertEqual(solver._propagation_native_tree[solver._propagation_tree_sizes[0]], tree_kernel == "auto")
+        list(_rollout(model, solver, np.zeros(model.joint_dof_count, dtype=np.float32), 1))
+        np.testing.assert_array_equal(solver._propagation_joint_split.numpy(), [4, 1, 1, 1, 1])
+        exact = solver._propagation_body_response.numpy()[feet]
+        split = solver._propagation_body_response_split.numpy()[feet]
+        # The split differs from both the exact response and the whole-response split.
+        test.assertGreater(float(np.abs(split - exact).max()), 1.0e-3 * float(np.abs(exact).max()))
+        test.assertGreater(float(np.abs(4.0 * exact - split).max()), 1.0e-3 * float(np.abs(exact).max()))
+        responses.append((exact, split))
+    for native, generic in zip(*responses, strict=True):
+        np.testing.assert_allclose(generic, native, rtol=1.0e-4, atol=1.0e-5 * float(np.abs(native).max()))
+
+
 def test_regularized_feet_reach_immediate_equilibrium(test, device):
     """Keep the regularized contact fixed point of three coupled feet under the split."""
     model = _three_foot_slider_model(device)
@@ -1405,7 +1506,7 @@ def test_regularized_feet_reach_immediate_equilibrium(test, device):
 
 
 def test_graph_replay_matches_eager_steps(test, device):
-    """Recount the coupled bodies on every replay of a captured step pair."""
+    """Recount the per-joint split on every replay of a captured step pair."""
     model = _three_foot_slider_model(device)
     for response, cached in PROPAGATION_ROUTES:
         with test.subTest(response=response, cached=cached):
@@ -1427,7 +1528,47 @@ def test_graph_replay_matches_eager_steps(test, device):
             for _ in range(3):
                 wp.capture_launch(capture.graph)
             np.testing.assert_allclose(output.joint_qd.numpy(), expected, atol=1.0e-6)
-            test.assertEqual(int(solver._propagation_coupling_group_body_count.numpy().max()), 3)
+            test.assertEqual(int(solver._propagation_joint_split.numpy().max()), 3)
+
+
+def test_linkage_gripper_holds_lifted_box(test, device):
+    """Hold a box through a lift with pads whose mobility is their own passive linkage."""
+    model, palm, box = _linkage_gripper_model(device)
+
+    def box_below_palm(state):
+        body_q = state.body_q.numpy()
+        return float(body_q[palm, 2] - body_q[box, 2])
+
+    for response in PROPAGATION_RESPONSES:
+        with test.subTest(response=response):
+            solver = SolverSteel(
+                model,
+                articulated_contact_response=response,
+                iterations=64,
+                friction_anchor_beta=0.0,
+                contact_friction_gap_max=0.001,
+            )
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            state, output, control = model.state(), model.state(), model.control()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+            with wp.ScopedCapture(device=model.device) as capture:
+                pipeline.collide(state, contacts)
+                for source, target in ((state, output), (output, state)) * 2:
+                    source.clear_forces()
+                    solver.step(source, target, control, contacts, 1.0 / 800.0)
+            joint_target = model.joint_target_q.numpy()
+            grasped = None
+            # Close the driver, then lift by 0.2 m along a smoothstep and hold.
+            joint_target[2] = 0.8
+            for tick in range(110):
+                lift = min(max(tick - 40, 0) / 50.0, 1.0)
+                joint_target[0] = 0.2 * lift * lift * (3.0 - 2.0 * lift)
+                control.joint_target_q.assign(joint_target)
+                wp.capture_launch(capture.graph)
+                if tick == 39:
+                    grasped = box_below_palm(state)
+            test.assertLess(abs(grasped - box_below_palm(state)), 0.01)
 
 
 def test_floating_quadruped_with_joint_velocities_stays_bounded(test, device):
@@ -1449,8 +1590,11 @@ class TestSteelPropagationCoupledContacts(unittest.TestCase):
 
 for _fn in (
     test_shared_dof_feet_reach_rest,
+    test_shared_dof_feet_split_their_whole_response,
+    test_shared_root_split_matches_across_kernels,
     test_regularized_feet_reach_immediate_equilibrium,
     test_graph_replay_matches_eager_steps,
+    test_linkage_gripper_holds_lifted_box,
     test_floating_quadruped_with_joint_velocities_stays_bounded,
 ):
     add_function_test(TestSteelPropagationCoupledContacts, _fn.__name__, _fn, devices=devices)
@@ -1595,7 +1739,7 @@ def test_default_routing_keeps_same_articulation_rows_dense(test, device):
 def test_flag_requires_propagation_mode(test, device):
     """Reject same-articulation propagation rows without the response that solves them."""
     model = _build_scissor_model(device)
-    for response in ("immediate", "propagation_fused", "propagation_colored"):
+    for response in ("immediate", "propagation_colored"):
         with test.subTest(response=response):
             with test.assertRaisesRegex(ValueError, "propagation_same_articulation_rows"):
                 SolverSteel(model, articulated_contact_response=response, propagation_same_articulation_rows=True)
@@ -2817,10 +2961,11 @@ def test_schedule_validation(test, device):
             set_torsion_radius(model, 0.0)
             with test.assertRaisesRegex(NotImplementedError, "contact_compliance.*row_schedule='interleaved'"):
                 SolverSteel(model, row_schedule=schedule, contact_compliance=True, friction_anchor_beta=0.0)
-    with test.assertRaisesRegex(NotImplementedError, "propagation_fused"):
-        SolverSteel(model, row_schedule="contact_then_internal", articulated_contact_response="propagation_fused")
-    fused = SolverSteel(model, row_schedule="phased", articulated_contact_response="propagation_fused")
-    test.assertEqual(fused.row_schedule, "phased")
+    for response in ("propagation", "propagation_colored"):
+        for schedule in SCHEDULES[1:]:
+            with test.subTest(response=response, schedule=schedule):
+                solver = SolverSteel(model, row_schedule=schedule, articulated_contact_response=response)
+                test.assertEqual(solver.row_schedule, schedule)
 
 
 def test_split_rejects_schedules(test, device):
