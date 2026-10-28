@@ -50,17 +50,9 @@ def _register_rigid_solver_custom_attributes(builder: newton.ModelBuilder, rigid
 
 
 def _make_kamino_config() -> SolverKamino.Config:
-    config = SolverKamino.Config()
+    config = SolverKamino.Config(dynamics_solver="lox")
     config.use_collision_detector = False
     config.use_fk_solver = False
-    config.dynamics.preconditioning = True
-    config.padmm.max_iterations = 120
-    config.padmm.primal_tolerance = 1.0e-5
-    config.padmm.dual_tolerance = 1.0e-5
-    config.padmm.compl_tolerance = 1.0e-5
-    config.padmm.rho_0 = 0.1
-    config.padmm.use_acceleration = True
-    config.padmm.warmstart_mode = "containers"
     return config
 
 
