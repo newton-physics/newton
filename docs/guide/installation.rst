@@ -28,8 +28,8 @@ Minimum Requirements
      - 3.10
      - 3.10 support is deprecated; removal planned for Newton 1.9. Use 3.11+.
    * - OS
-     - Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-     - macOS has no GPU acceleration
+     - Linux (x86-64, aarch64), Windows (x86-64, ARM64), or macOS (CPU only)
+     - macOS has no GPU acceleration; Windows ARM64 support is experimental
 
 GPU requirements depend on the installed `Warp
 <https://nvidia.github.io/warp/stable/user_guide/compatibility.html>`__ wheel:
@@ -87,6 +87,17 @@ Thor and DGX Spark also requires X11 development libraries to build
 
     sudo apt-get update
     sudo apt-get install -y libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl1-mesa-dev
+
+**Windows ARM64 (experimental)**
+
+Windows on ARM64 requires Warp 1.19 or newer and Python 3.11 or newer. Several
+optional dependencies do not publish Windows ARM64 packages, so the extras skip
+them on this platform. Most notably, :class:`~newton.solvers.SolverMuJoCo` and
+USD import and export are unavailable because ``mujoco`` and ``usd-core`` cannot
+be installed. The platform markers in ``pyproject.toml`` list all skipped
+packages. The ``torch-cu12``, ``torch-cu13``, and ``rtx`` extras cannot be
+installed because PyTorch provides no CUDA builds and OVRTX provides no
+packages for Windows ARM64.
 
 For tested configurations and CUDA version-specific notes, see
 :doc:`compatibility`.
