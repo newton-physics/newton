@@ -3544,7 +3544,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.021)))
         builder.add_shape_box(box, hx=0.02, hy=0.02, hz=0.02)
         model = builder.finalize(device=wp.get_cuda_device())
-        # Freed device memory holds NaN, so any unwritten scratch the solver publishes reads as NaN.
+        # Fill freed device memory with NaN so unwritten scratch the solver publishes is likely to read as NaN.
         nan_fill = wp.full(1 << 22, float("nan"), dtype=wp.float32, device=model.device)
         del nan_fill
         solver = SolverSteel(model, articulated_contact_response=response)
