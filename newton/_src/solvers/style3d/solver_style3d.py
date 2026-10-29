@@ -141,7 +141,7 @@ class SolverStyle3D(SolverBase):
         """
 
         iterations: int = 10
-        """Number of non-linear iterations per step."""
+        """Number of non-linear iterations per step. Must be at least 1."""
 
         linear_iterations: int = 10
         """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default)."""
@@ -347,8 +347,16 @@ class SolverStyle3D(SolverBase):
             observables: Optional solver observable arrays allocated by :meth:`observables`.
                 This solver declares no supported observables, so only an empty
                 container is accepted.
+
+        Raises:
+            ValueError: If :attr:`Config.iterations` is less than 1. Neither
+                input nor output state is modified in this case.
         """
         self.validate_observables(observables, contacts)
+
+        if self.config.iterations < 1:
+            raise ValueError(f"Config.iterations must be at least 1, got {self.config.iterations}.")
+
         # Model masses and flags may change between solver steps.
         wp.copy(self._particle_flags, self.model.particle_flags)
         if self.model.particle_count > 0:

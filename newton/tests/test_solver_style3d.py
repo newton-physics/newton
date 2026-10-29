@@ -187,6 +187,30 @@ def test_config_constructor_options(test, device):
     with test.assertRaisesRegex(TypeError, "Expected config to be SolverStyle3D.Config"):
         newton.solvers.SolverStyle3D(model, config={})
 
+    # Invalid runtime edits must fail before either state is modified.
+    valid_config = replace(solver.config)
+    state_in, state_out = model.state(), model.state()
+    state_in.particle_qd.fill_(wp.vec3(1.0, 2.0, 3.0))
+    state_out.particle_q.fill_(wp.vec3(4.0, 5.0, 6.0))
+    state_out.particle_qd.fill_(wp.vec3(7.0, 8.0, 9.0))
+    arrays = (state_in.particle_q, state_in.particle_qd, state_out.particle_q, state_out.particle_qd)
+    before = [array.numpy().copy() for array in arrays]
+    for iterations in (0, -1):
+        with test.subTest(invalid_iterations=iterations):
+            if iterations == 0:
+                solver.config.iterations = iterations
+            else:
+                solver.config = replace(valid_config, iterations=iterations)
+            with test.assertRaisesRegex(ValueError, "Config.iterations must be at least 1"):
+                solver.step(state_in, state_out, control, contacts, 0.01)
+            for array, expected in zip(arrays, before, strict=True):
+                np.testing.assert_array_equal(array.numpy(), expected)
+
+    solver.config = valid_config
+    actual = solve(solver)
+    np.testing.assert_allclose(actual[0], previous[0], atol=1e-6)
+    np.testing.assert_allclose(actual[1], previous[1], atol=1e-6)
+
 
 def test_high_valence_pd_matrix(test, device):
     """Preserve stretch and bending entries across the old capacity boundary."""
