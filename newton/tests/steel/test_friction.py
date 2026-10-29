@@ -265,8 +265,13 @@ class TestSteelFrictionAnchors(unittest.TestCase):
                 with self.subTest(iterations=iterations, demand=demand):
                     self.assertLess(abs(distance), 1.0e-5)
             anchors = solver._friction_patches.view.weight.numpy() > 0.0
-            self.assertTrue(anchors.any())
-            self.assertTrue((solver._friction_patches.current.source.numpy()[anchors] >= 0).all())
+            boxes = solver._friction_patches.current.body_a.numpy()
+            sources = solver._friction_patches.current.source.numpy()
+            for box, demand in enumerate(demands):
+                with self.subTest(iterations=iterations, demand=demand):
+                    held = anchors & (boxes == box)
+                    self.assertTrue(held.any())
+                    self.assertTrue((sources[held] >= 0).all())
 
     def test_row_builders_store_anchor_separation_per_route(self):
         """Store raw separation in dense rows and gain-scaled separation in free-body rows."""
