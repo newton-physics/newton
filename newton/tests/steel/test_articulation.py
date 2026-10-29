@@ -861,9 +861,14 @@ def test_open_world_closure_pulls_at_child_anchor(test, device):
     load = b.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
     b.add_shape_box(load, hx=0.04, hy=0.04, hz=0.04)
     # The child anchor is the load's center of mass; the world anchor sits 5 cm to the side.
-    with warnings.catch_warnings():
-        warnings.filterwarnings("ignore", message=r".*another joint already connects these bodies")
-        b.add_joint_ball(parent=-1, child=load, parent_xform=wp.transform(wp.vec3(0.05, 0.0, 1.0), wp.quat_identity()))
+    _expect_one_warning(
+        test,
+        newton.exceptions.NewtonWarning,
+        "another joint already connects these bodies",
+        lambda: b.add_joint_ball(
+            parent=-1, child=load, parent_xform=wp.transform(wp.vec3(0.05, 0.0, 1.0), wp.quat_identity())
+        ),
+    )
     model = b.finalize(device=device)
     solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
     state_0, state_1 = model.state(), model.state()
