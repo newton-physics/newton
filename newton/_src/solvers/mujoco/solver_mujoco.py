@@ -536,6 +536,12 @@ _MJW_BATCHED_MODEL_FIELDS = (
     # "mat_rgba",
 )
 
+_UPDATE_DATA_INTERVAL_DEPRECATION_MSG = (
+    "SolverMuJoCo update_data_interval is deprecated in Newton 1.8 and will be removed; "
+    "MuJoCo data will then be synchronized from the input state on every step. "
+    "Remove its use to adopt that behavior now."
+)
+
 
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
@@ -719,6 +725,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ObservableKind.OVERFLOW,
         }
     )
+
+    @property
+    def update_data_interval(self) -> int:
+        """Steps between MuJoCo data synchronizations from the input state.
+
+        .. deprecated:: 1.8
+            Reading or assigning this attribute warns; data will always be
+            synchronized on every step.
+        """
+        warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        return self._update_data_interval
+
+    @update_data_interval.setter
+    def update_data_interval(self, value: int) -> None:
+        warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        self._update_data_interval = value
 
     @property
     def supported_observables(self):
@@ -4400,7 +4422,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         sleep_tolerance: float | None = None,
         disable_contacts: bool | None = None,
         disable_sensors: bool | None = None,
-        update_data_interval: int = 1,
+        update_data_interval: int | None = None,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
         use_speculative_contacts: bool = False,
@@ -4462,7 +4484,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default.
             disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
-            update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
+            update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization. If None, Data is updated on every step.
+
+                .. deprecated:: 1.8
+                    Passing any value is deprecated; Data will always be updated on every step.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             use_speculative_contacts: Add frictionless normal constraints for separated Newton
@@ -4494,6 +4519,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 GPU sync, request ``ObservableKind.OVERFLOW`` via
                 :meth:`observables` and check the bitmask after each step.
         """
+        if update_data_interval is not None:
+            warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
         if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
@@ -4877,7 +4904,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._create_inverse_shape_mapping()
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
         self._initial_model_sync = False
-        self.update_data_interval = update_data_interval
+        self._update_data_interval = 1 if update_data_interval is None else update_data_interval
         self._step = 0
 
         if self.mjw_model is not None:
@@ -5056,7 +5083,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
-            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
+            if self._update_data_interval > 0 and self._step % self._update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self._update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
@@ -5090,7 +5117,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
                 self._enable_rne_postconstraint(state_out, observables)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
-                if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
+                if self._update_data_interval > 0 and self._step % self._update_data_interval == 0:
                     self._update_mjc_data(self.mjw_data, self.model, state_in)
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
@@ -5172,9 +5199,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         (and particle) flags are not actionable here and are ignored.
 
         ``qpos`` / ``qvel`` are normally synced from the reset ``state`` at the
-        start of the next :meth:`step`. When ``update_data_interval != 1`` that
-        per-step sync is disabled or sparse, so the reset joint coordinates are
-        pushed into ``qpos`` / ``qvel`` immediately for the selected worlds.
+        start of the next :meth:`step`. When the deprecated ``update_data_interval``
+        is not 1, that per-step sync is disabled or sparse, so the reset joint
+        coordinates are pushed into ``qpos`` / ``qvel`` immediately for the
+        selected worlds.
         When sleeping is enabled, reset synchronizes immediately, rebuilds
         MuJoCo Warp's cached position- and velocity-dependent data, and restores
         the initial sleep state in the selected worlds.
@@ -5225,7 +5253,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # reset on the next step. Otherwise push it now so it is not
                 # lost before the next sync. The sleeping path synchronizes
                 # below before rebuilding its cached data.
-                if self.update_data_interval != 1 and not self.enable_sleeping:
+                if self._update_data_interval != 1 and not self.enable_sleeping:
                     data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
                     if data is not None and native_template_world_selected:
                         self._update_mjc_data(data, self.model, state, world_mask=world_mask)
