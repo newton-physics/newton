@@ -1490,49 +1490,34 @@ class TestCollisionInspector(unittest.TestCase):
                 inspector.contacts_tab = True
                 inspector.overlays()
                 self.assertEqual(len(viewer.renderer._contact_labels), len(inspector.shape_contacts(0)))
-                # Live labels follow current witnesses without expanding the
-                # inspector or retaining a transient selected contact slot.
+                # Resuming clears labels immediately, even with Contacts open.
+                # Advancing live witnesses must not download or lay out labels.
                 expected = np.asarray(inspector.points(("contact", 0)))
                 viewer.is_paused = lambda: False
                 inspector.overlays()
-                self.assertEqual(len(viewer.renderer._contact_labels), 1)
-                np.testing.assert_allclose(viewer.renderer._contact_labels[0][0], expected)
+                self.assertEqual(viewer.renderer._contact_labels, ())
                 self.assertIsNone(viewer.renderer._contact_selection)
                 poses = state.body_q.numpy()
                 poses[:, 2] += 0.25
                 state.body_q.assign(poses)
                 viewer.time += 1
-                inspector.overlays()
-                np.testing.assert_allclose(viewer.renderer._contact_labels[0][0], expected + np.array([0, 0, 0.25]))
-                buffers = inspector._live_labels
-                counters = contacts.contact_counters.numpy().copy()
-                live_counters = counters.copy()
-                live_counters[1] = 1
-                contacts.contact_counters.assign(live_counters)
-                contacts.soft_contact_shape.fill_(0)
-                contacts.soft_contact_body_pos.fill_(wp.vec3(0.1, 0.2, 0.3))
-                ws.selected = inspector.list_owner = ("body", 0)
-                viewer.time += 1
-                inspector.overlays()
-                labels = viewer.renderer._contact_labels
-                self.assertEqual([label[1] for label in labels], ["1", "2"])
-                np.testing.assert_allclose(labels[1][0], [[0.1, 0.2, 0.55]], atol=1e-6)
-                self.assertIs(inspector._live_labels, buffers)
-                contacts.contact_counters.zero_()
-                viewer.time += 1
-                inspector.overlays()
-                self.assertEqual(viewer.renderer._contact_labels, ())
-                contacts.contact_counters.assign(counters)
-                ws.selected = inspector.list_owner = ("shape", 0)
-                inspector.contacts_tab = False
-                with patch.object(inspector, "_live_overlays") as live:
+                with (
+                    patch.object(inspector, "read", wraps=inspector.read) as read,
+                    patch.object(inspector, "label_points", wraps=inspector.label_points) as points,
+                ):
                     inspector.overlays()
-                    live.assert_not_called()
+                    read.assert_not_called()
+                    points.assert_not_called()
                 self.assertEqual(viewer.renderer._contact_labels, ())
+                self.assertTrue(viewer.show_contact_labels)
+                # Pausing restores the preference using the current witnesses.
+                viewer.is_paused = lambda: True
+                inspector.overlays()
+                self.assertEqual(len(viewer.renderer._contact_labels), 1)
+                np.testing.assert_allclose(viewer.renderer._contact_labels[0][0], expected + np.array([0, 0, 0.25]))
                 poses[:, 2] -= 0.25
                 state.body_q.assign(poses)
-                viewer.is_paused = lambda: True
-                inspector.contacts_tab = True
+                viewer.time += 1
                 inspector.sync()
                 ws.selected = None
                 inspector.overlays()

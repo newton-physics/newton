@@ -62,82 +62,6 @@ def _rigid_label_points(
     output[i, side] = wp.transform_point(layer, point)
 
 
-@wp.struct
-class _LiveContactLabel:
-    """Compact device-to-host annotation record for one contact and its displayed witnesses."""
-
-    number: int
-    sides: int
-    point0: wp.vec3
-    point1: wp.vec3
-
-
-@wp.kernel(enable_backward=False)
-def _gather_live_labels(
-    owner: int,
-    by_body: bool,
-    counters: wp.array[int],
-    body_q: wp.array[wp.transform],
-    shape_body: wp.array[int],
-    shape_world: wp.array[int],
-    shape0: wp.array[int],
-    shape1: wp.array[int],
-    point0: wp.array[wp.vec3],
-    point1: wp.array[wp.vec3],
-    offset0: wp.array[wp.vec3],
-    offset1: wp.array[wp.vec3],
-    soft_shape: wp.array[int],
-    soft_point: wp.array[wp.vec3],
-    world_offsets: wp.array[wp.vec3],
-    visible_worlds: wp.array[int],
-    layer: wp.transform,
-    count: wp.array[int],
-    output: wp.array[_LiveContactLabel],
-) -> None:
-    i, kind = wp.tid()
-    rigid_count = wp.min(counters[0], shape0.shape[0])
-    row_count = rigid_count if kind == 0 else wp.min(counters[1], soft_shape.shape[0])
-    if i >= row_count:
-        return
-    a, b = int(0), int(0)
-    p, q = wp.vec3(), wp.vec3()
-    if kind == 0:
-        a = shape0[i]
-        b = shape1[i]
-        p = point0[i] + offset0[i]
-        q = point1[i] + offset1[i]
-    else:
-        a = soft_shape[i]
-        b = a
-        p = soft_point[i]
-        q = p
-    if a < 0 or b < 0 or (kind == 0 and a == b):
-        return
-    first = shape_body[a] if by_body else a
-    second = shape_body[b] if by_body else b
-    if first != owner and second != owner:
-        return
-    world = shape_world[a] if shape_world[a] >= 0 else shape_world[b]
-    if world >= 0 and visible_worlds and visible_worlds[world] == 0:
-        return
-    slot = wp.atomic_add(count, 0, 1)
-    if slot >= output.shape[0]:
-        return
-    label = _LiveContactLabel()
-    label.number = i + 1 if kind == 0 else rigid_count + i + 1
-    label.sides = 2 if kind == 0 else 1
-    if shape_body[a] >= 0:
-        p = wp.transform_point(body_q[shape_body[a]], p)
-    if shape_body[b] >= 0:
-        q = wp.transform_point(body_q[shape_body[b]], q)
-    if world >= 0 and world_offsets:
-        p += world_offsets[world]
-        q += world_offsets[world]
-    label.point0 = wp.transform_point(layer, p)
-    label.point1 = wp.transform_point(layer, q)
-    output[slot] = label
-
-
 class CollisionInspector:
     """Inspect transient contact buffers and pipeline stages on demand.
 
@@ -168,9 +92,6 @@ class CollisionInspector:
         self.contacts_tab = False
         self.list_owner = None
         self._overlay_key = None
-        self._live_overlay_key = None
-        self._live_label_count = None
-        self._live_labels = None
 
     @staticmethod
     def handles(key: TreeKey) -> bool:
@@ -815,9 +736,7 @@ class CollisionInspector:
             if getattr(self, "_owner_key", None) != owner_key:
                 ws.viewer.show_contacts = True
                 self._owner_key = owner_key
-            ui.text_wrapped(
-                "Contact labels update during playback. Pause to select contacts and inspect their attributes."
-            )
+            ui.text_wrapped("Pause to show contact labels and inspect contacts.")
             return
         if w.button("Refresh", small=True):
             self.sync(force=True)
@@ -862,82 +781,12 @@ class CollisionInspector:
             ui.text_wrapped("Recorded contact. Unrecorded custom attributes are available only at the live frame.")
         self.draw_contact(inspector, self.active_contact)
 
-    def _live_overlays(self) -> None:
-        """Compact matching witnesses on device; transfer only the displayed labels."""
-        ws, viewer = self.workspace, self.workspace.viewer
-        contacts = self._contacts_buffer()
-        state = getattr(viewer, "_last_contact_state", None) or getattr(viewer, "_last_state", None)
-        if contacts is None or state is None or ws.selected[0] not in ("body", "shape"):
-            viewer.renderer._contact_labels = ()
-            self._live_overlay_key = None
-            return
-        key = (
-            id(contacts),
-            id(state),
-            viewer.time,
-            ws.selected,
-            tuple(viewer.layer.xform),
-            tuple(viewer._visible_worlds or ()),
-            viewer.show_contact_pairs,
-        )
-        if key == self._live_overlay_key:
-            return
-        device = ws.model.device
-        if self._live_labels is None or self._live_labels.device != device:
-            self._live_label_count = wp.zeros(1, dtype=int, device=device)
-            self._live_labels = wp.empty(256, dtype=_LiveContactLabel, device=device)
-        capacity = max(contacts.rigid_contact_max, contacts.soft_contact_max)
-        while True:
-            self._live_label_count.zero_()
-            if capacity:
-                wp.launch(
-                    _gather_live_labels,
-                    dim=(capacity, 2),
-                    inputs=[
-                        ws.selected[1],
-                        ws.selected[0] == "body",
-                        contacts.contact_counters,
-                        state.body_q,
-                        ws.model.shape_body,
-                        ws.model.shape_world,
-                        contacts.rigid_contact_shape0,
-                        contacts.rigid_contact_shape1,
-                        contacts.rigid_contact_point0,
-                        contacts.rigid_contact_point1,
-                        contacts.rigid_contact_offset0,
-                        contacts.rigid_contact_offset1,
-                        contacts.soft_contact_shape,
-                        contacts.soft_contact_body_pos,
-                        viewer.world_offsets,
-                        viewer._visible_worlds_mask,
-                        viewer.layer.xform,
-                    ],
-                    outputs=[self._live_label_count, self._live_labels],
-                    device=device,
-                )
-            count = int(self._live_label_count.numpy()[0])
-            if count <= len(self._live_labels):
-                break
-            self._live_labels = wp.empty(1 << (count - 1).bit_length(), dtype=_LiveContactLabel, device=device)
-        rows = self._live_labels[:count].numpy() if count else ()
-        sides = 2 if viewer.show_contact_pairs else 1
-        viewer.renderer._contact_label_scale = ws.widgets.scale
-        viewer.renderer._contact_labels = tuple(
-            (
-                np.asarray((row["point0"], row["point1"]))[: min(sides, int(row["sides"]))],
-                str(row["number"]),
-                False,
-            )
-            for row in sorted(rows, key=lambda row: row["number"])
-        )
-        self._live_overlay_key = key
-
     def overlays(self) -> None:
         """Synchronize renderer contact labels and selection rings with the current inspector context.
 
-        Clear stale annotations when the context is hidden. Keep selection-ring
-        updates independent of label layout and cache paused labels until their
-        contact or display inputs change.
+        Clear annotations during playback or when the context is hidden. Keep
+        selection-ring updates independent of label layout and cache paused
+        labels until their contact or display inputs change.
         """
         ws, viewer = self.workspace, self.workspace.viewer
         renderer = getattr(viewer, "renderer", None)
@@ -945,22 +794,13 @@ class CollisionInspector:
             return
         direct = ws.selected and ws.selected[0] in ("contact", "soft_contact")
         listed = self.contacts_tab and self.list_owner == ws.selected
-        if self.tree is None or not viewer.show_contacts or not (direct or listed):
+        if not viewer.is_paused() or self.tree is None or not viewer.show_contacts or not (direct or listed):
+            # Contact indices are transient slots; live labels flicker and
+            # require host readbacks without providing stable identities.
             renderer._contact_labels = ()
             renderer._contact_selection = None
             self._overlay_key = None
-            self._live_overlay_key = None
             return
-        if not viewer.is_paused():
-            renderer._contact_selection = None
-            self._overlay_key = None
-            if listed and viewer.show_contact_labels:
-                self._live_overlays()
-            else:
-                renderer._contact_labels = ()
-                self._live_overlay_key = None
-            return
-        self._live_overlay_key = None
         self.sync()
         selected = ws.selected if direct else self.active_contact if listed else None
         sides = 2 if viewer.show_contact_pairs else 1
