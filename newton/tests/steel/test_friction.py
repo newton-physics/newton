@@ -1546,39 +1546,44 @@ class TestFrictionPatchHistory(unittest.TestCase):
         self.assertAlmostEqual(float(np.linalg.norm(result[1:3])), 0.8)
         self.assertAlmostEqual(float(np.linalg.norm(result[5:7])), 0.8)
 
-    def test_seed_keeps_matched_warmstart_without_patch_history(self):
-        """Keep the contact-matched friction warm start on an anchor that has no patch history yet."""
+    def test_seed_bounds_matched_warmstart_without_patch_history(self):
+        """Keep a contact-matched friction seed inside the patch cone on an anchor without patch history."""
         _model, state, contacts, patches = _patch_fixture([[0, 0, 0]])
         self.assertEqual(int(patches.current.source.numpy()[0]), -1)
         slots = wp.zeros(1, dtype=int, device=_DEVICE)
         lengths = wp.array([3], dtype=int, device=_DEVICE)
         parents = wp.array([[-1] * 8], dtype=int, device=_DEVICE)
         mu = wp.array([[0.5, 0.25, 0.25] + [0.0] * 5], dtype=float, device=_DEVICE)
-        seeded = [1.0, 0.3, -0.2] + [0.0] * 5
-        impulses = wp.array([seeded], dtype=float, device=_DEVICE)
-        wp.launch(
-            seed_patch_impulses,
-            dim=1,
-            inputs=[
-                contacts.rigid_contact_count,
-                patches.current,
-                patches.previous,
-                state.body_q,
-                slots,
-                slots,
-                slots,
-                lengths,
-                0,
-                parents,
-                mu,
-                impulses,
-                1.0,
-                1.0,
-                wp.zeros(1, dtype=float, device=_DEVICE),
-            ],
-            device=_DEVICE,
-        )
-        np.testing.assert_array_equal(impulses.numpy()[0], np.array(seeded, dtype=np.float32))
+        # The anchor's cone radius is 0.25 * 1.0; the second seed is outside it.
+        for seeded_tangent, expected_tangent in (((0.15, -0.1), (0.15, -0.1)), ((0.3, -0.2), (0.2080, -0.1387))):
+            with self.subTest(seed=seeded_tangent):
+                impulses = wp.array([[1.0, *seeded_tangent] + [0.0] * 5], dtype=float, device=_DEVICE)
+                wp.launch(
+                    seed_patch_impulses,
+                    dim=1,
+                    inputs=[
+                        contacts.rigid_contact_count,
+                        patches.current,
+                        patches.previous,
+                        state.body_q,
+                        slots,
+                        slots,
+                        slots,
+                        lengths,
+                        0,
+                        parents,
+                        mu,
+                        impulses,
+                        1.0,
+                        1.0,
+                        wp.zeros(1, dtype=float, device=_DEVICE),
+                    ],
+                    device=_DEVICE,
+                )
+                result = impulses.numpy()[0]
+                self.assertEqual(result[0], 1.0)
+                np.testing.assert_allclose(result[1:3], expected_tangent, atol=1.0e-4)
+                np.testing.assert_array_equal(result[3:], 0.0)
 
     def test_anchors_without_rows_keep_history(self):
         """Keep a valid anchor and its cached impulse when its region gets no friction rows this step."""
