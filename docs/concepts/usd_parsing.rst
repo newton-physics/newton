@@ -128,13 +128,15 @@ vertices; the indices preserve that relationship.
    )
    vertex_data = authored_point_data[point_indices]
 
-This option always returns ``(mesh, uv_indices, source_point_indices)``.
+The ``return_source_point_indices`` option always returns
+``(mesh, uv_indices, source_point_indices)``.
 The second item is ``None`` unless UV indices are requested and available.
 The source-point mapping is always third, including when both mappings are
 requested. Without this option, existing return values are unchanged.
 
-This option requires a single mesh prim. It is not available when merging a
-stage or file. See the function's return table for all combinations.
+The ``return_source_point_indices`` option requires a single mesh prim. It is
+not available when merging a stage or file. See the function's return table
+for all combinations.
 
 Deformable Bodies
 -----------------
@@ -417,12 +419,9 @@ Known gaps of the experimental importer, tracked as follow-ups:
   collision in Newton yet: they warn and import colliding. A welded cable graph shares one
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
-* **Collision and graphics geometry** -- separate collision or render geometry under a
-  deformable body is not simulated or driven by the importer yet. Procedural visual
-  binding is available through :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`;
-  importing authored visual bindings is not implemented yet.
-  Untagged PointBased graphics geometry
-  warns and is skipped (a static import would leave a frozen copy behind), and a dedicated
+* **Collision and graphics geometry** -- graphics Mesh prims can follow their owning
+  simulation geometry; see :ref:`usd-deformable-visual-import`. Other PointBased
+  graphics are skipped with a diagnostic instead of becoming frozen rigid shapes. A dedicated
   point-based collider (every one warns) only toggles the simulation geometry's collision
   as described above and never becomes a separate rigid shape. Deformable-owned geometry
   is owned exclusively by the deformable importer: when a
@@ -594,6 +593,64 @@ proxies. It excludes simulation geometry and colliders, even disabled ones.
 It stops at nested deformable bodies, rigid bodies, and articulation roots.
 Visibility is not a filter. The reader does not edit the stage or compute
 embeddings; it only reports which prims the body owns.
+
+.. _usd-deformable-visual-import:
+
+Importing deformable visual meshes
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   Deformable visual mesh import follows the AOUSD proposal and may change.
+
+:meth:`ModelBuilder.add_usd` uses these readers to bind graphics Mesh prims to
+their owning simulation geometry. Volume meshes use tetrahedra, cloth meshes
+use triangles, and cable meshes follow imported rigid segments. Graphics add
+no mass or collision geometry. Set ``load_visual_shapes=False`` to omit them.
+
+.. code-block:: python
+
+   import newton
+   import newton.geometry
+
+   builder = newton.ModelBuilder()
+   builder.add_usd("deformable.usda")
+   model = builder.finalize()
+   state = model.state()
+   visuals = newton.geometry.DeformableVisuals(model)
+   visuals.update(state)
+
+Binding pairs the graphics and simulation bind poses in the same world frame.
+Without an authored bind pose, each prim's default-time points provide it.
+UV corner expansion keeps the source-point mapping, so texture seams do not
+change which bind points move the visual mesh. Material textures require UVs.
+Authored ``UsdTransform2d`` texture scale, rotation, and translation are preserved.
+One mesh-level material applies to the whole graphics mesh. Face-level material
+bindings on ``GeomSubset`` prims are not imported; a diagnostic reports that they
+were ignored. Split graphics into separate Mesh prims to use different textures.
+Only meshes a viewport would draw are imported, by the rule that decides
+whether a rigid shape is visible: the prim is visible and its purpose is
+``default`` or ``proxy``. ``ignore_paths`` applies too. A malformed visual is
+logged and skipped without removing valid physics or sibling meshes.
+
+Use the optional import result to look up a visual mesh by its USD path:
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+   result = builder.add_usd("deformable.usda", return_deformable_results=True)
+   mesh_index = result["path_deformable_visual_map"]["/World/SoftToy/Skin"]
+   model = builder.finalize()
+   skin = model.deformable_visual_meshes[mesh_index]
+
+The map contains only successfully imported visual meshes. Its indices describe
+this builder after import; it does not track copies made by later composition or
+replication. Imported meshes use their graphics prim path as their initial label;
+``world`` identifies each copy. USD namespaces are not rebased automatically.
+
+Embeddings are computed at import time. Authored per-vertex embedding weights,
+Gaussian graphics, and other PointBased graphics are not imported by this path.
+Triangle bindings discard normal offsets; vertices outside a volume are
+clamped as described in the :doc:`visualization guide </guide/visualization>`.
 
 Material Color Spaces
 ---------------------
