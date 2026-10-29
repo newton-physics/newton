@@ -726,6 +726,15 @@ class TestViewerRTXRendering(unittest.TestCase):
             self.assertLess(abs(np.where(colored(replaced, 0))[1].mean() - np.where(red_first)[1].mean()), 2)
             for image in (first, moved, hidden, replaced):
                 self.assertGreater(np.count_nonzero(colored(image, 1)), 5)
+            blue = newton.Gaussian(
+                [[0, 0, 1]], scales=[[0.3, 0.15, 0.15]], opacities=[0.99], sh_coeffs=[[-1.7, -1.7, 2.0]]
+            )
+            viewer.set_rendering_paused(True)
+            np.testing.assert_array_equal(render(blue, -0.6), replaced)
+            viewer.set_rendering_paused(False)
+            resumed = render(blue, -0.6)
+            self.assertGreater(np.count_nonzero(colored(resumed, 2)), 5)
+            self.assertLess(np.count_nonzero(colored(resumed, 0)), 3)
         finally:
             viewer.close()
 

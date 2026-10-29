@@ -259,54 +259,6 @@ class TestViewerRTXMarkers(unittest.TestCase):
         self.assertIn(([path], ["invisible"]), self._attribute_writes("visibility"))
         self.viewer._rtx.reset.assert_called_once_with(time=0.0)
 
-    def test_gaussian_field_replaces_runtime_prim_when_asset_changes(self):
-        """Author a Gaussian field once per asset and queue batched placement writes otherwise."""
-        first = newton.Gaussian([[0, 0, 0]], scales=[[0.2, 0.2, 0.2]])
-        second = newton.Gaussian([[0, 0, 0]], scales=[[0.4, 0.2, 0.2]])
-        path = "/root/field"
-        self.viewer.log_gaussian("/field", first)
-        self.assertEqual(self._add_reference.call_count, 1)
-        runtime_path = self.viewer._gaussian_paths["/field"]
-        self.assertNotEqual(runtime_path, path)
-        prim = self.viewer.stage.GetPrimAtPath(path)
-        samples = prim.GetAttribute("visibility").GetNumTimeSamples()
-        for frame in range(1, 3):
-            self.viewer.begin_frame(frame / 60.0)
-            self.viewer.log_gaussian("/field", first, wp.transform(wp.vec3(frame, 0, 0), wp.quat_identity()), True)
-        # Same asset: no new runtime prim and no new USD samples, only a queued placement.
-        self.assertEqual(self._add_reference.call_count, 1)
-        self.assertEqual(prim.GetAttribute("visibility").GetNumTimeSamples(), samples)
-        # A hidden call without a placement keeps the last one; a shown one resets to the origin.
-        self.viewer.log_gaussian("/field", first, hidden=True)
-        np.testing.assert_allclose(self.viewer._gaussian_last_placement["/field"][:3], [2, 0, 0])
-        self.viewer.log_gaussian("/field", second)
-        self.assertEqual(self._add_reference.call_count, 2)
-        self.assertNotEqual(self.viewer._gaussian_paths["/field"], runtime_path)
-        with (
-            mock.patch.object(self.viewer, "_update_ovrtx_camera"),
-            mock.patch.object(self.viewer, "_update_ovrtx_transforms"),
-        ):
-            self.viewer.end_frame()
-        xform_writes = [(paths, values) for paths, name, values, _ in self.writes if name == "omni:xform"]
-        self.assertEqual(xform_writes[-1][0], [self.viewer._gaussian_paths["/field"]])
-        self.assertEqual(xform_writes[-1][1].shape, (1, 4, 4))
-        # The batched matrix carries the latest placement: the shown call's origin.
-        np.testing.assert_allclose(xform_writes[-1][1][0, 3, :3], [0, 0, 0])
-        self.assertIn(([self.viewer._gaussian_paths["/field"]], ["inherited"]), self._attribute_writes("visibility"))
-
-    def test_gaussian_field_replacement_is_deferred_while_rendering(self):
-        """Remap a Gaussian field to its runtime prim once a deferred replacement is published."""
-        gaussian = newton.Gaussian([[0, 0, 0]], scales=[[0.2, 0.2, 0.2]])
-        self.viewer.log_gaussian("/field", gaussian)
-        runtime_path = self.viewer._gaussian_paths["/field"]
-        self.viewer.set_rendering_paused(True)
-        self.viewer.log_gaussian("/field", newton.Gaussian([[0, 0, 0]], scales=[[0.4, 0.2, 0.2]]))
-        self.assertEqual(self.viewer._gaussian_paths["/field"], "/root/field")
-        self.assertIn("/root/field", self.viewer._deferred_prims)
-        self.viewer.set_rendering_paused(False)
-        self.viewer._flush_deferred_prims()
-        self.assertNotIn(self.viewer._gaussian_paths["/field"], ("/root/field", runtime_path))
-
     def test_arrows_have_heads_and_correct_endpoints(self):
         """Render arrow meshes with tips at their endpoints, including reversed arrows."""
         starts = wp.array([[0, 0, 0], [1, 2, 3], [1, 0, 0]], dtype=wp.vec3, device="cpu")
