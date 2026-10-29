@@ -4792,6 +4792,21 @@ def invert_lower_factor_grouped(
             Linv_group[idx, row, col] = value / L_group[idx, row, row]
 
 
+@wp.kernel(enable_backward=False)
+def copy_unarticulated_body_state(
+    bodies: wp.array[int],
+    body_q_in: wp.array[wp.transform],
+    body_qd_in: wp.array[wp.spatial_vector],
+    # outputs
+    body_q_out: wp.array[wp.transform],
+    body_qd_out: wp.array[wp.spatial_vector],
+):
+    """Pass the prescribed state of bodies outside every articulation through the step."""
+    body = bodies[wp.tid()]
+    body_q_out[body] = body_q_in[body]
+    body_qd_out[body] = body_qd_in[body]
+
+
 @wp.kernel
 def update_body_qd_from_featherstone(
     body_v_s: wp.array[wp.spatial_vector],
@@ -4803,7 +4818,9 @@ def update_body_qd_from_featherstone(
     body_qd_out: wp.array[wp.spatial_vector],
 ):
     tid = wp.tid()
-    if body_active[tid] == 0:
+    art = body_to_articulation[tid]
+    # copy_unarticulated_body_state publishes bodies outside every articulation.
+    if body_active[tid] == 0 or art < 0:
         return
 
     twist = body_v_s[tid]  # spatial twist about origin
@@ -4813,11 +4830,7 @@ def update_body_qd_from_featherstone(
     X_wb = body_q[tid]
     com_local = body_com[tid]
     com_world = wp.transform_point(X_wb, com_local)
-    art = body_to_articulation[tid]
-    origin = wp.vec3()
-    if art >= 0:
-        origin = articulation_origin[art]
-    com_rel = com_world - origin
+    com_rel = com_world - articulation_origin[art]
 
     v_com = v0 + wp.cross(w, com_rel)
 
