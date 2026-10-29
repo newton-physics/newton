@@ -95,9 +95,10 @@ optional dependencies do not publish Windows ARM64 packages, so the extras skip
 them on this platform. Most notably, :class:`~newton.solvers.SolverMuJoCo` and
 USD import and export are unavailable because ``mujoco`` and ``usd-core`` cannot
 be installed. The platform markers in ``pyproject.toml`` list all skipped
-packages. The ``torch-cu12``, ``torch-cu13``, and ``rtx`` extras cannot be
-installed because PyTorch provides no CUDA builds and OVRTX provides no
-packages for Windows ARM64.
+packages. The ``torch-cu12``, ``torch-cu13``, ``rtx``, ``docs``, and
+``notebook`` extras cannot be installed because PyTorch provides no CUDA
+builds and OVRTX, ``pypandoc-binary``, and ``rerun-sdk`` provide no packages
+for Windows ARM64.
 
 For tested configurations and CUDA version-specific notes, see
 :doc:`compatibility`.
