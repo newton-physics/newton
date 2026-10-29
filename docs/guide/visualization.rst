@@ -829,7 +829,9 @@ presenting the result in a pyglet/OpenGL window.
 
 Debug geometry can be added before or after the first rendered frame using
 :meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
-:meth:`~newton.viewer.ViewerBase.log_lines`, and :meth:`~newton.viewer.ViewerBase.log_arrows`.
+:meth:`~newton.viewer.ViewerBase.log_lines`, :meth:`~newton.viewer.ViewerBase.log_arrows`, and
+:meth:`~newton.viewer.ViewerBase.log_gaussian`; a Gaussian field keeps its splats until a
+different asset object is logged under its name.
 For custom markers, register a triangle mesh with :meth:`~newton.viewer.ViewerBase.log_mesh`
 and place it with :meth:`~newton.viewer.ViewerBase.log_instances`. Instance batches support
 changing counts, transforms, scales, colors, and visibility. RTX arrows have cylinder shafts
@@ -1113,6 +1115,14 @@ Instead of rendering in real-time, you can also render the simulation as a time-
 
     # Save and close the USD file
     viewer.close()
+
+Shown Gaussian shapes and fields are written as ``ParticleField3DGaussianSplat``
+prims, the schema :meth:`~newton.Gaussian.create_from_usd` reads: one prototype
+class prim per asset holds the appearance and extent, the field prims reference
+it with time-sampled placement and visibility, and higher-order spherical
+harmonics are stored one RGB triple per basis function (the usdVol layout), which
+the reader turns back into Newton's channel-major order. A renderer needs the
+particle-field plugin to draw them; plain usd-core saves the attributes.
 
 External Integrations
 ---------------------

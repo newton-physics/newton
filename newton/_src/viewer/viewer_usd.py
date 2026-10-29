@@ -18,6 +18,8 @@ import newton
 
 from ..core.types import override
 from ..exceptions import NewtonWarning
+from ..usd.utils import GAUSSIAN_SORTING_MODE_TOKENS
+from ..utils.color import ColorSpace
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -72,6 +74,11 @@ def _usd_set_xform(
         xform_ops[1].Set(Gf.Quatf(float(rot[3]), float(rot[0]), float(rot[1]), float(rot[2])), time)
     if scale is not None:
         xform_ops[2].Set(Gf.Vec3d(float(scale[0]), float(scale[1]), float(scale[2])), time)
+
+
+def _gaussian_prototype_key(gaussian: newton.Gaussian) -> tuple:
+    """Identify the appearance a prototype prim holds: the asset's content plus the written settings."""
+    return (hash(gaussian), gaussian.sh_degree, gaussian.min_response, gaussian.sorting_mode, gaussian.sh_color_space)
 
 
 class ViewerUSD(ViewerBase):
@@ -168,6 +175,9 @@ class ViewerUSD(ViewerBase):
         layer._instance_groups = {}  # instance_name -> group prim for individually referenced meshes
         layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
         layer._points = {}  # point_name -> UsdGeom.Points
+        layer._gaussian_assets = {}  # name -> last immutable Gaussian asset
+        layer._gaussian_prototypes = {}  # _gaussian_prototype_key(asset) -> (asset, prim name holding its appearance)
+        layer._gaussian_prototype_count = 0  # prototypes written so far, for unique names
         layer._preview_materials: dict[tuple, Any] = {}  # material key -> UsdShade.Material
         layer._texture_paths: dict[str, tuple[Any, str, str]] = {}  # mesh -> (texture object, digest, file)
         layer._mesh_appearance: dict[str, dict[str, Any]] = {}
@@ -215,8 +225,17 @@ class ViewerUSD(ViewerBase):
                     pass
 
     def _remove_active_layer_prims(self):
-        names = set(self._meshes) | set(self._instance_groups) | set(self._instancers) | set(self._points)
-        for name in sorted(names, key=lambda item: self._get_path(item).count("/"), reverse=True):
+        names = (
+            set(self._meshes)
+            | set(self._instance_groups)
+            | set(self._instancers)
+            | set(self._points)
+            | set(self._gaussian_assets)
+        )
+        prototypes = {name for _, name in self._gaussian_prototypes.values()}
+        # Deepest first, and the Gaussian prototypes after the fields that reference them.
+        order = sorted(names, key=lambda item: -self._get_path(item).count("/")) + sorted(prototypes)
+        for name in order:
             if self._is_layer_owned_path(name):
                 self.stage.RemovePrim(self._get_path(name))
 
@@ -286,6 +305,110 @@ class ViewerUSD(ViewerBase):
 
         if self.output_path:
             logger.info("USD output saved in: %s", os.path.abspath(self.output_path))
+
+    @override
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: newton.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """Write a Gaussian field as a USD particle field, without a mesh proxy.
+
+        The field prim references a prototype class prim that holds the asset's
+        appearance and extent, written once per asset as default values, so the
+        latest asset applies to the whole timeline and fields that share an asset
+        share its arrays; appearance is not animated, and a prototype no field
+        references any more is removed. Placement and visibility are time
+        sampled. A field hidden before it exists is not written, and it is
+        invisible before the frame it first appears. Higher-order spherical
+        harmonics are stored one RGB triple per basis function, the order
+        :meth:`newton.Gaussian.create_from_usd` reads back. A renderer must
+        support ``ParticleField3DGaussianSplat``; plain usd-core saves the
+        attributes without the renderer's plugin.
+
+        Args:
+            name: Unique path for the Gaussian field.
+            gaussian: Rest Gaussian appearance in local coordinates [m].
+            xform: World-space placement; identity when omitted on a shown call,
+                and the last placement is kept when omitted on a hidden call.
+            hidden: Whether the field is hidden.
+        """
+        name = self._qualify(name)
+        path = self._get_path(name)
+        prim = self.stage.GetPrimAtPath(path)
+        first = not prim
+        if first and hidden:
+            return
+        if first:
+            self._ensure_scopes_for_path(self.stage, path)
+            prim = self.stage.DefinePrim(path, "ParticleField3DGaussianSplat")
+            _usd_add_xform(prim)
+            if self._frame_index > 0:
+                # A held first sample would show the field in the frames before it appeared.
+                prim.CreateAttribute("visibility", Sdf.ValueTypeNames.Token, custom=False).Set("invisible", 0)
+        previous = self._gaussian_assets.get(name)
+        if first or previous is not gaussian:
+            prim.GetReferences().ClearReferences()
+            prim.GetReferences().AddInternalReference(self._gaussian_prototype_path(gaussian))
+            self._gaussian_assets[name] = gaussian
+            key = _gaussian_prototype_key(previous) if previous is not None else None
+            if key is not None and all(
+                _gaussian_prototype_key(asset) != key for asset in self._gaussian_assets.values()
+            ):
+                # No field shows an asset equal to the old one any more; its prototype would only grow the stage.
+                self.stage.RemovePrim(self._get_path(self._gaussian_prototypes.pop(key)[1]))
+        prim.CreateAttribute("visibility", Sdf.ValueTypeNames.Token, custom=False).Set(
+            "invisible" if hidden else "inherited", self._frame_index
+        )
+        if xform is not None or not hidden:
+            transform = wp.transform_identity() if xform is None else xform
+            _usd_set_xform(prim, pos=transform[:3], rot=transform[3:], scale=(1, 1, 1), time=self._frame_index)
+
+    def _gaussian_prototype_path(self, gaussian: newton.Gaussian) -> str:
+        """Return the prim that holds ``gaussian``'s appearance, writing it on the asset's first use."""
+        # Equal assets share one prototype, whichever object logged them.
+        key = _gaussian_prototype_key(gaussian)
+        entry = self._gaussian_prototypes.get(key)
+        if entry is not None:
+            return self._get_path(entry[1])
+        name = self._qualify(f"gaussian_assets/asset_{self._gaussian_prototype_count}")
+        self._gaussian_prototype_count += 1
+        self._gaussian_prototypes[key] = (gaussian, name)
+        path = self._get_path(name)
+        self._ensure_scopes_for_path(self.stage, path)
+        # A class prim: only the fields that reference it are traversed, drawn or imported.
+        prim = self.stage.CreateClassPrim(path)
+        prim.SetTypeName("ParticleField3DGaussianSplat")
+        # One RGB triple per basis function, for the asset's degree or the one its coefficients allow.
+        sh = newton.Gaussian._sh_to_basis_major(gaussian.sh_coeffs)
+        degree = min(gaussian.sh_degree, math.isqrt(sh.shape[1]) - 1)
+        sh = sh[:, : (degree + 1) ** 2].reshape(-1, 3)
+        # The same bound the camera uses per sample, with the largest axis as the radius.
+        response = np.clip(gaussian.min_response / np.maximum(gaussian.opacities, 1e-6), 1e-6, 0.97)
+        radius = (np.sqrt(-2.0 * np.log(response)) * np.max(gaussian.scales, axis=1))[:, None]
+        extent = np.zeros((2, 3), dtype=np.float32)
+        if gaussian.count:
+            extent = np.stack([(gaussian.positions - radius).min(axis=0), (gaussian.positions + radius).max(axis=0)])
+        arrays = (
+            ("positions", Sdf.ValueTypeNames.Point3fArray, Vt.Vec3fArray.FromNumpy(gaussian.positions)),
+            ("orientations", Sdf.ValueTypeNames.QuatfArray, Vt.QuatfArray.FromNumpy(gaussian.rotations)),
+            ("scales", Sdf.ValueTypeNames.Float3Array, Vt.Vec3fArray.FromNumpy(gaussian.scales)),
+            ("opacities", Sdf.ValueTypeNames.FloatArray, Vt.FloatArray.FromNumpy(gaussian.opacities)),
+            ("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array, Vt.Vec3fArray.FromNumpy(sh)),
+            ("extent", Sdf.ValueTypeNames.Float3Array, Vt.Vec3fArray.FromNumpy(extent.astype(np.float32))),
+        )
+        for attribute, dtype, values in arrays:
+            prim.CreateAttribute(attribute, dtype, custom=False).Set(values)
+        prim.CreateAttribute("radiance:sphericalHarmonicsDegree", Sdf.ValueTypeNames.Int, custom=False).Set(degree)
+        prim.GetAttribute("radiance:sphericalHarmonicsCoefficients").SetColorSpace(
+            "lin_rec709_scene" if gaussian.sh_color_space == ColorSpace.LINEAR else "srgb_rec709_scene"
+        )
+        prim.CreateAttribute("sortingModeHint", Sdf.ValueTypeNames.Token, custom=False).Set(
+            GAUSSIAN_SORTING_MODE_TOKENS[gaussian.sorting_mode]
+        )
+        return path
 
     def _get_path(self, name):
         # Handle both absolute and relative paths correctly

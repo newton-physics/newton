@@ -2620,7 +2620,9 @@ class Gaussian:
                 If ``None``, defaults to ones (fully opaque).
             sh_coeffs: Spherical harmonic coefficients, shape ``(N, C)``, float.
                 The number of coefficients *C* determines the SH degree
-                (``C = 3`` -> degree 0, ``C = 12`` -> degree 1, etc.).
+                (``C = 3`` -> degree 0, ``C = 12`` -> degree 1, etc.). The first
+                three values are the RGB base color; the higher-order
+                coefficients follow channel by channel, the PLY file order.
             sh_degree: Spherical harmonic degree.
             min_response: Minimum response required for alpha testing.
             sorting_mode: Sorting strategy for depth-ordering Gaussian
@@ -2778,6 +2780,22 @@ class Gaussian:
         warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._warp_bvh = value
 
+    @staticmethod
+    def _sh_from_basis_major(per_basis: np.ndarray) -> np.ndarray:
+        """Reorder coefficients stored one RGB triple per basis function, shape ``(N, K, 3)``,
+        into Newton's layout: the base color, then the higher orders channel by channel."""
+        count = per_basis.shape[0]
+        rest = per_basis[:, 1:, :].transpose(0, 2, 1).reshape(count, -1)
+        return np.ascontiguousarray(np.concatenate([per_basis[:, 0, :], rest], axis=1), dtype=np.float32)
+
+    @staticmethod
+    def _sh_to_basis_major(sh_coeffs: np.ndarray) -> np.ndarray:
+        """Reorder Newton's coefficient layout, shape ``(N, C)``, into one RGB triple per basis
+        function, shape ``(N, C // 3, 3)``; the inverse of :meth:`_sh_from_basis_major`."""
+        count, bands = sh_coeffs.shape[0], sh_coeffs.shape[1] // 3
+        rest = sh_coeffs[:, 3:].reshape(count, 3, bands - 1).transpose(0, 2, 1)
+        return np.ascontiguousarray(np.concatenate([sh_coeffs[:, None, :3], rest], axis=1), dtype=np.float32)
+
     def _find_sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), inferred from *sh_coeffs* shape."""
         c = self._sh_coeffs.shape[1]
@@ -2913,12 +2931,11 @@ class Gaussian:
 
         sh_coeffs = None
         if "f_dc" in point_attrs:
-            sh_coeffs = point_attrs["f_dc"].reshape(count, 3)
+            per_basis = point_attrs["f_dc"].reshape(count, 1, 3)
             if "f_rest" in point_attrs:
                 # Open3D stores f_rest basis-major (N, K, 3); restore the file's channel-major order.
-                sh_rest = point_attrs["f_rest"].reshape(count, -1, 3).transpose(0, 2, 1).reshape(count, -1)
-                sh_coeffs = np.concatenate([sh_coeffs, sh_rest], axis=1)
-            sh_coeffs = np.ascontiguousarray(sh_coeffs)
+                per_basis = np.concatenate([per_basis, point_attrs["f_rest"].reshape(count, -1, 3)], axis=1)
+            sh_coeffs = Gaussian._sh_from_basis_major(per_basis)
 
         return Gaussian(
             positions=positions,
@@ -2941,6 +2958,8 @@ class Gaussian:
         ``lin_rec709_scene`` and other Rec.709 linear names are :attr:`~newton.utils.ColorSpace.LINEAR`.
         Other color spaces are imported without conversion and a warning is logged; see the
         USD parsing documentation for the full list of supported names.
+        USD stores one RGB triple per basis function; the coefficients are reordered into Newton's
+        layout (base color first, then the higher orders channel by channel).
 
         Args:
             prim: A USD prim containing Gaussian splat data.

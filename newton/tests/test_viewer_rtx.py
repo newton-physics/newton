@@ -159,6 +159,7 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         viewer._instance_prim_paths = {}
         viewer._mesh_prim_paths = {}
         viewer._point_batch_paths = {}
+        viewer._gaussian_paths = {}
         viewer._rtx = None
         viewer._tex_resource = None
         viewer._gl_texture = None
@@ -670,6 +671,63 @@ class TestViewerRTXRendering(unittest.TestCase):
                     self.assertFalse(np.array_equal(viewer.get_frame().numpy(), frozen))
                 finally:
                     viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_field_moves_and_hides(self):
+        """Render a Gaussian field natively and update its placement and visibility after startup."""
+        gaussian = newton.Gaussian(
+            [[0, 0, 1]], scales=[[0.3, 0.15, 0.15]], opacities=[0.99], sh_coeffs=[[2.0, -1.7, -1.7]]
+        )
+        viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=False, environment="none")
+        try:
+            viewer.set_camera(wp.vec3(0, -4, 1), pitch=0.0, yaw=90.0)
+            frame = 0
+
+            green = newton.Gaussian(
+                [[0, 0, 1]], scales=[[0.15, 0.15, 0.3]], opacities=[0.99], sh_coeffs=[[-1.7, 2.0, -1.7]]
+            )
+
+            def render(asset, offset, hidden=False):
+                nonlocal frame
+                # The renderer shows new geometry after a few frames.
+                for _ in range(6):
+                    viewer.begin_frame(frame / 60.0)
+                    viewer.log_gaussian("/toy", asset, wp.transform(wp.vec3(offset, 0, 0), wp.quat_identity()), hidden)
+                    viewer.log_gaussian("/other", green, wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()))
+                    viewer.end_frame()
+                    frame += 1
+                return viewer.get_frame().numpy().astype(np.float32)
+
+            def colored(rgb, channel):
+                others = [c for c in range(3) if c != channel]
+                return (rgb[:, :, channel] > rgb[:, :, others[0]] + 30) & (
+                    rgb[:, :, channel] > rgb[:, :, others[1]] + 30
+                )
+
+            # The move and the hide keep the asset, so they go through the batched runtime writes; the
+            # last pose swaps in an equal but distinct asset, which replaces the runtime prim.
+            first = render(gaussian, -0.6)
+            moved = render(gaussian, 0.6)
+            hidden = render(gaussian, 0.6, hidden=True)
+            replaced = render(
+                newton.Gaussian(
+                    gaussian.positions, gaussian.rotations, gaussian.scales, gaussian.opacities, gaussian.sh_coeffs
+                ),
+                -0.6,
+            )
+            red_first, red_moved, red_hidden = colored(first, 0), colored(moved, 0), colored(hidden, 0)
+            self.assertGreater(np.count_nonzero(red_first), 5)
+            self.assertGreater(np.count_nonzero(red_moved), 5)
+            self.assertGreater(np.where(red_moved)[1].mean(), np.where(red_first)[1].mean() + 5)
+            # Nothing red remains at the field's first columns: the build-phase prim did not stay behind.
+            self.assertEqual(np.count_nonzero(red_moved[:, : np.where(red_first)[1].min() + 3]), 0)
+            self.assertLess(np.count_nonzero(red_hidden), 3)
+            self.assertGreater(np.count_nonzero(colored(replaced, 0)), 5)
+            self.assertLess(abs(np.where(colored(replaced, 0))[1].mean() - np.where(red_first)[1].mean()), 2)
+            for image in (first, moved, hidden, replaced):
+                self.assertGreater(np.count_nonzero(colored(image, 1)), 5)
+        finally:
+            viewer.close()
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_headless_frame_capture(self):

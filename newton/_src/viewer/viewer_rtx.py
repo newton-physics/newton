@@ -963,6 +963,7 @@ void main() {
                 for path in (
                     *self._mesh_prim_paths.values(),
                     *self._point_batch_paths.values(),
+                    *self._gaussian_paths.values(),
                     *(self._get_path(name) for name in self._instance_prim_paths),
                 )
             }
@@ -1303,12 +1304,52 @@ void main() {
             for name, instances in self._instance_prim_paths.items():
                 if self._get_path(name) == path:
                     self._instance_prim_paths[name] = [f"{runtime_path}/instance_{i}" for i in range(len(instances))]
-            for batches in (self._mesh_prim_paths, self._point_batch_paths):
+            for batches in (self._mesh_prim_paths, self._point_batch_paths, self._gaussian_paths):
                 for name in batches:
                     if self._get_path(name) == path:
                         batches[name] = runtime_path
 
     # ------------------------------------------------ ViewerUSD overrides
+
+    @override
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: newton.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """Render a Gaussian field through OVRTX's native particle-field support.
+
+        The field prim is authored when it first appears and again whenever the
+        asset object changes; after the build phase that replaces its runtime
+        prim, and a field authored during the build phase keeps its first splats
+        in the scene, hidden, next to the replacement. A field hidden before it
+        exists is not authored. Ordinary frames only queue the placement and
+        visibility, which :meth:`end_frame` writes to the runtime scene in one
+        batch without resending the splats.
+
+        Args:
+            name: Unique field path.
+            gaussian: Immutable Gaussian appearance in local coordinates [m].
+            xform: World-space placement [m]; identity when omitted on a shown call,
+                and the last placement is kept when omitted on a hidden call.
+            hidden: Whether the field is hidden.
+        """
+        name = self._qualify(name)
+        path = self._get_path(name)
+        if name not in self._gaussian_paths or self._gaussian_assets.get(name) is not gaussian:
+            super().log_gaussian(name, gaussian, xform, hidden)
+            if not self.stage.GetPrimAtPath(path).IsValid():
+                return  # hidden before it exists: nothing to render yet
+            if self._phase == self._PHASE_BUILD:
+                self._gaussian_paths[name] = path
+            else:
+                self._gaussian_paths[name] = self._replace_runtime_prim(path)
+        if xform is not None or not hidden or name not in self._gaussian_last_placement:
+            placement = wp.transform_identity() if xform is None else xform
+            self._gaussian_last_placement[name] = np.asarray(placement, dtype=np.float64)
+        self._pending_gaussian_placements[name] = (self._gaussian_last_placement[name], bool(hidden))
 
     @override
     def set_model(self, model: newton.Model | None) -> None:
@@ -1807,6 +1848,7 @@ void main() {
         self._update_ovrtx_point_batches()
         self._update_ovrtx_mesh_materials()
         self._update_ovrtx_mesh_points()
+        self._update_ovrtx_gaussians()
         self._apply_ovstage_population_changes()
         self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
         if self._runtime_scene_changed:
@@ -1821,6 +1863,28 @@ void main() {
         self._pending_mesh_materials.clear()
         self._pending_instance_materials.clear()
         self._pending_point_batches.clear()
+        self._pending_gaussian_placements.clear()
+
+    def _update_ovrtx_gaussians(self):
+        if self._rtx is None or not self._pending_gaussian_placements:
+            return
+        paths = []
+        placements = []
+        visibility = []
+        for name, (placement, hidden) in self._pending_gaussian_placements.items():
+            path = self._gaussian_paths.get(name)
+            if path is None:
+                continue
+            paths.append(path)
+            placements.append(placement)
+            visibility.append("invisible" if hidden else "inherited")
+        if not paths:
+            return
+        # The matrices are local to the field prims' parent, so the root scaling still applies.
+        self._write_runtime_attribute(
+            paths, "omni:xform", _transforms_to_usd_matrices(np.stack(placements)), is_matrix=True
+        )
+        self._write_runtime_attribute(paths, "visibility", visibility)
 
     # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
     # build phase. RTX fractional opacity is evaluated per ray hit, so the
@@ -3094,6 +3158,9 @@ void main() {
         self._emissive_instance_groups = set()
         self._mesh_prim_paths = {}
         self._point_batch_paths = {}
+        self._gaussian_paths = {}
+        self._gaussian_last_placement = {}
+        self._pending_gaussian_placements = {}
         self._point_batch_colors = {}
         self._point_batch_synced_counts = {}
 
