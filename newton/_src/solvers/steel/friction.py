@@ -238,7 +238,7 @@ FRICTION_PAIR_CUDA = """
 _COUPLED_CONTACT_HEAD = """
     // One contact's normal and sliding pair solved together on its 3x3 Delassus block G, from the
     // velocities u (impulses old included), the normal target velocity, and the coefficient mu.
-    const auto contact_block_solve = [](
+    const auto contact_block_solve = [&](
         float u_n, float u_t1, float u_t2,
         float G_nn, float G_nt1, float G_nt2, float G_t1t1, float G_t1t2, float G_t2t2,
         float target_vel_n, float mu, float old_lambda_n, float old_lambda_t1, float old_lambda_t2,
@@ -246,8 +246,20 @@ _COUPLED_CONTACT_HEAD = """
         new_lambda_n = old_lambda_n;
         new_lambda_t1 = old_lambda_t1;
         new_lambda_t2 = old_lambda_t2;
+        // A singular block (a link with fewer than two tangential mobilities) keeps the normal
+        // impulse its contact row just solved and takes the fixed_normal pair on that disk.
+        const auto fixed_normal_pair = [&]() {
+            const float radius = fmaxf(mu * old_lambda_n, 0.0f);
+            const float2 pair = friction_pair_candidate(
+                G_t1t1, G_t1t2, G_t2t2, u_t1, u_t2, old_lambda_t1, old_lambda_t2, radius, 1.0f);
+            const float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
+            const float scale = mag > radius ? radius / mag : 1.0f;
+            new_lambda_t1 = pair.x * scale;
+            new_lambda_t2 = pair.y * scale;
+        };
 """
 
+# Repeats the arithmetic of _MF_BISECTION_FRICTION_SOURCE in solver_steel.py; change both together.
 _COUPLED_CONTACT_BISECTION = """
         if (G_nn < 1.0e-20f) return;
         // At zero load the cone also zeroes the sliding pair.
@@ -256,6 +268,10 @@ _COUPLED_CONTACT_BISECTION = """
             new_lambda_n = 0.0f;
             new_lambda_t1 = 0.0f;
             new_lambda_t2 = 0.0f;
+            return;
+        }
+        if (G_t1t1 * G_t2t2 - G_t1t2 * G_t1t2 <= 1.0e-5f * G_t1t1 * G_t2t2) {
+            fixed_normal_pair();
             return;
         }
         float lo = 0.0f;
@@ -311,6 +327,7 @@ _COUPLED_CONTACT_BISECTION = """
     };
 """
 
+# Repeats the arithmetic of _MF_COULOMB_NEWTON_FRICTION_SOURCE in solver_steel.py; change both together.
 _COUPLED_CONTACT_COULOMB_NEWTON = """
         if (G_nn < 1.0e-20f) return;
         float u_free_n = u_n - (G_nn * old_lambda_n + G_nt1 * old_lambda_t1 + G_nt2 * old_lambda_t2);
@@ -332,6 +349,11 @@ _COUPLED_CONTACT_COULOMB_NEWTON = """
         float AT01 = G_t1t2 - (wNT0 * wNT1) / WN;
         float AT10 = G_t1t2 - (wNT1 * wNT0) / WN;
         float AT11 = G_t2t2 - (wNT1 * wNT1) / WN;
+        // det(AT) <= det(G_t), so this also catches a singular tangent block.
+        if (AT00 * AT11 - AT01 * AT10 <= 1.0e-5f * G_t1t1 * G_t2t2) {
+            fixed_normal_pair();
+            return;
+        }
         float cT0 = bT0 - (bN / WN) * wNT0;
         float cT1 = bT1 - (bN / WN) * wNT1;
         float inv_det0 = 1.0f / (AT00 * AT11 - AT01 * AT10);

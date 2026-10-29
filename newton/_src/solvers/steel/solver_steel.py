@@ -16836,7 +16836,7 @@ def _colored_standard_unit(
                     }} else if (global_iter < friction_start_iteration) {{
                         imp[1] = 0.0f;
                         imp[2] = 0.0f;
-                    }} else if ({acc["eff"](1)} > 0.0f) {{
+                    }} else {{
 {coupled}
                         const float d0 = cn - lambda_n;
                         const float d1 = c1 - {acc["imp"](1)};
@@ -17091,13 +17091,6 @@ def _colored_prefetch_unit_body(
         )
         return f"if (la >= 0) {{ {la} }} if (lb >= 0) {{ {lb} }}"
 
-    # The coupled modes skip any row without mobility, as the matrix-free kernel does.
-    eff_skip = (
-        "if (eff_inv <= 0.0f && row_type != 2) continue;"
-        if friction_mode == "fixed_normal"
-        else "if (eff_inv <= 0.0f) continue;"
-    )
-
     def solve_row(me: dict, sib: dict, end_unit: str, sib_decl: str = "", setup: bool = False) -> str:
         # The reference body interleaves the sibling residual and the cross term per k;
         # keep that summation order.
@@ -17185,7 +17178,7 @@ def _colored_prefetch_unit_body(
                     continue;
                 }}
                 const float eff_inv = {me["eff"]};
-                {eff_skip}
+                if (eff_inv <= 0.0f && row_type != 2) continue;
                 const int parent_idx = {me["par"]};
                 // The pair's second row is solved together with slot parent_idx + 1.
                 if (row_type == {friction_type} && slot != parent_idx + 1) continue;
@@ -17535,10 +17528,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
 """
     coop_parent_decl = ""
     coop_parent = ""
-    eff_skip = "if (eff_inv <= 0.0f && row_type != 2) continue;"
     if friction_mode != "fixed_normal":
-        # The coupled modes skip any row without mobility, as the matrix-free kernel does.
-        eff_skip = "if (eff_inv <= 0.0f) continue;"
         coop_pair = _colored_coupled_row_loop(apply=False)
         tail_pair = _colored_coupled_row_loop(apply=True)
         coop_parent_decl = """                float par_delta = 0.0f;
@@ -17572,7 +17562,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                     continue;
                 }}
                 const float eff_inv = __ldg(&propagation_eff_mass_inv.data[off]);
-                {eff_skip}
+                if (eff_inv <= 0.0f && row_type != 2) continue;
                 const int ba = __ldg(&propagation_body_a.data[off]);
                 const int bb = __ldg(&propagation_body_b.data[off]);
                 const int la = (ba >= 0) ? __ldg(&propagation_body_local_slot.data[ba]) : -1;
@@ -17656,7 +17646,7 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
                     continue;
                 }}
                 const float eff_inv = propagation_eff_mass_inv.data[off];
-                {eff_skip}
+                if (eff_inv <= 0.0f && row_type != 2) continue;
                 const int ba = propagation_body_a.data[off];
                 const int bb = propagation_body_b.data[off];
                 const int la = (ba >= 0) ? propagation_body_local_slot.data[ba] : -1;
@@ -17918,11 +17908,11 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
 #endif
 """
 
-    snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
-    if friction_mode != "fixed_normal":
-        snippet = snippet.replace(
-            "#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + coupled_contact_cuda(friction_mode), 1
-        )
+    # The coupled update falls back to the friction pair, so it follows FRICTION_PAIR_CUDA.
+    coupled = coupled_contact_cuda(friction_mode) if friction_mode != "fixed_normal" else ""
+    snippet = snippet.replace(
+        "#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA + coupled, 1
+    )
 
     @wp.func_native(snippet)
     def pgs_solve_propagation_colored_warp_native(
@@ -18149,10 +18139,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                             }
                         }
 """
-    eff_skip = "if (eff_inv <= 0.0f && row_type != 2) continue;"
     if friction_mode != "fixed_normal":
-        # The coupled modes skip any row without mobility, as the matrix-free kernel does.
-        eff_skip = "if (eff_inv <= 0.0f) continue;"
         global_pair = _colored_coupled_row_loop(apply=True, global_twists=True)
         staged_pair = _colored_coupled_row_loop(apply=True)
 
@@ -18168,7 +18155,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                     continue;
                 }}
                 const float eff_inv = __ldg(&propagation_eff_mass_inv.data[off]);
-                {eff_skip}
+                if (eff_inv <= 0.0f && row_type != 2) continue;
                 const int ba = __ldg(&propagation_body_a.data[off]);
                 const int bb = __ldg(&propagation_body_b.data[off]);
                 float jv = 0.0f;
@@ -18262,7 +18249,7 @@ def _get_pgs_solve_propagation_colored_block_kernel(
                     continue;
                 }}
                 const float eff_inv = __ldg(&propagation_eff_mass_inv.data[off]);
-                {eff_skip}
+                if (eff_inv <= 0.0f && row_type != 2) continue;
                 const int ba = __ldg(&propagation_body_a.data[off]);
                 const int bb = __ldg(&propagation_body_b.data[off]);
                 const int la = (ba >= 0) ? __ldg(&propagation_body_local_slot.data[ba]) : -1;
@@ -18393,11 +18380,11 @@ def _get_pgs_solve_propagation_colored_block_kernel(
 #endif
 """
 
-    snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
-    if friction_mode != "fixed_normal":
-        snippet = snippet.replace(
-            "#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + coupled_contact_cuda(friction_mode), 1
-        )
+    # The coupled update falls back to the friction pair, so it follows FRICTION_PAIR_CUDA.
+    coupled = coupled_contact_cuda(friction_mode) if friction_mode != "fixed_normal" else ""
+    snippet = snippet.replace(
+        "#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA + coupled, 1
+    )
 
     @wp.func_native(snippet)
     def pgs_solve_propagation_colored_block_native(
@@ -21485,6 +21472,7 @@ _DENSE_BISECTION_FRICTION_SOURCE = """
                     new_impulse = new_lambda_t1;
                 }
 """
+# contact_block_solve in friction.py repeats this arithmetic for the colored sweep; change both together.
 _MF_BISECTION_FRICTION_SOURCE = """
                 int i_t1 = mf_par + 1;
                 int i_t2 = mf_par + 2;
@@ -21688,6 +21676,7 @@ _MF_DESAXCE_BIAS_SOURCE = """{
                                 float c_T_mag = sqrtf(u_t1 * u_t1 + u_t2 * u_t2);
                                 target_vel_n = target_vel_n + mu * c_T_mag;
                             }"""
+# contact_block_solve in friction.py repeats this arithmetic for the colored sweep; change both together.
 _MF_COULOMB_NEWTON_FRICTION_SOURCE = """
                 int i_t1 = mf_par + 1;
                 int i_t2 = mf_par + 2;
