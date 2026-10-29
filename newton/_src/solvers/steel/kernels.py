@@ -3037,7 +3037,7 @@ def populate_connect_J_for_size(
         if not prescribed:
             # Both walks take their lever arm from the anchors' midpoint, so the impulse pair
             # is not a couple across an open closure.
-            rel_a = rel_a - 0.5 * delta
+            rel_a = (p_a - 0.5 * delta) - origin
             rel_b = rel_a
 
         for axis in range(3):
