@@ -24,6 +24,14 @@ from ...sim.articulation import eval_fk
 from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
 from ._testing import current_kernel_overrides
+from .contact_angular_friction import (
+    configure_free_rigid_angular_friction,
+    free_rigid_angular_friction_gs_sources,
+    free_rigid_route_bodies,
+    launch_free_rigid_angular_friction_rows,
+    refresh_free_rigid_angular_friction,
+    validate_free_rigid_angular_friction_mode,
+)
 from .contact_torsion import (
     configure_contact_torsion,
     prepare_torsion_rows,
@@ -37,6 +45,7 @@ from .kernels import (
     CONTACT_GENERATION_NONE,
     CONTACT_ROW_FAMILIES,
     PGS_CONSTRAINT_TYPE_CONTACT,
+    PGS_CONSTRAINT_TYPE_CONTACT_ROLLING,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -1532,6 +1541,20 @@ class SolverSteel(SolverBase):
           torsion). PhysX also scales a radius with the penetration depth through
           ``physxCollision:torsionalPatchRadius``; this solver does not.
 
+        One experimental per-shape attribute adds rolling and spin friction rows to free-body contacts,
+        see ``contact_angular_friction``:
+
+        - ``steel:condim`` (default 3) borrows MuJoCo's 3/4/6 convention. At 4 or more a shape
+          contributes :attr:`~newton.Model.shape_material_mu_torsional` [m] to a spin row bounded by that
+          coefficient times the normal load; at 6 also :attr:`~newton.Model.shape_material_mu_rolling` [m]
+          to a rolling pair. A contact takes the larger coefficient of its two shapes, regardless of the
+          other shape's condim. Only contacts between free bodies, and free bodies on static or kinematic
+          geometry, read it. USD reads it only from an explicitly authored ``newton:steel:condim``; the
+          MJCF importer leaves it to :class:`~newton.solvers.SolverMuJoCo`'s ``mujoco:condim``. Under
+          friction patches, contacts share a patch only if their angular coefficients match. Edits take
+          effect at :meth:`notify_model_changed` with ``SHAPE_PROPERTIES``; a solver built without any
+          condim above 3 must be rebuilt to gain the rows.
+
         The solver reads them from the model at every step, for example
         ``model.steel.rigid_body_angular_damping``. Models built without these attributes use the defaults.
 
@@ -1590,6 +1613,19 @@ class SolverSteel(SolverBase):
                 dtype=wp.float32,
                 default=0.0,
                 usd_attribute_name="physxCollision:minTorsionalPatchRadius",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="condim",
+                namespace=_ATTRIBUTE_NAMESPACE,
+                frequency=Model.AttributeFrequency.SHAPE,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=3,
+                mjcf_attribute_name="steel:condim",
+                urdf_attribute_name="steel:condim",
+                usd_attribute_name="newton:steel:condim",
             )
         )
         builder.add_custom_attribute(
@@ -2528,6 +2564,7 @@ class SolverSteel(SolverBase):
         )
         if not self._hinv_jt_writes_world or self._preelim_active or self._sparse_mass_matrix_size is not None:
             self._hinv_jt_diag_sizes = frozenset()
+        configure_free_rigid_angular_friction(self, model)
         self._setup_local_solves(model)
         self._setup_paired_response(model)
 
@@ -2609,8 +2646,13 @@ class SolverSteel(SolverBase):
 
         self._shape_mu = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._shape_restitution = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
+        # Free-rigid angular coefficients after the condim gate; the kernels read them only when the rows are enabled.
+        self._free_rigid_mu_torsional = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
+        self._free_rigid_mu_rolling = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._refresh_shape_materials()
         self._check_restitution_support()
+        validate_free_rigid_angular_friction_mode(self)
+        self._free_rigid_route_body = free_rigid_route_bodies(self)
 
         self._contact_torsion_device = bool(contact_torsion_device)
         self._device_torsion = None
@@ -2664,6 +2706,7 @@ class SolverSteel(SolverBase):
                 inputs=[self._shape_mu, self._contact_friction_scale],
                 device=model.device,
             )
+        refresh_free_rigid_angular_friction(self)
 
     @property
     def _rebound_velocity_threshold(self) -> float:
@@ -4146,6 +4189,7 @@ class SolverSteel(SolverBase):
             and not self._enable_joint_friction
             # The factor-coordinate solve owns no torsion rows.
             and not self._contact_torsion_enabled
+            and not self._free_rigid_angular_rows
         )
         # Patches allocate one tangent pair per surviving anchor, so their rows are not uniform triples.
         self._factor_coordinate_contact_triples = bool(
@@ -4378,8 +4422,9 @@ class SolverSteel(SolverBase):
             and not self._contact_warmstart
             and not self._preelim_active
             and self._local_solve_max_rows > 0
-            # The local owners do not solve torsion rows.
+            # The local owners do not solve torsion or free-rigid angular rows.
             and not self._contact_torsion_enabled
+            and not self._free_rigid_angular_rows
             and self._sparse_mass_matrix_size is None
         )
         plan = self._model_plan
@@ -5464,6 +5509,7 @@ class SolverSteel(SolverBase):
                 factor_coordinates=self._paired_factor_coordinates,
                 skip_local_internal_worlds=self._local_internal_fast_path,
                 joint_friction=bool(self._joint_friction_warp_kernels),
+                free_rigid_angular_friction=self._free_rigid_angular_rows,
             )
             self._init_local_solve_kernels(device_arch, mf_rows)
 
@@ -8967,6 +9013,9 @@ class SolverSteel(SolverBase):
                     contact_gap_limit=self._contact_gap_limit,
                     friction_gap_limit=self._friction_gap,
                     frozen_bodies=frozen_bodies,
+                    angular_mu=(self._free_rigid_mu_torsional, self._free_rigid_mu_rolling, self._free_rigid_route_body)
+                    if self._free_rigid_angular_rows
+                    else None,
                 )
             wp.launch(
                 allocate_world_contact_slots,
@@ -9000,6 +9049,9 @@ class SolverSteel(SolverBase):
                     self._contact_gap_limit,
                     self._friction_gap,
                     self._friction_patches.view,
+                    int(self._free_rigid_angular_rows),
+                    self._free_rigid_mu_torsional,
+                    self._free_rigid_mu_rolling,
                     int(self._ordered_rows),
                 ],
                 outputs=[
@@ -9211,6 +9263,8 @@ class SolverSteel(SolverBase):
                     ],
                     device=model.device,
                 )
+                if self._free_rigid_angular_rows:
+                    launch_free_rigid_angular_friction_rows(self, state_aug, contacts, contact_build_threads)
                 wp.launch(
                     finalize_mf_constraint_counts,
                     dim=self._world_count,
@@ -13932,6 +13986,7 @@ def _get_pgs_solve_mf_gs_kernel(
     factor_coordinates: bool = False,
     skip_local_internal_worlds: bool = False,
     joint_friction: bool = False,
+    free_rigid_angular_friction: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -13996,7 +14051,12 @@ def _get_pgs_solve_mf_gs_kernel(
             ``"fixed_normal"`` update under ``"coulomb_newton"``).
         joint_friction: Emit the box projection of the joint-friction rows
             (``enable_joint_friction``).
+        free_rigid_angular_friction: Solve the rolling pair and spin row that follow free-body
+            contacts' sliding pairs (``steel:condim``); requires ``"fixed_normal"`` and no factor
+            coordinates.
     """
+    if free_rigid_angular_friction and (friction_mode != "fixed_normal" or factor_coordinates):
+        raise ValueError("free-rigid angular friction rows require the fixed-normal free-body solve")
     if fuse_vel_limits and not has_drive_rows:
         raise ValueError("fuse_vel_limits requires has_drive_rows")
     if factor_coordinates and (
@@ -14266,6 +14326,11 @@ def _get_pgs_solve_mf_gs_kernel(
         dense_friction_denominator_guard = ""
         mf_friction_denominator_guard = ""
 
+    mf_angular_skip, mf_angular_radius, mf_angular_update = "", "", ""
+    if free_rigid_angular_friction:
+        mf_angular_skip, mf_angular_radius, mf_angular_update = free_rigid_angular_friction_gs_sources()
+        mf_friction_denominator_guard += f" && mf_rt != {int(PGS_CONSTRAINT_TYPE_CONTACT_ROLLING)}"
+
     local_internal_skip = (
         f"""
     if (local_solve_owner.data[world] != {PGS_LOCAL_SOLVE_OWNER_GENERAL}) return;"""
@@ -14433,9 +14498,9 @@ def _get_pgs_solve_mf_gs_kernel(
                 __syncwarp();
                 continue;
             }}
-            if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i != mf_par + 1) continue;
+            if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)} && i != mf_par + 1) continue;{mf_angular_skip}
             if (mf_diag <= 0.0f{mf_friction_denominator_guard}) continue;
-{mf_friction_radius}
+{mf_friction_radius}{mf_angular_radius}
 
             float my_sum = 0.0f;
             if (lane < 6 && dof_a >= 0) my_sum = cur_Ja * s_v[dof_a + lane];
@@ -14454,7 +14519,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 if (new_impulse < 0.0f) new_impulse = 0.0f;
             }} else if (mf_rt == {int(PGS_CONSTRAINT_TYPE_FRICTION)}) {{
 {mf_friction_update}
-            }}
+            }}{mf_angular_update}
             float delta_impulse = new_impulse - old_impulse;
             __syncwarp();
             s_lam_mf[i] = new_impulse;
@@ -14581,6 +14646,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 friction_mode,
                 factor_coordinates,
                 joint_friction,
+                free_rigid_angular_friction,
             )
             + "_local",
         )
@@ -14718,6 +14784,7 @@ def _get_pgs_solve_mf_gs_kernel(
         friction_mode,
         factor_coordinates,
         joint_friction,
+        free_rigid_angular_friction,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -14737,6 +14804,7 @@ def _mf_gs_kernel_name(
     friction_mode: str,
     factor_coordinates: bool,
     joint_friction: bool,
+    free_rigid_angular_friction: bool = False,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
@@ -14748,6 +14816,7 @@ def _mf_gs_kernel_name(
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
         f"{'_factor' if factor_coordinates else ''}"
         f"{'_jfric' if joint_friction else ''}"
+        f"{'_free_rigid_angular' if free_rigid_angular_friction else ''}"
     )
 
 
