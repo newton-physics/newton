@@ -3,15 +3,23 @@
 
 from .actuator import Actuator
 from .batteries import BatteryBase, BatteryConstantResistance
-from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
+from .clamping import ClampingBase, ClampingCurrentPWM, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
+from .drives import (
+    DriveBase,
+    DriveNeuralGRU,
+    DriveNeuralLSTM,
+    DriveNeuralMLP,
+    DrivePD,
+    DrivePID,
+    DriveVoltageControlled,
+)
 from .input_processors import (
     InputProcessorBase,
     InputProcessorDelay,
     InputProcessorEncoder,
 )
 from .joint_space_response import JointSpaceResponse
-from .motors import MotorBase, MotorDC
+from .motors import MotorDC
 from .usd_parser import (
     ActuatorParsed,
     BatteryParsed,
@@ -29,6 +37,7 @@ __all__ = [
     "BatteryConstantResistance",
     "BatteryParsed",
     "ClampingBase",
+    "ClampingCurrentPWM",
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
@@ -39,11 +48,11 @@ __all__ = [
     "DriveNeuralMLP",
     "DrivePD",
     "DrivePID",
+    "DriveVoltageControlled",
     "InputProcessorBase",
     "InputProcessorDelay",
     "InputProcessorEncoder",
     "JointSpaceResponse",
-    "MotorBase",
     "MotorDC",
     "SchemaNames",
     "parse_actuator_prim",

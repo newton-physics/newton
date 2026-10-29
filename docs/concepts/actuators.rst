@@ -37,12 +37,13 @@ An actuator is composed of four building blocks, applied in this order:
    ├── InputProcessor[]  (optional: transforms state and command inputs)
    │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
    │   └── InputProcessorEncoder     (position encoder, e.g. behind a backlash joint)
-   ├── Drive      (control law that computes raw effort)
+   ├── Drive      (control law that computes raw effort, or the motor command)
    ├── Clamping[]  (clamps raw effort to model actuator limits)
    │   ├── ClampingMaxEffort        (±max_effort symmetric clamp)
+   │   ├── ClampingCurrentPWM       (current and PWM limits of a servo firmware)
    │   ├── ClampingDCMotor         (velocity-dependent saturation)
    │   └── ClampingPositionBased   (position-dependent lookup table)
-   └── Motor       (optional: turns the effort into the effort of a motor)
+   └── Motor       (optional: turns the motor command into the effort of a motor)
        └── MotorDC                 (PWM-driven DC motor, optionally on a battery)
 
 **Input processor**
@@ -59,31 +60,38 @@ An actuator is composed of four building blocks, applied in this order:
    PID and neural-network-based control.  See the individual drive class
    documentation for the control-law equations.
 
+   In an actuator with a motor, the drive computes the motor command
+   instead, e.g. the voltage of the firmware of a voltage-controlled servo
+   (:class:`DriveVoltageControlled`), and receives the supply voltage of the
+   motor.
+
 **Clamping**
    Clamps raw effort to model actuator limits.  Examples include saturation,
    back-EMF losses, performance envelopes and position-dependent effort
    limits.  Multiple clamping stages can be combined
    on a single actuator.
 
-   A clamp limits the effort the actuator outputs.  Limits that act on a quantity inside the
-   motor, e.g. the PWM duty cycle of a voltage-controlled servo, belong
-   in the motor instead, as in :class:`MotorDC`.
+   A clamp limits the drive output.  With a motor, this is the motor command,
+   not the effort, e.g. the voltage that :class:`ClampingCurrentPWM` bounds by
+   the current and PWM limits of a servo firmware.  Such a clamp may take
+   parameters from the motor (:attr:`ClampingBase.MOTOR_PARAMS`), so they are
+   authored once.
 
 **Motor**
-   Turns the clamped effort into the effort a motor produces at the joint
-   velocity and its supply voltage, e.g. with PWM and current limits and
-   back-EMF.  A motor may draw from a battery (see :ref:`actuator-battery`).
-   At most one motor per actuator; it always runs last.
+   Provides the supply voltage, and turns the motor command into the effort a
+   motor produces at the joint velocity, e.g. with back-EMF.  A motor may draw
+   from a battery (see :ref:`actuator-battery`).  At most one motor per
+   actuator; it always runs last.
 
 The per-step pipeline is:
 
 .. code-block:: text
 
-   Input processors → Drive → Clamping → Motor → Scatter-add → Drive state update
+   Input processors → Supply voltage → Drive → Clamping → Motor → Scatter-add → Drive state update
 
-Drives, clamping objects, input processors and motors are pluggable: implement the
-:class:`DriveBase`, :class:`ClampingBase`, :class:`InputProcessorBase` or
-:class:`MotorBase` class to add new models.
+Drives, clamping objects and input processors are pluggable: implement the
+:class:`DriveBase`, :class:`ClampingBase` or :class:`InputProcessorBase` class
+to add new models.
 
 .. deprecated:: 1.8
 
@@ -634,6 +642,9 @@ Drives
   (stateful: position/velocity history buffers).
 * :class:`DriveNeuralLSTM` — LSTM neural-network drive
   (stateful: hidden/cell state).
+* :class:`DriveVoltageControlled` — firmware position controller of a
+  voltage-controlled servo as in BAM, which outputs a voltage for a motor
+  (stateless).
 
 See the API documentation for each drive's control-law equations.
 
@@ -641,6 +652,9 @@ Clamping
 ^^^^^^^^
 
 * :class:`ClampingMaxEffort` — symmetric clamp to ±max_effort per actuator.
+* :class:`ClampingCurrentPWM` — current and PWM limits of the firmware of a
+  servo as in BAM, on the voltage command of a :class:`MotorDC`, applied in
+  this order.
 * :class:`ClampingDCMotor` — velocity-dependent effort saturation using the DC
   motor effort-speed characteristic.
 * :class:`ClampingPositionBased` — position-dependent effort limits via
@@ -652,9 +666,10 @@ in sequence.
 Motors
 ^^^^^^
 
-* :class:`MotorDC` — PWM-driven DC motor as in BAM (Better Actuator Models):
-  duty cycle, PWM and current limits, back-EMF, optionally on a battery.  It
-  models the back-EMF itself, so do not combine it with :class:`ClampingDCMotor`.
+* :class:`MotorDC` — DC motor driven by a PWM voltage as in BAM (Better
+  Actuator Models): takes a voltage command and models the back-EMF,
+  optionally on a battery.  It models the back-EMF itself, so do not combine
+  it with :class:`ClampingDCMotor`.
 
 .. _actuator-battery:
 
@@ -697,7 +712,7 @@ Below, the hip and knee share one battery and the ankle draws from another:
 .. testcode:: actuator-battery
 
    import newton
-   from newton.actuators import BatteryConstantResistance, DrivePD, MotorDC
+   from newton.actuators import BatteryConstantResistance, ClampingCurrentPWM, DriveVoltageControlled, MotorDC
 
    builder = newton.ModelBuilder()
    actuators = []
@@ -707,10 +722,11 @@ Below, the hip and knee share one battery and the ankle draws from another:
        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z, label=name)
        builder.add_articulation([joint])
        actuator = builder.add_actuator(
-           DrivePD,
+           DriveVoltageControlled,
            index=builder.joint_qd_start[joint],
-           kp=15.0,
-           kd=0.125,
+           kp=5.0,
+           error_gain=0.1,
+           clamping=[(ClampingCurrentPWM, {"max_current": 2.0, "max_pwm": 0.9})],
            motor=(MotorDC, {"kt": 0.5, "resistance": 2.0, "vin": 12.0, "supply_from_battery": True}),
        )
        actuators.append(actuator)
@@ -739,8 +755,8 @@ Customization
 Any actuator can be assembled from the existing building blocks — mix and
 match drives, clamping stages, input processors and motors to fit a specific use case.
 When the built-in components are not sufficient, implement new ones by
-subclassing :class:`DriveBase`, :class:`ClampingBase`,
-:class:`InputProcessorBase` or :class:`MotorBase`.
+subclassing :class:`DriveBase`, :class:`ClampingBase` or
+:class:`InputProcessorBase`.
 
 For example, a custom drive needs to implement
 :meth:`~DriveBase.compute`, :meth:`~DriveBase.resolve_arguments`,

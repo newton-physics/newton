@@ -12,7 +12,7 @@ class BatteryBase:
     """Base class for actuator batteries.
 
     A battery powers the motors of one or more actuators (see
-    :class:`~newton.actuators.MotorBase`).  One object holds several
+    :class:`~newton.actuators.MotorDC`).  One object holds several
     batteries of the same type: its parameter arrays have one entry per
     battery.  :meth:`step` and :meth:`reset` read and write these arrays on
     ``sim_control``, with one entry per actuator of the model, indexed like

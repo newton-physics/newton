@@ -100,7 +100,7 @@ if TYPE_CHECKING:
     from ..actuators.clamping.base import ClampingBase
     from ..actuators.drives.base import DriveBase
     from ..actuators.input_processors.base import InputProcessorBase
-    from ..actuators.motors.base import MotorBase
+    from ..actuators.motors.motor_dc import MotorDC
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -931,7 +931,7 @@ class ModelBuilder:
         input_processor_shared_kwargs: tuple = ()  # Tuple of dicts: shared kwargs per input processor class
         input_processor_args: list[list[dict[str, Any]]] = field(default_factory=list)  # Per-actuator params
         actuator_indices: list[int] = field(default_factory=list)  # Per-actuator rows of per-actuator arrays
-        motor_class: type | None = None  # MotorBase subclass (e.g. MotorDC), or None
+        motor_class: type | None = None  # Motor class (e.g. MotorDC), or None
         motor_shared_kwargs: dict = field(default_factory=dict)  # Shared motor kwargs
         motor_args: list[dict[str, Any]] = field(default_factory=list)  # Per-actuator motor array params
 
@@ -3246,7 +3246,7 @@ class ModelBuilder:
         pos_index: int | None = None,
         *,
         input_processors: list[tuple[type[InputProcessorBase], dict[str, Any]]] | None = None,
-        motor: tuple[type[MotorBase], dict[str, Any]] | None = None,
+        motor: tuple[type[MotorDC], dict[str, Any]] | None = None,
         controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> int:
@@ -3289,9 +3289,11 @@ class ModelBuilder:
 
         Raises:
             ValueError: *index* belongs to another world than the current
-                one, or a joint parameter of an input
+                one, a joint parameter of an input
                 processor does not identify a single-DOF joint of the current
-                world or a global joint, of the same type as the actuated joint.
+                world or a global joint, of the same type as the actuated joint,
+                or a clamping takes parameters from a motor that does not have them (see
+                :attr:`~newton.actuators.ClampingBase.MOTOR_PARAMS`).
         """
         if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
             if drive_class is not None:
@@ -3395,6 +3397,13 @@ class ModelBuilder:
             motor_shared_names = getattr(motor_class, "SHARED_PARAMS", set())
             motor_shared = {k: resolved_motor[k] for k in motor_shared_names if k in resolved_motor}
             motor_array_params = {k: v for k, v in resolved_motor.items() if k not in motor_shared_names}
+        for comp_class in clamping_classes:
+            missing = getattr(comp_class, "MOTOR_PARAMS", set()) - set(motor_array_params)
+            if missing:
+                raise ValueError(
+                    f"add_actuator: {comp_class.__name__} takes {', '.join(sorted(missing))} from the motor, "
+                    "which requires a motor with these parameters"
+                )
 
         # --- Build entry key: identifies a group of compatible actuators ---
         # Groups differ when drive class, input processor types/shared-params,
@@ -15740,17 +15749,6 @@ class ModelBuilder:
                     )
                     input_processor_objs.append(proc_class(**proc_arrays, **index_arrays, **shared_kw))
 
-                # Build clamping objects from per-DOF arrays + shared kwargs
-                clamping_objs = []
-                for i, (comp_class, shared_kw) in enumerate(
-                    zip(entry.clamping_classes, entry.clamping_shared_kwargs, strict=True)
-                ):
-                    comp_args_per_actuator = [per_act[i] for per_act in entry.clamping_args]
-                    comp_arrays = self._stack_args_to_arrays(
-                        comp_args_per_actuator, device=device, requires_grad=requires_grad
-                    )
-                    clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
-
                 motor_obj = None
                 if entry.motor_class is not None:
                     motor_arrays = self._stack_args_to_arrays(
@@ -15769,6 +15767,20 @@ class ModelBuilder:
                             NewtonWarning,
                             stacklevel=2,
                         )
+
+                # Build clamping objects from per-DOF arrays + shared kwargs
+                clamping_objs = []
+                for i, (comp_class, shared_kw) in enumerate(
+                    zip(entry.clamping_classes, entry.clamping_shared_kwargs, strict=True)
+                ):
+                    comp_args_per_actuator = [per_act[i] for per_act in entry.clamping_args]
+                    comp_arrays = self._stack_args_to_arrays(
+                        comp_args_per_actuator, device=device, requires_grad=requires_grad
+                    )
+                    motor_params = {
+                        name: getattr(motor_obj, name) for name in getattr(comp_class, "MOTOR_PARAMS", set())
+                    }
+                    clamping_objs.append(comp_class(**comp_arrays, **motor_params, **shared_kw))
 
                 has_rows = len(entry.actuator_indices) == len(entry.indices)
                 actuator = Actuator(

@@ -3,105 +3,73 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import warp as wp
 
-from .base import MotorBase
+
+@wp.kernel
+def _motor_dc_supply_voltage_kernel(
+    vin: wp.array[float],
+    supply_from_battery: wp.array[float],
+    battery_voltage: wp.array[float],
+    actuator_indices: wp.array[wp.uint32],
+    supply_voltage: wp.array[float],
+):
+    i = wp.tid()
+    voltage = vin[i]
+    if supply_from_battery[i] != 0.0:
+        voltage = battery_voltage[actuator_indices[i]]
+    supply_voltage[i] = voltage
 
 
 @wp.kernel
 def _motor_dc_kernel(
     velocities: wp.array[float],
     vel_indices: wp.array[wp.uint32],
+    supply_voltage: wp.array[float],
     actuator_indices: wp.array[wp.uint32],
     kt: wp.array[float],
     resistance: wp.array[float],
-    vin: wp.array[float],
-    max_pwm: wp.array[float],
-    max_current: wp.array[float],
-    supply_from_battery: wp.array[float],
-    supply_voltage: wp.array[float],
     src: wp.array[float],
     dst: wp.array[float],
     supply_current: wp.array[float],
 ):
     i = wp.tid()
-    vel = velocities[vel_indices[i]]
-
-    voltage = vin[i]
-    if supply_from_battery[i] != 0.0:
-        voltage = supply_voltage[actuator_indices[i]]
-
-    duty = (src[i] * resistance[i] / kt[i] + kt[i] * vel) / vin[i]
-    if max_current[i] > 0.0 and voltage > 0.0:
-        center = kt[i] * vel / voltage
-        span = resistance[i] * max_current[i] / voltage
-        duty = wp.clamp(duty, center - span, center + span)
-    duty = wp.clamp(duty, -max_pwm[i], max_pwm[i])
-
-    current = (voltage * duty - kt[i] * vel) / resistance[i]
+    voltage = src[i]
+    current = (voltage - kt[i] * velocities[vel_indices[i]]) / resistance[i]
     dst[i] = kt[i] * current
     if supply_current:
+        duty = float(0.0)
+        if supply_voltage[i] > 0.0:
+            duty = voltage / supply_voltage[i]
         supply_current[actuator_indices[i]] = duty * current
 
 
-class MotorDC(MotorBase):
-    """PWM-driven DC motor, as in BAM (Better Actuator Models).
+class MotorDC:
+    """DC motor driven by a PWM voltage, as in BAM (Better Actuator Models).
 
-    Turns the requested effort :math:`\\tau_{\\text{req}}` into the PWM duty
-    cycle that produces it at the supply voltage ``vin``, applies the
-    firmware limits, and computes the effort at the actual supply voltage:
+    Computes the effort from the commanded voltage :math:`u`:
 
     .. math::
 
-        d_0 &= \\frac{1}{V_{\\text{in}}} \\Big(\\frac{R}{k_t}\\, \\tau_{\\text{req}} + k_t\\, \\dot q\\Big) \\\\
-        d_1 &= \\operatorname{clamp}\\Big(d_0,\\;
-               \\frac{k_t\\, \\dot q - R\\, I_{\\max}}{V},\\;
-               \\frac{k_t\\, \\dot q + R\\, I_{\\max}}{V}\\Big) \\\\
-        d &= \\operatorname{clamp}(d_1,\\; -d_{\\max},\\; d_{\\max}) \\\\
-        I &= \\frac{V\\, d - k_t\\, \\dot q}{R} \\\\
+        I &= \\frac{u - k_t\\, \\dot q}{R} \\\\
         \\tau &= k_t\\, I
 
-    where :math:`d` is the duty cycle, :math:`I` the motor current [A] and
-    :math:`\\tau` the effort [N·m or N]. The symbols map to the parameters as
-    follows:
+    where :math:`I` is the motor current [A], :math:`\\tau` the effort
+    [N·m or N], :math:`k_t` is ``kt`` and :math:`R` is ``resistance``.
 
-    * :math:`k_t`: ``kt``;
-    * :math:`R`: ``resistance``;
-    * :math:`V_{\\text{in}}`: ``vin``;
-    * :math:`V`: ``vin``, or the battery voltage with ``supply_from_battery``;
-    * :math:`I_{\\max}`: ``max_current``; :math:`d_1 = d_0` when it is 0;
-    * :math:`d_{\\max}`: ``max_pwm``.
+    The command :math:`u` is the output of the drive, e.g. a
+    :class:`~newton.actuators.DriveVoltageControlled`, bounded by the
+    clampings, e.g. a :class:`~newton.actuators.ClampingCurrentPWM`, which
+    takes ``kt`` and ``resistance`` from this motor.
 
-    At the supply voltage ``vin`` and within the limits, the motor produces
-    the requested effort. The current limit narrows the duty cycle so that
-    :math:`|I| \\le I_{\\max}`. The ``max_pwm`` clamp is applied last, so at
-    high velocity the back-EMF term can still drive :math:`|I|` above
-    ``max_current``, and the motor brakes harder the faster it overspeeds.
-
-    With ``supply_from_battery=True``, the motor reads its supply voltage
-    from the battery and reports the current :math:`d\\, I` it draws, since
-    the battery supplies the motor current only during the PWM on-time (see
-    :class:`~newton.actuators.BatteryBase`).
-
-    .. hint::
-
-        A BAM servo with firmware gain :math:`k_{p,\\text{fw}}` and error
-        gain :math:`g` computes the duty cycle :math:`d_0 = g\\, k_{p,\\text{fw}}
-        (q_{\\text{target}} - q)`. This motor reproduces it exactly behind a
-        :class:`~newton.actuators.DrivePD` with
-
-        .. math::
-
-            k_p = \\frac{k_t\\, V_{\\text{in}}\\, g\\, k_{p,\\text{fw}}}{R}, \\qquad
-            k_d = \\frac{k_t^2}{R}
-
-        where :math:`k_d` cancels the back-EMF term of :math:`d_0`. The rest
-        of a BAM fit is modeled outside the motor: its armature on the joint
-        and its command delay with an
-        :class:`~newton.actuators.InputProcessorDelay`. Its friction is not
-        modeled.
+    The motor is the last stage of an actuator, after the drive and the
+    clamping. It provides the supply voltage :math:`V` of the actuator: ``vin``,
+    or the battery voltage with ``supply_from_battery=True``. It then
+    reports the current :math:`d\\, I` it draws, with the duty cycle
+    :math:`d = u / V`, since the battery supplies the motor current only
+    during the PWM on-time (see :class:`~newton.actuators.BatteryBase`).
 
     .. note::
 
@@ -110,26 +78,36 @@ class MotorDC(MotorBase):
         effort-speed limit a second time.
     """
 
+    SHARED_PARAMS: ClassVar[set[str]] = set()
+
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        missing = {"kt", "resistance", "vin"} - set(args)
+        """Resolve user-provided arguments with defaults.
+
+        Args:
+            args: User-provided arguments.
+
+        Returns:
+            Complete arguments with defaults filled in.
+
+        Raises:
+            ValueError: ``kt`` or ``resistance`` is missing or not positive,
+                or ``vin`` is without ``supply_from_battery``.
+        """
+        supply_from_battery = bool(args.get("supply_from_battery", False))
+        required = {"kt", "resistance"} if supply_from_battery else {"kt", "resistance", "vin"}
+        missing = required - set(args)
         if missing:
             raise ValueError(f"MotorDC is missing parameter(s): {', '.join(sorted(missing))}")
         resolved = {
             "kt": args["kt"],
             "resistance": args["resistance"],
-            "vin": args["vin"],
-            "max_pwm": args.get("max_pwm", 1.0),
-            "max_current": args.get("max_current", 0.0),
-            "supply_from_battery": float(bool(args.get("supply_from_battery", False))),
+            "vin": args.get("vin", 0.0),
+            "supply_from_battery": float(supply_from_battery),
         }
-        for name in ("kt", "resistance", "vin"):
+        for name in required:
             if resolved[name] <= 0.0:
                 raise ValueError(f"{name} must be positive, got {resolved[name]}")
-        if not 0.0 <= resolved["max_pwm"] <= 1.0:
-            raise ValueError(f"max_pwm must be in [0, 1], got {resolved['max_pwm']}")
-        if resolved["max_current"] < 0.0:
-            raise ValueError(f"max_current must be non-negative, got {resolved['max_current']}")
         return resolved
 
     def __init__(
@@ -137,8 +115,6 @@ class MotorDC(MotorBase):
         kt: wp.array[float],
         resistance: wp.array[float],
         vin: wp.array[float],
-        max_pwm: wp.array[float],
-        max_current: wp.array[float] | None = None,
         supply_from_battery: wp.array[float] | None = None,
     ):
         """Initialize the DC motor.
@@ -146,12 +122,8 @@ class MotorDC(MotorBase):
         Args:
             kt: Torque constant [N·m/A or N/A]. Shape ``(N,)``.
             resistance: Motor resistance [Ω]. Shape ``(N,)``.
-            vin: Supply voltage [V] at which the requested effort is
-                converted to a duty cycle, and the supply voltage without a
-                battery. Shape ``(N,)``.
-            max_pwm: Largest duty cycle magnitude. Shape ``(N,)``.
-            max_current: Firmware current limit [A]; 0 disables it. Shape
-                ``(N,)``. ``None`` disables it.
+            vin: Supply voltage [V] without a battery; unused with
+                ``supply_from_battery``. Shape ``(N,)``.
             supply_from_battery: Per actuator, nonzero to read the supply
                 voltage from the battery instead of *vin*. Shape ``(N,)``.
                 ``None`` uses *vin* everywhere.
@@ -165,20 +137,63 @@ class MotorDC(MotorBase):
         self.resistance = resistance
         """Motor resistance [Ω], shape (N,)."""
         self.vin = vin
-        """Supply voltage [V] of the duty cycle conversion, and without a battery, shape (N,)."""
-        self.max_pwm = max_pwm
-        """Largest duty cycle magnitude, shape (N,)."""
-        self.max_current = max_current if max_current is not None else wp.zeros(n, dtype=float, device=kt.device)
-        """Firmware current limit [A], 0 when disabled, shape (N,)."""
+        """Supply voltage [V] without a battery, shape (N,)."""
         self.supply_from_battery = (
             supply_from_battery if supply_from_battery is not None else wp.zeros(n, dtype=float, device=kt.device)
         )
         """Per actuator, nonzero when the supply voltage is read from the battery, shape (N,)."""
-        for name in ("resistance", "vin", "max_pwm", "max_current", "supply_from_battery"):
+        for name in ("resistance", "vin", "supply_from_battery"):
             shape = getattr(self, name).shape
             if shape != n:
                 raise ValueError(f"{name} shape {shape} must match kt shape {n}")
         self.uses_battery = bool(self.supply_from_battery.numpy().any())
+        """Whether an actuator slot draws from a battery."""
+
+    def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
+        """Called by :class:`~newton.actuators.Actuator` after construction to set up device-specific resources.
+
+        Args:
+            device: Warp device to use.
+            num_actuators: Number of actuators (DOFs) this motor manages.
+            requires_grad: Whether to allocate internal buffers with gradient support.
+        """
+
+    def is_graphable(self) -> bool:
+        """Return True if :meth:`compute` can be captured in a CUDA graph."""
+        return True
+
+    def compute_supply_voltage(
+        self,
+        battery_voltage: wp.array[float] | None,
+        actuator_indices: wp.array[wp.uint32] | None,
+        supply_voltage: wp.array[float],
+        device: wp.Device | None = None,
+    ) -> None:
+        """Write ``vin``, or the battery voltage with ``supply_from_battery``, to *supply_voltage*.
+
+        Args:
+            battery_voltage: Supply voltage of each actuator [V], one entry
+                per actuator of the model (``actuator_supply_voltage``),
+                written by :meth:`BatteryBase.step <newton.actuators.BatteryBase.step>`,
+                or ``None`` without a battery.
+            actuator_indices: Index of each slot into *battery_voltage*, or
+                ``None`` without a battery.
+            supply_voltage: Supply voltage of each slot [V]. Shape ``(N,)``.
+            device: Warp device for kernel launches.
+
+        Raises:
+            ValueError: An actuator has :attr:`supply_from_battery` set and
+                *actuator_indices* or *battery_voltage* is ``None``.
+        """
+        if self.uses_battery and (actuator_indices is None or battery_voltage is None):
+            raise ValueError("MotorDC with supply_from_battery requires actuator_indices and the battery voltage.")
+        wp.launch(
+            kernel=_motor_dc_supply_voltage_kernel,
+            dim=len(supply_voltage),
+            inputs=[self.vin, self.supply_from_battery, battery_voltage, actuator_indices],
+            outputs=[supply_voltage],
+            device=device,
+        )
 
     def compute(
         self,
@@ -186,35 +201,41 @@ class MotorDC(MotorBase):
         dst_forces: wp.array[float],
         velocities: wp.array[float],
         vel_indices: wp.array[wp.uint32],
+        supply_voltage: wp.array[float],
         actuator_indices: wp.array[wp.uint32] | None,
-        supply_voltage: wp.array[float] | None,
         supply_current: wp.array[float] | None,
         device: wp.Device | None = None,
     ) -> None:
-        """Compute the motor effort.
+        """Read the voltage command from *src*, write the motor effort to *dst*.
 
-        Raises:
-            ValueError: An actuator has :attr:`supply_from_battery` set and
-                *actuator_indices* or *supply_voltage* is ``None``.
+        When src and dst are the same array, this is an in-place update.
 
-        See :meth:`MotorBase.compute` for the arguments.
+        Args:
+            src_forces: Voltage command [V]. Shape ``(N,)``.
+            dst_forces: Motor effort [N or N·m]. Shape ``(N,)``.
+            velocities: Joint velocities [m/s or rad/s].
+            vel_indices: Indices into *velocities* for each slot.
+            supply_voltage: Supply voltage of each slot [V], written by
+                :meth:`compute_supply_voltage`. Shape ``(N,)``.
+            actuator_indices: Index of each slot into *supply_current*, or
+                ``None`` without a battery.
+            supply_current: Current each actuator draws from its battery [A],
+                one entry per actuator of the model (``actuator_supply_current``),
+                written here and read by
+                :meth:`BatteryBase.step <newton.actuators.BatteryBase.step>`,
+                or ``None`` to skip.
+            device: Warp device for kernel launches.
         """
-        if self.uses_battery and (actuator_indices is None or supply_voltage is None):
-            raise ValueError("MotorDC with supply_from_battery requires actuator_indices and the supply voltage.")
         wp.launch(
             kernel=_motor_dc_kernel,
             dim=len(src_forces),
             inputs=[
                 velocities,
                 vel_indices,
+                supply_voltage,
                 actuator_indices,
                 self.kt,
                 self.resistance,
-                self.vin,
-                self.max_pwm,
-                self.max_current,
-                self.supply_from_battery,
-                supply_voltage,
                 src_forces,
             ],
             outputs=[dst_forces, supply_current],

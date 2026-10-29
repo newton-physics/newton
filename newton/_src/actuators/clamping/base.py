@@ -15,6 +15,8 @@ class ClampingBase:
     actuator output effort — symmetric limits, velocity-dependent
     saturation, position-dependent curves, etc.  They read from a
     source effort buffer and write bounded values to a destination buffer.
+    In an actuator with a motor, they bound the motor command instead (e.g.
+    a voltage for :class:`~newton.actuators.MotorDC`).
 
     **Validation contract:**  :meth:`resolve_arguments` validates scalar
     parameter values before they are batched into Warp arrays.
@@ -24,6 +26,14 @@ class ClampingBase:
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
+
+    MOTOR_PARAMS: ClassVar[set[str]] = set()
+    """Constructor parameters taken from the motor of the actuator.
+
+    :meth:`ModelBuilder.add_actuator <newton.ModelBuilder.add_actuator>`
+    requires a motor with these parameters and passes the motor's arrays of
+    the same name, so they are authored once, on the motor.
+    """
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
@@ -83,6 +93,8 @@ class ClampingBase:
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
         device: wp.Device | None = None,
+        *,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         """Read effort from *src*, apply clamping, write to *dst*.
 
@@ -99,5 +111,9 @@ class ClampingBase:
             pos_indices: Indices into *positions* for each DOF.
             vel_indices: Indices into *velocities* for each DOF.
             device: Warp device for kernel launches.
+            supply_voltage: Supply voltage of each slot [V], from the
+                actuator's motor (see :meth:`MotorDC.compute_supply_voltage
+                <newton.actuators.MotorDC.compute_supply_voltage>`). Shape
+                ``(N,)``. Only passed when the actuator has a motor.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement modify_forces")

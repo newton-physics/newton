@@ -32,6 +32,7 @@ construction.
    BatteryConstantResistance
    BatteryParsed
    ClampingBase
+   ClampingCurrentPWM
    ClampingDCMotor
    ClampingMaxEffort
    ClampingPositionBased
@@ -42,11 +43,11 @@ construction.
    DriveNeuralMLP
    DrivePD
    DrivePID
+   DriveVoltageControlled
    InputProcessorBase
    InputProcessorDelay
    InputProcessorEncoder
    JointSpaceResponse
-   MotorBase
    MotorDC
    SchemaNames
 

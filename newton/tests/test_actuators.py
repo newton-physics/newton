@@ -31,6 +31,7 @@ from newton.actuators import (
     ActuatorParsed,
     BatteryConstantResistance,
     ClampingBase,
+    ClampingCurrentPWM,
     ClampingDCMotor,
     ClampingMaxEffort,
     ClampingPositionBased,
@@ -40,6 +41,7 @@ from newton.actuators import (
     DriveNeuralMLP,
     DrivePD,
     DrivePID,
+    DriveVoltageControlled,
     InputProcessorBase,
     InputProcessorDelay,
     InputProcessorEncoder,
@@ -2674,18 +2676,17 @@ class TestMotorDC(unittest.TestCase):
     """DC motor, alone and with batteries."""
 
     def test_compute(self):
-        """Construct the motor directly and call compute() with each duty-cycle limit.
+        """Construct the motor directly and call compute() from a voltage command.
 
-        Slot 0 is within all limits, slot 1 is narrowed by the current limit,
-        slot 2 is clamped by ``max_pwm``, and slot 3 reads its supply from
-        the battery voltage instead of ``vin`` and writes the current it draws.
+        Slots 0 to 2 are supplied with ``vin``, and slot 3 reads its supply
+        from the battery voltage and writes the current it draws. Slot 2
+        regenerates: its back-EMF exceeds the command.
         """
-        kt, resistance, vin, max_pwm = 0.5, 1.0, 10.0, 0.9
-        requested = [1.0, 6.0, 20.0, 1.0]
-        max_current = [0.0, 1.0, 0.0, 0.0]
+        kt, resistance, vin = 0.5, 2.0, 10.0
+        commanded = [5.0, -3.0, 0.5, 2.0]
         supply_from_battery = [0.0, 0.0, 0.0, 1.0]
-        qd = [0.5, -1.0, 2.0, 0.3]
-        n = len(requested)
+        qd = [0.5, -1.0, 4.0, 0.3]
+        n = len(commanded)
 
         def _f(vals: Sequence[float]) -> wp.array[float]:
             return wp.array(vals, dtype=wp.float32)
@@ -2696,28 +2697,22 @@ class TestMotorDC(unittest.TestCase):
             kt=_f([kt] * n),
             resistance=_f([resistance] * n),
             vin=_f([vin] * n),
-            max_pwm=_f([max_pwm] * n),
-            max_current=_f(max_current),
             supply_from_battery=_f(supply_from_battery),
         )
         self.assertTrue(motor.uses_battery)
-        supply_voltage = _f([7.0, 0.0, 0.0, 0.0])
+        supply_voltage = wp.zeros(n, dtype=wp.float32)
         supply_current = wp.zeros(n, dtype=wp.float32)
         forces = wp.zeros(n, dtype=wp.float32)
 
-        motor.compute(_f(requested), forces, _f(qd), indices, actuator_indices, supply_voltage, supply_current)
+        motor.compute_supply_voltage(_f([8.0, 0.0, 0.0, 0.0]), actuator_indices, supply_voltage)
+        motor.compute(_f(commanded), forces, _f(qd), indices, supply_voltage, actuator_indices, supply_current)
 
-        qd = np.array(qd)
-        supply = np.where(supply_from_battery, 7.0, vin)
-        duty = (np.array(requested) * resistance / kt + kt * qd) / vin
-        limited = np.array(max_current) > 0.0
-        center, span = kt * qd / supply, resistance * np.array(max_current) / supply
-        duty[limited] = np.clip(duty[limited], (center - span)[limited], (center + span)[limited])
-        duty = np.clip(duty, -max_pwm, max_pwm)
-        current = (supply * duty - kt * qd) / resistance
+        supply = np.where(supply_from_battery, 8.0, vin)
+        np.testing.assert_allclose(supply_voltage.numpy(), supply)
+        current = (np.array(commanded) - kt * np.array(qd)) / resistance
         np.testing.assert_allclose(forces.numpy(), kt * current, rtol=1e-5)
-        np.testing.assert_allclose(forces.numpy()[0], requested[0], rtol=1e-5)
-        np.testing.assert_allclose(supply_current.numpy(), (duty * current)[::-1], rtol=1e-5)
+        self.assertLess(forces.numpy()[2], 0.0)
+        np.testing.assert_allclose(supply_current.numpy(), (np.array(commanded) / supply * current)[::-1], rtol=1e-5)
 
     def test_battery_supply(self):
         """Each servo reads the voltage its battery dropped to under the previous step's current.
@@ -2726,8 +2721,8 @@ class TestMotorDC(unittest.TestCase):
         ankle servo share battery 0, and a second ankle servo draws from
         battery 1. The knee is its own actuator group and the ankle servos
         share one, so a battery spans groups and two servos of one group act
-        on one DOF. The PD gains reproduce the duty cycle ``kp * error`` of a
-        BAM servo, and a servo draws ``duty * current`` from its battery. In
+        on one DOF. Each servo computes the duty cycle ``kp * error`` of a
+        BAM servo, and draws ``duty * current`` from its battery. In
         world 0 the ankle regenerates: it offsets the knee's current on
         battery 0 and leaves battery 1 at its nominal voltage. In world 1
         battery 0 reaches its minimum voltage. ``replicate`` gives each world
@@ -2753,17 +2748,17 @@ class TestMotorDC(unittest.TestCase):
         template.add_articulation(joints)
         knee, ankle = template.joint_qd_start[joints[0]], template.joint_qd_start[joints[2]]
         servo = {
-            "kp": kt * vin * kp / resistance,
-            "kd": kt * kt / resistance,
-            "motor": (
-                MotorDC,
-                {"kt": kt, "resistance": resistance, "vin": vin, "max_pwm": max_pwm, "supply_from_battery": True},
-            ),
+            "kp": kp,
+            "clamping": [(ClampingCurrentPWM, {"max_pwm": max_pwm})],
+            "motor": (MotorDC, {"kt": kt, "resistance": resistance, "vin": vin, "supply_from_battery": True}),
         }
         knee_servo = template.add_actuator(
-            DrivePD, index=knee, input_processors=[(InputProcessorEncoder, {"output_joint": "backlash"})], **servo
+            DriveVoltageControlled,
+            index=knee,
+            input_processors=[(InputProcessorEncoder, {"output_joint": "backlash"})],
+            **servo,
         )
-        ankle_servos = [template.add_actuator(DrivePD, index=ankle, **servo) for _ in range(2)]
+        ankle_servos = [template.add_actuator(DriveVoltageControlled, index=ankle, **servo) for _ in range(2)]
         for servos, nominal, minimum in zip(
             ([knee_servo, ankle_servos[0]], [ankle_servos[1]]), nominal_voltage, min_voltage, strict=True
         ):
@@ -3055,6 +3050,66 @@ class TestInputProcessors(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # 3. Clamping
 # ---------------------------------------------------------------------------
+
+
+class TestClampingCurrentPWM(unittest.TestCase):
+    """ClampingCurrentPWM: current limit, then PWM limit, with the motor's kt and resistance."""
+
+    def test_modify_forces(self):
+        """Construct the clamp directly and call modify_forces() with each limit.
+
+        Slot 0 is within both limits, slot 1 is narrowed by the current limit,
+        slot 2 is clamped by ``max_pwm``, and slot 3 overspeeds: its current
+        window lies above the PWM limit, so the PWM limit wins.
+        """
+        kt, resistance, max_current, max_pwm, voltage = 0.5, 2.0, 1.0, 0.9, 10.0
+        commanded = [1.0, 6.0, -20.0, 0.0]
+        qd = [0.5, -1.0, 2.0, 30.0]
+        n = len(commanded)
+
+        def _f(vals: Sequence[float]) -> wp.array[float]:
+            return wp.array(vals, dtype=wp.float32)
+
+        indices = wp.array(list(range(n)), dtype=wp.uint32)
+        clamp = ClampingCurrentPWM(
+            max_current=_f([max_current, max_current, 0.0, max_current]),
+            max_pwm=_f([max_pwm] * n),
+            kt=_f([kt] * n),
+            resistance=_f([resistance] * n),
+        )
+        dst = wp.zeros(n, dtype=wp.float32)
+
+        clamp.modify_forces(
+            _f(commanded),
+            dst,
+            wp.zeros(n, dtype=wp.float32),
+            _f(qd),
+            indices,
+            indices,
+            supply_voltage=_f([voltage] * n),
+        )
+
+        np.testing.assert_allclose(dst.numpy(), [1.0, 1.5, -9.0, 9.0], rtol=1e-5)
+
+    def test_motor_params(self):
+        """The builder passes the motor's kt and resistance arrays, and requires a motor that has them."""
+        builder = newton.ModelBuilder()
+        link = builder.add_link()
+        joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        clamping = [(ClampingCurrentPWM, {"max_current": 1.0})]
+        with self.assertRaisesRegex(ValueError, "kt, resistance from the motor"):
+            builder.add_actuator(DriveVoltageControlled, index=builder.joint_qd_start[joint], kp=1.0, clamping=clamping)
+        builder.add_actuator(
+            DriveVoltageControlled,
+            index=builder.joint_qd_start[joint],
+            kp=1.0,
+            clamping=clamping,
+            motor=(MotorDC, {"kt": 0.5, "resistance": 2.0, "vin": 12.0}),
+        )
+        (actuator,) = builder.finalize().actuators
+        (clamp,) = actuator.clamping
+        self.assertIs(clamp.kt, actuator.motor.kt)
+        self.assertIs(clamp.resistance, actuator.motor.resistance)
 
 
 class TestClampingMaxEffort(unittest.TestCase):
@@ -5053,9 +5108,9 @@ class TestActuatorBuilder(unittest.TestCase):
     def test_motor_from_usd(self):
         """Servos with a DC motor, a delay, backlash and a battery, loaded from USD and replicated.
 
-        The asset has three servos with PD, max effort, a DC motor and a
-        2-step delay, with PD gains that reproduce a BAM duty cycle of
-        ``0.5 * error``:
+        The asset has three servos with voltage control for a BAM duty cycle
+        of ``0.5 * error``, current and PWM limits, a DC motor and a 2-step
+        delay:
           knee_actuator: backlash hinge in series, draws from Battery
           ankle_actuator: draws from Battery
           toe_actuator: fixed supply vin = 5 V
@@ -5106,8 +5161,8 @@ class TestActuatorBuilder(unittest.TestCase):
                 actuator.step(state, control, current, nxt, dt=0.01)
             states = [(actuator, nxt, current) for actuator, current, nxt in states]
 
-            requested = np.clip(0.6 * supply * 0.5 * (targets[max(step - 2, 0)] - measured) / 2.0, -0.8, 0.8)
-            duty = np.clip(requested * 2.0 / (0.6 * supply), -0.9, 0.9)
+            duty = np.clip(0.5 * (targets[max(step - 2, 0)] - measured), -2.0 / supply, 2.0 / supply)
+            duty = np.clip(duty, -0.9, 0.9)
             expected = 0.6 * supply * duty / 2.0
             np.testing.assert_allclose(control.joint_f.numpy()[dof], expected, rtol=1e-5, err_msg=f"step {step}")
 

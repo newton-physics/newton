@@ -2834,7 +2834,7 @@ def parse_usd(
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.input_processors.base import InputProcessorBase  # noqa: PLC0415
-    from ..actuators.motors.base import MotorBase  # noqa: PLC0415
+    from ..actuators.motors import MotorDC  # noqa: PLC0415
     from ..actuators.usd_parser import BatteryParsed, parse_actuator_prim, parse_battery_prim  # noqa: PLC0415
 
     batteries: dict[str, BatteryParsed] = {}
@@ -2899,7 +2899,7 @@ def parse_usd(
                             )
                         proc_kwargs[name] = path_joint_map[path]
                 input_processor_specs.append((comp_class, proc_kwargs))
-            elif issubclass(comp_class, MotorBase):
+            elif issubclass(comp_class, MotorDC):
                 motor_spec = (comp_class, dict(comp_kwargs))
             else:
                 clamping_specs.append((comp_class, comp_kwargs))

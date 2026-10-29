@@ -31,8 +31,9 @@ class InputProcessorEncoder(InputProcessorBase):
     effects of how the encoder is mounted and how it measures. Supported
     effects:
 
-    * **Output-side mounting** (``output_joint``): the encoder sits behind a
-      passive joint at the output of the actuated joint, so it reads
+    * **Output-side mounting** (``output_joint``): the encoder measures after
+      a passive joint between the actuated joint and the link, e.g. to model
+      gearbox backlash, so it reads
 
       .. math::
 

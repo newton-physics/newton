@@ -510,6 +510,7 @@ class DriveNeuralMLP(DriveBase):
         device: wp.Device | None = None,
         *,
         custom_inputs: dict[str, Any] | None = None,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         device = device or self._device
         n = self._num_actuators

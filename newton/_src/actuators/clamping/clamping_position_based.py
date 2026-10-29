@@ -271,6 +271,8 @@ class ClampingPositionBased(ClampingBase):
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
         device: wp.Device | None = None,
+        *,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         wp.launch(
             kernel=_position_based_clamp_kernel,

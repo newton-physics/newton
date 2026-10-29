@@ -296,6 +296,7 @@ class DrivePID(DriveBase):
         device: wp.Device | None = None,
         *,
         custom_inputs: dict[str, Any] | None = None,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         wp.launch(
             kernel=_pid_effort_kernel,

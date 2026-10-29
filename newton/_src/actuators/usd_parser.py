@@ -14,11 +14,19 @@ from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .batteries import BatteryBase, BatteryConstantResistance
-from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
+from .clamping import ClampingBase, ClampingCurrentPWM, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
+from .drives import (
+    DriveBase,
+    DriveNeuralGRU,
+    DriveNeuralLSTM,
+    DriveNeuralMLP,
+    DrivePD,
+    DrivePID,
+    DriveVoltageControlled,
+)
 from .input_processors import InputProcessorBase, InputProcessorEncoder
 from .input_processors.input_processor_delay import InputProcessorDelay
-from .motors import MotorBase, MotorDC
+from .motors import MotorDC
 from .utils import _looks_like_torch_checkpoint, load_metadata
 
 _DEPRECATED_UNSET = object()
@@ -88,7 +96,7 @@ class ActuatorParsed:
 
     drive_class: type[DriveBase]
     drive_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorBase], dict[str, Any]]] = field(
+    component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]] = field(
         default_factory=list
     )
     target_path: str = ""
@@ -100,7 +108,7 @@ class ActuatorParsed:
         self,
         drive_class: type[DriveBase] | object = _DEPRECATED_UNSET,
         drive_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
-        component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorBase], dict[str, Any]]] | None = None,
+        component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]] | None = None,
         target_path: str = "",
         *,
         battery_path: str | None = None,
@@ -284,10 +292,12 @@ class SchemaNames:
     PD_CONTROL = "NewtonPDControlAPI"
     PID_CONTROL = "NewtonPIDControlAPI"
     NEURAL_CONTROL = "NewtonNeuralControlAPI"
+    VOLTAGE_CONTROL = "NewtonVoltageControlAPI"
 
     MAX_EFFORT_CLAMPING = "NewtonMaxEffortClampingAPI"
     DC_MOTOR_CLAMPING = "NewtonDCMotorClampingAPI"
     POSITION_BASED_CLAMPING = "NewtonPositionBasedClampingAPI"
+    CURRENT_PWM_CLAMPING = "NewtonCurrentPWMClampingAPI"
 
     DC_MOTOR = "NewtonDCMotorAPI"
 
@@ -299,9 +309,11 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.PD_CONTROL: _SchemaEntry(DrivePD, ComponentKind.DRIVE),
     SchemaNames.PID_CONTROL: _SchemaEntry(DrivePID, ComponentKind.DRIVE),
     SchemaNames.NEURAL_CONTROL: _SchemaEntry(_resolve_neural_drive, ComponentKind.DRIVE),
+    SchemaNames.VOLTAGE_CONTROL: _SchemaEntry(DriveVoltageControlled, ComponentKind.DRIVE),
     SchemaNames.MAX_EFFORT_CLAMPING: _SchemaEntry(ClampingMaxEffort, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR_CLAMPING: _SchemaEntry(ClampingDCMotor, ComponentKind.CLAMPING),
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
+    SchemaNames.CURRENT_PWM_CLAMPING: _SchemaEntry(ClampingCurrentPWM, ComponentKind.CLAMPING),
     SchemaNames.DC_MOTOR: _SchemaEntry(MotorDC, ComponentKind.MOTOR),
     SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
     SchemaNames.ENCODER: _SchemaEntry(InputProcessorEncoder, ComponentKind.INPUT_PROCESSOR),
@@ -311,7 +323,6 @@ _BASE_SCHEMAS = {
     "NewtonActuatorControlBaseAPI",
     "NewtonActuatorClampingBaseAPI",
     "NewtonActuatorInputProcessorBaseAPI",
-    "NewtonActuatorMotorBaseAPI",
 }
 
 
@@ -501,7 +512,7 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             drive_schema_registered = _is_registered_schema(schema_name)
         else:
             if entry.kind is ComponentKind.MOTOR:
-                motor = next((c for c, _ in component_specs if issubclass(c, MotorBase)), None)
+                motor = next((c for c, _ in component_specs if issubclass(c, MotorDC)), None)
                 if motor is not None:
                     raise ValueError(
                         f"Actuator prim '{prim.GetPath()}' has multiple motors: {motor.__name__} and {cls.__name__}"
@@ -511,16 +522,16 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
     if drive_class is None:
         raise ValueError(f"Actuator prim '{prim.GetPath()}' has no drive schema (detected schemas: {detected})")
 
+    batteries = _get_relationship_targets(prim, "newton:battery")
     if not drive_schema_registered:
         claimed: set[str] = set()
         for cls, kwargs in component_specs:
             try:
-                claimed.update(cls.resolve_arguments(kwargs))
+                claimed.update(cls.resolve_arguments({"supply_from_battery": bool(batteries), **kwargs}))
             except ValueError as exc:
                 raise ValueError(f"Actuator prim '{prim.GetPath()}': {exc}") from None
         drive_kwargs = {name: value for name, value in drive_kwargs.items() if name not in claimed}
 
-    batteries = _get_relationship_targets(prim, "newton:battery")
     if len(batteries) > 1:
         warnings.warn(
             f"Actuator prim {prim.GetPath()} has {len(batteries)} batteries; only the first is used",

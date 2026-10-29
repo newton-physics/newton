@@ -22,7 +22,9 @@ class DriveBase:
     Drives compute actuator output effort from authored drive
     parameters, commanded inputs (targets, feedforward), and simulation
     state. The output may still be constrained by one or more
-    :class:`~newton.actuators.ClampingBase` objects.
+    :class:`~newton.actuators.ClampingBase` objects. In an actuator with a
+    motor, the output is the motor command instead (e.g. a voltage for
+    :class:`~newton.actuators.MotorDC`).
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
 
@@ -102,6 +104,7 @@ class DriveBase:
         device: wp.Device | None = None,
         *,
         custom_inputs: dict[str, Any] | None = None,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         """Compute actuator output effort and write to ``forces[i]``.
 
@@ -123,6 +126,10 @@ class DriveBase:
                 :attr:`custom_inputs`, keyed by attribute name. Values are
                 passed without validation and may be ``None`` when absent.
                 Empty when the drive names none.
+            supply_voltage: Supply voltage of each slot [V], from the
+                actuator's motor (see :meth:`MotorDC.compute_supply_voltage
+                <newton.actuators.MotorDC.compute_supply_voltage>`). Shape
+                ``(N,)``. Only passed when the actuator has a motor.
         """
         raise NotImplementedError(f"{type(self).__name__} must implement compute")
 

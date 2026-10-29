@@ -75,6 +75,8 @@ class ClampingMaxEffort(ClampingBase):
         pos_indices: wp.array[wp.uint32],
         vel_indices: wp.array[wp.uint32],
         device: wp.Device | None = None,
+        *,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         wp.launch(
             kernel=_box_clamp_kernel,

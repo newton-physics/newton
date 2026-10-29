@@ -42,6 +42,7 @@ class _EffortModeExplicit:
         dt: float | None,
         custom_inputs: dict[str, Any] | None = None,
         bias_force: wp.array[float] | None = None,
+        supply_voltage: wp.array[float] | None = None,
     ) -> wp.array[float]:
         """Compute raw effort into *computed_forces*, clamp into *applied_forces*.
 
@@ -51,6 +52,8 @@ class _EffortModeExplicit:
         compute_kwargs: dict[str, Any] = {"device": self._device}
         if self._drive.custom_inputs:
             compute_kwargs["custom_inputs"] = custom_inputs
+        if supply_voltage is not None:
+            compute_kwargs["supply_voltage"] = supply_voltage
         self._drive.compute(
             positions,
             velocities,
@@ -66,10 +69,11 @@ class _EffortModeExplicit:
             dt,
             **compute_kwargs,
         )
+        clamp_kwargs: dict[str, Any] = {"device": self._device}
+        if supply_voltage is not None:
+            clamp_kwargs["supply_voltage"] = supply_voltage
         forces = computed_forces
         for clamp in self._clamping:
-            clamp.modify_forces(
-                forces, applied_forces, positions, velocities, pos_indices, vel_indices, device=self._device
-            )
+            clamp.modify_forces(forces, applied_forces, positions, velocities, pos_indices, vel_indices, **clamp_kwargs)
             forces = applied_forces
         return forces

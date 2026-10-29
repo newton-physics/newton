@@ -773,6 +773,7 @@ class DriveNeuralGRU(DriveBase):
         device: wp.Device | None = None,
         *,
         custom_inputs: dict[str, Any] | None = None,
+        supply_voltage: wp.array[float] | None = None,
     ) -> None:
         """Evaluate one GRU sample and write physical effort."""
         self._next_hidden = None

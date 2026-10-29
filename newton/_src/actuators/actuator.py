@@ -19,7 +19,7 @@ from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortMo
 from .input_processors.base import InputProcessorBase
 from .input_processors.input_processor_delay import InputProcessorDelay
 from .input_processors.input_processor_encoder import InputProcessorEncoder
-from .motors.base import MotorBase
+from .motors.motor_dc import MotorDC
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -385,7 +385,7 @@ class Actuator:
         requires_grad: bool = False,
         *,
         input_processors: list[InputProcessorBase] | None = None,
-        motor: MotorBase | None = None,
+        motor: MotorDC | None = None,
         actuator_indices: wp.array[wp.uint32] | None = None,
         control_supply_voltage_attr: str = "actuator_supply_voltage",
         control_supply_current_attr: str = "actuator_supply_current",
@@ -426,7 +426,9 @@ class Actuator:
                 state and command inputs before the drive (e.g.
                 :class:`InputProcessorDelay`).
             motor: Optional motor, applied after the clamping (e.g.
-                :class:`~newton.actuators.MotorDC`).
+                :class:`~newton.actuators.MotorDC`). With a motor, the drive
+                computes the motor command (e.g. a voltage) and receives the
+                supply voltage of each slot.
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
                 than per DOF. Required when the motor draws from a battery.
@@ -501,6 +503,11 @@ class Actuator:
         self._applied_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
+        self._supply_voltage = None
+        if motor is not None:
+            self._supply_voltage = wp.zeros(
+                self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
+            )
 
         drive.finalize(self.device, self.num_actuators)
         for processor in self.input_processors:
@@ -757,18 +764,22 @@ class Actuator:
            in list order (e.g. read delayed targets from ``current_state``),
            and write each processor's ``next_state`` (e.g. push the current
            targets into the delay buffer).
-        2. **Effort** — raw effort into ``_computed_forces`` (explicit control
-           law, or the implicit end-of-step solve).
-        3. **Clamping** — bounded effort into ``_applied_forces``. Explicit
+        2. **Supply voltage** — with a motor, the supply voltage of each slot
+           (see :meth:`MotorDC.compute_supply_voltage
+           <newton.actuators.MotorDC.compute_supply_voltage>`), which is
+           passed to the drive and the motor.
+        3. **Effort** — raw effort into ``_computed_forces`` (explicit control
+           law, or the implicit end-of-step solve). With a motor, this is the
+           motor command (e.g. a voltage).
+        4. **Clamping** — bounded effort into ``_applied_forces``. Explicit
            clamps after the drive law; implicit enforces them inside the
            solve.
-        4. **Motor** — motor effort into ``_applied_forces``. A motor that
-           draws from a battery reads its supply voltage and writes the
-           current it draws.
-        5. **Scatter-add** — *accumulate* applied (and optionally computed)
+        5. **Motor** — motor effort into ``_applied_forces``. A motor that
+           draws from a battery writes the current it draws.
+        6. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
-        6. **Drive state update** — write the drive's ``next_state``.
+        7. **Drive state update** — write the drive's ``next_state``.
 
         Args:
             sim_state: Object or mapping carrying the arrays named by
@@ -846,7 +857,17 @@ class Actuator:
                 processor.update_state(inputs, current, nxt)
             inputs = processed
 
-        # --- 2+3. Effort mode: compute raw effort and clamp ---
+        # --- 2. Supply voltage from the motor ---
+        battery_voltage = supply_current = None
+        if self._uses_battery:
+            battery_voltage = _require_array(sim_control, self.control_supply_voltage_attr)
+            supply_current = _require_array(sim_control, self.control_supply_current_attr)
+        if self.motor is not None:
+            self.motor.compute_supply_voltage(
+                battery_voltage, self.actuator_indices, self._supply_voltage, device=self.device
+            )
+
+        # --- 3+4. Effort mode: compute raw effort and clamp ---
         drive_state = current_act_state.drive_state if current_act_state else None
         custom_inputs = _collect_custom_inputs(sim_control, self.drive.custom_inputs)
         output_forces = self._effort_mode.compute_force(
@@ -866,27 +887,24 @@ class Actuator:
             dt,
             custom_inputs,
             bias_force,
+            self._supply_voltage,
         )
 
-        # --- 4. Motor ---
+        # --- 5. Motor ---
         if self.motor is not None:
-            supply_voltage = supply_current = None
-            if self._uses_battery:
-                supply_voltage = _require_array(sim_control, self.control_supply_voltage_attr)
-                supply_current = _require_array(sim_control, self.control_supply_current_attr)
             self.motor.compute(
                 output_forces,
                 self._applied_forces,
                 inputs.velocities,
                 inputs.vel_indices,
+                self._supply_voltage,
                 self.actuator_indices,
-                supply_voltage,
                 supply_current,
                 device=self.device,
             )
             output_forces = self._applied_forces
 
-        # --- 5. Scatter-add to output ---
+        # --- 6. Scatter-add to output ---
         applied_output = _require_array(sim_control, self.control_output_attr)
         computed_output = None
         if (
@@ -902,7 +920,7 @@ class Actuator:
             device=self.device,
         )
 
-        # --- 6. State updates (write to next_state) ---
+        # --- 7. State updates (write to next_state) ---
         if self.drive.is_stateful():
             self.drive.update_state(
                 current_act_state.drive_state,

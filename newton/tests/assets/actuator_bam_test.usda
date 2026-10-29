@@ -82,11 +82,11 @@ def Xform "World"
             uniform token physics:axis = "Z"
         }
 
-        # Knee servo: PD + max effort + DC motor + delay + encoder, on the battery
+        # Knee servo: voltage control + current/PWM limits + DC motor + delay + encoder, on the battery
         def NewtonActuator "knee_actuator" (
             prepend apiSchemas = [
-                "NewtonPDControlAPI",
-                "NewtonMaxEffortClampingAPI",
+                "NewtonVoltageControlAPI",
+                "NewtonCurrentPWMClampingAPI",
                 "NewtonDCMotorAPI",
                 "NewtonActuatorDelayAPI",
                 "NewtonActuatorEncoderAPI",
@@ -96,21 +96,21 @@ def Xform "World"
             rel newton:targets = </World/Robot/knee>
             rel newton:outputJoint = </World/Robot/knee_backlash>
             rel newton:battery = </World/Robot/Battery>
-            float newton:kp = 0.9
-            float newton:kd = 0.18
+            float newton:kp = 32.0
+            float newton:errorGain = 0.015625
             float newton:kt = 0.6
             float newton:resistance = 2.0
             float newton:vin = 6.0
             float newton:maxPwm = 0.9
-            float newton:maxEffort = 0.8
+            float newton:maxCurrent = 1.0
             int newton:delaySteps = 2
         }
 
-        # Ankle servo: PD + max effort + DC motor + delay, on the battery
+        # Ankle servo: voltage control + current/PWM limits + DC motor + delay, on the battery
         def NewtonActuator "ankle_actuator" (
             prepend apiSchemas = [
-                "NewtonPDControlAPI",
-                "NewtonMaxEffortClampingAPI",
+                "NewtonVoltageControlAPI",
+                "NewtonCurrentPWMClampingAPI",
                 "NewtonDCMotorAPI",
                 "NewtonActuatorDelayAPI",
             ]
@@ -118,34 +118,34 @@ def Xform "World"
         {
             rel newton:targets = </World/Robot/ankle>
             rel newton:battery = </World/Robot/Battery>
-            float newton:kp = 0.9
-            float newton:kd = 0.18
+            float newton:kp = 32.0
+            float newton:errorGain = 0.015625
             float newton:kt = 0.6
             float newton:resistance = 2.0
             float newton:vin = 6.0
             float newton:maxPwm = 0.9
-            float newton:maxEffort = 0.8
+            float newton:maxCurrent = 1.0
             int newton:delaySteps = 2
         }
 
-        # Toe servo: PD + max effort + DC motor + delay, fixed supply vin
+        # Toe servo: voltage control + current/PWM limits + DC motor + delay, fixed supply vin
         def NewtonActuator "toe_actuator" (
             prepend apiSchemas = [
-                "NewtonPDControlAPI",
-                "NewtonMaxEffortClampingAPI",
+                "NewtonVoltageControlAPI",
+                "NewtonCurrentPWMClampingAPI",
                 "NewtonDCMotorAPI",
                 "NewtonActuatorDelayAPI",
             ]
         )
         {
             rel newton:targets = </World/Robot/toe>
-            float newton:kp = 0.75
-            float newton:kd = 0.18
+            float newton:kp = 32.0
+            float newton:errorGain = 0.015625
             float newton:kt = 0.6
             float newton:resistance = 2.0
             float newton:vin = 5.0
             float newton:maxPwm = 0.9
-            float newton:maxEffort = 0.8
+            float newton:maxCurrent = 1.0
             int newton:delaySteps = 2
         }
 
