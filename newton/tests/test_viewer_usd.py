@@ -437,6 +437,7 @@ class TestViewerUSD(unittest.TestCase):
         default_shader = self._get_bound_preview_surface(default_prim)
         self.assertAlmostEqual(default_shader.GetInput("roughness").Get(), 0.5)
         self.assertAlmostEqual(default_shader.GetInput("metallic").Get(), 0.0)
+        self.assertFalse(default_shader.GetInput("diffuseColor").HasConnectedSource())
         viewer.log_mesh(
             "/opacity_mesh",
             points,
@@ -451,6 +452,22 @@ class TestViewerUSD(unittest.TestCase):
             shader = self._get_bound_preview_surface(prim)
             self.assertAlmostEqual(shader.GetInput("roughness").Get(), roughness, places=6)
             self.assertAlmostEqual(shader.GetInput("metallic").Get(), metallic, places=6)
+        default_shader = self._get_bound_preview_surface(default_prim)
+        texture_source = default_shader.GetInput("diffuseColor").GetConnectedSource()
+        self.assertIsNotNone(texture_source)
+        self.assertEqual(texture_source[0].GetPrim().GetName(), "DiffuseTexture")
+
+        other_points = wp.array(points.numpy() + np.array([2.0, 0.0, 0.0]), dtype=wp.vec3)
+        uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.zeros((2, 2, 3), dtype=np.uint8))
+        previous_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        # USD currently keeps the old prototype when a group name is reused.
+        # A texture refresh must not apply the new prototype's material to it.
+        viewer.log_instances("/default_instances", "/other_mesh", xforms, scales, None, None)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.full((2, 2, 3), 127, dtype=np.uint8))
+        current_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        self.assertEqual(current_material.GetPath(), previous_material.GetPath())
+        np.testing.assert_allclose(UsdGeom.Mesh(default_prim).GetPointsAttr().Get(viewer._frame_index), points.numpy())
 
     def test_log_instances_rejects_mismatched_opacity_count(self):
         """Reject opacity arrays that do not match instance count."""
