@@ -328,18 +328,6 @@ def _check_restitution(shape_restitution: wp.array[float], status: wp.array[wp.i
         _latch(status, _RESTITUTION, -1)
 
 
-@wp.func_native("""
-return __ddiv_rn(1.0, __dmul_rn(dt, __dadd_rn(__dmul_rn(dt, k), c)));
-""")
-def _implicit_gamma(k: wp.float64, c: wp.float64, dt: wp.float64) -> wp.float64: ...
-
-
-@wp.func_native("""
-return __ddiv_rn(__dmul_rn(k, phi), __dadd_rn(__dmul_rn(dt, k), c));
-""")
-def _implicit_bias(k: wp.float64, c: wp.float64, phi: wp.float64, dt: wp.float64) -> wp.float64: ...
-
-
 @wp.kernel
 def _prepare_contacts(
     contact_count: wp.array[int],
@@ -425,8 +413,9 @@ def _prepare_contacts(
     c64 = wp.float64(0.0)
     if phi <= 0.0:
         c64 = wp.float64(c)
-    gamma = _implicit_gamma(k64, c64, dt)
-    bias = _implicit_bias(k64, c64, wp.float64(phi), dt)
+    denominator = dt * k64 + c64
+    gamma = wp.float64(1.0) / (dt * denominator)
+    bias = k64 * wp.float64(phi) / denominator
     limit = wp.float64(3.4028234663852886e38)
     if wp.abs(gamma) > limit or wp.abs(bias) > limit:
         _latch(status, _FLOAT32_RANGE, contact)
