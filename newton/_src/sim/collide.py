@@ -1644,7 +1644,10 @@ class CollisionPipeline:
                 ``0.5 * (world(point0) + world(point1))``.  Contacts whose
                 midpoint moves more than this are considered broken. In sticky mode,
                 keep fresh geometry when either saved witness moves farther than this
-                from its fresh contact point under the current body transforms.
+                from its fresh contact point under the current body transforms, and
+                drag each soft self-contact friction anchor to at most this from its
+                pair, so a kinematic cloth surface carries resting bodies along at up
+                to about this divided by the step's ``dt``.
                 Defaults to ``0.0005``.
             contact_matching_normal_dot_threshold: Minimum dot product between
                 old and new contact normals for a match.

@@ -2640,7 +2640,8 @@ loads on each other.  After each step it drags the anchors to within
 sliding, and friction then does not pull a body back once it stops.  Drift that
 builds up between steps, as kinematic particles move, is kept up to the threshold,
 so a kinematic surface carries resting bodies along at up to about
-``contact_matching_pos_threshold / dt``.  Contact geometry and normals stay fresh.
+``contact_matching_pos_threshold / dt``; tuning the threshold for rigid matching
+changes this limit too.  Contact geometry and normals stay fresh.
 
 **Memory**
 
