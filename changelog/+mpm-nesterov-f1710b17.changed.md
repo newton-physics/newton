@@ -1,0 +1,1 @@
+Accelerate the `SolverImplicitMPM` rheology iterations with Nesterov momentum and adaptive restart. Solves reach the tolerance in fewer iterations and solves that stop at `max_iterations` end closer to convergence, so their results change slightly; lower `max_iterations` to trade that accuracy for speed.
