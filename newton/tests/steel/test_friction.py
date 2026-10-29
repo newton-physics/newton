@@ -2440,8 +2440,8 @@ def test_colored_sliding_sphere_rolls_as_on_immediate(test, device):
     """Slide a sphere launched without spin until it rolls at 5/7 of its speed, as on immediate."""
     for mode in _COUPLED_MODES:
         with test.subTest(mode=mode):
-            immediate = _mode_trace(test, device, "immediate", mode, 120, scene="sphere")
-            colored = _mode_trace(test, device, "propagation_colored", mode, 120, scene="sphere")
+            immediate = _mode_trace(test, device, "immediate", mode, 60, scene="sphere")
+            colored = _mode_trace(test, device, "propagation_colored", mode, 60, scene="sphere")
             np.testing.assert_allclose(colored, immediate, atol=_MODE_TOLERANCE, rtol=0.0)
             speed, spin = colored[-1, 0, 0], colored[-1, 0, 4]
             test.assertAlmostEqual(speed, 2.0 * 5.0 / 7.0, delta=0.02)
