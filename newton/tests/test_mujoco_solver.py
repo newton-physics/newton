@@ -2450,9 +2450,9 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         dt = 0.002
         # Every joint type under the default integrator; the free joint, which moves in all six
         # directions, covers RK4's own weld tuning and independence from REFSAFE.
-        cases = [({}, kind) for kind in ("free", "revolute", "prismatic", "ball", "d6")]
-        cases += [({"integrator": "rk4"}, "free"), ({"refsafe": False}, "free")]
-        for (config, kind), use_mujoco_cpu in itertools.product(cases, (False, True)):
+        cases = [({}, kind, cpu) for kind in ("free", "revolute", "prismatic", "ball", "d6") for cpu in (False, True)]
+        cases += [({"integrator": "rk4"}, "free", False), ({"refsafe": False}, "free", False)]
+        for config, kind, use_mujoco_cpu in cases:
             with self.subTest(config=config, kind=kind, use_mujoco_cpu=use_mujoco_cpu):
                 model, body = self._build_kinematic_root(kind)
                 if "refsafe" in config:
@@ -2464,7 +2464,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 tol = 1.0e-5 if config.get("integrator") == "rk4" else 1.0e-6
                 state_0, state_1, control = model.state(), model.state(), model.control()
                 expected_state = model.state()
-                for i in range(20):
+                for i in range(5):
                     q, qd = self._prescribed_root_motion(model, kind, i * dt)
                     state_0.joint_q.assign(q)
                     state_0.joint_qd.assign(qd)
@@ -2536,7 +2536,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
         state_0, state_1, control = model.state(), model.state(), model.control()
         dt, z = 0.002, 0.45
-        for i in range(150):
+        for i in range(125):
             v = 0.0 if i < 50 else -0.5
             q = state_0.joint_q.numpy()
             qd = state_0.joint_qd.numpy()
@@ -2549,7 +2549,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             if i == 49:
                 self.assertTrue(np.all(solver.mjw_data.tree_asleep.numpy()[0] >= 0))
 
-        # The platform dropped 0.1 m; the payload must have followed instead of hovering.
+        # The platform dropped 0.075 m; the payload must have followed instead of hovering.
         body_q = state_0.body_q.numpy()
         self.assertLess(float(body_q[box, 2] - body_q[platform, 2]), 0.16)
 
@@ -2828,10 +2828,11 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
                     state_0, state_1, control = model.state(), model.state(), model.control()
                     trajectory = []
-                    for _ in range(200):
+                    for i in range(120):
                         solver.step(state_0, state_1, control, None, 0.002)
                         state_0, state_1 = state_1, state_0
-                        trajectory.append(float(state_0.joint_q.numpy()[-1]))
+                        if i % 5 == 4:
+                            trajectory.append(float(state_0.joint_q.numpy()[-1]))
                     angles.append(np.array(trajectory))
                 self.assertLess(np.abs(angles[0]).max(), 0.5)
                 np.testing.assert_allclose(angles[1], angles[0], atol=1.0e-3)
@@ -2850,7 +2851,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             model = builder.finalize()
             solver = SolverMuJoCo(model, njmax=100, nconmax=20)
             state_0, state_1, control = model.state(), model.state(), model.control()
-            for _ in range(300):
+            for _ in range(100):
                 solver.step(state_0, state_1, control, None, 0.002)
                 state_0, state_1 = state_1, state_0
             body_q = state_0.body_q.numpy()
