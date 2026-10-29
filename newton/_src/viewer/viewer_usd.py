@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import tempfile
 import warnings
@@ -83,6 +84,7 @@ class ViewerUSD(ViewerBase):
     """
 
     _root_path = "/root"
+    _supports_deformable_visual_meshes = True
 
     def __init__(
         self,
@@ -243,7 +245,8 @@ class ViewerUSD(ViewerBase):
             time: The simulation time for the new frame.
         """
         super().begin_frame(time)
-        self._frame_index = int(time * self.fps)
+        # Floor with a tolerance so accumulated float time just below a frame boundary maps to that frame.
+        self._frame_index = math.floor(time * self.fps + 1.0e-4)
         self._frame_count += 1
 
         # Update stage end time if needed
@@ -290,6 +293,15 @@ class ViewerUSD(ViewerBase):
             return self._root_path + name
         else:
             return f"{self._root_path}/{name}"
+
+    @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        existing = self._meshes.get(name)
+        if hidden and existing is not None:
+            existing.GetVisibilityAttr().Set("invisible", self._frame_index)
+            return
+        self.log_mesh(name, points, indices, hidden=hidden, **kwargs)
 
     @override
     def log_mesh(

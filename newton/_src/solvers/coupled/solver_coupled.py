@@ -2030,6 +2030,22 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view._fk_level_parent_pos = None
         view._fk_level_capacity = 0
 
+        # Rebuild serial traversal from local topology, including synthetic FREE
+        # roots that have no corresponding joint in the parent model.
+        from ...sim.builder import _build_fk_joint_order  # noqa: PLC0415
+
+        fk_joint_order = _build_fk_joint_order(
+            view.joint_parent.numpy(),
+            view.joint_child.numpy(),
+            view.joint_articulation.numpy(),
+            view.joint_ancestor.numpy(),
+            articulation_starts,
+            view.articulation_end.numpy(),
+        )
+        view._fk_joint_order = (
+            None if fk_joint_order is None else wp.array(fk_joint_order, dtype=wp.int32, device=device)
+        )
+
         # For VBD solver we require color groups to be compacted too.
         self._compact_color_groups(view, body_global_to_local)
 
@@ -3681,6 +3697,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_normal,
                     contacts.soft_contact_tids,
                     contacts.soft_contact_indices,
+                    contacts.soft_contact_rigid_indices,
                     contacts.soft_contact_barycentric,
                     contacts._soft_contact_mesh_features,
                     entry.view.shape_flags,
@@ -3695,6 +3712,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_normal,
                     filtered.soft_contact_tids,
                     filtered.soft_contact_indices,
+                    filtered.soft_contact_rigid_indices,
                     filtered.soft_contact_barycentric,
                     filtered._soft_contact_mesh_features,
                     soft_src_to_dst,
@@ -4649,6 +4667,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_normal: wp.array[wp.vec3],
     src_tids: wp.array[int],
     src_indices: wp.array[wp.vec3i],
+    src_rigid_indices: wp.array[wp.vec3i],
     src_barycentric: wp.array[wp.vec3],
     src_mesh_features: wp.array[wp.vec3i],
     shape_flags: wp.array[wp.int32],
@@ -4663,6 +4682,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_normal: wp.array[wp.vec3],
     dst_tids: wp.array[int],
     dst_indices: wp.array[wp.vec3i],
+    dst_rigid_indices: wp.array[wp.vec3i],
     dst_barycentric: wp.array[wp.vec3],
     dst_mesh_features: wp.array[wp.vec3i],
     src_to_dst: wp.array[wp.int32],
@@ -4712,6 +4732,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
     # VBD even with full-surface contact off (E7).
     dst_indices[dst_id] = src_indices[contact_id]
+    dst_rigid_indices[dst_id] = src_rigid_indices[contact_id]
     dst_barycentric[dst_id] = src_barycentric[contact_id]
     if dst_mesh_features:
         dst_mesh_features[dst_id] = wp.vec3i(-1, -1, -1)

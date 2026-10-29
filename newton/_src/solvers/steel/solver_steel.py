@@ -9778,6 +9778,7 @@ class SolverSteel(SolverBase):
         self._launch_tree_fk(
             "public",
             [
+                None,  # The tree plan already supplies the traversal order.
                 model.joint_articulation,
                 state_out.joint_q,
                 state_out.joint_qd,
@@ -9794,6 +9795,7 @@ class SolverSteel(SolverBase):
                 model.body_flags,
                 int(BodyFlags.ALL),
                 self._dynamics_art_active,
+                None,
             ],
             [state_out.body_q, state_out.body_qd],
         )
@@ -15681,10 +15683,10 @@ def _get_pgs_solve_streaming_kernel(max_constraints: int, device_arch: str, pgs_
     if (m > TILE_M_USABLE) m = TILE_M_USABLE;
     int num_contacts = m / 3;
 
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     // SHARED MEMORY: lambda, rhs, mu, diagonal inverses, and
     // block-row buffer for PGS_CHUNK contacts at a time
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     __shared__ float s_lam[{TILE_M_USABLE}];
     __shared__ float s_rhs[{TILE_M_USABLE}];
     __shared__ float s_mu[{NUM_CONTACTS_MAX}];
@@ -15694,9 +15696,9 @@ def _get_pgs_solve_streaming_kernel(max_constraints: int, device_arch: str, pgs_
     int off1 = world * TILE_M;
     int off2 = world * TILE_M * TILE_M;
 
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     // LOAD PHASE: Load persistent data into shared memory
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
 
     // Load lambda and rhs (coalesced)
     for (int i = lane; i < TILE_M_USABLE; i += 32) {{
@@ -15748,18 +15750,18 @@ def _get_pgs_solve_streaming_kernel(max_constraints: int, device_arch: str, pgs_
     }}
     __syncwarp();
 
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     // ITERATION PHASE: Stream block-rows in chunks and solve
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
 
     for (int iter = 0; iter < iterations; iter++) {{
         for (int chunk_start = 0; chunk_start < num_contacts; chunk_start += PGS_CHUNK) {{
             int chunk_end = min(chunk_start + PGS_CHUNK, num_contacts);
             int chunk_len = chunk_end - chunk_start;
 
-            // ─────────────────────────────────────────────────────────
+            // ---------------------------------------------------------
             // STREAM: Preload chunk_len block-rows of Delassus matrix
-            // ─────────────────────────────────────────────────────────
+            // ---------------------------------------------------------
             for (int ci = 0; ci < chunk_len; ci++) {{
                 int c = chunk_start + ci;
                 int c_row = c * 3;
@@ -15776,9 +15778,9 @@ def _get_pgs_solve_streaming_kernel(max_constraints: int, device_arch: str, pgs_
             }}
             __syncwarp();
 
-            // ─────────────────────────────────────────────────────────
+            // ---------------------------------------------------------
             // SOLVE: Process each contact in the chunk sequentially
-            // ─────────────────────────────────────────────────────────
+            // ---------------------------------------------------------
             for (int ci = 0; ci < chunk_len; ci++) {{
                 int c = chunk_start + ci;
                 const float* row_base = &s_block_rows[ci * NUM_CONTACTS_MAX * 9];
@@ -15857,9 +15859,9 @@ def _get_pgs_solve_streaming_kernel(max_constraints: int, device_arch: str, pgs_
         }}
     }}
 
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     // STORE PHASE: Write final lambda back to global memory
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     for (int i = lane; i < TILE_M_USABLE; i += 32) {{
         if (i < m) {{
             world_impulses.data[off1 + i] = s_lam[i];
@@ -15935,9 +15937,9 @@ def _get_pgs_solve_mf_kernel(free_body_constraint_max: int, max_mf_bodies: int, 
     int n_bodies = mf_body_count.data[world];
     if (n_bodies > MAX_BODIES) n_bodies = MAX_BODIES;
 
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     // SHARED MEMORY
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     __shared__ float s_vel[{MAX_BODIES * 6}];
     __shared__ float s_impulse[{MF_MAX_C}];
     __shared__ int s_dof_start[{MAX_BODIES}];
@@ -15945,9 +15947,9 @@ def _get_pgs_solve_mf_kernel(free_body_constraint_max: int, max_mf_bodies: int, 
     int body_off = world * MAX_BODIES;
     int c_off = world * MF_MAX_C;
 
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     // LOAD PHASE
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
 
     // Load body DOF starts and velocities
     for (int b = lane; b < n_bodies; b += 32) {{
@@ -15964,9 +15966,9 @@ def _get_pgs_solve_mf_kernel(free_body_constraint_max: int, max_mf_bodies: int, 
     }}
     __syncwarp();
 
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     // SOLVE PHASE (lane 0)
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
 
     if (lane == 0) {{
         for (int iter = 0; iter < iterations; iter++) {{
@@ -16114,9 +16116,9 @@ def _get_pgs_solve_mf_kernel(free_body_constraint_max: int, max_mf_bodies: int, 
     }}
     __syncwarp();
 
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
     // STORE PHASE
-    // ═══════════════════════════════════════════════════════════════
+    // ===============================================================
 
     // Write body velocities back to v_out
     for (int b = lane; b < n_bodies; b += 32) {{
@@ -20174,7 +20176,7 @@ def _get_propagation_cached_gemv_kernel(
     }}
     __syncwarp();
 
-    // v_out += R_b · imp_b per eligible active body.
+    // v_out += R_b * imp_b per eligible active body.
     for (int b = 0; b < n; ++b) {{
         if (s_elig[b] == 0) continue;
         float any_imp = fabsf(s_imp[b * 6 + 0]) + fabsf(s_imp[b * 6 + 1]) + fabsf(s_imp[b * 6 + 2])
@@ -20195,7 +20197,7 @@ def _get_propagation_cached_gemv_kernel(
         }}
     }}
 
-    // body_qd[a] = qd_base[a] + sum_b B_ab · imp_b; clear consumed impulses.
+    // body_qd[a] = qd_base[a] + sum_b B_ab * imp_b; clear consumed impulses.
     // Impulse reads all come from the s_imp staging, so the in-loop clear
     // cannot race the reads.
     for (int i = lane; i < n * 6; i += 32) {{
