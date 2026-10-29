@@ -34,6 +34,9 @@ class TestViewerGLShadows(unittest.TestCase):
         with mock.patch.object(RendererGL, "_setup_shadow_buffer", setup_small_shadow_buffer):
             viewer = _make_headless_viewer_gl_or_skip(self, width=512, height=384)
         self.addCleanup(viewer.close)
+        viewer.renderer.draw_sky = False
+        viewer.renderer.sky_upper = (0.25, 0.25, 0.25)
+        viewer.renderer.sky_lower = (0.25, 0.25, 0.25)
         viewer.renderer.specular_scale = 0.0
         viewer.renderer.spotlight_enabled = False
         # Resolve the 4 cm caster with ample texels even in the non-X-ray
@@ -48,11 +51,14 @@ class TestViewerGLShadows(unittest.TestCase):
             return wp.quat_rotate(rotation, wp.vec3(point))
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        # Keep this shadow fixture inside the camera frustum. Giant clipped
+        # triangles can disappear on software GL; a neutral background makes
+        # the receiver-color assertion reject such missing geometry.
         builder.add_shape_box(
             -1,
             xform=wp.transform(rotate((0.0, 0.0, -0.005)), rotation),
-            hx=50.0,
-            hy=0.6,
+            hx=0.12,
+            hy=0.12,
             hz=0.005,
             color=(0.2, 0.5, 0.8),
         )
