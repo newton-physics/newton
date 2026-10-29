@@ -1011,38 +1011,34 @@ def test_propagation_constraint_max_sizes_the_propagation_family(test, device):
 
 def test_propagation_constraint_max_keeps_contact_rows_with_a_small_free_body_budget(test, device):
     """Keep every contact row when the propagation family is sized for them and the free-body budget is small."""
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    for i in range(3):
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1 + 0.2 * i), wp.quat_identity()))
-        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-    model = builder.finalize(device=device)
+    model = _box_on_ground(device)
     pipeline = newton.CollisionPipeline(model)
     contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    pipeline.collide(state_in, contacts)
 
-    def step_and_read_watermarks(**options):
+    def step_and_read_watermarks(response, **options):
+        # A summed capacity of 1 + 1 rows is far below the rows of one resting box.
         solver = SolverSteel(
             model,
             solve_mode="matrix_free",
-            articulated_contact_response="propagation_colored",
-            free_body_constraint_max=4,
+            articulated_contact_response=response,
+            free_body_constraint_max=1,
+            articulation_constraint_max=1,
             row_watermark=True,
             warn_constraint_overflow=False,
             **options,
         )
-        state_0, state_1 = model.state(), model.state()
-        control = model.control()
-        for _ in range(5):
-            pipeline.collide(state_0, contacts)
-            solver.step(state_0, state_1, control, contacts, 0.005)
-            state_0, state_1 = state_1, state_0
+        solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
         return solver.constraint_row_watermarks()
 
-    summed = step_and_read_watermarks()
-    test.assertGreater(summed["propagation_dropped_contact_rows_high_water"], 0)
-    sized = step_and_read_watermarks(propagation_constraint_max=256)
-    test.assertEqual(sized["propagation_dropped_contact_rows_high_water"], 0)
-    test.assertGreater(sized["propagation_high_water"], 4)
+    for response in ("propagation", "propagation_colored"):
+        with test.subTest(response=response):
+            summed = step_and_read_watermarks(response)
+            test.assertGreater(summed["propagation_dropped_contact_rows_high_water"], 0)
+            sized = step_and_read_watermarks(response, propagation_constraint_max=16)
+            test.assertEqual(sized["propagation_dropped_contact_rows_high_water"], 0)
+            test.assertEqual(sized["propagation_high_water"], summed["propagation_raw_high_water"])
 
 
 add_function_test(

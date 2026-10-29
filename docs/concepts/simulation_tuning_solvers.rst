@@ -225,7 +225,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``joint_limit_activation_gap``, ``enable_joint_friction``,
        ``enable_joint_velocity_limits``, ``velocity_limit_activation_fraction``,
        ``articulation_constraint_max``, ``free_body_constraint_max``,
-       ``warn_constraint_overflow``, ``drive_mode``,
+       ``propagation_constraint_max``, ``warn_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
        ``contact_regularization``, ``velocity_iterations``,
@@ -284,7 +284,8 @@ repository examples spend tuning effort, not a shared solver API.
        drive gains stable at ordinary ``dt``; ``drive_mode="rows"`` solves
        them as PGS rows together with contacts and limits instead, and each
        driven DOF then uses one row of ``articulation_constraint_max``. Rows beyond ``articulation_constraint_max``
-       (articulated bodies) or ``free_body_constraint_max`` (free bodies) per world
+       (articulated bodies), ``free_body_constraint_max`` (free bodies) or
+       ``propagation_constraint_max`` (propagation rows, see below) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
@@ -324,9 +325,9 @@ repository examples spend tuning effort, not a shared solver API.
        articulation tree. In ``"propagation"`` and ``"propagation_colored"`` every
        contact row, free bodies included, shares one family of ``free_body_constraint_max +
        articulation_constraint_max`` rows per world, or of ``propagation_constraint_max`` rows
-       when that is set. Setting it lets ``free_body_constraint_max`` shrink to the rows that
-       stay matrix-free under these responses. ``"propagation_colored"`` sweeps them in
-       parallel batches of contacts that share no responding body, which pays off on
+       when that is set. Setting it lets ``free_body_constraint_max`` shrink to the free-body
+       velocity-limit rows, the only free-body rows these responses keep.
+       ``"propagation_colored"`` sweeps them in parallel batches of contacts that share no responding body, which pays off on
        scenes with many contacts per world. ``propagation_cached_response`` replaces the
        per-iteration tree walk with cached per-body responses (on by default); which is
        faster depends on the model. The propagation responses reject contact torsion,
