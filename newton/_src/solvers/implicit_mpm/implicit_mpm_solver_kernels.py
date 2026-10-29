@@ -213,6 +213,23 @@ def free_velocity(
     velocity_avg[i] = vel
 
 
+@wp.kernel
+def max_particle_density(particle_density: wp.array[float], max_density: wp.array[float]):
+    """Accumulate the largest positive particle density; zero-density kinematic particles are skipped."""
+    density = particle_density[wp.tid()]
+    if density > 0.0:
+        wp.atomic_max(max_density, 0, density)
+
+
+@wp.kernel
+def inertial_delassus_scale(dt_over_dx_sq: float, max_density: wp.array[float], scale: wp.array[float]):
+    """Write a full cell's inertial Delassus scale ``dt^2 / (rho dx^2)`` for the densest material.
+
+    Without any positive-density material, a unit density keeps the scale positive.
+    """
+    scale[0] = dt_over_dx_sq / wp.where(max_density[0] > 0.0, max_density[0], 1.0)
+
+
 @wp.func
 def hardening_law(Jp: float, hardening: float):
     if hardening == 0.0:
