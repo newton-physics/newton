@@ -538,6 +538,12 @@ show the camera image instead. Static Gaussian rendering is unchanged.
 USD import preserves the authored spherical-harmonic color space when it
 transforms the field into the simulation frame.
 
+Gaussian evaluation uses one batch across all fields. Replicated copies share
+their bind data, but each copy reads its own tetrahedra and has separate output.
+The binding keeps a center's offset from its barycentric point, so samples
+outside the simulation mesh keep their authored positions. Authored USD bind
+poses take precedence over the initial particle positions and solver rest shape.
+
 Add a Gaussian visual in the same world scope as its driving tetrahedra,
 before :meth:`~newton.ModelBuilder.end_world`. For replicated scenes, attach
 the visual to the prototype before replication. Global drivers and visuals

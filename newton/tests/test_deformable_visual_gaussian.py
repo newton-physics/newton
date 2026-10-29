@@ -15,7 +15,7 @@ import warp as wp
 
 import newton
 from newton.sensors import SensorCamera
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
 from newton.viewer import ViewerFile, ViewerNull
 
 
@@ -628,6 +628,51 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
 
 class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
     """Reusable current Gaussian transforms and scales."""
+
+    def test_outside_samples_keep_authored_centers(self):
+        """Preserve off-proxy samples through affine motion and independent world updates."""
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                source = _soft_builder()
+                center = np.array([[1.2, 0.3, 0.4]], dtype=np.float32)
+                scales = np.array([[0.05, 0.08, 0.1]], dtype=np.float32)
+                with self.assertLogs("newton", level="WARNING"):
+                    source.add_deformable_visual_gaussian(
+                        newton.Gaussian(center, scales=scales),
+                        kind="tetrahedron",
+                        tet_range=(0, source.tet_count),
+                    )
+                # Solver rest geometry is independent of the visual bind frame.
+                source.tet_poses = [np.asarray(pose) * 2.0 for pose in source.tet_poses]
+                builder = newton.ModelBuilder()
+                builder.replicate(source, 2, spacing=(3, 0, 0))
+                model = builder.finalize(device=device)
+                state = model.state()
+                rest = state.particle_q.numpy().copy()
+                visuals = newton.geometry.DeformableVisuals(model).update(state)
+                offsets = rest[:: source.particle_count] - np.asarray(source.particle_q[0])
+                np.testing.assert_allclose(visuals.gaussian_transforms.numpy()[:, :3], center + offsets, atol=1e-6)
+                graph = None
+                if device.is_cuda:
+                    with wp.ScopedCapture(device=device) as capture:
+                        visuals.update(state)
+                    graph = capture.graph
+                for motion in (np.diag([-1.0, 1.0, 1.0]), np.array([[1.5, 0.2, 0], [0, 0.7, 0.1], [0, 0, 1]])):
+                    changed = rest.copy()
+                    changed[: source.particle_count] = (
+                        rest[: source.particle_count] - offsets[0]
+                    ) @ motion.T + offsets[0]
+                    state.particle_q.assign(changed)
+                    if graph is None:
+                        visuals.update(state)
+                    else:
+                        wp.capture_launch(graph)
+                    transforms = visuals.gaussian_transforms.numpy()
+                    np.testing.assert_allclose(transforms[0, :3], (center @ motion.T)[0] + offsets[0], atol=1e-6)
+                    np.testing.assert_allclose(transforms[1, :3], center[0] + offsets[1], atol=1e-6)
+                    axes = _quat_matrix(transforms[0, 3:]) @ np.diag(visuals.gaussian_scales.numpy()[0])
+                    expected = motion @ np.diag(scales[0])
+                    np.testing.assert_allclose(axes @ axes.T, expected @ expected.T, atol=1e-6)
 
     def test_update_evaluates_tet_center_and_covariance(self):
         """Evaluate one Gaussian center and covariance through the shared visual result."""

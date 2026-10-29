@@ -22,6 +22,7 @@ from ..exceptions import NewtonDeprecationWarning
 from ..geometry.deformable_visual import (
     DeformableVisualGaussian,
     DeformableVisualMesh,
+    _DeformableGaussianBatch,
     _DeformableVisualSkinBatches,
 )
 from ..geometry.flags import ShapeFlags
@@ -1141,6 +1142,7 @@ class Model:
         self._deformable_visual_meshes: tuple[DeformableVisualMesh, ...] = ()
         self._deformable_visual_skin_batches: _DeformableVisualSkinBatches | None = None
         self.deformable_visual_gaussians: list[DeformableVisualGaussian] = []
+        self._deformable_visual_gaussian_batch: _DeformableGaussianBatch | None = None
         """Gaussian fields embedded in deformables for visualization and sensors.
 
         .. experimental::
@@ -2130,6 +2132,12 @@ class Model:
         .. experimental::
         """
         return len(self._deformable_visual_meshes)
+
+    def _get_deformable_visual_gaussian_batch(self) -> _DeformableGaussianBatch:
+        """Return the Gaussian bindings, rebuilding recorded data once."""
+        if self._deformable_visual_gaussian_batch is None:
+            self._deformable_visual_gaussian_batch = _DeformableGaussianBatch.from_visuals(self)
+        return self._deformable_visual_gaussian_batch
 
     def _get_deformable_visual_skin_batches(self) -> _DeformableVisualSkinBatches:
         """Return the fixed skinning layout, rebuilding loaded recordings once."""

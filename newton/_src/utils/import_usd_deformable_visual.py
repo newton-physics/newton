@@ -363,6 +363,9 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
 
             spec = builder._deformable_visual_gaussians[index]
             spec["_bind_poses"] = bind_poses
+            spec["_bind_offsets"] = (gaussian.positions - np.einsum("ni,nij->nj", spec["weights"], corners)).astype(
+                np.float32
+            )
             spec["body_path"] = body_path
             spec["sim_path"] = sim_path
             spec["graphics_path"] = path

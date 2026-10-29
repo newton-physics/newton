@@ -70,6 +70,7 @@ from ..geometry.deformable_visual import (
     DeformableVisualBinding,
     DeformableVisualGaussian,
     DeformableVisualMesh,
+    _DeformableGaussianBatch,
     _DeformableVisualSkinBatches,
 )
 from ..geometry.flags import MeshProperties
@@ -3974,6 +3975,17 @@ class ModelBuilder:
                 transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
                 targets = shape_transform_start + moved_copies[:, None] * counts["shape"] + static_shapes[None]
                 store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
+
+        gaussian_specs = visual_specs[1][0]
+        if gaussian_specs and len(moved_copies):
+            # Particle composition only translates. Keep their display shapes in the same frame.
+            shapes = np.asarray([spec["shape"] for spec in gaussian_specs], dtype=np.int64)
+            rows = shape_transform_start + moved_copies[:, None] * counts["shape"] + shapes[None]
+            source = pack_transforms([builder.shape_transform[shape] for shape in shapes.tolist()])
+            values = np.empty((len(moved_copies), len(shapes), 7), dtype=np.float32)
+            values[..., :3] = source[None, :, :3] + offsets[moved_copies][:, None]
+            values[..., 3:] = source[None, :, 3:]
+            store_transform_rows(self.shape_transform, rows.ravel(), values.reshape(-1, 7))
 
         # World guides carry their own frame; body-local guides follow the placed body.
         world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
@@ -14606,46 +14618,74 @@ class ModelBuilder:
         batches.meshes = tuple(meshes)
         return batches.meshes, batches
 
-    def _finalize_deformable_visual_gaussians(self) -> list[DeformableVisualGaussian]:
-        """Convert Gaussian visual specs to device-resident model records."""
-        if not self._deformable_visual_gaussians:
-            return []
-
-        particle_world = np.asarray(self.particle_world, dtype=np.int32)
-        tet_indices = np.asarray(self.tet_indices, dtype=np.int32).reshape(-1, 4)
-        visuals = []
-        for index, spec in enumerate(self._deformable_visual_gaussians):
-            parent = np.asarray(spec["parent"], dtype=np.int32)
-            drivers = tet_indices[parent].reshape(-1)
-            worlds = np.unique(particle_world[drivers]) if len(drivers) else np.empty(0, dtype=np.int32)
-            if len(worlds) > 1:
-                raise ValueError(
-                    f"deformable Gaussian visual {spec.get('label') or ''!r}: drivers span worlds "
-                    f"{worlds.tolist()}; a visual must be driven by a single world"
-                )
-            binding = DeformableVisualBinding(
-                kind=spec["kind"],
-                parent=wp.array(parent, dtype=wp.int32),
-                weights=wp.array(np.asarray(spec["weights"], dtype=np.float32), dtype=wp.vec4),
-            )
-            visuals.append(
-                DeformableVisualGaussian(
-                    gaussian=spec["gaussian"],
-                    binding=binding,
-                    rest_rotations=wp.array(spec["gaussian"].rotations, dtype=wp.quat),
-                    rest_scales=wp.array(spec["gaussian"].scales, dtype=wp.vec3),
-                    shape=spec["shape"],
-                    world=int(worlds[0]) if len(worlds) else -1,
-                    label=spec.get("label", ""),
-                    index=index,
-                    body_path=spec.get("body_path"),
-                    sim_path=spec.get("sim_path"),
-                    graphics_path=spec.get("graphics_path"),
-                )
-            )
+    def _finalize_deformable_visual_gaussians(
+        self,
+    ) -> tuple[list[DeformableVisualGaussian], _DeformableGaussianBatch | None]:
+        """Upload one batch, sharing bind data between translated copies of each prototype."""
+        specs = self._deformable_visual_gaussians
+        if not specs:
+            return [], None
+        groups = {}
+        prototypes = [
+            groups.setdefault((id(spec["weights"]), id(spec["gaussian"]), id(spec.get("_bind_poses"))), len(groups))
+            for spec in specs
+        ]
+        bind_data = []
+        for spec, prototype in zip(specs, prototypes, strict=True):
+            if prototype < len(bind_data):
+                continue
             if spec.get("_bind_poses") is not None:
-                visuals[-1]._bind_poses = wp.array(spec["_bind_poses"], dtype=wp.mat33)
-        return visuals
+                # USD bind geometry need not match the initial particles or the solver's rest shape.
+                poses = spec["_bind_poses"]
+                offsets = spec["_bind_offsets"]
+            else:
+                parents = np.asarray(spec["parent"], dtype=np.int64)
+                bound_tets, sample_tet = np.unique(parents, return_inverse=True)
+                tets = np.asarray([self.tet_indices[t] for t in bound_tets.tolist()], dtype=np.int64)
+                corner_ids = np.unique(tets)
+                corners = pack_warp_values([self.particle_q[i] for i in corner_ids.tolist()], wp.vec3).astype(
+                    np.float64
+                )
+                corners = corners[np.searchsorted(corner_ids, tets)]
+                edges = np.stack([corners[:, i] - corners[:, 0] for i in (1, 2, 3)], axis=2)
+                poses = np.linalg.inv(edges)[sample_tet]
+                # Composition translates the particles and the field's display shape together.
+                placement = np.asarray(self.shape_transform[spec["shape"]], dtype=np.float64)
+                centers = np.asarray(spec["gaussian"].positions, dtype=np.float64) + placement[:3]
+                offsets = centers - np.einsum("ni,nij->nj", spec["weights"], corners[sample_tet])
+            bind_data.append((np.asarray(poses, dtype=np.float32), np.asarray(offsets, dtype=np.float32)))
+        batch = _DeformableGaussianBatch(
+            [spec["parent"] for spec in specs],
+            [spec["weights"] for spec in specs],
+            prototypes,
+            [bind_data[p][0] for p in prototypes],
+            [bind_data[p][1] for p in prototypes],
+            [spec["gaussian"].rotations for spec in specs],
+            [spec["gaussian"].scales for spec in specs],
+            wp.get_device(),
+        )
+        visuals = []
+        for index, spec in enumerate(specs):
+            parent, weights = batch.visual_arrays(index)
+            start, end = batch.prototype_ranges[index]
+            visual = DeformableVisualGaussian(
+                gaussian=spec["gaussian"],
+                binding=DeformableVisualBinding(spec["kind"], parent, weights),
+                rest_rotations=batch.bindings.rest_rotations[start:end],
+                rest_scales=batch.bindings.rest_scales[start:end],
+                shape=spec["shape"],
+                world=int(self.shape_world[spec["shape"]]),
+                label=spec.get("label", ""),
+                index=index,
+                body_path=spec.get("body_path"),
+                sim_path=spec.get("sim_path"),
+                graphics_path=spec.get("graphics_path"),
+            )
+            visual._bind_poses = batch.bindings.bind_poses[start:end]
+            visual._bind_offsets = batch.bindings.rest_offsets[start:end]
+            visuals.append(visual)
+        batch.visuals = tuple(visuals)
+        return visuals, batch
 
     def finalize(
         self,
@@ -15873,7 +15913,9 @@ class ModelBuilder:
 
             # ---------------------
             # deformable visual meshes
-            m.deformable_visual_gaussians = self._finalize_deformable_visual_gaussians()
+            m.deformable_visual_gaussians, m._deformable_visual_gaussian_batch = (
+                self._finalize_deformable_visual_gaussians()
+            )
             m.deformable_visual_gaussian_count = len(m.deformable_visual_gaussians)
 
             # -----------------------

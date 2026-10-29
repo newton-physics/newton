@@ -508,6 +508,7 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                 attributes["deformable_visual_meshes"] = attributes.pop("_deformable_visual_meshes", ())
                 attributes["deformable_visual_mesh_count"] = len(attributes["deformable_visual_meshes"])
                 attributes.pop("_deformable_visual_skin_batches", None)
+                attributes.pop("_deformable_visual_gaussian_batch", None)
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,
@@ -971,6 +972,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                 }
             )
             visual._bind_poses = attributes.get("_bind_poses")
+            visual._bind_offsets = attributes.get("_bind_offsets")
             return visual
 
         if type_name == "AttributeSpec" and data.get("__module__") == Model.AttributeSpec.__module__:
@@ -1531,6 +1533,7 @@ class ViewerFile(ViewerBase):
                 target_obj.finalize()
 
         transfer_to_model(self.deserialized_model, model, post_load_init_callback)
+        model._deformable_visual_gaussian_batch = None
 
         if model.gaussians_count:
             # The recording keeps each shape's Gaussian source index, but not the device buffers
