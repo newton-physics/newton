@@ -2885,14 +2885,16 @@ def populate_connect_J_for_size(
 
     One thread per articulation of the group scans the closure table and writes three
     rows per owned closure: for world axis ``e``, ``phi = e . (p_A - p_B)`` and
-    ``J = e . (J_point(parent, p_A) - J_point(child, p_B))``, built with the ancestor
-    walk of the contact rows. Shared ancestors cancel. The anchors are the translations of
-    the closure joint's ``joint_X_p`` / ``joint_X_c``, read every step.
+    ``J = e . (J_point(parent, p_M) - J_point(child, p_M))``, built with the ancestor
+    walk of the contact rows. ``p_M`` is the midpoint of the two anchors, so each impulse
+    pair acts at one world point and adds no couple while the closure is open. Once the
+    closure is satisfied this is the per-anchor Jacobian. Shared ancestors cancel. The
+    anchors are the translations of the closure joint's ``joint_X_p`` / ``joint_X_c``,
+    read every step.
 
     A prescribed parent (a kinematic body outside the child's articulation, or the world
-    when ``connect_body_p[k] < 0``) contributes no DOFs; its anchor velocity enters the
-    row target instead (``J v = -e . v_A``), so the child anchor follows the moving
-    parent anchor.
+    when ``connect_body_p[k] < 0``) contributes no DOFs; its velocity at ``p_M`` enters the
+    row target instead (``J v = -e . v_A``), so the child follows the moving parent.
 
     Each row is normalized. On a planar linkage one axis is nearly redundant with the
     tree (``|J|`` around ``1e-4``), and an unnormalized row would relax a real velocity
@@ -2918,19 +2920,21 @@ def populate_connect_J_for_size(
         joint = connect_joint[k]
         anchor_p = wp.transform_get_translation(joint_X_p[joint])
         p_a = anchor_p
-        v_a = wp.vec3(0.0, 0.0, 0.0)
         if body_p >= 0:
             p_a = wp.transform_point(body_q[body_p], anchor_p)
-            if prescribed:
-                # The anchor velocity of a prescribed parent comes from its body twist.
-                twist = body_qd[body_p]
-                x_com = wp.transform_point(body_q[body_p], body_com[body_p])
-                v_a = wp.spatial_top(twist) + wp.cross(wp.spatial_bottom(twist), p_a - x_com)
         p_b = wp.transform_point(body_q[body_c], wp.transform_get_translation(joint_X_c[joint]))
-        origin = articulation_origin[art]
-        rel_a = p_a - origin
-        rel_b = p_b - origin
         delta = p_a - p_b
+        # Both walks take their lever arm from the anchors' midpoint, so the impulse pair is
+        # not a couple across an open closure.
+        p_m = p_a - 0.5 * delta
+        rel_a = p_m - articulation_origin[art]
+        rel_b = rel_a
+        v_a = wp.vec3(0.0, 0.0, 0.0)
+        if prescribed and body_p >= 0:
+            # The velocity of a prescribed parent at the shared anchor comes from its body twist.
+            twist = body_qd[body_p]
+            x_com = wp.transform_point(body_q[body_p], body_com[body_p])
+            v_a = wp.spatial_top(twist) + wp.cross(wp.spatial_bottom(twist), p_m - x_com)
 
         for axis in range(3):
             slot = base_slot + axis

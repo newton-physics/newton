@@ -1,0 +1,1 @@
+Fix `SolverSteel` loop closures adding angular momentum to a free-floating mechanism while the closure is open: CONNECT rows now apply their impulses at the midpoint of the two anchors instead of at each body's own anchor.
