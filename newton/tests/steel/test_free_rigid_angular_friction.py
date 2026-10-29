@@ -10,14 +10,17 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.steel.friction_patches import FrictionPatches
 from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_CONTACT_ROLLING,
     PGS_CONSTRAINT_TYPE_CONTACT_SPIN,
     PGS_CONSTRAINT_TYPE_FRICTION,
+    build_mf_contact_rows,
 )
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import set_torsion_radius
+from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 _DT = 1.0 / 480.0
 _RUN_TO_RUN = wp.DeterministicMode.RUN_TO_RUN
@@ -592,6 +595,92 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         model.steel.condim.fill_(6)
         with self.assertRaisesRegex(ValueError, "construct a new solver"):
             solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+
+
+def test_linear_row_builder_leaves_the_angular_rows(test, device):
+    """Write only the normal and sliding rows of a six-row free-body contact; rows 3-5 belong to the angular builder."""
+    sentinel = 123.0
+    patches = FrictionPatches()
+    patches.enabled = 0
+    patches.weight = wp.zeros(0, dtype=float, device=device)
+    patches.next_contact = wp.zeros(0, dtype=int, device=device)
+    patches.point_a = wp.zeros(0, dtype=wp.vec3, device=device)
+    patches.point_b = wp.zeros(0, dtype=wp.vec3, device=device)
+    patches.phi = wp.array([wp.vec2(0.2, 0.3)], dtype=wp.vec2, device=device)
+
+    def ints(value, shape=(1,)):
+        return wp.full(shape, value, dtype=int, device=device)
+
+    def floats(value, shape=(1,), dtype=float):
+        return wp.full(shape, value, dtype=dtype, device=device)
+
+    outputs = [
+        ints(int(sentinel), (1, 6)),
+        ints(int(sentinel), (1, 6)),
+        floats(sentinel, (1, 6, 6)),
+        floats(sentinel, (1, 6, 6)),
+        ints(int(sentinel), (1, 6)),
+        ints(int(sentinel), (1, 6)),
+        floats(sentinel, (1, 6)),
+        floats(sentinel, (1, 6)),
+        floats(sentinel, (1, 6)),
+        floats(sentinel, (1, 6)),
+    ]
+    wp.launch(
+        build_mf_contact_rows,
+        dim=1,
+        inputs=[
+            ints(1),
+            1,
+            floats(0.0, dtype=wp.vec3),
+            floats(0.0, dtype=wp.vec3),
+            wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device),
+            ints(-1),
+            ints(-1),
+            floats(0.0),
+            floats(0.0),
+            ints(0),
+            ints(0),
+            ints(1),
+            ints(-1),
+            ints(-1),
+            ints(0),
+            floats(0.0, dtype=wp.vec3),
+            ints(-1),
+            floats(0.0, dtype=wp.transform),
+            floats(0.0, dtype=wp.spatial_vector),
+            ints(0),
+            0,
+            floats(0.5),
+            ints(6),
+            floats(0.0),
+            patches,
+            1.0,
+            0,
+            0,
+        ],
+        outputs=outputs,
+        device=device,
+    )
+    row_type, row_phi = outputs[4].numpy()[0], outputs[7].numpy()[0]
+    np.testing.assert_array_equal(
+        row_type[:3], [PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_FRICTION, PGS_CONSTRAINT_TYPE_FRICTION]
+    )
+    np.testing.assert_allclose(row_phi[1:3], (0.2, 0.3), rtol=1.0e-6)
+    for output in outputs:
+        np.testing.assert_array_equal(output.numpy()[0, 3:], sentinel)
+
+
+class TestFreeRigidAngularRowBuilder(unittest.TestCase):
+    pass
+
+
+add_function_test(
+    TestFreeRigidAngularRowBuilder,
+    "test_linear_row_builder_leaves_the_angular_rows",
+    test_linear_row_builder_leaves_the_angular_rows,
+    devices=get_test_devices(),
+)
 
 
 class TestFreeRigidAngularFrictionImport(unittest.TestCase):
