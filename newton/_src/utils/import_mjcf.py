@@ -863,8 +863,10 @@ def parse_mjcf(
             if not mat_name:
                 continue
             mat_attrib = resolve_element_attrib(material, "material")
+            # Default to a neutral tint only when MJCF supplies a base-color texture.
+            default_rgba = "1 1 1 1" if mat_attrib.get("texture") else None
             material_assets[mat_name] = {
-                "rgba": mat_attrib.get("rgba", "1 1 1 1"),
+                "rgba": mat_attrib.get("rgba", default_rgba),
                 "texture": mat_attrib.get("texture"),
             }
             for key in ("roughness", "metallic"):

@@ -4999,6 +4999,8 @@ class ModelBuilder:
         Geom material defaults and RGBA are preserved. Meshes also retain base-color textures
         (the ``texture`` attribute or ``rgb``/``rgba`` layers) and non-negative ``roughness``
         and ``metallic`` values. Texture paths are retained for lazy loading by renderers.
+        MJCF textures default to a white tint. Without an MJCF color or base-color texture,
+        mesh-file appearance and primitive palette colors are retained for compatibility.
         Other PBR texture layers are not imported.
 
         Args:
