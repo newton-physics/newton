@@ -21,7 +21,6 @@ from ...geometry.deformable_visual import (
 )
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
-from ...utils.texture import compute_texture_hash
 from .gaussians import compute_gaussian_bvh_bounds
 from .render import create_kernel
 from .types import (
@@ -867,8 +866,12 @@ class RenderContext:
                 texture_data_ids.append(-1)
                 mesh_data_ids.append(-1)
 
+        # Sampled image hashes can miss changed channels. Keep skin keys separate
+        # from rigid-mesh hashes and share uploads only for the same source.
         skin_texture_ids = [
-            texture_id(mesh.texture, compute_texture_hash(mesh.texture)) if mesh.uvs is not None else -1
+            texture_id(mesh.texture, ("skin", mesh.texture if isinstance(mesh.texture, str) else id(mesh.texture)))
+            if mesh.uvs is not None
+            else -1
             for mesh in deformable_visual_meshes
         ]
         self._render_state.has_triangle_mesh_textures = any(i >= 0 for i in skin_texture_ids)

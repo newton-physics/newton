@@ -2044,6 +2044,51 @@ class TestSensorCameraDeformable(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "SIMULATION_ONLY"):
                     simulation_only.sync_deformable_meshes(state_a, deformable_visuals=visuals)
 
+    def test_distinct_skin_textures(self):
+        """Render different skin images separately, including repeated image references."""
+        green = np.full((32, 32, 3), (0, 255, 0), dtype=np.uint8)
+        blue = np.full_like(green, (0, 0, 255))
+        builder = newton.ModelBuilder()
+        points = np.array([[-0.5, -0.5, 0], [0.5, -0.5, 0], [0.5, 0.5, 0], [-0.5, 0.5, 0]])
+        for x, image in zip((0, 2, 4), (green, blue, green), strict=True):
+            vertices = points + np.array([x, 0, 0])
+            parents = [builder.add_particle(pos=tuple(p), vel=(0, 0, 0), mass=1, radius=0) for p in vertices]
+            builder.add_deformable_visual_mesh(
+                vertices,
+                [0, 1, 2, 0, 2, 3],
+                kind="particle",
+                parent=parents,
+                uvs=[[0, 0], [1, 0], [1, 1], [0, 1]],
+                texture=image,
+            )
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                state = model.state()
+                config = SensorCamera.RenderConfig(enable_textures=True)
+                camera = SensorCamera(model, default_render_config=config)
+                rays, _ = self._camera_arrays(model)
+                transforms = wp.array(
+                    [wp.transform((x, 0, 2), wp.quat_identity()) for x in (0, 2, 4)],
+                    dtype=wp.transform,
+                    device=device,
+                )
+                worlds = wp.zeros(3, dtype=wp.int32, device=device)
+                albedo = camera.allocate_image_albedo(3, 16, 16)
+                depth = camera.allocate_image_depth(3, 16, 16)
+                camera.update(state, transforms, rays, world_indices=worlds, albedo_image=albedo, depth_image=depth)
+                np.testing.assert_allclose(
+                    TestSensorCamera._unpack_rgb(albedo)[:, 8, 8],
+                    [[0, 255, 0], [0, 0, 255], [0, 255, 0]],
+                    atol=2,
+                )
+                expected_depth = depth.numpy().copy()
+                untextured = SensorCamera(model, load_textures=False, default_render_config=config)
+                untextured.update(state, transforms, rays, world_indices=worlds, albedo_image=albedo, depth_image=depth)
+                np.testing.assert_allclose(depth.numpy(), expected_depth)
+                colors = TestSensorCamera._unpack_rgb(albedo)[:, 8, 8]
+                np.testing.assert_array_equal(colors[0], colors[1])
+
     def test_textures_and_checkerboard(self):
         """Sample UVs outside the unit square, and keep skin textures while another shape shows its checkerboard."""
         rgb = np.empty((4, 4, 3), dtype=np.uint8)
