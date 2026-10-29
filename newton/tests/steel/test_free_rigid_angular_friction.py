@@ -88,6 +88,7 @@ def _simulate(
     steps=None,
     rolling_material=None,
     torsional_material=None,
+    sliding_material=None,
     condim=None,
     count=1,
     support_angular=None,
@@ -104,6 +105,8 @@ def _simulate(
         model.shape_material_mu_rolling.fill_(rolling_material)
     if torsional_material is not None:
         model.shape_material_mu_torsional.fill_(torsional_material)
+    if sliding_material is not None:
+        model.shape_material_mu.fill_(sliding_material)
     if condim is not None:
         model.steel.condim.fill_(condim)
     options = {"solve_mode": "matrix_free", "iterations": 32, "deterministic": _RUN_TO_RUN, **solver_kwargs}
@@ -203,6 +206,19 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 self.assertAlmostEqual(twist[5], 6.0 - rate * 0.2, delta=0.1)
                 _, twist, _ = _simulate("sphere", 0.6, angular=(0.0, 0.0, 6.0), **options)
                 self.assertLess(abs(twist[5]), 1.0e-3)
+
+    def test_patch_spin_row_takes_the_pooled_load(self):
+        """Decelerate a spinning cube at mu_s m g / I with one patch spin row, as with a spin row per contact.
+
+        Sliding friction is off so that only the spin rows resist the spin.
+        """
+        torsional = 5.0e-4
+        rate = torsional * _MASS * _GRAVITY / (_MASS * (2.0 * _RADIUS) ** 2 / 6.0)
+        options = {"angular": (0.0, 0.0, 6.0), "condim": 4, "torsional_material": torsional, "sliding_material": 0.0}
+        for beta in (0.0, 0.2):
+            with self.subTest(friction_anchor_beta=beta):
+                _, twist, _ = _simulate("box", 0.2, friction_anchor_beta=beta, **options)
+                self.assertAlmostEqual(twist[5], 6.0 - rate * 0.2, delta=0.1 * rate * 0.2)
 
     def test_rows_never_add_energy(self):
         """End a contact step with no more kinetic energy than it started with, for anisotropic inertias."""
