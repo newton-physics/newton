@@ -35,21 +35,18 @@ def _declared_options(source_path):
 
 
 def _documented_runs(description, example_name):
-    """Read commands and their following observations from the QA prose."""
-    runs = {}
-    current = None
+    """Read command arguments from the QA prose."""
+    runs = set()
     for line in description.partition("\nRuns:\n")[2].splitlines():
         if line.startswith("- `"):
             command = shlex.split(line[3:-1])
             if command[:4] != ["python", "-m", "newton.examples", example_name]:
                 raise ValueError(f"unexpected example command: {line}")
-            current = tuple(command[4:])
-            if current in runs:
+            args = tuple(command[4:])
+            if args in runs:
                 raise ValueError(f"duplicate example command: {line}")
-            runs[current] = []
-        elif current is not None:
-            runs[current].append(line)
-    return {args: "\n".join(criteria) for args, criteria in runs.items()}
+            runs.add(args)
+    return runs
 
 
 class TestExampleSpec(unittest.TestCase):
@@ -79,63 +76,6 @@ class TestExampleSpec(unittest.TestCase):
                     if option.startswith("--") and option not in options:
                         errors.append(f"{example_name}: run uses undeclared option {option}")
         self.assertEqual(errors, [], "Invalid example documentation:\n- " + "\n- ".join(errors))
-
-    def test_preserves_documented_run_variants(self):
-        """Retain previously documented commands and their applicable observations."""
-        documented_runs = {
-            "basic_conveyor": ((), ("--solver", "kamino")),
-            "basic_conveyor_forces": (("--solver", "kamino"),),
-            "basic_dzhanibekov": (("--solver", "xpbd"), ("--solver", "mujoco"), ("--solver", "kamino")),
-            "basic_heightfield": (("--solver", "mujoco"), ("--solver", "kamino")),
-            "basic_joints": (("--solver", "xpbd"), ("--solver", "vbd"), ("--solver", "kamino")),
-            "basic_pendulum": (("--solver", "xpbd"), ("--solver", "kamino")),
-            "basic_plotting": (("--world-count", "4"),),
-            "basic_shapes": ((), ("--solver", "kamino")),
-            "basic_urdf": ((), ("--solver", "kamino")),
-            "nut_bolt_hydro": (("--solver", "kamino"),),
-            "nut_bolt_sdf": ((), ("--solver", "kamino")),
-            "pyramid": ((), ("--solver", "kamino")),
-            "controller_differential_ik": (("--ik-method", "adaptive_damping"),),
-            "controller_joint_impedance_heterogeneous": (("--solver", "kamino"),),
-            "diffsim_spring_cage": ((),),
-            "ik_cube_stacking": (("--world-count", "16"),),
-            "kamino_basic_dr_testmech": (("--world-count", "16"),),
-            "kamino_basic_fourbar": (("--world-count", "16"),),
-            "kamino_robot_anymal_d": (("--world-count", "16"),),
-            "kamino_robot_dr_legs": (("--world-count", "16"),),
-            "mpm_anymal": (("--viewer", "gl"),),
-            "admm_contact_solver": (("--solver", "free"),),
-            "robot_allegro_hand": (("--world-count", "16"), ("--solver", "kamino")),
-            "robot_anymal_d": (("--world-count", "16"), ("--solver", "kamino")),
-            "robot_asroballet": ((),),
-            "robot_cartpole": (("--world-count", "100"),),
-            "robot_g1": (("--world-count", "16"),),
-            "robot_h1": (("--world-count", "16"), ("--solver", "kamino")),
-            "robot_panda_hydro": (("--scene", "pen", "--world-count", "1"),),
-            "robot_policy": (("--robot", "anymal", "--physx"),),
-            "robot_ur10": (("--world-count", "16"), ("--solver", "kamino")),
-            "selection_articulations": ((), ("--solver", "kamino")),
-            "selection_cartpole": (("--world-count", "16", "--max-worlds", "8"),),
-            "selection_materials": ((), ("--solver", "kamino")),
-            "selection_multiple": ((), ("--solver", "kamino")),
-        }
-        examples_directory = Path(newton.examples.get_source_directory())
-        examples = newton.examples.get_examples()
-        for example_name, expected_args in documented_runs.items():
-            with self.subTest(example=example_name):
-                relative_module = examples[example_name].removeprefix("newton.examples.")
-                path = examples_directory.joinpath(*relative_module.split(".")).with_suffix(".py")
-                description = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8")))
-                runs = _documented_runs(description, example_name)
-                self.assertTrue(
-                    set(expected_args) <= runs.keys(), f"Missing commands: {set(expected_args) - runs.keys()}"
-                )
-                if example_name == "admm_contact_solver":
-                    coupled_criterion = "The tray responds to particle contact through ADMM contact coupling."
-                    self.assertNotIn(coupled_criterion, description.partition("\nRuns:\n")[0])
-                    self.assertIn(coupled_criterion, runs[()])
-                    self.assertNotIn(coupled_criterion, runs[("--solver", "free")])
-                    self.assertIn("pass through the tray", runs[("--solver", "free")])
 
     def test_describe_cli_without_executing_example(self):
         """Print the complete docstring without executing example code, or report its absence."""

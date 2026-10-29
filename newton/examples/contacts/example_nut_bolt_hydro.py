@@ -6,12 +6,14 @@
 Demonstrates nut/bolt mesh collision using hydroelastic contacts.
 
 Success criteria:
-- 20 identical setups appear consisting of a nut and bolt system.
+- Identical setups appear, each consisting of a nut-and-bolt system.
 - The nut is slowly screwing into the bolt until reaching the end of the bolt.
 
 Runs:
 - `python -m newton.examples nut_bolt_hydro`
+  - 20 identical setups appear.
 - `python -m newton.examples nut_bolt_hydro --solver kamino`
+  - 8 identical setups appear.
 """
 
 import argparse
