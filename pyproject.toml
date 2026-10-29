@@ -67,7 +67,7 @@ importers = [
     "usd-exchange>=2.3.0,<4 ; platform_machine == 'aarch64' and python_version < '3.14'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.5.0",
+    "newton-usd-schemas>=0.6.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)
