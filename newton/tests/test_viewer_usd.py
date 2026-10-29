@@ -677,6 +677,20 @@ class TestViewerUSD(unittest.TestCase):
                 self.assertEqual(last_steps, [(frame + 1) * steps_per_frame - 1 for frame in range(num_frames)])
                 self.assertEqual(viewer.stage.GetEndTimeCode(), num_frames - 1)
 
+    def test_frame_time_maps_to_the_frame_containing_it(self):
+        """Map negative, zero and fractional times to the time code of the frame that contains them."""
+        viewer = self._make_viewer()
+        frame_codes = [-2.0, -1.5, -1.0, 0.0, 0.5]
+        for step, frame_code in enumerate(frame_codes):
+            viewer.begin_frame(frame_code / viewer.fps)
+            points = wp.array([[float(step), 0.0, 0.0]], dtype=wp.vec3)
+            path = viewer.log_points("/points", points, radii=0.01)
+            viewer.end_frame()
+
+        points_attr = UsdGeom.Points.Get(viewer.stage, path).GetPointsAttr()
+        self.assertEqual([int(t) for t in points_attr.GetTimeSamples()], [-2, -1, 0])
+        self.assertEqual([int(points_attr.Get(code)[0][0]) for code in (-2, -1, 0)], [1, 2, 4])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

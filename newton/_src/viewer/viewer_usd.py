@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import tempfile
 import warnings
@@ -244,7 +245,7 @@ class ViewerUSD(ViewerBase):
         """
         super().begin_frame(time)
         # Floor with a tolerance so accumulated float time just below a frame boundary maps to that frame.
-        self._frame_index = int(time * self.fps + 1.0e-4)
+        self._frame_index = math.floor(time * self.fps + 1.0e-4)
         self._frame_count += 1
 
         # Update stage end time if needed
