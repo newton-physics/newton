@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 from ._src import viewer as _viewer
 
 if TYPE_CHECKING:
-    pass
+    from ._src.viewer import *  # noqa: F403
 
 __all__ = [*_viewer.__all__]  # noqa: PLE0604
 
