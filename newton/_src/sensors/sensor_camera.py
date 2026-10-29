@@ -19,7 +19,7 @@ from ..geometry.flags import ShapeFlags
 from ..sim.camera import CameraLens
 from ..utils.selection import match_labels
 from .sensor_camera_render import Utils, raytrace
-from .sensor_camera_render.camera_utils import _multisample_offset
+from .sensor_camera_render.camera_utils import _pinhole_pixel_ray
 from .sensor_camera_render.types import (
     AntiAliasing,
     ClearData,
@@ -82,6 +82,7 @@ def _compute_view_pinhole_kernel(
     camera_focal_length: wp.array[wp.float32],
     camera_aperture: wp.array[wp.vec2f],
     camera_aperture_offset: wp.array[wp.vec2f],
+    camera_resolution: wp.array[wp.vec2i],
     aspect: wp.float32,
     out_pinhole: wp.array[wp.vec4f],
 ):
@@ -91,11 +92,23 @@ def _compute_view_pinhole_kernel(
     aperture = camera_aperture[camera]
     horizontal = aperture[0]
     vertical = aperture[1]
-    # A zero aperture component follows the image aspect ratio (square pixels).
     if horizontal <= 0.0:
+        # A zero aperture component follows the image aspect ratio (square pixels).
         horizontal = vertical * aspect
-    if vertical <= 0.0:
+    elif vertical <= 0.0:
         vertical = horizontal / aspect
+    else:
+        # Keep the pixel aspect ratio the camera has at its own resolution (square pixels
+        # without one) and expand the aperture to the image aspect ratio, like USD's
+        # default ``expandAperture`` conform policy.
+        resolution = camera_resolution[camera]
+        target = aspect
+        if resolution[0] > 0 and resolution[1] > 0:
+            target = aspect * (horizontal * float(resolution[1])) / (vertical * float(resolution[0]))
+        if horizontal < vertical * target:
+            horizontal = vertical * target
+        else:
+            vertical = horizontal / target
     offset = camera_aperture_offset[camera]
     out_pinhole[view] = wp.vec4f(horizontal / focal, vertical / focal, offset[0] / focal, offset[1] / focal)
 
@@ -109,14 +122,11 @@ def _fill_pinhole_bundles_kernel(
     out_rays: wp.array4d[wp.vec3f],
 ):
     bundle, py, px, sample_index = wp.tid()
-    pinhole = bundle_pinhole[bundle]
-    offset = _multisample_offset(sample_index, sample_count)
-    u = (float(px) + offset[0]) / float(width)
-    v = (float(py) + offset[1]) / float(height)
-    direction = wp.vec3f((u - 0.5) * pinhole[0] + pinhole[2], (0.5 - v) * pinhole[1] + pinhole[3], -1.0)
     row = bundle * height + py
     out_rays[row, px, sample_index, 0] = wp.vec3f(0.0)
-    out_rays[row, px, sample_index, 1] = wp.normalize(direction)
+    out_rays[row, px, sample_index, 1] = _pinhole_pixel_ray(
+        px, py, sample_index, sample_count, width, height, bundle_pinhole[bundle]
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -225,11 +235,20 @@ class SensorCamera:
 
     HIT_TRIANGLE_MESH = _HIT_TRIANGLE_MESH
     """``shape_index_image`` value of hits on deformable triangle surfaces; ``face_index_image``
-    then holds the triangle index into :attr:`~newton.Model.tri_indices`."""
+    then holds the triangle index into :attr:`~newton.Model.tri_indices`.
+
+    .. experimental::
+    """
     HIT_PARTICLES = _HIT_PARTICLES
-    """``shape_index_image`` value of particle hits; ``face_index_image`` then holds the particle index."""
+    """``shape_index_image`` value of particle hits; ``face_index_image`` then holds the particle index.
+
+    .. experimental::
+    """
     HIT_NONE = _HIT_NONE
-    """``shape_index_image`` value of rays that hit nothing."""
+    """``shape_index_image`` value of rays that hit nothing.
+
+    .. experimental::
+    """
 
     RayQuery = RayQuery
     AntiAliasing = AntiAliasing
@@ -251,7 +270,7 @@ class SensorCamera:
         width: int | None = None,
         height: int | None = None,
         sample_count: int = 1,
-        ray_mode: SensorCamera.RayMode | int = 0,
+        ray_mode: SensorCamera.RayMode | int = RayMode.PRECOMPUTED,
         ray_function: Any = None,
         ray_params: wp.array2d[wp.float32] | None = None,
         clipping_range: tuple[float, float] | None = None,
@@ -296,8 +315,9 @@ class SensorCamera:
                 SensorCamera.RayQuery) -> (origin, direction)`` evaluated in the render
                 kernel for every view.
             ray_params: Parameter table passed to ``ray_function``.
-            clipping_range: Near and far clip distance [m] for every view. Defaults
-                to the cameras' clip ranges, or ``(0, 1e6)`` for sites. The far
+            clipping_range: Near and far clip distance [m] for every view, measured
+                along each ray from its origin. Defaults to the cameras' clip ranges,
+                or ``(0, 1e6)`` for sites. The far
                 distance is also limited by the render config's ``max_distance``.
             default_clear_data: Clear values used by :meth:`update` when its
                 ``clear_data`` argument is ``None``. Defaults to ``ClearData()``.
@@ -414,17 +434,35 @@ class SensorCamera:
 
         device = self.device
         self.width = int(width)
-        """Image width [px] of a bound sensor."""
+        """Image width [px] of a bound sensor.
+
+        .. experimental::
+        """
         self.height = int(height)
-        """Image height [px] of a bound sensor."""
+        """Image height [px] of a bound sensor.
+
+        .. experimental::
+        """
         self.sample_count = int(sample_count)
-        """Rays per pixel of a bound sensor."""
+        """Rays per pixel of a bound sensor.
+
+        .. experimental::
+        """
         self.view_count = len(view_frame)
-        """Number of views rendered by a bound sensor."""
+        """Number of views rendered by a bound sensor.
+
+        .. experimental::
+        """
         self.view_camera = wp.array(view_frame, dtype=wp.int32, device=device)
-        """Model camera (or site) index of each view, shape ``(view_count,)``."""
+        """Model camera (or site) index of each view, shape ``(view_count,)``.
+
+        .. experimental::
+        """
         self.view_world = wp.array(view_world, dtype=wp.int32, device=device)
-        """World rendered by each view, shape ``(view_count,)``."""
+        """World rendered by each view, shape ``(view_count,)``.
+
+        .. experimental::
+        """
 
         self._view_frame_np = np.asarray(view_frame, dtype=np.int32)
         self._view_lens_np = np.asarray([frame_lens[f] for f in view_frame], dtype=np.int32)
@@ -452,7 +490,8 @@ class SensorCamera:
         self._view_bundle_np = np.full(self.view_count, -1, dtype=np.int32)
         self._pinhole_bundle_count = 0
         self._pinhole_params = np.zeros((0, 4), dtype=np.float32)
-        self._custom_bundles: list[tuple[np.ndarray, wp.array]] = []  # (views, rays)
+        self._custom_views: list[np.ndarray] = []  # views of each custom bundle slot
+        self._custom_row_offset = 0  # bundle index of the first custom slot in _camera_rays
         self._camera_rays: wp.array | None = None
         self._view_ray_bundle = wp.zeros(self.view_count, dtype=wp.int32, device=device)
         if ray_function is None and ray_mode == SensorCamera.RayMode.PRECOMPUTED:
@@ -460,7 +499,10 @@ class SensorCamera:
 
     @property
     def is_bound(self) -> bool:
-        """Whether this sensor renders model cameras or sites selected at construction."""
+        """Whether this sensor renders model cameras or sites selected at construction.
+
+        .. experimental::
+        """
         return self._bound
 
     def _require_bound(self) -> None:
@@ -483,6 +525,7 @@ class SensorCamera:
                 model.camera_focal_length,
                 model.camera_aperture,
                 model.camera_aperture_offset,
+                model.camera_resolution,
                 float(self.width) / float(self.height),
             ],
             outputs=[out],
@@ -492,8 +535,9 @@ class SensorCamera:
     def sync_camera_rays(self) -> None:
         """Rebuild the precomputed pinhole ray bundles from the Model's camera intrinsics.
 
-        Call after changing ``model.camera_focal_length``, ``camera_aperture`` or
-        ``camera_aperture_offset`` when using :attr:`RayMode.PRECOMPUTED`. Views with
+        Call after changing ``model.camera_focal_length``, ``camera_aperture``,
+        ``camera_aperture_offset`` or ``camera_resolution`` when using
+        :attr:`RayMode.PRECOMPUTED`. Views with
         identical intrinsics share one bundle. Custom bundles set with
         :meth:`set_camera_rays` are kept.
 
@@ -512,13 +556,32 @@ class SensorCamera:
         self._pinhole_params = bundle_params
         self._rebuild_bundles()
 
-    def _rebuild_bundles(self) -> None:
+    def _rebuild_bundles(
+        self, custom_views: list[np.ndarray] | None = None, sources: dict[int, int | wp.array] | None = None
+    ) -> None:
+        """Re-pack the pinhole and custom ray bundles into the sensor's ray storage.
+
+        ``sources`` maps each custom slot to the rays copied into it: a caller bundle, or the
+        index of a slot in the current layout whose rays carry over. By default all slots keep
+        their rays.
+        """
         device = self.device
+        if custom_views is None:
+            custom_views = self._custom_views
+            sources = {slot: slot for slot in range(len(custom_views))}
+        # Snapshot carried-over rays first, since the storage may be re-packed in place.
+        carried = {}
+        for slot, source in sources.items():
+            if isinstance(source, int):
+                row = (self._custom_row_offset + source) * self.height
+                carried[slot] = wp.clone(self._camera_rays[row : row + self.height])
+            else:
+                carried[slot] = source
         bundle_params = self._pinhole_params
         custom_offset = self._pinhole_bundle_count
-        for index, (views, _rays) in enumerate(self._custom_bundles):
+        for index, views in enumerate(custom_views):
             self._view_bundle_np[views] = custom_offset + index
-        bundle_count = self._pinhole_bundle_count + len(self._custom_bundles)
+        bundle_count = self._pinhole_bundle_count + len(custom_views)
         shape = (max(bundle_count, 1) * self.height, self.width, self.sample_count, 2)
         if self._camera_rays is None or self._camera_rays.shape != shape:
             self._camera_rays = wp.zeros(shape, dtype=wp.vec3f, device=device)
@@ -535,9 +598,11 @@ class SensorCamera:
                 outputs=[self._camera_rays],
                 device=device,
             )
-        for index, (_views, rays) in enumerate(self._custom_bundles):
-            row = (custom_offset + index) * self.height
+        for slot, rays in carried.items():
+            row = (custom_offset + slot) * self.height
             wp.copy(self._camera_rays[row : row + self.height], rays)
+        self._custom_views = custom_views
+        self._custom_row_offset = custom_offset
         self._view_ray_bundle.assign(self._view_bundle_np)
 
     def set_camera_rays(
@@ -587,29 +652,33 @@ class SensorCamera:
                 raise ValueError(f"Expected {len(frames)} bundles (one per selected camera), got {len(bundles)}")
             groups = [(views[self._view_frame_np[views] == f], b) for f, b in zip(frames, bundles, strict=True)]
 
-        # Reuse slots with the same views so repeated updates keep the storage layout.
+        # Reuse slots with the same views so repeated updates keep the storage layout. Each slot's
+        # source is a new bundle or the index of the current slot whose rays it keeps.
+        custom_views = list(self._custom_views)
+        sources: dict[int, int | wp.array] = {slot: slot for slot in range(len(custom_views))}
         layout_changed = False
         for group_views, bundle in groups:
-            slot = next(
-                (i for i, (v, _) in enumerate(self._custom_bundles) if np.array_equal(v, group_views)),
-                None,
-            )
+            slot = next((i for i, v in enumerate(custom_views) if np.array_equal(v, group_views)), None)
             if slot is None:
                 # Remove these views from older slots, then append.
-                kept = []
-                for v, b in self._custom_bundles:
+                kept_views, kept_sources = [], {}
+                for i, v in enumerate(custom_views):
                     remaining = np.setdiff1d(v, group_views)
                     if len(remaining):
-                        kept.append((remaining, b))
-                self._custom_bundles = [*kept, (group_views, bundle)]
+                        kept_sources[len(kept_views)] = sources[i]
+                        kept_views.append(remaining)
+                custom_views = [*kept_views, group_views]
+                sources = {**kept_sources, len(kept_views): bundle}
                 layout_changed = True
             else:
-                self._custom_bundles[slot] = (group_views, bundle)
-                if not layout_changed:
-                    row = (self._pinhole_bundle_count + slot) * self.height
-                    wp.copy(self._camera_rays[row : row + self.height], bundle)
+                sources[slot] = bundle
         if layout_changed:
-            self._rebuild_bundles()
+            self._rebuild_bundles(custom_views, sources)
+        else:
+            for slot, source in sources.items():
+                if not isinstance(source, int):
+                    row = (self._custom_row_offset + slot) * self.height
+                    wp.copy(self._camera_rays[row : row + self.height], source)
 
     def compute_view_transforms(self, state: State, out: wp.array[wp.transformf] | None = None) -> wp.array:
         """Compute the world-space pose of every view of a bound sensor.
@@ -1565,13 +1634,14 @@ class SensorCamera:
             face_index_image: Output hit-element index (``int32``): the triangle
                 index into :attr:`~newton.Model.tri_indices` for deformable-surface
                 hits, the mesh face index for mesh shapes, the particle index for
-                particle hits, and ``-1`` where nothing is hit.
+                particle hits, and ``-1`` for other shapes (analytic primitives,
+                Gaussians) and where nothing is hit.
 
                 .. experimental::
             barycentric_image: Output barycentric coordinates ``(u, v)`` of
                 triangle hits (``vec2f``), with the hit point at
-                ``u * p0 + v * p1 + (1 - u - v) * p2``; ``(0, 0)`` where nothing is
-                hit.
+                ``u * p0 + v * p1 + (1 - u - v) * p2``; ``(0, 0)`` for other hits
+                and where nothing is hit.
 
                 .. experimental::
 

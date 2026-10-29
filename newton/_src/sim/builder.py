@@ -1991,25 +1991,55 @@ class ModelBuilder:
 
         # cameras
         self.camera_label: list[str] = []
-        """Labels accumulated for :attr:`Model.camera_label`."""
+        """Labels accumulated for :attr:`Model.camera_label`.
+
+        .. experimental::
+        """
         self.camera_world: list[int] = []
-        """World indices accumulated for :attr:`Model.camera_world`."""
+        """World indices accumulated for :attr:`Model.camera_world`.
+
+        .. experimental::
+        """
         self.camera_body: list[int] = []
-        """Parent body indices accumulated for :attr:`Model.camera_body`."""
+        """Parent body indices accumulated for :attr:`Model.camera_body`.
+
+        .. experimental::
+        """
         self.camera_transform: list[Transform] = []
-        """Camera mount transforms accumulated for :attr:`Model.camera_transform`."""
+        """Camera mount transforms accumulated for :attr:`Model.camera_transform`.
+
+        .. experimental::
+        """
         self.camera_lens: list[int] = []
-        """Lens models accumulated for :attr:`Model.camera_lens`."""
+        """Lens models accumulated for :attr:`Model.camera_lens`.
+
+        .. experimental::
+        """
         self.camera_focal_length: list[float] = []
-        """Focal lengths [m] accumulated for :attr:`Model.camera_focal_length`."""
+        """Focal lengths [m] accumulated for :attr:`Model.camera_focal_length`.
+
+        .. experimental::
+        """
         self.camera_aperture: list[tuple[float, float]] = []
-        """Apertures [m] accumulated for :attr:`Model.camera_aperture`."""
+        """Apertures [m] accumulated for :attr:`Model.camera_aperture`.
+
+        .. experimental::
+        """
         self.camera_aperture_offset: list[tuple[float, float]] = []
-        """Aperture offsets [m] accumulated for :attr:`Model.camera_aperture_offset`."""
+        """Aperture offsets [m] accumulated for :attr:`Model.camera_aperture_offset`.
+
+        .. experimental::
+        """
         self.camera_clipping_range: list[tuple[float, float]] = []
-        """Clip ranges [m] accumulated for :attr:`Model.camera_clipping_range`."""
+        """Clip ranges [m] accumulated for :attr:`Model.camera_clipping_range`.
+
+        .. experimental::
+        """
         self.camera_resolution: list[tuple[int, int]] = []
-        """Nominal resolutions [px] accumulated for :attr:`Model.camera_resolution`."""
+        """Nominal resolutions [px] accumulated for :attr:`Model.camera_resolution`.
+
+        .. experimental::
+        """
 
         # tendons (cable-driven mechanisms)
         self.tendon_label: list[str] = []
@@ -2469,7 +2499,10 @@ class ModelBuilder:
 
     @property
     def camera_count(self) -> int:
-        """Number of declared cameras."""
+        """Number of declared cameras.
+
+        .. experimental::
+        """
         return len(self.camera_label)
 
     @property
@@ -9543,11 +9576,17 @@ class ModelBuilder:
             horizontal_aperture: Sensor width [m]. ``None`` or 0 derives it from the
                 vertical aperture and the image aspect ratio.
             vertical_aperture: Sensor height [m]. ``None`` or 0 derives it from the
-                horizontal aperture and the image aspect ratio.
+                horizontal aperture and the image aspect ratio. When both apertures
+                are set, they map onto ``resolution``; at other image aspect ratios
+                the aperture is expanded to keep that pixel aspect ratio (square
+                pixels without a resolution), like USD's default ``expandAperture``
+                conform policy.
             horizontal_aperture_offset: Horizontal principal-point offset [m].
             vertical_aperture_offset: Vertical principal-point offset [m].
-            clipping_range: Near and far clip distance [m]. Hits outside the range
-                are misses.
+            clipping_range: Near and far clip distance [m], measured along each ray
+                from the camera origin rather than as planar depth. Hits outside the
+                range are misses. USD and MJCF clip ranges are imported unchanged, so
+                toward the image corners they clip slightly closer than a planar clip.
             resolution: Nominal ``(width, height)`` [px] authored by the asset. Only a
                 default for sensors.
             label: Unique label; defaults to ``camera_{index}``.

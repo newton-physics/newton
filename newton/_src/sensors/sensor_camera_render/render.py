@@ -10,7 +10,7 @@ import warp as wp
 from ...geometry import Gaussian, GeoType
 from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
-from .camera_utils import _multisample_offset
+from .camera_utils import _pinhole_pixel_ray
 from .types import (
     AntiAliasing,
     ClearData,
@@ -138,12 +138,10 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             return camera_rays[row, px, sample_index, 0], camera_rays[row, px, sample_index, 1]
         elif wp.static(state.ray_mode == int(RayGenerationMode.PINHOLE)):
             # view_pinhole = (horizontal aperture, vertical aperture, horizontal offset, vertical offset) / focal
-            pinhole = view_pinhole[view_index]
-            offset = _multisample_offset(sample_index, sample_count)
-            u = (float(px) + offset[0]) / float(img_width)
-            v = (float(py) + offset[1]) / float(img_height)
-            direction = wp.vec3f((u - 0.5) * pinhole[0] + pinhole[2], (0.5 - v) * pinhole[1] + pinhole[3], -1.0)
-            return wp.vec3f(0.0), wp.normalize(direction)
+            direction = _pinhole_pixel_ray(
+                px, py, sample_index, sample_count, img_width, img_height, view_pinhole[view_index]
+            )
+            return wp.vec3f(0.0), direction
         else:
             query = RayQuery()
             query.view = view_index

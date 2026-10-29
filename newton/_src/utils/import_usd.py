@@ -132,33 +132,48 @@ class _CableAttachmentCandidate:
     target_path: str
 
 
-def _usd_render_product_resolutions(stage) -> dict[str, tuple[int, int]]:
-    """Map camera prim paths to the resolution of the first ``UsdRender.Product`` that renders them.
+def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], str, float]]:
+    """Map camera prim paths to the image format of the first ``UsdRender.Product`` that renders them.
 
-    A product inherits an unauthored ``camera`` or ``resolution`` from the ``UsdRender.Settings``
-    that lists it in ``products``; values authored on the product take precedence. Schema fallback
-    values are never used. ``UsdRender`` prims live under the ``/Render`` scope by convention, so
-    only that scope is scanned.
+    Each entry holds the resolution, the ``aspectRatioConformPolicy`` and the ``pixelAspectRatio``.
+    A product inherits unauthored values from the ``UsdRender.Settings`` that lists it in
+    ``products``; values authored on the product take precedence. A resolution is never taken from
+    the schema fallback, while the policy and pixel aspect ratio fall back to the USD defaults.
+    ``UsdRender`` prims live under the ``/Render`` scope by convention, so only that scope is scanned.
     """
-    resolutions: dict[str, tuple[int, int]] = {}
+    resolutions: dict[str, tuple[tuple[int, int], str, float]] = {}
     render_scope = stage.GetPrimAtPath("/Render")
     if not (render_scope and render_scope.IsValid()):
         return resolutions
     from pxr import Usd, UsdRender
 
-    def authored_resolution(settings_base):
-        attr = settings_base.GetResolutionAttr()
+    def authored(attr):
         return attr.Get() if attr and attr.HasAuthoredValue() else None
+
+    def authored_resolution(settings_base):
+        return authored(settings_base.GetResolutionAttr())
+
+    def image_format(*settings_bases):
+        """Return the conform policy and pixel aspect ratio, from the first base that authors each."""
+        policy = next(
+            (v for b in settings_bases if (v := authored(b.GetAspectRatioConformPolicyAttr())) is not None),
+            UsdRender.Tokens.expandAperture,
+        )
+        pixel_aspect = next(
+            (v for b in settings_bases if (v := authored(b.GetPixelAspectRatioAttr())) is not None),
+            1.0,
+        )
+        return str(policy), float(pixel_aspect)
 
     def authored_cameras(settings_base):
         rel = settings_base.GetCameraRel()
         return rel.GetForwardedTargets() if rel and rel.HasAuthoredTargets() else []
 
-    def add(cameras, resolution):
+    def add(cameras, resolution, policy, pixel_aspect):
         if resolution is None or resolution[0] <= 0 or resolution[1] <= 0:
             return
         for target in cameras:
-            resolutions.setdefault(str(target), (int(resolution[0]), int(resolution[1])))
+            resolutions.setdefault(str(target), ((int(resolution[0]), int(resolution[1])), policy, pixel_aspect))
 
     listed_products = set()
     for prim in Usd.PrimRange(render_scope):
@@ -174,13 +189,35 @@ def _usd_render_product_resolutions(stage) -> dict[str, tuple[int, int]]:
             add(
                 authored_cameras(product) or authored_cameras(settings),
                 authored_resolution(product) or authored_resolution(settings),
+                *image_format(product, settings),
             )
 
     for prim in Usd.PrimRange(render_scope):
         if prim.IsA(UsdRender.Product) and prim.GetPath() not in listed_products:
             product = UsdRender.Product(prim)
-            add(authored_cameras(product), authored_resolution(product))
+            add(authored_cameras(product), authored_resolution(product), *image_format(product))
     return resolutions
+
+
+def _conform_usd_aperture(
+    horizontal: float, vertical: float, resolution: tuple[int, int], policy: str, pixel_aspect: float
+) -> tuple[float, float]:
+    """Conform a USD camera aperture to an image format, following ``UsdRenderSettingsBase``.
+
+    The result maps exactly onto ``resolution`` with pixels of aspect ratio ``pixel_aspect``, except
+    for ``adjustPixelAspectRatio``, which keeps the authored aperture and lets the pixels stretch.
+    """
+    if horizontal <= 0.0 or vertical <= 0.0 or pixel_aspect <= 0.0 or policy == "adjustPixelAspectRatio":
+        return horizontal, vertical
+    target = resolution[0] * pixel_aspect / resolution[1]
+    aspect = horizontal / vertical
+    if policy == "adjustApertureWidth" or (policy == "expandAperture" and aspect < target):
+        return vertical * target, vertical
+    if policy == "cropAperture" and aspect > target:
+        return vertical * target, vertical
+    if policy in ("adjustApertureHeight", "expandAperture", "cropAperture"):
+        return horizontal, horizontal / target
+    return horizontal, vertical
 
 
 def _import_usd_cameras(
@@ -206,7 +243,8 @@ def _import_usd_cameras(
     Cameras below a rigid body that was not imported are skipped.
 
     USD authors focal length and apertures in tenths of a scene unit and the clipping range in scene
-    units; both are converted to meters with ``linear_unit``.
+    units; both are converted to meters with ``linear_unit``. A camera rendered by a ``UsdRender.Product``
+    takes its resolution from it, and its aperture is conformed to that image format.
     """
     from pxr import Usd, UsdGeom, UsdPhysics
 
@@ -259,17 +297,23 @@ def _import_usd_cameras(
             camera_xform = wp.transform(pos, rot)
 
         near, far = camera.GetClippingRangeAttr().Get()
+        horizontal = float(camera.GetHorizontalApertureAttr().Get())
+        vertical = float(camera.GetVerticalApertureAttr().Get())
+        resolution = None
+        if path in resolutions:
+            resolution, policy, pixel_aspect = resolutions[path]
+            horizontal, vertical = _conform_usd_aperture(horizontal, vertical, resolution, policy, pixel_aspect)
         try:
             camera_id = builder.add_camera(
                 body,
                 xform=camera_xform,
                 focal_length=float(camera.GetFocalLengthAttr().Get()) * lens_unit,
-                horizontal_aperture=float(camera.GetHorizontalApertureAttr().Get()) * lens_unit,
-                vertical_aperture=float(camera.GetVerticalApertureAttr().Get()) * lens_unit,
+                horizontal_aperture=horizontal * lens_unit,
+                vertical_aperture=vertical * lens_unit,
                 horizontal_aperture_offset=float(camera.GetHorizontalApertureOffsetAttr().Get()) * lens_unit,
                 vertical_aperture_offset=float(camera.GetVerticalApertureOffsetAttr().Get()) * lens_unit,
                 clipping_range=(float(near) * linear_unit, float(far) * linear_unit),
-                resolution=resolutions.get(path),
+                resolution=resolution,
                 label=path,
                 custom_attributes=usd.get_custom_attribute_values(prim, custom_attrs, context={"builder": builder})
                 if custom_attrs
