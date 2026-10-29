@@ -120,7 +120,7 @@ class Example:
 
         self.solver = newton.solvers.SolverStyle3D(
             model=self.model,
-            iterations=self.iterations,
+            config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations),
         )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()

@@ -175,7 +175,7 @@ class Example:
         # ------------------------------------------------------------------
         self.cloth_solver = newton.solvers.SolverStyle3D(
             model=self.model,
-            iterations=self.iterations,
+            config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations),
         )
         self.cloth_solver.collision.radius = 3.5e-3
         self.control = self.model.control()

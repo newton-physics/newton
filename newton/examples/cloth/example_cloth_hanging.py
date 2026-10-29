@@ -121,7 +121,7 @@ class Example:
         elif self.solver_type == "style3d":
             self.solver = newton.solvers.SolverStyle3D(
                 model=self.model,
-                iterations=self.iterations,
+                config=newton.solvers.SolverStyle3D.Config(iterations=self.iterations),
             )
         elif self.solver_type == "xpbd":
             self.solver = newton.solvers.SolverXPBD(

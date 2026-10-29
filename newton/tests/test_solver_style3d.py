@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from dataclasses import replace
 from unittest import mock
 
 import numpy as np
@@ -67,11 +68,128 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
     )
     model = builder.finalize(device=device)
 
-    solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+    solver = newton.solvers.SolverStyle3D(model)
+    config = newton.solvers.SolverStyle3D.Config()
+
+    test.assertEqual(solver.nonlinear_iterations, config.iterations)
+    test.assertEqual(solver.linear_iterations, config.linear_iterations)
+    test.assertEqual(solver.drag_spring_stiff, config.drag_spring_stiff)
+    test.assertEqual(solver.enable_mouse_dragging, config.enable_mouse_dragging)
 
     test.assertGreater(float(solver.pd_diags.numpy().sum()), 0.0)
     test.assertGreater(int(solver.pd_non_diags.num_nz.numpy().sum()), 0)
     _assert_pd_matrix(test, model, solver)
+
+
+def test_config_constructor_options(test, device):
+    """Match Config and legacy cloth solves, including runtime updates and conflicts."""
+    builder = newton.ModelBuilder()
+    newton.solvers.SolverStyle3D.register_custom_attributes(builder)
+    newton.solvers.style3d.add_cloth_grid(
+        builder,
+        pos=(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.1,
+    )
+    model = builder.finalize(device=device)
+    config = newton.solvers.SolverStyle3D.Config(
+        iterations=3,
+        linear_iterations=5,
+        drag_spring_stiff=42.0,
+        enable_mouse_dragging=True,
+    )
+
+    solver = newton.solvers.SolverStyle3D(model, config=config)
+    test.assertIs(solver.config, config)
+    test.assertEqual(solver.nonlinear_iterations, config.iterations)
+    test.assertEqual(solver.linear_iterations, config.linear_iterations)
+    test.assertEqual(solver.drag_spring_stiff, config.drag_spring_stiff)
+    test.assertEqual(solver.enable_mouse_dragging, config.enable_mouse_dragging)
+
+    legacy_solver = newton.solvers.SolverStyle3D(
+        model,
+        iterations=config.iterations,
+        linear_iterations=config.linear_iterations,
+        drag_spring_stiff=config.drag_spring_stiff,
+        enable_mouse_dragging=config.enable_mouse_dragging,
+    )
+    test.assertIsNot(legacy_solver.config, config)
+    test.assertEqual(legacy_solver.config, config)
+
+    contacts = newton.CollisionPipeline(model).contacts()
+    control = model.control()
+
+    def solve(current_solver):
+        state_in, state_out = model.state(), model.state()
+        current_solver._update_drag_info(0, wp.vec3(0.0, 0.0, 1.1), wp.vec3(1.0, 0.0, 0.0))
+        current_solver.step(state_in, state_out, control, contacts, 0.01)
+        return state_out.particle_q.numpy(), state_out.particle_qd.numpy()
+
+    outputs = [solve(current_solver) for current_solver in (solver, legacy_solver)]
+    np.testing.assert_allclose(outputs[0][0], outputs[1][0], atol=1e-6)
+    np.testing.assert_allclose(outputs[0][1], outputs[1][1], atol=1e-6)
+    test.assertTrue(np.isfinite(outputs[0][0]).all())
+    test.assertGreater(np.linalg.norm(outputs[0][1]), 0.0)
+
+    # Reuse a solver after each individual edit and compare with a fresh solver.
+    previous = outputs[0]
+    for name, value in (
+        ("iterations", 1),
+        ("linear_iterations", 1),
+        ("drag_spring_stiff", 420.0),
+        ("enable_mouse_dragging", False),
+    ):
+        with test.subTest(runtime_option=name):
+            setattr(config, name, value)
+            actual = solve(solver)
+            expected = solve(newton.solvers.SolverStyle3D(model, config=replace(config)))
+            np.testing.assert_allclose(actual[0], expected[0], atol=1e-6)
+            np.testing.assert_allclose(actual[1], expected[1], atol=1e-6)
+            test.assertGreater(np.max(np.abs(actual[1] - previous[1])), 1e-6)
+            legacy_name = "nonlinear_iterations" if name == "iterations" else name
+            test.assertEqual(getattr(solver, legacy_name), value)
+            previous = actual
+
+    # Replacing the public configuration also updates the next solve.
+    solver.config = replace(legacy_solver.config)
+    test.assertIsNot(solver.config, config)
+    actual = solve(solver)
+    np.testing.assert_allclose(actual[0], outputs[0][0], atol=1e-6)
+    np.testing.assert_allclose(actual[1], outputs[0][1], atol=1e-6)
+
+    # Legacy setters update the same configuration used by the solver.
+    solver.nonlinear_iterations = config.iterations
+    solver.linear_iterations = config.linear_iterations
+    solver.drag_spring_stiff = config.drag_spring_stiff
+    solver.enable_mouse_dragging = config.enable_mouse_dragging
+    test.assertEqual(solver.config, config)
+    actual = solve(solver)
+    np.testing.assert_allclose(actual[0], previous[0], atol=1e-6)
+    np.testing.assert_allclose(actual[1], previous[1], atol=1e-6)
+
+    default_config = newton.solvers.SolverStyle3D.Config()
+    partial_solver = newton.solvers.SolverStyle3D(model, config=None, iterations=2, drag_spring_stiff=0.0)
+    test.assertEqual(partial_solver.nonlinear_iterations, 2)
+    test.assertEqual(partial_solver.linear_iterations, default_config.linear_iterations)
+    test.assertEqual(partial_solver.drag_spring_stiff, 0.0)
+    test.assertEqual(partial_solver.enable_mouse_dragging, default_config.enable_mouse_dragging)
+
+    for name, value in (
+        ("iterations", default_config.iterations),
+        ("linear_iterations", default_config.linear_iterations),
+        ("drag_spring_stiff", default_config.drag_spring_stiff),
+        ("enable_mouse_dragging", default_config.enable_mouse_dragging),
+    ):
+        with test.subTest(option=name):
+            with test.assertRaisesRegex(TypeError, "either 'config' or legacy solver options"):
+                newton.solvers.SolverStyle3D(model, config=config, **{name: value})
+    with test.assertRaisesRegex(TypeError, "Expected config to be SolverStyle3D.Config"):
+        newton.solvers.SolverStyle3D(model, config={})
 
 
 def test_high_valence_pd_matrix(test, device):
@@ -310,6 +428,14 @@ add_function_test(
     TestSolverStyle3D,
     "test_constructor_precomputes_fixed_pd_matrix",
     test_constructor_precomputes_fixed_pd_matrix,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverStyle3D,
+    "test_config_constructor_options",
+    test_config_constructor_options,
     devices=devices,
     check_output=False,
 )
