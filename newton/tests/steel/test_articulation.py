@@ -2953,10 +2953,13 @@ def test_translated_d6_spin_holds_position(test, device, solver_cls=SolverSteel,
     state_0, state_1, control = model.state(), model.state(), model.control()
     newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
     substeps = 20 if solver_cls is SolverFeatherstone else 1
-    for _ in range(240 * substeps):
+    for _ in range(60 * substeps):
         solver.step(state_0, state_1, control, None, 1.0 / (240.0 * substeps))
         state_0, state_1 = state_1, state_0
-    np.testing.assert_allclose(state_0.body_q.numpy()[body, :3], (1.0, 0.0, 0.5), rtol=0.0, atol=1e-3)
+    body_q = state_0.body_q.numpy()[body]
+    np.testing.assert_allclose(body_q[:3], (1.0, 0.0, 0.5), rtol=0.0, atol=1e-3)
+    # 0.25 s at 6 rad/s turns the box 1.5 rad about y.
+    np.testing.assert_allclose(body_q[3:], (0.0, np.sin(0.75), 0.0, np.cos(0.75)), rtol=0.0, atol=1e-4)
     np.testing.assert_allclose(state_0.body_qd.numpy()[body], (0.0, 0.0, 0.0, 0.0, 6.0, 0.0), rtol=0.0, atol=1e-2)
 
 
