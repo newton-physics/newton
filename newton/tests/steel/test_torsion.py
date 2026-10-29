@@ -2484,7 +2484,7 @@ def test_propagation_dropped_members_leave_the_highest_kept_host(test, device):
     test.assertRegex(
         lines[0],
         r"Warning: Steel propagation constraint-row overflow in world 0: requested 16 rows, limit 10; "
-        r"dropped 8 contact/friction rows\.",
+        r"dropped 8 contact, friction or torsion rows\.",
     )
     count = int(contacts.rigid_contact_count.numpy()[0])
     slots = solver._contact_slot.numpy()[:count]

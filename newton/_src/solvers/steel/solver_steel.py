@@ -646,7 +646,7 @@ def _warn_constraint_row_overflow(
         if propagation_requested > propagation_capacity and wp.atomic_exch(warning_emitted, 3, 1) == 0:
             wp.printf(
                 "Warning: Steel propagation constraint-row overflow in world %d: requested %d rows, "
-                "limit %d; dropped %d contact/friction rows. Increase free_body_constraint_max or "
+                "limit %d; dropped %d contact, friction or torsion rows. Increase free_body_constraint_max or "
                 "articulation_constraint_max.\n",
                 world,
                 propagation_requested,
@@ -1978,8 +1978,9 @@ class SolverSteel(SolverBase):
                 that persists latches it again on the next step. Grouping runs serially per world with
                 worst-case quadratic cost in the contacts of a world. No effect without
                 contact torsion. With ``articulated_contact_response="propagation"``, every
-                contact with a positive radius that the immediate response would solve as an
-                articulated row reserves one more propagation row for torsion, so size
+                positive-radius contact on an articulated body that is routed to propagation
+                reserves one more propagation row for torsion (same-articulation contacts stay
+                dense unless ``propagation_same_articulation_rows`` is set), so size
                 ``articulation_constraint_max`` and ``free_body_constraint_max`` for it; each
                 sweep solves the torsion rows after the other rows with the same budget. That
                 response requires ``contact_torsion_device=True`` and ``velocity_iterations=0``.
