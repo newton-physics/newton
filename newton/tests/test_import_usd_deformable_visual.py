@@ -164,9 +164,22 @@ class TestUSDDeformableVisual(unittest.TestCase):
                 UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
                 UsdGeom.Xformable(stage.GetPrimAtPath("/World/Object")).AddTranslateOp().Set((3, 4, 5))
                 builder = newton.ModelBuilder()
-                builder.add_usd(stage)
+                if family == "surface":
+                    subset = UsdShade.MaterialBindingAPI(mesh).CreateMaterialBindSubset("Patch", [1])
+                    subset_material = UsdShade.Material.Define(stage, "/World/PatchMaterial")
+                    subset_material.GetPrim().GetReferences().AddInternalReference(material.GetPath())
+                    stage.GetPrimAtPath("/World/PatchMaterial/Texture").GetAttribute("inputs:file").Set(
+                        Sdf.AssetPath("patch.png")
+                    )
+                    UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(subset_material)
+                    with self.assertLogs("newton", level="WARNING") as logs:
+                        builder.add_usd(stage)
+                    self.assertTrue(any("material subsets" in message for message in logs.output))
+                else:
+                    builder.add_usd(stage)
                 model = builder.finalize(device="cpu")
                 self.assertEqual(model.deformable_visual_mesh_count, 1)
+                self.assertEqual(model.deformable_visual_meshes[0].texture, "albedo.png")
                 output = newton.geometry.DeformableVisuals(model).update(model.state())
                 np.testing.assert_allclose(output.points.numpy(), points[corners] + np.array([3.05, 4, 7]), atol=2e-6)
                 np.testing.assert_allclose(

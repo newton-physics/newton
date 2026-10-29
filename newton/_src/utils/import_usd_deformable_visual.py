@@ -123,6 +123,8 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
 
 def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
     """Import graphics payloads for every imported deformable body and embed them."""
+    from pxr import UsdShade
+
     from ..geometry.flags import ShapeFlags  # noqa: PLC0415
     from ..usd import utils as usd  # noqa: PLC0415
 
@@ -160,6 +162,17 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             if len(mesh.vertices) == 0 or len(mesh.indices) == 0:
                 logger.warning("%s: graphics mesh has no geometry; skipping visual mesh.", path)
                 continue
+            if any(
+                subset.GetIndicesAttr().Get()
+                and any(
+                    rel.GetName().startswith("material:binding") and rel.GetTargets()
+                    for rel in subset.GetPrim().GetRelationships()
+                )
+                for subset in UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+            ):
+                logger.warning(
+                    "%s: graphics material subsets are not supported; using only the mesh-level material.", path
+                )
             world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
             world_verts = _world_points(points, world_mat, translate=True).astype(np.float32)
             indices = np.asarray(mesh.indices, dtype=np.int32)
