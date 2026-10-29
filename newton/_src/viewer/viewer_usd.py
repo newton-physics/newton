@@ -775,8 +775,8 @@ class ViewerUSD(ViewerBase):
                     mesh,
                     texture=base.get("texture") if use_texture else None,
                     color=None if use_texture else color,
-                    roughness=float(material_params[0]) if material_params is not None else base.get("roughness"),
-                    metallic=float(material_params[1]) if material_params is not None else base.get("metallic"),
+                    roughness=float(material_params[0]) if material_params is not None else None,
+                    metallic=float(material_params[1]) if material_params is not None else None,
                     opacity=float(opacities[i]) if opacities is not None else base.get("opacity"),
                 )
                 self._bind_material(instance, material)

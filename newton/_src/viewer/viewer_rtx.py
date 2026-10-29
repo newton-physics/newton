@@ -1923,6 +1923,10 @@ void main() {
             same_texture = next_texture is previous_texture or (
                 isinstance(next_texture, str) and isinstance(previous_texture, str) and next_texture == previous_texture
             )
+            if next_texture is not None and not isinstance(next_texture, str):
+                # Failed exports return an untextured material; retry the image next time.
+                exported = self._texture_paths.get(name)
+                same_texture = same_texture and exported is not None and exported[0] is next_texture
             if not same_texture:
                 appearance = self._mesh_appearance.setdefault(name, {})
                 for key, value in (
@@ -2016,6 +2020,11 @@ void main() {
             changed |= any(not np.array_equal(old, new) for old, new in zip(previous[2], appearance, strict=True))
 
         if self._phase == self._PHASE_BUILD or (xforms is not None and changed):
+            # Rebuilt instances get their current materials from the stage below.
+            # Queued bindings refer to the old indices or the old prototype.
+            self._pending_instance_materials = {
+                key: value for key, value in self._pending_instance_materials.items() if key[0] != name
+            }
             if previous is not None and (previous[0] != mesh or previous[1] != count):
                 self.stage.RemovePrim(self._get_path(name))
             super().log_instances(

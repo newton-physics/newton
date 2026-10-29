@@ -299,7 +299,9 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 continue
 
             ctx.path_deformable_visual_map[path] = index
-            builder._set_deformable_visual_source_paths(index, body_path=body_path, sim_path=sim_path, graphics_path=path)
+            builder._set_deformable_visual_source_paths(
+                index, body_path=body_path, sim_path=sim_path, graphics_path=path
+            )
             if ctx.verbose:
                 logger.info("  Embedded visual mesh %s (%d verts) in %s %s.", path, len(world_verts), family, sim_path)
 
