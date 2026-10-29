@@ -1,1 +1,0 @@
-Change `SolverSteel`'s `BODY_PARENT_F` to the wrench of the solved step, including contact, friction, spin and loop-closure loads, as `SolverMuJoCo` reports it. `SolverSteel` no longer reports the start-of-step inverse dynamics at zero joint acceleration, which `SolverFeatherstone` still does.
