@@ -56,6 +56,7 @@ class TestViewerUI(unittest.TestCase):
         self.addCleanup(imgui.destroy_context, context)
         # Exercise ImGui state without an OpenGL renderer or window.
         self.ui = ImGuiBackend.__new__(ImGuiBackend)
+        self.ui._workspace_style = True
         self.ui.imgui = imgui
         self.ui.giz = imguizmo.im_guizmo
         self.ui.io = imgui.get_io()
@@ -156,6 +157,26 @@ class TestViewerUI(unittest.TestCase):
                 self.assertEqual(style.font_scale_dpi, scale)
                 self.assertEqual([tuple(style.color_(i)) for i in range(imgui.Col_.count)], colors)
                 self.assertEqual(self.ui.io.fonts.fonts[0], font)
+
+    def test_legacy_style_preserves_main_metrics(self) -> None:
+        """Legacy controls keep main's spacing and colors across DPI changes."""
+        self.ui._workspace_style = False
+        for scale in (1.0, 1.5, 2.0, 1.0):
+            with self.subTest(scale=scale):
+                self.ui.dpi_scale = scale
+                self.ui._apply_dpi_scaling()
+                style = self.ui.imgui.get_style()
+                self.assertEqual(tuple(style.window_padding), (12 * scale, 12 * scale))
+                self.assertEqual(tuple(style.frame_padding), (6 * scale, 6 * scale))
+                self.assertEqual(tuple(style.item_spacing), (12 * scale, 6 * scale))
+                self.assertEqual(style.frame_rounding, 0)
+                self.assertEqual(style.window_border_size, 0)
+                np.testing.assert_allclose(
+                    tuple(style.color_(self.ui.imgui.Col_.window_bg)), (20 / 255, 22 / 255, 26 / 255, 1)
+                )
+                np.testing.assert_allclose(
+                    tuple(style.color_(self.ui.imgui.Col_.check_mark)), (127 / 255, 131 / 255, 1, 1)
+                )
 
     def test_clipped_property_widgets(self) -> None:
         """Keep scroll layout and native editors while omitting offscreen decoration."""

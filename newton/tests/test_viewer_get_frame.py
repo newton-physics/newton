@@ -290,6 +290,8 @@ class TestViewerGLGetFrame(unittest.TestCase):
                         self.skipTest(f"ViewerGL display/backend not available: {exc}")
                     raise
                 try:
+                    if viewer.gui is not None and viewer.gui.is_available:
+                        viewer.gui.ui.io.set_ini_filename("")
                     self.assertIsNone(viewer.renderer._selection_outline)
                     devices = [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]
                     for device in devices:
@@ -348,6 +350,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             raise
         self.addCleanup(viewer.close)
         self.assertTrue(viewer.gui.is_available)
+        viewer.gui.ui.io.set_ini_filename("")
         self.assertIsNone(viewer.gui.workspace)
         for name in (
             "_selection_outline",
@@ -432,6 +435,9 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     viewer.set_model(model)
                     gui = viewer.gui
                     self.assertTrue(gui.is_available)
+                    # Native GUI tests must neither load nor overwrite a user's
+                    # persisted window sizes in the working directory.
+                    gui.ui.io.set_ini_filename("")
                     from OpenGL import GL  # noqa: PLC0415 - optional GL dependency, after context creation
 
                     image_texture = int(GL.glGenTextures(1))
@@ -474,13 +480,15 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     self.assertFalse(gui.ui.section_errors)
                     self.assertGreater(gui.ui.imgui.get_draw_data().total_vtx_count, 0)
                     if legacy:
+                        self.assertIsNone(gui.ui.io.font_default)
+                        self.assertIsNone(gui.ui.number_font)
                         self.assertIsNone(gui.workspace)
                         self.assertIsNone(gui.console_capture)
                         self.assertIsNone(viewer.renderer._workspace_rect)
                         self.assertEqual(calls, ["panel", "side", "stats", "free", "timeline_gui"] * 2)
-                        self.assertIsNotNone(
-                            gui.ui.imgui.internal.find_window_by_name(f"Newton Viewer v{newton.__version__}")
-                        )
+                        sidebar = gui.ui.imgui.internal.find_window_by_name(f"Newton Viewer v{newton.__version__}")
+                        self.assertIsNotNone(sidebar)
+                        self.assertEqual(sidebar.size.x, 300 * gui.ui.dpi_scale)
                     else:
                         self.assertIsNotNone(gui.workspace)
                         self.assertIsNotNone(viewer.renderer._workspace_rect)

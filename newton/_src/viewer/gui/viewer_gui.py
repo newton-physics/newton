@@ -52,7 +52,7 @@ class ViewerGui:
         deferred until the first UI frame; legacy GUIs compile on demand.
         """
         self._viewer = viewer
-        self.ui = ImGuiBackend(window)
+        self.ui = ImGuiBackend(window, workspace_style=workspace_enabled)
         self.ui.key_press_filter = self._filter_gui_key_press
         window.push_handlers(on_deactivate=self.on_window_deactivated)
 
