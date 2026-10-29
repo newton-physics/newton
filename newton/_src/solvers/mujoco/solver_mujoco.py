@@ -536,9 +536,9 @@ _MJW_BATCHED_MODEL_FIELDS = (
 )
 
 _UPDATE_DATA_INTERVAL_DEPRECATION_MSG = (
-    "SolverMuJoCo update_data_interval is deprecated in Newton 1.7 and will be removed; "
+    "SolverMuJoCo update_data_interval is deprecated in Newton 1.8 and will be removed; "
     "MuJoCo data will then be synchronized from the input state on every step. "
-    "Stop passing update_data_interval to use that behavior now."
+    "Remove its use to adopt that behavior now."
 )
 
 
@@ -689,15 +689,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def update_data_interval(self) -> int:
         """Steps between MuJoCo data synchronizations from the input state.
 
-        .. deprecated:: 1.7
-            Data will always be synchronized on every step.
+        .. deprecated:: 1.8
+            Reading or assigning this attribute warns; data will always be
+            synchronized on every step.
         """
+        warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._update_data_interval
 
     @update_data_interval.setter
     def update_data_interval(self, value: int) -> None:
-        if value != 1:
-            warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._update_data_interval = value
 
     @property
@@ -4435,7 +4436,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
 
-                .. deprecated:: 1.7
+                .. deprecated:: 1.8
                     Values other than 1 are deprecated; Data will always be updated on every step.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
@@ -5020,7 +5021,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
-            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
+            if self._update_data_interval > 0 and self._step % self._update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self._update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
@@ -5044,7 +5045,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
                 self._enable_rne_postconstraint(state_out, observables)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
-                if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
+                if self._update_data_interval > 0 and self._step % self._update_data_interval == 0:
                     self._update_mjc_data(self.mjw_data, self.model, state_in)
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
@@ -5189,7 +5190,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # reset on the next step. Otherwise push it now so it is not
                 # lost before the next sync. The sleeping path synchronizes
                 # below before rebuilding its cached data.
-                if self.update_data_interval != 1 and not self.enable_sleeping:
+                if self._update_data_interval != 1 and not self.enable_sleeping:
                     data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
                     if data is not None and native_template_world_selected:
                         self._update_mjc_data(data, self.model, state, world_mask=world_mask)

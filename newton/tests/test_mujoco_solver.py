@@ -5739,11 +5739,11 @@ class TestMuJoCoUpdateDataIntervalDeprecation(unittest.TestCase):
     def test_non_default_interval_warns(self):
         for interval in (0, 2):
             with self.subTest(interval=interval):
-                # The caller attribution makes the warning visible from __main__ under default filters.
+                # Caller attribution keeps the warning visible from __main__ under default filters.
                 with self.assertWarnsRegex(NewtonDeprecationWarning, "update_data_interval is deprecated") as cm:
                     solver = SolverMuJoCo(self.model, use_mujoco_cpu=True, update_data_interval=interval)
                 self.assertEqual(cm.filename, __file__)
-                self.assertEqual(solver.update_data_interval, interval)
+                self.assertEqual(solver._update_data_interval, interval)
 
     def test_default_interval_does_not_warn(self):
         for kwargs in ({}, {"update_data_interval": 1}):
@@ -5751,12 +5751,14 @@ class TestMuJoCoUpdateDataIntervalDeprecation(unittest.TestCase):
                 warnings.simplefilter("error", NewtonDeprecationWarning)
                 SolverMuJoCo(self.model, use_mujoco_cpu=True, **kwargs)
 
-    def test_attribute_assignment_warns(self):
+    def test_attribute_access_warns(self):
         solver = SolverMuJoCo(self.model, use_mujoco_cpu=True)
         with self.assertWarnsRegex(NewtonDeprecationWarning, "update_data_interval is deprecated") as cm:
             solver.update_data_interval = 0
         self.assertEqual(cm.filename, __file__)
-        self.assertEqual(solver.update_data_interval, 0)
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "update_data_interval is deprecated") as cm:
+            self.assertEqual(solver.update_data_interval, 0)
+        self.assertEqual(cm.filename, __file__)
 
 
 class TestMuJoCoValidation(unittest.TestCase):
