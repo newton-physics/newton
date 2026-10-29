@@ -1,0 +1,1 @@
+Scale the proximal regularization of the `SolverImplicitMPM` rheology solve with the inertia of a full grid cell, dt^2 / (rho dx^2), in place of a fixed 1e-6 Pa^-1. Stiff, dense or finely time-stepped materials converge in fewer iterations and stay stable, so their results change; no settings need to change.

@@ -10,8 +10,10 @@ from warp.fem.linalg import symmetric_eigenvalues_qr
 
 from .contact_solver_kernels import ColoredContacts, make_solve_colored_cell_contacts
 
-_DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
-"""Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
+_DELASSUS_SCALED_REG = wp.constant(1.0e-2)
+"""Proximal regularization of the Delassus diagonal blocks, as a fraction of a full cell's inertial scale.
+
+Blocks far below that scale, such as those of nearly empty cells, are damped accordingly."""
 
 _SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
 """Tolerance for the Newton method to solve for the sliding velocity"""
@@ -169,6 +171,7 @@ def compute_delassus_diagonal(
     strain_batch: wp.array[int],
     mass_multiplicity: wp.array2d[float],
     majorize: bool,
+    delassus_scale: wp.array[float],
     delassus_rotation: wp.array[mat55],
     delassus_diagonal: wp.array[vec6],
 ):
@@ -179,6 +182,10 @@ def compute_delassus_diagonal(
 
     Empty ``mass_multiplicity`` uses unit weights (GS); otherwise use the
     supplied per-batch weights (Jacobi or batched GS).
+
+    ``delassus_scale[0]`` is a full cell's inertial Delassus scale dt^2 / (rho dx^2);
+    the proximal regularization is a fixed fraction of it, which makes it independent
+    of units and time step.
     """
     tau_i = wp.tid()
     block_beg = strain_mat_offsets[tau_i]
@@ -212,7 +219,8 @@ def compute_delassus_diagonal(
         b_v2 = _symmetric_part_op(b_val, wp.vec3(0.0, 0.0, 1.0))
         diag_block += inv_frac * wp.outer(b_v2, b_v2)
 
-    diag_block += _DELASSUS_PROXIMAL_REG * wp.identity(n=6, dtype=float)
+    reg = _DELASSUS_SCALED_REG * delassus_scale[0]
+    diag_block += reg * wp.identity(n=6, dtype=float)
 
     coupling = vec6(0.0)
     for k in range(1, 6):
@@ -220,7 +228,7 @@ def compute_delassus_diagonal(
         diag_block[0, k] = 0.0
         diag_block[k, 0] = 0.0
 
-    diag, ev = symmetric_eigenvalues_qr(diag_block, _DELASSUS_PROXIMAL_REG * 0.1)
+    diag, ev = symmetric_eigenvalues_qr(diag_block, reg * 0.1)
 
     if not (wp.ddot(ev, ev) < 1.0e16 and wp.length_sq(diag) < 1.0e16):
         diag = wp.get_diag(diag_block)

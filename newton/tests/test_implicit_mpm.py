@@ -24,7 +24,7 @@ from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     rasterize_collider_kernel,
 )
 from newton._src.solvers.implicit_mpm.rheology_solver_kernels import (
-    _DELASSUS_PROXIMAL_REG,
+    _DELASSUS_SCALED_REG,
     YieldParamVec,
     _symmetric_part_op,
     _symmetric_part_transposed_op,
@@ -234,6 +234,7 @@ def test_assembled_elastic_stiffness(test, device):
                     stress=scratch.stress_field.dof_values,
                 ),
                 MomentumData(scratch.inv_mass_matrix, scratch.velocity_field.dof_values),
+                scratch.delassus_scale,
                 temporary_store=solver.temporary_store,
             )
             operator.require_strain_mat_transpose()
@@ -363,6 +364,7 @@ def _coupled_rheology(device, grid_type="dense", max_active_cell_count=-1, strai
             operator = _DelassusOperator(
                 rheology,
                 MomentumData(scratch.inv_mass_matrix, scratch.velocity_field.dof_values),
+                scratch.delassus_scale,
                 temporary_store=solver.temporary_store,
             )
             yield operator, solver.temporary_store
@@ -403,7 +405,9 @@ def test_delassus_majorizer(test, device):
     count = len(blocks)
     with wp.ScopedDevice(device):
         values = np.asarray(blocks, dtype=np.float32)
-        W = (values + np.float32(_DELASSUS_PROXIMAL_REG) * np.eye(6, dtype=np.float32)).astype(float)
+        # Unit inertial scale: the blocks are of order one
+        reg = float(_DELASSUS_SCALED_REG)
+        W = (values + np.float32(reg) * np.eye(6, dtype=np.float32)).astype(float)
         rotation, diagonal = wp.empty(count, dtype=mat55), wp.empty(count, dtype=vec6)
         inputs = [
             wp.zeros(count + 1, dtype=int),
@@ -417,7 +421,7 @@ def test_delassus_majorizer(test, device):
             wp.empty((0, 0), dtype=float),
         ]
         outputs = [rotation, diagonal]
-        wp.launch(compute_delassus_diagonal, count, inputs=[*inputs, True], outputs=outputs)
+        wp.launch(compute_delassus_diagonal, count, inputs=[*inputs, True, wp.ones(1, dtype=float)], outputs=outputs)
         for i, (d, R) in enumerate(zip(diagonal.numpy(), rotation.numpy(), strict=True)):
             with test.subTest(block=i):
                 test.assertTrue(np.isfinite(d).all() and (d > 0).all())
@@ -427,7 +431,7 @@ def test_delassus_majorizer(test, device):
                 target = Q @ W[i] @ Q.T
                 target /= np.sqrt(np.outer(d.astype(float), d.astype(float)))
                 test.assertLessEqual(np.linalg.eigvalsh(target)[-1], 1.0 + 3e-6)
-        np.testing.assert_allclose(diagonal.numpy()[0], 1.0 + float(_DELASSUS_PROXIMAL_REG), rtol=1e-5)
+        np.testing.assert_allclose(diagonal.numpy()[0], 1.0 + reg, rtol=1e-5)
 
 
 def test_coupled_iteration_bound(test, device):
@@ -555,6 +559,7 @@ def test_majorized_rheology_solve(test, device, capture=False):
             collider_impulse=wp.zeros(nv, dtype=wp.vec3),
         )
         W = (B * inverse_mass) @ B.T + C
+        delassus_scale = wp.array([np.mean(np.diag(W))], dtype=float, device=operator.momentum.velocity.device)
         modes = ("gs", "gs-soa", "gs-batched", "jacobi", ("cg", "gs"), ("cg", "jacobi", "gs-batched"))
         for contact, mode in itertools.product((False, True), modes):
             with test.subTest(contact=contact, solver=mode, capture=capture):
@@ -578,6 +583,7 @@ def test_majorized_rheology_solve(test, device, capture=False):
                         operator.momentum,
                         operator.rheology,
                         collision,
+                        delassus_scale,
                         temporary_store=store,
                         use_graph=capture,
                         verbose=False,

@@ -65,6 +65,7 @@ from .implicit_mpm_solver_kernels import (
     gimp_domain_corners,
     gimp_half_size,
     gimp_store_point_stress,
+    inertial_delassus_scale,
     integrate_active_fraction,
     integrate_collider_fraction,
     integrate_collider_fraction_apic,
@@ -93,6 +94,7 @@ from .implicit_mpm_solver_kernels import (
     mat13,
     mat31,
     mat66,
+    max_particle_density,
     node_color,
     record_volume_rebuild_status,
     reset_mpm_collider_history,
@@ -338,6 +340,7 @@ class ImplicitMPMScratchpad:
         self.transposed_collider_matrix = wps.bsr_zeros(0, 0, block_type=float)
 
         self.strain_node_particle_volume = None
+        self.delassus_scale = None
         self.strain_basis_transform = None
         self.strain_stress_transform = None
         self.strain_node_volume = None
@@ -3694,6 +3697,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ):
         mpm_model = self._mpm_model
 
+        # A full cell's inertial Delassus scale, dt^2 / (rho dx^2), sets the rheology regularization
+        max_density = wp.zeros(shape=(1,), dtype=float)
+        wp.launch(
+            max_particle_density,
+            dim=mpm_model.particle_density.shape[0],
+            inputs=[mpm_model.particle_density, max_density],
+        )
+        scratch.delassus_scale = wp.empty(shape=(1,), dtype=float)
+        dt_over_dx_sq = dt * dt / (self.voxel_size * self.voxel_size)
+        wp.launch(inertial_delassus_scale, dim=1, inputs=[dt_over_dx_sq, max_density, scratch.delassus_scale])
+
         with self._timer("Strain-node particle volumes"):
             fem.integrate(
                 integrate_active_fraction,
@@ -4048,6 +4062,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 momentum_data,
                 rheology_data,
                 collision_data,
+                scratch.delassus_scale,
                 temporary_store=self.temporary_store,
                 use_graph=self._use_cuda_graph,
                 verbose=self.verbose,

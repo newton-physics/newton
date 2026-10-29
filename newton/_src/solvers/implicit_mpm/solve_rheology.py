@@ -584,10 +584,13 @@ class _DelassusOperator:
         self,
         rheology: RheologyData,
         momentum: MomentumData,
+        delassus_scale: wp.array,
         temporary_store: fem.TemporaryStore | None = None,
     ):
         self.rheology = rheology
         self.momentum = momentum
+        # One-element inertial scale [1/Pa] of the proximal regularization
+        self.delassus_scale = delassus_scale
 
         self.delassus_rotation = fem.borrow_temporary(temporary_store, shape=self.size, dtype=mat55)
         self.delassus_diagonal = fem.borrow_temporary(temporary_store, shape=self.size, dtype=vec6)
@@ -674,6 +677,7 @@ class _DelassusOperator:
                 batch_map,
                 mult,
                 majorize,
+                self.delassus_scale,
             ],
             outputs=[
                 self.delassus_rotation,
@@ -2008,6 +2012,7 @@ def solve_rheology(
     momentum: MomentumData,
     rheology: RheologyData,
     collision: CollisionData,
+    delassus_scale: wp.array,
     jacobi_warmstart_smoother_iterations: int = 5,
     temporary_store: fem.TemporaryStore | None = None,
     use_graph: bool = True,
@@ -2061,6 +2066,9 @@ def solve_rheology(
             yield parameters, coloring data, and output stress/strain arrays.
         collision: :class:`CollisionData` containing collider matrices, friction,
             adhesion, normals, velocities, rigidity operator, and impulse arrays.
+        delassus_scale: One-element device array holding a full cell's inertial
+            Delassus scale dt^2 / (rho dx^2) [1/Pa]; the proximal regularization of
+            the Delassus diagonal blocks is a fixed fraction of it.
         jacobi_warmstart_smoother_iterations: Number of Jacobi smoother
             iterations to run before the main Gauss-Seidel solve (ignored
             for Jacobi solver).
@@ -2090,7 +2098,7 @@ def solve_rheology(
 
     contact_solver.apply_initial_guess()
 
-    delassus_operator = _DelassusOperator(rheology, momentum, temporary_store)
+    delassus_operator = _DelassusOperator(rheology, momentum, delassus_scale, temporary_store)
     batch_tolerance_scales = None
     if rheology.strain_environment_offsets is None:
         tolerance_scale = math.sqrt(1 + delassus_operator.size)
