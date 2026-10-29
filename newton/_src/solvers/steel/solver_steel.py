@@ -2047,7 +2047,8 @@ class SolverSteel(SolverBase):
                 - ``"propagation_colored"``: the ``"propagation"`` rows and capacity, with each
                   sweep solving the contacts of a world in batches of contacts that share no
                   responding body, one batch after the other. The batches are recolored every
-                  step; contacts left without a batch run last in contact order.
+                  step; contacts left without a batch run last, in the order set by
+                  ``propagation_color_order``.
 
                 The propagation responses avoid the per-row ``H^-1 J^T`` of contact rows at
                 the cost of tree passes over every articulation in each iteration; which
@@ -2074,8 +2075,8 @@ class SolverSteel(SolverBase):
                 contact-active bodies of cache-eligible articulations per world; free bodies
                 do not count. At least 1.
             propagation_color_order: Order in which ``"propagation_colored"`` colors a world's
-                contacts: ``"contact"`` (default) by contact index, or ``"longest_first"`` by row
-                count, longest first, then contact index. A batch takes as long as its longest
+                contacts and runs those left without a batch: ``"contact"`` (default) by contact
+                index, or ``"longest_first"`` by row count, longest first, then contact index. A batch takes as long as its longest
                 contact, so ``"longest_first"`` puts long contacts together, which shortens the
                 sweep where one body carries many contacts with different row counts; on some
                 stacked scenes it converges more slowly at a fixed iteration count. Other
