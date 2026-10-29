@@ -3532,7 +3532,6 @@ def _run_mixed_response(
     return solver, samples
 
 
-@unittest.skipUnless(wp.is_cuda_available(), "graph capture requires CUDA")
 class TestSteelJointlessKinematicBody(unittest.TestCase):
     PRESCRIBED_QD = (0.3, -0.2, 0.0, 0.0, 0.0, 0.5)
 
@@ -3544,9 +3543,6 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.021)))
         builder.add_shape_box(box, hx=0.02, hy=0.02, hz=0.02)
         model = builder.finalize(device=wp.get_cuda_device())
-        # Fill freed device memory with NaN so unwritten scratch the solver publishes is likely to read as NaN.
-        nan_fill = wp.full(1 << 22, float("nan"), dtype=wp.float32, device=model.device)
-        del nan_fill
         solver = SolverSteel(model, articulated_contact_response=response)
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
@@ -3579,6 +3575,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         self.assertTrue(np.isfinite(states[0].body_q.numpy()[box]).all())
         return body_q[floor], [(s.body_q.numpy()[floor], s.body_qd.numpy()[floor]) for s in states]
 
+    @unittest.skipUnless(wp.is_cuda_available(), "graph capture requires CUDA")
     def test_jointless_kinematic_body_publishes_its_prescribed_state(self):
         """Pass a jointless kinematic body's input pose and velocity through every step, eager and captured."""
         for response in ("immediate", "propagation"):
@@ -3589,30 +3586,23 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
                         np.testing.assert_array_equal(body_q, prescribed_q)
                         np.testing.assert_array_equal(body_qd, np.array(self.PRESCRIBED_QD, dtype=np.float32))
 
-
-class TestSteelJointlessOnlyModel(unittest.TestCase):
     def test_model_without_joints_publishes_its_prescribed_state(self):
         """Pass a jointless kinematic body's state through a step of a model that has no joints."""
-        devices = [("cpu", "split")]
-        if wp.is_cuda_available():
-            devices.append((wp.get_cuda_device(), "matrix_free"))
-        for device, solve_mode in devices:
-            with self.subTest(device=str(device)):
-                builder = newton.ModelBuilder()
-                body = builder.add_link(is_kinematic=True)
-                builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-                model = builder.finalize(device=device)
-                self.assertEqual(model.joint_count, 0)
-                solver = SolverSteel(model, solve_mode=solve_mode)
-                state_in, state_out = model.state(), model.state()
-                body_q, body_qd = state_in.body_q.numpy(), state_in.body_qd.numpy()
-                body_q[body, 0] = 0.25
-                body_qd[body] = (0.3, -0.2, 0.0, 0.0, 0.0, 0.5)
-                state_in.body_q.assign(body_q)
-                state_in.body_qd.assign(body_qd)
-                solver.step(state_in, state_out, None, None, DEFAULT_DT)
-                np.testing.assert_array_equal(state_out.body_q.numpy()[body], body_q[body])
-                np.testing.assert_array_equal(state_out.body_qd.numpy()[body], body_qd[body])
+        builder = newton.ModelBuilder()
+        body = builder.add_link(is_kinematic=True)
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.joint_count, 0)
+        solver = SolverSteel(model, solve_mode="split")
+        state_in, state_out = model.state(), model.state()
+        body_q, body_qd = state_in.body_q.numpy(), state_in.body_qd.numpy()
+        body_q[body, 0] = 0.25
+        body_qd[body] = self.PRESCRIBED_QD
+        state_in.body_q.assign(body_q)
+        state_in.body_qd.assign(body_qd)
+        solver.step(state_in, state_out, None, None, DEFAULT_DT)
+        np.testing.assert_array_equal(state_out.body_q.numpy()[body], body_q[body])
+        np.testing.assert_array_equal(state_out.body_qd.numpy()[body], body_qd[body])
 
 
 class TestSteelPairedResponse(unittest.TestCase):

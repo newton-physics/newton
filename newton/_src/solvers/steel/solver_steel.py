@@ -1316,7 +1316,10 @@ class SolverSteel(SolverBase):
       patches, restitution, regularization, warm start, velocity-only iterations, contact
       torsion and contact compliance need ``solve_mode="matrix_free"``; the split solve uses
       point friction.
-    - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
+    - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds. A body
+      outside every articulation, such as a link without a joint, enters contact rows with
+      its pose and zero velocity; :meth:`step` passes its input ``body_q`` and ``body_qd``
+      through to the output.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
     - Experimental passive-island sleeping (``enable_sleeping``, ``solve_mode="matrix_free"``
       only): settled, supported islands of articulations freeze their published state and
@@ -6106,7 +6109,9 @@ class SolverSteel(SolverBase):
 
         Args:
             state_in: Input state. Its maximal coordinates (``body_q``) are refreshed from
-                ``joint_q`` by forward kinematics during the step.
+                ``joint_q`` by forward kinematics during the step. Bodies outside every
+                articulation keep their ``body_q`` and ``body_qd``, which pass through to
+                ``state_out``; contact rows treat their velocity as zero.
             state_out: Output state receiving ``joint_q``, ``joint_qd``, ``body_q``,
                 ``body_qd`` and, when requested, ``body_parent_f``.
             control: Control input; ``None`` uses the model's default control.
