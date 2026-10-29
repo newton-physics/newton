@@ -306,7 +306,7 @@ def parse_usd(
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
         return_deformable_results: If True, include the experimental deformable entries in the
-            returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
+            returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
             default return shape carries no deformable additions.
         allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
@@ -396,6 +396,8 @@ def parse_usd(
               - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``return_deformable_results=True``.
             * - ``"path_soft_map"``
               - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
+            * - ``"path_deformable_visual_map"``
+              - Mapping from graphics Mesh prim path (str) to its index in :attr:`Model.deformable_visual_meshes`. Includes only successfully imported visual meshes. Present only with ``return_deformable_results=True``. The indices describe this import, not copies created by later builder composition or replication.
             * - ``"path_cable_attrs"``
               - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
             * - ``"path_cloth_attrs"``
@@ -3084,6 +3086,7 @@ def parse_usd(
                 "path_cable_map": path_cable_map,
                 "path_cloth_map": path_cloth_map,
                 "path_soft_map": path_soft_map,
+                "path_deformable_visual_map": _deformable_ctx.path_deformable_visual_map,
                 "path_cable_attrs": path_cable_attrs,
                 "path_cloth_attrs": path_cloth_attrs,
                 "path_soft_attrs": path_soft_attrs,

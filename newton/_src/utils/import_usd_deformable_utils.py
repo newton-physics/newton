@@ -1512,3 +1512,4 @@ class _DeformableImportContext:
     cable_visual_bind_errors: dict[int, str] = field(default_factory=dict)
     cable_visual_sim_paths: set[str] = field(default_factory=set)
     cable_visual_bind_points: dict[str, np.ndarray | None] = field(default_factory=dict)
+    path_deformable_visual_map: dict[str, int] = field(default_factory=dict)

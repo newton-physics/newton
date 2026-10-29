@@ -629,8 +629,19 @@ whether a rigid shape is visible: the prim is visible and its purpose is
 ``default`` or ``proxy``. ``ignore_paths`` applies too. A malformed visual is
 logged and skipped without removing valid physics or sibling meshes.
 
-Imported meshes expose their source ``body_path``, ``sim_path``, and
-``graphics_path``. Composition and replication retain these source paths;
+Use the optional import result to look up a visual mesh by its USD path:
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+   result = builder.add_usd("deformable.usda", return_deformable_results=True)
+   mesh_index = result["path_deformable_visual_map"]["/World/SoftToy/Skin"]
+   model = builder.finalize()
+   skin = model.deformable_visual_meshes[mesh_index]
+
+The map contains only successfully imported visual meshes. Its indices describe
+this builder after import; it does not track copies made by later composition or
+replication. Imported meshes use their graphics prim path as their initial label;
 ``world`` identifies each copy. USD namespaces are not rebased automatically.
 
 Embeddings are computed at import time. Authored per-vertex embedding weights,

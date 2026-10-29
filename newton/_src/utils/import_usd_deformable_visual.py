@@ -245,10 +245,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 logger.warning("%s: could not embed visual mesh; skipping (%s)", path, exc)
                 continue
 
-            spec = builder._deformable_visual_meshes[index]
-            spec["body_path"] = body_path
-            spec["sim_path"] = sim_path
-            spec["graphics_path"] = path
+            ctx.path_deformable_visual_map[path] = index
             if ctx.verbose:
                 logger.info("  Embedded visual mesh %s (%d verts) in %s %s.", path, len(world_verts), family, sim_path)
 

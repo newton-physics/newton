@@ -64,9 +64,13 @@ class TestUSDDeformableVisual(unittest.TestCase):
         for family in ("curve", "surface", "volume"):
             self._object(stage, f"/World/{family}", family)
         prototype = newton.ModelBuilder()
-        prototype.add_usd(stage)
+        result = prototype.add_usd(stage, return_deformable_results=True)
+        visual_indices = result["path_deformable_visual_map"]
+        self.assertEqual(
+            visual_indices, {f"/World/{family}/Skin": i for i, family in enumerate(("curve", "surface", "volume"))}
+        )
         physics = newton.ModelBuilder()
-        physics.add_usd(stage, load_visual_shapes=False)
+        self.assertNotIn("path_deformable_visual_map", physics.add_usd(stage, load_visual_shapes=False))
         for field in ("particle_q", "particle_mass", "body_q", "body_mass", "joint_q"):
             np.testing.assert_array_equal(getattr(prototype, field), getattr(physics, field))
         self.assertEqual(physics.finalize(device="cpu").deformable_visual_mesh_count, 0)
@@ -76,10 +80,8 @@ class TestUSDDeformableVisual(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertEqual(model.deformable_visual_mesh_count, 6)
         self.assertEqual([mesh.world for mesh in model.deformable_visual_meshes], [0, 0, 0, 1, 1, 1])
-        for mesh in model.deformable_visual_meshes:
-            self.assertEqual(mesh.graphics_path, mesh.label)
-            self.assertEqual(mesh.sim_path, f"{mesh.body_path}/Sim")
-            self.assertEqual(mesh.graphics_path, f"{mesh.body_path}/Skin")
+        for path, index in visual_indices.items():
+            self.assertEqual(model.deformable_visual_meshes[index].label, path)
         self.assertEqual(
             {mesh.kind for mesh in model.deformable_visual_meshes},
             {
@@ -244,13 +246,17 @@ class TestUSDDeformableVisual(unittest.TestCase):
                     self._object(stage, f"/World/{family}/Good", family)
                 builder = newton.ModelBuilder()
                 with self.assertLogs("newton", level="WARNING") as logs:
-                    builder.add_usd(stage)
+                    result = builder.add_usd(stage, return_deformable_results=True)
                 for family in families:
                     self.assertTrue(any(f"/World/{family}/Bad/Skin" in message for message in logs.output))
                 model = builder.finalize(device="cpu")
                 self.assertEqual(
                     [mesh.label for mesh in model.deformable_visual_meshes],
                     [f"/World/{family}/Good/Skin" for family in families],
+                )
+                self.assertEqual(
+                    result["path_deformable_visual_map"],
+                    {mesh.label: mesh.index for mesh in model.deformable_visual_meshes},
                 )
                 self.assertGreater(model.body_count, 0)
                 self.assertGreater(model.particle_count, 0)
