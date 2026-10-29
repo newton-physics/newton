@@ -1744,7 +1744,9 @@ def _rigid_compliant_alm_defaults_to_compliant(test, device):
             newton.solvers.SolverVBD(model, rigid_avbd_beta=-1.0)
     with test.assertRaisesRegex(TypeError, "rigid_compliant_alm"):
         newton.solvers.SolverVBD(model, rigid_compliant_alm=None)
-    with test.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False.*rigid_avbd_beta"):
+    with test.assertWarnsRegex(
+        newton.exceptions.NewtonDeprecationWarning, "rigid_compliant_alm=False.*rigid_avbd_beta"
+    ):
         newton.solvers.SolverVBD(
             model,
             rigid_compliant_alm=False,

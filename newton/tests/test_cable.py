@@ -6060,6 +6060,11 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
     test.assertEqual((builder.body_count, builder.shape_count, builder.joint_count), (0, 0, 0))
 
     invalid_calls = (
+        (
+            graph,
+            {"cfg": newton.ModelBuilder.ShapeConfig(density=-1.0), "body_frame_origin": "start"},
+            "density must be finite and >= 0",
+        ),
         (graph, {"stretch_stiffness": -1.0, "body_frame_origin": "start"}, "add_rod: stretch_stiffness"),
         (
             graph,

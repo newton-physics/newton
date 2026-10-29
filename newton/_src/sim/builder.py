@@ -10493,6 +10493,8 @@ class ModelBuilder:
             node_incidence[u].append(e_idx)
             node_incidence[v].append(e_idx)
 
+        cfg.validate(shape_type=GeoType.CAPSULE)
+
         # Warn after validation but before mutating the builder.
         if body_frame_origin == "start":
             warnings.warn(
