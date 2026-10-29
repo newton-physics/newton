@@ -23,28 +23,6 @@ overrides. Use the artifact environment's Python when running commands, and
 check the example's prerequisites (assets, recording inputs, optional
 dependencies). Apply [shared-qa.md](shared-qa.md) alongside scene-specific checks.
 
-## Older wheels without QA docstrings
-
-If the artifact lacks `--describe` or QA criteria, read the relevant module
-docstring statically from a separately pinned criteria checkout. Do not replace
-the artifact's imports with that checkout. For example:
-
-```bash
-uv run python - <<'PY'
-import ast
-from pathlib import Path
-
-source = Path('/path/to/pinned/newton/newton/examples/basic/example_basic_pendulum.py')
-print(ast.get_docstring(ast.parse(source.read_text(encoding='utf-8'))) or '')
-PY
-```
-
-Record the criteria checkout's commit and local changes separately from wheel
-provenance. Compare names, options, defaults, and scenes with the installed
-release; renamed examples or changed scenes need explicit mapping. Keep examples
-absent from the wheel out of its tested count, and mark missing or contradictory
-criteria as uncovered rather than inventing acceptance requirements.
-
 ## Judge and maintain
 
 Criteria describe intended behavior, not prior observations or guaranteed

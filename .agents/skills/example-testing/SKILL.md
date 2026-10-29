@@ -25,9 +25,8 @@ allowed when within the user's scope; keep the tested artifact unchanged.
 3. Read [criteria.md](references/criteria.md). Extract each example's description,
    common criteria, and required run variants with `--describe`; expectations live
    beside the example implementation. Apply explicit user overrides and record
-   both artifact and criteria revisions. Follow the pinned-source fallback for
-   older wheels without QA docstrings. Missing or contradictory criteria leave the
-   affected acceptance checks incomplete; continue independent checks. Never
+   both artifact and criteria revisions. Missing or contradictory criteria leave
+   the affected acceptance checks incomplete; continue independent checks. Never
    infer a release pass or reuse old observations as current results.
 4. Establish a working capture/input path before a large campaign. The proven
    path is the native GL viewer on Linux X11, screenshots inspected by the agent,
