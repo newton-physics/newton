@@ -18,7 +18,8 @@ HINGE_CONNECT_HALF_SPAN = 0.05
 """Distance [m] along the hinge axis from a revolute loop joint's anchor to each of its two CONNECT points."""
 
 KINEMATIC_LOCK_INERTIA_RATIO = 1.0e4
-"""Armature, relative to a DOF's own inertia, that locks kinematic root DOFs while MuJoCo computes its constants.
+"""Armature, relative to a DOF's own inertia (``dof_M0``), that locks kinematic root DOFs while MuJoCo computes its
+constants.
 
 Large enough for constraint regularization to treat the root as immovable, small enough
 to keep its weld and contact rows conditioned for MuJoCo Warp's float32 CG solver."""

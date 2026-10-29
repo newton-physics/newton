@@ -2327,39 +2327,33 @@ def update_dof_armature_kernel(
     joint_armature: wp.array[float],
     newton_dof_to_body: wp.array[wp.int32],
     body_flags: wp.array[wp.int32],
-    lock_armature: wp.array[float],
+    lock_dof_M0: wp.array2d[float],
+    lock_ratio: float,
     # outputs
     dof_armature: wp.array2d[float],
 ):
-    """Update MuJoCo dof_armature from Newton joint_armature, adding ``lock_armature`` to kinematic DOFs if given."""
+    """Update MuJoCo dof_armature from Newton joint_armature, adding ``lock_ratio * lock_dof_M0`` to kinematic DOFs."""
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
     armature = joint_armature[newton_dof]
-    if lock_armature and (body_flags[newton_dof_to_body[newton_dof]] & BodyFlags.KINEMATIC) != 0:
-        armature += lock_armature[mjc_dof]
+    if lock_dof_M0 and (body_flags[newton_dof_to_body[newton_dof]] & BodyFlags.KINEMATIC) != 0:
+        armature += lock_ratio * lock_dof_M0[world % lock_dof_M0.shape[0], mjc_dof]
     dof_armature[world, mjc_dof] = armature
 
 
 @wp.kernel
-def remove_lock_armature_from_meaninertia_kernel(
-    mjc_dof_to_newton_dof: wp.array2d[wp.int32],
-    newton_dof_to_body: wp.array[wp.int32],
-    body_flags: wp.array[wp.int32],
-    lock_armature: wp.array[float],
+def mass_matrix_diagonal_kernel(
+    M_rowadr: wp.array[int],
+    M_rownnz: wp.array[int],
+    M: wp.array2d[float],
     # outputs
-    meaninertia: wp.array[float],
+    diagonal: wp.array2d[float],
 ):
-    """Restore the physical mean inertia that MuJoCo computed with kinematic DOFs locked."""
-    world = wp.tid()
-    nv = mjc_dof_to_newton_dof.shape[1]
-    total = float(0.0)
-    for mjc_dof in range(nv):
-        newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
-        if newton_dof >= 0 and (body_flags[newton_dof_to_body[newton_dof]] & BodyFlags.KINEMATIC) != 0:
-            total += lock_armature[mjc_dof]
-    meaninertia[world % meaninertia.shape[0]] -= total / float(nv)
+    """Extract the diagonal of MuJoCo Warp's CSR mass matrix, the last entry of each row."""
+    world, dof = wp.tid()
+    diagonal[world, dof] = M[world, M_rowadr[dof] + M_rownnz[dof] - 1]
 
 
 @wp.kernel

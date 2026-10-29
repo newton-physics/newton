@@ -2837,6 +2837,31 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 self.assertLess(np.abs(angles[0]).max(), 0.5)
                 np.testing.assert_allclose(angles[1], angles[0], atol=1.0e-3)
 
+    def test_kinematic_root_lock_follows_each_worlds_inertia(self):
+        """A kinematic root is locked against each world's own inertia, so a heavier payload still sees a fixed base."""
+        invweight = {}
+        for fixed in (True, False):
+            template = newton.ModelBuilder()
+            base = template.add_link(is_kinematic=not fixed)
+            template.add_shape_box(base, hx=0.05, hy=0.05, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=10.0))
+            arm = template.add_link()
+            template.add_shape_capsule(
+                arm, radius=0.04, half_height=0.25, xform=wp.transform((0.3, 0.0, 0.0), wp.quat_identity())
+            )
+            root = template.add_joint_fixed(-1, base) if fixed else template.add_joint_free(base)
+            template.add_articulation([root, template.add_joint_revolute(base, arm, axis=newton.Axis.Y)])
+            builder = newton.ModelBuilder()
+            builder.replicate(template, 2)
+            model = builder.finalize()
+            body_mass, body_inertia = model.body_mass.numpy(), model.body_inertia.numpy()
+            body_mass[3] *= 1.0e3
+            body_inertia[3] *= 1.0e3
+            model.body_mass.assign(body_mass)
+            model.body_inertia.assign(body_inertia)
+            solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+            invweight[fixed] = solver.mjw_model.dof_invweight0.numpy()[:, -1]
+        np.testing.assert_allclose(invweight[False], invweight[True], rtol=1.0e-3)
+
     def test_contacts_on_kinematic_body_ignore_its_mass(self):
         """A box rests on a light kinematic platform as on a heavy one, as on an infinite-mass collider."""
         gaps = []

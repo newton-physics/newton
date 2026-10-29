@@ -91,8 +91,8 @@ from .kernels import (
     eval_mujoco_coupling_effective_mass_kernel,
     eval_mujoco_coupling_gravity_acceleration_kernel,
     hinge_connect_anchor,
+    mass_matrix_diagonal_kernel,
     recompute_jnt_eq_anchor1_kernel,
-    remove_lock_armature_from_meaninertia_kernel,
     repeat_array_kernel,
     reset_joint_state_kernel,
     reset_sleeping_state_kernel,
@@ -4467,8 +4467,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Template joint -> MuJoCo weld equality holding its kinematic root, or -1.
         self._jnt_weld: wp.array[wp.int32] | None = None
         self._kinematic_mocap_root_bodies: np.ndarray | None = None
-        # Armature per MuJoCo DOF that locks welded roots while MuJoCo computes its constants.
-        self._kinematic_lock_armature: wp.array[float] | None = None
+        # Physical qpos0 inertia scratch for computing constants with kinematic roots locked.
+        self._physical_dof_M0: wp.array2d[float] | None = None
+        self._physical_meaninertia: wp.array[float] | None = None
         self._mocap_root_moved: wp.array[wp.bool] | None = None
         self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
         """Control source for each MuJoCo actuator.
@@ -5621,7 +5622,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             previous_flags = None if self.model.device.is_capturing else self._notify_body_flags.numpy().copy()
             wp.copy(self._notify_body_flags, self.model.body_flags)
             self._update_kinematic_weld_active(previous_flags)
-            if self._kinematic_lock_armature is not None:
+            if self._kinematic_weld_eq is not None:
                 # Constraint regularization treats kinematic roots as locked.
                 self._invalidate_contact_fast_path()
                 need_const_0 = True
@@ -8954,15 +8955,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 jnt_weld = np.full(n_template_joints, -1, dtype=np.int32)
                 jnt_weld[template_jnt] = self._kinematic_weld_eq_np
                 self._jnt_weld = wp.array(jnt_weld, dtype=wp.int32)
-                lock_armature = np.zeros(self.mj_model.nv)
-                for _, root_body, _, _ in kinematic_weld_roots:
-                    mjc_body = self.mj_model.body(root_body.name).id
-                    dofs = slice(
-                        self.mj_model.body_dofadr[mjc_body],
-                        self.mj_model.body_dofadr[mjc_body] + self.mj_model.body_dofnum[mjc_body],
-                    )
-                    lock_armature[dofs] = KINEMATIC_LOCK_INERTIA_RATIO * self.mj_model.dof_M0[dofs]
-                self._kinematic_lock_armature = wp.array(lock_armature, dtype=float, device=model.device)
             if np.any(jnt_mocap >= 0):
                 self._jnt_mocap = wp.array(jnt_mocap, dtype=wp.int32)
 
@@ -9440,6 +9432,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Constant refreshes must use published properties, not pending model edits.
         self._notify_body_flags = wp.clone(self.model.body_flags)
         self._notify_joint_armature = wp.clone(self.model.joint_armature)
+        if self._kinematic_weld_eq is not None:
+            shape = (self.mjc_dof_to_newton_dof.shape[0], self.mj_model.nv)
+            self._physical_dof_M0 = wp.zeros(shape, dtype=float, device=self.model.device)
+            if not self.use_mujoco_cpu:
+                self._physical_meaninertia = wp.empty_like(self.mjw_model.stat.meaninertia)
         solref = getattr(getattr(self.model, "mujoco", None), "solreflimit", None)
         self._joint_limit_solref_snapshot = wp.clone(solref) if solref is not None else None
         if not self.use_mujoco_cpu:
@@ -9592,40 +9589,39 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _set_const_0(self, lock_kinematic: bool = True) -> None:
         """Recompute MuJoCo's qpos0-dependent model constants.
 
-        With ``lock_kinematic``, inverse weights and the constraint regularization derived from
-        them see welded kinematic roots as locked, as their welds hold them, while the stepping
-        armature and the mean inertia stay physical.
+        With ``lock_kinematic``, a second pass locks kinematic root DOFs with armature of
+        ``KINEMATIC_LOCK_INERTIA_RATIO`` times their physical ``dof_M0`` in each world, so weld, contact,
+        and limit regularization treat the roots as immovable. Stepping armature and mean inertia stay physical.
         """
-        lock = lock_kinematic and self._kinematic_lock_armature is not None
-        if lock:
-            self._update_dof_armature(lock=True)
+        lock = lock_kinematic and self._kinematic_weld_eq is not None
         if self.use_mujoco_cpu:
-            if lock:
-                self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
+            self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
             self._mujoco.mj_setConst(self.mj_model, self.mj_data)
         else:
-            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+            # Without restore, mjw_data.M keeps the qpos0 mass matrix for the lock.
+            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data, restore=not lock)
         if not lock:
             return
-        self._update_dof_armature()
         if self.use_mujoco_cpu:
-            physical = self.mjw_model.dof_armature.numpy()[0]
-            if self.mj_model.nv and hasattr(self.mj_model.stat, "meaninertia"):
-                self.mj_model.stat.meaninertia -= (self.mj_model.dof_armature - physical).sum() / self.mj_model.nv
-            self.mj_model.dof_armature[:] = physical
-        elif hasattr(self.mjw_model.stat, "meaninertia"):
+            meaninertia = self.mj_model.stat.meaninertia
+            self._physical_dof_M0.assign(np.broadcast_to(self.mj_model.dof_M0, self._physical_dof_M0.shape))
+        else:
+            wp.copy(self._physical_meaninertia, self.mjw_model.stat.meaninertia)
             wp.launch(
-                remove_lock_armature_from_meaninertia_kernel,
-                dim=self.mjc_dof_to_newton_dof.shape[0],
-                inputs=[
-                    self.mjc_dof_to_newton_dof,
-                    self.newton_dof_to_body,
-                    self._notify_body_flags,
-                    self._kinematic_lock_armature,
-                ],
-                outputs=[self.mjw_model.stat.meaninertia],
+                mass_matrix_diagonal_kernel,
+                dim=self._physical_dof_M0.shape,
+                inputs=[self.mjw_model.M_rowadr, self.mjw_model.M_rownnz, self.mjw_data.M],
+                outputs=[self._physical_dof_M0],
                 device=self.model.device,
             )
+        self._update_dof_armature(lock=True)
+        self._set_const_0(lock_kinematic=False)
+        self._update_dof_armature()
+        if self.use_mujoco_cpu:
+            self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
+            self.mj_model.stat.meaninertia = meaninertia
+        else:
+            wp.copy(self.mjw_model.stat.meaninertia, self._physical_meaninertia)
 
     def _update_dof_armature(self, lock: bool = False):
         """Publish Newton ``joint_armature`` to MuJoCo ``dof_armature``, optionally locking kinematic roots."""
@@ -9639,7 +9635,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._notify_joint_armature,
                 self.newton_dof_to_body,
                 self._notify_body_flags,
-                self._kinematic_lock_armature if lock else None,
+                self._physical_dof_M0 if lock else None,
+                KINEMATIC_LOCK_INERTIA_RATIO,
             ],
             outputs=[self.mjw_model.dof_armature],
             device=self.model.device,
@@ -10926,7 +10923,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self.use_mujoco_cpu:
             self.mj_model.actuator_biasprm[:] = compiled_bias[0]
         # Resolve against physical inertia; the notification then recomputes constants with locked kinematic roots.
-        if self._kinematic_lock_armature is not None:
+        if self._kinematic_weld_eq is not None:
             with self._scoped_mujoco_warp_execution():
                 self._set_const_0(lock_kinematic=False)
         self.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
