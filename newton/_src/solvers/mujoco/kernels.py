@@ -944,6 +944,7 @@ def convert_warp_coords_to_mj_kernel(
     mj_q_start: wp.array[wp.int32],
     mj_qd_start: wp.array[wp.int32],
     jnt_mocap: wp.array[wp.int32],
+    jnt_weld: wp.array[wp.int32],
     write_state: bool,
     # outputs
     qpos: wp.array2d[wp.float32],
@@ -951,6 +952,7 @@ def convert_warp_coords_to_mj_kernel(
     mocap_pos: wp.array2d[wp.vec3],
     mocap_quat: wp.array2d[wp.quat],
     mocap_root_moved: wp.array[wp.bool],
+    eq_data: wp.array2d[vec11],
 ):
     """Push Newton joint coordinates to MuJoCo and pose the mocap roots driven by Newton joints.
 
@@ -959,6 +961,10 @@ def convert_warp_coords_to_mj_kernel(
     False, as after a joint-frame notification without a state, only fixed-root
     poses are written. ``mocap_root_moved`` flags worlds whose mocap roots moved,
     since MuJoCo does not wake trees resting on a moving mocap body.
+
+    ``jnt_weld`` maps template joints to the weld holding their kinematic root
+    (``-1`` if none). Its reference follows the root because the weld's
+    quaternion residual weakens and adds Jdot*v acceleration away from it.
     """
     worldid, jntid = wp.tid()
 
@@ -966,6 +972,34 @@ def convert_warp_coords_to_mj_kernel(
         return
 
     joint_id = joints_per_world * worldid + jntid
+
+    if jnt_weld and write_state:
+        eq = jnt_weld[jntid]
+        if eq >= 0:
+            X_wj, _v_j = eval_joint_motion(
+                joint_type[joint_id],
+                joint_q_start[joint_id],
+                joint_qd_start[joint_id],
+                joint_dof_dim[joint_id, 0],
+                joint_dof_dim[joint_id, 1],
+                joint_q,
+                joint_qd,
+                joint_axis,
+            )
+            X_wj = joint_X_p[joint_id] * X_wj
+            root_q = quat_xyzw_to_wxyz((X_wj * wp.transform_inverse(joint_X_c[joint_id])).q)
+            # Anchor the weld at the joint origin so its residual and Jdot*v start at zero.
+            data = eq_data[worldid, eq]
+            anchor_world = X_wj.p
+            anchor_body = joint_X_c[joint_id].p
+            for i in range(3):
+                data[i] = anchor_world[i]
+                data[3 + i] = anchor_body[i]
+            data[6] = root_q[0]
+            data[7] = -root_q[1]
+            data[8] = -root_q[2]
+            data[9] = -root_q[3]
+            eq_data[worldid, eq] = data
 
     if jnt_mocap:
         mocap = jnt_mocap[jntid]

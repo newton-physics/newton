@@ -4456,6 +4456,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._kinematic_weld_jnt: wp.array2d[wp.int32] | None = None
         self._kinematic_weld_body: np.ndarray | None = None
         self._kinematic_weld_eq: wp.array[wp.int32] | None = None
+        self._kinematic_weld_eq_np: np.ndarray | None = None
         self._kinematic_unsupported_bodies: np.ndarray | None = None
         # Welded roots that were dynamic in every world at construction.
         self._kinematic_late_roots: np.ndarray | None = None
@@ -4463,6 +4464,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Active welds per world that njmax has rows for, or None if unbounded.
         self._kinematic_weld_capacity: int | None = None
         self._jnt_mocap: wp.array[wp.int32] | None = None
+        # Template joint -> MuJoCo weld equality holding its kinematic root, or -1.
+        self._jnt_weld: wp.array[wp.int32] | None = None
         self._kinematic_mocap_root_bodies: np.ndarray | None = None
         # Armature per MuJoCo DOF that locks welded roots while MuJoCo computes its constants.
         self._kinematic_lock_armature: wp.array[float] | None = None
@@ -6039,6 +6042,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         mjw_data = getattr(self, "mjw_data", None)
         jnt_mocap = self._jnt_mocap if mjw_data is not None else None
+        jnt_weld = self._jnt_weld if mjw_data is not None else None
         sleep_redirect = is_mjwarp and self.enable_sleeping and write_state
         mocap_root_moved = self._mocap_root_moved if is_mjwarp and jnt_mocap is not None else None
         if mocap_root_moved is not None:
@@ -6064,6 +6068,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_q_start,
                 self.mj_qd_start,
                 jnt_mocap,
+                jnt_weld,
                 write_state,
             ],
             outputs=[
@@ -6072,6 +6077,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjw_data.mocap_pos if jnt_mocap is not None else None,
                 mjw_data.mocap_quat if jnt_mocap is not None else None,
                 mocap_root_moved,
+                self.mjw_model.eq_data if jnt_weld is not None else None,
             ],
             device=model.device,
         )
@@ -6081,6 +6087,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if not is_mjwarp and jnt_mocap is not None:
             mj_data.mocap_pos[:] = mjw_data.mocap_pos.numpy()[0]
             mj_data.mocap_quat[:] = mjw_data.mocap_quat.numpy()[0]
+        if not is_mjwarp and jnt_weld is not None and write_state:
+            weld_eq = self._kinematic_weld_eq_np
+            self.mj_model.eq_data[weld_eq] = self.mjw_model.eq_data.numpy()[0, weld_eq]
         if not write_state:
             return
 
@@ -8923,7 +8932,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 late = ~np.array([t[3] for t in kinematic_weld_roots], dtype=bool)
                 self._kinematic_late_roots = np.zeros(model.body_count, dtype=bool)
                 self._kinematic_late_roots[self._kinematic_weld_body[:, late].ravel()] = True
-                self._kinematic_weld_eq = wp.array([eq.id for eq in kinematic_welds], dtype=wp.int32)
+                self._kinematic_weld_eq_np = np.array([eq.id for eq in kinematic_welds], dtype=np.int32)
+                self._kinematic_weld_eq = wp.array(self._kinematic_weld_eq_np, dtype=wp.int32)
+                jnt_weld = np.full(n_template_joints, -1, dtype=np.int32)
+                jnt_weld[template_jnt] = self._kinematic_weld_eq_np
+                self._jnt_weld = wp.array(jnt_weld, dtype=wp.int32)
                 lock_armature = np.zeros(self.mj_model.nv)
                 for _, root_body, _, _ in kinematic_weld_roots:
                     mjc_body = self.mj_model.body(root_body.name).id

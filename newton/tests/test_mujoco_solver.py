@@ -2486,6 +2486,42 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     self.assertLess(np.linalg.norm([dq[0], dq[1], dq[2]]), tol)
                     state_0, state_1 = state_1, state_0
 
+    def test_kinematic_root_weld_holds_at_any_orientation(self):
+        """The weld holding a loaded kinematic root does not weaken or drift as the root turns."""
+        for kind, use_mujoco_cpu in itertools.product(("revolute", "free"), (False, True)):
+            with self.subTest(kind=kind, use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder(gravity=(0.0, -10.0, 0.0))
+                SolverMuJoCo.register_custom_attributes(builder)
+                body = builder.add_link(is_kinematic=True)
+                builder.add_shape_box(
+                    body, xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()), hx=0.1, hy=0.1, hz=0.1
+                )
+                if kind == "revolute":
+                    joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z)
+                else:
+                    joint = builder.add_joint_free(body)
+                builder.add_articulation([joint])
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                com = model.body_com.numpy()[0]
+                # Half a turn away from the weld's compiled reference, at rest and spinning.
+                for angle, w in ((np.pi, 0.0), (3.0, 2.0)):
+                    q = model.joint_q.numpy().copy()
+                    qd = np.zeros(model.joint_dof_count, dtype=np.float32)
+                    if kind == "revolute":
+                        q[0], qd[0] = angle, w
+                    else:
+                        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), angle)
+                        q[3:7] = rot
+                        r_com = wp.quat_rotate(rot, wp.vec3(*com))
+                        qd[:] = (-w * r_com[1], w * r_com[0], 0.0, 0.0, 0.0, w)
+                    state_0.joint_q.assign(q)
+                    state_0.joint_qd.assign(qd)
+                    solver.step(state_0, state_1, control, None, 0.01)
+                    qacc = solver.mj_data.qacc if use_mujoco_cpu else solver.mjw_data.qacc.numpy()[0]
+                    np.testing.assert_allclose(qacc, 0.0, atol=0.05)
+
     def test_moving_massless_kinematic_root_wakes_sleeping_payload(self):
         """Wake a payload asleep on a massless kinematic root, which MuJoCo moves as a mocap body."""
         if wp.get_cuda_device_count() == 0:
