@@ -2674,10 +2674,10 @@ def build_mass_update_mask(
 # Mimic rows enforce ``q_follower = coef0 + coef1 * q_leader`` between two DOFs of
 # one articulation, one row per follower coordinate. Connect rows close a kinematic
 # loop: three rows per loop-closing BALL or REVOLUTE joint pin its parent and child
-# anchors together, and a REVOLUTE closure adds two hinge-axis rows. Both are bilateral equality rows with an unbounded impulse and the
-# Baumgarte bias ``baumgarte * phi / dt``. Coefficients, enable flags and anchors are
-# read from device arrays every step, so runtime changes need no re-initialization
-# and stay compatible with CUDA graph capture.
+# anchors together, and a REVOLUTE closure adds two hinge-axis rows. Both are bilateral
+# equality rows with an unbounded impulse and the Baumgarte bias ``baumgarte * phi / dt``.
+# Coefficients, enable flags and anchors are read from device arrays every step, so
+# runtime changes need no re-initialization and stay compatible with CUDA graph capture.
 
 
 @wp.func
@@ -2905,6 +2905,45 @@ def _accumulate_angular_jacobian_row(
         curr = joint_ancestor[curr]
 
 
+@wp.func
+def _finish_connect_row(
+    group_idx: int,
+    slot: int,
+    n_dofs: int,
+    world: int,
+    phi: float,
+    target: float,
+    J_group: wp.array3d[float],
+    world_row_type: wp.array2d[int],
+    world_row_parent: wp.array2d[int],
+    world_row_mu: wp.array2d[float],
+    world_phi: wp.array2d[float],
+    world_target_velocity: wp.array2d[float],
+):
+    """Normalize a connect row's Jacobian, ``phi`` and target, and write its metadata; a degenerate row is left inert."""
+    norm_sq = float(0.0)
+    for d in range(n_dofs):
+        norm_sq += J_group[group_idx, slot, d] * J_group[group_idx, slot, d]
+    row_phi = phi
+    row_target = target
+    if norm_sq > 1.0e-8:
+        inv_norm = 1.0 / wp.sqrt(norm_sq)
+        for d in range(n_dofs):
+            J_group[group_idx, slot, d] *= inv_norm
+        row_phi *= inv_norm
+        row_target *= inv_norm
+    else:
+        for d in range(n_dofs):
+            J_group[group_idx, slot, d] = 0.0
+        row_phi = 0.0
+        row_target = 0.0
+    world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_CONNECT
+    world_row_parent[world, slot] = -1
+    world_row_mu[world, slot] = 0.0
+    world_phi[world, slot] = row_phi
+    world_target_velocity[world, slot] = row_target
+
+
 @wp.kernel
 def populate_connect_J_for_size(
     articulation_dof_start: wp.array[int],
@@ -3028,27 +3067,20 @@ def populate_connect_J_for_size(
                     J_group[group_idx, slot, d - dof_start] -= wp.dot(e, lin + wp.cross(ang, rel_b))
                 curr = joint_ancestor[curr]
 
-            norm_sq = float(0.0)
-            for d in range(n_dofs):
-                norm_sq += J_group[group_idx, slot, d] * J_group[group_idx, slot, d]
-            phi_axis = delta[axis]
-            if norm_sq > 1.0e-8:
-                inv_norm = 1.0 / wp.sqrt(norm_sq)
-                for d in range(n_dofs):
-                    J_group[group_idx, slot, d] *= inv_norm
-                phi_axis *= inv_norm
-                target *= inv_norm
-            else:
-                for d in range(n_dofs):
-                    J_group[group_idx, slot, d] = 0.0
-                phi_axis = 0.0
-                target = 0.0
-
-            world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_CONNECT
-            world_row_parent[world, slot] = -1
-            world_row_mu[world, slot] = 0.0
-            world_phi[world, slot] = phi_axis
-            world_target_velocity[world, slot] = target
+            _finish_connect_row(
+                group_idx,
+                slot,
+                n_dofs,
+                world,
+                delta[axis],
+                target,
+                J_group,
+                world_row_type,
+                world_row_parent,
+                world_row_mu,
+                world_phi,
+                world_target_velocity,
+            )
 
         if connect_rows[k] < 5:
             continue
@@ -3064,8 +3096,6 @@ def populate_connect_J_for_size(
             e = e1
             if i == 1:
                 e = e2
-            for d in range(n_dofs):
-                J_group[group_idx, slot, d] = 0.0
             target = float(0.0)
             if prescribed:
                 target = -wp.dot(e, omega_a)
@@ -3096,26 +3126,20 @@ def populate_connect_J_for_size(
                 slot,
                 J_group,
             )
-            norm_sq = float(0.0)
-            for d in range(n_dofs):
-                norm_sq += J_group[group_idx, slot, d] * J_group[group_idx, slot, d]
-            phi_axis = wp.dot(e, misalign)
-            if norm_sq > 1.0e-8:
-                inv_norm = 1.0 / wp.sqrt(norm_sq)
-                for d in range(n_dofs):
-                    J_group[group_idx, slot, d] *= inv_norm
-                phi_axis *= inv_norm
-                target *= inv_norm
-            else:
-                for d in range(n_dofs):
-                    J_group[group_idx, slot, d] = 0.0
-                phi_axis = 0.0
-                target = 0.0
-            world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_CONNECT
-            world_row_parent[world, slot] = -1
-            world_row_mu[world, slot] = 0.0
-            world_phi[world, slot] = phi_axis
-            world_target_velocity[world, slot] = target
+            _finish_connect_row(
+                group_idx,
+                slot,
+                n_dofs,
+                world,
+                wp.dot(e, misalign),
+                target,
+                J_group,
+                world_row_type,
+                world_row_parent,
+                world_row_mu,
+                world_phi,
+                world_target_velocity,
+            )
 
 
 # =============================================================================

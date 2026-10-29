@@ -1290,7 +1290,8 @@ class SolverSteel(SolverBase):
       child belongs to an articulation): three bilateral rows pin the joint's parent and
       child anchors together, and a REVOLUTE closure adds two rows that keep the child's
       hinge axis aligned with the parent's. A closure has no joint coordinate, so limits
-      and drive gains on a loop-closing REVOLUTE joint are ignored, with a warning. The
+      and drive gains on a loop-closing REVOLUTE joint are ignored; the solver warns at
+      construction if any are set, or if the hinge axis is zero. The
       parent is in the child's articulation, a kinematic body, or the world. The closure
       rows read :attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_X_p` /
       :attr:`~newton.Model.joint_X_c` and, for a REVOLUTE closure,
@@ -3389,8 +3390,8 @@ class SolverSteel(SolverBase):
 
         Loop-closing BALL and REVOLUTE joints are kept out of the articulation tree by
         :meth:`_SteelModelPlan.build` and enforced as three rows pinning the joint's
-        parent and child anchors together, plus two hinge-axis rows for a REVOLUTE closure. A closure belongs to its child body's
-        articulation. Its parent is either in that articulation or prescribed: a kinematic
+        parent and child anchors together, plus two hinge-axis rows for a REVOLUTE
+        closure. A closure belongs to its child body's articulation. Its parent is either in that articulation or prescribed: a kinematic
         body (:attr:`~newton.BodyFlags.KINEMATIC`) or the world. A prescribed parent
         contributes no DOFs; its anchor velocity enters the row target. Other loop-closing
         joints raise :class:`NotImplementedError`. The rows read the joint's enabled flag and
@@ -3414,6 +3415,7 @@ class SolverSteel(SolverBase):
         joint_qd_start = model.joint_qd_start.numpy()
         limit_lower, limit_upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
         target_ke, target_kd = model.joint_target_ke.numpy(), model.joint_target_kd.numpy()
+        joint_axis = model.joint_axis.numpy()
 
         art_l, body_p, body_c, prescribed_l = [], [], [], []
         joint_l, foreign_l, rows_l = [], [], []
@@ -3430,6 +3432,12 @@ class SolverSteel(SolverBase):
                     ignored = " and ".join(name for name, on in (("limits", limited), ("drive gains", driven)) if on)
                     warnings.warn(
                         f"SolverSteel: loop-closing REVOLUTE joint {j} has {ignored}, which a loop closure ignores.",
+                        NewtonWarning,
+                        stacklevel=3,
+                    )
+                if not np.any(joint_axis[dof]):
+                    warnings.warn(
+                        f"SolverSteel: loop-closing REVOLUTE joint {j} has a zero axis, so it closes the loop like a BALL joint.",
                         NewtonWarning,
                         stacklevel=3,
                     )

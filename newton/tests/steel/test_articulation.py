@@ -3307,15 +3307,20 @@ def _rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     return v + w * t + np.cross(u, t)
 
 
-def _closure_metrics(model, state, joint) -> tuple[float, float]:
-    """Return a loop-closing joint's anchor gap [m] and hinge-axis misalignment [deg]."""
-    body_q = state.body_q.numpy().astype(np.float64)
+def _closure_frames(model, joint):
+    """Return a loop-closing joint's parent, child, anchor transforms and hinge axis, read once from the model."""
     parent, child = int(model.joint_parent.numpy()[joint]), int(model.joint_child.numpy()[joint])
     x_p = model.joint_X_p.numpy()[joint].astype(np.float64)
     x_c = model.joint_X_c.numpy()[joint].astype(np.float64)
     axis = np.array([1.0, 0.0, 0.0])
     if int(model.joint_type.numpy()[joint]) == int(newton.JointType.REVOLUTE):
         axis = model.joint_axis.numpy()[int(model.joint_qd_start.numpy()[joint])].astype(np.float64)
+    return parent, child, x_p, x_c, axis
+
+
+def _closure_metrics(frames, body_q) -> tuple[float, float]:
+    """Return a loop-closing joint's anchor gap [m] and hinge-axis misalignment [deg] for host body poses."""
+    parent, child, x_p, x_c, axis = frames
     a_p, p_a = _rotate(x_p[3:], axis), x_p[:3]
     if parent >= 0:
         a_p = _rotate(body_q[parent, 3:], a_p)
@@ -3326,7 +3331,7 @@ def _closure_metrics(model, state, joint) -> tuple[float, float]:
     return float(np.linalg.norm(p_a - p_b)), float(misalignment)
 
 
-def _build_world_hinged_swing(closure, start_angle=0.6):
+def _build_world_hinged_swing(test, closure, start_angle=0.6):
     """Hang a body from the world by a hinge about x, with its center of mass offset along the axis.
 
     ``closure`` is ``"revolute"`` or ``"ball"`` for a loop joint beside a free joint, or ``"tree"``
@@ -3351,14 +3356,15 @@ def _build_world_hinged_swing(closure, start_angle=0.6):
         b.add_articulation([joint])
         return b, joint
     b.add_articulation([b.add_joint_free(child=body)])
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        if closure == "revolute":
-            joint = b.add_joint_revolute(
-                parent=-1, child=body, axis=wp.vec3(1.0, 0.0, 0.0), parent_xform=x_p, child_xform=x_c
-            )
-        else:
-            joint = b.add_joint_ball(parent=-1, child=body, parent_xform=x_p, child_xform=x_c)
+    if closure == "revolute":
+        add_loop_joint = functools.partial(
+            b.add_joint_revolute, parent=-1, child=body, axis=wp.vec3(1.0, 0.0, 0.0), parent_xform=x_p, child_xform=x_c
+        )
+    else:
+        add_loop_joint = functools.partial(b.add_joint_ball, parent=-1, child=body, parent_xform=x_p, child_xform=x_c)
+    joint = _expect_one_warning(
+        test, newton.exceptions.NewtonWarning, "another joint already connects these bodies", add_loop_joint
+    )
     return b, joint
 
 
@@ -3404,29 +3410,32 @@ def _build_square_loop(closure):
 
 
 def _run_closure(builder, joint, device, steps=500, **solver_options):
-    """Step a model and return its worst closure gap [m], worst misalignment [deg] and body poses per step."""
+    """Step a model; return its worst closure gap [m], worst misalignment [deg], body poses per step and the solver."""
     model = builder.finalize(device=device)
     solver = SolverSteel(model, iterations=8, enable_joint_limits=True, **solver_options)
     state_0, state_1 = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     control = model.control()
-    worst_gap, worst_misalignment, poses = 0.0, 0.0, []
+    poses = []
     for _ in range(steps):
         solver.step(state_0, state_1, control, None, 1.0 / 500.0)
         state_0, state_1 = state_1, state_0
         poses.append(state_0.body_q.numpy().astype(np.float64))
-        if joint is not None:
-            gap, misalignment = _closure_metrics(model, state_0, joint)
+    worst_gap, worst_misalignment = 0.0, 0.0
+    if joint is not None:
+        frames = _closure_frames(model, joint)
+        for body_q in poses:
+            gap, misalignment = _closure_metrics(frames, body_q)
             worst_gap, worst_misalignment = max(worst_gap, gap), max(worst_misalignment, misalignment)
-    return worst_gap, worst_misalignment, np.array(poses)
+    return worst_gap, worst_misalignment, np.array(poses), solver
 
 
 def test_revolute_loop_world_hinge_holds_its_axis(test, device):
     """Swing a body hung from the world by a REVOLUTE loop joint like the same tree hinge; a BALL closure tumbles."""
-    gap, misalignment, loop = _run_closure(*_build_world_hinged_swing("revolute"), device)
+    gap, misalignment, loop, _ = _run_closure(*_build_world_hinged_swing(test, "revolute"), device)
     test.assertLess(gap, 5.0e-4)
     test.assertLess(misalignment, 0.05)
-    builder, _ = _build_world_hinged_swing("tree")
+    builder, _ = _build_world_hinged_swing(test, "tree")
     tree = _run_closure(builder, None, device)[2]
     loop, tree = loop[:, 0], tree[:, 0]
     swing = np.degrees(2.0 * np.arccos(np.clip(np.abs(tree[:, 6]), 0.0, 1.0)))
@@ -3434,13 +3443,13 @@ def test_revolute_loop_world_hinge_holds_its_axis(test, device):
     dots = np.clip(np.abs(np.sum(loop[:, 3:] * tree[:, 3:], axis=1)), 0.0, 1.0)
     test.assertLess(np.degrees(2.0 * np.arccos(dots)).max(), 1.0, "the loop hinge must swing like the tree hinge")
     test.assertLess(np.linalg.norm(loop[:, :3] - tree[:, :3], axis=1).max(), 2.0e-3)
-    ball_misalignment = _run_closure(*_build_world_hinged_swing("ball"), device)[1]
+    ball_misalignment = _run_closure(*_build_world_hinged_swing(test, "ball"), device)[1]
     test.assertGreater(ball_misalignment, 10.0, "a BALL closure should let the body tumble")
 
 
 def test_revolute_loop_spatial_loop_stays_rigid(test, device):
     """Keep a spatial four-link loop closed by a REVOLUTE joint rigid under gravity; a BALL closure frees it."""
-    gap, misalignment, _ = _run_closure(*_build_square_loop("revolute"), device)
+    gap, misalignment, _, _ = _run_closure(*_build_square_loop("revolute"), device)
     test.assertLess(gap, 5.0e-4)
     test.assertLess(misalignment, 0.05)
     test.assertGreater(_run_closure(*_build_square_loop("ball"), device)[1], 10.0)
@@ -3448,14 +3457,18 @@ def test_revolute_loop_spatial_loop_stays_rigid(test, device):
 
 def test_revolute_loop_pre_eliminates_five_rows(test, device):
     """Pre-eliminate all five rows of a REVOLUTE closure."""
-    gap, misalignment, _ = _run_closure(*_build_square_loop("revolute"), device, enable_bilateral_preelimination=True)
+    gap, misalignment, _, solver = _run_closure(
+        *_build_square_loop("revolute"), device, enable_bilateral_preelimination=True
+    )
+    test.assertTrue(solver._preelim_active)
+    test.assertEqual(int(solver._preelim_nB.numpy()[0]), 5)
     test.assertLess(gap, 1.0e-4)
     test.assertLess(misalignment, 0.01)
 
 
-def test_revolute_loop_axis_edit_applies_at_runtime(test, device):
-    """Re-aim a loop hinge by editing ``Model.joint_axis`` and notifying ``JOINT_PROPERTIES``."""
-    builder, joint = _build_world_hinged_swing("revolute", start_angle=0.0)
+def _check_revolute_loop_axis_edit(test, device, captured):
+    """Hold a loop hinge about x against a pull about y, then edit ``Model.joint_axis`` in place to y."""
+    builder, joint = _build_world_hinged_swing(test, "revolute", start_angle=0.0)
     model = builder.finalize(device=device)
     solver = SolverSteel(model, iterations=8, enable_joint_limits=True)
     state_0, state_1 = model.state(), model.state()
@@ -3463,11 +3476,21 @@ def test_revolute_loop_axis_edit_applies_at_runtime(test, device):
     control = model.control()
     start = state_0.body_q.numpy()[0, 3:].astype(np.float64)
 
-    def run(steps):
+    def step_pair():
         nonlocal state_0, state_1
-        for _ in range(steps):
+        for _ in range(2):
             solver.step(state_0, state_1, control, None, 1.0 / 500.0)
             state_0, state_1 = state_1, state_0
+
+    run = step_pair
+    if captured:
+        # Two steps per graph leave state_0 holding the newest state after every replay.
+        step_pair()
+        with wp.ScopedCapture(device=device) as capture:
+            step_pair()
+
+        def run():
+            wp.capture_launch(capture.graph)
 
     def rotation_since_start():
         """Return the body's rotation vector [deg] relative to its start orientation."""
@@ -3489,35 +3512,73 @@ def test_revolute_loop_axis_edit_applies_at_runtime(test, device):
         return np.degrees(rel[:3] / sin_half * 2.0 * np.arctan2(sin_half, rel[3]))
 
     # The center of mass is offset along x below the pivot, so gravity pulls about y.
-    run(200)
+    for _ in range(100):
+        run()
     test.assertLess(np.linalg.norm(rotation_since_start()), 0.05, "a hinge about x must hold against a pull about y")
     axis = model.joint_axis.numpy()
     axis[int(model.joint_qd_start.numpy()[joint])] = (0.0, 1.0, 0.0)
     model.joint_axis.assign(axis)
-    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
-    run(200)
+    if not captured:
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    for _ in range(100):
+        run()
     rotation = rotation_since_start()
     test.assertGreater(abs(rotation[1]), 5.0, "after the edit the body must swing about y")
     test.assertLess(np.hypot(rotation[0], rotation[2]), 0.05, "and only about y")
-    gap, misalignment = _closure_metrics(model, state_0, joint)
+    gap, misalignment = _closure_metrics(_closure_frames(model, joint), state_0.body_q.numpy().astype(np.float64))
     test.assertLess(gap, 5.0e-4)
     test.assertLess(misalignment, 0.05)
 
 
+def test_revolute_loop_axis_edit_applies_at_runtime(test, device):
+    """Re-aim a loop hinge by editing ``Model.joint_axis`` and notifying ``JOINT_PROPERTIES``."""
+    _check_revolute_loop_axis_edit(test, device, captured=False)
+
+
+def test_revolute_loop_axis_edit_applies_between_replays(test, device):
+    """Re-aim a loop hinge by editing ``Model.joint_axis`` in place between replays of one captured graph."""
+    _check_revolute_loop_axis_edit(test, device, captured=True)
+
+
+def test_revolute_loop_overflow_drops_all_five_rows(test, device):
+    """Keep a REVOLUTE closure whole when its five rows fit, and drop it whole when one row is missing."""
+    model = _build_world_hinged_swing(test, "revolute")[0].finalize(device=device)
+
+    def row_count(capacity):
+        solver = SolverSteel(
+            model, solve_mode="matrix_free", articulation_constraint_max=capacity, warn_constraint_overflow=False
+        )
+        state_0, state_1 = model.state(), model.state()
+        solver.step(state_0, state_1, model.control(), None, 1.0 / 500.0)
+        slot = int(solver._connect_slot.numpy()[0])
+        return int(solver._constraint_count.numpy()[0]), slot, bool(solver.constraint_overflow.numpy()[0])
+
+    rows, slot, overflow = row_count(32)
+    test.assertGreaterEqual(rows, 5)
+    test.assertGreaterEqual(slot, 0)
+    test.assertFalse(overflow)
+    test.assertEqual(row_count(rows), (rows, slot, False))
+    test.assertEqual(row_count(rows - 1), (rows - 5, -1, True))
+
+
 def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
-    """Warn at construction about limits or drive gains on a loop-closing REVOLUTE joint."""
-    builder, joint = _build_world_hinged_swing("revolute")
+    """Warn at construction about limits, drive gains or a zero axis on a loop-closing REVOLUTE joint."""
+    builder, joint = _build_world_hinged_swing(test, "revolute")
     dof = builder.joint_qd_start[joint]
     builder.joint_limit_lower[dof], builder.joint_limit_upper[dof] = -0.5, 0.5
     with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* limits"):
         SolverSteel(builder.finalize(device=device))
-    builder, joint = _build_world_hinged_swing("revolute")
+    builder, joint = _build_world_hinged_swing(test, "revolute")
     builder.joint_target_ke[builder.joint_qd_start[joint]] = 10.0
     with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"):
         SolverSteel(builder.finalize(device=device))
+    builder, joint = _build_world_hinged_swing(test, "revolute")
+    builder.joint_axis[builder.joint_qd_start[joint]] = (0.0, 0.0, 0.0)
+    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* zero axis"):
+        SolverSteel(builder.finalize(device=device))
     with warnings.catch_warnings():
         warnings.simplefilter("error", newton.exceptions.NewtonWarning)
-        SolverSteel(_build_world_hinged_swing("revolute")[0].finalize(device=device))
+        SolverSteel(_build_world_hinged_swing(test, "revolute")[0].finalize(device=device))
 
 
 class TestSteelRevoluteLoop(unittest.TestCase):
@@ -3529,6 +3590,8 @@ for _name in (
     "test_revolute_loop_spatial_loop_stays_rigid",
     "test_revolute_loop_pre_eliminates_five_rows",
     "test_revolute_loop_axis_edit_applies_at_runtime",
+    "test_revolute_loop_axis_edit_applies_between_replays",
+    "test_revolute_loop_overflow_drops_all_five_rows",
     "test_revolute_loop_warns_about_ignored_limits_and_drives",
 ):
     add_function_test(TestSteelRevoluteLoop, _name, globals()[_name], devices=get_cuda_test_devices())
