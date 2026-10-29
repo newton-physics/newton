@@ -2250,10 +2250,19 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
             np.testing.assert_array_equal(first, second)
 
     def test_graph_replay_matches_eager(self):
-        """Replay captured steps bit-identically to eager stepping."""
+        """Replay captured steps bit-identically to eager stepping, also after an in-place coefficient edit."""
         model = _lateral_hinge_model(1.0)
         effort = 2.0 * LOAD_COEFFICIENT * GRAVITY
-        _, eager = _advance_hinge(_friction_solver(model), model, effort, 10)
+        flags = newton.ModelFlags.JOINT_DOF_PROPERTIES
+        solver = _friction_solver(model)
+        states, control = [model.state(), model.state()], model.control()
+        control.joint_f.fill_(effort)
+        _, eager = _advance_friction(solver, states, control, 10)
+        # The larger coefficient makes the sliding hinge stick, so a replay that missed the edit diverges.
+        _load_coefficient(model).fill_(4.0 * LOAD_COEFFICIENT)
+        solver.notify_model_changed(flags)
+        _, eager_edited = _advance_friction(solver, states, control, 2)
+        _load_coefficient(model).fill_(LOAD_COEFFICIENT)
         solver = _friction_solver(model)
         states, control = [model.state(), model.state()], model.control()
         control.joint_f.fill_(effort)
@@ -2265,7 +2274,12 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
         for _ in range(4):
             wp.capture_launch(capture.graph)
             replayed.append(states[0].joint_qd.numpy()[0])
-        np.testing.assert_array_equal(np.array(replayed, dtype=np.float32), eager[3::2])
+        _load_coefficient(model).fill_(4.0 * LOAD_COEFFICIENT)
+        solver.notify_model_changed(flags)
+        wp.capture_launch(capture.graph)
+        replayed.append(states[0].joint_qd.numpy()[0])
+        self.assertLess(abs(float(eager_edited[1])), abs(float(eager[-1])))
+        np.testing.assert_array_equal(np.array(replayed, dtype=np.float32), [*eager[3::2], eager_edited[1]])
 
     def test_coefficient_edits_apply_at_the_next_step(self):
         """Use the coefficient current at the step."""

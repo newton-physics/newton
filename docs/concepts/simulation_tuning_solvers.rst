@@ -255,8 +255,9 @@ repository examples spend tuning effort, not a shared solver API.
        default). Joint friction (:attr:`~newton.Model.joint_friction`, for
        example from MJCF ``frictionloss``) is enforced only with
        ``enable_joint_friction=True`` (off by default). A positive per-DOF
-       ``steel:joint_friction_load_coefficient`` adds the PhysX articulation
-       law, a bound that grows with the force and torque the joint transmits.
+       ``steel:joint_friction_load_coefficient`` adds the joint friction law of
+       PhysX articulations before PhysX 5.6, a bound that grows with the force
+       and torque the joint transmits.
        The solver sets up this load term only if some coefficient is positive
        at construction; to randomize coefficients after construction, make at
        least one positive before creating the solver.
