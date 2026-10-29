@@ -3,6 +3,7 @@
 
 """Row capacities, overflow reporting, watermarks and heterogeneous-world guards of SolverSteel."""
 
+import gc
 import sys
 import unittest
 
@@ -116,6 +117,63 @@ def test_overflow_warning_is_printed_once(test, device, solve_mode="matrix_free"
     np.testing.assert_array_equal(solver._row_overflow_warning_emitted.numpy(), expected)
 
 
+def test_status_snapshot_reports_status_at_snapshot(test, device, solve_mode="matrix_free"):
+    """Report the status as copied by snapshot_constraint_status, unchanged by later steps and resets."""
+    model = _box_on_ground(device)
+    solver = SolverSteel(model, solve_mode=solve_mode, free_body_constraint_max=1, warn_constraint_overflow=False)
+    with test.assertRaisesRegex(RuntimeError, "snapshot_constraint_status"):
+        solver.check_constraint_capacity(snapshot=True)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    solver.snapshot_constraint_status()
+    pipeline.collide(state_in, contacts)
+    solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+    solver.check_constraint_capacity(snapshot=True)
+    solver.snapshot_constraint_status()
+    solver.reset(state_out)
+    solver.check_constraint_capacity()
+    with test.assertRaisesRegex(RuntimeError, "dropped contacts or constraint rows"):
+        solver.check_constraint_capacity(snapshot=True)
+    solver.snapshot_constraint_status()
+    solver.check_constraint_capacity(snapshot=True)
+    for name, pattern in (
+        ("_disabled_tree_joint", "articulation tree joint"),
+        ("_joint_friction_invalid", "joint_friction was invalid"),
+    ):
+        getattr(solver, name).fill_(True)
+        solver.snapshot_constraint_status()
+        getattr(solver, name).fill_(False)
+        with test.assertRaisesRegex(RuntimeError, pattern):
+            solver.check_constraint_capacity(snapshot=True)
+        solver.check_constraint_capacity()
+
+
+def test_released_snapshot_solver_keeps_another_capture_valid(test, device):
+    """Release a solver that took and read a snapshot while another graph is being captured."""
+    model = _box_on_ground(device)
+    solver = SolverSteel(model, free_body_constraint_max=1, warn_constraint_overflow=False)
+    solver.snapshot_constraint_status()
+    solver.check_constraint_capacity(snapshot=True)
+    counter = wp.zeros(1, dtype=int, device=device)
+    with wp.ScopedCapture(device) as capture:
+        counter.fill_(1)
+        del solver
+        gc.collect()
+        counter.fill_(2)
+    wp.capture_launch(capture.graph)
+    test.assertEqual(int(counter.numpy()[0]), 2)
+
+
+def test_status_snapshot_is_refused_during_capture(test, device):
+    """Refuse a snapshot inside CUDA graph capture."""
+    model = _box_on_ground(device)
+    solver = SolverSteel(model)
+    with wp.ScopedCapture(device):
+        with test.assertRaisesRegex(RuntimeError, "outside CUDA graph capture"):
+            solver.snapshot_constraint_status()
+
+
 class TestSteelCapacityStatus(unittest.TestCase):
     pass
 
@@ -149,10 +207,35 @@ add_function_test(
 )
 
 
+add_function_test(
+    TestSteelCapacityStatus,
+    "test_status_snapshot_reports_status_at_snapshot",
+    test_status_snapshot_reports_status_at_snapshot,
+    devices=devices,
+)
+
+
+add_function_test(
+    TestSteelCapacityStatus,
+    "test_released_snapshot_solver_keeps_another_capture_valid",
+    test_released_snapshot_solver_keeps_another_capture_valid,
+    devices=devices,
+)
+
+
+add_function_test(
+    TestSteelCapacityStatus,
+    "test_status_snapshot_is_refused_during_capture",
+    test_status_snapshot_is_refused_during_capture,
+    devices=devices,
+)
+
+
 for _name in (
     "test_capacity_failure_is_observable",
     "test_dense_capacity_failure_is_world_local",
     "test_overflow_warning_is_printed_once",
+    "test_status_snapshot_reports_status_at_snapshot",
 ):
     add_function_test(
         TestSteelCapacityStatus,

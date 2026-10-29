@@ -810,6 +810,22 @@ def test_captured_errors_are_deferred_until_reset(test, device):
     test.assertTrue(np.isfinite(scene.pose()).all())
 
 
+def test_status_snapshot_reports_a_replay_error(test, device):
+    """Report a replay's invalid contact input from a snapshot taken after it, not from one taken before."""
+    scene = _CompliantScene(device, articulated=True)
+    graph = scene.capture()
+    wp.capture_launch(graph)
+    scene.solver.snapshot_constraint_status()
+    scene.stiffness.fill_(float("nan"))
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity(snapshot=True)
+    scene.solver.snapshot_constraint_status()
+    scene.solver.reset(scene.states[0])
+    scene.solver.check_constraint_capacity()
+    with test.assertRaisesRegex(RuntimeError, r"contact compliance.*Invalid contact stiffness \(contact 0\)"):
+        scene.solver.check_constraint_capacity(snapshot=True)
+
+
 def _run_paired_fixture(device, *, hinv_jt_kernel, friction, friction_gap_max=None, steps=40):
     """Drop a free box onto a 23-DOF arm (one articulation/free-body pair per world) with compliant contacts."""
     with wp.ScopedDevice(device):
@@ -948,6 +964,7 @@ for _fn in (
     test_capture_interleaves_with_eager_steps_and_reset,
     test_replay_reads_edited_contact_material,
     test_captured_errors_are_deferred_until_reset,
+    test_status_snapshot_reports_a_replay_error,
 ):
     add_function_test(TestContactComplianceCapture, _fn.__name__, _fn, devices=devices)
 
