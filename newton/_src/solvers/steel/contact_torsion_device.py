@@ -815,7 +815,7 @@ class DeviceTorsionPreparation:
                 s._row_mu,
                 s._phi,
                 s._target_velocity,
-                s._row_restitution,
+                s._row_rebound_velocity,
                 s._contact_torsion_group,
                 s._torsion_row_radius,
             ],

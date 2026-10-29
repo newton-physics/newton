@@ -1140,7 +1140,7 @@ def synthetic_fixture(*, worlds=3, witnesses=5, patches=True, seed=4, device="cp
         _group_to_art={size: arr(np.flatnonzero(response_sizes == size).astype(np.int32), int) for size in (3, 6)},
         _J_by_size={size: zero((worlds, dense, size)) for size in (3, 6)},
     )
-    for name in ("_phi", "_target_velocity", "_row_restitution"):
+    for name in ("_phi", "_target_velocity", "_row_rebound_velocity"):
         setattr(solver, name, zero((worlds, dense)))
     return solver, state, augmented, contacts
 
@@ -1178,7 +1178,7 @@ def compare(test, *, device, modify=None, **options):
         "_row_mu",
         "_phi",
         "_target_velocity",
-        "_row_restitution",
+        "_row_rebound_velocity",
         "_contact_torsion_group",
     ):
         np.testing.assert_allclose(
