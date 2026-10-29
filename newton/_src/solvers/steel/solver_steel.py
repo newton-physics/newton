@@ -17459,9 +17459,10 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     color cap run in order on lane 0. ``prefetch`` loads each unit's rows in one batch from
     the step's unit records, ``packed`` from a packed payload, ``staged`` copies the next
     color's payload to shared memory while a color solves, and ``straight_line`` solves the
-    standard units without the row loop; every variant gives the same result bitwise. Any
-    ``friction_mode`` but fixed_normal solves each contact row and its sliding pair together at
-    the pair's first row (see :func:`_colored_coupled_contact`).
+    standard units without the row loop; with fixed_normal every variant gives the same result
+    bitwise. Any other ``friction_mode`` solves each contact row and its sliding pair together at
+    the pair's first row (see :func:`_colored_coupled_contact`); the variants then agree up to
+    float32 summation order.
     """
     M = propagation_max_constraints
     NE = n_color_entries
