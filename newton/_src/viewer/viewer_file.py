@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Hashable, Iterable, Mapping
 from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -132,23 +132,23 @@ class ArrayCache(Generic[T]):
     """
     Cache that assigns a monotonically increasing index to each unique key and stores an object with it.
 
-    - Keys are uint64-compatible integers (use Python int).
+    - Keys are hashable: integers for Warp arrays, meshes and Gaussians, tuples for NumPy arrays.
     - Values are stored alongside the assigned index.
     - During serialization, repeated keys return their existing index; new keys return -1 and are added.
     - During deserialization, lookups happen by index and return the associated object or raise if missing.
     """
 
     def __init__(self):
-        self._key_to_entry: dict[int, tuple[int, T]] = {}
+        self._key_to_entry: dict[Hashable, tuple[int, T]] = {}
         self._index_to_entry: dict[int, T] = {}
         self._next_index: int = 1
 
-    def try_register_pointer_and_value(self, key: int, value: T) -> int:
+    def try_register_pointer_and_value(self, key: Hashable, value: T) -> int:
         """
-        Register an object under a numeric key.
+        Register an object under a key.
 
         Args:
-            key: Unsigned 64-bit compatible integer key
+            key: Hashable key from one of the module's key helpers
             value: Object to cache
 
         Returns:
@@ -178,7 +178,7 @@ class ArrayCache(Generic[T]):
         """
         return self._index_to_entry[index]
 
-    def try_register_pointer_and_value_and_index(self, key: int, value: T, index: int) -> int:
+    def try_register_pointer_and_value_and_index(self, key: Hashable, value: T, index: int) -> int:
         """
         Register an object with an explicit, well-defined index (used during deserialization).
 
@@ -207,7 +207,7 @@ class ArrayCache(Generic[T]):
             self._next_index = index + 1
         return index
 
-    def get_index_for_key(self, key: int) -> int:
+    def get_index_for_key(self, key: Hashable) -> int:
         """Return the assigned index for an existing key, else raise KeyError."""
         existing_entry = self._key_to_entry.get(key, None)
         if existing_entry is None:
@@ -249,9 +249,9 @@ def _get_serialization_format(file_path: str) -> str:
 
 
 def _ptr_key_from_numpy(arr: np.ndarray) -> int:
-    # Use the underlying buffer address as a stable key within a process
-    # for non-aliased arrays. For views, this still points to the base buffer;
-    # since user guarantees no aliasing across arrays, we can use the data address.
+    # The underlying buffer address is a stable key part within a process. A view
+    # starts at an address inside its base buffer; _np_key adds the shape and dtype
+    # so a view that starts at another array's address gets its own entry.
     # Empty arrays share a null data buffer, so distinct empties would otherwise
     # collide on the same key; fall back to object identity for them.
     if arr.size == 0:
@@ -262,10 +262,25 @@ def _ptr_key_from_numpy(arr: np.ndarray) -> int:
 _NP_TAG = 1 << 60
 _WARP_TAG = 2 << 60
 _MESH_TAG = 3 << 60
+_GAUSSIAN_TAG = 4 << 60
+_GAUSSIAN_RECORD_FIELDS = (
+    "positions",
+    "rotations",
+    "scales",
+    "opacities",
+    "sh_coeffs",
+    "sh_degree",
+    "sh_color_space",
+    "min_response",
+    "sorting_mode",
+)
 
 
-def _np_key(arr: np.ndarray) -> int:
-    return _NP_TAG + _ptr_key_from_numpy(arr)
+def _np_key(arr: np.ndarray) -> tuple[int, int, tuple[int, ...], str]:
+    # A view can start at another array's address (a Gaussian keeps views of the arrays it is
+    # built from), so the shape and dtype are part of the key: equal address, shape and dtype
+    # of contiguous arrays means the same data.
+    return (_NP_TAG, _ptr_key_from_numpy(arr), arr.shape, arr.dtype.str)
 
 
 def _warp_key(x) -> int:
@@ -278,6 +293,10 @@ def _warp_key(x) -> int:
 
 def _mesh_key_from_object(mesh: Mesh) -> int:
     return _MESH_TAG + int(id(mesh))
+
+
+def _gaussian_key_from_object(gaussian: Gaussian) -> int:
+    return _GAUSSIAN_TAG + int(id(gaussian))
 
 
 def serialize_ndarray(arr: np.ndarray, format_type: str = "json", cache: ArrayCache | None = None) -> dict:
@@ -388,8 +407,8 @@ def deserialize_ndarray(
             arr = arr.reshape(shape, order=order)
             # Register in cache if available and index provided
             if cache is not None and "cache_index" in data:
-                # We cannot recover a stable pointer from bytes; use id(arr.data) as key surrogate
-                # Since no aliasing is guaranteed, each full array is unique in the stream
+                # The loaded array's own address, shape and dtype serve as its key; each full
+                # array is unique in the stream, and references resolve by index.
                 key = _np_key(arr)
                 cache.try_register_pointer_and_value_and_index(key, arr, int(data["cache_index"]))
             return arr
@@ -617,25 +636,23 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
             return {"__type__": "warp.Mesh", "data": None}
 
         if isinstance(x, Gaussian):
-            # Save appearance, not process-local device buffers or BVH handles.
-            return {
-                "__type__": "Gaussian",
-                "__module__": Gaussian.__module__,
-                "attributes": {
+            # Save the appearance, not the process-local device buffers or BVH handles, and an
+            # asset shared by several shapes once, like a Mesh.
+            if cache is not None:
+                gaussian_key = _gaussian_key_from_object(x)
+                idx = cache.try_register_pointer_and_value(gaussian_key, x)
+                if idx > 0:
+                    return {"__type__": "newton.geometry.Gaussian_ref", "cache_index": int(idx)}
+            record = {
+                "__type__": "newton.geometry.Gaussian",
+                "data": {
                     name: serialize(getattr(x, name), callback, format_type=format_type, cache=cache)
-                    for name in (
-                        "positions",
-                        "rotations",
-                        "scales",
-                        "opacities",
-                        "sh_coeffs",
-                        "sh_degree",
-                        "sh_color_space",
-                        "min_response",
-                        "sorting_mode",
-                    )
+                    for name in _GAUSSIAN_RECORD_FIELDS
                 },
             }
+            if cache is not None:
+                record["cache_index"] = int(cache.get_index_for_key(gaussian_key))
+            return record
 
         if isinstance(x, Mesh):
             # Use vertices buffer address as mesh key
@@ -1251,6 +1268,29 @@ def depointer_as_key(data: Mapping[str, Any], format_type: str = "json", cache: 
             except KeyError:
                 return {"__cache_ref__": {"index": ref_index, "kind": "mesh"}}
 
+        elif x_type == "newton.geometry.Gaussian_ref":
+            if cache is None:
+                raise ValueError("ArrayCache required to resolve Gaussian_ref")
+            ref_index = int(x["cache_index"])
+            try:
+                return cache.try_get_value(ref_index)
+            except KeyError:
+                return {"__cache_ref__": {"index": ref_index, "kind": "gaussian"}}
+
+        elif x_type == "newton.geometry.Gaussian":
+            fields = {
+                name: deserialize(value, callback, f"{path}.{name}" if path else name, format_type, cache)
+                for name, value in x["data"].items()
+            }
+            fields["sorting_mode"] = Gaussian.SortingMode(int(fields["sorting_mode"]))
+            gaussian = Gaussian(**fields)
+            cache_index = x.get("cache_index")
+            if cache is not None and cache_index is not None:
+                cache.try_register_pointer_and_value_and_index(
+                    _gaussian_key_from_object(gaussian), gaussian, int(cache_index)
+                )
+            return gaussian
+
         elif x_type == "newton.geometry.Mesh":
             try:
                 mesh_data = x["data"]
@@ -1472,6 +1512,9 @@ class ViewerFile(ViewerBase):
     def playback_model(self, model: Model):
         """Populate a Model instance from loaded recording data.
 
+        Gaussian shapes are rebuilt from per-model copies of the recorded
+        assets; see :meth:`load_model`.
+
         Args:
             model: Destination model object to populate.
 
@@ -1490,18 +1533,37 @@ class ViewerFile(ViewerBase):
         transfer_to_model(self.deserialized_model, model, post_load_init_callback)
 
         if model.gaussians_count:
-            # Shape source indices remain stable, but runtime buffers and BVHs
-            # must be recreated. Deformable instances have distinct source indices.
-            model._gaussians = [None] * model.gaussians_count
-            model._gaussian_bvhs = [None] * model.gaussians_count
+            # The recording keeps each shape's Gaussian source index, but not the device buffers
+            # or the BVH, which this process must build again. Finalizing stores both on the
+            # asset, so every loaded model gets its own copy of each recorded asset and keeps
+            # it alive through shape_source; loading a second model does not free the first's.
+            # The arrays go where the other restored arrays went.
+            device = model.shape_source_ptr.device
+            copies: dict[int, Gaussian] = {}
+            gaussians: list[Gaussian.Data | None] = [None] * model.gaussians_count
             sources = model.shape_source_ptr.numpy()
-            for shape, geometry in enumerate(model.shape_source):
-                if isinstance(geometry, Gaussian):
-                    index = int(sources[shape])
-                    if model._gaussians[index] is None:
-                        model._gaussians[index] = geometry.finalize(device=model.device)
-                        model._gaussian_bvhs[index] = geometry.bvh
-            model.gaussians_data = wp.array(model._gaussians, dtype=Gaussian.Data, device=model.device)
+            shape_source = list(model.shape_source)
+            for shape, geometry in enumerate(shape_source):
+                if not isinstance(geometry, Gaussian):
+                    continue
+                index = int(sources[shape])
+                copy = copies.get(index)
+                if copy is None:
+                    copy = Gaussian(**{name: getattr(geometry, name) for name in _GAUSSIAN_RECORD_FIELDS})
+                    copies[index] = copy
+                shape_source[shape] = copy
+                if gaussians[index] is None:
+                    gaussians[index] = copy.finalize(device=device)
+            model.shape_source = shape_source
+            if any(entry is None for entry in gaussians):
+                # Recordings written before Gaussian sources were recorded as assets hold them as
+                # plain dictionaries; the viewers skip Gaussian shapes without render data.
+                logger.warning("[Recorder] The recording has no Gaussian asset data; its Gaussian shapes are skipped.")
+                model.gaussians_data = None
+            else:
+                model._gaussians = gaussians
+                model._gaussian_bvhs = [copies[index].bvh for index in range(model.gaussians_count)]
+                model.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data, device=device)
 
     def _save_to_file(self, file_path: str):
         """Save recorded model and history to disk."""
@@ -1754,6 +1816,10 @@ class ViewerFile(ViewerBase):
         already has deformable visual meshes keeps them; the recording must then
         have the same particle, body, triangle and tetrahedron counts, and if it
         holds visual meshes, the same ones (count, kind and vertex count).
+        Gaussian shapes get their own copies of the recorded assets, finalized
+        on the device that was active during :meth:`load_recording`, so several
+        models can be loaded from one recording. A recording made before
+        Gaussian assets were recorded loads with a warning and no Gaussian data.
 
         Args:
             model: A Newton Model instance to populate.

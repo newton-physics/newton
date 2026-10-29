@@ -161,7 +161,11 @@ simulation state without evaluating them. JSON and binary recordings rebuild
 their skinning batches on first use. Load into an empty Model to restore the
 recorded meshes. A finalized Model that already has meshes keeps them; the
 recording's driver counts and mesh layout must then match. Older physics-only
-recordings still load into a compatible model with meshes.
+recordings still load into a compatible model with meshes. Gaussian shapes are
+recorded with their asset's appearance, once per asset; each loaded model gets
+its own finalized copies on the device active during loading, and a recording
+made before Gaussian assets were recorded loads with a warning and no Gaussian
+data.
 
 .. list-table:: Skinned mesh support
    :header-rows: 1
