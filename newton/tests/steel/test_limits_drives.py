@@ -2299,7 +2299,11 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
 
     def test_invalid_coefficient_edits_flag_the_world(self):
         """Flag a step that reads an invalid coefficient, also when the mode was off at construction."""
-        for coefficient, edit in ((LOAD_COEFFICIENT, float("nan")), (0.0, LOAD_COEFFICIENT)):
+        for coefficient, edit in (
+            (LOAD_COEFFICIENT, float("nan")),
+            (LOAD_COEFFICIENT, float("inf")),
+            (0.0, LOAD_COEFFICIENT),
+        ):
             with self.subTest(coefficient=coefficient, edit=edit):
                 model = _lateral_hinge_model(1.0, coefficient=coefficient)
                 solver = _friction_solver(model)
@@ -2310,6 +2314,29 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
                 _advance_friction(solver, states, control, 1)
                 with self.assertRaisesRegex(RuntimeError, r"joint_friction was invalid at a step in worlds \[-1\]"):
                     solver.check_constraint_capacity()
+
+    def test_overflowing_load_term_keeps_the_row(self):
+        """Saturate a finite coefficient whose load term overflows float32 instead of dropping its row."""
+        model = _lateral_hinge_model(1.0, coefficient=1.0e38)
+        solver = _friction_solver(model)
+        _, qd = _advance_hinge(solver, model, 1.0, 3)
+        np.testing.assert_allclose(qd, 0.0, atol=1.0e-6)
+        self.assertTrue(np.isfinite(solver._joint_friction_total.numpy()[0]))
+        solver.check_constraint_capacity()
+
+    def test_invalid_coefficient_leaves_the_constant_friction(self):
+        """Keep the constant friction row of a DOF whose load coefficient was edited to an invalid value."""
+        builder = _lateral_hinge_builder(1.0)
+        builder.joint_friction = [0.5 * GRAVITY * LOAD_COEFFICIENT]
+        model = builder.finalize()
+        _load_coefficient(model).fill_(LOAD_COEFFICIENT)
+        solver = _friction_solver(model)
+        effort = 0.3 * LOAD_COEFFICIENT * GRAVITY
+        for value in (float("inf"), float("nan"), -1.0):
+            with self.subTest(value=value):
+                _load_coefficient(model).fill_(value)
+                _, qd = _advance_hinge(solver, model, effort, 3)
+                np.testing.assert_allclose(qd, 0.0, atol=1.0e-6)
 
     def test_rejects_wrong_shape_replacement(self):
         """Raise before any launch when a coefficient array is replaced with a wrong shape."""

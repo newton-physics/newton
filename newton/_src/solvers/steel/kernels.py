@@ -1588,6 +1588,9 @@ def _compute_body_net_wrench(
     return body_fb_s[child] + f_t_s - f_ext_origin
 
 
+_FLOAT32_MAX = wp.constant(3.4028234663852886e38)
+
+
 @wp.kernel
 def eval_joint_friction_load(
     articulation_start: wp.array[int],
@@ -1667,9 +1670,10 @@ def eval_joint_friction_load(
         for dof in range(dof_start, dof_start + joint_dof_dim[i, 0] + joint_dof_dim[i, 1]):
             total = joint_friction[dof]
             coefficient = joint_friction_load_coefficient[dof]
-            # Invalid friction stays as is so the DOF builds no row.
-            if coefficient > 0.0 and total >= 0.0 and friction_dof_supported[dof] != 0:
-                total += coefficient * load
+            # Invalid friction stays as is so the DOF builds no row; invalid coefficients add nothing.
+            if coefficient > 0.0 and wp.isfinite(coefficient) and total >= 0.0 and friction_dof_supported[dof] != 0:
+                # Saturate so a finite coefficient keeps its row when the product overflows float32.
+                total = wp.min(total + coefficient * load, _FLOAT32_MAX)
             joint_friction_total[dof] = total
 
 
