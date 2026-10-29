@@ -562,7 +562,15 @@ class TestViewerRTXRendering(unittest.TestCase):
                         left = wp.array(points.numpy() + np.array([0, -0.5, 0]), dtype=wp.vec3)
                         right = wp.array(points.numpy() + np.array([0, 0.5, 0]), dtype=wp.vec3)
                         for frame, (texture, channel) in enumerate(
-                            ((red_path, 0), (green, 1), (green, 1), (blue_path, 2), (None, None), (red, 0))
+                            (
+                                (red_path, 0),
+                                (green, 1),
+                                (green, 1),
+                                (blue_path, 2),
+                                (None, None),
+                                (None, None),
+                                (red, 0),
+                            )
                         ):
                             with self.subTest(frame=frame):
                                 if frame == 1:
@@ -590,10 +598,10 @@ class TestViewerRTXRendering(unittest.TestCase):
                                         viewer.log_mesh(
                                             "/left_alternate", left, indices, uvs=uvs, texture=red_path, hidden=True
                                         )
-                                    count = 3 if frame == 0 else (0 if frame == 4 else 1)
+                                    count = 3 if frame == 0 else (0 if frame == 5 else 1)
                                     viewer.log_instances(
                                         "/left_copy",
-                                        "/left_alternate" if frame == 5 else "/left",
+                                        "/left_alternate" if frame == 6 else "/left",
                                         wp.array([wp.transform_identity()] * count, dtype=wp.transform),
                                         None,
                                         wp.array([[1, 1, 1]] * count, dtype=wp.vec3),
@@ -614,6 +622,8 @@ class TestViewerRTXRendering(unittest.TestCase):
                                 for pixels, expected in ((rgb[:, :48], channel), (rgb[:, 48:], 0)):
                                     if expected is None:
                                         self.assertLess(np.max(np.ptp(pixels, axis=-1)), 30)
+                                        if frame == 4:
+                                            self.assertGreater(np.count_nonzero(pixels.max(axis=-1) > 80), 30)
                                     else:
                                         others = np.delete(pixels, expected, axis=-1).max(axis=-1)
                                         self.assertGreater(np.count_nonzero(pixels[:, :, expected] > others + 40), 30)

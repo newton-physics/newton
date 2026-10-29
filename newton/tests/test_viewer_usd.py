@@ -437,6 +437,7 @@ class TestViewerUSD(unittest.TestCase):
         default_shader = self._get_bound_preview_surface(default_prim)
         self.assertAlmostEqual(default_shader.GetInput("roughness").Get(), 0.5)
         self.assertAlmostEqual(default_shader.GetInput("metallic").Get(), 0.0)
+        self.assertFalse(default_shader.GetInput("diffuseColor").HasConnectedSource())
         viewer.log_mesh(
             "/opacity_mesh",
             points,
@@ -451,6 +452,10 @@ class TestViewerUSD(unittest.TestCase):
             shader = self._get_bound_preview_surface(prim)
             self.assertAlmostEqual(shader.GetInput("roughness").Get(), roughness, places=6)
             self.assertAlmostEqual(shader.GetInput("metallic").Get(), metallic, places=6)
+        default_shader = self._get_bound_preview_surface(default_prim)
+        texture_source = default_shader.GetInput("diffuseColor").GetConnectedSource()
+        self.assertIsNotNone(texture_source)
+        self.assertEqual(texture_source[0].GetPrim().GetName(), "DiffuseTexture")
 
         other_points = wp.array(points.numpy() + np.array([2.0, 0.0, 0.0]), dtype=wp.vec3)
         uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
