@@ -535,6 +535,12 @@ _MJW_BATCHED_MODEL_FIELDS = (
     # "mat_rgba",
 )
 
+_UPDATE_DATA_INTERVAL_DEPRECATION_MSG = (
+    "SolverMuJoCo update_data_interval is deprecated in Newton 1.7 and will be removed; "
+    "MuJoCo data will then be synchronized from the input state on every step. "
+    "Stop passing update_data_interval to use that behavior now."
+)
+
 
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
@@ -678,6 +684,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ObservableKind.OVERFLOW,
         }
     )
+
+    @property
+    def update_data_interval(self) -> int:
+        """Steps between MuJoCo data synchronizations from the input state.
+
+        .. deprecated:: 1.7
+            Data will always be synchronized on every step.
+        """
+        return self._update_data_interval
+
+    @update_data_interval.setter
+    def update_data_interval(self, value: int) -> None:
+        if value != 1:
+            warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, FutureWarning, stacklevel=2)
+        self._update_data_interval = value
 
     @property
     def supported_observables(self):
@@ -4413,6 +4434,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             disable_contacts: If True, disable contact computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default.
             disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
+
+                .. deprecated:: 1.7
+                    Values other than 1 are deprecated; Data will always be updated on every step.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             use_speculative_contacts: Add frictionless normal constraints for separated Newton
@@ -4444,6 +4468,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 GPU sync, request ``ObservableKind.OVERFLOW`` via
                 :meth:`observables` and check the bitmask after each step.
         """
+        if update_data_interval != 1:
+            # FutureWarning: DeprecationWarning is hidden unless raised from __main__.
+            warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, FutureWarning, stacklevel=2)
         super().__init__(model)
         if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
@@ -4826,7 +4853,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._create_inverse_shape_mapping()
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
         self._initial_model_sync = False
-        self.update_data_interval = update_data_interval
+        self._update_data_interval = update_data_interval
         self._step = 0
 
         if self.mjw_model is not None:

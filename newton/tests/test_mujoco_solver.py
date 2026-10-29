@@ -5727,6 +5727,44 @@ class TestMuJoCoContactForce(unittest.TestCase):
         np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
 
 
+class TestMuJoCoUpdateDataIntervalDeprecation(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        cls.model = builder.finalize()
+
+    def _construct(self, **kwargs):
+        with warnings.catch_warnings(record=True) as caught:
+            # Python's default filters: a DeprecationWarning from a non-__main__ caller is hidden.
+            warnings.resetwarnings()
+            warnings.filterwarnings("ignore", category=DeprecationWarning)
+            solver = SolverMuJoCo(self.model, use_mujoco_cpu=True, **kwargs)
+        return solver, [w for w in caught if "update_data_interval" in str(w.message)]
+
+    def test_non_default_interval_warns_visibly(self):
+        for interval in (0, 2):
+            with self.subTest(interval=interval):
+                solver, caught = self._construct(update_data_interval=interval)
+                self.assertEqual(len(caught), 1)
+                self.assertEqual(caught[0].filename, __file__)
+                self.assertEqual(solver.update_data_interval, interval)
+
+    def test_default_interval_does_not_warn(self):
+        for kwargs in ({}, {"update_data_interval": 1}):
+            with self.subTest(kwargs=kwargs):
+                _, caught = self._construct(**kwargs)
+                self.assertEqual(caught, [])
+
+    def test_attribute_assignment_warns(self):
+        solver, _ = self._construct()
+        with self.assertWarnsRegex(FutureWarning, "update_data_interval is deprecated") as cm:
+            solver.update_data_interval = 0
+        self.assertEqual(cm.filename, __file__)
+        self.assertEqual(solver.update_data_interval, 0)
+
+
 class TestMuJoCoValidation(unittest.TestCase):
     """Test cases for SolverMuJoCo._validate_model_for_separate_worlds()."""
 

@@ -177,7 +177,6 @@ class Example:
             jacobian="sparse",
             njmax=4096,
             nconmax=2048,
-            update_data_interval=0,
         )
 
         self.state_0 = self.model.state()
