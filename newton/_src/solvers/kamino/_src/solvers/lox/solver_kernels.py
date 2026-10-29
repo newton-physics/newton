@@ -7,7 +7,7 @@ reductions, terminal status, and integrator inputs.
 
 import warp as wp
 
-from ...core.math import compute_gyroscopic_torque
+from ...core.math import compute_gyroscopic_torque, has_singular_inertia
 from ...core.types import mat66f, vec6f
 from .system_kernels import apply_body_weight, compute_body_explicit_wrench, unpack_body_solution
 from .types import LOXStatus, make_status
@@ -559,9 +559,7 @@ def _write_integrator_body_inputs(
         torque[1],
         torque[2],
     )
-    if body_vector_index[bid] >= 0 and (
-        model_bodies_inv_m_i[bid] == 0.0 or wp.determinant(model_bodies_inv_i_I_i[bid]) == 0.0
-    ):
+    if body_vector_index[bid] >= 0 and has_singular_inertia(model_bodies_inv_m_i[bid], model_bodies_inv_i_I_i[bid]):
         data_bodies_u_i[bid] = wp.spatial_vectorf(
             velocity_end[0],
             velocity_end[1],

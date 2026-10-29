@@ -45,7 +45,7 @@ def _contact_force_observables(solver, contacts):
     return solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sample_flat_sdf_features(sdfs: wp.array[TextureSDFData], scale: wp.vec3, distances: wp.array[float]):
     a = wp.vec3(0.2, 0.2, 0.5)
     b = wp.vec3(0.8, 0.2, 0.5)
@@ -87,7 +87,7 @@ def test_flat_sdf_preserves_separation(test, device):
             np.testing.assert_allclose(distances.numpy(), distance * min(abs(v) for v in scale), atol=1.0e-6)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _sample_nonconvex_sdf_search(sdfs: wp.array[TextureSDFData], distances: wp.array2d[float]):
     it = wp.tid()
     p = wp.vec3(0.0)
@@ -266,7 +266,7 @@ def test_soft_contact_accumulation_thread_counts(test, device):
     np.testing.assert_allclose(results[1][3], results[0][3], rtol=1.0e-5, atol=5.0e-6)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _plane_features(
     a: wp.vec3,
     b: wp.vec3,
@@ -1901,7 +1901,7 @@ def test_mesh_complete_rigid_indices_and_reuse(test, device):
     np.testing.assert_array_equal(contacts._soft_contact_mesh_features.numpy()[:count, 0], features_np)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _mesh_nearest_query_results(mesh: wp.uint64, point: wp.vec3, radius: float, results: wp.array[wp.int32]):
     """Probe the two nearest-face routines used by the production sign query."""
     normal_query = wp.mesh_query_point_sign_normal(mesh, point, radius)

@@ -679,9 +679,12 @@ class ViewerViser(ViewerBase):
         previous_up_axis = self._camera_up_axis
         super().set_model(model)
         self._build_packed_shape_arrays()
-        self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
+        self.picking = (
+            Picking(model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask)
+            if model is not None
+            else None
+        )
         if self.picking is not None:
-            self.picking.visible_worlds_mask = self._visible_worlds_mask
             try:
                 self.picking._load_kernels()
             except Exception:
@@ -1273,7 +1276,7 @@ class ViewerViser(ViewerBase):
     def _picking_world_offset(layer, picking: Picking) -> np.ndarray:
         """Return the visual world offset for the currently picked body."""
         offset = np.zeros(3, dtype=np.float32)
-        body_idx = int(picking.pick_body.numpy()[0])
+        body_idx = picking.pick_body
         if body_idx < 0 or layer.world_offsets is None or layer.world_offsets.shape[0] == 0:
             return offset
         if layer.model is None or layer.model.body_world is None:
@@ -1324,8 +1327,7 @@ class ViewerViser(ViewerBase):
         """
         layer = self._layers[layer_id]
         picking = layer.picking
-        pick_state = picking.pick_state.numpy()
-        target = self._picking_point_to_visual(layer, picking, pick_state[0]["picking_target_world"])
+        target = self._picking_point_to_visual(layer, picking, picking.pick_target)
         self._remove_picking_control(layer_id, release=False)
         handle = self._server.scene.add_transform_controls(
             name=self._picking_control_path(layer_id),
@@ -1381,9 +1383,7 @@ class ViewerViser(ViewerBase):
         )
         offset = self._picking_world_offset(layer, layer.picking)
         target = np.asarray(point_with_offset).copy() - offset
-        pick_state = layer.picking.pick_state.numpy()
-        pick_state[0]["picking_target_world"] = target
-        layer.picking.pick_state.assign(pick_state)
+        layer.picking.pick_target = wp.vec3(*target)
 
     def _process_interaction_events(self) -> None:
         """Apply browser callbacks on the simulation thread between frames."""
@@ -2338,8 +2338,8 @@ class ViewerViser(ViewerBase):
         self._sync_shape_colors_from_model()
         self._sync_shape_opacities_from_model()
 
-        from .kernels import update_model_shape_xforms  # noqa: PLC0415
-        from .viewer_viser_kernels import detect_shape_color_changes, detect_shape_opacity_changes  # noqa: PLC0415
+        from .kernels import detect_shape_color_changes, update_model_shape_xforms  # noqa: PLC0415
+        from .viewer_viser_kernels import detect_shape_opacity_changes  # noqa: PLC0415
 
         wp.launch(
             kernel=update_model_shape_xforms,
@@ -2466,14 +2466,8 @@ class ViewerViser(ViewerBase):
         if not self.picking_enabled or self.picking is None or not self.picking.is_picking():
             self.log_lines("picking_line", None, None, None)
             return
-        body_idx = int(self.picking.pick_body.numpy()[0])
-        if body_idx < 0:
-            self.log_lines("picking_line", None, None, None)
-            return
-
-        pick_state = self.picking.pick_state.numpy()
-        anchor = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picked_point_world"])
-        target = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picking_target_world"])
+        anchor = self._picking_point_to_visual(self.layer, self.picking, self.picking.pick_point)
+        target = self._picking_point_to_visual(self.layer, self.picking, self.picking.pick_target)
         self.log_lines(
             "picking_line",
             np.asarray([anchor], dtype=np.float32),
@@ -2641,7 +2635,7 @@ class ViewerViser(ViewerBase):
         # pick-body sentinel controls whether graph replay applies a force.
         # Disabling picking releases that sentinel, including captured graphs.
         if self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
     def save_recording(self):
         """
