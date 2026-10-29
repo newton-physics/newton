@@ -351,7 +351,13 @@ _DENSE_BODY_POSITIONS = ((0.0, 0.0, 0.0), (-0.2, 0.3, 0.1), (0.4, -0.1, 0.2))
 
 
 def _launch_dense_contact_builders(
-    device, *, anchors=(0, 0), point0=_DENSE_POINT0, point1=_DENSE_POINT1, thickness=_DENSE_THICKNESS
+    device,
+    *,
+    anchors=(0, 0),
+    point0=_DENSE_POINT0,
+    point1=_DENSE_POINT1,
+    thickness=_DENSE_THICKNESS,
+    twist=(0.0, 0.0, -2.0, 0.0, 0.0, 0.0),
 ):
     """Build one same-articulation contact's Jacobian through the tree-walk and compact paths."""
     contact_count = wp.array([1], dtype=wp.int32, device=device)
@@ -476,7 +482,7 @@ def _launch_dense_contact_builders(
             body_q,
             # Body 2 (shape 0) closes on body 1 at 2 m/s, so the impact gate keeps the mixed restitution.
             wp.array(
-                [wp.spatial_vector(0.0), wp.spatial_vector(0.0), wp.spatial_vector(0.0, 0.0, -2.0, 0.0, 0.0, 0.0)],
+                [wp.spatial_vector(0.0), wp.spatial_vector(0.0), wp.spatial_vector(*twist)],
                 dtype=wp.spatial_vector,
                 device=device,
             ),
@@ -523,26 +529,37 @@ def test_shared_anchors_move_the_row_points_to_the_witness_midpoint(test, device
     witness_a = np.add(_DENSE_BODY_POSITIONS[2], _DENSE_POINT0) + _DENSE_THICKNESS[0] * normal
     witness_b = np.add(_DENSE_BODY_POSITIONS[1], _DENSE_POINT1) - _DENSE_THICKNESS[1] * normal
     midpoint = 0.5 * (witness_a + witness_b)
+    # Spinning body 2 makes the closing speed differ between its witness point and the midpoint.
+    twist = (0.0, 0.0, -2.0, 1.0, 0.5, 0.0)
     midpoint_rows = _launch_dense_contact_builders(
         device,
         point0=tuple(midpoint - _DENSE_BODY_POSITIONS[2]),
         point1=tuple(midpoint - _DENSE_BODY_POSITIONS[1]),
         thickness=(0.0, 0.0),
+        twist=twist,
     )
-    witness_rows = _launch_dense_contact_builders(device)
+    witness_rows = _launch_dense_contact_builders(device, twist=twist)
     for anchors, normal_source, friction_source in (
         ((1, 0), midpoint_rows, midpoint_rows),
         ((1, 1), midpoint_rows, midpoint_rows),
         ((0, 1), witness_rows, midpoint_rows),
     ):
         with test.subTest(anchors=anchors):
-            serial, compact, metadata = _launch_dense_contact_builders(device, anchors=anchors)
+            serial, compact, metadata = _launch_dense_contact_builders(device, anchors=anchors, twist=twist)
             for jacobian in (serial, compact):
                 np.testing.assert_allclose(jacobian[0, 0], normal_source[0][0, 0], rtol=0.0, atol=1.0e-6)
                 np.testing.assert_allclose(jacobian[0, 1:3], friction_source[0][0, 1:3], rtol=0.0, atol=1.0e-6)
             np.testing.assert_allclose(metadata["phi"][0, 0], witness_rows[2]["phi"][0, 0], rtol=0.0, atol=1.0e-7)
+            # The rebound speed comes from the normal row's points.
+            np.testing.assert_allclose(
+                metadata["row_rebound_velocity"][0, 0],
+                normal_source[2]["row_rebound_velocity"][0, 0],
+                rtol=1.0e-6,
+            )
     # The fixture's witness points are separated along and across the normal, so the rows differ.
     test.assertGreater(float(np.abs(midpoint_rows[0][0, :3] - witness_rows[0][0, :3]).max()), 1.0e-3)
+    rebound_gap = midpoint_rows[2]["row_rebound_velocity"][0, 0] - witness_rows[2]["row_rebound_velocity"][0, 0]
+    test.assertGreater(abs(float(rebound_gap)), 0.05)
 
 
 def test_shared_anchors_warn_with_patch_friction(test, device):

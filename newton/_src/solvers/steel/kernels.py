@@ -4230,8 +4230,8 @@ def contact_rebound_velocity(
 ):
     """Return the separating speed ``-e * u_start`` a contact closing at ``u_start`` must leave with, else zero.
 
-    ``u_start`` is the step-start relative normal velocity, so this step's forces neither qualify an impact nor
-    enlarge its rebound.
+    ``u_start`` is the step-start relative normal velocity at the normal row's points, so this step's forces
+    neither qualify an impact nor enlarge its rebound.
     """
     if restitution <= 0.0:
         return 0.0
@@ -4376,21 +4376,21 @@ def prepare_world_contact_rows(
         world_row_parent[world, slot] = -1
         world_row_mu[world, slot] = mu
         world_phi[world, slot] = phi
+        point_a_normal, point_b_normal = contact_row_points(
+            c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+        )
         world_row_rebound_velocity[world, slot] = contact_rebound_velocity(
             mixed_contact_restitution(shape_a, shape_b, shape_material_restitution),
             body_a,
             art_a,
             body_b,
             art_b,
-            point_a_world,
-            point_b_world,
+            point_a_normal,
+            point_b_normal,
             normal,
             articulation_origin,
             body_v_s,
             restitution_velocity_threshold,
-        )
-        point_a_normal, point_b_normal = contact_row_points(
-            c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
         )
         world_target_velocity[world, slot] = prescribed_relative_contact_target(
             body_a,
@@ -5668,14 +5668,17 @@ def _build_mf_contact_row(
     )
     phi = wp.dot(normal, point_a_world - point_b_world)
     mu = _contact_mu(shape_a, shape_b, shape_material_mu)
+    point_a_normal, point_b_normal = contact_row_points(
+        c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+    )
     rebound_velocity = contact_rebound_velocity(
         mixed_contact_restitution(shape_a, shape_b, shape_material_restitution),
         body_a,
         contact_art_a[c],
         body_b,
         contact_art_b[c],
-        point_a_world,
-        point_b_world,
+        point_a_normal,
+        point_b_normal,
         normal,
         articulation_origin,
         body_v_s,
@@ -7480,14 +7483,17 @@ def build_propagation_contact_rows(
         if response_body_b >= 0:
             com_b = wp.transform_point(body_q[response_body_b], body_com[response_body_b])
 
+        point_a_normal, point_b_normal = contact_row_points(
+            c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+        )
         rebound_velocity = contact_rebound_velocity(
             mixed_contact_restitution(shape_a, shape_b, shape_material_restitution),
             body_a,
             art_a,
             body_b,
             art_b,
-            point_a_world,
-            point_b_world,
+            point_a_normal,
+            point_b_normal,
             normal,
             articulation_origin,
             body_v_s,
