@@ -30,7 +30,7 @@ from newton._src.solvers.steel.kernels import (
 )
 from newton._src.solvers.steel.solver_steel import _get_joint_limit_warp_kernel, _use_resident_mfgs_metadata
 from newton.solvers import SolverBase, SolverSteel
-from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _built_rows(device, q: float, *, gap: float, lower: float = -1.0, upper: float = 1.0, scalar_builder=False):
@@ -2341,6 +2341,38 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
         wp.capture_launch(capture.graph)
         _advance_hinge(solver, model, 0.2, 2)
         solver.check_constraint_capacity()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_reads_only_the_steel_coefficient(self):
+        """Import the authored Steel coefficient and leave physxJoint:jointFriction unmapped."""
+        from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        authored = (
+            ("steel", "newton:steel:jointFrictionLoadCoefficient", 0.3),
+            ("physx", "physxJoint:jointFriction", 0.5),
+        )
+        for i, (name, attribute, value) in enumerate(authored):
+            body = UsdGeom.Cube.Define(stage, f"/World/{name}")
+            body.AddTranslateOp().Set((2.0 * i, 0.0, 1.0))
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass.CreateMassAttr(1.0)
+            mass.CreateDiagonalInertiaAttr((0.1, 0.1, 0.1))
+            joint = UsdPhysics.RevoluteJoint.Define(stage, f"/World/{name}_hinge")
+            joint.CreateBody1Rel().SetTargets([body.GetPath()])
+            joint.CreateAxisAttr("Y")
+            joint.CreateLocalPos0Attr((2.0 * i, 0.0, 1.0))
+            joint.GetPrim().CreateAttribute(attribute, Sdf.ValueTypeNames.Float).Set(value)
+        builder = newton.ModelBuilder()
+        SolverSteel.register_custom_attributes(builder)
+        builder.add_usd(stage)
+        model = builder.finalize()
+        coefficients = dict(zip(model.joint_label, _load_coefficient(model).numpy().tolist(), strict=True))
+        self.assertAlmostEqual(coefficients["/World/steel_hinge"], 0.3, places=6)
+        self.assertEqual(coefficients["/World/physx_hinge"], 0.0)
 
     def test_disabled_friction_ignores_coefficients(self):
         """Leave the coefficients unused when enable_joint_friction is off."""
