@@ -473,7 +473,7 @@ class Example:
         gp = wp.transform_get_translation(self.gizmo_tf)
 
         picking = getattr(self.viewer, "picking", None)
-        picked_body = int(picking.pick_body.numpy()[0]) if picking is not None else -1
+        picked_body = picking.pick_body if picking is not None else -1
 
         self._pick_body.assign([picked_body])
         self._pick_target.assign([gp])

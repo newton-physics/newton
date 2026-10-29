@@ -21,7 +21,10 @@ from ..utils.color import ColorSpace, color_linear_to_srgb
 from ..utils.import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
+    _is_aousd_deformable_sim_prim,
     _is_usd_float_representable,
+    _iter_deformable_pointbased_prims,
+    _prim_has_collision_api,
     _warn_geometry_authored_material_attrs,
 )
 from ..utils.texture import linear_texture_to_srgb, load_texture
@@ -162,6 +165,11 @@ def has_applied_api_schema(prim: Usd.Prim, schema_name: str) -> bool:
         True if the schema is applied to the prim, False otherwise.
     """
     return prim.HasAPI(schema_name) or schema_name in _get_raw_api_schemas(prim)
+
+
+def _is_particle_sim_prim(prim: Usd.Prim) -> bool:
+    """Return whether a Points prim opts into Newton particle simulation."""
+    return prim.IsA(UsdGeom.Points) and has_applied_api_schema(prim, "NewtonPointsDeformableSimAPI")
 
 
 @overload
@@ -1581,6 +1589,47 @@ def get_physics_scenes(
     return _get_physics_scenes_from_results(stage, physics_results)
 
 
+def find_deformable_visual_prims(prim: Usd.Prim) -> list[Usd.Prim]:
+    """Find the visual geometry owned by one USD deformable body.
+
+    .. experimental::
+        This function follows the AOUSD deformable proposal and may change.
+
+    Return the body's ``UsdGeom.PointBased`` prims that apply neither a deformable
+    simulation API nor ``PhysicsCollisionAPI`` (the proposal's *graphics
+    geometries*), in traversal order and including instance proxies. Stop at
+    nested deformable bodies, rigid bodies, and articulation roots.
+    Simulation geometry is any prim applying an AOUSD
+    deformable simulation API, or a Points prim applying Newton's
+    ``NewtonPointsDeformableSimAPI``; a TetMesh without one is visual geometry,
+    as in :meth:`~newton.ModelBuilder.add_usd`. Collision geometry is excluded even
+    when collision is disabled.
+
+    This reads ownership only. It does not filter visibility or create a
+    simulation, embedding, or render mesh. Mesh prims can be read with
+    :func:`get_mesh`.
+
+    Args:
+        prim: Prim with ``PhysicsDeformableBodyAPI`` applied.
+
+    Returns:
+        Visual prims belonging to this body, not to nested bodies.
+
+    Raises:
+        ValueError: If ``prim`` is invalid or lacks the deformable body API.
+    """
+    if not prim:
+        raise ValueError("Expected a valid prim with PhysicsDeformableBodyAPI")
+    if not has_applied_api_schema(prim, "PhysicsDeformableBodyAPI"):
+        raise ValueError(f"{prim.GetPath()}: expected a prim with PhysicsDeformableBodyAPI")
+    return [
+        child
+        for child in _iter_deformable_pointbased_prims(prim)
+        if not _prim_has_collision_api(child)
+        and not (_is_aousd_deformable_sim_prim(child) or _is_particle_sim_prim(child))
+    ]
+
+
 def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
     """Find all prims with the ``UsdGeom.TetMesh`` schema in a USD stage.
 
@@ -1602,6 +1651,84 @@ def find_tetmesh_prims(stage: Usd.Stage) -> list[Usd.Prim]:
         list[Usd.Prim]: All prims in the stage that have the TetMesh schema.
     """
     return [prim for prim in stage.Traverse() if prim.IsA(UsdGeom.TetMesh)]
+
+
+def get_deformable_bind_pose(prim: Usd.Prim) -> np.ndarray:
+    """Read a deformable geometry's bind-pose points in authored local units.
+
+    .. experimental::
+        This function follows the AOUSD deformable proposal and may change.
+
+    Read the multiple-apply ``PhysicsDeformablePoseAPI:<instance>`` whose
+    ``physics:deformablePose:<instance>:purposes`` contains ``bindPose`` and return
+    its ``physics:deformablePose:<instance>:points``, as the proposal's examples
+    author them. If no such instance exists, use the geometry's default-time
+    ``points``.
+    Do not substitute a rest shape or an animated sample for that fallback. An
+    explicit bind pose is also accepted when the geometry's ``points`` exist
+    only as time samples; :func:`get_mesh` cannot load such a mesh.
+    Newton rejects multiple bind poses rather than choosing one by schema order.
+
+    Points remain in USD vertex order and the prim's local coordinates.
+    Transforms and stage-unit conversion are left to the caller. The result
+    owns its storage; changing it does not edit the stage. These are authored
+    points, not render vertices split at UV or normal seams.
+
+    Args:
+        prim: A ``UsdGeom.PointBased`` prim, such as a Mesh, BasisCurves, or TetMesh.
+
+    Returns:
+        Float64 array of shape ``(point_count, 3)`` in stage length units
+        (meters when ``metersPerUnit`` is 1).
+
+    Raises:
+        ValueError: If the prim is not PointBased, the required points are
+            missing, multiple poses have ``bindPose`` purpose, or the selected
+            pose has an invalid shape, point count, or non-finite coordinates.
+    """
+    if not prim:
+        raise ValueError("Expected a valid UsdGeom.PointBased prim")
+    if not prim.IsA(UsdGeom.PointBased):
+        raise ValueError(f"{prim.GetPath()}: expected a UsdGeom.PointBased prim")
+    pose_attributes = []
+    # PrimTypeInfo includes composed, unregistered proposal schemas even when
+    # registered APIs (such as MaterialBindingAPI) are applied on the same prim.
+    for schema in prim.GetPrimTypeInfo().GetAppliedAPISchemas():
+        if not schema.startswith("PhysicsDeformablePoseAPI:"):
+            continue
+        instance = schema.split(":", 1)[1]
+        prefix = f"physics:deformablePose:{instance}"
+        if "bindPose" in (get_attribute(prim, f"{prefix}:purposes") or ()):
+            pose_attributes.append(f"{prefix}:points")
+    path = prim.GetPath()
+    if len(pose_attributes) > 1:
+        raise ValueError(f"{path}: Multiple deformable poses have bindPose purpose")
+
+    points_attr = UsdGeom.PointBased(prim).GetPointsAttr()
+    geometry_points = points_attr.Get(Usd.TimeCode.Default())
+    if pose_attributes:
+        pose_attr = pose_attributes[0]
+        values = get_attribute(prim, pose_attr)
+    else:
+        pose_attr = "points"
+        values = geometry_points
+    if values is None:
+        raise ValueError(f"{path}: {pose_attr} must provide default-time points for the bind pose")
+    points = np.array(values, dtype=np.float64)
+    if points.size == 0:
+        points = points.reshape((0, 3))
+    if points.ndim != 2 or points.shape[1] != 3 or not np.all(np.isfinite(points)):
+        raise ValueError(f"{path}: {pose_attr} must contain finite 3D points")
+    if pose_attributes:
+        if geometry_points is None:
+            # An explicit bind pose permits animated geometry with no default points.
+            # Read a sample only to check the point count, never as a bind-pose fallback.
+            geometry_points = points_attr.Get(Usd.TimeCode.EarliestTime())
+        if geometry_points is None:
+            raise ValueError(f"{path}: points must be authored to validate the {pose_attr} point count")
+        if len(points) != len(geometry_points):
+            raise ValueError(f"{path}: {pose_attr} point count must match the geometry's points")
+    return points
 
 
 def _resolve_asset_path(
@@ -2494,12 +2621,13 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     """Load Gaussian splat data from a USD prim.
 
     Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and
-    `radiance:sphericalHarmonicsCoefficients`. The (possibly inherited) color-space name of the
-    radiance selects :attr:`Gaussian.sh_color_space`: untagged, `srgb`, `srgb_texture`, `srgb_rec709_scene` and
-    `srgb_rec709_display` radiance is sRGB, and `lin_rec709_scene`, `lin_rec709`, `lin_srgb`, `raw`, `data`, `identity` and `linear`
-    radiance is linear. Any other name is imported as linear if it looks linear (`lin_*` or
-    `acescg`) and as sRGB otherwise, without converting primaries or transfer function, and a
-    warning is logged.
+    `radiance:sphericalHarmonicsCoefficients`, or its half-precision `h` variant when only that one
+    has a value. The color-space name of the coefficient attribute that is read (its own metadata or
+    its schema fallback; inherited color spaces are ignored) selects :attr:`Gaussian.sh_color_space`: untagged, `srgb`,
+    `srgb_texture`, `srgb_rec709_scene` and `srgb_rec709_display` radiance is sRGB, and
+    `lin_rec709_scene`, `lin_rec709`, `lin_srgb`, `raw`, `data`, `identity` and `linear` radiance is
+    linear. Any other name is imported as linear if it looks linear (`lin_*` or `acescg`) and as sRGB
+    otherwise, without converting primaries or transfer function, and a warning is logged.
 
     Args:
         prim: A USD prim containing Gaussian splat data.
@@ -2516,12 +2644,11 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
                 return attr
         return None
 
-    def _get_float_array_attr(name):
-        attr = _get_valued_attr(name)
-        return None if attr is None else np.array(attr.Get(), dtype=np.float32)
-
     def _get_float_array_from(attr):
         return None if attr is None else np.array(attr.Get(), dtype=np.float32)
+
+    def _get_float_array_attr(name):
+        return _get_float_array_from(_get_valued_attr(name))
 
     positions = _get_float_array_attr("positions")
     if positions is None:
@@ -2538,10 +2665,14 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         else:
             raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
 
+    # The color space follows the coefficient attribute that supplies the radiance (single or half precision).
     # Untagged radiance is display-referred (sRGB).
     sh_attr = _get_valued_attr("radiance:sphericalHarmonicsCoefficients")
     sh_color_space = _resolve_color_space(
-        _get_attribute_color_space(sh_attr), ColorSpace.SRGB, "Gaussian SH radiance", prim.GetPath()
+        (sh_attr.GetColorSpace() if sh_attr is not None else None) or "",
+        ColorSpace.SRGB,
+        "Gaussian SH radiance",
+        prim.GetPath(),
     )
 
     return Gaussian(
