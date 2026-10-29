@@ -254,7 +254,10 @@ repository examples spend tuning effort, not a shared solver API.
        Joint limits are enforced only with ``enable_joint_limits=True`` (off by
        default). Joint friction (:attr:`~newton.Model.joint_friction`, for
        example from MJCF ``frictionloss``) is enforced only with
-       ``enable_joint_friction=True`` (off by default). Contacts and joint limits are hard
+       ``enable_joint_friction=True`` (off by default). A positive per-DOF
+       ``steel:joint_friction_load_coefficient`` adds the PhysX articulation
+       law, a bound that grows with the force and torque the joint transmits.
+       Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``iterations`` reduce residual penetration and
        slip, and ``baumgarte`` sets how much position error is corrected per
