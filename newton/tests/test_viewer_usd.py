@@ -452,6 +452,18 @@ class TestViewerUSD(unittest.TestCase):
             self.assertAlmostEqual(shader.GetInput("roughness").Get(), roughness, places=6)
             self.assertAlmostEqual(shader.GetInput("metallic").Get(), metallic, places=6)
 
+        other_points = wp.array(points.numpy() + np.array([2.0, 0.0, 0.0]), dtype=wp.vec3)
+        uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.zeros((2, 2, 3), dtype=np.uint8))
+        previous_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        # USD currently keeps the old prototype when a group name is reused.
+        # A texture refresh must not apply the new prototype's material to it.
+        viewer.log_instances("/default_instances", "/other_mesh", xforms, scales, None, None)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.full((2, 2, 3), 127, dtype=np.uint8))
+        current_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        self.assertEqual(current_material.GetPath(), previous_material.GetPath())
+        np.testing.assert_allclose(UsdGeom.Mesh(default_prim).GetPointsAttr().Get(viewer._frame_index), points.numpy())
+
     def test_log_instances_rejects_mismatched_opacity_count(self):
         """Reject opacity arrays that do not match instance count."""
         viewer = self._make_viewer()

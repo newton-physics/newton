@@ -758,12 +758,17 @@ class ViewerUSD(ViewerBase):
         """Refresh local instance overrides after the prototype material changes."""
         updated = []
         base = self._mesh_appearance[mesh]
+        mesh_path = Sdf.Path(self._get_path(mesh))
         for name, appearance in self._instance_appearance.items():
             if appearance.get("mesh") != mesh:
                 continue
             for i in range(appearance["count"]):
                 instance = self.stage.GetPrimAtPath(self._get_path(name) + f"/instance_{i}")
                 if not instance or not instance.GetRelationship("material:binding").HasAuthoredTargets():
+                    continue
+                # Reusing a USD group name can leave instances on its previous prototype.
+                references = instance.GetMetadata("references")
+                if not references or not any(ref.primPath == mesh_path for ref in references.GetAppliedItems()):
                     continue
                 colors = appearance.get("colors")
                 params = appearance.get("materials")
