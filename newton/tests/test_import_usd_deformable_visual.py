@@ -123,14 +123,17 @@ class TestUSDDeformableVisual(unittest.TestCase):
                 self._bind(sim.GetPrim(), sim_points)
                 sim.GetPointsAttr().Set((sim_points + np.array([0.05, 0, 2])).tolist())
                 mesh.CreatePointsAttr([(9, 9, 9)] * 4)
-                mesh.CreateFaceVertexCountsAttr([4])
-                mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+                corners = [0, 1, 2, 0, 2, 3]
+                mesh.CreateFaceVertexCountsAttr([3, 3])
+                mesh.CreateFaceVertexIndicesAttr(corners)
                 self._bind(mesh.GetPrim(), points)
                 uv = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
                     "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
                 )
                 uv.Set([(0, 0), (1, 0), (1, 1), (0, 1)])
-                uv.SetIndices([3, 2, 1, 0])
+                # Point 0 has different UVs on its two faces.
+                uv_indices = [3, 2, 1, 0, 1, 3]
+                uv.SetIndices(uv_indices)
                 material = UsdShade.Material.Define(stage, "/World/Material")
                 shader = UsdShade.Shader.Define(stage, "/World/Material/Surface")
                 shader.CreateIdAttr("UsdPreviewSurface")
@@ -161,15 +164,27 @@ class TestUSDDeformableVisual(unittest.TestCase):
                 UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
                 UsdGeom.Xformable(stage.GetPrimAtPath("/World/Object")).AddTranslateOp().Set((3, 4, 5))
                 builder = newton.ModelBuilder()
-                builder.add_usd(stage)
+                if family == "surface":
+                    subset = UsdShade.MaterialBindingAPI(mesh).CreateMaterialBindSubset("Patch", [1])
+                    subset_material = UsdShade.Material.Define(stage, "/World/PatchMaterial")
+                    subset_material.GetPrim().GetReferences().AddInternalReference(material.GetPath())
+                    stage.GetPrimAtPath("/World/PatchMaterial/Texture").GetAttribute("inputs:file").Set(
+                        Sdf.AssetPath("patch.png")
+                    )
+                    UsdShade.MaterialBindingAPI.Apply(subset.GetPrim()).Bind(subset_material)
+                    with self.assertLogs("newton", level="WARNING") as logs:
+                        builder.add_usd(stage)
+                    self.assertTrue(any("material subsets" in message for message in logs.output))
+                else:
+                    builder.add_usd(stage)
                 model = builder.finalize(device="cpu")
                 self.assertEqual(model.deformable_visual_mesh_count, 1)
+                self.assertEqual(model.deformable_visual_meshes[0].texture, "albedo.png")
                 output = newton.geometry.DeformableVisuals(model).update(model.state())
-                corners = [0, 1, 2, 0, 2, 3]
                 np.testing.assert_allclose(output.points.numpy(), points[corners] + np.array([3.05, 4, 7]), atol=2e-6)
                 np.testing.assert_allclose(
                     model.deformable_visual_meshes[0].uvs.numpy(),
-                    np.array([[-0.25, 0.1], [-0.25, 2.1], [0.25, 2.1], [0.25, 0.1]])[corners],
+                    np.array([[0.25, 0.1], [0.25, 2.1], [-0.25, 2.1], [-0.25, 0.1]])[uv_indices],
                     atol=1e-6,
                 )
 
@@ -258,8 +273,9 @@ class TestUSDDeformableVisual(unittest.TestCase):
                     result["path_deformable_visual_map"],
                     {mesh.label: mesh.index for mesh in model.deformable_visual_meshes},
                 )
-                self.assertGreater(model.body_count, 0)
-                self.assertGreater(model.particle_count, 0)
+                self.assertEqual(model.body_count, 4)  # Two two-segment cables.
+                self.assertEqual(model.particle_count, 16)  # Two four-point cloths and two four-point volumes.
+                self.assertEqual(model.tet_count, 2)
 
     def test_import_filter_and_nested_ownership(self):
         """Respect regex filters, purposes, and body ownership without loading frozen copies of skins."""
@@ -320,7 +336,9 @@ class TestUSDDeformableVisual(unittest.TestCase):
         from pxr import UsdGeom
 
         stage = _deformable_stage()
-        _, skin, _ = self._object(stage, "/World/Cable", "curve")
+        _, skin, points = self._object(stage, "/World/Cable", "curve")
+        # This point binds to the second segment but is not part of any rendered face.
+        skin.GetPointsAttr().Set(np.vstack([points, [1.5, 0.1, 1.0]]).tolist())
         for visible in (True, False):
             with self.subTest(visible=visible):
                 skin.CreateVisibilityAttr(UsdGeom.Tokens.inherited if visible else UsdGeom.Tokens.invisible)

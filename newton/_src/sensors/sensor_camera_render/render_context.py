@@ -764,6 +764,7 @@ class RenderContext:
                     np.int32
                 )
                 triangle_groups = wp.array(triangle_groups_np, dtype=wp.int32, device=self.device)
+
             self._triangle_mesh = wp.Mesh(
                 self._triangle_points, self._triangle_indices, groups=triangle_groups, bvh_constructor="sah"
             )
@@ -897,6 +898,7 @@ class RenderContext:
             self._set_triangle_points(model.particle_q)
             self._set_triangle_indices(model.tri_indices.flatten())
             return
+
         triangle_indices: list[np.ndarray] = []
         triangle_uvs: list[np.ndarray] = []
         triangle_texture_ids: list[np.ndarray] = []

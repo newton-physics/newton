@@ -634,6 +634,9 @@ Without an authored bind pose, each prim's default-time points provide it.
 UV corner expansion keeps the source-point mapping, so texture seams do not
 change which bind points move the visual mesh. Material textures require UVs.
 Authored ``UsdTransform2d`` texture scale, rotation, and translation are preserved.
+One mesh-level material applies to the whole graphics mesh. Face-level material
+bindings on ``GeomSubset`` prims are not imported; a diagnostic reports that they
+were ignored. Split graphics into separate Mesh prims to use different textures.
 Only meshes a viewport would draw are imported, by the rule that decides
 whether a rigid shape is visible: the prim is visible and its purpose is
 ``default`` or ``proxy``. ``ignore_paths`` applies too. A malformed visual is

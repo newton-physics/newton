@@ -174,7 +174,7 @@ def _gaussian_in_world(ctx: _DeformableImportContext, prim, gaussian):
 
 def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
     """Import graphics payloads for every imported deformable body and embed them."""
-    from pxr import UsdGeom
+    from pxr import UsdGeom, UsdShade
 
     from ..geometry.flags import ShapeFlags  # noqa: PLC0415
     from ..usd import utils as usd  # noqa: PLC0415
@@ -213,6 +213,17 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             if len(mesh.vertices) == 0 or len(mesh.indices) == 0:
                 logger.warning("%s: graphics mesh has no geometry; skipping visual mesh.", path)
                 continue
+            if any(
+                subset.GetIndicesAttr().Get()
+                and any(
+                    rel.GetName().startswith("material:binding") and rel.GetTargets()
+                    for rel in subset.GetPrim().GetRelationships()
+                )
+                for subset in UsdShade.MaterialBindingAPI(prim).GetMaterialBindSubsets()
+            ):
+                logger.warning(
+                    "%s: graphics material subsets are not supported; using only the mesh-level material.", path
+                )
             world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
             world_verts = _world_points(points, world_mat, translate=True).astype(np.float32)
             indices = np.asarray(mesh.indices, dtype=np.int32)
@@ -292,8 +303,9 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                         texture=texture,
                         label=path,
                     )
-                    # A partial skin must not hide unbound segments of the cable.
-                    skinned_bodies.update(builder._deformable_visual_meshes[index]["parent"])
+                    # Unused visual vertices do not replace a segment's capsule.
+                    parents = builder._deformable_visual_meshes[index]["parent"]
+                    skinned_bodies.update(parents[vertex] for vertex in indices)
             except ValueError as exc:
                 logger.warning("%s: could not embed visual mesh; skipping (%s)", path, exc)
                 continue

@@ -40,10 +40,9 @@ class DeformableVisualMesh:
     equal rest vertices and triangle indices share device storage, while
     bindings stay per mesh. The label can be changed for display, and the
     texture can be reassigned. Consumers may cache textures; see the supported
-    update behavior in :doc:`/guide/visualization`. Meshes imported from USD also
-    keep the paths of their body, simulation geometry, and graphics prim.
-    Composition and recording retain these paths; replication can explicitly
-    rebase their namespaces.
+    update behavior in :doc:`/guide/visualization`. For USD graphics prim paths,
+    use the ``path_deformable_visual_map`` result from
+    :meth:`newton.ModelBuilder.add_usd`.
 
     .. experimental::
     """
