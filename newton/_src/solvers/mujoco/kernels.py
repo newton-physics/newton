@@ -973,50 +973,43 @@ def convert_warp_coords_to_mj_kernel(
 
     joint_id = joints_per_world * worldid + jntid
 
+    eq = int(-1)
     if jnt_weld and write_state:
         eq = jnt_weld[jntid]
+    mocap = int(-1)
+    # Without a state only fixed roots, whose pose does not depend on joint coordinates, are current.
+    if jnt_mocap and (write_state or joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1] == 0):
+        mocap = jnt_mocap[jntid]
+
+    if eq >= 0 or mocap >= 0:
+        X_j, _v_j = eval_joint_motion(
+            joint_type[joint_id],
+            joint_q_start[joint_id],
+            joint_qd_start[joint_id],
+            joint_dof_dim[joint_id, 0],
+            joint_dof_dim[joint_id, 1],
+            joint_q,
+            joint_qd,
+            joint_axis,
+        )
+        X_wj = joint_X_p[joint_id] * X_j
+        pose = X_wj * wp.transform_inverse(joint_X_c[joint_id])
+        quat = quat_xyzw_to_wxyz(pose.q)
+
         if eq >= 0:
-            X_wj, _v_j = eval_joint_motion(
-                joint_type[joint_id],
-                joint_q_start[joint_id],
-                joint_qd_start[joint_id],
-                joint_dof_dim[joint_id, 0],
-                joint_dof_dim[joint_id, 1],
-                joint_q,
-                joint_qd,
-                joint_axis,
-            )
-            X_wj = joint_X_p[joint_id] * X_wj
-            root_q = quat_xyzw_to_wxyz((X_wj * wp.transform_inverse(joint_X_c[joint_id])).q)
             # Anchor the weld at the joint origin so its residual and Jdot*v start at zero.
             data = eq_data[worldid, eq]
-            anchor_world = X_wj.p
             anchor_body = joint_X_c[joint_id].p
             for i in range(3):
-                data[i] = anchor_world[i]
+                data[i] = X_wj.p[i]
                 data[3 + i] = anchor_body[i]
-            data[6] = root_q[0]
-            data[7] = -root_q[1]
-            data[8] = -root_q[2]
-            data[9] = -root_q[3]
+            data[6] = quat[0]
+            data[7] = -quat[1]
+            data[8] = -quat[2]
+            data[9] = -quat[3]
             eq_data[worldid, eq] = data
 
-    if jnt_mocap:
-        mocap = jnt_mocap[jntid]
-        # Without a state only fixed roots, whose pose does not depend on joint coordinates, are current.
-        if mocap >= 0 and (write_state or joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1] == 0):
-            X_j, _v_j = eval_joint_motion(
-                joint_type[joint_id],
-                joint_q_start[joint_id],
-                joint_qd_start[joint_id],
-                joint_dof_dim[joint_id, 0],
-                joint_dof_dim[joint_id, 1],
-                joint_q,
-                joint_qd,
-                joint_axis,
-            )
-            pose = joint_X_p[joint_id] * X_j * wp.transform_inverse(joint_X_c[joint_id])
-            quat = quat_xyzw_to_wxyz(pose.q)
+        if mocap >= 0:
             if mocap_root_moved:
                 old_quat = mocap_quat[worldid, mocap]
                 delta = wp.length(pose.p - mocap_pos[worldid, mocap]) + wp.length(
