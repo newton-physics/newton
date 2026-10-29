@@ -190,7 +190,8 @@ MuJoCo also exports ``QFRC_BIAS``, ``QFRC_CONSTRAINT``, and
 ``QFRC_FRICTIONLOSS`` on both backends. ``qfrc_frictionloss`` is the part of
 ``qfrc_constraint`` that comes from each DOF's own friction loss, so
 ``qfrc_constraint - qfrc_frictionloss`` is the constraint load on a DOF without
-it. The solver writes observables only during :meth:`~newton.solvers.SolverBase.step`
+it. All three come from MuJoCo's last force evaluation of the step: the start of
+the step, or the last stage with RK4. The solver writes observables only during :meth:`~newton.solvers.SolverBase.step`
 and :meth:`~newton.solvers.SolverMuJoCo.reset` leaves them unchanged, so zero
 them for reset worlds if a consumer reads them before the next step.
 

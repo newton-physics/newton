@@ -7955,13 +7955,22 @@ class TestMuJoCoOptions(unittest.TestCase):
     def test_qfrc_constraint_load_observables(self):
         """Friction-loss forces are split out of the constraint forces of a horizontal arm.
 
-        World 0 has more friction than the gravity torque and sticks; world 1 slides.
+        Arm 0 has more friction than the gravity torque and sticks; arm 1 slides;
+        arm 2 has no friction and rests on its joint limit.
         """
         mass, length, gravity = 1.0, 0.5, 9.81
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
-        for friction in (10.0, 2.0):
+        for friction, limit_upper in ((10.0, None), (2.0, None), (0.0, 0.0)):
             link = builder.add_link(com=wp.vec3(length, 0.0, 0.0), mass=mass, inertia=wp.diag(wp.vec3(1.0e-6)))
-            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Y, friction=friction)
+            joint = builder.add_joint_revolute(
+                parent=-1,
+                child=link,
+                axis=newton.Axis.Y,
+                friction=friction,
+                limit_lower=None if limit_upper is None else -1.0,
+                limit_upper=limit_upper,
+                limit_kd=100.0,
+            )
             builder.add_articulation([joint])
         model = builder.finalize()
         kinds = {
@@ -7975,7 +7984,7 @@ class TestMuJoCoOptions(unittest.TestCase):
                 solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
                 observables = solver.observables(kinds)
                 state_0, state_1, control = model.state(), model.state(), model.control()
-                for _ in range(30):
+                for _ in range(240):
                     solver.step(state_0, state_1, control, None, 1.0 / 240.0, observables=observables)
                     state_0, state_1 = state_1, state_0
 
@@ -7993,8 +8002,9 @@ class TestMuJoCoOptions(unittest.TestCase):
                 np.testing.assert_allclose(bias[0], -gravity_torque, rtol=1e-3)
                 np.testing.assert_allclose(frictionloss[0], -gravity_torque, rtol=1e-3)
                 np.testing.assert_allclose(abs(frictionloss[1]), 2.0, rtol=1e-3)
-                np.testing.assert_allclose(constraint - frictionloss, 0.0, atol=1e-4)
-                np.testing.assert_allclose((constraint - frictionloss - bias)[0], gravity_torque, rtol=1e-3)
+                np.testing.assert_allclose((constraint - frictionloss)[:2], 0.0, atol=1e-4)
+                self.assertEqual(frictionloss[2], 0.0)
+                np.testing.assert_allclose(constraint[2], -gravity_torque, rtol=1e-2)
 
     def _create_body_observable_builder(self):
         """Build a moving chain with nonzero velocity-dependent acceleration."""
@@ -8948,7 +8958,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 )
 
     def test_ball_joint_actuator_readback_rotated_child_anchor(self):
-        """convert_qfrc_actuator_from_mj_kernel BALL maps mj_data.qfrc_actuator to state.mujoco.qfrc_actuator in Newton's anchor frame for varying joint_q under non-identity child_xform rotation."""
+        """convert_qfrc_from_mj_kernel BALL maps mj_data.qfrc_actuator to state.mujoco.qfrc_actuator in Newton's anchor frame for varying joint_q under non-identity child_xform rotation."""
         child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
         rx90 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0)
         ry45 = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 4.0)
@@ -11060,7 +11070,7 @@ class TestActuatorDampratioMultiWorld(unittest.TestCase):
 class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
     """Multi-world qfrc_actuator must use each world's own body CoM.
 
-    Regression test: convert_qfrc_actuator_from_mj_kernel indexed
+    Regression test: convert_qfrc_from_mj_kernel indexed
     joint_type, joint_child, and joint_dof_dim with per-world jntid
     instead of the global index, so world 1 read world 0's CoM for
     the free-joint force transform.

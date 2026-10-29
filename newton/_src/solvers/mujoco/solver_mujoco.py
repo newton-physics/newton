@@ -80,7 +80,7 @@ from .kernels import (
     compute_physical_meaninertia_kernel,
     convert_mj_coords_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
-    convert_qfrc_actuator_from_mj_kernel,
+    convert_qfrc_from_mj_kernel,
     convert_rigid_forces_from_mj_kernel,
     convert_solref,
     convert_warp_coords_to_mj_kernel,
@@ -667,7 +667,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dtype=wp.float32,
             frequency=AttributeFrequency.JOINT_DOF,
         )
-        """Constraint forces [N or N·m], shape ``(joint_dof_count,)``."""
+        """Constraint forces [N or N·m], shape ``(joint_dof_count,)``.
+
+        From the same force evaluation as :attr:`qfrc_bias`.
+        """
 
         qfrc_frictionloss: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.float32,
@@ -676,7 +679,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """DOF friction-loss forces [N or N·m], shape ``(joint_dof_count,)``.
 
         Part of :attr:`qfrc_constraint`; ``qfrc_constraint - qfrc_frictionloss``
-        is the constraint load on a DOF without its own friction.
+        is the constraint load on a DOF without its own friction. As in MuJoCo,
+        the force opposes the DOF motion. From the same force evaluation as
+        :attr:`qfrc_bias`.
         """
 
         overflow: wp.array[wp.int32] | None = SolverBase.Observables.field(  # noqa: RUF009
@@ -6395,32 +6400,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if qfrc_actuator is None:
             qfrc_actuator = legacy_qfrc_actuator
         if qfrc_actuator is not None:
-            if is_mjwarp:
-                mjw_qfrc = mj_data.qfrc_actuator
-                mjw_qpos = mj_data.qpos
-            else:
-                mjw_qfrc = wp.array([mj_data.qfrc_actuator], dtype=wp.float32, device=model.device)
-                mjw_qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
-            wp.launch(
-                convert_qfrc_actuator_from_mj_kernel,
-                dim=(nworld, joints_per_world),
-                inputs=[
-                    mjw_qfrc,
-                    mjw_qpos,
-                    joints_per_world,
-                    model.joint_type,
-                    model.joint_q_start,
-                    model.joint_qd_start,
-                    model.joint_dof_dim,
-                    model.joint_child,
-                    model.joint_X_c,
-                    model.body_com,
-                    self.mj_q_start,
-                    self.mj_qd_start,
-                ],
-                outputs=[qfrc_actuator],
-                device=model.device,
-            )
+            self._convert_mj_qfrc(model, mj_data, mj_data.qfrc_actuator, nworld, joints_per_world, qfrc_actuator)
             if legacy_qfrc_actuator is not None and legacy_qfrc_actuator.ptr != qfrc_actuator.ptr:
                 legacy_qfrc_actuator.assign(qfrc_actuator)
 
@@ -6433,55 +6413,66 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         ):
             if not observables.is_requested(kind):
                 continue
-            if is_mjwarp:
-                if kind == self.ObservableKind.QFRC_FRICTIONLOSS:
-                    self._mjw_qfrc_frictionloss.zero_()
-                    wp.launch(
-                        frictionloss_force_from_efc_kernel,
-                        dim=(nworld, mj_data.njmax),
-                        inputs=[
-                            mj_data.nefc,
-                            mj_data.efc.type,
-                            mj_data.efc.id,
-                            mj_data.efc.force,
-                            int(self._mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF),
-                        ],
-                        outputs=[self._mjw_qfrc_frictionloss],
-                        device=model.device,
-                    )
-                    mjw_qfrc = self._mjw_qfrc_frictionloss
-                else:
-                    mjw_qfrc = getattr(mj_data, kind)
-                mjw_qpos = mj_data.qpos
+            if kind != self.ObservableKind.QFRC_FRICTIONLOSS:
+                mj_qfrc = getattr(mj_data, kind)
+            elif is_mjwarp:
+                self._mjw_qfrc_frictionloss.zero_()
+                wp.launch(
+                    frictionloss_force_from_efc_kernel,
+                    dim=(nworld, mj_data.njmax),
+                    inputs=[
+                        mj_data.nefc,
+                        mj_data.efc.type,
+                        mj_data.efc.id,
+                        mj_data.efc.force,
+                        int(self._mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF),
+                    ],
+                    outputs=[self._mjw_qfrc_frictionloss],
+                    device=model.device,
+                )
+                mj_qfrc = self._mjw_qfrc_frictionloss
             else:
-                if kind == self.ObservableKind.QFRC_FRICTIONLOSS:
-                    rows = mj_data.efc_type == self._mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
-                    mj_qfrc = np.zeros(self.mj_model.nv, dtype=np.float32)
-                    mj_qfrc[mj_data.efc_id[rows]] = mj_data.efc_force[rows]
-                else:
-                    mj_qfrc = getattr(mj_data, kind)
-                mjw_qfrc = wp.array([mj_qfrc], dtype=wp.float32, device=model.device)
-                mjw_qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
-            wp.launch(
-                convert_qfrc_actuator_from_mj_kernel,
-                dim=(nworld, joints_per_world),
-                inputs=[
-                    mjw_qfrc,
-                    mjw_qpos,
-                    joints_per_world,
-                    model.joint_type,
-                    model.joint_q_start,
-                    model.joint_qd_start,
-                    model.joint_dof_dim,
-                    model.joint_child,
-                    model.joint_X_c,
-                    model.body_com,
-                    self.mj_q_start,
-                    self.mj_qd_start,
-                ],
-                outputs=[qfrc],
-                device=model.device,
-            )
+                rows = mj_data.efc_type == self._mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+                mj_qfrc = np.zeros(self.mj_model.nv, dtype=np.float32)
+                mj_qfrc[mj_data.efc_id[rows]] = mj_data.efc_force[rows]
+            self._convert_mj_qfrc(model, mj_data, mj_qfrc, nworld, joints_per_world, qfrc)
+
+    def _convert_mj_qfrc(
+        self,
+        model: Model,
+        mj_data: Any,
+        mj_qfrc: Any,
+        nworld: int,
+        joints_per_world: int,
+        out: wp.array[wp.float32],
+    ):
+        """Convert a MuJoCo generalized force ``[nworld, nv]``, or ``[nv]`` on the CPU backend, to Newton DOF order."""
+        if isinstance(mj_qfrc, wp.array):
+            mjw_qfrc = mj_qfrc
+            mjw_qpos = mj_data.qpos
+        else:
+            mjw_qfrc = wp.array([mj_qfrc], dtype=wp.float32, device=model.device)
+            mjw_qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
+        wp.launch(
+            convert_qfrc_from_mj_kernel,
+            dim=(nworld, joints_per_world),
+            inputs=[
+                mjw_qfrc,
+                mjw_qpos,
+                joints_per_world,
+                model.joint_type,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_dof_dim,
+                model.joint_child,
+                model.joint_X_c,
+                model.body_com,
+                self.mj_q_start,
+                self.mj_qd_start,
+            ],
+            outputs=[out],
+            device=model.device,
+        )
 
     @staticmethod
     def _find_body_collision_filter_pairs(
