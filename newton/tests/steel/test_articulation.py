@@ -778,6 +778,110 @@ def _expect_one_warning(test, category, pattern, call):
     return result
 
 
+def _build_floating_four_bar():
+    """Build a free-floating planar four-bar, without gravity, whose crank is driven against a locked rocker."""
+    b = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    z0 = 0.6
+    base = b.add_link(xform=wp.transform(wp.vec3(0.2, 0.0, z0), wp.quat_identity()))
+    b.add_shape_box(base, hx=0.25, hy=0.02, hz=0.02)
+    j_free = b.add_joint_free(child=base)
+    crank = b.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, z0 - 0.1), wp.quat_identity()))
+    b.add_shape_box(crank, hx=0.02, hy=0.02, hz=0.1)
+    j_crank = b.add_joint_revolute(
+        parent=base,
+        child=crank,
+        axis=wp.vec3(0.0, 1.0, 0.0),
+        parent_xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
+    )
+    coupler = b.add_link(xform=wp.transform(wp.vec3(0.2, 0.0, z0 - 0.2), wp.quat_identity()))
+    b.add_shape_box(coupler, hx=0.2, hy=0.02, hz=0.02)
+    j_coupler = b.add_joint_revolute(
+        parent=crank,
+        child=coupler,
+        axis=wp.vec3(0.0, 1.0, 0.0),
+        parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
+    )
+    rocker = b.add_link(xform=wp.transform(wp.vec3(0.4, 0.0, z0 - 0.1), wp.quat_identity()))
+    b.add_shape_box(rocker, hx=0.02, hy=0.02, hz=0.1)
+    j_rocker = b.add_joint_revolute(
+        parent=base,
+        child=rocker,
+        axis=wp.vec3(0.0, 1.0, 0.0),
+        parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
+        limit_lower=0.0,
+        limit_upper=0.0,
+    )
+    b.add_articulation([j_free, j_crank, j_coupler, j_rocker])
+    b.add_joint_ball(
+        parent=coupler,
+        child=rocker,
+        parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
+        child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()),
+    )
+    crank_dof, crank_coord = 6, 7
+    b.joint_target_ke[crank_dof] = 50.0
+    b.joint_target_kd[crank_dof] = 1.0
+    b.joint_target_mode[crank_dof] = int(newton.JointTargetMode.POSITION)
+    b.joint_target_q[crank_coord] = 0.8
+    return b
+
+
+def _angular_momentum(model, state) -> np.ndarray:
+    """Return the system's angular momentum about the world origin [kg m^2/s]."""
+    mass, com, inertia = model.body_mass.numpy(), model.body_com.numpy(), model.body_inertia.numpy()
+    body_q, body_qd = state.body_q.numpy(), state.body_qd.numpy()
+    total = np.zeros(3)
+    for b in range(model.body_count):
+        rotation = np.array(wp.quat_to_matrix(wp.quat(*body_q[b, 3:]))).reshape(3, 3)
+        x_com = body_q[b, :3] + rotation @ com[b]
+        total += np.cross(x_com, mass[b] * body_qd[b, :3]) + rotation @ inertia[b] @ rotation.T @ body_qd[b, 3:]
+    return total
+
+
+def test_open_closure_on_floating_base_conserves_angular_momentum(test, device):
+    """Keep a free-floating mechanism's angular momentum while its loop closure is loaded open."""
+    model = _build_floating_four_bar().finalize(device=device)
+    solver = SolverSteel(model, iterations=2, enable_joint_limits=True)
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    control = model.control()
+    for _ in range(300):
+        solver.step(state_0, state_1, control, None, 1.0 / 500.0)
+        state_0, state_1 = state_1, state_0
+    test.assertGreater(_loop_anchor_gap(model, state_0), 5.0e-3, "the closure should be loaded open")
+    test.assertLess(np.linalg.norm(_angular_momentum(model, state_0)), 1.0e-3)
+
+
+def test_open_world_closure_pulls_at_child_anchor(test, device):
+    """Pull a free load toward an offset world anchor through its center of mass without spinning it."""
+    b = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    load = b.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()))
+    b.add_shape_box(load, hx=0.04, hy=0.04, hz=0.04)
+    # The child anchor is the load's center of mass; the world anchor sits 5 cm to the side.
+    _expect_one_warning(
+        test,
+        newton.exceptions.NewtonWarning,
+        "another joint already connects these bodies",
+        lambda: b.add_joint_ball(
+            parent=-1, child=load, parent_xform=wp.transform(wp.vec3(0.05, 0.0, 1.0), wp.quat_identity())
+        ),
+    )
+    model = b.finalize(device=device)
+    solver = SolverSteel(model, solve_mode="matrix_free", iterations=16, baumgarte=0.2)
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    spin = 0.0
+    for _ in range(120):
+        solver.step(state_0, state_1, control, None, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+        spin = max(spin, float(np.linalg.norm(state_0.body_qd.numpy()[load, 3:])))
+    test.assertLess(np.linalg.norm(state_0.body_q.numpy()[load, :3] - np.array([0.05, 0.0, 1.0])), 3.0e-3)
+    test.assertLess(spin, 1.0e-3)
+
+
 class TestSteelConnect(unittest.TestCase):
     pass
 
@@ -808,6 +912,8 @@ for _name in (
     "test_unsupported_loop_joints_are_rejected",
     "test_closure_row_overflow_is_reported",
     "test_imported_connect_equality_is_enforced",
+    "test_open_closure_on_floating_base_conserves_angular_momentum",
+    "test_open_world_closure_pulls_at_child_anchor",
 ):
     add_function_test(TestSteelConnect, _name, globals()[_name], devices=cuda_devices)
 
@@ -3192,95 +3298,6 @@ for _name, _func, _devices in (
     ("test_captured_mixed_step_matches_eager", test_captured_mixed_step_matches_eager, get_cuda_test_devices()),
 ):
     add_function_test(TestSteelSplit, _name, _func, devices=_devices)
-
-
-def _build_floating_four_bar():
-    """Build a free-floating planar four-bar, without gravity, whose crank is driven against a locked rocker."""
-    b = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    z0 = 0.6
-    base = b.add_link(xform=wp.transform(wp.vec3(0.2, 0.0, z0), wp.quat_identity()))
-    b.add_shape_box(base, hx=0.25, hy=0.02, hz=0.02)
-    j_free = b.add_joint_free(child=base)
-    crank = b.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, z0 - 0.1), wp.quat_identity()))
-    b.add_shape_box(crank, hx=0.02, hy=0.02, hz=0.1)
-    j_crank = b.add_joint_revolute(
-        parent=base,
-        child=crank,
-        axis=wp.vec3(0.0, 1.0, 0.0),
-        parent_xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
-    )
-    coupler = b.add_link(xform=wp.transform(wp.vec3(0.2, 0.0, z0 - 0.2), wp.quat_identity()))
-    b.add_shape_box(coupler, hx=0.2, hy=0.02, hz=0.02)
-    j_coupler = b.add_joint_revolute(
-        parent=crank,
-        child=coupler,
-        axis=wp.vec3(0.0, 1.0, 0.0),
-        parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(-0.2, 0.0, 0.0), wp.quat_identity()),
-    )
-    rocker = b.add_link(xform=wp.transform(wp.vec3(0.4, 0.0, z0 - 0.1), wp.quat_identity()))
-    b.add_shape_box(rocker, hx=0.02, hy=0.02, hz=0.1)
-    j_rocker = b.add_joint_revolute(
-        parent=base,
-        child=rocker,
-        axis=wp.vec3(0.0, 1.0, 0.0),
-        parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity()),
-        limit_lower=0.0,
-        limit_upper=0.0,
-    )
-    b.add_articulation([j_free, j_crank, j_coupler, j_rocker])
-    b.add_joint_ball(
-        parent=coupler,
-        child=rocker,
-        parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
-        child_xform=wp.transform(wp.vec3(0.0, 0.0, -0.1), wp.quat_identity()),
-    )
-    crank_dof, crank_coord = 6, 7
-    b.joint_target_ke[crank_dof] = 50.0
-    b.joint_target_kd[crank_dof] = 1.0
-    b.joint_target_mode[crank_dof] = int(newton.JointTargetMode.POSITION)
-    b.joint_target_q[crank_coord] = 0.8
-    return b
-
-
-def _angular_momentum(model, state) -> np.ndarray:
-    """Return the system's angular momentum about the world origin [kg m^2/s]."""
-    mass, com, inertia = model.body_mass.numpy(), model.body_com.numpy(), model.body_inertia.numpy()
-    body_q, body_qd = state.body_q.numpy(), state.body_qd.numpy()
-    total = np.zeros(3)
-    for b in range(model.body_count):
-        rotation = np.array(wp.quat_to_matrix(wp.quat(*body_q[b, 3:]))).reshape(3, 3)
-        x_com = body_q[b, :3] + rotation @ com[b]
-        total += np.cross(x_com, mass[b] * body_qd[b, :3]) + rotation @ inertia[b] @ rotation.T @ body_qd[b, 3:]
-    return total
-
-
-def test_open_closure_on_floating_base_conserves_angular_momentum(test, device):
-    """Keep a free-floating mechanism's angular momentum while its loop closure is loaded open."""
-    model = _build_floating_four_bar().finalize(device=device)
-    solver = SolverSteel(model, iterations=2, enable_joint_limits=True)
-    state_0, state_1 = model.state(), model.state()
-    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
-    control = model.control()
-    for _ in range(300):
-        solver.step(state_0, state_1, control, None, 1.0 / 500.0)
-        state_0, state_1 = state_1, state_0
-    test.assertGreater(_loop_anchor_gap(model, state_0), 5.0e-3, "the closure should be loaded open")
-    test.assertLess(np.linalg.norm(_angular_momentum(model, state_0)), 1.0e-3)
-
-
-class TestSteelConnectMomentum(unittest.TestCase):
-    pass
-
-
-add_function_test(
-    TestSteelConnectMomentum,
-    "test_open_closure_on_floating_base_conserves_angular_momentum",
-    test_open_closure_on_floating_base_conserves_angular_momentum,
-    devices=get_cuda_test_devices(),
-)
 
 
 def _rotate(q: np.ndarray, v: np.ndarray) -> np.ndarray:

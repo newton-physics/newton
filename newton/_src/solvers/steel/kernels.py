@@ -2949,8 +2949,9 @@ def populate_connect_J_for_size(
     read every step.
 
     A prescribed parent (a kinematic body outside the child's articulation, or the world
-    when ``connect_body_p[k] < 0``) contributes no DOFs; its velocity at ``p_M`` enters the
-    row target instead (``J v = -e . v_A``), so the child follows the moving parent.
+    when ``connect_body_p[k] < 0``) contributes no DOFs and takes no reaction, so the row
+    keeps each body's own anchor: ``J = -e . J_point(child, p_B)``, and the parent's
+    velocity at ``p_A`` enters the row target (``J v = -e . v_A``).
 
     A REVOLUTE closure adds two rows ``J = e_i . (omega_parent - omega_child)`` for the two
     directions ``e_i`` perpendicular to the hinge axis, with ``phi_i = e_i . (a_child x a_parent)``,
@@ -2981,21 +2982,24 @@ def populate_connect_J_for_size(
         joint = connect_joint[k]
         anchor_p = wp.transform_get_translation(joint_X_p[joint])
         p_a = anchor_p
+        v_a = wp.vec3(0.0, 0.0, 0.0)
         if body_p >= 0:
             p_a = wp.transform_point(body_q[body_p], anchor_p)
+            if prescribed:
+                # The anchor velocity of a prescribed parent comes from its body twist.
+                twist = body_qd[body_p]
+                x_com = wp.transform_point(body_q[body_p], body_com[body_p])
+                v_a = wp.spatial_top(twist) + wp.cross(wp.spatial_bottom(twist), p_a - x_com)
         p_b = wp.transform_point(body_q[body_c], wp.transform_get_translation(joint_X_c[joint]))
+        origin = articulation_origin[art]
+        rel_a = p_a - origin
+        rel_b = p_b - origin
         delta = p_a - p_b
-        # Both walks take their lever arm from the anchors' midpoint, so the impulse pair is
-        # not a couple across an open closure.
-        p_m = p_a - 0.5 * delta
-        rel_a = p_m - articulation_origin[art]
-        rel_b = rel_a
-        v_a = wp.vec3(0.0, 0.0, 0.0)
-        if prescribed and body_p >= 0:
-            # The velocity of a prescribed parent at the shared anchor comes from its body twist.
-            twist = body_qd[body_p]
-            x_com = wp.transform_point(body_q[body_p], body_com[body_p])
-            v_a = wp.spatial_top(twist) + wp.cross(wp.spatial_bottom(twist), p_m - x_com)
+        if not prescribed:
+            # Both walks take their lever arm from the anchors' midpoint, so the impulse pair
+            # is not a couple across an open closure.
+            rel_a = rel_a - 0.5 * delta
+            rel_b = rel_a
 
         for axis in range(3):
             slot = base_slot + axis
