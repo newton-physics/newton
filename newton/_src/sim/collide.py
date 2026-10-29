@@ -1185,7 +1185,8 @@ def _compute_per_world_shape_pairs_max(model: Model) -> int:
     sw = shape_world.numpy()
     shape_flags = getattr(model, "shape_flags", None)
     if shape_flags is not None:
-        sf = shape_flags.numpy()
+        # Variant rows that start empty can collide after a selection.
+        sf = model._shape_option_flags() if getattr(model, "_variant_row_max", 0) else shape_flags.numpy()
         colliding = (sf & int(ShapeFlags.COLLIDE_SHAPES)) != 0
     else:
         colliding = np.ones(len(sw), dtype=bool)

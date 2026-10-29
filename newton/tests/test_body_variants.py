@@ -168,6 +168,32 @@ class TestBodyVariants(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             builder.collapse_fixed_joints()
 
+    def test_rows_empty_at_construction(self):
+        """Rows that start empty still count for world starts and broad-phase pair capacity."""
+        one = newton.ModelBuilder()
+        one.add_shape_sphere(one.add_body(), radius=0.05)
+        two = newton.ModelBuilder()
+        body = two.add_body()
+        for x in (-0.1, 0.1):
+            two.add_shape_sphere(body, xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()), radius=0.05)
+        builder = newton.ModelBuilder()
+        builder.add_body_variants(
+            builder.add_body(xform=wp.transform((0.0, 0.0, 0.04), wp.quat_identity())), [one, two]
+        )
+        builder.add_ground_plane()
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(model.shape_world_start.numpy(), [3, 3, 3])
+
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+        _select(model, [1])
+        pipeline.collide(model.state(), contacts)
+        count = contacts.rigid_contact_count.numpy()[0]
+        self.assertEqual(
+            set(contacts.rigid_contact_shape0.numpy()[:count]) | set(contacts.rigid_contact_shape1.numpy()[:count]),
+            {0, 1, 2},
+        )
+
     def test_viewer_renders_selected_variant(self):
         model = _scene(2).finalize(device="cpu")
         viewer = newton.viewer.ViewerNull()

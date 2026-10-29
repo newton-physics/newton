@@ -16012,8 +16012,11 @@ class ModelBuilder:
             # per-world start indices
             m.particle_world_start = wp.array(self.particle_world_start, dtype=wp.int32)
             m.body_world_start = wp.array(self.body_world_start, dtype=wp.int32)
-            # Variant shape rows were counted as trailing global shapes.
-            m.shape_world_start = wp.array([*self.shape_world_start[:-1], shape_count], dtype=wp.int32)
+            # Variant shape rows were counted as global shapes, in the leading block when no world
+            # shape precedes them; no start lies beyond the real shapes.
+            m.shape_world_start = wp.array(
+                [min(start, shape_count) for start in self.shape_world_start], dtype=wp.int32
+            )
             m.joint_world_start = wp.array(self.joint_world_start, dtype=wp.int32)
             m.articulation_world_start = wp.array(self.articulation_world_start, dtype=wp.int32)
             m.joint_dof_world_start = wp.array(self.joint_dof_world_start, dtype=wp.int32)
