@@ -1994,7 +1994,7 @@ class SolverSteel(SolverBase):
                 lost to a row capacity, even with ``warn_constraint_overflow`` off, or a positive
                 shape restitution) makes an eager step raise. In a captured step the error is
                 deferred: :meth:`check_constraint_capacity` raises after the replays, until
-                :meth:`reset`, and their results are invalid. Contacts the allocator excludes on
+                :meth:`reset`, and their results are invalid; eager steps do not report it. Contacts the allocator excludes on
                 purpose are counted in ``compliance_skipped_contact_count`` and compliant contacts
                 in ``compliance_contact_count``. This option may change without the normal
                 deprecation period.
@@ -7427,7 +7427,7 @@ class SolverSteel(SolverBase):
         return 0 if self._compliance is None else _contact_compliance.counts(self)[1]
 
     def check_constraint_capacity(self) -> None:
-        """Raise if any world, or the global entry, lost contacts or constraint rows since its last reset.
+        """Raise if any world or the global entry lost contacts or rows, or rejected input, since its last reset.
 
         Also raises if a step saw a joint of an articulation tree disabled in
         :attr:`~newton.Model.joint_enabled`; only loop-closing joints can be disabled. That
@@ -7461,7 +7461,7 @@ class SolverSteel(SolverBase):
                 raise RuntimeError(f"Steel contact torsion rejected its input: {error}") from error
         if self._compliance is not None:
             try:
-                _contact_compliance.validate(self, clear=False)
+                _contact_compliance.validate(self._compliance.status, clear=False)
             except (RuntimeError, ValueError) as error:
                 raise RuntimeError(f"Steel contact compliance rejected its input: {error}") from error
         disabled = np.flatnonzero(self._disabled_tree_joint.numpy())

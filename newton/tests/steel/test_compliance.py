@@ -735,12 +735,14 @@ def test_captured_errors_are_deferred_until_reset(test, device):
     scene.solver.check_constraint_capacity()
     scene.stiffness.fill_(float("nan"))
     wp.capture_launch(graph)
+    scene.stiffness.fill_(3000.0)
+    # A valid eager step neither raises the replay's error nor clears it.
+    scene.step()
     for _ in range(2):
-        with test.assertRaisesRegex(RuntimeError, "contact compliance.*Invalid contact stiffness"):
+        with test.assertRaisesRegex(RuntimeError, r"contact compliance.*Invalid contact stiffness \(contact 0\)"):
             scene.solver.check_constraint_capacity()
     scene.solver.reset(scene.states[0])
     scene.solver.check_constraint_capacity()
-    scene.stiffness.fill_(3000.0)
     wp.capture_launch(graph)
     scene.solver.check_constraint_capacity()
     # A shape notification publishes the restitution that the captured step reads.

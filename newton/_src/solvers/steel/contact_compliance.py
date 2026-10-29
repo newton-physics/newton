@@ -12,9 +12,9 @@ coefficient, with the cone bounded by the compliant normal impulse.
 
 Row coefficients are prepared on the device in persistent buffers, and the solve
 kernels add ``gamma * lambda`` to compliant normal residuals in every sweep, so a
-step needs no host synchronization and can be graph captured. Errors latch in a
-device status word: an eager step raises from it, and after captured replay
-:meth:`SolverSteel.check_constraint_capacity` raises until :meth:`SolverSteel.reset`.
+step needs no host synchronization and can be graph captured. Errors latch in device
+status words: an eager step raises from its own word, and captured steps latch into a
+word that :meth:`SolverSteel.check_constraint_capacity` reports until :meth:`SolverSteel.reset`.
 """
 
 import math
@@ -138,14 +138,17 @@ class ComplianceBuffers:
         self.mf_weight = wp.zeros(solver._mf_eff_mass_inv.shape, dtype=float, device=device)
         # [active, skipped] for the latest prepared step.
         self.counts = wp.zeros(2, dtype=wp.int32, device=device)
+        # Captured steps latch into ``status``; eager steps check and clear ``eager_status``.
         self.status = wp.empty(_STATUS_CODES + 1, dtype=wp.int32, device=device)
+        self.eager_status = wp.empty(_STATUS_CODES + 1, dtype=wp.int32, device=device)
         clear_status(self)
         self.dummy_target = wp.zeros((1, 1), dtype=float, device=device)
 
 
 def clear_status(buffers):
-    """Clear the latched status word."""
-    wp.launch(_reset_status, dim=1, inputs=[buffers.status], device=buffers.status.device)
+    """Clear both latched status words."""
+    for status in (buffers.status, buffers.eager_status):
+        wp.launch(_reset_status, dim=1, inputs=[status], device=status.device)
 
 
 def begin_rows(solver):
@@ -163,6 +166,8 @@ def prepare_rows(solver, contacts, dt):
     """Replace the bias and CFM of compliant normal rows on the device, then weight their friction rows."""
     buffers = solver._compliance
     device = solver.model.device
+    capturing = wp.get_stream(device).is_capturing
+    status = buffers.status if capturing else buffers.eager_status
     wp.launch(
         _check_inputs,
         dim=max(solver._world_count, 1),
@@ -174,7 +179,7 @@ def prepare_rows(solver, contacts, dt):
             solver._mf_constraint_count,
             solver._free_body_constraint_max,
             solver._row_dropped_all,
-            buffers.status,
+            status,
         ],
         device=device,
     )
@@ -182,7 +187,7 @@ def prepare_rows(solver, contacts, dt):
         wp.launch(
             _check_restitution,
             dim=solver._shape_restitution.shape[0],
-            inputs=[solver._shape_restitution, buffers.status],
+            inputs=[solver._shape_restitution, status],
             device=device,
         )
     has_target = bool(solver._has_prescribed_response)
@@ -221,7 +226,7 @@ def prepare_rows(solver, contacts, dt):
             buffers.dense_weight,
             buffers.mf_weight,
             buffers.counts,
-            buffers.status,
+            status,
         ],
         device=device,
     )
@@ -252,22 +257,22 @@ def prepare_rows(solver, contacts, dt):
             outputs=[solver._mf_row_mu],
             device=device,
         )
-    if not wp.get_stream(device).is_capturing:
+    if not capturing:
         # An eager step raises at once; the next step starts from a clear status.
-        validate(solver, clear=True)
+        validate(status, clear=True)
 
 
-def validate(solver, *, clear):
-    """Raise the first latched compliance error with one small synchronous readback, optionally clearing it."""
-    buffers = solver._compliance
-    status = buffers.status.numpy()
-    if not status[:_STATUS_CODES].any():
+def validate(status, *, clear):
+    """Raise the first error latched in ``status`` with one small synchronous readback, optionally clearing it."""
+    values = status.numpy()
+    if not values[:_STATUS_CODES].any():
         return
-    first = int(status[_STATUS_CODES])
+    first = int(values[_STATUS_CODES])
     if clear:
-        clear_status(buffers)
+        wp.launch(_reset_status, dim=1, inputs=[status], device=status.device)
     error, message = _ERRORS[first & 15]
-    raise error(message)
+    contact = first // 16 - 1
+    raise error(message if contact < 0 else f"{message} (contact {contact})")
 
 
 def counts(solver):
