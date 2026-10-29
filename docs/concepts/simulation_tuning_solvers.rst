@@ -322,15 +322,17 @@ repository examples spend tuning effort, not a shared solver API.
        selects how contacts of articulated bodies are solved: ``"immediate"`` rows of
        the generalized coordinates, or the matrix-free ``"propagation"`` responses,
        which solve them as body-space rows and propagate their impulses through each
-       articulation tree. In ``"propagation"`` and ``"propagation_colored"`` every
-       contact row, free bodies included, shares one family of ``free_body_constraint_max +
+       articulation tree. In ``"propagation"`` and ``"propagation_colored"`` contact
+       rows, free bodies included, share one family of ``free_body_constraint_max +
        articulation_constraint_max`` rows per world, or of ``propagation_constraint_max`` rows
-       when that is set. Setting it lets ``free_body_constraint_max`` shrink to the free-body
-       velocity-limit rows, the only free-body rows these responses keep.
-       ``"propagation_colored"`` sweeps them in parallel batches of contacts that share no responding body, which pays off on
-       scenes with many contacts per world. ``propagation_cached_response`` replaces the
-       per-iteration tree walk with cached per-body responses (on by default); which is
-       faster depends on the model. The propagation responses reject contact torsion,
+       when that is set. Contacts between two links of one articulation stay dense rows of
+       ``articulation_constraint_max`` unless ``propagation_same_articulation_rows`` is set.
+       Setting ``propagation_constraint_max`` lets ``free_body_constraint_max`` shrink to the
+       free-body velocity-limit rows, the only free-body rows these responses keep.
+       ``"propagation_colored"`` sweeps the propagation rows in parallel batches of contacts
+       that share no responding body, which pays off on scenes with many contacts per world.
+       ``propagation_cached_response`` replaces the per-iteration tree walk with cached
+       per-body responses (on by default); which is faster depends on the model. The propagation responses reject contact torsion,
        contact compliance, sleeping and loop-closing joints, and fall back from bilateral
        pre-elimination to iterative mimic rows with a warning.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and

@@ -1760,10 +1760,11 @@ class SolverSteel(SolverBase):
                 :attr:`constraint_overflow`.
             propagation_constraint_max: Capacity of the propagation row family per world in the
                 ``"propagation"`` and ``"propagation_colored"`` responses, which hold every contact
-                row. ``None`` (default) uses ``free_body_constraint_max +
-                articulation_constraint_max``. Setting it lets ``free_body_constraint_max`` shrink
-                to the free-body velocity-limit rows. At least 1; rejected with
-                ``articulated_contact_response="immediate"``.
+                row except those between two links of one articulation; these stay dense unless
+                ``propagation_same_articulation_rows`` is set. ``None`` (default) uses
+                ``free_body_constraint_max + articulation_constraint_max``. Setting it lets
+                ``free_body_constraint_max`` shrink to the free-body velocity-limit rows. At least
+                1; rejected with ``articulated_contact_response="immediate"``.
             warn_constraint_overflow: Print a device-side warning the first time a world
                 exceeds a row capacity. The warning does not synchronize the host and is
                 compatible with CUDA graph capture.
@@ -2359,8 +2360,8 @@ class SolverSteel(SolverBase):
                 "propagation_same_articulation_rows requires articulated_contact_response='propagation', "
                 f"got {articulated_contact_response!r}"
             )
-        # The propagation responses route every contact row to the propagation family, so by
-        # default its capacity absorbs both the free-body and the dense contact budgets.
+        # The propagation responses route contact rows, free bodies included, to the propagation
+        # family, so by default its capacity absorbs both contact budgets.
         self._propagation_constraint_max = (
             None if propagation_constraint_max is None else int(propagation_constraint_max)
         )
