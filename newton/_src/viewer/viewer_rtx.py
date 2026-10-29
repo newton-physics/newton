@@ -1923,6 +1923,10 @@ void main() {
             same_texture = next_texture is previous_texture or (
                 isinstance(next_texture, str) and isinstance(previous_texture, str) and next_texture == previous_texture
             )
+            if next_texture is not None and not isinstance(next_texture, str):
+                # Failed exports return an untextured material; retry the image next time.
+                exported = self._texture_paths.get(name)
+                same_texture = same_texture and exported is not None and exported[0] is next_texture
             if not same_texture:
                 appearance = self._mesh_appearance.setdefault(name, {})
                 for key, value in (

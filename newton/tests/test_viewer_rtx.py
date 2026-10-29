@@ -569,6 +569,13 @@ class TestViewerRTXRendering(unittest.TestCase):
                                     viewer.set_rendering_paused(True)
                                     frozen = viewer.get_frame().numpy().copy()
                                 viewer.begin_frame(frame / 60.0)
+                                if frame == 1:
+                                    with (
+                                        mock.patch("PIL.Image.Image.save", side_effect=OSError("disk full")),
+                                        self.assertWarnsRegex(newton.exceptions.NewtonWarning, "failed to export"),
+                                    ):
+                                        viewer.log_mesh("/left", left, indices, uvs=uvs, texture=texture)
+                                    # Retry the same image object after the export failure.
                                 viewer.log_mesh(
                                     "/left",
                                     left,
