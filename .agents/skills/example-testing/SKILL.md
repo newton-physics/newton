@@ -26,7 +26,7 @@ allowed when within the user's scope; keep the tested artifact unchanged.
    common criteria, and required run variants with `--describe`; expectations live
    beside the example implementation. Apply explicit user overrides and record
    both artifact and criteria revisions. Follow the pinned-source fallback for
-   older wheels without metadata. Missing or contradictory criteria leave the
+   older wheels without QA docstrings. Missing or contradictory criteria leave the
    affected acceptance checks incomplete; continue independent checks. Never
    infer a release pass or reuse old observations as current results.
 4. Establish a working capture/input path before a large campaign. The proven

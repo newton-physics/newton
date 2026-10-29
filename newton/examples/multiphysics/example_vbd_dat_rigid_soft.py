@@ -31,6 +31,15 @@ the ``AUTO`` schedule adds. Without graph capture the overhead is about 40 %
 body color, and their host-side launch cost then dominates. All six bodies
 here share one color, so the per-color rigid truncation costs nothing extra;
 scenes with several body colors pay one more truncation pass per color.
+
+Success criteria:
+- A pinned sheet supports a box, sphere, and capsule under a smaller free sheet.
+- Incoming spinning projectiles deform the sheets, which catch and retain the bodies.
+- Cloth stays outside rigid surfaces and the two sheets do not visibly pass through one another.
+- Bodies remain supported by the pinned sheet without tunneling or unbounded motion.
+
+Runs:
+- `python -m newton.examples vbd_dat_rigid_soft`
 """
 
 from __future__ import annotations
@@ -394,18 +403,6 @@ class Example:
         parser = newton.examples.create_parser()
         parser.set_defaults(num_frames=PARAMS["num_frames"])
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A pinned sheet supports a box, sphere, and capsule under a smaller free sheet.",
-        "Incoming spinning projectiles deform the sheets, which catch and retain the bodies.",
-        "Cloth stays outside rigid surfaces and the two sheets do not visibly pass through one another.",
-        "Bodies remain supported by the pinned sheet without tunneling or unbounded motion.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

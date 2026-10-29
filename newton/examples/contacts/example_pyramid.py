@@ -5,6 +5,19 @@
 
 Builds pyramids of box-shaped cubes with a wrecking ball on a ramp
 to stress-test narrow-phase contact generation.
+
+Success criteria:
+- Box pyramids and a large sphere on a ramp appear; pyramid count and height match the selected
+  options.
+- The sphere rolls down the ramp and knocks boxes from the stacks.
+- Boxes respond through contact without explosive motion.
+
+Runs:
+- `python -m newton.examples pyramid --broad-phase nxn`
+- `python -m newton.examples pyramid --broad-phase sap --num-pyramids 5 --pyramid-size 40`
+- `python -m newton.examples pyramid --broad-phase explicit --num-pyramids 40 --pyramid-size 5`
+- `python -m newton.examples pyramid`
+- `python -m newton.examples pyramid --solver kamino`
 """
 
 import numpy as np
@@ -258,23 +271,6 @@ class Example:
             help=f"Number of rows in each pyramid base (default: {DEFAULT_PYRAMID_SIZE}).",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Box pyramids and a large sphere on a ramp appear; pyramid count and height match the selected options.",
-        "The sphere rolls down the ramp and knocks boxes from the stacks.",
-        "Boxes respond through contact without explosive motion.",
-    ),
-    "runs": (
-        {"args": ("--broad-phase", "nxn"), "success_criteria": ()},
-        {"args": ("--broad-phase", "sap", "--num-pyramids", "5", "--pyramid-size", "40"), "success_criteria": ()},
-        {"args": ("--broad-phase", "explicit", "--num-pyramids", "40", "--pyramid-size", "5"), "success_criteria": ()},
-        {"args": (), "success_criteria": ()},
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

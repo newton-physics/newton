@@ -8,6 +8,22 @@ Creates a bundle of 7 cables passing through moving obstacles that
 apply cyclic loading (load -> hold -> release). The Dahl model captures
 plastic deformation and hysteresis loops in cable bending behavior,
 showing realistic memory effects in cable dynamics.
+
+Success criteria:
+- Seven cables are bent by four vertical capsules into an S pattern.
+- After the capsules disappear, the cables settle without exploding.
+
+Runs:
+- `python -m newton.examples cable_bundle_hysteresis --no-dahl`
+  - The cables are mostly straight.
+- `python -m newton.examples cable_bundle_hysteresis`
+  - The cables keep a clear S shape.
+- `python -m newton.examples cable_bundle_hysteresis --segments 15`
+  - The cables have a more irregular S shape with visibly coarser segmentation.
+- `python -m newton.examples cable_bundle_hysteresis --eps-max 0.3`
+  - The cables retain a less-pronounced S shape than the default run.
+- `python -m newton.examples cable_bundle_hysteresis --tau 10.0`
+  - The cables become mostly straight.
 """
 
 import numpy as np
@@ -436,28 +452,6 @@ class Example:
         parser.add_argument("--eps-max", type=float, default=2.0, help="Maximum plastic strain [rad]")
         parser.add_argument("--tau", type=float, default=0.1, help="Memory decay length [rad]")
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Seven cables are bent by four vertical capsules into an S pattern.",
-        "After the capsules disappear, the cables settle without exploding.",
-    ),
-    "runs": (
-        {"args": ("--no-dahl",), "success_criteria": ("The cables are mostly straight.",)},
-        {"args": (), "success_criteria": ("The cables keep a clear S shape.",)},
-        {
-            "args": ("--segments", "15"),
-            "success_criteria": ("The cables have a more irregular S shape with visibly coarser segmentation.",),
-        },
-        {
-            "args": ("--eps-max", "0.3"),
-            "success_criteria": ("The cables retain a less-pronounced S shape than the default run.",),
-        },
-        {"args": ("--tau", "10.0"), "success_criteria": ("The cables become mostly straight.",)},
-    ),
-}
 
 
 if __name__ == "__main__":

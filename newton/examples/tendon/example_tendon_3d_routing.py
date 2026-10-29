@@ -9,6 +9,17 @@ along X (wrapping in YZ).  The cable routes over P1, under P2, over
 P3 with weights on both ends.  The inter-pulley cable segments run
 approximately vertically, along the intersection of adjacent wrapping
 planes.
+
+Success criteria:
+- A cable connects a sphere and a heavier box through three pulleys, routing over the first, under
+  the middle, and over the third.
+- Adjacent pulleys route the cable in perpendicular planes, with approximately vertical spans
+  between them initially.
+- The weights move under gravity and all three pulleys rotate as the cable travels without explosive
+  stretching or disconnection.
+
+Runs:
+- `python -m newton.examples tendon_3d_routing`
 """
 
 import numpy as np
@@ -318,20 +329,6 @@ class Example:
             starts, ends = get_tendon_cable_lines(self.solver, self.model, self.state_0)
             self.viewer.log_lines("cable", starts, ends, colors=(0.9, 0.2, 0.2), width=0.008)
             self.viewer.end_frame()
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A cable connects a sphere and a heavier box through three pulleys, routing over the first, "
-        "under the middle, and over the third.",
-        "Adjacent pulleys route the cable in perpendicular planes, with approximately vertical "
-        "spans between them initially.",
-        "The weights move under gravity and all three pulleys rotate as the cable travels without "
-        "explosive stretching or disconnection.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

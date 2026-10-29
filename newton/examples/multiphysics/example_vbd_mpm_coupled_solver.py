@@ -6,6 +6,16 @@
 A tetrahedral VBD cube falls into an implicit-MPM granular heap.  The soft
 body's surface is exported to MPM as a prescribed-velocity deformable mesh
 collider through the generic particle proxy hooks.
+
+Success criteria:
+- A tetrahedral VBD cube appears above an implicit-MPM granular heap.
+- The VBD cube falls into the granular heap.
+- The soft cube surface is exported to MPM as a deformable collider through proxy coupling.
+- The soft cube and granular heap should interact without either system exploding.
+- The soft body and MPM particles should remain above the ground.
+
+Runs:
+- `python -m newton.examples vbd_mpm_coupled_solver`
 """
 
 from __future__ import annotations
@@ -366,19 +376,6 @@ class Example:
             default=0.6,
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A tetrahedral VBD cube appears above an implicit-MPM granular heap.",
-        "The VBD cube falls into the granular heap.",
-        "The soft cube surface is exported to MPM as a deformable collider through proxy coupling.",
-        "The soft cube and granular heap should interact without either system exploding.",
-        "The soft body and MPM particles should remain above the ground.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

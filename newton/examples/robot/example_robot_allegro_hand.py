@@ -10,6 +10,18 @@ apply a continuous rotation to the fixed root joint in the form
 of the joint parent transform. The solver is updated
 about this change in the joint parent transform by calling
 self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
+
+Success criteria:
+- Floating Allegro hands appear with a cube on each palm.
+- The hands are manipulating the cube to make it turn.
+- All hands have the same movement.
+
+Runs:
+- `python -m newton.examples robot_allegro_hand --world-count 18`
+  - 18 floating Allegro hands appear.
+- `python -m newton.examples robot_allegro_hand --world-count 16`
+  - 16 floating Allegro hands appear.
+- `python -m newton.examples robot_allegro_hand --solver kamino`
 """
 
 import numpy as np
@@ -271,27 +283,6 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=None)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Floating Allegro hands appear with a cube on each palm.",
-        "The hands are manipulating the cube to make it turn.",
-        "All hands have the same movement.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "18"),
-            "success_criteria": ("18 floating Allegro hands appear.",),
-        },
-        {
-            "args": ("--world-count", "16"),
-            "success_criteria": ("16 floating Allegro hands appear.",),
-        },
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

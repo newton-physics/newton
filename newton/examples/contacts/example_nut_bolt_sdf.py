@@ -4,6 +4,20 @@
 """Example SDF Mesh Collision
 
 Demonstrates nut/bolt mesh collision using SDF (Signed Distance Field).
+
+Success criteria:
+- Nut-and-bolt assemblies appear, with the count matching the selected world count.
+- The nuts rotate and descend along the threads toward the ends of the bolts.
+- All documented solver variants show the same qualitative thread-engagement outcome; exact
+  trajectories need not match.
+
+Runs:
+- `python -m newton.examples nut_bolt_sdf --world-count 4 --solver xpbd`
+  - Four nut-and-bolt assemblies appear.
+- `python -m newton.examples nut_bolt_sdf --world-count 4 --solver mujoco`
+  - Four nut-and-bolt assemblies appear.
+- `python -m newton.examples nut_bolt_sdf`
+- `python -m newton.examples nut_bolt_sdf --solver kamino`
 """
 
 import tempfile
@@ -403,28 +417,6 @@ class Example:
         )
         parser.add_argument("--num-per-world", type=int, default=1, help="Number of assemblies per world.")
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Nut-and-bolt assemblies appear, with the count matching the selected world count.",
-        "The nuts rotate and descend along the threads toward the ends of the bolts.",
-        "All documented solver variants show the same qualitative thread-engagement outcome; exact trajectories need not match.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "4", "--solver", "xpbd"),
-            "success_criteria": ("Four nut-and-bolt assemblies appear.",),
-        },
-        {
-            "args": ("--world-count", "4", "--solver", "mujoco"),
-            "success_criteria": ("Four nut-and-bolt assemblies appear.",),
-        },
-        {"args": (), "success_criteria": ()},
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

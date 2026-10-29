@@ -13,6 +13,19 @@ This example builds rigid/VBD proxy coupling directly through
 
 Pass ``--solver vbd`` to run the same scene with a single VBD solver
 (no coupling) as a reference baseline.
+
+Success criteria:
+- Rigid boxes and an articulated chain appear above a cloth sheet and several soft bodies.
+- The rigid bodies interact with the deformables, bouncing on contact without flying apart or
+  excessively penetrating the ground.
+- The deformables remain bounded without stretching explosively or sinking through the ground.
+- The rigid bodies settle above the ground; inspect the late motion for persistent jitter.
+
+Runs:
+- `python -m newton.examples mujoco_vbd_coupled_solver`
+  - Deformable contact reactions affect the rigid bodies through proxy coupling.
+- `python -m newton.examples mujoco_vbd_coupled_solver --solver vbd`
+  - The same scene runs as a single-solver VBD reference.
 """
 
 from __future__ import annotations
@@ -382,25 +395,6 @@ class Example:
             default=1,
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Rigid boxes and an articulated chain appear above a cloth sheet and several soft bodies.",
-        "The rigid bodies interact with the deformables, bouncing on contact without flying "
-        "apart or excessively penetrating the ground.",
-        "The deformables remain bounded without stretching explosively or sinking through the ground.",
-        "The rigid bodies settle above the ground; inspect the late motion for persistent jitter.",
-    ),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": ("Deformable contact reactions affect the rigid bodies through proxy coupling.",),
-        },
-        {"args": ("--solver", "vbd"), "success_criteria": ("The same scene runs as a single-solver VBD reference.",)},
-    ),
-}
 
 
 if __name__ == "__main__":

@@ -9,6 +9,15 @@ such that it bounces off the wall and floor in order to hit a target.
 This example uses the built-in wp.Tape() object to compute gradients of
 the distance to target (loss) w.r.t the material parameters, followed by
 a simple gradient-descent optimization step.
+
+Success criteria:
+- A deformable box is bouncing on the ground plane then on a wall and tries to reach a floating
+  target (purple box).
+- Previously displayed rollout trajectories remain visible while newer trajectories are added.
+- The deformable box is becoming increasingly good at reaching the target.
+
+Runs:
+- `python -m newton.examples diffsim_soft_body`
 """
 
 import numpy as np
@@ -366,18 +375,6 @@ class Example:
             help="Set material behavior to be Anisotropic or Isotropic.",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A deformable box is bouncing on the ground plane then on a wall and tries to reach a "
-        "floating target (purple box).",
-        "Previously displayed rollout trajectories remain visible while newer trajectories are added.",
-        "The deformable box is becoming increasingly good at reaching the target.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

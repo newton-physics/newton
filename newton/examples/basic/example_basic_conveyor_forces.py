@@ -9,6 +9,17 @@ an attached constant or pivot velocity field. Each step the per-contact
 normal forces are read back from the solver and converted into Coulomb-limited
 tangential body forces, so boxes are carried around the loop, through the
 180-degree turn, up the incline, across the differential pair, and back.
+
+Success criteria:
+- Boxes travel around the circuit, through its turn, up the incline, and across the differential
+  belt pair.
+- After startup, every box has moved from its spawn location; the fleet does not stall at belt
+  transitions.
+- Boxes remain supported on the circuit without non-finite poses or falling through the floor.
+
+Runs:
+- `python -m newton.examples basic_conveyor_forces`
+- `python -m newton.examples basic_conveyor_forces --solver kamino`
 """
 
 import math
@@ -1033,20 +1044,6 @@ def _look_at(eye, target):
     pitch = np.degrees(np.arcsin(d[2]))
     yaw = np.degrees(np.arctan2(d[1], d[0]))
     return wp.vec3(*eye), float(pitch), float(yaw)
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Boxes travel around the circuit, through its turn, up the incline, and across the differential belt pair.",
-        "After startup, every box has moved from its spawn location; the fleet does not stall at belt transitions.",
-        "Boxes remain supported on the circuit without non-finite poses or falling through the floor.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ()},
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

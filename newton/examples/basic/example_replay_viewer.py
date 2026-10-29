@@ -11,6 +11,17 @@ Recording is done automatically using ViewerFile:
   viewer.set_model(model)
   viewer.log_state(state)  # Records automatically
   viewer.close()  # Saves automatically
+
+Success criteria:
+- The Replay Controls panel offers Load Recording; loading humanoid_recording.bin displays the
+  recorded humanoids.
+- Total frames matches the recording length: 1000 for the default recording example, with a slider
+  from 0 to 999.
+- Moving the slider displays the corresponding state; Next and Prev advance or reverse one frame.
+- First and Last select the initial and final recorded states without stepping past either end.
+
+Runs:
+- `python -m newton.examples replay_viewer`
 """
 
 import os
@@ -210,20 +221,6 @@ class Example:
 
     def test_final(self):
         pass
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The Replay Controls panel offers Load Recording; loading humanoid_recording.bin "
-        "displays the recorded humanoids.",
-        "Total frames matches the recording length: 1000 for the default recording example, "
-        "with a slider from 0 to 999.",
-        "Moving the slider displays the corresponding state; Next and Prev advance or reverse one frame.",
-        "First and Last select the initial and final recorded states without stepping past either end.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

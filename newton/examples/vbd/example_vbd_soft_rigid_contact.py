@@ -8,6 +8,16 @@ particle-rigid (soft) contacts can be inspected in isolation.
 The bags are laid out in a row; bodies settle under gravity and are
 then lifted, making it easy to spot which shape type causes
 instability.
+
+Success criteria:
+- Six cloth bags each contain a different rigid shape: mesh, cone, sphere, box, capsule, or
+  cylinder.
+- The shapes fall, bounce against the bags, and approach rest without passing through the fabric.
+- After 120 simulation frames of settling, the bags lift and carry their contents; inspect for
+  renewed contact jitter.
+
+Runs:
+- `python -m newton.examples vbd_soft_rigid_contact`
 """
 
 import os
@@ -372,18 +382,6 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument("--seed", type=int, default=42)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Six cloth bags each contain a different rigid shape: mesh, cone, sphere, box, capsule, or cylinder.",
-        "The shapes fall, bounce against the bags, and approach rest without passing through the fabric.",
-        "After 120 simulation frames of settling, the bags lift and carry their contents; "
-        "inspect for renewed contact jitter.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

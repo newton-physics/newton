@@ -4,6 +4,15 @@
 """Example Rigid Soft Contact
 
 Shows how to set up a rigid sphere colliding with a soft FEM beam.
+
+Success criteria:
+- An orange ball falls on a deformable cuboid
+- The deformable cuboid is vibrating/oscillating before the ball hits it.
+- The ball bounces off the cuboid and rolls off screen.
+- The cuboid approaches rest over time.
+
+Runs:
+- `python -m newton.examples rigid_soft_contact`
 """
 
 import numpy as np
@@ -399,18 +408,6 @@ class Example:
             default=10,
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "An orange ball falls on a deformable cuboid",
-        "The deformable cuboid is vibrating/oscillating before the ball hits it.",
-        "The ball bounces off the cuboid and rolls off screen.",
-        "The cuboid approaches rest over time.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

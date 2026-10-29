@@ -5,6 +5,17 @@
 
 Shows how to use the Newton Viewer class to visualize various shapes
 and line instances without a Newton model.
+
+Success criteria:
+- Six floating shapes appear from left to right: sphere, box, cone, cylinder, capsule, and bunny;
+  the sphere bobs, the capsule sways, and the shapes rotate.
+- The Custom UI text section provides Time and Spacing sliders that change animation time and shape
+  spacing.
+- With the GL renderer, Renderer Settings controls visibly affect exposure, diffuse brightness,
+  specular highlights, shadow radius and extents, and spotlight illumination.
+
+Runs:
+- `python -m newton.examples basic_viewer`
 """
 
 import math
@@ -218,20 +229,6 @@ class Example:
 
     def test_final(self):
         pass
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Six floating shapes appear from left to right: sphere, box, cone, cylinder, capsule, "
-        "and bunny; the sphere bobs, the capsule sways, and the shapes rotate.",
-        "The Custom UI text section provides Time and Spacing sliders that change animation time and shape spacing.",
-        "With the GL renderer, Renderer Settings controls visibly affect exposure, diffuse "
-        "brightness, specular highlights, shadow radius and extents, and spotlight "
-        "illumination.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

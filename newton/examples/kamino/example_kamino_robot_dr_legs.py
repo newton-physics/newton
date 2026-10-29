@@ -4,6 +4,15 @@
 """Example Robot DR Legs
 
 Shows how to simulate DR Legs with multiple worlds using SolverKamino.
+
+Success criteria:
+- A torso-free biped with complex leg linkages appears.
+- Right-drag its movable bodies: leg joints remain connected and the mechanism responds without
+  explosive motion.
+
+Runs:
+- `python -m newton.examples kamino_robot_dr_legs`
+- `python -m newton.examples kamino_robot_dr_legs --world-count 16`
 """
 
 import warp as wp
@@ -374,19 +383,6 @@ class Example:
         parser.set_defaults(use_kamino_contacts=True)
         parser.set_defaults(use_graph_conditionals=True)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A torso-free biped with complex leg linkages appears.",
-        "Right-drag its movable bodies: leg joints remain connected and the mechanism responds without explosive motion.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ()},
-        {"args": ("--world-count", "16"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

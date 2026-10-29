@@ -5,6 +5,20 @@
 
 Shows how to set up a simulation of a G1 robot articulation
 from a USD stage using newton.ModelBuilder.add_usd().
+
+Success criteria:
+- G1 humanoids begin upright slightly above the ground, then drop onto their feet and remain
+  supported; the displayed world count matches --world-count.
+- Right-drag individual robots: robots in separate worlds do not collide with one another but
+  interact with their ground plane.
+- Without perturbations, robots remain supported and settle without persistent visible jitter.
+
+Runs:
+- `python -m newton.examples robot_g1 --world-count 3`
+  - Three G1 robots appear.
+- `python -m newton.examples robot_g1 --world-count 2`
+  - Two G1 robots appear; use this scene for the shared viewer checklist.
+- `python -m newton.examples robot_g1 --world-count 16`
 """
 
 import warp as wp
@@ -195,27 +209,6 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=4)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "G1 humanoids begin upright slightly above the ground, then drop onto their feet and remain supported; the displayed world count matches --world-count.",
-        "Right-drag individual robots: robots in separate worlds do not collide with one another but interact with their ground plane.",
-        "Without perturbations, robots remain supported and settle without persistent visible jitter.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "3"),
-            "success_criteria": ("Three G1 robots appear.",),
-        },
-        {
-            "args": ("--world-count", "2"),
-            "success_criteria": ("Two G1 robots appear; use this scene for the shared viewer checklist.",),
-        },
-        {"args": ("--world-count", "16"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

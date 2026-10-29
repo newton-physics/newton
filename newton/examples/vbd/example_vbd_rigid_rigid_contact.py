@@ -7,6 +7,15 @@ Rigid bodies of all supported shape types (sphere, box, capsule,
 cylinder, cone, mesh bear) are dropped into a static rigid box
 container and settle under gravity.  This exercises pure rigid-rigid
 contact handling in the VBD solver at a small (centimeter) scale.
+
+Success criteria:
+- The scene starts paused; resume to observe the drop.
+- Sphere, box, capsule, cylinder, cone, and mesh bodies fall into the static box container.
+- The bodies settle inside the container without sustained jitter, explosive separation, or passing
+  through its walls.
+
+Runs:
+- `python -m newton.examples vbd_rigid_rigid_contact`
 """
 
 import os
@@ -280,18 +289,6 @@ class Example:
         parser.add_argument("--seed", type=int, default=42)
         parser.set_defaults(paused=True)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The scene starts paused; resume to observe the drop.",
-        "Sphere, box, capsule, cylinder, cone, and mesh bodies fall into the static box container.",
-        "The bodies settle inside the container without sustained jitter, explosive "
-        "separation, or passing through its walls.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

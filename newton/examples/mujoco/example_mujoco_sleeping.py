@@ -8,6 +8,16 @@ islands. The stacks topple toward one another in a shared world, allowing
 their islands to merge. Awake articulations use Newton's display palette,
 with a shared color for every tree in the same constraint island. Sleeping
 islands are gray.
+
+Success criteria:
+- Four nearby ant stacks topple toward one another in a shared world.
+- Awake articulations in the same constraint island share a display color; sleeping islands become
+  gray.
+- After settling, sleeping bodies remain still; perturbing a body wakes the affected island and
+  restores its active coloring.
+
+Runs:
+- `python -m newton.examples mujoco_sleeping`
 """
 
 from __future__ import annotations
@@ -290,18 +300,6 @@ class Example:
             help="Scaled velocity threshold below which an island can sleep.",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Four nearby ant stacks topple toward one another in a shared world.",
-        "Awake articulations in the same constraint island share a display color; sleeping islands become gray.",
-        "After settling, sleeping bodies remain still; perturbing a body wakes the affected "
-        "island and restores its active coloring.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

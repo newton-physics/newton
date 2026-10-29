@@ -6,6 +6,13 @@
 This simulation demonstrates four stacked soft body blocks with two cloth
 straps wrapped around them. The blocks fall under gravity, and the cloth
 straps hold them together.
+
+Success criteria:
+- A stack of 4 deformable boxes are tied together by a ribbon.
+- The stack is dropping on the ground plane and bouncing while maintaining their structure.
+
+Runs:
+- `python -m newton.examples softbody_gift`
 """
 
 import numpy as np
@@ -293,16 +300,6 @@ class Example:
             default="vbd",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A stack of 4 deformable boxes are tied together by a ribbon.",
-        "The stack is dropping on the ground plane and bouncing while maintaining their structure.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

@@ -5,6 +5,15 @@
 
 This example shows how to simulate a Y-junction using `newton.Rod` with
 explicit graph topology and a shared junction node.
+
+Success criteria:
+- A suspended Y-shaped cable oscillates and reaches a stable hanging configuration.
+- Right-drag a free part of the cable and release it; motion damps back toward a stable
+  configuration.
+- The junction remains connected and the pinned tip stays fixed throughout the interaction.
+
+Runs:
+- `python -m newton.examples cable_y_junction`
 """
 
 from __future__ import annotations
@@ -208,17 +217,6 @@ class Example:
         q_now = self.state_0.body_q.numpy()[self.pinned_body]
         if np.max(np.abs(q_now[0:3] - self.pinned_body_q0[0:3])) > 1.0e-4:
             raise ValueError("Pinned tip body moved unexpectedly.")
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A suspended Y-shaped cable oscillates and reaches a stable hanging configuration.",
-        "Right-drag a free part of the cable and release it; motion damps back toward a stable configuration.",
-        "The junction remains connected and the pinned tip stays fixed throughout the interaction.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

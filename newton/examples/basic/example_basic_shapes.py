@@ -6,6 +6,16 @@
 Shows how to programmatically create a variety of
 collision shapes using the newton.ModelBuilder() API.
 Supports XPBD (default), VBD, and Kamino DVI solvers.
+
+Success criteria:
+- Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.
+- The shapes fall onto the ground and settle without explosive motion or persistent visible jitter.
+
+Runs:
+- `python -m newton.examples basic_shapes --solver xpbd`
+- `python -m newton.examples basic_shapes --solver vbd`
+- `python -m newton.examples basic_shapes`
+- `python -m newton.examples basic_shapes --solver kamino`
 """
 
 import warp as wp
@@ -264,21 +274,6 @@ class Example:
         if self.contacts is not None:
             self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Seven shapes appear: ellipsoid, cylinder, sphere, capsule, box, bunny, and cone.",
-        "The shapes fall onto the ground and settle without explosive motion or persistent visible jitter.",
-    ),
-    "runs": (
-        {"args": ("--solver", "xpbd"), "success_criteria": ()},
-        {"args": ("--solver", "vbd"), "success_criteria": ()},
-        {"args": (), "success_criteria": ()},
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

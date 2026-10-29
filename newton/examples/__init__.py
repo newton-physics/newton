@@ -641,27 +641,22 @@ def _print_examples(examples: dict[str, str]) -> None:
 
 
 def _describe_example(examples: dict[str, str], argv: list[str]) -> None:
-    """Print an embedded example specification without importing the example module."""
+    """Print an example's module docstring without importing or executing it."""
     import argparse  # noqa: PLC0415
-
-    from ._spec import load_example_spec, render_example_spec  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(prog="python -m newton.examples --describe")
     parser.add_argument("example_name", choices=examples)
-    parser.add_argument("--format", choices=("markdown", "json"), default="markdown")
     args = parser.parse_args(argv)
 
     module_path = examples[args.example_name]
     relative_module = module_path.removeprefix("newton.examples.")
     source_path = os.path.join(get_source_directory(), *relative_module.split(".")) + ".py"
-    try:
-        spec = load_example_spec(source_path)
-    except ValueError as error:
-        parser.error(str(error))
-    if spec is None:
-        parser.error(f"example '{args.example_name}' does not define an example specification")
+    with open(source_path, encoding="utf-8") as source:
+        description = ast.get_docstring(ast.parse(source.read(), filename=source_path))
+    if not description:
+        parser.error(f"example '{args.example_name}' does not have a module docstring")
 
-    print(render_example_spec(args.example_name, spec, output_format=args.format))
+    print(description)
 
 
 def create_parser():
@@ -1011,7 +1006,7 @@ def main():
         print("Usage: python -m newton.examples <example_name> [options]")
         print("       python -m newton.examples          # run default basic_pendulum")
         print("       python -m newton.examples --list   # print available examples")
-        print("       python -m newton.examples --describe <example_name> [--format markdown|json]")
+        print("       python -m newton.examples --describe <example_name> # print description and QA criteria")
         print()
         print("Run 'python -m newton.examples <example_name> --help' to see the")
         print("options supported by a given example.")

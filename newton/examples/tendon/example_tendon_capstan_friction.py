@@ -23,6 +23,19 @@ weights keep a fixed orientation and remain on their respective sides.
 With dynamic pulleys, low finite friction spins the pulley only partially.
 The red tab on each pulley marks rim rotation; the frictionless pulley
 should translate the cable without spinning.
+
+Success criteria:
+- Three side-by-side pulley systems compare friction coefficients of 0.0, 0.40, and 10.0 from left
+  to right.
+- The heavier weights descend and the lighter weights rise along their vertical tracks, remaining on
+  their respective sides.
+- Before payload contact, the frictionless pulley stays nearly stationary, the middle pulley rotates
+  partially, and the high-friction pulley rotates more than the middle one.
+- Red rim markers make the different pulley rotations visible; the cable routes remain bounded
+  without abrupt weight jumps.
+
+Runs:
+- `python -m newton.examples tendon_capstan_friction`
 """
 
 import numpy as np
@@ -340,21 +353,6 @@ class Example:
                 width=0.008,
             )
             self.viewer.end_frame()
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Three side-by-side pulley systems compare friction coefficients of 0.0, 0.40, and 10.0 from left to right.",
-        "The heavier weights descend and the lighter weights rise along their vertical tracks, "
-        "remaining on their respective sides.",
-        "Before payload contact, the frictionless pulley stays nearly stationary, the middle pulley "
-        "rotates partially, and the high-friction pulley rotates more than the middle one.",
-        "Red rim markers make the different pulley rotations visible; the cable routes remain "
-        "bounded without abrupt weight jumps.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

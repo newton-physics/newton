@@ -5,6 +5,13 @@
 
 Balances a small procedural toy body on a narrow pedestal. The body is
 built from primitive shapes so the example has no external mesh asset.
+
+Success criteria:
+- The bird remains balanced upright on the pedestal in the undisturbed run.
+- The body does not drift off its support or fall through the pedestal.
+
+Runs:
+- `python -m newton.examples balance_bird`
 """
 
 from __future__ import annotations
@@ -210,16 +217,6 @@ class Example:
         parser = newton.examples.create_parser()
         parser.add_argument("--solver", default="xpbd", choices=SOLVER_CHOICES, help="Solver used for the balance toy.")
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The bird remains balanced upright on the pedestal in the undisturbed run.",
-        "The body does not drift off its support or fall through the pedestal.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

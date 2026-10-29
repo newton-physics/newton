@@ -7,6 +7,14 @@ Demonstrates a Franka Panda robot picking up bricks from a table
 and stacking them, using SDF-based mesh collision and the MuJoCo solver.
 The arm is controlled with IK and a finite-state machine that sequences
 approach, grasp, lift, move, place and release for each brick.
+
+Success criteria:
+- A Franka gripper and three bricks appear on a table.
+- The gripper stacks the red brick on the green one, then places the pair on the blue brick.
+- After release, all three bricks remain aligned in a stable stack without sustained jitter.
+
+Runs:
+- `python -m newton.examples brick_stacking`
 """
 
 import enum
@@ -1029,17 +1037,6 @@ class Example:
 
         if errors:
             raise ValueError("Brick stacking verification failed:\n  " + "\n  ".join(errors))
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A Franka gripper and three bricks appear on a table.",
-        "The gripper stacks the red brick on the green one, then places the pair on the blue brick.",
-        "After release, all three bricks remain aligned in a stable stack without sustained jitter.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

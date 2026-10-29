@@ -60,7 +60,6 @@ example:
 
 ```bash
 python -m newton.examples --describe robot_omniwheel
-python -m newton.examples --describe robot_omniwheel --format json
 ```
 
 <table>

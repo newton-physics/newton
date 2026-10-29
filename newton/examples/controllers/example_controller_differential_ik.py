@@ -29,6 +29,16 @@ itself can't suggest a motion the controller would ignore.
 --ik-method picks the inverse-Jacobian solve (dls, pinv, transpose,
 adaptive_damping, truncated_svd) -- see the create_controller_from_*_method
 functions below, one per DifferentialIKMethod.
+
+Success criteria:
+- Four robot arms appear with independent draggable target gizmos.
+- Drag reachable targets: each arm follows its own configured task axes without moving unrelated
+  robots.
+- With targets stationary, arms remain near their solved poses without sustained jitter.
+
+Runs:
+- `python -m newton.examples controller_differential_ik`
+- `python -m newton.examples controller_differential_ik --ik-method adaptive_damping`
 """
 
 import numpy as np
@@ -628,20 +638,6 @@ class Example:
         assert np.all(np.abs(five_dof_q - five_dof_ready_q) < 0.2), (
             f"5-DOF arm joints drifted from its ready pose: {five_dof_q}"
         )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Four robot arms appear with independent draggable target gizmos.",
-        "Drag reachable targets: each arm follows its own configured task axes without moving unrelated robots.",
-        "With targets stationary, arms remain near their solved poses without sustained jitter.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ()},
-        {"args": ("--ik-method", "adaptive_damping"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

@@ -27,6 +27,16 @@ mechanical torsion law and the joint's local dual rest length:
   twist_stiffness = GJ / h
 
 and verifies that pure endpoint quaternion twist does not bend the cable.
+
+Success criteria:
+- The root remains untwisted while the tip rotates to its prescribed angle.
+- After the ramp and hold, orange simulated material-frame ticks align with the cyan analytic ticks
+  along the rod.
+- The twist profile is nearly linear and the centerline remains straight without visible bending
+  leakage.
+
+Runs:
+- `python -m newton.examples cable_torsion_material_mapping`
 """
 
 import math
@@ -474,18 +484,6 @@ class Example:
         assert material_scaling["max_scale_relative_error"] < 1.0e-9, (
             f"material scaling response is wrong: {material_scaling['max_scale_relative_error']}"
         )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The root remains untwisted while the tip rotates to its prescribed angle.",
-        "After the ramp and hold, orange simulated material-frame ticks align with the cyan "
-        "analytic ticks along the rod.",
-        "The twist profile is nearly linear and the centerline remains straight without visible bending leakage.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

@@ -4,6 +4,18 @@
 """Example Robot Anymal D
 
 Shows how to simulate Anymal D with multiple worlds using MuJoCo or Kamino.
+
+Success criteria:
+- ANYmal D robots appear standing on the ground.
+- The user can grasp every robot with a right click and move them around.
+- The robots do not interact with each other but collide properly with the ground plane.
+
+Runs:
+- `python -m newton.examples robot_anymal_d --world-count 4`
+  - 4 ANYmal D robots appear.
+- `python -m newton.examples robot_anymal_d --world-count 16`
+  - 16 ANYmal D robots appear.
+- `python -m newton.examples robot_anymal_d --solver kamino`
 """
 
 import warp as wp
@@ -220,27 +232,6 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=8)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "ANYmal D robots appear standing on the ground.",
-        "The user can grasp every robot with a right click and move them around.",
-        "The robots do not interact with each other but collide properly with the ground plane.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "4"),
-            "success_criteria": ("4 ANYmal D robots appear.",),
-        },
-        {
-            "args": ("--world-count", "16"),
-            "success_criteria": ("16 ANYmal D robots appear.",),
-        },
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

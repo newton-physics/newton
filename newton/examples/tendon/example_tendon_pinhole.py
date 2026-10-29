@@ -9,6 +9,15 @@ through the pinhole, descending while the lighter weight ascends.
 
 Unlike a rolling pulley, the pinhole has no radius and no wrap arc.
 The cable simply passes through a single point on the body.
+
+Success criteria:
+- A cable connects two weights through a fixed pinhole above them, without a pulley wrap arc.
+- The heavier weight descends while the lighter weight rises as cable passes through the pinhole.
+- The cable remains connected through the guide without explosive extension or diverging weight
+  motion.
+
+Runs:
+- `python -m newton.examples tendon_pinhole`
 """
 
 import numpy as np
@@ -156,17 +165,6 @@ class Example:
             starts, ends = get_tendon_cable_lines(self.solver, self.model, self.state_0)
             self.viewer.log_lines("cable", starts, ends, colors=(0.9, 0.2, 0.2), width=0.008)
             self.viewer.end_frame()
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A cable connects two weights through a fixed pinhole above them, without a pulley wrap arc.",
-        "The heavier weight descends while the lighter weight rises as cable passes through the pinhole.",
-        "The cable remains connected through the guide without explosive extension or diverging weight motion.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

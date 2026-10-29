@@ -1,7 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Drop three differently colored MPM materials and compare their deformation."""
+"""Drop three differently colored MPM materials and compare their deformation.
+
+Success criteria:
+- 3 different volumes of particles having different colors drop to the ground.
+- Particles are not exploding and drop nicely.
+
+Runs:
+- `python -m newton.examples mpm_multi_material`
+"""
 
 import numpy as np
 import warp as wp
@@ -187,16 +195,6 @@ class Example:
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-6)
         parser.add_argument("--voxel-size", "-dx", type=float, default=0.05)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "3 different volumes of particles having different colors drop to the ground.",
-        "Particles are not exploding and drop nicely.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

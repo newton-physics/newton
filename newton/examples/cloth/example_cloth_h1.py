@@ -8,6 +8,14 @@ for cloth and driven by an IkSolver for robot kinematics.
 
 Demonstrates how to leverage interpolated robot kinematics within the
 collision processing pipeline and feed the results to the cloth solver.
+
+Success criteria:
+- An H1 humanoid wears a jacket while waving its arms, then returns to a resting pose.
+- The jacket follows the robot motion and drapes around it without obvious body penetration,
+  tearing, or explosive deformation.
+
+Runs:
+- `python -m newton.examples cloth_h1`
 """
 
 import numpy as np
@@ -315,17 +323,6 @@ class Example:
         self.viewer.log_state(self.state)
         self.viewer.end_frame()
         wp.synchronize()
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "An H1 humanoid wears a jacket while waving its arms, then returns to a resting pose.",
-        "The jacket follows the robot motion and drapes around it without obvious body "
-        "penetration, tearing, or explosive deformation.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

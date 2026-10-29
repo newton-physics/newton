@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Render a collapsing granular column with multiple visual points per simulation particle."""
+"""Render a collapsing granular column with multiple visual points per simulation particle.
+
+Success criteria:
+- A column of particles collapses on the ground floor creating a circular pile of particles.
+
+Runs:
+- `python -m newton.examples mpm_grain_rendering`
+"""
 
 import numpy as np
 import warp as wp
@@ -133,13 +140,6 @@ class Example:
         parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
         parser.add_argument("--points-per-particle", "-ppp", type=float, default=8)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": ("A column of particles collapses on the ground floor creating a circular pile of particles.",),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

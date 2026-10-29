@@ -8,6 +8,16 @@ from a URDF using the newton.ModelBuilder().
 Note this example does not include a trained policy.
 
 Users can pick bodies by right-clicking and dragging with the mouse.
+
+Success criteria:
+- Quadrupeds drop onto the plane and remain supported on their four legs.
+- The resting robots stay stable without sustained jitter or falling through the ground.
+
+Runs:
+- `python -m newton.examples basic_urdf --world-count 16`
+  - Sixteen quadrupeds appear.
+- `python -m newton.examples basic_urdf`
+- `python -m newton.examples basic_urdf --solver kamino`
 """
 
 import numpy as np
@@ -215,23 +225,6 @@ class Example:
             help="Solver type: xpbd (default), vbd, or kamino",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Quadrupeds drop onto the plane and remain supported on their four legs.",
-        "The resting robots stay stable without sustained jitter or falling through the ground.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "16"),
-            "success_criteria": ("Sixteen quadrupeds appear.",),
-        },
-        {"args": (), "success_criteria": ()},
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

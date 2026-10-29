@@ -6,6 +6,14 @@
 This simulation demonstrates twisting an FEM cloth model using the VBD
 solver, showcasing its ability to handle complex self-contacts while
 ensuring it remains intersection-free.
+
+Success criteria:
+- A suspended sheet twists as its two ends rotate.
+- The sheet stays connected and resolves folds without visible self-intersections or explosive
+  stretching.
+
+Runs:
+- `python -m newton.examples cloth_twist`
 """
 
 import math
@@ -294,16 +302,6 @@ class Example:
             "particle velocities are within a reasonable range",
             lambda q, qd: max(abs(qd)) < 1.5,
         )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A suspended sheet twists as its two ends rotate.",
-        "The sheet stays connected and resolves folds without visible self-intersections or explosive stretching.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

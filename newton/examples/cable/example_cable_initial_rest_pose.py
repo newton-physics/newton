@@ -10,6 +10,16 @@ Demonstrates two cables whose initial and structural-rest poses differ:
 
 The initial and rest segment lengths match in both cases, isolating the
 angular material response from initial stretch.
+
+Success criteria:
+- Two cables start side by side: an orange helix with a straight rest pose and a blue straight cable
+  with a helical rest pose.
+- The orange cable relaxes toward a straighter shape while the blue cable bends toward its helical
+  rest shape.
+- Both cables remain connected and bounded as they respond to their different structural-rest poses.
+
+Runs:
+- `python -m newton.examples cable_initial_rest_pose`
 """
 
 import math
@@ -195,18 +205,6 @@ class Example:
             raise ValueError("Cable state contains non-finite values.")
         if np.max(np.abs(body_q[body_indices, :3])) >= 10.0:
             raise ValueError("Cable body positions exceeded the example bounds.")
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Two cables start side by side: an orange helix with a straight rest pose and a blue "
-        "straight cable with a helical rest pose.",
-        "The orange cable relaxes toward a straighter shape while the blue cable bends toward its helical rest shape.",
-        "Both cables remain connected and bounded as they respond to their different structural-rest poses.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

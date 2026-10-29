@@ -1,7 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Water-like MPM dam break rendered as an extracted surface mesh."""
+"""Water-like MPM dam break rendered as an extracted surface mesh.
+
+Success criteria:
+- The initial water column spreads horizontally through the tank after release.
+- A continuous visible water surface follows the flowing material rather than remaining at its
+  initial shape.
+- Water remains contained by the tank floor and walls without explosive particle escape.
+- With --show-particles, the extracted surface tracks the dense flowing particle volume; sparse
+  spray may remain visible outside the reconstructed surface.
+
+Runs:
+- `python -m newton.examples mpm_water_dam_break`
+- `python -m newton.examples mpm_water_dam_break --show-particles`
+"""
 
 import argparse
 import warnings
@@ -592,18 +605,6 @@ class Example:
         )
         parser.add_argument("--show-particles", action="store_true")
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The initial water column spreads horizontally through the tank after release.",
-        "A continuous visible water surface follows the flowing material rather than remaining at its initial shape.",
-        "Water remains contained by the tank floor and walls without explosive particle escape.",
-        "With --show-particles, the extracted surface tracks the dense flowing particle volume; sparse spray may remain visible outside the reconstructed surface.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()}, {"args": ("--show-particles",), "success_criteria": ()}),
-}
 
 
 if __name__ == "__main__":

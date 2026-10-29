@@ -15,6 +15,17 @@ sufficiently large gradual twist, the straight cable can still develop a
 crown-like centerline wave. The test checks that the open-curve link quantity,
 Lk = Tw + Wr, remains close to the commanded endpoint twist while self-contact
 prevents strand passage.
+
+Success criteria:
+- Both endpoints stay fixed in position as the tip twists about the cable tangent after an initial
+  settling period.
+- The initially straight cable develops a visible helical crown without a shortening ramp.
+- Twist transfers along the cable without abrupt material-frame jumps or excessive segment
+  stretching.
+- Self-contact prevents strand passage; inspect the final held crown from multiple views.
+
+Runs:
+- `python -m newton.examples cable_twist_buckling`
 """
 
 import math
@@ -565,19 +576,6 @@ class Example:
         assert link["min_nonlocal_distance_diameters"] > self.MIN_SELF_DISTANCE_DIAMETERS, (
             f"cable self-distance is too small for a link-conservation test: {link}"
         )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Both endpoints stay fixed in position as the tip twists about the cable tangent after "
-        "an initial settling period.",
-        "The initially straight cable develops a visible helical crown without a shortening ramp.",
-        "Twist transfers along the cable without abrupt material-frame jumps or excessive segment stretching.",
-        "Self-contact prevents strand passage; inspect the final held crown from multiple views.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

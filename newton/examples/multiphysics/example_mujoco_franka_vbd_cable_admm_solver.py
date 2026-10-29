@@ -9,6 +9,20 @@ default. The original VBD cable payload is kept as an alternate mode for A/B
 testing. SolverCoupledADMM detects rigid-rigid contacts between the robot and
 the payload from the model collision pairs, and the same template is
 replicated across many worlds to exercise ADMM contact scaling.
+
+Success criteria:
+- A fixed-base Franka arm and payload appear in each replicated world.
+- The arm approaches, descends, grasps and holds, lifts, moves to the target, lowers, releases, and
+  retracts.
+- Robot-payload contacts resolve during grasping and transport; inspect for separation or
+  interpenetration.
+- The arm base stays above the floor and pick/place targets remain aligned with the payload.
+
+Runs:
+- `python -m newton.examples mujoco_franka_vbd_cable_admm_solver`
+  - The payload is a short XPBD rigid chain.
+- `python -m newton.examples mujoco_franka_vbd_cable_admm_solver --payload-kind vbd-cable`
+  - The payload is a VBD cable.
 """
 
 from __future__ import annotations
@@ -657,21 +671,6 @@ class Example:
             help="Disable graph capture.",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A fixed-base Franka arm and payload appear in each replicated world.",
-        "The arm approaches, descends, grasps and holds, lifts, moves to the target, lowers, releases, and retracts.",
-        "Robot-payload contacts resolve during grasping and transport; inspect for separation or interpenetration.",
-        "The arm base stays above the floor and pick/place targets remain aligned with the payload.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ("The payload is a short XPBD rigid chain.",)},
-        {"args": ("--payload-kind", "vbd-cable"), "success_criteria": ("The payload is a VBD cable.",)},
-    ),
-}
 
 
 if __name__ == "__main__":

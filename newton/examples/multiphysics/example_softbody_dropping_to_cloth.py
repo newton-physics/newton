@@ -6,6 +6,13 @@
 This simulation demonstrates a volumetric soft body (tetrahedral grid)
 dropping onto a cloth sheet. The soft body uses Neo-Hookean elasticity
 and deforms on impact with the cloth.
+
+Success criteria:
+- A deformable box is dropped on an extended piece of cloth.
+- The deformable box is bouncing several times on the cloth.
+
+Runs:
+- `python -m newton.examples softbody_dropping_to_cloth`
 """
 
 import numpy as np
@@ -227,16 +234,6 @@ class Example:
             default=10,
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A deformable box is dropped on an extended piece of cloth.",
-        "The deformable box is bouncing several times on the cloth.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

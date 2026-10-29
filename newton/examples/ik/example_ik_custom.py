@@ -10,6 +10,17 @@ avoidance against an interactive sphere obstacle.
 - Adds gizmos for the end-effector target and the obstacle sphere
 - Re-solves IK every frame from the latest gizmo transforms
 - EE target gizmo snaps back to solved TCP pose on release
+
+Success criteria:
+- A Franka arm and floating sphere appear with end-effector and obstacle gizmos.
+- Left-drag either gizmo: the sphere follows its gizmo and the arm attempts to track the requested
+  end-effector pose.
+- For reachable targets near the obstacle, the end effector moves away from the sphere instead of
+  tracking through it.
+- Releasing the end-effector gizmo snaps its target to the solved pose.
+
+Runs:
+- `python -m newton.examples ik_custom`
 """
 
 import warp as wp
@@ -314,20 +325,6 @@ class Example:
 
         self.viewer.end_frame()
         wp.synchronize()
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A Franka arm and floating sphere appear with end-effector and obstacle gizmos.",
-        "Left-drag either gizmo: the sphere follows its gizmo and the arm attempts to track "
-        "the requested end-effector pose.",
-        "For reachable targets near the obstacle, the end effector moves away from the sphere "
-        "instead of tracking through it.",
-        "Releasing the end-effector gizmo snaps its target to the solved pose.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

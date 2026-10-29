@@ -7,6 +7,17 @@ Demonstrates the Dzhanibekov effect on a free T-shaped rigid body.
 The body is composed of a horizontal bar (一) and a vertical stem (|).
 The initial angular velocity is about the stem axis, gravity is
 disabled, and the body is advanced by a rigid-body solver.
+
+Success criteria:
+- The T-shaped body rotates freely and undergoes an intermediate-axis flip rather than falling under
+  gravity.
+- The center of mass stays in place and rotation remains bounded without visible energy growth.
+
+Runs:
+- `python -m newton.examples basic_dzhanibekov`
+- `python -m newton.examples basic_dzhanibekov --solver xpbd`
+- `python -m newton.examples basic_dzhanibekov --solver mujoco`
+- `python -m newton.examples basic_dzhanibekov --solver kamino`
 """
 
 import numpy as np
@@ -198,21 +209,6 @@ class Example:
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.end_frame()
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The T-shaped body rotates freely and undergoes an intermediate-axis flip rather than falling under gravity.",
-        "The center of mass stays in place and rotation remains bounded without visible energy growth.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ()},
-        {"args": ("--solver", "xpbd"), "success_criteria": ()},
-        {"args": ("--solver", "mujoco"), "success_criteria": ()},
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

@@ -7,6 +7,12 @@ This simulation demonstrates cloth bending behavior using the Vertex Block
 Descent (VBD) integrator. A cloth mesh, initially curved, is dropped on
 the ground. The cloth maintains its curved shape due to bending stiffness,
 controlled by edge_ke and edge_kd parameters.
+
+Success criteria:
+- A bent sheet of cloth is dropping on the floor while maintaining its overall shape.
+
+Runs:
+- `python -m newton.examples cloth_bending`
 """
 
 import numpy as np
@@ -162,13 +168,6 @@ class Example:
             assert max_stretch_ratio < 0.2, (
                 f"edges stretched too much from rest length: max stretch ratio = {max_stretch_ratio:.2%}"
             )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": ("A bent sheet of cloth is dropping on the floor while maintaining its overall shape.",),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

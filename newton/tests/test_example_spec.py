@@ -4,8 +4,7 @@
 import ast
 import contextlib
 import io
-import json
-import runpy
+import shlex
 import sys
 import tempfile
 import unittest
@@ -13,7 +12,6 @@ from pathlib import Path
 from unittest import mock
 
 import newton.examples
-from newton.examples._spec import load_example_spec, render_example_spec
 
 
 def _declared_options(source_path):
@@ -36,116 +34,54 @@ def _declared_options(source_path):
     return options
 
 
+def _documented_runs(description, example_name):
+    """Read commands and their following observations from the QA prose."""
+    runs = {}
+    current = None
+    for line in description.partition("\nRuns:\n")[2].splitlines():
+        if line.startswith("- `"):
+            command = shlex.split(line[3:-1])
+            if command[:4] != ["python", "-m", "newton.examples", example_name]:
+                raise ValueError(f"unexpected example command: {line}")
+            current = tuple(command[4:])
+            if current in runs:
+                raise ValueError(f"duplicate example command: {line}")
+            runs[current] = []
+        elif current is not None:
+            runs[current].append(line)
+    return {args: "\n".join(criteria) for args, criteria in runs.items()}
+
+
 class TestExampleSpec(unittest.TestCase):
-    def test_loads_literal_without_executing_module(self):
-        """Load static metadata without executing surrounding module code."""
-        source = '''"""Example description."""
-raise RuntimeError("must not execute")
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": ("It works.",),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
-'''
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "example_test.py"
-            path.write_text(source, encoding="utf-8")
-            spec = load_example_spec(path)
-
-        self.assertIsNotNone(spec)
-        self.assertEqual(spec.description, "Example description.")
-        self.assertEqual(spec.success_criteria, ("It works.",))
-
-    def test_rejects_non_literal_metadata(self):
-        """Reject metadata that would require executing the example module."""
-        source = '''"""Example description."""
-_EXAMPLE_SPEC = make_spec()
-'''
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "example_test.py"
-            path.write_text(source, encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "must be a literal value"):
-                load_example_spec(path)
-
-    def test_rejects_invalid_schema_versions(self):
-        """Require the schema version to be the exact supported integer value."""
-        for schema_version in ("True", "1.0", "2"):
-            with self.subTest(schema_version=schema_version):
-                source = f'''"""Example description."""
-_EXAMPLE_SPEC = {{
-    "schema_version": {schema_version},
-    "success_criteria": ("It works.",),
-    "runs": ({{"args": (), "success_criteria": ()}},),
-}}
-'''
-                with tempfile.TemporaryDirectory() as directory:
-                    path = Path(directory) / "example_test.py"
-                    path.write_text(source, encoding="utf-8")
-                    with self.assertRaisesRegex(ValueError, "unsupported example spec schema version"):
-                        load_example_spec(path)
-
-    def test_renders_markdown_commands_and_criteria(self):
-        """Render common and run-specific criteria as readable Markdown."""
-        path = Path(__file__).parents[1] / "examples" / "cable" / "example_cable_bundle_hysteresis.py"
-        spec = load_example_spec(path)
-        output = render_example_spec("cable_bundle_hysteresis", spec, output_format="markdown")
-
-        self.assertIn("# `cable_bundle_hysteresis`", output)
-        self.assertIn("Demonstrates Dahl friction model for cable bending hysteresis.", output)
-        self.assertIn("showing realistic memory effects in cable dynamics.", output)
-        self.assertEqual(output.count("python -m newton.examples cable_bundle_hysteresis --no-dahl"), 1)
-        self.assertNotIn("Run interactively:", output)
-        self.assertIn("The cables are mostly straight.", output)
-
-    def test_renders_json_for_agents(self):
-        """Render a structured JSON form with complete commands."""
-        path = Path(__file__).parents[1] / "examples" / "robot" / "example_robot_asroballet.py"
-        spec = load_example_spec(path)
-        payload = json.loads(render_example_spec("robot_asroballet", spec, output_format="json"))
-
-        self.assertEqual(payload["schema_version"], 1)
-        self.assertEqual(payload["name"], "robot_asroballet")
-        self.assertIn("Demonstrates LQR and learned-policy control for the asRoBallet robot", payload["description"])
-        self.assertIn('default; pass "--controller lqr" to use LQR.', payload["description"])
-        self.assertEqual(len(payload["runs"]), 3)
-        self.assertEqual(
-            payload["runs"][1]["command"],
-            "python -m newton.examples robot_asroballet --controller lqr",
-        )
-
     def test_all_examples_have_specs_and_descriptions(self):
-        """Require descriptions, valid specs, and declared run options across the registry.
-
-        This static check detects stale option names, including generated negative
-        boolean options; it does not validate argument values or execute examples.
-        """
+        """Require descriptions, QA criteria, and declared command options for every example."""
         examples_directory = Path(newton.examples.get_source_directory())
         shared_options = _declared_options(examples_directory / "__init__.py")
         errors = []
         for example_name, module_path in newton.examples.get_examples().items():
             relative_module = module_path.removeprefix("newton.examples.")
-            source_path = examples_directory.joinpath(*relative_module.split(".")).with_suffix(".py")
+            path = examples_directory.joinpath(*relative_module.split(".")).with_suffix(".py")
+            description = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8"))) or ""
+            introduction, separator, criteria = description.partition("\nSuccess criteria:\n")
+            if not introduction.strip() or not separator or not criteria.partition("\nRuns:\n")[0].strip():
+                errors.append(f"{example_name}: missing description or success criteria")
             try:
-                spec = load_example_spec(source_path)
+                runs = _documented_runs(description, example_name)
             except ValueError as error:
                 errors.append(f"{example_name}: {error}")
                 continue
-            if spec is None:
-                errors.append(f"{example_name}: does not define _EXAMPLE_SPEC")
-            elif not spec.description.strip():
-                errors.append(f"{example_name}: does not have a module description")
-            if spec is not None:
-                options = shared_options | _declared_options(source_path)
-                for run in spec.runs:
-                    for argument in run.args:
-                        option = argument.partition("=")[0]
-                        if option.startswith("--") and option not in options:
-                            errors.append(f"{example_name}: run uses undeclared option {option}")
-
-        self.assertEqual(errors, [], "Invalid example specifications:\n- " + "\n- ".join(errors))
+            if not runs:
+                errors.append(f"{example_name}: no documented commands")
+            options = shared_options | _declared_options(path)
+            for args in runs:
+                for argument in args:
+                    option = argument.partition("=")[0]
+                    if option.startswith("--") and option not in options:
+                        errors.append(f"{example_name}: run uses undeclared option {option}")
+        self.assertEqual(errors, [], "Invalid example documentation:\n- " + "\n- ".join(errors))
 
     def test_preserves_documented_run_variants(self):
-        """Retain commands removed from descriptions in the rendered run catalog."""
+        """Retain previously documented commands and their applicable observations."""
         documented_runs = {
             "basic_conveyor": ((), ("--solver", "kamino")),
             "basic_conveyor_forces": (("--solver", "kamino"),),
@@ -188,51 +124,46 @@ _EXAMPLE_SPEC = {{
         for example_name, expected_args in documented_runs.items():
             with self.subTest(example=example_name):
                 relative_module = examples[example_name].removeprefix("newton.examples.")
-                source_path = examples_directory.joinpath(*relative_module.split(".")).with_suffix(".py")
-                spec = load_example_spec(source_path)
-                payload = json.loads(render_example_spec(example_name, spec, output_format="json"))
-                actual_args = {tuple(run["args"]) for run in payload["runs"]}
+                path = examples_directory.joinpath(*relative_module.split(".")).with_suffix(".py")
+                description = ast.get_docstring(ast.parse(path.read_text(encoding="utf-8")))
+                runs = _documented_runs(description, example_name)
                 self.assertTrue(
-                    set(expected_args) <= actual_args, f"Missing commands: {set(expected_args) - actual_args}"
+                    set(expected_args) <= runs.keys(), f"Missing commands: {set(expected_args) - runs.keys()}"
                 )
                 if example_name == "admm_contact_solver":
-                    criteria_by_args = {tuple(run["args"]): run["success_criteria"] for run in payload["runs"]}
                     coupled_criterion = "The tray responds to particle contact through ADMM contact coupling."
-                    self.assertNotIn(coupled_criterion, payload["success_criteria"])
-                    self.assertIn(coupled_criterion, criteria_by_args[()])
-                    self.assertNotIn(coupled_criterion, criteria_by_args[("--solver", "free")])
-                    self.assertTrue(any("pass through the tray" in c for c in criteria_by_args[("--solver", "free")]))
+                    self.assertNotIn(coupled_criterion, description.partition("\nRuns:\n")[0])
+                    self.assertIn(coupled_criterion, runs[()])
+                    self.assertNotIn(coupled_criterion, runs[("--solver", "free")])
+                    self.assertIn("pass through the tray", runs[("--solver", "free")])
 
-    def test_describe_cli_renders_json_without_running_example(self):
-        """Dispatch the JSON CLI without executing the selected example."""
-        output = io.StringIO()
-        argv = ["newton.examples", "--describe", "robot_asroballet", "--format", "json"]
-        with (
-            mock.patch.object(sys, "argv", argv),
-            mock.patch.object(runpy, "run_module") as run_module,
-            contextlib.redirect_stdout(output),
-            self.assertRaises(SystemExit) as exit_context,
-        ):
-            newton.examples.main()
-
-        self.assertEqual(exit_context.exception.code, 0)
-        run_module.assert_not_called()
-        self.assertEqual(json.loads(output.getvalue())["name"], "robot_asroballet")
-
-    def test_describe_cli_reports_missing_metadata(self):
-        """Report a clear CLI error when an example has no embedded specification."""
-        error = io.StringIO()
-        argv = ["newton.examples", "--describe", "basic_pendulum"]
-        with (
-            mock.patch.object(sys, "argv", argv),
-            mock.patch("newton.examples._spec.load_example_spec", return_value=None),
-            contextlib.redirect_stderr(error),
-            self.assertRaises(SystemExit) as exit_context,
-        ):
-            newton.examples.main()
-
-        self.assertEqual(exit_context.exception.code, 2)
-        self.assertIn("does not define an example specification", error.getvalue())
+    def test_describe_cli_without_executing_example(self):
+        """Print the complete docstring without executing example code, or report its absence."""
+        description = (
+            "Example probe.\n\nSuccess criteria:\n- It stays upright.\n\nRuns:\n- `python -m newton.examples probe`"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            category = Path(directory) / "basic"
+            category.mkdir()
+            path = category / "example_probe.py"
+            for text in (description, None):
+                with self.subTest(description=text):
+                    source = (repr(text) + "\n" if text else "") + 'raise RuntimeError("must not execute")\n'
+                    path.write_text(source, encoding="utf-8")
+                    output, error = io.StringIO(), io.StringIO()
+                    with (
+                        mock.patch.object(newton.examples, "get_source_directory", return_value=directory),
+                        mock.patch.object(sys, "argv", ["newton.examples", "--describe", "probe"]),
+                        contextlib.redirect_stdout(output),
+                        contextlib.redirect_stderr(error),
+                        self.assertRaises(SystemExit) as exit_context,
+                    ):
+                        newton.examples.main()
+                    self.assertEqual(exit_context.exception.code, 0 if text else 2)
+                    if text:
+                        self.assertEqual(output.getvalue(), description + "\n")
+                    else:
+                        self.assertIn("does not have a module docstring", error.getvalue())
 
 
 if __name__ == "__main__":

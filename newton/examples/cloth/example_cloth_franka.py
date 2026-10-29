@@ -12,6 +12,14 @@ via Newton's IK solver.
 The simulation runs in centimeter scale for better numerical behavior
 of the VBD solver. A vis_state is used to convert back to meter scale
 for visualization.
+
+Success criteria:
+- A setup appears with a Franka robotic arm and a table with a shirt on it.
+- The Franka arm starts to move and fold the shirt properly.
+- The shirt should be folded in a reasonable state at the end of the demo.
+
+Runs:
+- `python -m newton.examples cloth_franka`
 """
 
 from __future__ import annotations
@@ -582,17 +590,6 @@ class Example:
             "body velocities are within a reasonable range",
             lambda q, qd: max(abs(qd)) < 70.0,
         )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A setup appears with a Franka robotic arm and a table with a shirt on it.",
-        "The Franka arm starts to move and fold the shirt properly.",
-        "The shirt should be folded in a reasonable state at the end of the demo.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

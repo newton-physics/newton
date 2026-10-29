@@ -6,6 +6,17 @@
 Shows how to set up a simulation of a UR10 robot arm
 from a USD file using newton.ModelBuilder.add_usd() and
 applies a sinusoidal trajectory to the joint targets.
+
+Success criteria:
+- UR10 robotic arms appear standing on cylinders.
+- They are all moving, performing different motions.
+
+Runs:
+- `python -m newton.examples robot_ur10 --world-count 32`
+  - 32 UR10 robotic arms appear.
+- `python -m newton.examples robot_ur10 --world-count 16`
+  - 16 UR10 robotic arms appear.
+- `python -m newton.examples robot_ur10 --solver kamino`
 """
 
 import numpy as np
@@ -212,26 +223,6 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=None)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "UR10 robotic arms appear standing on cylinders.",
-        "They are all moving, performing different motions.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "32"),
-            "success_criteria": ("32 UR10 robotic arms appear.",),
-        },
-        {
-            "args": ("--world-count", "16"),
-            "success_criteria": ("16 UR10 robotic arms appear.",),
-        },
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

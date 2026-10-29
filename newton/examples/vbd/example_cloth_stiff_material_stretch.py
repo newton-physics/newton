@@ -19,6 +19,15 @@ nu = tri_ka / (tri_ka + 2 * tri_ke).
 
 The example validates the Neo-Hookean membrane against the StableNH
 closed-form prediction.
+
+Success criteria:
+- 5 blue-and-white checkerboard sheets are oriented so that they are parallel to the ground plane.
+- Each material is stretched so that it elongates towards the camera.
+- The materials oscillate as they are stretched.
+- The oscillations are damped and the materials quickly find a rest pose at the maximum stretch.
+
+Runs:
+- `python -m newton.examples cloth_stiff_material_stretch`
 """
 
 import numpy as np
@@ -246,18 +255,6 @@ class Example:
         self.viewer.log_state(self.state_0)
         self.viewer.log_contacts(self.contacts, self.state_0)
         self.viewer.end_frame()
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "5 blue-and-white checkerboard sheets are oriented so that they are parallel to the ground plane.",
-        "Each material is stretched so that it elongates towards the camera.",
-        "The materials oscillate as they are stretched.",
-        "The oscillations are damped and the materials quickly find a rest pose at the maximum stretch.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

@@ -7,6 +7,17 @@ Demonstrates batch control of multiple articulated robots using
 ArticulationView. This example spawns ant and humanoid robots across
 multiple worlds, applies random forces to their joints, and
 performs selective resets on subsets of worlds.
+
+Success criteria:
+- Replicated setups appear consisting of a floating MuJoCo humanoid on top of a floating ant.
+- Both robots fall down on the ground and are then reset to their initial position.
+- All setups behave differently.
+
+Runs:
+- `python -m newton.examples selection_articulations --world-count 8`
+  - 8 replicated humanoid-and-ant setups appear.
+- `python -m newton.examples selection_articulations`
+- `python -m newton.examples selection_articulations --solver kamino`
 """
 
 from __future__ import annotations
@@ -314,24 +325,6 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=16)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Replicated setups appear consisting of a floating MuJoCo humanoid on top of a floating ant.",
-        "Both robots fall down on the ground and are then reset to their initial position.",
-        "All setups behave differently.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "8"),
-            "success_criteria": ("8 replicated humanoid-and-ant setups appear.",),
-        },
-        {"args": (), "success_criteria": ()},
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

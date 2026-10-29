@@ -16,6 +16,24 @@ subspace without the dynamic artifacts of a free moment-driven tip.
 
 Verification/report modes:
   --cable-dahl-mode {all,bend,twist}   (default: all)
+
+Success criteria:
+- The displayed elastic and Dahl cables follow the prescribed slow loading and unloading cycles.
+- Inspect the final settling interval separately from the driven cycles.
+
+Runs:
+- `python -m newton.examples cable_dahl_hysteresis`
+  - Both bend and twist comparison pairs are displayed.
+  - Bend comparisons show force/deflection hysteresis and residual set for Dahl relative to the
+    elastic reference.
+  - Twist comparisons show torque/twist hysteresis without substantial unintended bending.
+- `python -m newton.examples cable_dahl_hysteresis --cable-dahl-mode bend`
+  - Only the bend comparison pair is displayed.
+  - Bend comparisons show force/deflection hysteresis and residual set for Dahl relative to the
+    elastic reference.
+- `python -m newton.examples cable_dahl_hysteresis --cable-dahl-mode twist`
+  - Only the twist comparison pair is displayed.
+  - Twist comparisons show torque/twist hysteresis without substantial unintended bending.
 """
 
 import math
@@ -731,41 +749,6 @@ class Example:
             kappa_gate = max(1.0e-6, 1.0e-4 * max(row["active_kappa"], 1.0))
             assert row["leak_sigma"] < sigma_gate, f"Dahl sigma leaked across bend/twist subspaces: {row}"
             assert row["leak_kappa"] < kappa_gate, f"Dahl kappa leaked across bend/twist subspaces: {row}"
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The displayed elastic and Dahl cables follow the prescribed slow loading and unloading cycles.",
-        "Inspect the final settling interval separately from the driven cycles.",
-    ),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": (
-                "Both bend and twist comparison pairs are displayed.",
-                "Bend comparisons show force/deflection hysteresis and residual set for Dahl relative "
-                "to the elastic reference.",
-                "Twist comparisons show torque/twist hysteresis without substantial unintended bending.",
-            ),
-        },
-        {
-            "args": ("--cable-dahl-mode", "bend"),
-            "success_criteria": (
-                "Only the bend comparison pair is displayed.",
-                "Bend comparisons show force/deflection hysteresis and residual set for Dahl relative "
-                "to the elastic reference.",
-            ),
-        },
-        {
-            "args": ("--cable-dahl-mode", "twist"),
-            "success_criteria": (
-                "Only the twist comparison pair is displayed.",
-                "Twist comparisons show torque/twist hysteresis without substantial unintended bending.",
-            ),
-        },
-    ),
-}
 
 
 if __name__ == "__main__":

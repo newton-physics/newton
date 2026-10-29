@@ -10,6 +10,18 @@ proxy-body coupling path with momentum-based force harvesting.
 
 Pass ``--solver xpbd`` to run the same scene with a single XPBD solver
 (no coupling) as a reference baseline.
+
+Success criteria:
+- Rigid boxes and an articulated chain appear above a cloth sheet.
+- The rigid bodies interact with the deformables, bouncing on contact without flying apart or
+  excessively penetrating the ground.
+- The deformables remain bounded without stretching explosively or sinking through the ground.
+
+Runs:
+- `python -m newton.examples mujoco_xpbd_coupled_solver`
+  - Deformable contact reactions affect the rigid bodies through proxy coupling.
+- `python -m newton.examples mujoco_xpbd_coupled_solver --solver xpbd`
+  - The same scene runs as a single-solver XPBD reference.
 """
 
 from __future__ import annotations
@@ -317,24 +329,6 @@ class Example:
             default=1,
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Rigid boxes and an articulated chain appear above a cloth sheet.",
-        "The rigid bodies interact with the deformables, bouncing on contact without flying "
-        "apart or excessively penetrating the ground.",
-        "The deformables remain bounded without stretching explosively or sinking through the ground.",
-    ),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": ("Deformable contact reactions affect the rigid bodies through proxy coupling.",),
-        },
-        {"args": ("--solver", "xpbd"), "success_criteria": ("The same scene runs as a single-solver XPBD reference.",)},
-    ),
-}
 
 
 if __name__ == "__main__":

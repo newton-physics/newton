@@ -5,6 +5,18 @@
 
 This simulation demonstrates a simple cloth hanging behavior. A planar cloth
 mesh is fixed on one side and hangs under gravity, colliding with the ground.
+
+Success criteria:
+- For each solver variant, a hanging piece of cloth appears and drops to the ground plane.
+- The cloth is much longer than wide.
+- The cloth is moving until reaching a stable state.
+- It is expected that the behavior is slightly different with every solver.
+
+Runs:
+- `python -m newton.examples cloth_hanging --width 128 --height 16 --solver semi_implicit`
+- `python -m newton.examples cloth_hanging --width 128 --height 16 --solver style3d`
+- `python -m newton.examples cloth_hanging --width 128 --height 16 --solver xpbd`
+- `python -m newton.examples cloth_hanging --width 128 --height 16 --solver vbd`
 """
 
 import warp as wp
@@ -210,23 +222,6 @@ class Example:
         parser.add_argument("--width", type=int, default=64, help="Cloth resolution in x.")
         parser.add_argument("--height", type=int, default=32, help="Cloth resolution in y.")
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "For each solver variant, a hanging piece of cloth appears and drops to the ground plane.",
-        "The cloth is much longer than wide.",
-        "The cloth is moving until reaching a stable state.",
-        "It is expected that the behavior is slightly different with every solver.",
-    ),
-    "runs": (
-        {"args": ("--width", "128", "--height", "16", "--solver", "semi_implicit"), "success_criteria": ()},
-        {"args": ("--width", "128", "--height", "16", "--solver", "style3d"), "success_criteria": ()},
-        {"args": ("--width", "128", "--height", "16", "--solver", "xpbd"), "success_criteria": ()},
-        {"args": ("--width", "128", "--height", "16", "--solver", "vbd"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

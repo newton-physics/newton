@@ -12,6 +12,14 @@ water-tight soft-FACE pass detects the triangle face crossing the pinch, so
 the grip (and the lift that follows) works only with
 ``enable_rigid_soft_full_surface_contact=True``. With the flag off the
 triangle slips out and falls.
+
+Success criteria:
+- Cube finger pads pinch the center of a triangle whose three vertices lie outside the jaws.
+- The triangle lifts with the gripper and remains held during the hold phase; its face does not slip
+  through the fingers.
+
+Runs:
+- `python -m newton.examples vbd_gripper_soft_triangle`
 """
 
 from __future__ import annotations
@@ -355,17 +363,6 @@ class Example:
         parser = newton.examples.create_parser()
         parser.set_defaults(num_frames=PARAMS["num_frames"])
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Cube finger pads pinch the center of a triangle whose three vertices lie outside the jaws.",
-        "The triangle lifts with the gripper and remains held during the hold phase; its face "
-        "does not slip through the fingers.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

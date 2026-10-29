@@ -6,6 +6,15 @@
 A single particle is attached with springs to each point of a cage.
 The objective is to optimize the rest length of the springs in order
 for the particle to be pulled towards a target position.
+
+Success criteria:
+- A cage of anchor spheres, a spring-connected particle, and a red target appear.
+- With --verbose, training iterations and loss values are printed.
+- As training converges, the particle approaches its target and loss reaches below 1e-6.
+
+Runs:
+- `python -m newton.examples diffsim_spring_cage --verbose`
+- `python -m newton.examples diffsim_spring_cage`
 """
 
 import numpy as np
@@ -273,20 +282,6 @@ class Example:
             "--verbose", action="store_true", help="Print out additional status messages during execution."
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A cage of anchor spheres, a spring-connected particle, and a red target appear.",
-        "With --verbose, training iterations and loss values are printed.",
-        "As training converges, the particle approaches its target and loss reaches below 1e-6.",
-    ),
-    "runs": (
-        {"args": ("--verbose",), "success_criteria": ()},
-        {"args": (), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

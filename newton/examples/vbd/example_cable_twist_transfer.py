@@ -18,6 +18,15 @@ centerline drift.
 The acceptance criteria check Newton's VBD bend/twist split directly: twist
 should remain a tangent-axis mode and should transfer across routed cable
 geometry.
+
+Success criteria:
+- Straight, V-kink, and semicircular cables are held between fixed endpoints while the root twists.
+- Twist propagates along the straight and smoothly curved paths, while it concentrates before the
+  sharp V kink.
+- The held tip keeps its rest orientation and the centerlines do not undergo large drift.
+
+Runs:
+- `python -m newton.examples cable_twist_transfer`
 """
 
 import math
@@ -379,17 +388,6 @@ class Example:
             f"semicircle twist did not transfer around the curve: {twist_metrics}"
         )
         assert max(centerline_drifts) < 0.08, f"centerline drift too large: {centerline_drifts}"
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Straight, V-kink, and semicircular cables are held between fixed endpoints while the root twists.",
-        "Twist propagates along the straight and smoothly curved paths, while it concentrates before the sharp V kink.",
-        "The held tip keeps its rest orientation and the centerlines do not undergo large drift.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

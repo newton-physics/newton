@@ -5,6 +5,16 @@
 
 Shows how to set up a simulation of a rigid-body cartpole articulation
 from a USD stage using newton.ModelBuilder.add_usd().
+
+Success criteria:
+- Replicated setups appear consisting of a double pendulum attached to a rail.
+- The double pendulum is consistently moving.
+
+Runs:
+- `python -m newton.examples robot_cartpole --world-count 2`
+  - 2 cartpole setups appear.
+- `python -m newton.examples robot_cartpole --world-count 100`
+  - 100 cartpole setups appear.
 """
 
 import numpy as np
@@ -221,25 +231,6 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=100)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Replicated setups appear consisting of a double pendulum attached to a rail.",
-        "The double pendulum is consistently moving.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "2"),
-            "success_criteria": ("2 cartpole setups appear.",),
-        },
-        {
-            "args": ("--world-count", "100"),
-            "success_criteria": ("100 cartpole setups appear.",),
-        },
-    ),
-}
 
 
 if __name__ == "__main__":

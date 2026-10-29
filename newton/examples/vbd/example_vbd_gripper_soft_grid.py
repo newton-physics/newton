@@ -13,6 +13,15 @@ The legacy per-particle path finds no vertex between the jaws, so the grid is
 gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
 via the water-tight soft-EDGE pass. With the flag off the grid slips out and
 falls.
+
+Success criteria:
+- Cube finger pads close across the interior diagonal edge of a two-triangle grid whose corner
+  vertices lie outside the jaws.
+- The grid lifts with the gripper and remains held in the air during the hold phase, without
+  slipping through the fingers.
+
+Runs:
+- `python -m newton.examples vbd_gripper_soft_grid`
 """
 
 from __future__ import annotations
@@ -359,18 +368,6 @@ class Example:
             help="Use triangulated cube finger pads instead of analytic boxes.",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Cube finger pads close across the interior diagonal edge of a two-triangle grid whose "
-        "corner vertices lie outside the jaws.",
-        "The grid lifts with the gripper and remains held in the air during the hold phase, "
-        "without slipping through the fingers.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

@@ -34,6 +34,26 @@ These rows are direct analytic checks for "bend does not create twist" and
 
 Verification/report modes:
   --cable-analytic-mode {all,bend,twist,twist_max}   (default: all)
+
+Success criteria:
+- Kinematic endpoints follow the prescribed bend or twist targets.
+- After the ramp and hold, simulated overlays closely match the analytic reference for each
+  displayed row.
+
+Runs:
+- `python -m newton.examples cable_bend_twist_analytic`
+  - Both bend and twist rows are displayed.
+  - Bend rows follow constant-curvature centerlines without unwanted twist.
+  - Twist rows distribute twist uniformly without visible bending.
+- `python -m newton.examples cable_bend_twist_analytic --cable-analytic-mode bend`
+  - Only bend rows are displayed.
+  - Bend rows follow constant-curvature centerlines without unwanted twist.
+- `python -m newton.examples cable_bend_twist_analytic --cable-analytic-mode twist`
+  - Only twist rows are displayed.
+  - Twist rows distribute twist uniformly without visible bending.
+- `python -m newton.examples cable_bend_twist_analytic --cable-analytic-mode twist_max`
+  - The maximum-twist reference row is displayed.
+  - Twist rows distribute twist uniformly without visible bending.
 """
 
 import math
@@ -520,46 +540,6 @@ class Example:
             assert max(twist_tip_errors) < math.radians(0.02), f"twist tip errors too high: {twist_tip_errors}"
             assert max(twist_linear_errors) < math.radians(0.02), f"twist linear errors too high: {twist_linear_errors}"
             assert max(twist_transverse) < 1.0e-5, f"pure twist created transverse motion: {twist_transverse}"
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Kinematic endpoints follow the prescribed bend or twist targets.",
-        "After the ramp and hold, simulated overlays closely match the analytic reference for each displayed row.",
-    ),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": (
-                "Both bend and twist rows are displayed.",
-                "Bend rows follow constant-curvature centerlines without unwanted twist.",
-                "Twist rows distribute twist uniformly without visible bending.",
-            ),
-        },
-        {
-            "args": ("--cable-analytic-mode", "bend"),
-            "success_criteria": (
-                "Only bend rows are displayed.",
-                "Bend rows follow constant-curvature centerlines without unwanted twist.",
-            ),
-        },
-        {
-            "args": ("--cable-analytic-mode", "twist"),
-            "success_criteria": (
-                "Only twist rows are displayed.",
-                "Twist rows distribute twist uniformly without visible bending.",
-            ),
-        },
-        {
-            "args": ("--cable-analytic-mode", "twist_max"),
-            "success_criteria": (
-                "The maximum-twist reference row is displayed.",
-                "Twist rows distribute twist uniformly without visible bending.",
-            ),
-        },
-    ),
-}
 
 
 if __name__ == "__main__":

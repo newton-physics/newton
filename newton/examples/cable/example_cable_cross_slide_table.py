@@ -14,6 +14,15 @@ The sample combines passive revolute pulleys, a closed cable loop, and two
 commanded input pulleys. The input rotations trace a rectangle with the
 beige table marker while the solver resolves cable wrapping and contact
 against the guides.
+
+Success criteria:
+- Two blue input pulleys pull the green and beige carriages through a deformable cable loop.
+- The beige table moves in the XY plane, tracking the commanded path without losing the cable from
+  its guides.
+- Live plots report both blue input rotations, beige table X and Y positions, and tracking error.
+
+Runs:
+- `python -m newton.examples cable_cross_slide_table`
 """
 
 from __future__ import annotations
@@ -907,17 +916,6 @@ class Example:
                 f"RMS error {table_tracking_rms_error:.4f} m exceeds "
                 f"{TABLE_TRACKING_RMS_ERROR_TOLERANCE:.4f} m."
             )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Two blue input pulleys pull the green and beige carriages through a deformable cable loop.",
-        "The beige table moves in the XY plane, tracking the commanded path without losing the cable from its guides.",
-        "Live plots report both blue input rotations, beige table X and Y positions, and tracking error.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

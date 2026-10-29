@@ -7,6 +7,14 @@ Demonstrates complex cable-to-cable contact and settling behavior.
 Creates a pile of cables with alternating
 orientations (X/Y axis) and sinusoidal waviness. Tests multi-body contact
 resolution, stacking stability, and friction in dense cable assemblies.
+
+Success criteria:
+- An ordered pile of cables drops onto the ground.
+- The pile settles and remains mostly static, with no sustained visible contact chatter or cables
+  falling through the ground.
+
+Runs:
+- `python -m newton.examples cable_pile`
 """
 
 import math
@@ -246,17 +254,6 @@ class Example:
             )
 
             assert (np.abs(body_velocities) < 5e2).all(), "Velocities too large"
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "An ordered pile of cables drops onto the ground.",
-        "The pile settles and remains mostly static, with no sustained visible contact chatter "
-        "or cables falling through the ground.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

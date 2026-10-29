@@ -17,6 +17,15 @@ decoupling computed internally by the controller from the sim model).
 
 The two robots have different DOF counts, exercising the heterogeneous
 per-robot DOF layout and the indexed-view scatter into the sim.
+
+Success criteria:
+- The three-joint chain tracks sinusoidal targets with staggered phases.
+- The single pendulum rotates continuously through the horizontal pose despite gravity.
+- Both mechanisms stay connected and follow bounded motion without unstable control oscillation.
+
+Runs:
+- `python -m newton.examples controller_joint_impedance_heterogeneous`
+- `python -m newton.examples controller_joint_impedance_heterogeneous --solver kamino`
 """
 
 import math
@@ -246,20 +255,6 @@ class Example:
         assert np.all(np.abs(joint_q[:3] - offset_a) <= TARGET_AMP + 0.3), (
             f"Robot A joints out of expected range: {joint_q[:3]}"
         )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The three-joint chain tracks sinusoidal targets with staggered phases.",
-        "The single pendulum rotates continuously through the horizontal pose despite gravity.",
-        "Both mechanisms stay connected and follow bounded motion without unstable control oscillation.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ()},
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

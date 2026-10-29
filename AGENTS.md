@@ -43,4 +43,4 @@ uvx --with virtualenv asv run --launch-method spawn main^!
   - Implement `test_final()` or `test_post_step()`; an example may implement both.
   - In test mode, `test_post_step()` runs after each simulation step and `test_final()` runs after the example completes.
 - Register the example in `README.md` with its `python -m newton.examples <name>` command and a 320x320 JPEG screenshot.
-- Include a module description and literal `_EXAMPLE_SPEC` with run variants and success criteria, as described in `docs/guide/development.rst` (Embedded success criteria). CI checks every registered example.
+- Include a module docstring with a general description, success criteria, and run commands, as described in `docs/guide/development.rst` (Embedded success criteria). CI checks every registered example.

@@ -13,6 +13,16 @@ Cable geometry/material, Franka joint gains, contact parameters and the
 proxy coupling solver settings mirror IsaacLab's franka_cable_env_cfg.
 
 Standalone: depends only on newton + warp (no IsaacLab).
+
+Success criteria:
+- A fixed-base Franka FR3 arm and a deformable cable appear on a working surface.
+- The Franka arm approaches the cable, descends to the cable, and closes the gripper around it.
+- The arm lifts the cable, moves it to a target location, lowers it, releases it, and retracts.
+- The cable behaves as a deformable VBD rod and interacts with the gripper through proxy contacts.
+- The grasped cable segment should be placed close to the target location.
+
+Runs:
+- `python -m newton.examples franka_cable_ik_pick_place`
 """
 
 from __future__ import annotations
@@ -551,19 +561,6 @@ class Example:
             help="Disable graph capture.",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A fixed-base Franka FR3 arm and a deformable cable appear on a working surface.",
-        "The Franka arm approaches the cable, descends to the cable, and closes the gripper around it.",
-        "The arm lifts the cable, moves it to a target location, lowers it, releases it, and retracts.",
-        "The cable behaves as a deformable VBD rod and interacts with the gripper through proxy contacts.",
-        "The grasped cable segment should be placed close to the target location.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

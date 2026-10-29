@@ -9,6 +9,18 @@ supplies the drawer response through frictionless ADMM contacts.
 
 Pass ``--solver free`` to disable the ADMM contacts and compare against the
 uncoupled baseline.
+
+Success criteria:
+- A ball-jointed rigid tray/drawer appears below a grid-like XPBD particle pad.
+- The XPBD particles fall under gravity.
+
+Runs:
+- `python -m newton.examples admm_contact_solver`
+  - The tray responds to particle contact through ADMM contact coupling.
+  - The particles should contact the tray and each other instead of passing through the tray.
+- `python -m newton.examples admm_contact_solver --solver free`
+  - Without ADMM contact coupling, the particles pass through the tray instead of transferring
+    contact forces to it.
 """
 
 from __future__ import annotations
@@ -405,30 +417,6 @@ class Example:
             default=0.02,
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A ball-jointed rigid tray/drawer appears below a grid-like XPBD particle pad.",
-        "The XPBD particles fall under gravity.",
-    ),
-    "runs": (
-        {
-            "args": (),
-            "success_criteria": (
-                "The tray responds to particle contact through ADMM contact coupling.",
-                "The particles should contact the tray and each other instead of passing through the tray.",
-            ),
-        },
-        {
-            "args": ("--solver", "free"),
-            "success_criteria": (
-                "Without ADMM contact coupling, the particles pass through the tray instead of transferring contact forces to it.",
-            ),
-        },
-    ),
-}
 
 
 if __name__ == "__main__":

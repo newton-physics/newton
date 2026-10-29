@@ -5,6 +5,18 @@
 
 Demonstrates heightfield terrain with objects dropped onto it.
 Supports XPBD, MuJoCo, and Kamino DVI solvers.
+
+Success criteria:
+- Five spheres start above a wavy heightfield and drop onto its surface.
+- Spheres roll along the terrain; some may roll off its edges while others come to rest on the
+  surface.
+- Spheres that come to rest on the terrain remain stable without persistent visible contact jitter;
+  other spheres may continue rolling smoothly.
+
+Runs:
+- `python -m newton.examples basic_heightfield`
+- `python -m newton.examples basic_heightfield --solver mujoco`
+- `python -m newton.examples basic_heightfield --solver kamino`
 """
 
 import numpy as np
@@ -152,21 +164,6 @@ class Example:
         for body_idx in self.sphere_bodies:
             z = float(body_q[body_idx, 2])
             assert z > -1.0, f"Sphere body {body_idx} fell through heightfield: z={z:.4f}"
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Five spheres start above a wavy heightfield and drop onto its surface.",
-        "Spheres roll along the terrain; some may roll off its edges while others come to rest on the surface.",
-        "Spheres that come to rest on the terrain remain stable without persistent visible contact jitter; other spheres may continue rolling smoothly.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ()},
-        {"args": ("--solver", "mujoco"), "success_criteria": ()},
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

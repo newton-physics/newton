@@ -20,6 +20,16 @@ render-time displacement: it shifts every drawn object in the layer
 without changing the underlying physics state, so passing
 ``wp.transform_identity()`` (or a zero-translation transform) makes the
 layers overlay exactly.
+
+Success criteria:
+- Four solver layers show connected four-link pendulum chains initially overlaid in the same view.
+- The chains swing; solver-dependent trajectories can diverge while links remain connected and
+  within their pendulum planes.
+- Toggling a layer in the Layers panel hides or shows only that solver layer without removing the
+  others.
+
+Runs:
+- `python -m newton.examples basic_multi_solver_overlay`
 """
 
 import warnings
@@ -271,18 +281,6 @@ class Example:
             if layer.contacts is not None:
                 self.viewer.log_contacts(layer.contacts, layer.state_1, observables=layer.solver_observables)
         self.viewer.end_frame()
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Four solver layers show connected four-link pendulum chains initially overlaid in the same view.",
-        "The chains swing; solver-dependent trajectories can diverge while links remain "
-        "connected and within their pendulum planes.",
-        "Toggling a layer in the Layers panel hides or shows only that solver layer without removing the others.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

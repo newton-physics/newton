@@ -6,6 +6,23 @@
 Shows how to set up a pick-and-place manipulation simulation using a
 Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
 Supports different scene configurations: pen or cube.
+
+Success criteria:
+- Each world shows a Franka arm, a support box, a cup, and the selected grasp object.
+- The arm lifts and transports the object while the cup remains upright.
+
+Runs:
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene cube`
+  - The arm grasps the cube and releases it on top of the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene pen`
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --scene pen --world-count 1`
+  - One world appears.
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
 """
 
 import argparse
@@ -584,38 +601,6 @@ class Example:
             help="Scene type to load (pen, cube)",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Each world shows a Franka arm, a support box, a cup, and the selected grasp object.",
-        "The arm lifts and transports the object while the cup remains upright.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "2", "--scene", "cube"),
-            "success_criteria": (
-                "The arm grasps the cube and releases it on top of the cup.",
-                "Two worlds appear.",
-            ),
-        },
-        {
-            "args": ("--world-count", "2", "--scene", "pen"),
-            "success_criteria": (
-                "The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate downward, then drops it inside the cup.",
-                "Two worlds appear.",
-            ),
-        },
-        {
-            "args": ("--scene", "pen", "--world-count", "1"),
-            "success_criteria": (
-                "One world appears.",
-                "The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate downward, then drops it inside the cup.",
-            ),
-        },
-    ),
-}
 
 
 if __name__ == "__main__":

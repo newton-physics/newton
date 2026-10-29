@@ -1,7 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Collapse granular MPM material onto a rigid collider and the ground."""
+"""Collapse granular MPM material onto a rigid collider and the ground.
+
+Success criteria:
+- A box-shaped volume of particles collapses onto the rigid box collider.
+- Particles flow around the box and accumulate on the ground and collider rather than passing
+  through either.
+
+Runs:
+- `python -m newton.examples mpm_granular`
+"""
 
 import warnings
 
@@ -297,16 +306,6 @@ class Example:
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-4)
         parser.add_argument("--voxel-size", "-dx", type=float, default=0.1)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A box-shaped volume of particles collapses onto the rigid box collider.",
-        "Particles flow around the box and accumulate on the ground and collider rather than passing through either.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

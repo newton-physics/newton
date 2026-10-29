@@ -18,6 +18,16 @@ Rows at or below the threshold are fixed planar references. Rows above the
 threshold remain dynamic; the sweep verifies that supercritical rings develop
 a visible out-of-plane response, while exact post-buckling branch and
 amplitude are not treated as monotonic calibration targets.
+
+Success criteria:
+- The fixed planar reference rings remain planar; do not count these kinematic references as
+  evidence of dynamic stability.
+- The above-threshold dynamic sweep develops a visible out-of-plane writhe response.
+- Rings remain finite and connected; neither the post-buckling shape nor amplitude is required to
+  vary monotonically with stiffness.
+
+Runs:
+- `python -m newton.examples cable_michell_threshold`
 """
 
 import math
@@ -398,19 +408,6 @@ class Example:
         assert max_above_threshold_coplanarity > 10.0 * max(max_stable_coplanarity, 1.0e-8), (
             f"above-threshold rings should become much less planar than stable rings: {metrics}"
         )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The fixed planar reference rings remain planar; do not count these kinematic "
-        "references as evidence of dynamic stability.",
-        "The above-threshold dynamic sweep develops a visible out-of-plane writhe response.",
-        "Rings remain finite and connected; neither the post-buckling shape nor amplitude is "
-        "required to vary monotonically with stiffness.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

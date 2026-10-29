@@ -14,6 +14,17 @@ alternative to proxy-body coupling based on linearised ADMM over model
 joints, model attachment annotations, and collision-detected contacts rather
 than proxy bodies. See ``docs/plans/2026-04-23-admm-coupling.tex`` for the
 algorithm.
+
+Success criteria:
+- A pinned VBD cloth sheet appears with a rigid ball attached near its center.
+- A separate rigid pendulum link carries a VBD rigid payload through a model ball joint.
+- ADMM attachment constraints keep the rigid ball attached to the cloth and keep the pendulum
+  payload coupled.
+- The ball should hang below the cloth plane while remaining attached to the cloth center.
+- The pendulum payload should remain coupled without excessive drift.
+
+Runs:
+- `python -m newton.examples mujoco_vbd_admm_solver`
 """
 
 from __future__ import annotations
@@ -290,19 +301,6 @@ class Example:
             help="Keep cross-solver joint neighbor bodies as inertial ADMM proxies.",
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A pinned VBD cloth sheet appears with a rigid ball attached near its center.",
-        "A separate rigid pendulum link carries a VBD rigid payload through a model ball joint.",
-        "ADMM attachment constraints keep the rigid ball attached to the cloth and keep the pendulum payload coupled.",
-        "The ball should hang below the cloth plane while remaining attached to the cloth center.",
-        "The pendulum payload should remain coupled without excessive drift.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

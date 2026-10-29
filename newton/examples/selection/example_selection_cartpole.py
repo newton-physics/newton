@@ -8,6 +8,17 @@ ArticulationView. This example spawns multiple cartpole robots and applies
 center-directed cart forces from randomized initial cart and pole states.
 
 To limit the number of worlds to render use the max-worlds argument.
+
+Success criteria:
+- The displayed setups consist of a double pendulum attached to a rail.
+- Each setup evolves from random initial cart and pole coordinates under a center-directed cart
+  force.
+
+Runs:
+- `python -m newton.examples selection_cartpole --world-count 8`
+  - 8 cartpole setups appear.
+- `python -m newton.examples selection_cartpole --world-count 16 --max-worlds 8`
+  - 16 worlds are simulated, but only 8 are displayed because of --max-worlds.
 """
 
 from __future__ import annotations
@@ -251,25 +262,6 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=16)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "The displayed setups consist of a double pendulum attached to a rail.",
-        "Each setup evolves from random initial cart and pole coordinates under a center-directed cart force.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "8"),
-            "success_criteria": ("8 cartpole setups appear.",),
-        },
-        {
-            "args": ("--world-count", "16", "--max-worlds", "8"),
-            "success_criteria": ("16 worlds are simulated, but only 8 are displayed because of --max-worlds.",),
-        },
-    ),
-}
 
 
 if __name__ == "__main__":

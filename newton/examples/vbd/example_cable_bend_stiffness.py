@@ -20,6 +20,16 @@ Other assertions:
   - Deflection decreases monotonically as bend stiffness increases.
   - Tip stays close to its original Y, so the bend load does not leak sideways.
   - Tip X foreshortening remains within a geometric bound.
+
+Success criteria:
+- Three cantilever cables receive the same transverse tip load while their roots remain fixed.
+- After the load ramp and hold, larger bend stiffness produces smaller deflection; tip deflection
+  times bend stiffness is approximately equal across the cables.
+- The tips bend downward without appreciable sideways drift or axial stretching; inspect the held
+  response for persistent jitter.
+
+Runs:
+- `python -m newton.examples cable_bend_stiffness`
 """
 
 import numpy as np
@@ -225,19 +235,6 @@ class Example:
                 f"cable {i}: tip X displacement {x:+.4f} m outside expected "
                 f"foreshortening range [-{geometric_bound:.4f}, {0.005 * self.cable_length:.4f}]"
             )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "Three cantilever cables receive the same transverse tip load while their roots remain fixed.",
-        "After the load ramp and hold, larger bend stiffness produces smaller deflection; tip "
-        "deflection times bend stiffness is approximately equal across the cables.",
-        "The tips bend downward without appreciable sideways drift or axial stretching; "
-        "inspect the held response for persistent jitter.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

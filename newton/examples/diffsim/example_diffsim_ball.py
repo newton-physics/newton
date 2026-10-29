@@ -9,6 +9,16 @@ such that it bounces off the wall and floor in order to hit a target.
 This example uses the built-in wp.Tape() object to compute gradients of
 the distance to target (loss) w.r.t the initial velocity, followed by
 a simple gradient-descent optimization step.
+
+Success criteria:
+- A ball bounces off the ground and wall toward a floating target, with previous trajectories
+  retained in the view.
+- Training improves target accuracy and the loss plot shows the optimization trend.
+- When the gradient check runs, numeric and analytic gradients agree within the example check
+  tolerance.
+
+Runs:
+- `python -m newton.examples diffsim_ball`
 """
 
 import numpy as np
@@ -255,18 +265,6 @@ class Example:
             "--verbose", action="store_true", help="Print out additional status messages during execution."
         )
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "A ball bounces off the ground and wall toward a floating target, with previous "
-        "trajectories retained in the view.",
-        "Training improves target accuracy and the loss plot shows the optimization trend.",
-        "When the gradient check runs, numeric and analytic gradients agree within the example check tolerance.",
-    ),
-    "runs": ({"args": (), "success_criteria": ()},),
-}
 
 
 if __name__ == "__main__":

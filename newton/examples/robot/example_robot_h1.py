@@ -5,6 +5,18 @@
 
 Shows how to set up a simulation of a H1 articulation
 from a USD file using newton.ModelBuilder.add_usd().
+
+Success criteria:
+- H1 humanoid robots appear standing on the ground and then collapse on the ground.
+- The user can grasp every robot with a right click and move them around.
+- The robots do not interact with each other but collide properly with the ground plane.
+
+Runs:
+- `python -m newton.examples robot_h1 --world-count 5`
+  - 5 H1 humanoid robots appear.
+- `python -m newton.examples robot_h1 --world-count 16`
+  - 16 H1 humanoid robots appear.
+- `python -m newton.examples robot_h1 --solver kamino`
 """
 
 import warp as wp
@@ -211,27 +223,6 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=4)
         return parser
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "H1 humanoid robots appear standing on the ground and then collapse on the ground.",
-        "The user can grasp every robot with a right click and move them around.",
-        "The robots do not interact with each other but collide properly with the ground plane.",
-    ),
-    "runs": (
-        {
-            "args": ("--world-count", "5"),
-            "success_criteria": ("5 H1 humanoid robots appear.",),
-        },
-        {
-            "args": ("--world-count", "16"),
-            "success_criteria": ("16 H1 humanoid robots appear.",),
-        },
-        {"args": ("--solver", "kamino"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":

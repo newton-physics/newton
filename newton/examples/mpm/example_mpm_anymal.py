@@ -4,6 +4,14 @@
 """Example MPM ANYmal
 
 Shows ANYmal C with a pretrained policy coupled with implicit MPM sand.
+
+Success criteria:
+- An Anymal robot is walking on a ground covered by particles.
+- The particles are reacting realistically to the movement of the robot.
+
+Runs:
+- `python -m newton.examples mpm_anymal`
+- `python -m newton.examples mpm_anymal --viewer gl`
 """
 
 import sys
@@ -343,19 +351,6 @@ def _spawn_particles(builder: newton.ModelBuilder, res, bounds_lo, bounds_hi, de
         jitter=2.0 * radius,
         radius_mean=radius,
     )
-
-
-_EXAMPLE_SPEC = {
-    "schema_version": 1,
-    "success_criteria": (
-        "An Anymal robot is walking on a ground covered by particles.",
-        "The particles are reacting realistically to the movement of the robot.",
-    ),
-    "runs": (
-        {"args": (), "success_criteria": ()},
-        {"args": ("--viewer", "gl"), "success_criteria": ()},
-    ),
-}
 
 
 if __name__ == "__main__":
