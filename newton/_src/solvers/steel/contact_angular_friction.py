@@ -3,7 +3,7 @@
 """Experimental rolling and spin friction rows for free-body contacts.
 
 A shape opts in through the ``steel:condim`` custom attribute, borrowing MuJoCo's 3/4/6
-convention: at 4 or more it contributes :attr:`~newton.Model.shape_material_mu_torsional` [m]
+convention: at 4 it contributes :attr:`~newton.Model.shape_material_mu_torsional` [m]
 to a spin row about the contact normal, at 6 also :attr:`~newton.Model.shape_material_mu_rolling`
 [m] to a rolling pair about the contact tangents. A contact takes the larger coefficient of its
 two shapes. The rows follow the contact's sliding pair, ``[normal, t1, t2, roll1, roll2, spin]``,
@@ -24,33 +24,58 @@ from .kernels import (
 
 
 def configure_free_rigid_angular_friction(solver, model) -> None:
-    """Decide from the shapes' ``steel:condim`` whether free-body contacts get angular rows."""
+    """Decide from the shapes' ``steel:condim`` whether free-body contacts get angular rows, and validate the options.
+
+    Raises :class:`ValueError` for a condim other than 3, 4 or 6, and :class:`NotImplementedError` for an
+    option the angular rows do not support.
+    """
     condim = solver._namespaced_attribute("condim")
     values = condim.numpy() if condim is not None and model.shape_count else None
-    if values is not None and np.any((values < 1) | (values > 6)):
-        raise ValueError("steel:condim must be between 1 and 6")
+    if values is not None:
+        _check_condim_values(values)
     solver._free_rigid_angular_rows = bool(values is not None and np.any(values >= 4))
+    if not solver._free_rigid_angular_rows:
+        return
+    unsupported = [
+        name
+        for name, requested in (
+            (f"solve_mode={solver._solve_mode!r}", solver._solve_mode != "matrix_free"),
+            (
+                f"articulated_contact_response={solver._articulated_contact_response!r}",
+                solver._articulated_contact_response != "immediate",
+            ),
+            (f"row_schedule={solver._row_schedule!r}", solver._row_schedule != "interleaved"),
+            (f"friction_mode={solver._friction_mode!r}", solver._friction_mode != "fixed_normal"),
+            ("contact_compliance=True", solver._contact_compliance),
+        )
+        if requested
+    ]
+    if unsupported:
+        raise NotImplementedError(f"steel:condim above 3 does not support {', '.join(unsupported)}")
 
 
 def refresh_free_rigid_angular_friction(solver) -> None:
     """Write each shape's gated torsional and rolling coefficients [m] on the device.
 
-    Capturable; outside capture it also rejects a condim above 3 on a solver constructed without angular rows.
+    Capturable. Outside capture it also reads ``steel:condim`` on the host and raises :class:`ValueError` for
+    a value other than 3, 4 or 6, or for a value above 3 on a solver constructed without angular rows.
     """
     model = solver.model
     condim = solver._namespaced_attribute("condim")
-    if not solver._free_rigid_angular_rows:
-        if condim is not None and model.shape_count and not model.device.is_capturing:
-            if np.any(condim.numpy() >= 4):
-                raise ValueError("steel:condim above 3 needs a solver constructed with it; construct a new solver")
+    if solver._free_rigid_angular_rows:
+        wp.launch(
+            gate_free_rigid_angular_coefficients,
+            dim=model.shape_count,
+            inputs=[condim, model.shape_material_mu_torsional, model.shape_material_mu_rolling],
+            outputs=[solver._free_rigid_mu_torsional, solver._free_rigid_mu_rolling],
+            device=model.device,
+        )
+    if condim is None or not model.shape_count or model.device.is_capturing:
         return
-    wp.launch(
-        gate_free_rigid_angular_coefficients,
-        dim=model.shape_count,
-        inputs=[condim, model.shape_material_mu_torsional, model.shape_material_mu_rolling],
-        outputs=[solver._free_rigid_mu_torsional, solver._free_rigid_mu_rolling],
-        device=model.device,
-    )
+    values = condim.numpy()
+    _check_condim_values(values)
+    if not solver._free_rigid_angular_rows and np.any(values >= 4):
+        raise ValueError("steel:condim above 3 needs a solver constructed with it; construct a new solver")
 
 
 def free_rigid_route_bodies(solver) -> wp.array | None:
@@ -69,29 +94,6 @@ def free_rigid_route_bodies(solver) -> wp.array | None:
         safe = np.maximum(body_art, 0)
         route[: model.body_count] = (body_art < 0) | (response[safe] == 0) | (free[safe] != 0)
     return wp.array(route, dtype=wp.int32, device=model.device)
-
-
-def validate_free_rigid_angular_friction_mode(solver) -> None:
-    """Reject solver options whose free-body solves do not visit the angular rows."""
-    if not solver._free_rigid_angular_rows:
-        return
-    model = solver.model
-    if (
-        not model.device.is_cuda
-        or model.requires_grad
-        or solver._solve_mode != "matrix_free"
-        or solver._articulated_contact_response != "immediate"
-        or solver._row_schedule != "interleaved"
-        or solver._friction_mode != "fixed_normal"
-        or solver._contact_compliance
-        or solver._sparse_mass_matrix_size is not None
-        or (solver._has_free_rigid_bodies and solver._pgs_solve_mf_gs_kernel is None)
-    ):
-        raise ValueError(
-            "steel:condim above 3 requires CUDA, no gradients, solve_mode='matrix_free', "
-            "articulated_contact_response='immediate', row_schedule='interleaved', friction_mode='fixed_normal', "
-            "the fused matrix-free GS solve and no contact compliance"
-        )
 
 
 def launch_free_rigid_angular_friction_rows(solver, state_aug, contacts, threads: int) -> None:
@@ -203,3 +205,10 @@ def free_rigid_angular_friction_gs_sources() -> tuple[str, str, str]:
                 }}
             }}"""
     return skip, radius, update
+
+
+def _check_condim_values(values: np.ndarray) -> None:
+    """Reject a ``steel:condim`` other than the implemented 3, 4 and 6."""
+    invalid = np.setdiff1d(values, (3, 4, 6))
+    if invalid.size:
+        raise ValueError(f"steel:condim must be 3, 4 or 6, got {int(invalid[0])}")

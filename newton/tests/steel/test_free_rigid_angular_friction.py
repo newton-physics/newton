@@ -571,24 +571,30 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         self.assertAlmostEqual(reported_tangent, seen["sliding"], delta=1.0e-4 + 1.0e-4 * seen["sliding"])
 
     def test_invalid_options_raise(self):
-        """Reject a bad condim, unsupported solve modes, and a condim raise without rebuilding."""
+        """Reject a condim other than 3, 4 or 6, unsupported options by name, and a condim raise without rebuilding."""
         model, _ = _scene("sphere")
         model.steel.condim.fill_(6)
-        with self.assertRaises(ValueError):
-            SolverSteel(model, solve_mode="split")
-        with self.assertRaises(ValueError):
+        for options, option in (
+            ({"solve_mode": "split"}, "solve_mode='split'"),
             # Point friction: bisection with persistent patches would warn before the rejection under test.
-            SolverSteel(model, solve_mode="matrix_free", friction_mode="bisection", friction_anchor_beta=0.0)
-        with self.assertRaises(ValueError):
-            SolverSteel(model, solve_mode="matrix_free", articulated_contact_response="propagation")
-        for condim in (0, 7):
+            ({"friction_mode": "bisection", "friction_anchor_beta": 0.0}, "friction_mode='bisection'"),
+            ({"articulated_contact_response": "propagation"}, "articulated_contact_response='propagation'"),
+        ):
+            with self.subTest(option=option), self.assertRaisesRegex(NotImplementedError, option):
+                SolverSteel(model, **{"solve_mode": "matrix_free", **options})
+        for condim in (0, 1, 2, 5, 7):
             model.steel.condim.fill_(condim)
-            with self.subTest(condim=condim), self.assertRaises(ValueError):
+            with self.subTest(condim=condim), self.assertRaisesRegex(ValueError, "3, 4 or 6"):
                 SolverSteel(model, solve_mode="matrix_free")
+        model.steel.condim.fill_(6)
+        solver = SolverSteel(model, solve_mode="matrix_free")
+        model.steel.condim.fill_(5)
+        with self.assertRaisesRegex(ValueError, "3, 4 or 6"):
+            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
         model.steel.condim.fill_(3)
         solver = SolverSteel(model, solve_mode="matrix_free")
         model.steel.condim.fill_(6)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "construct a new solver"):
             solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
 
 

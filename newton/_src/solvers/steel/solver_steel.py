@@ -30,7 +30,6 @@ from .contact_angular_friction import (
     free_rigid_route_bodies,
     launch_free_rigid_angular_friction_rows,
     refresh_free_rigid_angular_friction,
-    validate_free_rigid_angular_friction_mode,
 )
 from .contact_torsion import (
     configure_contact_torsion,
@@ -1250,7 +1249,8 @@ class SolverSteel(SolverBase):
       and raises :class:`NotImplementedError` when any of these is active: joint velocity
       limits, PGS drive rows, mimic and loop-closing joints, friction patches, contact
       regularization, restitution, warm start, velocity-only iterations, contact torsion,
-      contact compliance, sleeping and the propagation contact responses. Contact torsion is CUDA-only, so on a CPU device a
+      free-body rolling and spin friction (``steel:condim``), contact compliance, sleeping
+      and the propagation contact responses. Contact torsion is CUDA-only, so on a CPU device a
       positive torsion radius raises :class:`ValueError` first.
 
     ``articulated_contact_response`` selects how contacts of articulated bodies are
@@ -1319,11 +1319,13 @@ class SolverSteel(SolverBase):
       regularization, warm start from the previous step's impulses, velocity-only
       iterations and gap gates for speculative contacts are configured on the
       constructor. Experimental contact torsion (per-shape ``steel:min_torsional_patch_radius``)
-      adds a load-bounded spin-friction row per contact group, and experimental implicit
-      compliance of hydroelastic contacts is opt-in (``contact_compliance``). Friction
-      patches, restitution, regularization, warm start, velocity-only iterations, contact
-      torsion and contact compliance need ``solve_mode="matrix_free"``; the split solve uses
-      point friction.
+      adds a load-bounded spin-friction row per contact group. Experimental rolling and spin
+      friction rows for free-body contacts are opt-in per shape (``steel:condim``, see
+      :meth:`register_custom_attributes`), and experimental implicit compliance of
+      hydroelastic contacts is opt-in (``contact_compliance``). Friction patches,
+      restitution, regularization, warm start, velocity-only iterations, contact torsion,
+      the free-body angular rows and contact compliance need ``solve_mode="matrix_free"``;
+      the split solve uses point friction.
     - Kinematic bodies (:attr:`~newton.BodyFlags.KINEMATIC`) and heterogeneous worlds.
     - CUDA graph capture of :meth:`step` and :meth:`reset`.
     - Experimental passive-island sleeping (``enable_sleeping``, ``solve_mode="matrix_free"``
@@ -1522,7 +1524,7 @@ class SolverSteel(SolverBase):
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """Register the body and shape attributes consumed by Steel in the ``steel`` namespace.
 
-        Each attribute maps to the matching PhysX rigid-body USD attribute:
+        The body attributes map to the matching PhysX rigid-body USD attributes:
 
         - ``steel:rigid_body_angular_damping`` [1/s] damps the angular velocity of free bodies and
           floating bases as ``w *= 1 - d dt`` each step (``physxRigidBody:angularDamping``,
@@ -1541,21 +1543,23 @@ class SolverSteel(SolverBase):
           torsion). PhysX also scales a radius with the penetration depth through
           ``physxCollision:torsionalPatchRadius``; this solver does not.
 
-        One experimental per-shape attribute adds rolling and spin friction rows to free-body contacts,
-        see ``contact_angular_friction``:
+        One experimental per-shape attribute adds rolling and spin friction rows to free-body contacts:
 
-        - ``steel:condim`` (default 3) borrows MuJoCo's 3/4/6 convention. At 4 or more a shape
-          contributes :attr:`~newton.Model.shape_material_mu_torsional` [m] to a spin row bounded by that
-          coefficient times the normal load; at 6 also :attr:`~newton.Model.shape_material_mu_rolling` [m]
-          to a rolling pair. A contact takes the larger coefficient of its two shapes, regardless of the
-          other shape's condim. Only contacts between free bodies, and free bodies on static or kinematic
-          geometry, read it. USD reads it only from an explicitly authored ``newton:steel:condim``; the
-          MJCF importer leaves it to :class:`~newton.solvers.SolverMuJoCo`'s ``mujoco:condim``. Under
-          friction patches, contacts share a patch only if their angular coefficients match. Edits take
-          effect at :meth:`notify_model_changed` with ``SHAPE_PROPERTIES``; a solver built without any
-          condim above 3 must be rebuilt to gain the rows.
+        - ``steel:condim`` (default 3) borrows MuJoCo's 3/4/6 convention; other values raise
+          :class:`ValueError`. At 4 a shape contributes :attr:`~newton.Model.shape_material_mu_torsional`
+          [m] to a spin row bounded by that coefficient times the normal load; at 6 also
+          :attr:`~newton.Model.shape_material_mu_rolling` [m] to a rolling pair. A contact takes the
+          larger coefficient of its two shapes, regardless of the other shape's condim. Only contacts
+          between free bodies, and free bodies on static or kinematic geometry, read it. USD reads it
+          only from an explicitly authored ``newton:steel:condim``; the MJCF importer leaves it to
+          :class:`~newton.solvers.SolverMuJoCo`'s ``mujoco:condim``. Under friction patches, contacts
+          share a patch only if their angular coefficients match. A contact with angular rows takes up
+          to 6 free-body rows instead of 3; raise ``free_body_constraint_max`` if
+          :attr:`constraint_overflow` reports dropped rows. The solver reads ``steel:condim`` at
+          construction and at :meth:`notify_model_changed` with ``SHAPE_PROPERTIES``; a solver built
+          without any condim above 3 must be rebuilt to gain the rows.
 
-        The solver reads them from the model at every step, for example
+        The solver reads the other attributes from the model at every step, for example
         ``model.steel.rigid_body_angular_damping``. Models built without these attributes use the defaults.
 
         Args:
@@ -1623,9 +1627,9 @@ class SolverSteel(SolverBase):
                 assignment=Model.AttributeAssignment.MODEL,
                 dtype=wp.int32,
                 default=3,
+                # The default MJCF/URDF name, condim, belongs to SolverMuJoCo's mujoco:condim.
                 mjcf_attribute_name="steel:condim",
                 urdf_attribute_name="steel:condim",
-                usd_attribute_name="newton:steel:condim",
             )
         )
         builder.add_custom_attribute(
@@ -2356,6 +2360,7 @@ class SolverSteel(SolverBase):
                 f"got {articulated_contact_response!r}"
             )
         self._articulated_contact_response = articulated_contact_response
+        configure_free_rigid_angular_friction(self, model)
         inherited = deterministic is None
         if inherited:
             deterministic = wp.config.deterministic
@@ -2564,7 +2569,6 @@ class SolverSteel(SolverBase):
         )
         if not self._hinv_jt_writes_world or self._preelim_active or self._sparse_mass_matrix_size is not None:
             self._hinv_jt_diag_sizes = frozenset()
-        configure_free_rigid_angular_friction(self, model)
         self._setup_local_solves(model)
         self._setup_paired_response(model)
 
@@ -2651,7 +2655,6 @@ class SolverSteel(SolverBase):
         self._free_rigid_mu_rolling = wp.zeros(max(model.shape_count, 1), dtype=wp.float32, device=model.device)
         self._refresh_shape_materials()
         self._check_restitution_support()
-        validate_free_rigid_angular_friction_mode(self)
         self._free_rigid_route_body = free_rigid_route_bodies(self)
 
         self._contact_torsion_device = bool(contact_torsion_device)
@@ -2902,7 +2905,10 @@ class SolverSteel(SolverBase):
 
         With ``enable_joint_friction``, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_friction` on the host and raises :class:`ValueError` for invalid
-        values, after applying every other update. A captured notification skips this check.
+        values, after applying every other update. Likewise, when the ``steel:condim`` attribute is
+        registered, an eager shape notification reads it on the host and raises :class:`ValueError`
+        for a value other than 3, 4 or 6, or for a value above 3 on a solver constructed without
+        one. A captured notification skips these checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -4074,13 +4080,14 @@ class SolverSteel(SolverBase):
         They solve hard point-friction contacts (one normal and two tangent rows per
         contact) without restitution, so friction patches, warm start, regularization,
         velocity-only iterations, normal-only contacts, restitution, contact torsion,
-        contact compliance, the propagation responses and the other friction modes keep
-        the dense path.
+        free-body angular friction rows, contact compliance, the propagation responses and
+        the other friction modes keep the dense path.
         """
         if (
             self._articulated_contact_response != "immediate"
             or self._friction_mode != "fixed_normal"
             or self._contact_torsion_enabled
+            or self._free_rigid_angular_rows
             or self._contact_compliance
             or self._friction_anchors_enabled
             or self._contact_warmstart
