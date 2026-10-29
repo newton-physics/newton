@@ -123,14 +123,17 @@ class TestUSDDeformableVisual(unittest.TestCase):
                 self._bind(sim.GetPrim(), sim_points)
                 sim.GetPointsAttr().Set((sim_points + np.array([0.05, 0, 2])).tolist())
                 mesh.CreatePointsAttr([(9, 9, 9)] * 4)
-                mesh.CreateFaceVertexCountsAttr([4])
-                mesh.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+                corners = [0, 1, 2, 0, 2, 3]
+                mesh.CreateFaceVertexCountsAttr([3, 3])
+                mesh.CreateFaceVertexIndicesAttr(corners)
                 self._bind(mesh.GetPrim(), points)
                 uv = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
                     "st", Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
                 )
                 uv.Set([(0, 0), (1, 0), (1, 1), (0, 1)])
-                uv.SetIndices([3, 2, 1, 0])
+                # Point 0 has different UVs on its two faces.
+                uv_indices = [3, 2, 1, 0, 1, 3]
+                uv.SetIndices(uv_indices)
                 material = UsdShade.Material.Define(stage, "/World/Material")
                 shader = UsdShade.Shader.Define(stage, "/World/Material/Surface")
                 shader.CreateIdAttr("UsdPreviewSurface")
@@ -165,11 +168,10 @@ class TestUSDDeformableVisual(unittest.TestCase):
                 model = builder.finalize(device="cpu")
                 self.assertEqual(model.deformable_visual_mesh_count, 1)
                 output = newton.geometry.DeformableVisuals(model).update(model.state())
-                corners = [0, 1, 2, 0, 2, 3]
                 np.testing.assert_allclose(output.points.numpy(), points[corners] + np.array([3.05, 4, 7]), atol=2e-6)
                 np.testing.assert_allclose(
                     model.deformable_visual_meshes[0].uvs.numpy(),
-                    np.array([[-0.25, 0.1], [-0.25, 2.1], [0.25, 2.1], [0.25, 0.1]])[corners],
+                    np.array([[0.25, 0.1], [0.25, 2.1], [-0.25, 2.1], [-0.25, 0.1]])[uv_indices],
                     atol=1e-6,
                 )
 
@@ -258,8 +260,9 @@ class TestUSDDeformableVisual(unittest.TestCase):
                     result["path_deformable_visual_map"],
                     {mesh.label: mesh.index for mesh in model.deformable_visual_meshes},
                 )
-                self.assertGreater(model.body_count, 0)
-                self.assertGreater(model.particle_count, 0)
+                self.assertEqual(model.body_count, 4)  # Two two-segment cables.
+                self.assertEqual(model.particle_count, 16)  # Two four-point cloths and two four-point volumes.
+                self.assertEqual(model.tet_count, 2)
 
     def test_import_filter_and_nested_ownership(self):
         """Respect regex filters, purposes, and body ownership without loading frozen copies of skins."""
