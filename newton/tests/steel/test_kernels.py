@@ -1773,5 +1773,134 @@ add_function_test(
 )
 
 
+def _build_chains_on_boxes(device):
+    """Two driven, limited chains, one resting on a free box, and a lone box, in two worlds."""
+    world = newton.ModelBuilder()
+    for x, top in ((0.0, 0.92), (1.5, 1.05)):
+        joints, parent = [], -1
+        for i in range(3):
+            link = world.add_link(xform=wp.transform(wp.vec3(x, 0.0, top - 0.3 * i), wp.quat_identity()))
+            world.add_shape_capsule(link, radius=0.04, half_height=0.12)
+            joints.append(
+                world.add_joint_revolute(
+                    parent,
+                    link,
+                    axis=wp.vec3(0.0, 1.0, 0.0),
+                    parent_xform=wp.transform(
+                        wp.vec3(x, 0.0, top + 0.15) if parent < 0 else wp.vec3(0.0, 0.0, -0.15), wp.quat_identity()
+                    ),
+                    child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity()),
+                    limit_lower=-0.6,
+                    limit_upper=0.6,
+                    target_ke=200.0,
+                    target_kd=5.0,
+                    target_pos=0.3,
+                )
+            )
+            parent = link
+        world.add_articulation(joints)
+    for x, z in ((0.0, 0.09), (3.0, 0.2)):
+        body = world.add_link(xform=wp.transform(wp.vec3(x, 0.0, z), wp.quat_identity()))
+        world.add_shape_box(body, hx=0.08, hy=0.08, hz=0.08)
+        world.add_articulation([world.add_joint_free(parent=-1, child=body)])
+    scene = newton.ModelBuilder()
+    scene.add_ground_plane()
+    scene.replicate(world, 2, spacing=(0.0, 6.0, 0.0))
+    return scene.finalize(device=device)
+
+
+def _row_phase_rollout(model, *, runtime_phase=False, capture=False, **options):
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        iterations=12,
+        enable_joint_limits=True,
+        drive_mode="rows",
+        articulation_constraint_max=_ROWS,
+        free_body_constraint_max=_ROWS,
+        **options,
+    )
+    prebuilt = set(solver._pgs_solve_mf_gs_kernels)
+    if runtime_phase:
+        # Every launch takes the kernel that reads the phase argument.
+        solver._pgs_solve_mf_gs_kernels = {0: solver._pgs_solve_mf_gs_kernel_for_phase()}
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state, next_state, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+
+    def step():
+        pipeline.collide(state, contacts)
+        solver.step(state, next_state, control, contacts, 1.0 / 240.0)
+        for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+            wp.copy(getattr(state, name), getattr(next_state, name))
+
+    if capture:
+        # The solver's first step is the captured one.
+        with wp.ScopedCapture(model.device) as graph:
+            step()
+    trace = []
+    for _ in range(120):
+        if capture:
+            wp.capture_launch(graph.graph)
+        else:
+            step()
+        trace.append(np.concatenate([state.body_q.numpy().ravel(), state.body_qd.numpy().ravel()]))
+    return solver, prebuilt, np.asarray(trace)
+
+
+def test_compiled_row_phase_matches_runtime_phase(test, device, **options):
+    """Kernels with the row phase compiled in reproduce the runtime-phase kernel bit for bit."""
+    model = _build_chains_on_boxes(device)
+    solver, prebuilt, compiled = _row_phase_rollout(model, **options)
+    _, _, runtime = _row_phase_rollout(model, runtime_phase=True, **options)
+    # Every phase the schedule launched was built at construction.
+    test.assertEqual(set(solver._pgs_solve_mf_gs_kernels), prebuilt)
+    for phase, kernel in solver._pgs_solve_mf_gs_kernels.items():
+        test.assertIn(f"_phase{phase}", kernel.key)
+    test.assertTrue(np.isfinite(runtime).all())
+    np.testing.assert_array_equal(compiled.view(np.uint32), runtime.view(np.uint32))
+
+
+def test_compiled_row_phases_replay_a_captured_first_step(test, device):
+    """A propagation solver whose first step is captured replays its phase kernels like eager steps."""
+    model = _build_chains_on_boxes(device)
+    options = {"articulated_contact_response": "propagation", **_VELOCITY_LIMITS}
+    solver, prebuilt, captured = _row_phase_rollout(model, capture=True, **options)
+    _, _, eager = _row_phase_rollout(model, **options)
+    test.assertEqual(set(solver._pgs_solve_mf_gs_kernels), prebuilt)
+    np.testing.assert_array_equal(captured.view(np.uint32), eager.view(np.uint32))
+
+
+class TestSteelMatrixFreeRowPhase(unittest.TestCase):
+    pass
+
+
+# Drive rows and velocity limits give every phase rows to solve, so a wrong phase changes the result.
+_VELOCITY_LIMITS = {"enable_joint_velocity_limits": True, "velocity_limit_activation_fraction": 0.0}
+for _name, _options in (
+    ("phased", {"row_schedule": "phased", **_VELOCITY_LIMITS}),
+    ("contact_then_internal", {"row_schedule": "contact_then_internal"}),
+    ("propagation", {"articulated_contact_response": "propagation", **_VELOCITY_LIMITS}),
+    (
+        "propagation_contact_then_internal",
+        {"articulated_contact_response": "propagation", "row_schedule": "contact_then_internal"},
+    ),
+):
+    add_function_test(
+        TestSteelMatrixFreeRowPhase,
+        f"test_compiled_row_phase_matches_runtime_phase_{_name}",
+        test_compiled_row_phase_matches_runtime_phase,
+        devices=get_cuda_test_devices(),
+        **_options,
+    )
+add_function_test(
+    TestSteelMatrixFreeRowPhase,
+    "test_compiled_row_phases_replay_a_captured_first_step",
+    test_compiled_row_phases_replay_a_captured_first_step,
+    devices=get_cuda_test_devices(),
+)
+
+
 if __name__ == "__main__":
     unittest.main()
