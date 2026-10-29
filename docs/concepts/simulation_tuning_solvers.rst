@@ -279,7 +279,9 @@ repository examples spend tuning effort, not a shared solver API.
        prepares these rows on the device, which CUDA graph capture requires.
        The experimental ``contact_compliance`` option solves hydroelastic
        contacts with positive stiffness as implicit spring-dampers instead; it
-       uses point friction and does not support CUDA graph capture.
+       uses point friction and prepares its rows on the device, so a compliant
+       step can be captured, and ``check_constraint_capacity()`` reports input
+       a captured step rejected.
        Joint drives are integrated implicitly by default, which keeps large
        drive gains stable at ordinary ``dt``; ``drive_mode="rows"`` solves
        them as PGS rows together with contacts and limits instead, and each
