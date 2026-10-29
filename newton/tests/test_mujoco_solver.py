@@ -2660,6 +2660,15 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mocap body in every world"):
             SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
 
+        # Nor can it have mass in only some worlds.
+        model.body_flags.assign(initial_flags)
+        body_mass, body_inertia = model.body_mass.numpy(), model.body_inertia.numpy()
+        body_mass[2], body_inertia[2] = 1.0, np.eye(3)
+        model.body_mass.assign(body_mass)
+        model.body_inertia.assign(body_inertia)
+        with self.assertRaisesRegex(ValueError, "some worlds but not in others"):
+            SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+
     def test_kinematic_root_with_massive_fixed_descendant_is_welded(self):
         """A massless root takes the mass of bodies welded to it, so it stays switchable to dynamic."""
         builder = newton.ModelBuilder()

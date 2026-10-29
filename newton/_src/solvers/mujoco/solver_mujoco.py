@@ -7873,7 +7873,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 weld_group[int(joint_child[j]) % template_bodies] = weld_group[parent % template_bodies]
         group_has_mass = np.zeros_like(has_mass)
         np.logical_or.at(group_has_mass.T, weld_group, has_mass.T)
-        body_massless = (~group_has_mass[:, weld_group]).any(axis=0)
+        world_massless = ~group_has_mass[:, weld_group]
+        body_massless = world_massless.any(axis=0)
+        body_mixed_mass = body_massless & ~world_massless.all(axis=0)
         body_kinematic = any_world((body_flags & int(BodyFlags.KINEMATIC)) != 0)
         kinematic_mocap_root_joints = []
         for j in joints_with_bodies:
@@ -7891,6 +7893,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             is_kinematic_mocap_root = (
                 parent == -1 and not is_fixed_root and body_kinematic[template_child] and body_massless[template_child]
             )
+            if is_kinematic_mocap_root and body_mixed_mass[template_child]:
+                raise ValueError(
+                    f"Body {model.body_label[int(joint_child[j])]!r} is kinematic without mass or inertia in some "
+                    "worlds but not in others. SolverMuJoCo drives such a root as a MuJoCo mocap body in every world; "
+                    "give it mass and inertia in every world or in none."
+                )
             body, parent, child, child_is_kinematic, j_type, child_xform = add_body_from_joint(
                 int(j), mocap=is_fixed_root or is_kinematic_mocap_root
             )
