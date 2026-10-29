@@ -2017,6 +2017,11 @@ void main() {
             changed |= any(not np.array_equal(old, new) for old, new in zip(previous[2], appearance, strict=True))
 
         if self._phase == self._PHASE_BUILD or (xforms is not None and changed):
+            # Rebuilt instances get their current materials from the stage below.
+            # Queued bindings refer to the old indices or the old prototype.
+            self._pending_instance_materials = {
+                key: value for key, value in self._pending_instance_materials.items() if key[0] != name
+            }
             if previous is not None and (previous[0] != mesh or previous[1] != count):
                 self.stage.RemovePrim(self._get_path(name))
             super().log_instances(

@@ -586,12 +586,17 @@ class TestViewerRTXRendering(unittest.TestCase):
                                     roughness=0.1 if frame == 0 else None,
                                 )
                                 if asynchronous:
+                                    if frame == 0:
+                                        viewer.log_mesh(
+                                            "/left_alternate", left, indices, uvs=uvs, texture=red_path, hidden=True
+                                        )
+                                    count = 3 if frame == 0 else (0 if frame == 4 else 1)
                                     viewer.log_instances(
                                         "/left_copy",
-                                        "/left",
-                                        wp.array([wp.transform_identity()], dtype=wp.transform),
+                                        "/left_alternate" if frame == 5 else "/left",
+                                        wp.array([wp.transform_identity()] * count, dtype=wp.transform),
                                         None,
-                                        wp.array([[1, 1, 1]], dtype=wp.vec3) if frame == 0 else None,
+                                        wp.array([[1, 1, 1]] * count, dtype=wp.vec3),
                                         None,
                                     )
                                 viewer.log_mesh("/right", right, indices, uvs=uvs, texture=red_path)
