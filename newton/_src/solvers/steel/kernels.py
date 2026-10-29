@@ -5644,7 +5644,7 @@ def _build_mf_contact_row(
     mf_target_velocity: wp.array2d[float],
     mf_row_restitution: wp.array2d[float],
 ):
-    """Build the normal row and, when allocated, the two friction rows of a free-body contact.
+    """Build the normal row and, when allocated, the two sliding friction rows of a free-body contact.
 
     A free body's generalized velocity is ``[v, omega]`` of its articulation origin, so
     each side's row is ``J = [d, r x d]`` with ``r`` the contact point relative to that
@@ -5685,7 +5685,8 @@ def _build_mf_contact_row(
     restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
     t0, t1 = contact_tangent_basis(normal)
 
-    for row_offset in range(contact_slots_needed[c]):
+    # Rows past the sliding pair are angular; build_mf_angular_friction_rows writes them.
+    for row_offset in range(wp.min(contact_slots_needed[c], 3)):
         row_idx = slot + row_offset
         d = normal
         if row_offset == 1:
