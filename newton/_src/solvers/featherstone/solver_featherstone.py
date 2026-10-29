@@ -157,6 +157,16 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.BODY_PARENT_F})
 
+    @override
+    def coupling_uses_reduced_coordinates(self) -> bool:
+        """Represent rigid motion through articulation joint coordinates."""
+        return True
+
+    @override
+    def coupling_supports_inertial_property_refresh(self) -> bool:
+        """Refresh spatial inertia and COM transforms entirely on the device."""
+        return True
+
     def __init__(
         self,
         model: Model,
@@ -361,6 +371,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             # Re-derive the buffers baked from body_mass/body_inertia/body_com so runtime mass
             # randomization reaches the mass matrix and the COM velocity transforms.
             self._update_body_inertial_buffers()
+            self._mass_matrix_dirty = True
+        if flags & ModelFlags.JOINT_PROPERTIES:
             self._mass_matrix_dirty = True
 
     def _compute_articulation_indices(self, model):

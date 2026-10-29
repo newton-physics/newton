@@ -34,6 +34,15 @@ from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_t
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
+def _mujoco_solver(model, **kwargs) -> SolverMuJoCo:
+    """Build a MuJoCo solver, skipping the current test or subtest when MuJoCo is not installed."""
+    try:
+        SolverMuJoCo.import_mujoco()
+    except ImportError as exc:
+        raise unittest.SkipTest(str(exc)) from exc
+    return SolverMuJoCo(model, **kwargs)
+
+
 @wp.kernel(enable_backward=False)
 def _write_proxy_body_wrench_kernel(
     body_local_to_proxy_global: wp.array[int],
@@ -176,15 +185,10 @@ class _ProxyParticleHookSolver(SolverBase, CouplingInterface):
         self.harvest_calls = 0
         self.instances.append(self)
 
-    def coupling_rewind_proxy_particle(
-        self,
-        particle_local_to_proxy_global,
-        state,
-        coupling_forces,
-        particle_gravity_acceleration,
-        dt,
+    def coupling_set_inertial_target(
+        self, state, body_momentum, particle_momentum, *, body_indices=None, particle_indices=None, accumulate=False, dt
     ):
-        del particle_local_to_proxy_global, state, coupling_forces, particle_gravity_acceleration, dt
+        del state, body_momentum, particle_momentum, body_indices, particle_indices, accumulate, dt
         self.rewind_calls += 1
 
     def coupling_harvest_proxy_particle_forces(
@@ -289,15 +293,10 @@ class _AffineBodyForceSourceSolver(SolverBase, CouplingInterface):
 class _AffineProxyBodyFeedbackSolver(SolverBase, CouplingInterface):
     """Return the scalar affine feedback map H(x) = -2x + 1."""
 
-    def coupling_rewind_proxy_body(
-        self,
-        body_local_to_proxy_global,
-        state,
-        coupling_forces,
-        body_gravity_acceleration,
-        dt,
+    def coupling_set_inertial_target(
+        self, state, body_momentum, particle_momentum, *, body_indices=None, particle_indices=None, accumulate=False, dt
     ):
-        del body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
+        del state, body_momentum, particle_momentum, body_indices, particle_indices, accumulate, dt
 
     def coupling_harvest_proxy_wrenches(
         self,
@@ -1460,7 +1459,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
         internal_body_counts = {}
 
         class _RecordingCoupledSolver(SolverCoupled):
-            def _customize_compact_view(self, view: ModelView) -> None:
+            def _customize_compact_view(self, view: ModelView, proxy_body_local_indices: wp.array) -> None:
+                del proxy_body_local_indices
                 internal_body_counts[view.name] = view.body_count
 
         def configure_soft_view(view: ModelView) -> None:
@@ -2439,6 +2439,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
     def test_entries_preserve_global_shape_ids_by_default(self):
         """Entry shape views should keep global shape arrays with hidden dummies."""
+        parent_flags = self.model.shape_flags.numpy().copy()
         coupled = SolverCoupled(
             model=self.model,
             entries=[
@@ -2464,6 +2465,35 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertNotEqual(int(flags[0]) & collide, 0)
         self.assertEqual(int(flags[1]) & collide, 0)
         self.assertEqual(view_a.shape_contact_pair_count, 0)
+        np.testing.assert_array_equal(flags, [parent_flags[0], 0])
+        np.testing.assert_array_equal(coupled.view("B").shape_flags.numpy(), [0, parent_flags[1]])
+        np.testing.assert_array_equal(self.model.shape_flags.numpy(), parent_flags)
+
+        # Parent property refreshes must not restore excluded shapes or sites.
+        parent_flags[1] = int(newton.ShapeFlags.VISIBLE | newton.ShapeFlags.SITE)
+        self.model.shape_flags.assign(parent_flags)
+        coupled.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        np.testing.assert_array_equal(view_a.shape_flags.numpy(), [parent_flags[0], 0])
+        np.testing.assert_array_equal(coupled.view("B").shape_flags.numpy(), [0, parent_flags[1]])
+        np.testing.assert_array_equal(self.model.shape_flags.numpy(), parent_flags)
+
+    def test_entry_without_visible_shapes_clears_all_flags(self):
+        """Exclude every shape when a particle-only entry has no static geometry."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_sphere(body=body, radius=0.1)
+        particle = builder.add_particle(pos=(0, 0, 1), vel=(0, 0, 0), mass=1.0)
+        model = builder.finalize(device="cpu")
+        parent_flags = model.shape_flags.numpy().copy()
+        coupled = SolverCoupled(
+            model,
+            [SolverCoupled.Entry(name="particles", solver=SolverSemiImplicit, particles=[particle])],
+        )
+        view = coupled.view("particles")
+        self.assertEqual(view.shape_count, model.shape_count)
+        np.testing.assert_array_equal(view.shape_flags.numpy(), [0])
+        np.testing.assert_array_equal(view.shape_body.numpy(), [-1])
+        np.testing.assert_array_equal(model.shape_flags.numpy(), parent_flags)
 
     def test_particle_entry_without_shapes_keeps_global_static_shapes(self):
         """Particle-only entries should inherit global static shapes by default."""
@@ -2490,6 +2520,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertNotIn(dynamic_shape, view.body_shapes[-1])
         self.assertNotEqual(int(flags[ground_shape]) & collide_particles, 0)
         self.assertEqual(int(flags[dynamic_shape]) & collide_particles, 0)
+        self.assertEqual(int(flags[ground_shape]), int(model.shape_flags.numpy()[ground_shape]))
+        self.assertEqual(int(flags[dynamic_shape]), 0)
         body_shape_ids = np.array(view.body_shapes[-1], dtype=int)
         particle_collider_shapes = body_shape_ids[(flags[body_shape_ids] & collide_particles) > 0]
         np.testing.assert_array_equal(particle_collider_shapes, np.array([ground_shape], dtype=int))
@@ -2583,6 +2615,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertEqual(view_a.shape_contact_pair_count, 0)
         self.assertNotEqual(int(view_b.shape_flags.numpy()[0]) & collide, 0)
         self.assertNotEqual(int(view_b.shape_flags.numpy()[1]) & collide, 0)
+        np.testing.assert_array_equal(view_b.shape_flags.numpy(), self.model.shape_flags.numpy())
         self.assertEqual(view_b.shape_contact_pair_count, 1)
         np.testing.assert_array_equal(view_b.shape_contact_pairs.numpy(), np.array([[0, 1]], dtype=np.int32))
 
@@ -3111,6 +3144,227 @@ add_function_test(
 )
 
 
+class TestCouplingMomentum(unittest.TestCase):
+    """Check default force updates and native inertial-target overrides."""
+
+    def test_default_indexed_momentum_targets_leave_other_rows_unchanged(self):
+        """Apply reordered compact targets to selected bodies and particles only."""
+        for factory in (SolverXPBD, SolverVBD):
+            with self.subTest(solver=factory.__name__):
+                builder = newton.ModelBuilder(gravity=(0, 0, -3))
+                for i in range(3):
+                    builder.add_body(mass=float(i + 1), inertia=wp.mat33(np.eye(3)))
+                    builder.add_particle(pos=(i, 0, 0), vel=(0, 0, 0), mass=float(i + 1))
+                builder.color()
+                model = builder.finalize(device="cpu")
+                solver = factory(model, iterations=1)
+                state = model.state()
+                state.body_f.fill_(wp.spatial_vector(7, 8, 9, 1, 2, 3))
+                state.particle_f.fill_(wp.vec3(4, 5, 6))
+                poses = state.body_q.numpy().copy()
+                body_force = state.body_f.numpy().copy()
+                particle_force = state.particle_f.numpy().copy()
+                body_indices = wp.array([2, 0], dtype=int, device=model.device)
+                particle_indices = wp.array([1], dtype=int, device=model.device)
+                body_target = wp.array(
+                    [[3, 6, 9, 1, 2, 3], [2, 4, 6, 4, 5, 6]], dtype=wp.spatial_vector, device=model.device
+                )
+                particle_target = wp.array([[2, 4, 6]], dtype=wp.vec3, device=model.device)
+                CouplingInterface.coupling_set_inertial_target(
+                    solver,
+                    state,
+                    body_target,
+                    particle_target,
+                    body_indices=body_indices,
+                    particle_indices=particle_indices,
+                    dt=0.1,
+                )
+                np.testing.assert_allclose(state.body_f.numpy()[2], [30, 60, 99, 10, 20, 30], atol=1e-5)
+                np.testing.assert_allclose(state.body_f.numpy()[0], [20, 40, 63, 40, 50, 60], atol=1e-5)
+                np.testing.assert_array_equal(state.body_f.numpy()[1], body_force[1])
+                np.testing.assert_allclose(state.particle_f.numpy()[1], [20, 40, 66], atol=1e-5)
+                np.testing.assert_array_equal(state.particle_f.numpy()[[0, 2]], particle_force[[0, 2]])
+                np.testing.assert_array_equal(state.body_q.numpy(), poses)
+                np.testing.assert_array_equal(body_target.numpy(), [[3, 6, 9, 1, 2, 3], [2, 4, 6, 4, 5, 6]])
+                np.testing.assert_array_equal(particle_target.numpy(), [[2, 4, 6]])
+
+                # Accumulate adds only the requested impulse, preserving gravity
+                # and existing forces, including on reordered selections.
+                before_body = state.body_f.numpy().copy()
+                before_particle = state.particle_f.numpy().copy()
+                CouplingInterface.coupling_set_inertial_target(
+                    solver,
+                    state,
+                    body_target,
+                    particle_target,
+                    body_indices=body_indices,
+                    particle_indices=particle_indices,
+                    accumulate=True,
+                    dt=0.1,
+                )
+                expected_body = before_body.copy()
+                expected_body[[2, 0]] += body_target.numpy() / 0.1
+                expected_particle = before_particle.copy()
+                expected_particle[1] += particle_target.numpy()[0] / 0.1
+                np.testing.assert_allclose(state.body_f.numpy(), expected_body, atol=1e-5)
+                np.testing.assert_allclose(state.particle_f.numpy(), expected_particle, atol=1e-5)
+
+    def test_default_momentum_target_preserves_poses_and_matches_forces(self):
+        """Match rotated angular momentum and external impulses without changing history."""
+        for factory in (SolverXPBD, SolverVBD):
+            with self.subTest(solver=factory.__name__):
+                builder = newton.ModelBuilder(gravity=(0, 0, -3))
+                rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1, 2, 3)), 0.7)
+                builder.add_body(
+                    xform=wp.transform((0.2, -0.1, 0.5), rotation),
+                    mass=2.0,
+                    inertia=wp.mat33(np.diag([1, 2, 3])),
+                    com=wp.vec3(0.1, 0.2, -0.3),
+                )
+                builder.add_body(mass=4.0, inertia=wp.mat33(np.eye(3)), is_kinematic=True)
+                builder.add_particle(pos=(3, 0, 0), vel=(1, 2, 3), mass=5)
+                builder.color()
+                model = builder.finalize(device="cpu")
+                solver = factory(model, iterations=1)
+                state = model.state()
+                state.body_qd.assign([[1, -2, 0.5, 0.2, 0.4, -0.3], [0, 0, 0, 0, 0, 0]])
+                state.body_f.assign([[2, 3, -1, 0.1, -0.2, 0.5], [7, 8, 9, 1, 2, 3]])
+                state.particle_f.assign([[4, -2, 1]])
+                dt = 0.02
+                before_q = state.body_q.numpy().copy()
+                before_qd = state.body_qd.numpy().copy()
+                before_f = state.body_f.numpy().copy()
+                history = solver.body_q_prev.numpy().copy() if isinstance(solver, SolverVBD) else None
+                R = np.asarray(wp.quat_to_matrix(rotation)).reshape(3, 3)
+                I = R @ np.diag([1, 2, 3]) @ R.T
+                expected = np.r_[2 * before_qd[0, :3], I @ before_qd[0, 3:]]
+                expected += dt * (before_f[0] + np.array([0, 0, -6, 0, 0, 0]))
+                body_p = wp.array([expected, np.zeros(6)], dtype=wp.spatial_vector, device=model.device)
+                particle_p = wp.array([[5.08, 9.96, 14.72]], dtype=wp.vec3, device=model.device)
+                CouplingInterface.coupling_set_inertial_target(solver, state, body_p, particle_p, dt=dt)
+                # The independently computed target is rounded to float32 momentum.
+                np.testing.assert_allclose(dt * state.body_f.numpy(), dt * before_f, atol=2e-7)
+                np.testing.assert_allclose(dt * state.particle_f.numpy(), dt * np.array([[4, -2, 1]]), atol=2e-7)
+                target = body_p.numpy()
+                target[0] += dt * np.array([1, -2, 3, -0.5, 0.2, 0.4])
+                target[1] = 0  # Prescribed body input must remain untouched.
+                body_p.assign(target)
+                CouplingInterface.coupling_set_inertial_target(solver, state, body_p, None, dt=dt)
+                solver.coupling_notify_input_state_update(
+                    state,
+                    newton.StateFlags.BODY_QD | newton.StateFlags.BODY_F,
+                    dt=dt,
+                )
+                np.testing.assert_allclose(state.body_f.numpy()[0], before_f[0] + [1, -2, 3, -0.5, 0.2, 0.4], atol=2e-5)
+                np.testing.assert_array_equal(state.body_f.numpy()[1], before_f[1])
+                np.testing.assert_allclose(dt * state.particle_f.numpy(), dt * np.array([[4, -2, 1]]), atol=2e-7)
+                np.testing.assert_array_equal(state.body_q.numpy(), before_q)
+                np.testing.assert_array_equal(state.body_qd.numpy(), before_qd)
+                if history is not None:
+                    np.testing.assert_array_equal(solver.body_q_prev.numpy(), history)
+                # A force computed independently must produce the same native step.
+                reference = model.state()
+                wp.copy(reference.body_q, state.body_q)
+                wp.copy(reference.body_qd, state.body_qd)
+                reference.body_f.assign([before_f[0] + [1, -2, 3, -0.5, 0.2, 0.4], before_f[1]])
+                wp.copy(reference.particle_f, state.particle_f)
+                other_solver = factory(model, iterations=1)
+                out, expected_out = model.state(), model.state()
+                solver.step(state, out, model.control(), None, dt)
+                other_solver.step(reference, expected_out, model.control(), None, dt)
+                np.testing.assert_allclose(out.body_qd.numpy(), expected_out.body_qd.numpy(), atol=2e-6)
+                np.testing.assert_allclose(out.particle_qd.numpy(), expected_out.particle_qd.numpy(), atol=2e-6)
+
+    def test_vbd_momentum_target_matches_inertial_pose(self):
+        """Match COM displacement and finite rotation without changing input poses or history."""
+        dt = 0.02
+        selected = [2, 0]
+        for accumulate in (False, True):
+            with self.subTest(accumulate=accumulate):
+                builder = newton.ModelBuilder(gravity=(0, -9.81, 0))
+                rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1, 2, 3)), 0.7)
+                for i in range(4):
+                    builder.add_body(
+                        xform=wp.transform((0.2 * i, -0.1, 0.5), rotation),
+                        mass=float(i + 1),
+                        inertia=wp.mat33(np.diag([1.0, 2.0, 3.0])),
+                        com=wp.vec3(0.3, -0.4, 0.2),
+                        is_kinematic=i == 3,
+                    )
+                builder.add_particle(pos=(2, 0, 0), vel=(1, 2, 3), mass=2.0)
+                builder.color()
+                model = builder.finalize(device="cpu")
+                solver = SolverVBD(model, iterations=1)
+                state, out = model.state(), model.state()
+                state.body_qd.fill_(wp.spatial_vector(1, -2, 0.5, 0.7, -0.4, 0.3))
+                state.body_f.fill_(wp.spatial_vector(2, 3, -1, 0.1, -0.2, 0.5))
+                state.particle_f.fill_(wp.vec3(1, -2, 3))
+                pose, velocity, force = (a.numpy().copy() for a in (state.body_q, state.body_qd, state.body_f))
+                history = solver.body_q_prev.numpy().copy()
+                particle_pose = state.particle_q.numpy().copy()
+                reference, reference_out = model.state(), model.state()
+                reference.body_qd.assign(state.body_qd)
+                reference.body_f.assign(state.body_f)
+                reference.particle_f.assign(state.particle_f)
+                SolverVBD(model, iterations=1).step(reference, reference_out, None, None, dt)
+
+                twists = np.array([[0.6, -0.2, 0.3, 3, -2, 1], [1, 2, -1, 0, 0, 0]])
+                R = np.asarray(wp.quat_to_matrix(rotation)).reshape(3, 3)
+                inertia = R @ np.diag([1.0, 2.0, 3.0]) @ R.T
+                values = np.array(
+                    [
+                        np.r_[model.body_mass.numpy()[i] * v[:3], inertia @ v[3:]]
+                        for i, v in zip(selected, twists, strict=True)
+                    ]
+                )
+                # Include a selected prescribed body: its input must remain untouched.
+                values = np.vstack((values, np.ones(6)))
+                target = wp.array(values, dtype=wp.spatial_vector, device=model.device)
+                indices = wp.array([*selected, 3], dtype=int, device=model.device)
+                particle_target = wp.array([[2, 4, 6]], dtype=wp.vec3, device=model.device)
+                saved_target = target.numpy().copy()
+                solver.coupling_set_inertial_target(
+                    state, target, particle_target, body_indices=indices, accumulate=accumulate, dt=dt
+                )
+                solver.coupling_notify_input_state_update(
+                    state,
+                    newton.StateFlags.BODY_QD
+                    | newton.StateFlags.BODY_F
+                    | newton.StateFlags.PARTICLE_QD
+                    | newton.StateFlags.PARTICLE_F,
+                    dt=dt,
+                )
+                np.testing.assert_array_equal(state.body_q.numpy(), pose)
+                np.testing.assert_array_equal(state.body_qd.numpy(), velocity)
+                np.testing.assert_array_equal(state.body_f.numpy()[[1, 3]], force[[1, 3]])
+                np.testing.assert_array_equal(state.particle_q.numpy(), particle_pose)
+                np.testing.assert_array_equal(solver.body_q_prev.numpy(), history)
+                np.testing.assert_array_equal(target.numpy(), saved_target)
+                solver.step(state, out, None, None, dt)
+                for row, body in enumerate(selected):
+                    expected = twists[row].copy()
+                    if accumulate:
+                        expected += reference_out.body_qd.numpy()[body]
+                    np.testing.assert_allclose(out.body_qd.numpy()[body], expected, atol=6e-6, rtol=2e-6)
+                    start = wp.transform(*pose[body])
+                    end = wp.transform(*out.body_q.numpy()[body])
+                    com = model.body_com.numpy()[body]
+                    start_com = np.asarray(wp.transform_point(start, wp.vec3(com)))
+                    end_com = np.asarray(wp.transform_point(end, wp.vec3(com)))
+                    np.testing.assert_allclose(end_com, start_com + dt * expected[:3], atol=2e-7)
+                    angle = float(np.linalg.norm(expected[3:]) * dt)
+                    delta = (
+                        wp.quat_from_axis_angle(wp.vec3(expected[3:] / np.linalg.norm(expected[3:])), angle)
+                        if angle
+                        else wp.quat_identity()
+                    )
+                    np.testing.assert_allclose(out.body_q.numpy()[body, 3:], np.asarray(delta * rotation), atol=2e-7)
+                expected_particle = np.array([1, 2, 3], dtype=float)
+                if accumulate:
+                    expected_particle += reference_out.particle_qd.numpy()[0]
+                np.testing.assert_allclose(out.particle_qd.numpy()[0], expected_particle, atol=6e-6)
+
+
 class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
     """MuJoCo-specific coupling hook behavior."""
 
@@ -3226,6 +3480,20 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
             np.array([[0.0, 0.0, -7.5], [0.0, 0.0, -5.0], [0.0, 0.0, -2.5]], dtype=np.float32),
             atol=1.0e-6,
         )
+
+        # Overwrite cancels each selected body's compensated gravity.
+        state = model.state()
+        selected = wp.array([2, 0], dtype=int, device=model.device)
+        target = wp.array([[1, 2, 3, 0, 0, 0], [4, 5, 6, 0, 0, 0]], dtype=wp.spatial_vector, device=model.device)
+        expected = np.zeros((3, 6), dtype=np.float32)
+        expected[[2, 0]] = target.numpy()
+        expected[[2, 0], :3] -= model.body_mass.numpy()[[2, 0], None] * body_acceleration.numpy()[[2, 0]]
+        solver.coupling_set_inertial_target(state, target, None, body_indices=selected, dt=1.0)
+        np.testing.assert_allclose(state.body_f.numpy(), expected, atol=1e-6)
+        # Accumulate must not apply the gravity compensation a second time.
+        solver.coupling_set_inertial_target(state, target, None, body_indices=selected, accumulate=True, dt=1.0)
+        expected[[2, 0]] += target.numpy()
+        np.testing.assert_allclose(state.body_f.numpy(), expected, atol=1e-6)
 
 
 def _coupled_vbd_reset_preserves_pose_history(test, device):
@@ -3792,6 +4060,206 @@ def _assert_proxy_reset_buffers(test, model, coupled, mapping, entity_world):
 
 class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
     """Body proxy mappings install full proxy inertia tensors."""
+
+    def test_reduced_destination_receives_proxy_body_state(self):
+        """Give receiving proxies FREE roots and preserve transferred motion through native solves."""
+        factories = {
+            "featherstone": SolverFeatherstone,
+            "mujoco": lambda view: _mujoco_solver(view, use_mujoco_cpu=True, integrator="euler"),
+            "mujoco_persistent": lambda view: _mujoco_solver(
+                view, use_mujoco_cpu=True, integrator="euler", update_data_interval=0
+            ),
+        }
+        for backend, factory in factories.items():
+            for root_kind in ("free", "revolute"):
+                for mode in ("lagged", "staggered"):
+                    with self.subTest(backend=backend, root_kind=root_kind, mode=mode):
+                        builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                        root = (
+                            builder.add_joint_free(body)
+                            if root_kind == "free"
+                            else builder.add_joint_revolute(-1, body, axis=wp.vec3(0, 0, 1))
+                        )
+                        builder.add_articulation([root])
+                        model = builder.finalize(device="cpu")
+                        coupled = SolverCoupledProxy(
+                            model,
+                            [
+                                SolverCoupled.Entry("src", SolverFeatherstone, bodies=[body], joints=[root]),
+                                SolverCoupled.Entry("dst", factory),
+                            ],
+                            SolverCoupledProxy.Config(
+                                proxies=[SolverCoupledProxy.Proxy("src", "dst", bodies=[body], mode=mode)]
+                            ),
+                        )
+                        dst = coupled._entries["dst"]
+                        self.assertEqual(dst.view.joint_type.numpy().tolist(), [int(newton.JointType.FREE)])
+                        self.assertEqual(dst.view.joint_parent.numpy().tolist(), [-1])
+                        self.assertEqual(dst.view.control(clone_variables=False).joint_f.shape[0], 6)
+                        state, out = model.state(), model.state()
+                        axis = 0 if root_kind == "free" else 5
+                        force = np.zeros((1, 6), dtype=np.float32)
+                        force[0, axis] = 10.0
+                        for _ in range(2):
+                            state.body_f.assign(force)
+                            coupled.step(state, out, None, None, 0.01)
+                            src = coupled._entries["src"]
+                            self.assertGreater(float(src.state_1.body_qd.numpy()[0, axis]), 0.09)
+                            np.testing.assert_allclose(
+                                dst.state_0.joint_qd.numpy(), src.state_1.body_qd.numpy()[0], atol=2.0e-6
+                            )
+                            np.testing.assert_allclose(
+                                dst.state_1.body_qd.numpy(), src.state_1.body_qd.numpy(), atol=2.0e-6
+                            )
+                            expected_pose = src.state_0.body_q if mode == "lagged" else src.state_1.body_q
+                            np.testing.assert_allclose(dst.state_0.body_q.numpy(), expected_pose.numpy(), atol=2.0e-6)
+                            np.testing.assert_allclose(
+                                coupled._proxy_mappings[0].coupling_forces.numpy(), 0.0, atol=2.0e-4
+                            )
+                            state, out = out, state
+
+    def test_vbd_spinning_proxy_matches_inertial_target(self):
+        """Match free proxy motion without feeding integration corrections to the source."""
+        dt = 0.02
+        for mode in ("lagged", "staggered"):
+            for iterations in (1, 2):
+                with self.subTest(mode=mode, iterations=iterations):
+                    builder = newton.ModelBuilder(gravity=(0, -9.81, 0))
+                    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1, 2, 3)), 0.7)
+                    body = builder.add_link(
+                        xform=wp.transform((0.2, -0.1, 0.5), rotation),
+                        mass=2.0,
+                        inertia=wp.mat33(np.diag([1.0, 2.0, 3.0])),
+                        com=wp.vec3(0.3, -0.4, 0.2),
+                    )
+                    root = builder.add_joint_free(body)
+                    builder.add_articulation([root])
+                    builder.color()
+                    model = builder.finalize(device="cpu")
+                    coupled = SolverCoupledProxy(
+                        model,
+                        [
+                            SolverCoupled.Entry("src", SolverFeatherstone, bodies=[body], joints=[root]),
+                            SolverCoupled.Entry("dst", lambda view: SolverVBD(view, iterations=2)),
+                        ],
+                        SolverCoupledProxy.Config(
+                            proxies=[SolverCoupledProxy.Proxy("src", "dst", bodies=[body], mode=mode, mass_scale=0.1)],
+                            iterations=iterations,
+                        ),
+                    )
+                    state, out = model.state(), model.state()
+                    twist = np.array([[0.6, -0.2, 0.3, 3.0, -2.0, 1.0]], dtype=np.float32)
+                    state.body_qd.assign(twist)
+                    state.joint_qd.assign(twist.ravel())
+                    mapping = coupled._proxy_mappings[0]
+                    # Exercise cancellation of a previous reaction on the first pass.
+                    # Later passes have no contacts and must return zero feedback.
+                    mapping.coupling_forces.assign([[0.4, -0.2, 0.1, 0.02, 0.03, -0.04]])
+                    dst = coupled._entries["dst"]
+                    proxy = int(mapping.proxy_ids_local.numpy()[0])
+                    for _ in range(3):
+                        coupled.step(state, out, None, None, dt)
+                        target = mapping.momentum_target.numpy()[0]
+                        pose = dst.solver._coupling_body_q_prev_snapshot.numpy()[proxy]
+                        R = np.asarray(wp.quat_to_matrix(wp.quat(*pose[3:]))).reshape(3, 3)
+                        inertia = R @ dst.view.body_inertia.numpy()[proxy] @ R.T
+                        expected = np.r_[
+                            target[:3] / dst.view.body_mass.numpy()[proxy],
+                            np.linalg.solve(inertia, target[3:]),
+                        ]
+                        np.testing.assert_allclose(dst.state_1.body_qd.numpy()[proxy], expected, atol=2e-5)
+                        np.testing.assert_array_equal(mapping.coupling_forces.numpy(), 0.0)
+                        np.testing.assert_allclose(
+                            out.body_qd.numpy(), coupled._entries["src"].state_1.body_qd.numpy(), atol=1e-6
+                        )
+                        state, out = out, state
+
+    def test_reduced_body_notification_preserves_unedited_joint_state(self):
+        """Convert body-only edits while retaining explicitly supplied joint state and force inputs."""
+        factories = {
+            "featherstone": SolverFeatherstone,
+            "mujoco": lambda model: _mujoco_solver(
+                model, use_mujoco_cpu=True, integrator="euler", update_data_interval=0
+            ),
+        }
+        for backend, factory in factories.items():
+            with self.subTest(backend=backend):
+                builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                hinge = builder.add_joint_revolute(-1, link, axis=wp.vec3(0, 0, 1))
+                builder.add_articulation([hinge])
+                model = builder.finalize(device="cpu")
+                solver = factory(model)
+                state, out = model.state(), model.state()
+                q = state.joint_q.numpy()
+                q[-1] = 4 * np.pi + 0.2
+                state.joint_q.assign(q)
+                newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+                poses = state.body_q.numpy()
+                poses[0, :3] = [1, 2, 3]
+                state.body_q.assign(poses)
+                state.body_qd.assign([[0.25, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]])
+                original_qd = state.joint_qd.numpy().copy()
+                # Exercise the default on a real reduced solver, independently
+                # of backend overrides needed to upload persistent native state.
+                if backend == "featherstone":
+                    CouplingInterface.coupling_notify_input_state_update(
+                        solver, state, newton.StateFlags.BODY_Q, dt=0.0
+                    )
+                else:
+                    solver.coupling_notify_input_state_update(state, newton.StateFlags.BODY_Q, dt=0.0)
+                np.testing.assert_allclose(state.joint_q.numpy()[:3], [1, 2, 3])
+                self.assertAlmostEqual(float(state.joint_q.numpy()[-1]), 4 * np.pi + 0.2, places=5)
+                np.testing.assert_array_equal(state.joint_qd.numpy(), original_qd)
+                original_q = state.joint_q.numpy().copy()
+                solver.coupling_notify_input_state_update(state, newton.StateFlags.BODY_QD, dt=0.0)
+                np.testing.assert_array_equal(state.joint_q.numpy(), original_q)
+                np.testing.assert_allclose(state.joint_qd.numpy(), [0.25, 0, 0, 0, 0, 0, 0])
+                solver.step(state, out, None, None, 0.01)
+                np.testing.assert_allclose(out.body_qd.numpy()[0], [0.25, 0, 0, 0, 0, 0], atol=1.0e-6)
+                np.testing.assert_allclose(out.body_q.numpy()[0, :3], [1.0025, 2, 3], atol=1.0e-6)
+
+                state.joint_qd.assign([0.5, 0, 0, 0, 0, 0, 0])
+                force = [[1, 2, 3, 4, 5, 6], [0, 0, 0, 0, 0, 0]]
+                state.body_f.assign(force)
+                if backend == "mujoco":
+                    solver.mj_data.qacc_warmstart[:] = 0.7
+                    warmstart = solver.mj_data.qacc_warmstart.copy()
+                solver.coupling_notify_input_state_update(state, newton.StateFlags.ALL, iteration_restart=True)
+                np.testing.assert_array_equal(state.joint_qd.numpy(), [0.5, 0, 0, 0, 0, 0, 0])
+                np.testing.assert_array_equal(state.body_f.numpy(), force)
+                if backend == "mujoco":
+                    np.testing.assert_array_equal(solver.mj_data.qacc_warmstart, warmstart)
+                solver.coupling_notify_input_state_update(state, newton.StateFlags.BODY_F)
+                np.testing.assert_array_equal(state.joint_qd.numpy(), [0.5, 0, 0, 0, 0, 0, 0])
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA is required")
+    def test_reduced_body_notification_cuda_graph(self):
+        """Replay body-only notifications with changing twists and persistent native state."""
+        factories = {
+            "featherstone": SolverFeatherstone,
+            "mujoco": lambda model: _mujoco_solver(model, integrator="euler", update_data_interval=0),
+        }
+        for backend, factory in factories.items():
+            with self.subTest(backend=backend):
+                builder = newton.ModelBuilder(gravity=(0, 0, 0))
+                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), com=wp.vec3(0.2, -0.1, 0.3))
+                model = builder.finalize(device="cuda:0")
+                solver = factory(model)
+                state, out = model.state(), model.state()
+                solver.step(state, out, None, None, 0.01)
+                # The inherited hook also supports its first use inside capture.
+                with wp.ScopedCapture(device=model.device) as capture:
+                    solver.coupling_notify_input_state_update(state, newton.StateFlags.BODY)
+                    solver.step(state, out, None, None, 0.01)
+                for speed in (0.25, 0.75):
+                    velocity = np.array([[speed, 0, 0, 0, 0, 0]], dtype=np.float32)
+                    state.body_qd.assign(velocity)
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_allclose(out.body_qd.numpy(), velocity, atol=1.0e-6)
+                    np.testing.assert_allclose(out.body_q.numpy()[0, :3], [0.01 * speed, 0, 0], atol=1.0e-6)
 
     @staticmethod
     def _entry_body_local(coupled: SolverCoupledProxy, entry_name: str, body_id: int) -> int:

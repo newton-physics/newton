@@ -20,6 +20,8 @@ from .interface import (
 )
 from .proxy_utils import (
     blend_proxy_forces_kernel,
+    proxy_body_momentum_target_kernel,
+    proxy_particle_momentum_target_kernel,
     restore_filtered_proxy_rigid_contacts_kernel,
     stash_proxy_forces_kernel,
     sync_proxy_particles_kernel,
@@ -53,6 +55,7 @@ class _ProxyEntityMapping:
     coupling_forces: wp.array = field(default=None)
     coupling_forces_previous: wp.array = field(default=None)
     proxy_qd_before: wp.array = field(default=None)
+    momentum_target: wp.array = field(default=None)
     mass_scale: float = 1.0
     mode: int = 0
     proxy_relaxation: float = 1.0
@@ -1071,12 +1074,9 @@ class SolverCoupledProxy(SolverCoupled):
             mapping.aitken_stats = wp.zeros(2, dtype=float, device=device)
             mapping.aitken_relaxation = wp.array([mapping.proxy_relaxation], dtype=float, device=device)
             mapping.aitken_has_previous = wp.zeros(1, dtype=int, device=device)
-        mapping.proxy_qd_before = wp.zeros(entity_count, dtype=force_dtype, device=device)
-
-    def _entry_needs_gravity_acceleration(self, entry) -> bool:
-        return any(mapping.dst_name == entry.name for mapping in self._proxy_mappings) or any(
-            mapping.dst_name == entry.name for mapping in self._proxy_particle_mappings
-        )
+        local_count = mapping.destination_local_to_proxy_global.shape[0]
+        mapping.proxy_qd_before = wp.zeros(local_count, dtype=force_dtype, device=device)
+        mapping.momentum_target = wp.empty(proxy_count, dtype=force_dtype, device=device)
 
     def _reset_coupling_state(
         self,
@@ -1461,12 +1461,24 @@ class SolverCoupledProxy(SolverCoupled):
                 if is_staggered:
                     proxy.coupling_forces.zero_()
 
-                dst.solver.coupling_rewind_proxy_body(
-                    proxy.destination_local_to_proxy_global,
-                    dst.state_0,
-                    proxy.coupling_forces,
-                    dst.body_gravity_acceleration,
-                    dt,
+                wp.launch(
+                    proxy_body_momentum_target_kernel,
+                    dim=proxy.proxy_ids_local.shape[0],
+                    inputs=[
+                        proxy.proxy_ids_local,
+                        proxy.proxy_ids_global,
+                        dst.view.body_mass,
+                        dst.view.body_inertia,
+                        dst.state_0.body_q,
+                        dst.state_0.body_qd,
+                        proxy.coupling_forces,
+                        float(dt),
+                        proxy.momentum_target,
+                    ],
+                    device=self.model.device,
+                )
+                dst.solver.coupling_set_inertial_target(
+                    dst.state_0, proxy.momentum_target, None, body_indices=proxy.proxy_ids_local, dt=dt
                 )
                 self._notify_input_state_update(dst, StateFlags.BODY_QD | StateFlags.BODY_F, dt=dt)
 
@@ -1498,14 +1510,24 @@ class SolverCoupledProxy(SolverCoupled):
                 if is_staggered:
                     continue
 
-                dst.solver.coupling_rewind_proxy_particle(
-                    proxy.destination_local_to_proxy_global,
-                    dst.state_0,
-                    proxy.coupling_forces,
-                    dst.particle_gravity_acceleration,
-                    dt,
+                wp.launch(
+                    proxy_particle_momentum_target_kernel,
+                    dim=proxy.proxy_ids_local.shape[0],
+                    inputs=[
+                        proxy.proxy_ids_local,
+                        proxy.proxy_ids_global,
+                        dst.view.particle_mass,
+                        dst.state_0.particle_qd,
+                        proxy.coupling_forces,
+                        float(dt),
+                        proxy.momentum_target,
+                    ],
+                    device=self.model.device,
                 )
-                self._notify_input_state_update(dst, StateFlags.PARTICLE_QD, dt=dt)
+                dst.solver.coupling_set_inertial_target(
+                    dst.state_0, None, proxy.momentum_target, particle_indices=proxy.proxy_ids_local, dt=dt
+                )
+                self._notify_input_state_update(dst, StateFlags.PARTICLE_QD | StateFlags.PARTICLE_F, dt=dt)
 
             dst_contacts = contacts
             # Without a proxy-local collision pipeline, the caller-provided

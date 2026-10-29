@@ -59,6 +59,11 @@ if TYPE_CHECKING:
 __all__ = ["SolverKamino"]
 
 
+@wp.kernel(module="unique", module_options={"mode": "debug"}, enable_backward=False)
+def _assert_captured_model_structure(violations: wp.array[int], sentinel: int):
+    assert violations[wp.tid()] == sentinel, "Model edit changes Kamino topology; recreate SolverKamino"
+
+
 def _estimate_dvi_contacts_per_world(model, newton_model: Model) -> int:
     """Estimate DVI contact capacity using the collision pipeline's weights."""
     theoretical = max(model.geoms.world_minimum_contacts, default=0)
@@ -1283,6 +1288,11 @@ class SolverKamino(SolverBase, CouplingInterface):
                 wp.copy(observable_contacts.force, observables.contact_f, count=observable_contacts.force.shape[0])
 
     @override
+    def coupling_supports_inertial_property_refresh(self) -> bool:
+        """Refresh inertial properties and joint frames during CUDA graph capture."""
+        return True
+
+    @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Propagate Newton model property changes to Kamino's internal ModelKamino.
 
@@ -1683,6 +1693,16 @@ class SolverKamino(SolverBase, CouplingInterface):
             check_body_immovability=check_body_immovability,
             kinematic_only_immovable=self._config.dynamics_solver == "lox",
         )
+        if self.device.is_capturing:
+            # Host reads are forbidden during capture. Keep the same structural
+            # checks on every replay, reporting invalid edits on the device.
+            wp.launch(
+                _assert_captured_model_structure,
+                dim=self._notify_violations.shape[0],
+                inputs=[self._notify_violations, sentinel],
+                device=self.device,
+            )
+            return
         violations = self._notify_violations.numpy()
         dynamic_joint = violations[self._kamino.StructuralUpdateViolation.DYNAMIC_CTS]
         limit_dof = violations[self._kamino.StructuralUpdateViolation.LIMIT_FINITE]

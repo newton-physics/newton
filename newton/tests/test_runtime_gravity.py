@@ -370,8 +370,8 @@ def test_global_gravity_bodies(test, device, solver_fn):
     test.assertAlmostEqual(body_qd[local_body, 2], -0.5, places=6)
 
 
-def test_global_gravity_coupling_acceleration(test, device, solver_fn):
-    """Report dedicated global gravity through solver coupling hooks."""
+def test_global_gravity_coupling_momentum(test, device, solver_fn):
+    """Read and cancel global and local gravity through momentum targets."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -2.0))
     global_particle = builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
     global_body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -383,16 +383,31 @@ def test_global_gravity_coupling_acceleration(test, device, solver_fn):
 
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    particle_acceleration = wp.empty(model.particle_count, dtype=wp.vec3, device=device)
+    state = model.state()
     body_acceleration = wp.empty(model.body_count, dtype=wp.vec3, device=device)
+    particle_acceleration = wp.empty(model.particle_count, dtype=wp.vec3, device=device)
     solver.coupling_eval_gravity_acceleration(body_acceleration, particle_acceleration)
-
-    particle_acceleration_np = particle_acceleration.numpy()
-    body_acceleration_np = body_acceleration.numpy()
-    np.testing.assert_allclose(particle_acceleration_np[global_particle], (0.0, 0.0, -2.0), atol=1.0e-6)
-    np.testing.assert_allclose(particle_acceleration_np[local_particle], (0.0, 0.0, -5.0), atol=1.0e-6)
-    np.testing.assert_allclose(body_acceleration_np[global_body], (0.0, 0.0, -2.0), atol=1.0e-6)
-    np.testing.assert_allclose(body_acceleration_np[local_body], (0.0, 0.0, -5.0), atol=1.0e-6)
+    np.testing.assert_allclose(particle_acceleration.numpy()[global_particle], (0.0, 0.0, -2.0), atol=1e-6)
+    np.testing.assert_allclose(particle_acceleration.numpy()[local_particle], (0.0, 0.0, -5.0), atol=1e-6)
+    np.testing.assert_allclose(body_acceleration.numpy()[global_body], (0.0, 0.0, -2.0), atol=1e-6)
+    np.testing.assert_allclose(body_acceleration.numpy()[local_body], (0.0, 0.0, -5.0), atol=1e-6)
+    body_momentum = wp.empty_like(state.body_qd)
+    particle_momentum = wp.empty_like(state.particle_qd)
+    body_momentum.zero_()
+    particle_momentum.zero_()
+    solver.coupling_set_inertial_target(state, body_momentum, particle_momentum, dt=1.0)
+    solver.coupling_notify_input_state_update(
+        state,
+        newton.StateFlags.BODY_QD
+        | newton.StateFlags.BODY_F
+        | newton.StateFlags.PARTICLE_QD
+        | newton.StateFlags.PARTICLE_F,
+        dt=1.0,
+    )
+    out = model.state()
+    solver.step(state, out, model.control(), None, 1.0)
+    np.testing.assert_allclose(out.body_qd.numpy(), 0.0, atol=1e-6)
+    np.testing.assert_allclose(out.particle_qd.numpy(), 0.0, atol=1e-6)
 
 
 def test_per_world_gravity_bodies_mujoco_warp(test, device):
@@ -891,8 +906,8 @@ for device in devices:
             continue
         add_function_test(
             TestRuntimeGravity,
-            f"test_global_gravity_coupling_acceleration_{solver_name}",
-            test_global_gravity_coupling_acceleration,
+            f"test_global_gravity_coupling_momentum_{solver_name}",
+            test_global_gravity_coupling_momentum,
             devices=[device],
             solver_fn=solvers_bodies[solver_name],
         )

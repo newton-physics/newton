@@ -50,17 +50,9 @@ def _register_rigid_solver_custom_attributes(builder: newton.ModelBuilder, rigid
 
 
 def _make_kamino_config() -> SolverKamino.Config:
-    config = SolverKamino.Config()
+    config = SolverKamino.Config(dynamics_solver="lox")
     config.use_collision_detector = False
     config.use_fk_solver = False
-    config.dynamics.preconditioning = True
-    config.padmm.max_iterations = 120
-    config.padmm.primal_tolerance = 1.0e-5
-    config.padmm.dual_tolerance = 1.0e-5
-    config.padmm.compl_tolerance = 1.0e-5
-    config.padmm.rho_0 = 0.1
-    config.padmm.use_acceleration = True
-    config.padmm.warmstart_mode = "containers"
     return config
 
 
@@ -151,7 +143,7 @@ class Example:
             self.center_particle,
             self.ball_body,
             body_point=wp.vec3(0.0, 0.0, ball_radius),
-            stiffness=1.0e3,
+            stiffness=4.8e5,
         )
 
         link_hx = 0.28
@@ -220,9 +212,10 @@ class Example:
             ],
             coupling=SolverCoupledADMM.Config(
                 iterations=2,
-                rho=50,
-                gamma=0.1,
+                rho=0.1,
+                gamma=50.0,
                 baumgarte=0.01,
+                joint_stiffness=4.8e6,
                 joint_proximal_bodies=args.joint_proximal_bodies,
                 joint_proximal_destination_entries=(rigid_name,),
             ),

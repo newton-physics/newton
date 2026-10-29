@@ -47,13 +47,14 @@ Supported hook signatures are:
     def coupling_supports_full_surface_soft_contacts() -> bool: ...
 
 
-    def coupling_rewind_proxy_body(
-        body_local_to_proxy_global, state, coupling_forces, body_gravity_acceleration, dt
-    ) -> None: ...
+    def coupling_uses_reduced_coordinates() -> bool: ...
 
 
-    def coupling_rewind_proxy_particle(
-        particle_local_to_proxy_global, state, coupling_forces, particle_gravity_acceleration, dt
+    def coupling_eval_gravity_acceleration(out_body_acceleration, out_particle_acceleration) -> None: ...
+
+
+    def coupling_set_inertial_target(
+        state, body_momentum, particle_momentum, *, body_indices=None, particle_indices=None, accumulate=False, dt
     ) -> None: ...
 
 
@@ -92,19 +93,39 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import ParticleFlags
-from ...sim import BodyFlags, StateFlags
+from ...sim import BodyFlags, JointType, StateFlags
+from ...sim.articulation import eval_ik
 from .proxy_utils import (
     filter_proxy_rigid_contacts_kernel,
     harvest_proxy_momentum_forces_kernel,
     harvest_proxy_particle_momentum_forces_kernel,
-    subtract_proxy_body_forces_kernel,
-    subtract_proxy_particle_forces_kernel,
 )
 
 if TYPE_CHECKING:
     from ...sim import Contacts, State
 
 __all__ = ["CouplingInterface"]
+
+
+@wp.kernel(enable_backward=False)
+def _copy_joint_positions_near_previous(
+    joint_type: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    positions: wp.array[float],
+    joint_q: wp.array[float],
+):
+    joint = wp.tid()
+    start = joint_q_start[joint]
+    for coord in range(start, joint_q_start[joint + 1]):
+        value = positions[coord]
+        angular = joint_type[joint] == JointType.REVOLUTE or (
+            joint_type[joint] == JointType.D6 and coord >= start + joint_dof_dim[joint, 0]
+        )
+        if angular:
+            period = 2.0 * wp.pi
+            value += period * wp.round((joint_q[coord] - value) / period)
+        joint_q[coord] = value
 
 
 class CouplingInterface:
@@ -242,8 +263,51 @@ class CouplingInterface:
 
         ``flags`` uses :class:`~newton.StateFlags` bits for both kinematic
         state arrays and public force-input buffers.
+
+        The default translates body-only edits into joint state when
+        :meth:`coupling_uses_reduced_coordinates` returns ``True``.
+        When the corresponding joint component is also flagged, that joint
+        component is authoritative and must retain its supplied value.
+        Solvers with additional native state should call this default before
+        refreshing their native buffers. Scratch arrays are allocated on the
+        first body-only notification and reused thereafter.
+
+        A pose update with ``dt=0`` establishes an instantaneous input baseline;
+        it does not represent motion over a timestep. This is used when
+        restoring physical timestep inputs.
+        It must preserve joint and contact history.
         """
-        del state, flags, iteration_restart, dt
+        del iteration_restart, dt
+        if not self.coupling_uses_reduced_coordinates():
+            return
+        model = self.model
+        update_q = bool(flags & StateFlags.BODY_Q) and not bool(flags & StateFlags.JOINT_Q)
+        update_qd = bool(flags & StateFlags.BODY_QD) and not bool(flags & StateFlags.JOINT_QD)
+        if not model.articulation_count or not (update_q or update_qd):
+            return
+        if not hasattr(self, "_coupling_joint_q_scratch"):
+            self._coupling_joint_q_scratch = wp.empty(model.joint_coord_count, dtype=float, device=model.device)
+            self._coupling_joint_qd_scratch = wp.empty(model.joint_dof_count, dtype=float, device=model.device)
+        joint_q_scratch = self._coupling_joint_q_scratch
+        if update_q:
+            # IK leaves non-articulation rows untouched.
+            wp.copy(joint_q_scratch, state.joint_q)
+        # IK writes both components; discard whichever one was not requested.
+        eval_ik(
+            model,
+            state,
+            joint_q_scratch,
+            state.joint_qd if update_qd else self._coupling_joint_qd_scratch,
+        )
+        if update_q:
+            # Preserve revolution counts so an unchanged physical joint retains
+            # its limits and drive error after a proxy pose update.
+            wp.launch(
+                _copy_joint_positions_near_previous,
+                dim=model.joint_count,
+                inputs=[model.joint_type, model.joint_q_start, model.joint_dof_dim, joint_q_scratch, state.joint_q],
+                device=model.device,
+            )
 
     def coupling_supports_inertial_property_refresh(self) -> bool:
         """Return whether inertial property refresh is safe during graph capture.
@@ -267,12 +331,22 @@ class CouplingInterface:
         """
         return False
 
+    def coupling_uses_reduced_coordinates(self) -> bool:
+        """Return whether joint coordinates determine rigid body motion.
+
+        Reduced-coordinate solvers must return ``True``: joint coordinates are
+        authoritative, and inertial targets are imposed through applied forces.
+        Maximal-coordinate solvers use the default ``False``: each body's
+        position, orientation, and velocity are independent state variables.
+        """
+        return False
+
     def coupling_eval_gravity_acceleration(
         self,
         out_body_acceleration: wp.array[wp.vec3] | None,
         out_particle_acceleration: wp.array[wp.vec3] | None,
     ) -> None:
-        """Evaluate solver-applied gravity-like acceleration for all local entities.
+        """Read the gravity acceleration this solver applies to each body and particle.
 
         The coupled solvers cache these arrays at initialization and refresh
         them on relevant model changes. Solvers that apply scaled or compensated
@@ -301,69 +375,108 @@ class CouplingInterface:
                 device=model.device,
             )
 
-    def coupling_rewind_proxy_body(
+    def coupling_set_inertial_target(
         self,
-        body_local_to_proxy_global: wp.array[int],
         state: State,
-        coupling_forces: wp.array[wp.spatial_vector],
-        body_gravity_acceleration: wp.array[wp.vec3],
+        body_momentum: wp.array[wp.spatial_vector] | None,
+        particle_momentum: wp.array[wp.vec3] | None,
+        *,
+        body_indices: wp.array[int] | None = None,
+        particle_indices: wp.array[int] | None = None,
+        accumulate: bool = False,
         dt: float,
     ) -> None:
-        """Rewind lagged proxy-body feedback, gravity acceleration and external forces
-        before the destination solve, so those are not double-counted.
+        """Set the motion preferred by the next solve, using targets expressed as momentum.
 
-        Implementations may update either ``state.body_qd`` or ``state.body_f``.
+        The target describes the motion preferred by the solver before contact,
+        joint, or material constraints. For a body, linear momentum ``p`` gives
+        a target COM velocity ``p / m`` and angular momentum ``L`` gives a
+        target angular velocity ``inverse(I_world) * L``. A position-based
+        solver realizes these as a COM displacement ``dt * v`` and a rotation
+        vector ``dt * w`` from the current input pose. A particle target gives
+        the velocity ``p / m`` and displacement ``dt * p / m``.
+
+        With ``accumulate=False``, replace the inertial target. With
+        ``accumulate=True``, add the supplied momentum to the existing target,
+        including the effects of external forces and gravity. This operation
+        must not cancel gravity a second time.
+
+        Implementations choose the forces or initial velocities that realize
+        this motion under their native integration. They need not preserve the
+        algebraic value ``M*v + dt*f``: finite-step rotation and gyroscopic
+        terms may require different inputs. The default is a first-order force
+        update based on ``(m*v, I_world*w) + dt*(f + m*g, torque)`` for bodies
+        and ``m*v + dt*(f + m*g)`` for particles. Solvers can override it to
+        match their inertial prediction more accurately.
+
+        Only selected dynamic bodies and active particles may change. Poses,
+        stored solver history, and supplied arrays must remain unchanged.
+        Afterward the caller invokes :meth:`coupling_notify_input_state_update`
+        with ``BODY_QD | BODY_F`` and/or ``PARTICLE_QD | PARTICLE_F``.
+
+        Args:
+            state: Input state to edit. Only velocity and force arrays may change.
+            body_momentum: One target or increment per selected body, or ``None``
+                to leave bodies unchanged. Rows contain world linear momentum
+                [kg m/s], then world angular momentum about the COM [kg m^2/s].
+                Use the body's inertia at its current input pose to encode the
+                target angular velocity. For a pose target, use the shortest
+                rotation vector divided by ``dt``.
+            particle_momentum: One world linear momentum target or increment
+                [kg m/s] per selected particle, or ``None`` to leave particles
+                unchanged.
+            body_indices: Local body indices in target-row order, without
+                duplicates. ``None`` selects all local bodies in model order.
+                Unselected bodies are untouched.
+            particle_indices: Local particle indices in target-row order,
+                without duplicates. ``None`` selects all local particles in
+                model order. Unselected particles are untouched.
+            accumulate: Add to the existing inertial target if ``True``;
+                replace it if ``False``.
+            dt: Positive duration of the next solve [s]. Determines the target
+                displacement and the impulses supplied by gravity and forces.
         """
-        del dt
-        if body_local_to_proxy_global.shape[0] == 0 or state.body_f is None:
-            return
-
+        if dt <= 0.0:
+            raise ValueError("Coupling momentum requires dt > 0")
         model = self.model
-        wp.launch(
-            subtract_proxy_body_forces_kernel,
-            dim=body_local_to_proxy_global.shape[0],
-            inputs=[
-                body_gravity_acceleration,
-                state.body_f,
-                coupling_forces,
-                body_local_to_proxy_global,
-                model.body_mass,
-                model.body_inv_mass,
-            ],
-            device=model.device,
-        )
-
-    def coupling_rewind_proxy_particle(
-        self,
-        particle_local_to_proxy_global: wp.array[int],
-        state: State,
-        coupling_forces: wp.array[wp.vec3],
-        particle_gravity_acceleration: wp.array[wp.vec3],
-        dt: float,
-    ) -> None:
-        """Rewind lagged proxy-body feedback, gravity acceleration and external forces
-        before the destination solve, so those are not double-counted.
-
-        Implementations may update either ``state.particle_qd`` or ``state.particle_f``.
-        """
-        if particle_local_to_proxy_global.shape[0] == 0 or state.particle_qd is None:
-            return
-
-        model = self.model
-        wp.launch(
-            subtract_proxy_particle_forces_kernel,
-            dim=particle_local_to_proxy_global.shape[0],
-            inputs=[
-                float(dt),
-                particle_gravity_acceleration,
-                state.particle_f,
-                coupling_forces,
-                particle_local_to_proxy_global,
-                model.particle_inv_mass,
-                state.particle_qd,
-            ],
-            device=model.device,
-        )
+        if body_momentum is not None and model.body_count:
+            wp.launch(
+                _body_momentum_kernel,
+                dim=body_momentum.shape[0],
+                inputs=[
+                    model.body_mass,
+                    model.body_inertia,
+                    model.body_flags,
+                    model.body_world,
+                    model.gravity,
+                    state.body_q,
+                    state.body_qd,
+                    state.body_f,
+                    float(dt),
+                    accumulate,
+                    body_momentum,
+                    body_indices,
+                ],
+                device=model.device,
+            )
+        if particle_momentum is not None and model.particle_count:
+            wp.launch(
+                _particle_momentum_kernel,
+                dim=particle_momentum.shape[0],
+                inputs=[
+                    model.particle_mass,
+                    model.particle_flags,
+                    model.particle_world,
+                    model.gravity,
+                    state.particle_qd,
+                    state.particle_f,
+                    float(dt),
+                    accumulate,
+                    particle_momentum,
+                    particle_indices,
+                ],
+                device=model.device,
+            )
 
     def coupling_harvest_proxy_wrenches(
         self,
@@ -592,3 +705,59 @@ def _coupling_zero_inertia_kernel(out_inertia: wp.array[wp.mat33]):
 
 
 CouplingEndpointKind = CouplingInterface.EndpointKind
+
+
+@wp.kernel(enable_backward=False)
+def _body_momentum_kernel(
+    mass: wp.array[float],
+    inertia: wp.array[wp.mat33],
+    flags: wp.array[wp.int32],
+    world: wp.array[int],
+    gravity: wp.array[wp.vec3],
+    q: wp.array[wp.transform],
+    qd: wp.array[wp.spatial_vector],
+    force: wp.array[wp.spatial_vector],
+    dt: float,
+    accumulate: bool,
+    momentum: wp.array[wp.spatial_vector],
+    indices: wp.array[int],
+):
+    row = wp.tid()
+    i = row
+    if indices:
+        i = indices[row]
+    if mass[i] <= 0.0 or (flags[i] & int(BodyFlags.KINEMATIC)) != 0:
+        return
+    increment = momentum[row]
+    if not accumulate:
+        rot = wp.transform_get_rotation(q[i])
+        angular = wp.quat_rotate(rot, inertia[i] * wp.quat_rotate_inv(rot, wp.spatial_bottom(qd[i])))
+        current = wp.spatial_vector(mass[i] * wp.spatial_top(qd[i]), angular)
+        current += dt * (force[i] + wp.spatial_vector(mass[i] * gravity[world[i]], wp.vec3(0.0)))
+        increment -= current
+    force[i] += increment / dt
+
+
+@wp.kernel(enable_backward=False)
+def _particle_momentum_kernel(
+    mass: wp.array[float],
+    flags: wp.array[wp.int32],
+    world: wp.array[int],
+    gravity: wp.array[wp.vec3],
+    qd: wp.array[wp.vec3],
+    force: wp.array[wp.vec3],
+    dt: float,
+    accumulate: bool,
+    momentum: wp.array[wp.vec3],
+    indices: wp.array[int],
+):
+    row = wp.tid()
+    i = row
+    if indices:
+        i = indices[row]
+    if mass[i] <= 0.0 or (flags[i] & int(ParticleFlags.ACTIVE)) == 0:
+        return
+    increment = momentum[row]
+    if not accumulate:
+        increment -= mass[i] * qd[i] + dt * (force[i] + mass[i] * gravity[world[i]])
+    force[i] += increment / dt

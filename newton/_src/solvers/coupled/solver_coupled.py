@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected as _reset_world_selected
+from ...core.types import MAXVAL
 from ...geometry import ParticleFlags, ShapeFlags
 from ...sim import JointType, Model, ModelFlags, StateFlags
 from ..solver import SolverBase
@@ -46,13 +47,12 @@ def _remap_reference_kernel(src: wp.array[int], global_to_local: wp.array[int], 
 
 
 @wp.kernel(enable_backward=False)
-def _clear_shape_collision_flags_kernel(
+def _clear_shape_flags_kernel(
     hidden_shape_indices: wp.array[int],
-    collision_mask: int,
     shape_flags: wp.array[int],
 ):
     shape = hidden_shape_indices[wp.tid()]
-    shape_flags[shape] = shape_flags[shape] & ~collision_mask
+    shape_flags[shape] = 0
 
 
 @wp.kernel(enable_backward=False)
@@ -223,6 +223,14 @@ class _FreeRootLayout:
     """View articulation row of every view joint, ``-1`` outside articulations."""
     own_articulation_rows: tuple[tuple[int, int], ...]
     """View articulation rows a FREE joint heads, with that joint's index, sorted by row."""
+    reversed_joint: tuple[int, ...] = ()
+    """Parent-model loop joints that the view lists with parent and child swapped."""
+    reversed_joint_local: tuple[int, ...] = ()
+    """View joint row of each reversed joint."""
+    copied_joint: tuple[int, ...] = ()
+    """Parent-model joints that attach their own copy of a proxy body."""
+    copied_joint_local: tuple[int, ...] = ()
+    """View joint row of each copied joint."""
 
 
 @dataclass(frozen=True)
@@ -238,6 +246,8 @@ class _FreeRootJoints:
     """First view joint-coordinate row of each FREE joint."""
     dof_local: wp.array[int]
     """First view joint-DOF row of each FREE joint."""
+    copy_body_local: tuple[int, ...] = ()
+    """View body row of the proxy body copy each copied joint attaches."""
 
     @property
     def count(self) -> int:
@@ -387,6 +397,38 @@ def _require_supports_coupling(solver: SolverBase) -> None:
         )
 
 
+_PROXY_JOINT_DOF_CLEARED_VALUES = (
+    ("joint_target_ke", 0.0),
+    ("joint_target_kd", 0.0),
+    ("joint_damping", 0.0),
+    ("joint_friction", 0.0),
+    ("joint_armature", 0.0),
+    ("joint_limit_ke", 0.0),
+    ("joint_limit_kd", 0.0),
+    ("joint_limit_lower", -MAXVAL),
+    ("joint_limit_upper", MAXVAL),
+)
+"""Per-DOF joint fields of joint proxies and the values that make them exert no force."""
+
+_PROXY_JOINT_CONTROL_FIELDS = ("joint_f", "joint_act")
+"""Per-DOF control inputs that never act on joint proxies."""
+
+
+@wp.kernel(enable_backward=False)
+def _zero_indexed_float_kernel(indices: wp.array[int], values: wp.array[float]):
+    values[indices[wp.tid()]] = 0.0
+
+
+def _clear_proxy_joint_control(control: Control, dofs: wp.array[int] | None) -> None:
+    """Zero the per-DOF control inputs of joint proxies in an entry-local control."""
+    if dofs is None:
+        return
+    for name in _PROXY_JOINT_CONTROL_FIELDS:
+        values = getattr(control, name, None)
+        if isinstance(values, wp.array) and values.shape[0] > 0:
+            wp.launch(_zero_indexed_float_kernel, dim=dofs.shape[0], inputs=[dofs, values], device=values.device)
+
+
 @dataclass
 class SolverEntry:
     """Runtime state for one sub-solver entry inside ``SolverCoupled``."""
@@ -429,6 +471,7 @@ class SolverEntry:
     body_gravity_acceleration: wp.array[wp.vec3] | None = None
     particle_gravity_acceleration: wp.array[wp.vec3] | None = None
     free_root_joints: _FreeRootJoints | None = None
+    proxy_joint_dof_local_indices: wp.array[int] | None = None
 
 
 _CORE_RESET_STATE_FLAGS = {
@@ -760,6 +803,17 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 owner[index] = entry_idx
         return owner
 
+    def _label_body_copies(self, view: ModelView, free_root_joints: _FreeRootJoints | None) -> None:
+        """Suffix each body copy's label with the joint it serves."""
+        if free_root_joints is None or not free_root_joints.copy_body_local:
+            return
+        labels = list(view.body_label)
+        for local_id, joint in zip(free_root_joints.copy_body_local, free_root_joints.layout.copied_joint, strict=True):
+            suffix = f"_copy_{self.model.joint_label[joint]}"
+            if not labels[local_id].endswith(suffix):
+                labels[local_id] = f"{labels[local_id]}{suffix}"
+        view.body_label = labels
+
     def _global_indices_to_local_array(
         self,
         indices: Sequence[int],
@@ -842,7 +896,18 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 visible_bodies = {int(i) for i in cfg.bodies} | {int(i) for i in proxy_body_keep}
                 self._apply_global_shape_metadata(view, cfg, visible_bodies)
                 self._apply_noncompact_body_particle_attachment_visibility(view, cfg)
-            self._customize_compact_view(view)
+            proxy_body_local_indices = self._global_indices_to_local_array(
+                sorted(proxy_body_keep),
+                index_lists,
+                model.AttributeFrequency.BODY,
+            )
+            if index_lists is not None and index_lists.free_root_joints is not None:
+                copy_body_local = index_lists.free_root_joints.copy_body_local
+                if copy_body_local:
+                    proxy_body_local_indices = wp.array(
+                        [*proxy_body_local_indices.numpy().tolist(), *copy_body_local], dtype=int, device=device
+                    )
+            self._customize_compact_view(view, proxy_body_local_indices)
             if cfg.configure_view is not None:
                 cfg.configure_view(view)
             self._filter_shape_contact_pairs(view)
@@ -862,11 +927,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 joint_dynamics_disabled,
                 index_lists,
                 model.AttributeFrequency.JOINT,
-            )
-            proxy_body_local_indices = self._global_indices_to_local_array(
-                sorted(proxy_body_keep),
-                index_lists,
-                model.AttributeFrequency.BODY,
             )
             proxy_particle_local_indices = self._global_indices_to_local_array(
                 sorted(proxy_particle_keep),
@@ -896,6 +956,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     wp.array([global_id for _, global_id in owned_pairs], dtype=int, device=device),
                 )
 
+            proxy_joint_dof_local_indices = self._proxy_joint_dof_local_indices(view, proxy_joint_keep, index_lists)
+            self._clear_proxy_joint_forces(view, proxy_joint_dof_local_indices)
             try:
                 solver = cfg.solver(view)
             except ValueError as error:
@@ -923,6 +985,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 joint_dynamics_disabled_local_indices=joint_dynamics_disabled_local_indices,
                 proxy_body_local_indices=proxy_body_local_indices,
                 proxy_particle_local_indices=proxy_particle_local_indices,
+                proxy_joint_dof_local_indices=proxy_joint_dof_local_indices,
                 joint_q_indices=joint_q_indices,
                 joint_qd_indices=joint_qd_indices,
                 shape_indices=shape_indices,
@@ -1011,14 +1074,112 @@ class SolverCoupled(SolverBase, CouplingInterface):
         del name
         return set()
 
+    def _proxy_joint_dof_local_indices(
+        self,
+        view: ModelView,
+        proxy_joint_keep: set[int],
+        compact: _CompactIndexMaps | None,
+    ) -> wp.array[int] | None:
+        """Return the view-local DOFs of the joints kept as joint proxies, or ``None`` when there are none."""
+        joints = self._global_indices_to_local_array(
+            sorted(proxy_joint_keep), compact, self.model.AttributeFrequency.JOINT
+        )
+        if joints.shape[0] == 0:
+            return None
+        qd_start = view.joint_qd_start.numpy()
+        dofs = [dof for joint in joints.numpy() for dof in range(int(qd_start[joint]), int(qd_start[joint + 1]))]
+        if not dofs:
+            return None
+        return wp.array(dofs, dtype=int, device=self.model.device)
+
+    @staticmethod
+    def _clear_proxy_joint_forces(view: ModelView, dofs: wp.array[int] | None) -> None:
+        """Make joint proxies pure kinematic ties: no drives, damping, friction, limits, or armature.
+
+        Joint proxies keep the model's joint rows in the view; the coupler only needs their kinematics.
+        """
+        if dofs is None:
+            return
+        indices = dofs.numpy()
+        for name, value in _PROXY_JOINT_DOF_CLEARED_VALUES:
+            current = getattr(view, name, None)
+            if not isinstance(current, wp.array) or current.shape[0] == 0:
+                continue
+            values = current.numpy()
+            values[indices] = value
+            if object.__getattribute__(view, "_overrides").get(name) is current:
+                # Solvers may alias the view's override, so write into it.
+                current.assign(values)
+            else:
+                setattr(view, name, wp.array(values, dtype=current.dtype, device=current.device))
+
     def _entry_proxy_joint_keep_indices(self, name: str) -> set[int]:
         """Return joint indices that should remain enabled as proxies in one view."""
         del name
         return set()
 
-    def _customize_compact_view(self, view: ModelView) -> None:
-        """Apply subclass-specific edits after entry compaction."""
-        del view
+    def _entry_proxy_tree_joints(self, name: str) -> dict[int, int]:
+        """Return kept joints that attach a proxy body as a tree child in one view, mapped to that body.
+
+        A kept parent-model loop joint listed here joins the articulation of its
+        other body in the view, with the proxy body as its child, instead of
+        the proxy receiving a FREE root. The view swaps the joint's parent and
+        child when the proxy is the parent-model parent.
+        """
+        del name
+        return {}
+
+    def _entry_proxy_body_copies(self, name: str) -> dict[int, int]:
+        """Return kept joints that attach their own copy of a proxy body in one view, mapped to that body.
+
+        Each joint listed here references a separate view row of its proxy
+        body, gathered from the same parent-model body, and attaches it as a
+        tree child like :meth:`_entry_proxy_tree_joints`. A proxy body joined
+        to an entry by several joints thereby receives one row per joint.
+        """
+        del name
+        return {}
+
+    def _entry_tree_proxy_joints(
+        self, cfg: SolverCoupled.Entry, proxy_body_keep: set[int], proxy_joint_keep: set[int]
+    ) -> dict[int, int]:
+        """Return the kept loop joints that attach a proxy to an entry-owned body as a tree child."""
+        return self._entry_owned_loop_proxy_joints(
+            cfg, self._entry_proxy_tree_joints(cfg.name), proxy_body_keep, proxy_joint_keep
+        )
+
+    def _entry_owned_loop_proxy_joints(
+        self,
+        cfg: SolverCoupled.Entry,
+        joints: dict[int, int],
+        proxy_body_keep: set[int],
+        proxy_joint_keep: set[int],
+    ) -> dict[int, int]:
+        """Keep the kept loop joints, mapped to their proxy, whose other body the entry owns."""
+        if not joints:
+            return {}
+        model = self.model
+        joint_articulation = model.joint_articulation.numpy()
+        joint_parent = model.joint_parent.numpy()
+        joint_child = model.joint_child.numpy()
+        owned = {int(body) for body in cfg.bodies}
+        result = {}
+        for joint, proxy in joints.items():
+            if joint not in proxy_joint_keep or proxy not in proxy_body_keep or int(joint_articulation[joint]) >= 0:
+                continue
+            other = int(joint_parent[joint]) if int(joint_child[joint]) == proxy else int(joint_child[joint])
+            if other in owned:
+                result[int(joint)] = int(proxy)
+        return result
+
+    def _customize_compact_view(self, view: ModelView, proxy_body_local_indices: wp.array) -> None:
+        """Apply subclass-specific edits after entry compaction.
+
+        Args:
+            view: Entry view to edit.
+            proxy_body_local_indices: View indices of the kept proxy bodies.
+        """
+        del view, proxy_body_local_indices
 
     def _apply_entry_shape_visibility(
         self,
@@ -1026,7 +1187,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         cfg: SolverCoupled.Entry,
         proxy_body_keep: set[int],
     ) -> None:
-        """Restrict shape collisions to entry-owned and proxy-visible shapes."""
+        """Clear all flags on shapes excluded from the entry's view."""
         model = self.model
         if model.shape_count == 0 or model.shape_flags is None:
             return
@@ -1040,17 +1201,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if not cfg.shapes:
             visible_bodies.update(int(i) for i in cfg.bodies)
         visible.update(self._entry_visible_shapes(cfg, visible_bodies))
-        if not visible:
-            return
-
-        collision_mask = int(ShapeFlags.COLLIDE_SHAPES | ShapeFlags.COLLIDE_PARTICLES | ShapeFlags.HYDROELASTIC)
         hidden = [shape for shape in range(model.shape_count) if shape not in visible]
         shape_flags = view._cow_array("shape_flags")
         if hidden:
             wp.launch(
-                _clear_shape_collision_flags_kernel,
+                _clear_shape_flags_kernel,
                 dim=len(hidden),
-                inputs=[wp.array(hidden, dtype=int, device=model.device), collision_mask],
+                inputs=[wp.array(hidden, dtype=int, device=model.device)],
                 outputs=[shape_flags],
                 device=model.device,
             )
@@ -1220,7 +1377,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
         visible_particles = {int(i) for i in cfg.particles} | {int(i) for i in proxy_particle_keep}
         visible_joints = {int(i) for i in cfg.joints} | {int(i) for i in proxy_joint_keep}
         visible_shapes = self._entry_visible_shapes(cfg, visible_bodies)
-        free_root_cuts = self._entry_free_root_cut_joints(cfg, visible_joints)
+        tree_joints = self._entry_tree_proxy_joints(cfg, proxy_body_keep, proxy_joint_keep)
+        body_copies = self._entry_owned_loop_proxy_joints(
+            cfg, self._entry_proxy_body_copies(cfg.name), proxy_body_keep, proxy_joint_keep
+        )
+        free_root_cuts = self._entry_free_root_cut_joints(
+            cfg, visible_joints, proxy_body_keep, set(tree_joints.values())
+        )
 
         body_order = self._ordered_world_subset(
             visible_bodies,
@@ -1272,6 +1435,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             particle_order,
             attachment_order,
             free_root_cuts,
+            tree_joints,
+            body_copies,
         )
         if compact is None:
             self._warn_compaction_fallback(cfg, failure_reason or "the selected topology is not closed")
@@ -1280,8 +1445,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         self._apply_compact_entry_view(view, compact)
         return compact
 
-    def _entry_free_root_cut_joints(self, cfg: SolverCoupled.Entry, visible_joints: set[int]) -> set[int]:
-        """Return hidden incoming tree joints of entry-owned bodies that receive a FREE root joint.
+    def _entry_free_root_cut_joints(
+        self,
+        cfg: SolverCoupled.Entry,
+        visible_joints: set[int],
+        proxy_bodies: set[int],
+        tree_proxies: set[int] | None = None,
+    ) -> set[int]:
+        """Return hidden incoming tree joints of owned or proxy bodies needing a FREE root.
 
         A reduced-coordinate solver moves a body only through its incoming
         joint, so each entry-owned body whose enabled articulation joint to a
@@ -1289,12 +1460,16 @@ class SolverCoupled(SolverBase, CouplingInterface):
         holds whether the hidden joint is unowned or owned by another entry.
         A hidden FREE joint to the world is replaced by an identical one. A
         hidden joint of another type to the world stays out of the view, with
-        a warning, since no entry simulates it.
+        a warning, since no entry simulates it. Receiving proxies instead get
+        a FREE root for any hidden incoming joint: their source supplies the
+        constrained motion, while the destination simulates independent copies.
+        Proxies in ``tree_proxies`` hang from a kept loop joint instead.
         """
+        tree_proxies = tree_proxies or set()
         model = self.model
-        if model.joint_count == 0 or model.articulation_count == 0 or not cfg.bodies:
+        if model.joint_count == 0 or model.articulation_count == 0 or not (cfg.bodies or proxy_bodies):
             return set()
-        owned_bodies = {int(body) for body in cfg.bodies}
+        dynamic_bodies = {int(body) for body in cfg.bodies} | proxy_bodies
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
         joint_type = model.joint_type.numpy()
@@ -1303,7 +1478,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         incoming: dict[int, list[int]] = {}
         for joint in np.flatnonzero(joint_articulation >= 0).tolist():
             child = int(joint_child[joint])
-            if child in owned_bodies:
+            if child in dynamic_bodies and child not in tree_proxies:
                 incoming.setdefault(child, []).append(int(joint))
         cuts = set()
         hidden_world_joints = []
@@ -1312,7 +1487,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 continue
             for joint in joints:
                 if bool(joint_enabled[joint]):
-                    if int(joint_parent[joint]) >= 0 or int(joint_type[joint]) == JointType.FREE:
+                    if (
+                        int(joint_child[joint]) in proxy_bodies
+                        or int(joint_parent[joint]) >= 0
+                        or int(joint_type[joint]) == JointType.FREE
+                    ):
                         cuts.add(joint)
                     else:
                         hidden_world_joints.append(joint)
@@ -1320,8 +1499,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if hidden_world_joints:
             labels = ", ".join(repr(model.joint_label[joint]) for joint in hidden_world_joints)
             logger.warning(
-                f"SolverCoupled entry {cfg.name!r} owns the child body of world joint(s) {labels} but not the "
+                "SolverCoupled entry %r owns the child body of world joint(s) %s but not the "
                 "joint itself; no entry simulates these joints.",
+                cfg.name,
+                labels,
             )
         return cuts
 
@@ -1425,11 +1606,14 @@ class SolverCoupled(SolverBase, CouplingInterface):
         particle_order: list[int],
         attachment_order: list[int],
         free_root_cuts: set[int] | None = None,
+        tree_joints: dict[int, int] | None = None,
+        body_copies: dict[int, int] | None = None,
     ) -> tuple[_CompactIndexMaps | None, str | None]:
         model = self.model
         free_root_cuts = free_root_cuts or set()
+        tree_joints = dict(tree_joints or {})
+        body_copies = body_copies or {}
         real_joint_order = [joint for joint in joint_order if joint not in free_root_cuts]
-        body_set = set(body_order)
         joint_set = set(real_joint_order)
         joint_global_to_local = {
             global_id: local_id for local_id, global_id in enumerate(joint_order) if global_id not in free_root_cuts
@@ -1437,6 +1621,37 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         joint_parent = model.joint_parent.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
         joint_child = model.joint_child.numpy() if model.joint_count else np.empty(0, dtype=np.int32)
+        body_world = model.body_world.numpy() if model.body_count else np.empty(0, dtype=np.int32)
+        # Each copied joint references a copy of its proxy body. During layout a
+        # copy carries a provisional id past the parent-model bodies, sits right
+        # after its body, and joins the tree joints; the body projection maps it
+        # back to the parent-model body.
+        copy_source: dict[int, int] = {}
+        copied_joints = sorted(body_copies)
+        if copied_joints:
+            joint_parent, joint_child = joint_parent.copy(), joint_child.copy()
+            copies_of: dict[int, list[int]] = {}
+            for index, joint in enumerate(copied_joints):
+                proxy = int(body_copies[joint])
+                copy = model.body_count + index
+                copy_source[copy] = proxy
+                copies_of.setdefault(proxy, []).append(copy)
+                if int(joint_parent[joint]) == proxy:
+                    joint_parent[joint] = copy
+                else:
+                    joint_child[joint] = copy
+                tree_joints[joint] = copy
+            body_order = [member for body in body_order for member in (body, *copies_of.get(int(body), ()))]
+            body_world = np.concatenate([body_world, [body_world[copy_source[copy]] for copy in sorted(copy_source)]])
+        body_set = set(body_order)
+        # Tree joints whose proxy is the parent-model parent are listed with parent and child swapped.
+        reversed_joints = sorted(joint for joint, proxy in tree_joints.items() if int(joint_parent[joint]) == proxy)
+        if reversed_joints:
+            joint_parent, joint_child = joint_parent.copy(), joint_child.copy()
+            joint_parent[reversed_joints], joint_child[reversed_joints] = (
+                joint_child[reversed_joints],
+                joint_parent[reversed_joints],
+            )
         for joint in real_joint_order:
             parent = int(joint_parent[joint])
             child = int(joint_child[joint])
@@ -1467,9 +1682,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         joint_constraint_order: list[int] = []
         position_keys: dict[Model.AttributeFrequency, list[int]] = {}
         free_root_layout = None
-        if free_root_cuts:
+        if free_root_cuts or tree_joints:
             ordered_joints, block_starts, articulation_order, joint_articulation_local, own_articulation_rows = (
-                self._free_root_joint_layout(joint_order, free_root_cuts, joint_parent, joint_child)
+                self._free_root_joint_layout(joint_order, free_root_cuts, joint_parent, joint_child, tree_joints)
             )
             cut_joint: list[int] = []
             free_joint_local: list[int] = []
@@ -1513,9 +1728,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 dof_local=tuple(free_dof_local),
                 joint_articulation_local=tuple(joint_articulation_local),
                 own_articulation_rows=own_articulation_rows,
+                reversed_joint=tuple(reversed_joints),
+                reversed_joint_local=tuple(joint_local_order.index(joint) for joint in reversed_joints),
+                copied_joint=tuple(copied_joints),
+                copied_joint_local=tuple(joint_local_order.index(joint) for joint in copied_joints),
             )
             joint_order = joint_local_order
-            body_order = self._free_root_body_order(body_order, ordered_joints, joint_child)
+            body_order = self._free_root_body_order(body_order, ordered_joints, joint_child, body_world)
             articulation_keys = list(range(len(articulation_order)))
             position_keys = {
                 model.AttributeFrequency.JOINT: joint_keys,
@@ -1534,7 +1753,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         keep_deformables = bool(particle_order)
         built_in_frequency_orders = {
             model.AttributeFrequency.ONCE: [0],
-            model.AttributeFrequency.BODY: body_order,
+            model.AttributeFrequency.BODY: [copy_source.get(int(body), int(body)) for body in body_order],
             model.AttributeFrequency.JOINT: joint_order,
             model.AttributeFrequency.JOINT_COORD: joint_coord_order,
             model.AttributeFrequency.JOINT_DOF: joint_dof_order,
@@ -1565,17 +1784,24 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         free_root_joints = None
         if free_root_layout is not None:
-            free_root_joints = self._free_root_joints(free_root_layout, body_order, joint_order, joint_parent)
-        return (
-            _CompactIndexMaps(
-                {
-                    frequency: _compact_index_projection(order, source_count, position_keys.get(frequency))
-                    for frequency, (order, source_count) in frequency_orders.items()
-                },
-                free_root_joints,
-            ),
-            None,
-        )
+            free_root_joints = self._free_root_joints(
+                free_root_layout, body_order, joint_order, joint_parent, joint_child
+            )
+        projections = {
+            frequency: _compact_index_projection(order, source_count, position_keys.get(frequency))
+            for frequency, (order, source_count) in frequency_orders.items()
+        }
+        if copy_source:
+            # References to a parent-model body resolve to its own row; only copied joints reach a copy.
+            body_projection = projections[model.AttributeFrequency.BODY]
+            inverse = [-1] * model.body_count
+            for local_id, body in enumerate(body_order):
+                if int(body) < model.body_count:
+                    inverse[int(body)] = local_id
+            projections[model.AttributeFrequency.BODY] = _CompactIndexProjection(
+                body_projection.local_to_global, inverse, body_projection.position_keys
+            )
+        return _CompactIndexMaps(projections, free_root_joints), None
 
     def _compact_deformable_orders(
         self, frequency_orders: dict[Model.AttributeFrequency, list[int]]
@@ -1617,6 +1843,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         body_order: Sequence[int],
         ordered_joints: Sequence[int],
         joint_child: np.ndarray,
+        body_world: np.ndarray,
     ) -> list[int]:
         """Order joint child bodies like their joints after a FREE root layout.
 
@@ -1627,7 +1854,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         run of bodies; every other body keeps its position.
         """
         child_rank = {int(joint_child[joint]): rank for rank, joint in enumerate(ordered_joints)}
-        body_world = self.model.body_world.numpy()
         result = list(body_order)
         run_start = 0
         for index in range(1, len(result) + 1):
@@ -1646,6 +1872,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         free_root_cuts: set[int],
         joint_parent: np.ndarray,
         joint_child: np.ndarray,
+        tree_joints: dict[int, int] | None = None,
     ) -> tuple[list[int], list[int], list[int], list[int], tuple[tuple[int, int], ...]]:
         """Order view joints so each FREE root joint heads its own articulation.
 
@@ -1656,7 +1883,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         then each FREE joint followed by its subtree, all in parent-model
         order, so parents precede children and every view articulation is a
         contiguous joint range. Blocks keep their parent-model order, which
-        keeps rows grouped by world.
+        keeps rows grouped by world. Each joint in ``tree_joints`` joins the
+        block holding its parent body, after the parent's joints; one whose
+        parent body has no view articulation stays outside articulations.
+        ``joint_parent`` and ``joint_child`` give the view's joint direction.
 
         Returns:
             The reordered parent joint ids, the first parent joint id of the
@@ -1666,6 +1896,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             joint heads paired with that joint's index.
         """
         joint_articulation = self.model.joint_articulation.numpy()
+        tree_joints = tree_joints or {}
         blocks: list[tuple[int, list[int]]] = []
         for joint in joint_order:
             articulation = int(joint_articulation[joint])
@@ -1673,6 +1904,26 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 blocks[-1][1].append(int(joint))
             else:
                 blocks.append((articulation, [int(joint)]))
+        if tree_joints:
+            child_block = {
+                int(joint_child[joint]): index
+                for index, (articulation, joints) in enumerate(blocks)
+                if articulation >= 0
+                for joint in joints
+            }
+            for joint in tree_joints:
+                block = child_block.get(int(joint_parent[joint]))
+                if block is None:
+                    continue
+                blocks[block][1].append(int(joint))
+                child_block[int(joint_child[joint])] = block
+                blocks = [entry for entry in blocks if entry != (-1, [int(joint)])]
+                child_block = {
+                    int(joint_child[member]): index
+                    for index, (articulation, joints) in enumerate(blocks)
+                    if articulation >= 0
+                    for member in joints
+                }
 
         ordered: list[int] = []
         block_starts: list[int] = []
@@ -1962,7 +2213,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
         spring_order = compact.order(frequency.SPRING)
         attachment_order = compact.order(frequency.ATTACHMENT_PARTICLE_BODY)
 
-        body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
+        body_global_to_local = {
+            global_id: local_id
+            for global_id, local_id in enumerate(compact.projections[frequency.BODY].global_to_local)
+            if local_id >= 0
+        }
         view.body_count = len(body_order)
         view.particle_count = len(particle_order)
         view.joint_count = len(joint_order)
@@ -2010,6 +2265,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
             body_global_to_local,
             set(visible_shape_order),
         )
+        for local_id in range(len(body_order)):
+            view.body_shapes.setdefault(local_id, [])
+        self._label_body_copies(view, free_root_joints)
         view.shape_collision_filter_pairs = model.shape_collision_filter_pairs
 
         if free_root_joints is None:
@@ -2047,7 +2305,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
 
         # For VBD solver we require color groups to be compacted too.
-        self._compact_color_groups(view, body_global_to_local)
+        self._compact_color_groups(view, body_order)
 
         self._set_world_start_arrays(view, joint_constraint_order)
 
@@ -2222,6 +2480,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         body_order: Sequence[int],
         joint_order: Sequence[int],
         joint_parent: np.ndarray,
+        joint_child: np.ndarray,
     ) -> _FreeRootJoints:
         """Compute the builder row values of the FREE root joints a compact view synthesizes.
 
@@ -2233,7 +2492,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
             layout: FREE root joint rows of the view.
             body_order: Parent body of each view body row.
             joint_order: Parent joint of each view joint row, ``-1`` for FREE root joints.
-            joint_parent: Parent body of each parent-model joint.
+            joint_parent: Parent body of each parent-model joint, in view joint direction.
+            joint_child: Child body of each parent-model joint, in view joint direction.
         """
         from ...sim.builder import _build_joint_ancestor  # noqa: PLC0415
 
@@ -2286,12 +2546,22 @@ class SolverCoupled(SolverBase, CouplingInterface):
         body_q = model.body_q.numpy()
         body_world = model.body_world.numpy()
         body_label = model.body_label
-        joint_child = model.joint_child.numpy()
         bodies = layout.body_global
+        projected = {
+            attribute.name
+            for attribute in self._attribute_projections
+            if attribute.frequency in _FREE_ROOT_JOINT_FREQUENCIES
+            and isinstance(self._model_attribute_value(attribute.name), (wp.array, np.ndarray, list))
+        }
 
         def set_rows(name: str, rows: list[int], values: list[Any]) -> None:
-            if name in row_values:
+            if name in projected:
                 row_values[name] = (rows, values)
+
+        def add_rows(name: str, rows: list[int], values: list[Any]) -> None:
+            if name in projected:
+                old_rows, old_values = row_values.get(name, ([], []))
+                row_values[name] = (old_rows + rows, old_values + values)
 
         joint_rows = list(layout.joint_local)
         set_rows("joint_child", joint_rows, body_local)
@@ -2327,12 +2597,37 @@ class SolverCoupled(SolverBase, CouplingInterface):
         set_rows("articulation_world", own_row_ids, [int(body_world[body]) for body in own_bodies])
         set_rows("articulation_label", own_row_ids, [f"{body_label[body]}_articulation" for body in own_bodies])
 
+        if layout.reversed_joint:
+            reversed_rows = list(layout.reversed_joint_local)
+            reversed_joints = list(layout.reversed_joint)
+            add_rows(
+                "joint_parent", reversed_rows, [body_global_to_local[int(joint_parent[j])] for j in reversed_joints]
+            )
+            add_rows("joint_child", reversed_rows, [body_global_to_local[int(joint_child[j])] for j in reversed_joints])
+            joint_X_p = model.joint_X_p.numpy()
+            joint_X_c = model.joint_X_c.numpy()
+            add_rows("joint_X_p", reversed_rows, [joint_X_c[j] for j in reversed_joints])
+            add_rows("joint_X_c", reversed_rows, [joint_X_p[j] for j in reversed_joints])
+        copy_body_local: list[int] = []
+        if layout.copied_joint:
+            reversed_set = set(layout.reversed_joint)
+            copied = [
+                (joint, local)
+                for joint, local in zip(layout.copied_joint, layout.copied_joint_local, strict=True)
+                if joint not in reversed_set
+            ]
+            copied_rows = [local for _, local in copied]
+            add_rows("joint_parent", copied_rows, [body_global_to_local[int(joint_parent[j])] for j, _ in copied])
+            add_rows("joint_child", copied_rows, [body_global_to_local[int(joint_child[j])] for j, _ in copied])
+            copy_body_local = [body_global_to_local[int(joint_child[joint])] for joint in layout.copied_joint]
+
         return _FreeRootJoints(
             layout=layout,
             row_values=row_values,
             body_local=wp.array(body_local, dtype=int, device=device),
             coord_local=wp.array(layout.coord_local, dtype=int, device=device),
             dof_local=wp.array(layout.dof_local, dtype=int, device=device),
+            copy_body_local=tuple(copy_body_local),
         )
 
     def _view_attribute_value(self, view: ModelView, full_name: str):
@@ -2468,18 +2763,23 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _compact_color_groups(
         self,
         view: ModelView,
-        body_global_to_local: dict[int, int],
+        body_order: Sequence[int],
     ) -> None:
         value = self._raw_view_value(view, "body_color_groups")
         # List (length number of color groups) of body ids.
         if not isinstance(value, list):
             return
+        # A proxy body copy shares its body's color: it touches only an owned
+        # body through a joint the parent model already gives that body.
+        body_locals: dict[int, list[int]] = {}
+        for local_id, global_id in enumerate(body_order):
+            body_locals.setdefault(int(global_id), []).append(local_id)
         remapped: list = []
         for group in value:
             if not isinstance(group, wp.array):
                 remapped.append(group)
                 continue
-            local = [body_global_to_local[g] for g in (int(x) for x in group.numpy()) if g in body_global_to_local]
+            local = [local_id for g in (int(x) for x in group.numpy()) for local_id in body_locals.get(g, ())]
             remapped.append(wp.array(local, dtype=wp.int32, device=self.model.device))
         view.body_color_groups = remapped
 
@@ -3505,6 +3805,8 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if filter_contacts:
             contacts = self._contacts_for_entry(entry, contacts)
         control = _copy_control_to_entry(control, entry)
+        if control is not None and control is entry.control:
+            _clear_proxy_joint_control(control, entry.proxy_joint_dof_local_indices)
         if control_callback is not None:
             control_callback(control)
         entry_observables = None
@@ -3825,15 +4127,20 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 update_existing=True,
                 free_root_joints=entry.free_root_joints,
             )
+            self._label_body_copies(entry.view, entry.free_root_joints)
 
             if flags & int(ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
                 self._refresh_body_inertial_view_overrides(entry)
                 entry.view.mark_proxy_bodies(entry.proxy_body_local_indices)
 
             if flags & int(
-                ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                ModelFlags.JOINT_PROPERTIES
+                | ModelFlags.JOINT_DOF_PROPERTIES
+                | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+                | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
             ):
                 entry.view.disable_joints(entry.joint_dynamics_disabled_local_indices)
+                self._clear_proxy_joint_forces(entry.view, entry.proxy_joint_dof_local_indices)
 
             if flags & int(ModelFlags.SHAPE_PROPERTIES):
                 cfg = self._entry_configs_by_name[entry.name]
@@ -3844,7 +4151,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 )
                 if self.model.shape_contact_pairs is not None:
                     entry.view.shape_contact_pairs = wp.clone(self.model.shape_contact_pairs)
-                self._customize_compact_view(entry.view)
+                self._customize_compact_view(entry.view, entry.proxy_body_local_indices)
                 self._filter_shape_contact_pairs(entry.view)
 
     def _attribute_matches_model_flags(self, attribute: _AttributeProjection, flags: int) -> bool:
@@ -3975,8 +4282,7 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
         mapping = entry.attribute_local_to_global.get(spec.frequency)
         if mapping is None:
             continue
-        has_unmapped_rows = has_free_root_joints and spec.frequency in _FREE_ROOT_JOINT_FREQUENCIES
-        _copy_mapped_control_attribute(src, dst, full_name, mapping, has_unmapped_rows=has_unmapped_rows)
+        _copy_mapped_control_attribute(src, dst, full_name, mapping)
     return dst
 
 
@@ -3993,8 +4299,6 @@ def _copy_mapped_control_attribute(
     dst_control: Control,
     full_name: str,
     local_to_global: wp.array,
-    *,
-    has_unmapped_rows: bool = False,
 ) -> None:
     src = _nested_attribute_value(src_control, full_name)
     dst = _nested_attribute_value(dst_control, full_name)
@@ -4005,16 +4309,13 @@ def _copy_mapped_control_attribute(
         return
     if dst.shape[0] == 0:
         return
-    if has_unmapped_rows:
-        # Unmapped rows keep their entry-local values.
-        wp.launch(
-            _copy_mapped_rows_kernel,
-            dim=dst.shape[0],
-            inputs=[local_to_global, src, dst],
-            device=dst.device,
-        )
-        return
-    wp.copy(dst, src[local_to_global])
+    # FREE roots have no source row. Keep their defaults.
+    wp.launch(
+        _copy_mapped_rows_kernel,
+        dim=dst.shape[0],
+        inputs=[local_to_global, src, dst],
+        device=dst.device,
+    )
 
 
 def _copy_control_float_array(

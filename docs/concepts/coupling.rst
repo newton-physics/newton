@@ -130,14 +130,19 @@ The protocol currently covers these concepts:
   argument uses :class:`newton.StateFlags`. VBD uses this to realign private
   previous-pose state after proxy synchronization or ADMM iteration restarts.
   MPM uses it to keep collider caches consistent.
-- ``coupling_eval_gravity_acceleration()`` lets a solver report the body and
-  particle acceleration that it applies internally for gravity-like forces.
-  Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind
-  and harvest hooks so solvers that scale or compensate gravity can avoid
-  double-applying it.
-- ``coupling_rewind_proxy_body()`` and
-  ``coupling_rewind_proxy_particle()`` let a
-  destination solver prepare proxy velocities before a lagged proxy pass.
+- ``coupling_eval_gravity_acceleration()`` reports the gravity each solver
+  actually applies, including gravity compensation and prescribed colliders.
+  ADMM uses it to cancel gravity on joint proxies and on the mass added by
+  ``gamma``.
+- ``coupling_set_inertial_target()`` matches an inertial target expressed as
+  momentum, or adds to the current target with ``accumulate=True``. This is the
+  motion preferred before contact, joint, or material constraints. The default
+  uses a first-order force update including gravity; solvers may invert their
+  native integration more accurately. The setter accepts compact targets with
+  local body or particle indices and changes forces or velocities, preserving
+  poses and solver history. The caller notifies velocity and force updates
+  afterward. Proxy feedback cancellation and ADMM ``gamma`` stabilization use
+  this same setter.
 - ``coupling_harvest_proxy_wrenches()`` and
   ``coupling_harvest_proxy_particle_forces()`` let a destination solver
   report feedback forces from solver-native contact or transfer data.
@@ -274,8 +279,8 @@ sub-solver. This avoids solving the same constraint twice. The current generic
 ADMM path supports ``BALL``, ``FIXED``, and ``REVOLUTE`` joints. Ball joints
 create translational anchor-coincidence rows. Fixed joints add angular rows.
 Revolute joints preserve the hinge axis and can add a dry-friction row from
-model joint friction. Prismatic, distance, and D6 joint rows are not yet part of
-the experimental API.
+model joint friction [N·m]. Prismatic, distance, and D6 joint rows are not yet
+part of the experimental API.
 
 Particle-body attachments cover interfaces that cannot be represented by a
 model joint because one endpoint is a particle. The coupler reads the model
@@ -283,10 +288,11 @@ attachment rows described under :ref:`Particle-body attachments` and owns those
 whose body and particle endpoints belong to different entries; rows owned
 entirely by one entry are left to that entry's solver. The coupler logs a warning
 if that solver does not support attachments or if an endpoint is owned by no
-entry. Rows authored under the legacy ``coupling:body_particle_attachment``
-custom frequency are also consumed by ADMM, so importers that write those
-attributes keep working; these legacy rows remain invisible to
-:class:`~newton.solvers.SolverVBD`.
+entry. Each row carries a body id, particle id, body-local point [m], stiffness
+[N/m], damping [N·s/m], and enabled state. Rows authored under the legacy
+``coupling:body_particle_attachment`` custom frequency are also consumed by
+ADMM, so importers that write those attributes keep working; these legacy rows
+remain invisible to :class:`~newton.solvers.SolverVBD`.
 ``SolverCoupledADMM.add_body_particle_attachment()`` is deprecated in favor of
 :meth:`newton.ModelBuilder.add_attachment_particle_body`, but keeps writing the
 legacy custom-row layout until it is removed.
@@ -296,14 +302,67 @@ Contact coupling is enabled by adding one or more ``ContactPair`` values to
 ``SolverCoupledADMM.auto_detect_contact_pairs(entries)`` can build the complete
 pair list for every distinct entry combination.
 
+Override the dimensionless ``rho``, ``gamma``, and ``baumgarte`` parameters
+where each constraint is defined: on ``ContactPair`` for contacts, or in the
+``custom_attributes`` of a joint or particle-body attachment. Contact overrides
+affect only contacts. Joints and
+attachments can each have their own settings, even between the same solver
+entries. Omitted parameters inherit the corresponding global ``Config`` value;
+explicit ``gamma=0.0`` or ``baumgarte=0.0`` disables that term for the constraint.
+All constraints share the global iteration count.
+
+.. code-block:: python
+
+    coupling = SolverCoupledADMM.Config(
+        contact_pairs=[
+            SolverCoupledADMM.ContactPair("rigid", "cloth", rho=0.4, gamma=0.2),
+        ],
+    )
+
+    SolverCoupledADMM.register_custom_attributes(builder)
+    builder.add_attachment_particle_body(
+        particle,
+        body,
+        custom_attributes={
+            "coupling:attachment_particle_body_rho": 0.6,
+            "coupling:attachment_particle_body_gamma": 0.1,
+            "coupling:attachment_particle_body_baumgarte": 0.2,
+        },
+    )
+    builder.add_joint_ball(
+        parent=body_a,
+        child=body_b,
+        custom_attributes={"coupling:joint_rho": 0.6, "coupling:joint_gamma": 0.1},
+    )
+
+Joint overrides use ``coupling:joint_rho``, ``coupling:joint_gamma``, and
+``coupling:joint_baumgarte``. Model attachment overrides use
+``coupling:attachment_particle_body_rho``,
+``coupling:attachment_particle_body_gamma``, and
+``coupling:attachment_particle_body_baumgarte``. Rows authored under the
+legacy ``coupling:body_particle_attachment`` custom frequency read their
+overrides from ``coupling:body_particle_attachment_rho``,
+``coupling:body_particle_attachment_gamma``, and
+``coupling:body_particle_attachment_baumgarte``; the deprecated
+``add_body_particle_attachment()`` helper leaves them at their inherit
+default. These custom attributes use ``-1`` to inherit the global value;
+``ContactPair`` uses ``None``. Overrides are read at solver construction and
+apply only to rows coupled by ADMM; an attachment owned entirely by one
+:class:`~newton.solvers.SolverVBD` entry uses that solver's own attachment
+handling.
+USD support for these solver settings is deferred while
+:class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` is
+experimental; they are authored through Python.
+
 For enabled contact pairs, the coupler owns private detection data and builds
 rows from solver ownership: particle-shape rows between particle entries and
 shapes on bodies owned by other entries, rigid-rigid rows from cross-entry shape
 pairs, and particle-particle rows from cross-entry particle sets through a
-private hash-grid stream. Friction is read from model material properties such
-as ``shape_material_mu`` and ``Model.particle_mu`` at row-fill time; it is not a
-``ContactPair`` field. Contact rows use an isotropic Coulomb
-maximum-dissipation projection. They do not solve cone complementarity directly.
+private hash-grid stream. Dimensionless friction coefficients are read from
+model material properties such as ``shape_material_mu`` and ``Model.particle_mu``
+at row-fill time; they are not ``ContactPair`` fields. Contact rows use an
+isotropic Coulomb maximum-dissipation projection. They do not solve cone
+complementarity directly.
 
 ADMM contact buffers are fixed-capacity device arrays. Persistent contacts
 warm-start local variables and dual variables by stable contact keys across
@@ -314,12 +373,23 @@ stream.
 The main ADMM parameters are:
 
 - ``iterations``: fixed iteration count, chosen to be graph-capture friendly;
-- ``rho``: penalty weight for interface rows;
-- ``gamma``: proximal inertia and velocity weight;
-- ``baumgarte``: positional error stabilization for attachment/contact rows;
-- stiffness and damping values for model-joint and particle-body attachment
-  rows;
-- rigid contact matching mode, thresholds, and warm-start force scale.
+- ``rho``: dimensionless penalty weight for interface rows (default ``0.5``);
+- ``gamma``: dimensionless proximal inertia and velocity weight (default ``0.1``);
+- ``baumgarte``: dimensionless position error correction fraction for
+  attachment/contact rows;
+- ``joint_stiffness`` and ``joint_damping``: translational model-joint
+  attachment stiffness [N/m] and damping [N·s/m];
+- ``joint_angular_stiffness`` and ``joint_angular_damping``: angular model-joint
+  attachment stiffness [N·m/rad] and damping [N·m·s/rad];
+- ``stiffness`` and ``damping`` of particle-body attachment rows
+  (:meth:`newton.ModelBuilder.add_attachment_particle_body`): attachment
+  stiffness [N/m] and damping [N·s/m];
+- ``joint_proximal_mass_scale``: dimensionless proxy mass multiplier;
+- ``rigid_contact_matching``: rigid contact matching mode;
+- ``contact_matching_pos_threshold``: contact matching distance threshold [m];
+- ``contact_matching_normal_dot_threshold``: dimensionless minimum dot product
+  between matched contact normals;
+- ``contact_matching_force_scale``: dimensionless warm-start multiplier.
 
 ADMM detects cross-entry contacts with its own collision pipeline. Set
 ``Config.contact_max_triangle_pairs`` to size its triangle-pair storage and
@@ -330,13 +400,29 @@ the triangle-pair capacity must be less than ``2**20``. Larger capacities are
 allowed with matching disabled. Increase the hash table size factor when
 contact reduction needs more storage while retaining contact matching.
 
-When ``gamma`` is positive, the coupler scales owned body and particle masses in
-each entry ``ModelView``, asks sub-solvers to refresh model-derived caches, and
-shifts entry input velocities toward the previous ADMM iterate. Endpoint
-effective mass uses solver hooks when available and model fallbacks otherwise.
-This keeps the implementation compatible with solvers that can provide an
-articulated mass estimate, such as MuJoCo Warp, while still allowing simpler
-solvers to participate.
+When ``gamma`` is positive, the coupler adds the proximal mass to owned body and
+particle masses in each entry ``ModelView``, asks sub-solvers to refresh
+model-derived caches, and sets an inertial target that pulls the added mass
+toward the previous ADMM iterate while the physical velocities stay unchanged.
+Endpoint effective mass uses solver hooks when available and model fallbacks
+otherwise. This keeps the implementation compatible with solvers that can
+provide an articulated mass estimate, such as MuJoCo Warp, while still allowing
+simpler solvers to participate.
+
+With ``joint_proximal_bodies`` enabled, each entry view also keeps the body on
+the other side of a cross-solver joint, together with that joint, as rows of
+that view. This joint proxy realizes the local ADMM penalty of the joint's
+rows: at the start of each step it is placed with the joint at zero
+coordinates on the owned body, and it carries the rows' ``rho * W**2``
+inertia, with each row's own ``rho``, centered on the rows. Each iteration pulls it toward the owned body's
+current iterate, so the term vanishes at the ADMM fixed point and
+``joint_proximal_mass_scale`` changes convergence, not the converged answer.
+A cross joint outside any articulation joins the owned body's articulation in
+that view, so reduced-coordinate solvers move the proxy through it. Proxy joints
+carry no drives, limits, or control. Proxy bodies carry
+:attr:`~newton.BodyFlags.PROXY` and every flag of their shapes is cleared, so
+they neither collide nor render. ``joint_proximal_destination_entries``
+restricts which entries keep proxies.
 
 Choosing Proxy or ADMM Coupling
 -------------------------------
@@ -379,7 +465,7 @@ between proxy bodies. For one-DoF drives, the coupler remaps source targets to
 destination-local indices and copies ``joint_target_q`` and ``joint_target_qd``
 before each destination solve.
 
-Implicit MPM supports proxy body and proxy particle rewind/harvest hooks.
+Implicit MPM supports the inertial-target and proxy harvest hooks.
 Transfer-active proxy particles can participate in P2G/G2P momentum transfer
 while being excluded from material volume, stress, strain, and constitutive
 updates. Deformable collider particles registered through collider-particle ids

@@ -17,6 +17,7 @@ from ...core.reset import reset_world_selected
 from ...geometry import ParticleFlags
 from ...math.spatial import velocity_at_point
 from ...sim.contacts import contact_surface_point
+from ...sim.enums import JointType
 
 _PARTICLE_FLAG_ACTIVE = wp.constant(int(ParticleFlags.ACTIVE))
 _INACTIVE_U_MIN = wp.constant(-1.0e8)
@@ -221,194 +222,46 @@ def velocity_proximal_shift_joint_masked_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def velocity_proximal_shift_body_lumped_kernel(
+def body_proximal_momentum_kernel(
     v_n: wp.array[wp.spatial_vector],
     v_k: wp.array[wp.spatial_vector],
+    bias: wp.array[wp.spatial_vector],
     proximal_mass: wp.array[float],
     proximal_inertia: wp.array[float],
-    body_mass: wp.array[float],
-    body_inertia: wp.array[wp.mat33],
-    v_out: wp.array[wp.spatial_vector],
+    inv_mass: wp.array[float],
+    gravity: wp.array[wp.vec3],
+    dt: float,
+    momentum: wp.array[wp.spatial_vector],
 ):
-    """Shift body velocities using the lumped ADMM proximal metric."""
+    """Add numerical momentum while retaining only the physical mass's gravity impulse."""
     i = wp.tid()
-
-    v_n_i = v_n[i]
-    v_k_i = v_k[i]
-    linear = wp.spatial_top(v_n_i)
-    angular = wp.spatial_bottom(v_n_i)
-
-    mass_lump = proximal_mass[i]
-    if mass_lump > 0.0:
-        base_mass = body_mass[i] - mass_lump
-        if base_mass > 0.0:
-            inv_denom = 1.0 / (base_mass + mass_lump)
-            linear = (base_mass * wp.spatial_top(v_n_i) + mass_lump * wp.spatial_top(v_k_i)) * inv_denom
-
-    inertia_lump = proximal_inertia[i]
-    if inertia_lump > 0.0:
-        base_inertia = wp.max(wp.trace(body_inertia[i]) / 3.0 - inertia_lump, 0.0)
-        if base_inertia > 0.0:
-            inv_denom = 1.0 / (base_inertia + inertia_lump)
-            angular = (base_inertia * wp.spatial_bottom(v_n_i) + inertia_lump * wp.spatial_bottom(v_k_i)) * inv_denom
-
-    v_out[i] = wp.spatial_vector(linear, angular)
+    if inv_mass[i] <= 0.0:
+        momentum[i] = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
+        return
+    linear = proximal_mass[i] * (wp.spatial_top(v_k[i] - v_n[i]) - dt * gravity[i])
+    angular = proximal_inertia[i] * wp.spatial_bottom(v_k[i] - v_n[i])
+    momentum[i] = wp.spatial_vector(linear, angular)
+    if bias:
+        momentum[i] += dt * bias[i]
 
 
 @wp.kernel(enable_backward=False)
-def velocity_proximal_shift_particle_lumped_kernel(
+def particle_proximal_momentum_kernel(
     v_n: wp.array[wp.vec3],
     v_k: wp.array[wp.vec3],
     proximal_mass: wp.array[float],
-    particle_mass: wp.array[float],
-    v_out: wp.array[wp.vec3],
+    inv_mass: wp.array[float],
+    flags: wp.array[wp.int32],
+    gravity: wp.array[wp.vec3],
+    dt: float,
+    momentum: wp.array[wp.vec3],
 ):
-    """Shift particle velocities using the lumped ADMM proximal metric."""
+    """Compute the added mass's momentum increment, canceling its gravity impulse."""
     i = wp.tid()
-    mass_lump = proximal_mass[i]
-    if mass_lump <= 0.0:
-        v_out[i] = v_n[i]
+    if inv_mass[i] <= 0.0 or (flags[i] & _PARTICLE_FLAG_ACTIVE) == 0:
+        momentum[i] = wp.vec3(0.0)
         return
-
-    base_mass = particle_mass[i] - mass_lump
-    if base_mass <= 0.0:
-        v_out[i] = v_n[i]
-        return
-
-    inv_denom = 1.0 / (base_mass + mass_lump)
-    v_out[i] = (base_mass * v_n[i] + mass_lump * v_k[i]) * inv_denom
-
-
-@wp.kernel(enable_backward=False)
-def velocity_proximal_shift_joint_lumped_kernel(
-    v_n: wp.array[float],
-    v_k: wp.array[float],
-    proximal_factor: wp.array[float],
-    v_out: wp.array[float],
-):
-    """Shift generalized velocities using a dimensionless lumped factor."""
-    i = wp.tid()
-    factor = proximal_factor[i]
-    if factor <= 0.0:
-        v_out[i] = v_n[i]
-        return
-    inv_denom = 1.0 / (1.0 + factor)
-    v_out[i] = (v_n[i] + factor * v_k[i]) * inv_denom
-
-
-@wp.kernel(enable_backward=False)
-def body_gravity_compensation_kernel(
-    gamma: float,
-    body_mass: wp.array[float],
-    body_inv_mass: wp.array[float],
-    body_gravity_acceleration: wp.array[wp.vec3],
-    body_f: wp.array[wp.spatial_vector],
-):
-    """Cancel gravity force introduced by ADMM proximal mass scaling.
-
-    ``body_gravity_acceleration`` is evaluated by the sub-solver's coupling
-    hook and therefore already includes solver-specific gravity scaling.
-    """
-    i = wp.tid()
-    if body_inv_mass[i] <= 0.0:
-        return
-
-    mass = body_mass[i] / (1.0 + gamma)
-    g = body_gravity_acceleration[i]
-    wp.atomic_add(body_f, i, wp.spatial_vector(-gamma * mass * g, wp.vec3(0.0, 0.0, 0.0)))
-
-
-@wp.kernel(enable_backward=False)
-def body_gravity_compensation_masked_kernel(
-    gamma: float,
-    proximal_mask: wp.array[int],
-    body_mass: wp.array[float],
-    body_inv_mass: wp.array[float],
-    body_gravity_acceleration: wp.array[wp.vec3],
-    body_f: wp.array[wp.spatial_vector],
-):
-    """Cancel gravity introduced by masked ADMM proximal mass scaling."""
-    i = wp.tid()
-    if proximal_mask[i] == 0 or body_inv_mass[i] <= 0.0:
-        return
-
-    mass = body_mass[i] / (1.0 + gamma)
-    g = body_gravity_acceleration[i]
-    wp.atomic_add(body_f, i, wp.spatial_vector(-gamma * mass * g, wp.vec3(0.0, 0.0, 0.0)))
-
-
-@wp.kernel(enable_backward=False)
-def particle_gravity_compensation_kernel(
-    gamma: float,
-    particle_mass: wp.array[float],
-    particle_inv_mass: wp.array[float],
-    particle_flags: wp.array[wp.int32],
-    particle_gravity_acceleration: wp.array[wp.vec3],
-    particle_f: wp.array[wp.vec3],
-):
-    """Cancel gravity force introduced by ADMM proximal mass scaling."""
-    i = wp.tid()
-    if particle_inv_mass[i] <= 0.0 or (particle_flags[i] & _PARTICLE_FLAG_ACTIVE) == 0:
-        return
-
-    mass = particle_mass[i] / (1.0 + gamma)
-    g = particle_gravity_acceleration[i]
-    wp.atomic_add(particle_f, i, -gamma * mass * g)
-
-
-@wp.kernel(enable_backward=False)
-def particle_gravity_compensation_masked_kernel(
-    gamma: float,
-    proximal_mask: wp.array[int],
-    particle_mass: wp.array[float],
-    particle_inv_mass: wp.array[float],
-    particle_flags: wp.array[wp.int32],
-    particle_gravity_acceleration: wp.array[wp.vec3],
-    particle_f: wp.array[wp.vec3],
-):
-    """Cancel gravity introduced by masked ADMM proximal mass scaling."""
-    i = wp.tid()
-    if proximal_mask[i] == 0 or particle_inv_mass[i] <= 0.0 or (particle_flags[i] & _PARTICLE_FLAG_ACTIVE) == 0:
-        return
-
-    mass = particle_mass[i] / (1.0 + gamma)
-    g = particle_gravity_acceleration[i]
-    wp.atomic_add(particle_f, i, -gamma * mass * g)
-
-
-@wp.kernel(enable_backward=False)
-def body_gravity_compensation_lumped_kernel(
-    proximal_mass: wp.array[float],
-    body_inv_mass: wp.array[float],
-    body_gravity_acceleration: wp.array[wp.vec3],
-    body_f: wp.array[wp.spatial_vector],
-):
-    """Cancel gravity introduced by lumped proximal mass increments."""
-    i = wp.tid()
-    mass_lump = proximal_mass[i]
-    if mass_lump <= 0.0 or body_inv_mass[i] <= 0.0:
-        return
-
-    g = body_gravity_acceleration[i]
-    wp.atomic_add(body_f, i, wp.spatial_vector(-mass_lump * g, wp.vec3(0.0, 0.0, 0.0)))
-
-
-@wp.kernel(enable_backward=False)
-def particle_gravity_compensation_lumped_kernel(
-    proximal_mass: wp.array[float],
-    particle_inv_mass: wp.array[float],
-    particle_flags: wp.array[wp.int32],
-    particle_gravity_acceleration: wp.array[wp.vec3],
-    particle_f: wp.array[wp.vec3],
-):
-    """Cancel gravity introduced by lumped proximal mass increments."""
-    i = wp.tid()
-    mass_lump = proximal_mass[i]
-    if mass_lump <= 0.0 or particle_inv_mass[i] <= 0.0 or (particle_flags[i] & _PARTICLE_FLAG_ACTIVE) == 0:
-        return
-
-    g = particle_gravity_acceleration[i]
-    wp.atomic_add(particle_f, i, -mass_lump * g)
+    momentum[i] = proximal_mass[i] * (v_k[i] - v_n[i] - dt * gravity[i])
 
 
 @wp.kernel(enable_backward=False)
@@ -681,52 +534,17 @@ def accumulate_active_global_indices_proximal_lump_kernel(
             local_mask[local_id] = 1
 
 
-@wp.kernel(enable_backward=False)
-def accumulate_joint_qd_factor_from_body_proximal_lump_kernel(
-    body_mass_lump: wp.array[float],
-    body_inertia_lump: wp.array[float],
-    body_local_to_global: wp.array[int],
-    body_effective_mass: wp.array[float],
-    body_effective_inertia_scalar: wp.array[float],
-    body_joint_qd_start: wp.array[int],
-    body_joint_qd_count: wp.array[int],
-    body_joint_qd_indices: wp.array[int],
-    joint_qd_factor: wp.array[float],
-    joint_qd_mask: wp.array[int],
-):
-    """Propagate body proximal lumps to generalized-velocity DOFs."""
-    body = wp.tid()
-    global_body = body_local_to_global[body]
-    factor = float(0.0)
-
-    mass = body_effective_mass[global_body]
-    if mass > 0.0 and body_mass_lump[body] > 0.0:
-        factor = factor + body_mass_lump[body] / mass
-
-    inertia = body_effective_inertia_scalar[global_body]
-    if inertia > 0.0 and body_inertia_lump[body] > 0.0:
-        factor = factor + body_inertia_lump[body] / inertia
-
-    if factor <= 0.0:
-        return
-
-    start = body_joint_qd_start[body]
-    count = body_joint_qd_count[body]
-    for offset in range(count):
-        dof = body_joint_qd_indices[start + offset]
-        if 0 <= dof and dof < joint_qd_factor.shape[0]:
-            wp.atomic_add(joint_qd_factor, dof, factor)
-            joint_qd_mask[dof] = 1
-
-
 # ----------------------------------------------------------------------
 # Quadratic attachment local solve
 # ----------------------------------------------------------------------
 #
-# The ADMM update rules for a quadratic coupling energy
-# ``E_c(u) = (kappa/2) ||u - u_target||^2 + (damping/2) ||u||^2`` are:
+# The ADMM update rules for a quadratic coupling energy with physical stiffness
+# ``kappa`` and damping ``damping`` are:
 #
-#     u^{k+1}      = (rho W^2 Jv + kappa u_target - W lambda) / (kappa + damping + rho W^2)
+#     kappa_v       = dt^2 kappa
+#     damping_v     = dt damping
+#     u^{k+1}       = (rho W^2 Jv + kappa_v u_target - W lambda)
+#                       / (kappa_v + damping_v + rho W^2)
 #     lambda^{k+1} = lambda^k + rho W (u^{k+1} - Jv)
 #
 # With ``u_target = 0`` the coupling damps the relative velocity to zero;
@@ -737,6 +555,7 @@ def accumulate_joint_qd_factor_from_body_proximal_lump_kernel(
 def u_update_quadratic_kernel(
     kappa: wp.array[float],
     damping: wp.array[float],
+    dt: float,
     W: wp.array[float],
     rho: float,
     lambda_k: wp.array[wp.vec3],
@@ -748,8 +567,10 @@ def u_update_quadratic_kernel(
     i = wp.tid()
     W_i = W[i]
     W2 = W_i * W_i
-    denom = kappa[i] + damping[i] + rho * W2
-    u_out[i] = (rho * W2 * Jv[i] + kappa[i] * u_target[i] - W_i * lambda_k[i]) / denom
+    kappa_v = dt * dt * kappa[i]
+    damping_v = dt * damping[i]
+    denom = kappa_v + damping_v + rho * W2
+    u_out[i] = (rho * W2 * Jv[i] + kappa_v * u_target[i] - W_i * lambda_k[i]) / denom
 
 
 @wp.kernel(enable_backward=False)
@@ -778,6 +599,7 @@ def _soft_threshold_box(value: float, threshold: float) -> float:
 @wp.kernel(enable_backward=False)
 def joint_box_friction_u_update_kernel(
     friction: wp.array[wp.vec3],
+    dt: float,
     W: wp.array[float],
     rho: float,
     lambda_k: wp.array[wp.vec3],
@@ -798,9 +620,9 @@ def joint_box_friction_u_update_kernel(
         p = p - lambda_k[i] / denom
 
     threshold = wp.vec3(0.0, 0.0, 0.0)
-    force_denom = rho * W_i * W_i
-    if force_denom > 0.0:
-        threshold = friction[i] / force_denom
+    impulse_denom = rho * W_i * W_i
+    if impulse_denom > 0.0:
+        threshold = dt * friction[i] / impulse_denom
 
     u_out[i] = wp.vec3(
         _soft_threshold_box(p[0], threshold[0]),
@@ -830,6 +652,17 @@ def solve_coulomb_isotropic(mu: float, normal: wp.vec3, u: wp.vec3):
             u = u * (1.0 + mu * u_n / wp.sqrt(tau))
 
     return u
+
+
+@wp.func
+def _interface_impulse(
+    rho: float,
+    W: float,
+    lambda_k: wp.vec3,
+    u_k: wp.vec3,
+    Jv_k: wp.vec3,
+) -> wp.vec3:
+    return W * (lambda_k + rho * W * (u_k - Jv_k))
 
 
 @wp.kernel(enable_backward=False)
@@ -948,6 +781,7 @@ def attach_rp_accumulate_forces_kernel(
     particle_b: wp.array[int],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -961,7 +795,7 @@ def attach_rp_accumulate_forces_kernel(
     ba = body_a[i]
     pb = particle_b[i]
     W_i = W[i]
-    force = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
 
     xform_a = body_q[ba]
     world_pt_a = wp.transform_point(xform_a, point_a_local[i])
@@ -1104,6 +938,7 @@ def attach_rr_revolute_angular_local_compute_u_target_kernel(
 def attach_rr_angular_accumulate_forces_kernel(
     body_a: wp.array[int],
     body_b: wp.array[int],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1115,7 +950,7 @@ def attach_rr_angular_accumulate_forces_kernel(
     """Splat angular attachment torques into both rigid-body force buffers."""
     i = wp.tid()
     W_i = W[i]
-    torque_a = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    torque_a = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     wp.atomic_add(body_f_a, body_a[i], wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), torque_a))
     wp.atomic_sub(body_f_b, body_b[i], wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), torque_a))
 
@@ -1126,6 +961,7 @@ def attach_rr_angular_local_accumulate_forces_kernel(
     frame_a: wp.array[wp.transform],
     body_b: wp.array[int],
     body_q_a: wp.array[wp.transform],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1138,7 +974,7 @@ def attach_rr_angular_local_accumulate_forces_kernel(
     i = wp.tid()
     ba = body_a[i]
     W_i = W[i]
-    torque_local = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    torque_local = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     frame_world = body_q_a[ba] * frame_a[i]
     torque_world = wp.quat_rotate(wp.transform_get_rotation(frame_world), torque_local)
     wp.atomic_add(body_f_a, ba, wp.spatial_vector(wp.vec3(0.0, 0.0, 0.0), torque_world))
@@ -1151,6 +987,7 @@ def attach_rr_revolute_angular_local_accumulate_forces_kernel(
     frame_a: wp.array[wp.transform],
     body_b: wp.array[int],
     body_q_a: wp.array[wp.transform],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1163,7 +1000,7 @@ def attach_rr_revolute_angular_local_accumulate_forces_kernel(
     i = wp.tid()
     ba = body_a[i]
     W_i = W[i]
-    torque_local = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    torque_local = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     torque_local = wp.vec3(0.0, torque_local[1], torque_local[2])
     frame_world = body_q_a[ba] * frame_a[i]
     torque_world = wp.quat_rotate(wp.transform_get_rotation(frame_world), torque_local)
@@ -1221,6 +1058,7 @@ def attach_rr_accumulate_forces_kernel(
     body_com_a: wp.array[wp.vec3],
     body_q_b: wp.array[wp.transform],
     body_com_b: wp.array[wp.vec3],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1234,7 +1072,7 @@ def attach_rr_accumulate_forces_kernel(
     ba = body_a[i]
     bb = body_b[i]
     W_i = W[i]
-    force_a = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force_a = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
 
     xform_a = body_q_a[ba]
     point_a = wp.transform_point(xform_a, point_a_local[i])
@@ -1326,6 +1164,7 @@ def contact_rr_accumulate_forces_kernel(
     body_com_a: wp.array[wp.vec3],
     body_q_b: wp.array[wp.transform],
     body_com_b: wp.array[wp.vec3],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1341,7 +1180,7 @@ def contact_rr_accumulate_forces_kernel(
     ba = body_a[i]
     bb = body_b[i]
     W_i = W[i]
-    force_a = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force_a = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
 
     xform_a = body_q_a[ba]
     point_a = contact_surface_point(xform_a, point_a_local[i], point_a_offset_local[i])
@@ -1656,6 +1495,7 @@ def contact_rp_accumulate_forces_kernel(
     body_sign: wp.array[int],
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1671,7 +1511,7 @@ def contact_rp_accumulate_forces_kernel(
     b = body_id[i]
     p = particle_id[i]
     W_i = W[i]
-    force = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     force_body = float(body_sign[i]) * force
 
     xform = body_q[b]
@@ -1883,6 +1723,7 @@ def contact_pp_accumulate_forces_kernel(
     active_count: wp.array[int],
     particle_a: wp.array[int],
     particle_b: wp.array[int],
+    inv_dt: float,
     rho: float,
     W: wp.array[float],
     lambda_k: wp.array[wp.vec3],
@@ -1898,7 +1739,7 @@ def contact_pp_accumulate_forces_kernel(
     pa = particle_a[i]
     pb = particle_b[i]
     W_i = W[i]
-    force = W_i * (lambda_k[i] + rho * W_i * (u_k[i] - Jv_k[i]))
+    force = inv_dt * _interface_impulse(rho, W_i, lambda_k[i], u_k[i], Jv_k[i])
     wp.atomic_add(particle_f_a, pa, force)
     wp.atomic_sub(particle_f_b, pb, force)
 
@@ -2083,3 +1924,227 @@ def contact_pp_fill_from_particle_contacts_kernel(
     W[dst] = weight
     friction[dst] = particle_mu
     lambda_[dst] = lambda0
+
+
+@wp.func
+def _parallel_axis(r: wp.vec3):
+    return wp.dot(r, r) * wp.identity(n=3, dtype=float) - wp.outer(r, r)
+
+
+@wp.kernel(enable_backward=False)
+def joint_proxy_accumulate_point_inertia_kernel(
+    owned: wp.array[int],
+    slots: wp.array[int],
+    anchors: wp.array[wp.vec3],
+    com: wp.array[wp.vec3],
+    weights: wp.array[float],
+    scale: float,
+    mass: wp.array[float],
+    moment: wp.array[wp.vec3],
+    inertia: wp.array[wp.mat33],
+):
+    """Add a point row's ``scale * W**2`` mass at its anchor, in the owned body's frame."""
+    row = wp.tid()
+    slot = slots[row]
+    if slot < 0:
+        return
+    m = scale * weights[row] * weights[row]
+    r = anchors[row] - com[owned[row]]
+    wp.atomic_add(mass, slot, m)
+    wp.atomic_add(moment, slot, m * r)
+    wp.atomic_add(inertia, slot, m * _parallel_axis(r))
+
+
+@wp.kernel(enable_backward=False)
+def joint_proxy_accumulate_angular_inertia_kernel(
+    owned: wp.array[int],
+    slots: wp.array[int],
+    body_q: wp.array[wp.transform],
+    frame_bodies: wp.array[int],
+    frame_body_q: wp.array[wp.transform],
+    frames: wp.array[wp.transform],
+    axes: wp.vec3,
+    weights: wp.array[float],
+    scale: float,
+    inertia: wp.array[wp.mat33],
+):
+    """Add an angular row's ``scale * W**2`` tensor on its constrained axes, in the owned body's frame."""
+    row = wp.tid()
+    slot = slots[row]
+    if slot < 0:
+        return
+    frame = frame_body_q[frame_bodies[row]] * frames[row]
+    rotation = wp.quat_inverse(wp.transform_get_rotation(body_q[owned[row]])) * wp.transform_get_rotation(frame)
+    R = wp.quat_to_matrix(rotation)
+    wp.atomic_add(inertia, slot, (scale * weights[row] * weights[row]) * (R * wp.diag(axes) * wp.transpose(R)))
+
+
+@wp.kernel(enable_backward=False)
+def joint_proxy_center_inertia_kernel(
+    owned: wp.array[int],
+    proxies: wp.array[int],
+    relative: wp.array[wp.transform],
+    point_only: wp.array[int],
+    owned_com: wp.array[wp.vec3],
+    body_local_to_global: wp.array[int],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    lump_mass: wp.array[float],
+    lump_moment: wp.array[wp.vec3],
+    lump_inertia: wp.array[wp.mat33],
+    proxy_mass: wp.array[float],
+    proxy_inertia: wp.array[wp.mat33],
+    proxy_com: wp.array[wp.vec3],
+):
+    """Center each proxy's lumped inertia on its rows and express it in the proxy's frame."""
+    slot = wp.tid()
+    m = wp.max(lump_mass[slot], 1.0e-8)
+    r = lump_moment[slot] / m
+    # The proxied body's own radii of gyration at the proxy mass, in the proxy's frame.
+    proxied_body = body_local_to_global[proxies[slot]]
+    reference = (m / wp.max(body_mass[proxied_body], 1.0e-8)) * body_inertia[proxied_body]
+    I = lump_inertia[slot] - m * _parallel_axis(r)
+    # Rows leave some rotations unconstrained; a small tensor keeps native integration defined.
+    I += (1.0e-6 * (wp.trace(lump_inertia[slot]) + wp.trace(reference))) * wp.identity(n=3, dtype=float)
+    to_proxy = wp.transform_inverse(relative[slot])
+    R = wp.quat_to_matrix(wp.transform_get_rotation(to_proxy))
+    proxy_mass[slot] = m
+    proxy_inertia[slot] = R * I * wp.transpose(R)
+    if point_only[slot] != 0:
+        proxy_inertia[slot] = reference
+    proxy_com[proxies[slot]] = wp.transform_point(to_proxy, owned_com[owned[slot]] + r)
+
+
+@wp.kernel(enable_backward=False)
+def joint_proxy_scatter_inertia_kernel(
+    proxies: wp.array[int],
+    proxy_mass: wp.array[float],
+    proxy_inertia: wp.array[wp.mat33],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+):
+    """Write proxy inertia into body-indexed arrays that are zero elsewhere."""
+    slot = wp.tid()
+    body_mass[proxies[slot]] = proxy_mass[slot]
+    body_inertia[proxies[slot]] = proxy_inertia[slot]
+
+
+@wp.kernel(enable_backward=False)
+def joint_proxy_recenter_kernel(
+    owned: wp.array[int],
+    proxies: wp.array[int],
+    relative: wp.array[wp.transform],
+    com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+):
+    """Place each maximal-coordinate proxy with its cross joint at zero coordinates on the owned body.
+
+    The proxy moves rigidly with the owned body, so the cross joint starts without relative motion.
+    """
+    slot = wp.tid()
+    a = owned[slot]
+    b = proxies[slot]
+    X_a = body_q[a]
+    X_b = X_a * relative[slot]
+    w = wp.spatial_bottom(body_qd[a])
+    r = wp.transform_point(X_b, com[b]) - wp.transform_point(X_a, com[a])
+    body_q[b] = X_b
+    body_qd[b] = wp.spatial_vector(wp.spatial_top(body_qd[a]) + wp.cross(w, r), w)
+    body_f[b] = wp.spatial_vector(wp.vec3(0.0), wp.vec3(0.0))
+
+
+@wp.kernel(enable_backward=False)
+def joint_proxy_momentum_target_kernel(
+    owned: wp.array[int],
+    proxies: wp.array[int],
+    relative: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+    body_q_k: wp.array[wp.transform],
+    velocity_k: wp.array[wp.spatial_vector],
+    com: wp.array[wp.vec3],
+    mass: wp.array[float],
+    inertia: wp.array[wp.mat33],
+    bias: wp.array[wp.spatial_vector],
+    dt: float,
+    momentum: wp.array[wp.spatial_vector],
+):
+    """Target each proxy's momentum at the owned body's iterate, rigidly extended to the proxy.
+
+    With ``body_q_k``, the linear target moves the proxy COM onto the owned
+    body's iterate pose extended through ``relative``, so a solver that
+    realizes the target as a COM displacement ``dt * v`` lands on it exactly.
+    """
+    slot = wp.tid()
+    a = owned[slot]
+    b = proxies[slot]
+    v = velocity_k[a]
+    w = wp.spatial_bottom(v)
+    X_b = body_q[b]
+    c_b = wp.transform_point(X_b, com[b])
+    linear = wp.spatial_top(v) + wp.cross(w, c_b - wp.transform_point(body_q[a], com[a]))
+    if body_q_k:
+        linear = (wp.transform_point(body_q_k[a] * relative[slot], com[b]) - c_b) / dt
+    rot = wp.transform_get_rotation(X_b)
+    angular = wp.quat_rotate(rot, inertia[b] * wp.quat_rotate_inv(rot, w))
+    momentum[slot] = wp.spatial_vector(mass[b] * linear, angular)
+    if bias:
+        momentum[slot] += dt * bias[b]
+
+
+@wp.kernel(enable_backward=False)
+def joint_proxy_coordinates_kernel(
+    owned: wp.array[int],
+    proxies: wp.array[int],
+    relative: wp.array[wp.transform],
+    com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    cross_type: wp.array[int],
+    cross_q_start: wp.array[int],
+    cross_qd_start: wp.array[int],
+    free_q_start: wp.array[int],
+    free_qd_start: wp.array[int],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+):
+    """Write reduced coordinates that place each proxy with its cross joint at zero on the owned body.
+
+    Only the cross joint and the proxy's own FREE root change: the cross joint
+    takes zero coordinates and velocity, and a FREE root takes the proxy pose
+    and the owned body's rigid motion at the proxy's COM.
+    """
+    slot = wp.tid()
+    q = cross_q_start[slot]
+    qd = cross_qd_start[slot]
+    kind = cross_type[slot]
+    if kind == JointType.BALL:
+        joint_q[q + 0] = 0.0
+        joint_q[q + 1] = 0.0
+        joint_q[q + 2] = 0.0
+        joint_q[q + 3] = 1.0
+        for k in range(3):
+            joint_qd[qd + k] = 0.0
+    elif kind == JointType.REVOLUTE:
+        joint_q[q] = 0.0
+        joint_qd[qd] = 0.0
+    q = free_q_start[slot]
+    if q < 0:
+        return
+    qd = free_qd_start[slot]
+    a = owned[slot]
+    b = proxies[slot]
+    X_a = body_q[a]
+    X_b = X_a * relative[slot]
+    w = wp.spatial_bottom(body_qd[a])
+    r = wp.transform_point(X_b, com[b]) - wp.transform_point(X_a, com[a])
+    v = wp.spatial_top(body_qd[a]) + wp.cross(w, r)
+    p = wp.transform_get_translation(X_b)
+    rot = wp.transform_get_rotation(X_b)
+    for k in range(3):
+        joint_q[q + k] = p[k]
+        joint_qd[qd + k] = v[k]
+        joint_qd[qd + 3 + k] = w[k]
+    for k in range(4):
+        joint_q[q + 3 + k] = rot[k]

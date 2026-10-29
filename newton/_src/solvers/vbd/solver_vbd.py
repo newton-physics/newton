@@ -1557,6 +1557,49 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def coupling_supports_full_surface_soft_contacts(self) -> bool:
         return True
 
+    def coupling_set_inertial_target(
+        self,
+        state: State,
+        body_momentum: wp.array[wp.spatial_vector] | None,
+        particle_momentum: wp.array[wp.vec3] | None,
+        *,
+        body_indices: wp.array[int] | None = None,
+        particle_indices: wp.array[int] | None = None,
+        accumulate: bool = False,
+        dt: float,
+    ) -> None:
+        """Set forces so VBD's predicted pose matches the inertial target.
+
+        See :meth:`CouplingInterface.coupling_set_inertial_target` for arguments.
+        Correct the normalized quaternion integration and the input spin's
+        gyroscopic torque without modifying poses, velocities, or history.
+        """
+        super().coupling_set_inertial_target(
+            state, None, particle_momentum, particle_indices=particle_indices, accumulate=accumulate, dt=dt
+        )
+        if body_momentum is not None and self.model.body_count:
+            model = self.model
+            wp.launch(
+                vbd_coupling_kernels._set_body_momentum_target,
+                dim=body_momentum.shape[0],
+                inputs=[
+                    body_indices,
+                    body_momentum,
+                    model.body_mass,
+                    model.body_inertia,
+                    model.body_inv_inertia,
+                    model.body_flags,
+                    model.body_world,
+                    model.gravity,
+                    state.body_q,
+                    state.body_qd,
+                    state.body_f,
+                    float(dt),
+                    accumulate,
+                ],
+                device=model.device,
+            )
+
     def coupling_notify_input_state_update(
         self,
         state: State,
@@ -1592,9 +1635,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             return
 
         if dt <= 0.0:
-            # A reset distributes state before its world mask selects histories.
+            # Accept an instantaneous pose edit without converting it to motion.
             if not iteration_restart:
                 wp.copy(dest=self.body_q_prev, src=state.body_q)
+                wp.copy(dest=self._coupling_body_q_prev_snapshot, src=state.body_q)
             return
 
         if iteration_restart:
@@ -1980,10 +2024,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         if not self.model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
             return
-        joint_type_np = self._to_numpy(self.model.joint_type, dtype=np.int32)
-        if not np.any(joint_type_np == int(JointType.ROD)):
-            return
-
+        # The kernel skips non-rod joints. Keep this refresh on the device:
+        # a temporary host copy captured here would outlive its allocation.
         wp.launch(
             kernel=init_rod_rest_bend_twist,
             dim=self.model.joint_count,

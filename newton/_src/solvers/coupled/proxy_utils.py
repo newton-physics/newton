@@ -75,73 +75,39 @@ def sync_proxy_particles_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def subtract_proxy_body_forces_kernel(
-    body_gravity_acceleration: wp.array[wp.vec3],
-    dst_body_f: wp.array[wp.spatial_vector],
-    coupling_forces: wp.array[wp.spatial_vector],
-    body_local_to_proxy_global: wp.array[int],
-    dst_body_mass: wp.array[float],
-    dst_body_inv_mass: wp.array[float],
+def proxy_body_momentum_target_kernel(
+    local_indices: wp.array[int],
+    global_indices: wp.array[int],
+    mass: wp.array[float],
+    inertia: wp.array[wp.mat33],
+    q: wp.array[wp.transform],
+    qd: wp.array[wp.spatial_vector],
+    feedback: wp.array[wp.spatial_vector],
+    dt: float,
+    target: wp.array[wp.spatial_vector],
 ):
-    """Subtract lagged proxy feedback and gravity from destination body force inputs.
-
-    Args:
-        body_gravity_acceleration: Per-body acceleration applied internally by
-            the destination solver's gravity-like forces [m/s^2].
-        dst_body_f: Destination body force inputs (written in-place).
-        coupling_forces: Spatial forces previously applied to the driving solver,
-            indexed by global proxy body id.
-        body_local_to_proxy_global: Dense map from local body id to global
-            proxy body id. ``-1`` entries are skipped.
-        dst_body_mass: Destination body masses [kg].
-        dst_body_inv_mass: Destination inverse masses.
-    """
-    local_id = wp.tid()
-    global_id = body_local_to_proxy_global[local_id]
-    if global_id < 0:
-        return
-
-    f = coupling_forces[global_id]
-
-    inv_m = dst_body_inv_mass[local_id]
-    g = body_gravity_acceleration[local_id]
-    f_grav = wp.vec3(0.0, 0.0, 0.0)
-    if inv_m > 0.0:
-        f_grav = dst_body_mass[local_id] * g
-
-    dst_body_f[local_id] = -f - wp.spatial_vector(f_grav, wp.vec3(0.0, 0.0, 0.0))
+    row = wp.tid()
+    i = local_indices[row]
+    proxy = global_indices[row]
+    rot = wp.transform_get_rotation(q[i])
+    angular = wp.quat_rotate(rot, inertia[i] * wp.quat_rotate_inv(rot, wp.spatial_bottom(qd[i])))
+    target[row] = wp.spatial_vector(mass[i] * wp.spatial_top(qd[i]), angular) - dt * feedback[proxy]
 
 
 @wp.kernel(enable_backward=False)
-def subtract_proxy_particle_forces_kernel(
+def proxy_particle_momentum_target_kernel(
+    local_indices: wp.array[int],
+    global_indices: wp.array[int],
+    mass: wp.array[float],
+    qd: wp.array[wp.vec3],
+    feedback: wp.array[wp.vec3],
     dt: float,
-    particle_gravity_acceleration: wp.array[wp.vec3],
-    dst_particle_f: wp.array[wp.vec3],
-    coupling_forces: wp.array[wp.vec3],
-    particle_local_to_proxy_global: wp.array[int],
-    dst_particle_inv_mass: wp.array[float],
-    dst_particle_qd: wp.array[wp.vec3],
+    target: wp.array[wp.vec3],
 ):
-    """Subtract default velocity-level feedback, particle force inputs, and gravity."""
-    local_id = wp.tid()
-    global_id = particle_local_to_proxy_global[local_id]
-    if global_id < 0:
-        return
-
-    inv_m = dst_particle_inv_mass[local_id]
-    delta_v = dt * inv_m * (coupling_forces[global_id] + dst_particle_f[local_id])
-
-    g = particle_gravity_acceleration[local_id]
-    delta_v_grav = wp.vec3(0.0, 0.0, 0.0)
-    if inv_m > 0.0:
-        delta_v_grav = dt * g
-
-    dst_particle_qd[local_id] = dst_particle_qd[local_id] - (delta_v + delta_v_grav)
-
-
-# ------------------------------------------------------------------
-# 3. Harvest proxy feedback
-# ------------------------------------------------------------------
+    row = wp.tid()
+    i = local_indices[row]
+    proxy = global_indices[row]
+    target[row] = mass[i] * qd[i] - dt * feedback[proxy]
 
 
 @wp.kernel(enable_backward=False)

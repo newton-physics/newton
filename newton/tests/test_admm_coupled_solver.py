@@ -12,6 +12,7 @@ from __future__ import annotations
 import inspect
 import math
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -22,12 +23,14 @@ from newton._src.solvers.coupled.interface import CouplingInterface
 from newton.solvers import (
     SolverBase,
     SolverFeatherstone,
+    SolverKamino,
     SolverMuJoCo,
     SolverSemiImplicit,
     SolverVBD,
     SolverXPBD,
 )
 from newton.solvers.experimental.coupled import (
+    ModelView,
     SolverCoupled,
     SolverCoupledADMM,
 )
@@ -517,7 +520,9 @@ def _make_admm_inclined_plane_particle_box_solver(
         ],
         coupling=SolverCoupledADMM.Config(
             iterations=18,
-            rho=50.0,
+            # Migrate the legacy tuning at the reference substep of 1/360 s.
+            rho=50.0 / 360.0,
+            gamma=0.0,
             baumgarte=0.1,
             contact_pairs=[
                 SolverCoupledADMM.ContactPair(
@@ -681,8 +686,9 @@ def _make_collision_admm_inclined_plane_rigid_box_solver(
         ],
         coupling=SolverCoupledADMM.Config(
             iterations=30,
-            rho=5.0,
-            gamma=0.2,
+            # Migrate the legacy tuning at the reference substep of 1/360 s.
+            rho=5.0 / 360.0,
+            gamma=72.0,
             baumgarte=0.03,
             rigid_contact_matching=rigid_contact_matching,
             contact_matching_pos_threshold=contact_matching_pos_threshold,
@@ -733,6 +739,21 @@ def _run_collision_inclined_plane_rigid_box(
 
 class TestAdmmSmoke(unittest.TestCase):
     """End-to-end: construct, run, verify state advances without NaNs."""
+
+    def test_rejects_invalid_timesteps(self):
+        """Reject nonpositive and non-finite timesteps before advancing state."""
+        model = _build_two_particle_scene()
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(name="a", solver=SolverSemiImplicit, particles=[0]),
+                SolverCoupled.Entry(name="b", solver=SolverSemiImplicit, particles=[1]),
+            ],
+            SolverCoupledADMM.Config(),
+        )
+        for dt in (0.0, -1.0, float("nan"), float("inf"), -float("inf")):
+            with self.subTest(dt=dt), self.assertRaisesRegex(ValueError, "dt"):
+                solver.step(model.state(), model.state(), model.control(), contacts=None, dt=dt)
 
     def test_rejects_invalid_numerical_config(self):
         """Reject invalid ADMM coefficients and collision capacities before allocation."""
@@ -807,6 +828,38 @@ class TestAdmmSmoke(unittest.TestCase):
 class TestAdmmProximal(unittest.TestCase):
     """Proximal terms affect constrained DOFs only."""
 
+    def test_default_proximal_stabilizes_stiff_attachment(self):
+        """Converge to a shared velocity for a nearly rigid attachment."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        particle = builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(1.0, 0.0, 0.0), mass=1.0, radius=0.0)
+        builder.add_attachment_particle_body(particle, body, stiffness=1.0e12)
+        builder.color()
+        model = builder.finalize(device="cpu")
+        model.particle_grid = None
+        solver = SolverCoupledADMM(
+            model,
+            [
+                SolverCoupled.Entry(
+                    "body",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    bodies=[body],
+                ),
+                SolverCoupled.Entry(
+                    "particle",
+                    lambda view: SolverSemiImplicit(view, enable_tri_contact=False),
+                    particles=[particle],
+                ),
+            ],
+            SolverCoupledADMM.Config(iterations=40),
+        )
+        state_in, state_out = model.state(), model.state()
+        solver.step(state_in, state_out, model.control(), contacts=None, dt=1.0 / 120.0)
+
+        # Equal masses share the initial momentum in the hard-constraint limit.
+        np.testing.assert_allclose(state_out.body_qd.numpy()[body, :3], (0.5, 0.0, 0.0), atol=1.0e-4)
+        np.testing.assert_allclose(state_out.particle_qd.numpy()[particle], (0.5, 0.0, 0.0), atol=1.0e-4)
+
     def test_gamma_does_not_change_unconstrained_freefall(self):
         # Place the rigid body high so it stays in free-fall across the
         # window; with no ADMM constraints, gamma should not alter the result.
@@ -874,6 +927,61 @@ class TestAdmmGraphCapture(unittest.TestCase):
         wp.capture_launch(capture.graph)
         q = state_1.body_q.numpy()
         self.assertTrue(np.all(np.isfinite(q)))
+
+
+def _build_split_ball_pair(tree: bool) -> newton.Model:
+    """Build two 1 kg bodies joined by a satisfied ball joint, 0.3 m apart along x, without gravity.
+
+    With ``tree`` the ball is the child's articulation joint below the parent's FREE joint; otherwise
+    each body has its own FREE joint and the ball closes a loop.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    inertia = wp.mat33(np.eye(3) * 0.01)
+    parent = builder.add_link(mass=1.0, inertia=inertia)
+    child = builder.add_link(xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia)
+    root = builder.add_joint_free(parent)
+    if tree:
+        ball = builder.add_joint_ball(
+            parent, child, child_xform=wp.transform(wp.vec3(-0.3, 0.0, 0.0), wp.quat_identity())
+        )
+        builder.add_articulation([root, ball])
+    else:
+        builder.add_articulation([root])
+        builder.add_articulation([builder.add_joint_free(child)])
+        builder.add_joint_ball(parent, child, child_xform=wp.transform(wp.vec3(-0.3, 0.0, 0.0), wp.quat_identity()))
+    builder.color()
+    return builder.finalize(device="cpu")
+
+
+def _make_split_ball_solver(model: newton.Model, make_solver, tree: bool, **coupling_kwargs) -> SolverCoupledADMM:
+    """Split the ball pair across two entries; a tree-modeled child owns no joint and gets a joint proxy."""
+    return SolverCoupledADMM(
+        model=model,
+        entries=[
+            SolverCoupled.Entry(name="parent", solver=make_solver, bodies=[0], joints=[0]),
+            SolverCoupled.Entry(name="child", solver=make_solver, bodies=[1], joints=[] if tree else [1]),
+        ],
+        coupling=SolverCoupledADMM.Config(
+            iterations=50,
+            rho=1.0 / 3.0,
+            gamma=0.0,
+            baumgarte=0.5,
+            joint_proximal_bodies=tree,
+            **coupling_kwargs,
+        ),
+    )
+
+
+def _push_split_ball(model: newton.Model, solver, body_f: tuple[float, ...], n_steps: int = 20) -> tuple:
+    """Apply a constant wrench to one body (index 0 of ``body_f``) and return the final body state."""
+    state_0, state_1 = model.state(), model.state()
+    wrench = np.zeros((model.body_count, 6), dtype=np.float32)
+    wrench[int(body_f[0])] = body_f[1:]
+    for _ in range(n_steps):
+        state_0.body_f.assign(wrench)
+        solver.step(state_0, state_1, None, None, 1.0 / 120.0)
+        state_0, state_1 = state_1, state_0
+    return state_0.body_q.numpy(), state_0.body_qd.numpy()
 
 
 class TestAdmmModelJointInterface(unittest.TestCase):
@@ -1005,10 +1113,11 @@ class TestAdmmModelJointInterface(unittest.TestCase):
             ],
             coupling=SolverCoupledADMM.Config(
                 iterations=12,
-                rho=40.0,
+                rho=1.0 / 3.0,
+                gamma=0.0,
                 baumgarte=0.5,
-                joint_stiffness=500.0,
-                joint_angular_stiffness=50.0,
+                joint_stiffness=6.0e4,
+                joint_angular_stiffness=6.0e3,
                 joint_proximal_bodies=False,
             ),
         )
@@ -1058,8 +1167,8 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         self.assertLess(body_q[child, 0], 0.25)
         self.assertGreater(body_q[parent, 0], 0.05)
 
-    def test_split_articulation_proximal_dofs_follow_view_articulations(self):
-        """Map each body to the DOFs of its view articulation, including synthesized FREE roots.
+    def test_split_articulation_proximal_targets_follow_view_articulations(self):
+        """Evaluate proximal targets through each synthesized FREE root articulation.
 
         The chain A-B-C-D alternates entries, so the ``outer`` view holds A's
         FREE root in one articulation and C's synthesized FREE root with the
@@ -1093,17 +1202,18 @@ class TestAdmmModelJointInterface(unittest.TestCase):
 
         entry = solver._entries["outer"]
         buf = solver._admm_buffers["outer"]
-        starts = buf.body_joint_qd_start.numpy()
-        counts = buf.body_joint_qd_count.numpy()
-        indices = buf.body_joint_qd_indices.numpy()
-        body_dofs = {
-            int(body): indices[starts[local] : starts[local] + counts[local]].tolist()
-            for local, body in enumerate(entry.body_local_to_global.numpy())
-        }
         # View DOFs: A's FREE root 0-5, C's synthesized FREE root 6-11, C-D revolute 12.
-        self.assertEqual(body_dofs[a], list(range(6)))
-        self.assertEqual(body_dofs[c], list(range(6, 13)))
-        self.assertEqual(body_dofs[d], list(range(6, 13)))
+        # A unit velocity on a root DOF moves exactly the bodies of that articulation.
+        for dof, moving_bodies in ((0, {a}), (6, {c, d})):
+            qd = wp.zeros(entry.view.joint_dof_count, dtype=float, device=model.device)
+            values = qd.numpy()
+            values[dof] = 1.0
+            qd.assign(values)
+            velocity = buf.reduced_gamma.target_velocity(entry.state_0.joint_q, qd).numpy()
+            for local, body in enumerate(entry.body_local_to_global.numpy()):
+                expected = np.zeros(6)
+                expected[0] = float(int(body) in moving_bodies)
+                np.testing.assert_allclose(velocity[local], expected, atol=1.0e-7)
 
         state_0, state_1 = model.state(), model.state()
         for _ in range(4):
@@ -1144,18 +1254,21 @@ class TestAdmmModelJointInterface(unittest.TestCase):
             newton.ShapeFlags.COLLIDE_SHAPES | newton.ShapeFlags.COLLIDE_PARTICLES | newton.ShapeFlags.HYDROELASTIC
         )
         proxy_flag = int(newton.BodyFlags.PROXY)
-        for name in ("parent", "child"):
+        for name, owned in (("parent", parent), ("child", child)):
             with self.subTest(name=name):
                 view = solver.view(name)
                 self.assertEqual(view.shape_count, model.shape_count)
                 shape_body = view.shape_body.numpy()
-                body_flags = view.body_flags.numpy()
+                body_global = solver._entries[name].body_local_to_global.numpy()
                 shape_flags = view.shape_flags.numpy()
                 proxy_shapes = [
                     shape_id
                     for shape_id, body_id in enumerate(shape_body)
-                    if int(body_id) >= 0 and int(body_flags[int(body_id)]) & proxy_flag
+                    if int(body_id) >= 0 and int(body_global[int(body_id)]) != owned
                 ]
+                body_flags = view.body_flags.numpy()
+                for body_id, global_id in enumerate(body_global):
+                    self.assertEqual(bool(body_flags[body_id] & proxy_flag), int(global_id) != owned)
                 owned_shapes = [
                     shape_id
                     for shape_id, body_id in enumerate(shape_body)
@@ -1166,7 +1279,7 @@ class TestAdmmModelJointInterface(unittest.TestCase):
                 self.assertEqual(len(proxy_shapes), 1)
                 self.assertEqual(len(owned_shapes), 1)
                 self.assertEqual(len(hidden_shapes), 1)
-                self.assertEqual(int(shape_flags[proxy_shapes[0]]) & collision_mask, 0)
+                self.assertEqual(int(shape_flags[proxy_shapes[0]]), 0)
                 self.assertNotEqual(int(shape_flags[owned_shapes[0]]) & collision_mask, 0)
                 self.assertEqual(int(shape_flags[hidden_shapes[0]]) & collision_mask, 0)
 
@@ -1190,6 +1303,489 @@ class TestAdmmModelJointInterface(unittest.TestCase):
                 ],
                 coupling=SolverCoupledADMM.Config(),
             )
+
+
+def _semi_implicit(view):
+    return SolverSemiImplicit(model=view, enable_tri_contact=False)
+
+
+def _build_off_center_ball_pair(
+    *, kamino: bool = False, joint_rho: float | None = None, parallel: bool = False
+) -> newton.Model:
+    """Build two free bodies joined by a ball joint anchored off the first body's COM."""
+    builder = newton.ModelBuilder(gravity=(0.0, -9.81, 0.0))
+    if kamino:
+        SolverKamino.register_custom_attributes(builder)
+    joint_attributes = {}
+    if joint_rho is not None:
+        SolverCoupledADMM.register_custom_attributes(builder)
+        joint_attributes = {"custom_attributes": {"coupling:joint_rho": joint_rho}}
+    for mass in (2.0, 5.0):
+        builder.add_body(mass=mass, inertia=wp.mat33(np.diag([1.0, 2.0, 3.0])))
+    builder.add_joint_ball(0, 1, parent_xform=wp.transform((0.3, -0.4, 0.2), wp.quat_identity()), **joint_attributes)
+    if parallel:
+        anchor = wp.transform((-0.5, 0.1, 0.0), wp.quat_identity())
+        builder.add_joint_ball(0, 1, parent_xform=anchor, child_xform=anchor)
+    builder.color()
+    return builder.finalize(device="cpu")
+
+
+def _step_off_center_ball_pair(
+    model: newton.Model, factories, *, in_place: bool = False, substeps: int = 1, **config
+) -> tuple[SolverCoupledADMM, np.ndarray]:
+    """Split the pair across two entries and take one coupled step from spinning initial velocities."""
+
+    def configure(view: ModelView) -> None:
+        # Solvers such as Kamino rewrite body and joint frames in place; keep those writes local.
+        for name in ("body_com", "body_inertia", "joint_X_p", "joint_X_c"):
+            setattr(view, name, wp.clone(getattr(view, name)))
+
+    solver = SolverCoupledADMM(
+        model,
+        [
+            SolverCoupled.Entry(
+                name=str(body),
+                bodies=[body],
+                joints=[body],
+                solver=factories[body],
+                in_place=in_place,
+                substeps=substeps,
+                configure_view=configure,
+            )
+            for body in range(2)
+        ],
+        SolverCoupledADMM.Config(**{"gamma": 0.0, "joint_stiffness": 5000.0, **config}),
+    )
+    state, out = model.state(), model.state()
+    initial = np.array([[1.3, 0.2, -0.3, 0.7, -0.4, 0.3], [-0.7, -0.1, 0.2, -0.2, 0.1, 0.3]], dtype=np.float32)
+    state.body_qd.assign(initial)
+    joint_qd = state.joint_qd.numpy()
+    joint_qd[:12] = initial.ravel()
+    state.joint_qd.assign(joint_qd)
+    solver.step(state, out, None, None, 0.02)
+    return solver, out.body_qd.numpy()
+
+
+def _build_split_four_bar(world_count: int) -> tuple[newton.Model, list[tuple[str, list[int], list[int]]]]:
+    """Build a closed four-bar of free links on a fixed base, with alternate links in two entries."""
+    template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+
+    def bar(start: tuple[float, ...], end: tuple[float, ...], mass: float) -> tuple[int, wp.transform, tuple, tuple]:
+        start, end = np.asarray(start), np.asarray(end)
+        length = float(np.linalg.norm(end - start))
+        direction = (end - start) / length
+        quat = np.array([*np.cross([1.0, 0.0, 0.0], direction), 1.0 + direction[0]])
+        pose = wp.transform(wp.vec3(*(0.5 * (start + end))), wp.quat(*(quat / np.linalg.norm(quat))))
+        body = template.add_link(xform=pose, mass=mass, inertia=wp.mat33(np.eye(3) * mass * length * length / 12.0))
+        return body, pose, (-0.5 * length, 0.0, 0.0), (0.5 * length, 0.0, 0.0)
+
+    left_base, right_base, left_top, right_top = (
+        (-0.48, 0.0, 1.05),
+        (0.48, 0.0, 1.05),
+        (-0.30, 0.0, 1.55),
+        (0.34, 0.0, 1.46),
+    )
+    ground, ground_pose, ground_left, ground_right = bar(left_base, right_base, 1.0)
+    base = template.add_joint_fixed(-1, ground, parent_xform=ground_pose)
+    template.add_articulation([base])
+    crank, _, crank_base, crank_top = bar(left_base, left_top, 0.35)
+    coupler, _, coupler_left, coupler_right = bar(left_top, right_top, 0.42)
+    rocker, _, rocker_base, rocker_top = bar(right_base, right_top, 0.36)
+    roots = []
+    for link in (crank, coupler, rocker):
+        roots.append(template.add_joint_free(link))
+        template.add_articulation([roots[-1]])
+    for parent, parent_point, child, child_point in (
+        (ground, ground_left, crank, crank_base),
+        (crank, crank_top, coupler, coupler_left),
+        (coupler, coupler_right, rocker, rocker_top),
+        (rocker, rocker_base, ground, ground_right),
+    ):
+        template.add_joint_revolute(
+            parent,
+            child,
+            parent_xform=wp.transform(parent_point, wp.quat_identity()),
+            child_xform=wp.transform(child_point, wp.quat_identity()),
+            axis=wp.vec3(0.0, 1.0, 0.0),
+        )
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+    builder.replicate(template, copy_count=world_count)
+    builder.color()
+    model = builder.finalize(device="cpu")
+
+    def per_world(ids: list[int], stride: int) -> list[int]:
+        return [world * stride + index for world in range(world_count) for index in ids]
+
+    bodies, joints = template.body_count, template.joint_count
+    return model, [
+        ("a", per_world([crank, rocker], bodies), per_world([roots[0], roots[2]], joints)),
+        ("b", per_world([ground, coupler], bodies), per_world([base, roots[1]], joints)),
+    ]
+
+
+def _build_loop_before_tree_joint(device: str = "cpu") -> tuple[newton.Model, list[SolverCoupled.Entry]]:
+    """Build a body proxied by a loop joint whose index precedes its tree joint into the same entry."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+    inertia = wp.mat33(np.eye(3) * 0.01)
+    a0, b0, a1 = (
+        builder.add_link(xform=wp.transform((x, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=inertia)
+        for x in (0.0, 0.3, 0.6)
+    )
+    hinge = {
+        "parent_xform": wp.transform((0.15, 0.0, 0.0), wp.quat_identity()),
+        "child_xform": wp.transform((-0.15, 0.0, 0.0), wp.quat_identity()),
+        "axis": wp.vec3(0.0, 1.0, 0.0),
+    }
+    builder.add_joint_revolute(b0, a1, **hinge)
+    root = builder.add_joint_free(a0)
+    builder.add_articulation([root, builder.add_joint_revolute(a0, b0, **hinge)])
+    root1 = builder.add_joint_free(a1)
+    builder.add_articulation([root1])
+    model = builder.finalize(device=device)
+    return model, [
+        SolverCoupled.Entry(name="a", solver=SolverFeatherstone, bodies=[a0, a1], joints=[root, root1]),
+        SolverCoupled.Entry(name="b", solver=SolverFeatherstone, bodies=[b0], joints=[]),
+    ]
+
+
+class TestAdmmJointProxies(unittest.TestCase):
+    """Joint proxies only change ADMM convergence, never the converged solution."""
+
+    def test_tree_joint_proxy_ignores_joint_order(self):
+        """Give a tree joint and a loop joint into one entry each a proxy row, whichever comes first."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            model, entries = _build_loop_before_tree_joint()
+            solver = SolverCoupledADMM(model, entries, SolverCoupledADMM.Config())
+        for group in (*solver._admm_rr_groups, *solver._admm_rr_revolute_angular_groups):
+            self.assertTrue(np.all(group.proxy_slots_a.numpy() >= 0))
+            self.assertTrue(np.all(group.proxy_slots_b.numpy() >= 0))
+        self.assertEqual(sum("_copy_" in label for label in solver.view("a").body_label), 1)
+
+    def test_proxy_mass_keeps_solution(self):
+        """Match the proxy-free solution for any proxy mass, attachment stiffness, and coordinate type."""
+        push = (0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        solvers = {
+            "featherstone": SolverFeatherstone,
+            "semi_implicit": lambda v: SolverSemiImplicit(model=v, enable_tri_contact=False),
+        }
+        for name, make_solver in solvers.items():
+            for stiffness in (6.0e4, 6.0e8):
+                stiffness_kwargs = {"joint_stiffness": stiffness, "joint_angular_stiffness": 0.1 * stiffness}
+                model = _build_split_ball_pair(tree=False)
+                reference, _ = _push_split_ball(
+                    model, _make_split_ball_solver(model, make_solver, tree=False, **stiffness_kwargs), push
+                )
+                for mass_scale in (0.5, 2.0):
+                    with self.subTest(solver=name, stiffness=stiffness, mass_scale=mass_scale):
+                        model = _build_split_ball_pair(tree=True)
+                        solver = _make_split_ball_solver(
+                            model, make_solver, tree=True, joint_proximal_mass_scale=mass_scale, **stiffness_kwargs
+                        )
+                        body_q, body_qd = _push_split_ball(model, solver, push)
+                        np.testing.assert_allclose(body_q[:, :3], reference[:, :3], atol=2.0e-4)
+                        # A unit force over 20 steps gives the pair 1/6 N s of momentum.
+                        self.assertAlmostEqual(float(body_qd[0, 0] + body_qd[1, 0]), 20.0 / 120.0, delta=1.0e-3)
+
+    def test_proxy_joints_exert_no_drive_or_control(self):
+        """Keep the drive, armature, and joint control of proxied joints out of the coupled solution."""
+        joint_f = np.zeros(7, dtype=np.float32)
+        joint_f[0] = 1.0  # the parent's FREE joint, a proxy path in the child's view
+        wrench = np.zeros((2, 6), dtype=np.float32)
+        wrench[1, 5] = 0.01  # turns the hinge, which a leftover drive would resist
+
+        def run(model: newton.Model, solver):
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            control.joint_f.assign(joint_f)
+            for _ in range(20):
+                state_0.body_f.assign(wrench)
+                solver.step(state_0, state_1, control, None, 1.0 / 120.0)
+                state_0, state_1 = state_1, state_0
+            return state_0.body_q.numpy(), state_0.body_qd.numpy()
+
+        def coupled(make_solver, tree: bool, stiffness: float):
+            model = _build_split_hinge_pair(tree)
+            return run(
+                model,
+                _make_split_ball_solver(
+                    model, make_solver, tree=tree, joint_stiffness=stiffness, joint_angular_stiffness=0.1 * stiffness
+                ),
+            )
+
+        # Nothing simulates a cross-solver joint's drive or armature, so the reference hinge has none.
+        reference = _build_split_hinge_pair(True, driven=False)
+        cases = (
+            ("featherstone", run(reference, SolverFeatherstone(reference)), coupled(SolverFeatherstone, True, 6.0e8)),
+            ("semi_implicit", coupled(_semi_implicit, False, 6.0e6), coupled(_semi_implicit, True, 6.0e6)),
+        )
+        for name, (expected_q, expected_qd), (body_q, body_qd) in cases:
+            with self.subTest(solver=name):
+                np.testing.assert_allclose(body_q, expected_q, atol=2.0e-4)
+                np.testing.assert_allclose(body_qd, expected_qd, atol=2.0e-3)
+
+    def test_model_notifications_keep_proxy_joint_dofs_cleared(self):
+        """Keep drives and armature of proxy joints cleared in the view arrays solvers hold."""
+        # Host copies of CUDA arrays share no memory with the view arrays.
+        devices = ["cpu", *([str(wp.get_cuda_device())] if wp.is_cuda_available() else [])]
+        for device in devices:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                model, entries = _build_loop_before_tree_joint(device)
+                solver = SolverCoupledADMM(model, entries, SolverCoupledADMM.Config())
+            entries = [entry for entry in solver._entries.values() if entry.proxy_joint_dof_local_indices is not None]
+            self.assertTrue(entries)
+            held = {entry.name: (entry.view.joint_target_ke, entry.view.joint_armature) for entry in entries}
+            model.joint_target_ke.fill_(50.0)
+            model.joint_armature.fill_(0.1)
+
+            for flag in (newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES, newton.ModelFlags.JOINT_DOF_PROPERTIES):
+                solver.notify_model_changed(flag)
+                for entry in entries:
+                    dofs = entry.proxy_joint_dof_local_indices.numpy()
+                    for name, array in zip(("joint_target_ke", "joint_armature"), held[entry.name], strict=True):
+                        with self.subTest(device=device, flag=flag, entry=entry.name, attribute=name):
+                            np.testing.assert_array_equal(array.numpy()[dofs], 0.0)
+
+    def test_proxy_is_a_single_free_rooted_link(self):
+        """Keep one proxy body per cross-solver joint; a reduced view roots it with a FREE joint."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        parent = -1
+        joints = []
+        for _ in range(3):
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01), com=wp.vec3(0.0, 0.0, 0.15))
+            offset = 0.0 if parent < 0 else 0.3
+            joints.append(
+                builder.add_joint_revolute(
+                    parent,
+                    body,
+                    parent_xform=wp.transform(
+                        wp.vec3(0.0, 0.0, offset), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.3)
+                    ),
+                    axis=newton.Axis.X,
+                )
+            )
+            parent = body
+        builder.add_articulation(joints)
+        model = builder.finalize(device="cpu")
+
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="base", solver=SolverFeatherstone, bodies=[0, 1], joints=[0, 1]),
+                SolverCoupled.Entry(name="tip", solver=SolverFeatherstone, bodies=[2], joints=[]),
+            ],
+            coupling=SolverCoupledADMM.Config(),
+        )
+        # The tip sees only a copy of link 1, rooted by a FREE joint, above its own link through joint 2.
+        tip = solver.view("tip")
+        np.testing.assert_array_equal(solver._entries["tip"].body_local_to_global.numpy(), [1, 2])
+        np.testing.assert_array_equal(
+            tip.joint_type.numpy(), [int(newton.JointType.FREE), int(newton.JointType.REVOLUTE)]
+        )
+        np.testing.assert_array_equal(solver._entries["base"].body_local_to_global.numpy(), [0, 1, 2])
+
+    def test_proxied_child_keeps_rotation(self):
+        """Accumulate a reduced-coordinate child's rotation through its cross-solver joint across steps."""
+        torque = (1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.01)
+        model = _build_split_ball_pair(tree=True)
+        expected_q, expected_qd = _push_split_ball(model, SolverFeatherstone(model), torque)
+        model = _build_split_ball_pair(tree=True)
+        solver = _make_split_ball_solver(
+            model,
+            SolverFeatherstone,
+            tree=True,
+            joint_stiffness=6.0e8,
+            joint_angular_stiffness=6.0e7,
+        )
+        body_q, body_qd = _push_split_ball(model, solver, torque)
+        self.assertGreater(abs(float(expected_q[1, 5])), 1.0e-3)
+        np.testing.assert_allclose(body_q[1, 3:], expected_q[1, 3:], atol=1.0e-4)
+        np.testing.assert_allclose(body_qd[1, 3:], expected_qd[1, 3:], atol=1.0e-3)
+
+    def test_closed_loop_proxies_cover_every_joint(self):
+        """Give every joint row of a split four-bar a proxy through body copies, in every world."""
+        model, entries = _build_split_four_bar(world_count=2)
+        config = {
+            "iterations": 60,
+            "rho": 0.5,
+            "gamma": 1.0,
+            "joint_stiffness": 3.6e6,
+            "joint_angular_stiffness": 3.6e6,
+        }
+        body_q = {}
+        # The linearized update diverges on this stiff loop, so the converged answer is checked
+        # for independence from the proxy mass.
+        for mass_scale in (1.0, 2.0):
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(name=name, solver=SolverFeatherstone, bodies=bodies, joints=joints)
+                    for name, bodies, joints in entries
+                ],
+                SolverCoupledADMM.Config(joint_proximal_mass_scale=mass_scale, **config),
+            )
+            for group in (*solver._admm_rr_groups, *solver._admm_rr_revolute_angular_groups):
+                self.assertTrue(np.all(group.proxy_slots_a.numpy() >= 0))
+                self.assertTrue(np.all(group.proxy_slots_b.numpy() >= 0))
+            # Body copies keep their labels and PROXY flags through a body-property notification.
+            for notify in (False, True):
+                if notify:
+                    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+                for name, _, _ in entries:
+                    # Each view holds two linkage bodies joined to it twice, so two copies per world.
+                    view = solver.view(name)
+                    self.assertEqual(sum("_copy_" in label for label in view.body_label), 4)
+                    body_flags = view.body_flags.numpy()
+                    for label, flags in zip(view.body_label, body_flags, strict=True):
+                        if "_copy_" in label:
+                            self.assertTrue(flags & int(newton.BodyFlags.PROXY))
+            state_0, state_1 = model.state(), model.state()
+            newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+            for _ in range(10):
+                solver.step(state_0, state_1, None, None, 1.0 / 180.0)
+                state_0, state_1 = state_1, state_0
+            body_q[mass_scale] = state_0.body_q.numpy()
+        self.assertTrue(np.all(np.isfinite(body_q[1.0])))
+        np.testing.assert_allclose(body_q[2.0], body_q[1.0], atol=1.0e-5)
+        np.testing.assert_allclose(body_q[1.0][:4], body_q[1.0][4:], atol=1.0e-6)
+
+    def test_kamino_lox_moves_joint_proxies(self):
+        """Move PROXY-flagged joint proxies as dynamic bodies in a Kamino LOX view."""
+        model = _build_off_center_ball_pair(kamino=True)
+
+        def kamino(view: ModelView) -> SolverKamino:
+            config = SolverKamino.Config(dynamics_solver="lox")
+            config.use_collision_detector = False
+            config.use_fk_solver = False
+            return SolverKamino(model=view, config=config)
+
+        factories = (kamino, SolverFeatherstone)
+        solver, expected = _step_off_center_ball_pair(
+            model, factories, iterations=400, rho=0.4, joint_proximal_bodies=False
+        )
+        solver, actual = _step_off_center_ball_pair(model, factories, iterations=64, rho=0.4)
+        self.assertTrue(np.any(solver.view("0").body_flags.numpy() & int(newton.BodyFlags.PROXY)))
+        # A frozen proxy errs by O(1).
+        np.testing.assert_allclose(actual, expected, atol=1.0e-3)
+
+    def test_proxy_inertia_uses_joint_rho(self):
+        """Size each proxy from its joint's rho override."""
+        model = _build_off_center_ball_pair(joint_rho=2.0)
+        solver, _ = _step_off_center_ball_pair(model, (SolverFeatherstone, SolverFeatherstone), iterations=4, rho=0.5)
+        group = solver._admm_rr_groups[0]
+        self.assertEqual(group.parameters.rho, 2.0)
+        w = float(group.W.numpy()[0])
+        body_mass, body_inertia = model.body_mass.numpy(), model.body_inertia.numpy()
+        for name, proxies in solver._admm_joint_proxies.items():
+            np.testing.assert_allclose(proxies.mass.numpy(), [2.0 * w * w], rtol=1.0e-6)
+            # Ball-joint proxies keep the proxied body's radii of gyration.
+            proxied = solver._entries[name].body_local_to_global.numpy()[proxies.proxies.numpy()[0]]
+            reference = 2.0 * w * w / body_mass[proxied] * body_inertia[proxied]
+            np.testing.assert_allclose(proxies.inertia.numpy()[0], reference, rtol=1.0e-5, atol=1.0e-9)
+
+    def test_in_place_entries_keep_proxy_fixed_point(self):
+        """Target position-based proxies at the previous entry step's poses when entries step in place."""
+        model = _build_off_center_ball_pair()
+        factories = (lambda view: SolverXPBD(view, iterations=10, angular_damping=0.0),) * 2
+        for rho in (0.4, 2.0):
+            with self.subTest(rho=rho):
+                _, expected = _step_off_center_ball_pair(model, factories, iterations=64, rho=rho)
+                _, actual = _step_off_center_ball_pair(model, factories, iterations=64, rho=rho, in_place=True)
+                np.testing.assert_allclose(actual, expected, atol=1.0e-6)
+
+    def test_substepped_entries_keep_proxy_fixed_point(self):
+        """Keep the converged answer close to the linearized one when entries take several substeps."""
+        model = _build_off_center_ball_pair()
+        for label, factory in (
+            ("featherstone", SolverFeatherstone),
+            ("xpbd", lambda view: SolverXPBD(view, iterations=10, angular_damping=0.0)),
+        ):
+            with self.subTest(solver=label):
+                factories = (factory, factory)
+                _, expected = _step_off_center_ball_pair(
+                    model, factories, substeps=3, iterations=600, rho=0.05, joint_proximal_bodies=False
+                )
+                _, actual = _step_off_center_ball_pair(model, factories, substeps=3, iterations=200, rho=0.4)
+                # Proxies follow the iterate over the whole step, not within it; that leaves about 2e-4 here.
+                np.testing.assert_allclose(actual, expected, atol=1.0e-3)
+
+    def test_inertia_notification_keeps_proxy_state(self):
+        """Leave a reduced-coordinate proxied step unchanged by an inertia notification without a change."""
+        velocities = []
+        for notify in (False, True):
+            builder = newton.ModelBuilder(gravity=(0.0, -9.81, 0.0))
+            inertia = wp.mat33(np.eye(3) * 0.01)
+            parent = builder.add_link(mass=1.0, inertia=inertia, com=wp.vec3(0.05, 0.02, 0.0))
+            child = builder.add_link(
+                xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()),
+                mass=1.0,
+                inertia=inertia,
+                com=wp.vec3(0.1, 0.0, 0.03),
+            )
+            root = builder.add_joint_free(parent)
+            ball = builder.add_joint_ball(
+                parent, child, child_xform=wp.transform(wp.vec3(-0.3, 0.0, 0.0), wp.quat_identity())
+            )
+            builder.add_articulation([root, ball])
+            model = builder.finalize(device="cpu")
+            solver = SolverCoupledADMM(
+                model,
+                [
+                    SolverCoupled.Entry(name="parent", solver=SolverFeatherstone, bodies=[parent], joints=[root]),
+                    SolverCoupled.Entry(name="child", solver=SolverFeatherstone, bodies=[child]),
+                ],
+                SolverCoupledADMM.Config(iterations=20, rho=0.5, gamma=0.5),
+            )
+            state_0, state_1 = model.state(), model.state()
+            joint_qd = state_0.joint_qd.numpy()
+            joint_qd[:6] = [0.3, 0.1, 0.0, 2.0, -1.0, 3.0]
+            state_0.joint_qd.assign(joint_qd)
+            newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+            for step in range(6):
+                if notify and step == 3:
+                    solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+                solver.step(state_0, state_1, None, None, 1.0 / 120.0)
+                state_0, state_1 = state_1, state_0
+            velocities.append(state_0.body_qd.numpy())
+        np.testing.assert_allclose(velocities[1], velocities[0], atol=1.0e-6)
+
+    def test_parallel_joints_each_get_a_proxy(self):
+        """Give each of two joints between the same bodies its own proxy."""
+        with warnings.catch_warnings():
+            # The builder warns that parallel joints have undefined semantics.
+            warnings.simplefilter("ignore")
+            model = _build_off_center_ball_pair(parallel=True)
+        factories = (SolverFeatherstone, SolverFeatherstone)
+        # The linearized update needs a small rho on parallel joints.
+        _, expected = _step_off_center_ball_pair(model, factories, iterations=800, rho=0.1, joint_proximal_bodies=False)
+        solver, actual = _step_off_center_ball_pair(model, factories, iterations=96, rho=2.0)
+        self.assertEqual(sorted(solver._admm_rr_groups[0].proxy_slots_a.numpy().tolist()), [0, 1])
+        np.testing.assert_allclose(actual, expected, atol=1.0e-5)
+
+
+def _build_split_hinge_pair(tree: bool, driven: bool = True) -> newton.Model:
+    """Build the split pair of :func:`_build_split_ball_pair` joined by a revolute hinge about z.
+
+    With ``driven`` the hinge has a position drive and armature, which no coupled entry simulates
+    for a cross-solver joint.
+    """
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    inertia = wp.mat33(np.eye(3) * 0.01)
+    parent = builder.add_link(mass=1.0, inertia=inertia)
+    child = builder.add_link(xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia)
+    root = builder.add_joint_free(parent)
+    hinge = {"child_xform": wp.transform(wp.vec3(-0.3, 0.0, 0.0), wp.quat_identity()), "axis": newton.Axis.Z}
+    if driven:
+        hinge.update(target_ke=50.0, target_kd=5.0, armature=0.1)
+    if tree:
+        builder.add_articulation([root, builder.add_joint_revolute(parent, child, **hinge)])
+    else:
+        builder.add_articulation([root])
+        builder.add_articulation([builder.add_joint_free(child)])
+        builder.add_joint_revolute(parent, child, **hinge)
+    builder.color()
+    return builder.finalize(device="cpu")
 
 
 class TestAdmmBodyParticleAttachment(unittest.TestCase):
@@ -1675,8 +2271,9 @@ class TestAdmmCollisionDetection(unittest.TestCase):
             ],
             coupling=SolverCoupledADMM.Config(
                 iterations=12,
-                rho=45.0,
-                gamma=0.05,
+                # Migrate the legacy tuning at the reference substep of 1/120 s.
+                rho=0.375,
+                gamma=6.0,
                 baumgarte=0.1,
                 contact_pairs=[
                     SolverCoupledADMM.ContactPair(

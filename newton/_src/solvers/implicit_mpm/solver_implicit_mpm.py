@@ -2162,11 +2162,69 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         out_body_acceleration: wp.array[wp.vec3] | None,
         out_particle_acceleration: wp.array[wp.vec3] | None,
     ) -> None:
-        """Evaluate gravity acceleration applied internally by the MPM solver."""
+        """Read gravity applied to grid particles; prescribed colliders receive none."""
         if out_body_acceleration is not None:
             out_body_acceleration.zero_()
-        if out_particle_acceleration is not None:
-            super().coupling_eval_gravity_acceleration(None, out_particle_acceleration)
+        if out_particle_acceleration is not None and self.model.particle_count:
+            wp.launch(
+                _mpm_particle_gravity_kernel,
+                dim=self.model.particle_count,
+                inputs=[self._mpm_model.particle_flags, self.model.particle_world, self.model.gravity],
+                outputs=[out_particle_acceleration],
+                device=self.model.device,
+            )
+
+    @override
+    def coupling_set_inertial_target(
+        self,
+        state: newton.State,
+        body_momentum: wp.array[wp.spatial_vector] | None,
+        particle_momentum: wp.array[wp.vec3] | None,
+        *,
+        body_indices: wp.array[int] | None = None,
+        particle_indices: wp.array[int] | None = None,
+        accumulate: bool = False,
+        dt: float,
+    ) -> None:
+        """Set inertial targets through MPM particle and collider velocities."""
+        if dt <= 0.0:
+            raise ValueError("Coupling momentum requires dt > 0")
+        # Collider bodies consume prescribed velocities, not body forces or gravity.
+        if body_momentum is not None and self.model.body_count:
+            wp.launch(
+                _mpm_body_momentum_kernel,
+                dim=body_momentum.shape[0],
+                inputs=[
+                    self.model.body_mass,
+                    self.model.body_inv_inertia,
+                    self.model.body_flags,
+                    state.body_q,
+                    state.body_qd,
+                    accumulate,
+                    body_momentum,
+                    body_indices,
+                ],
+                device=self.model.device,
+            )
+        # MPM particles consume gravity at grid transfer, but do not consume particle_f.
+        if particle_momentum is not None and self.model.particle_count:
+            wp.launch(
+                _mpm_particle_momentum_kernel,
+                dim=particle_momentum.shape[0],
+                inputs=[
+                    self.model.particle_mass,
+                    self.model.particle_flags,
+                    self._mpm_model.particle_flags,
+                    self.model.particle_world,
+                    self.model.gravity,
+                    state.particle_qd,
+                    float(dt),
+                    accumulate,
+                    particle_momentum,
+                    particle_indices,
+                ],
+                device=self.model.device,
+            )
 
     def coupling_notify_input_state_update(
         self,
@@ -2227,34 +2285,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     device=self.model.device,
                 )
 
-    def coupling_rewind_proxy_body(
-        self,
-        body_local_to_proxy_global: wp.array[int],
-        state: newton.State,
-        coupling_forces: wp.array[wp.spatial_vector],
-        body_gravity_acceleration: wp.array[wp.vec3],
-        dt: float,
-    ) -> None:
-        """Remove lagged velocity-level proxy wrenches from collider velocities."""
-        del body_gravity_acceleration
-        if state.body_q is None or state.body_qd is None or body_local_to_proxy_global.shape[0] == 0:
-            return
-
-        wp.launch(
-            _rewind_mpm_proxy_bodies_kernel,
-            dim=body_local_to_proxy_global.shape[0],
-            inputs=[
-                float(dt),
-                body_local_to_proxy_global,
-                coupling_forces,
-                state.body_q,
-                self.model.body_inv_inertia,
-                self.model.body_inv_mass,
-                state.body_qd,
-            ],
-            device=self.model.device,
-        )
-
     def coupling_harvest_proxy_wrenches(
         self,
         body_local_to_proxy_global: wp.array[int],
@@ -2295,42 +2325,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             ],
             device=self.model.device,
         )
-
-    def coupling_rewind_proxy_particle(
-        self,
-        particle_local_to_proxy_global: wp.array[int],
-        state: newton.State,
-        coupling_forces: wp.array[wp.vec3],
-        particle_gravity_acceleration: wp.array[wp.vec3],
-        dt: float,
-    ) -> None:
-        """Remove lagged velocity-level proxy forces from proxy particle velocities."""
-        if state.particle_qd is None or particle_local_to_proxy_global.shape[0] == 0:
-            return
-
-        wp.launch(
-            _rewind_mpm_proxy_particles_kernel,
-            dim=particle_local_to_proxy_global.shape[0],
-            inputs=[
-                float(dt),
-                particle_local_to_proxy_global,
-                int(newton.ParticleFlags.PROXY),
-                int(newton.ParticleFlags.ACTIVE),
-                self.model.particle_flags,
-                self._mpm_model.particle_flags,
-                particle_gravity_acceleration,
-                coupling_forces,
-                self.model.particle_inv_mass,
-                state.particle_qd,
-            ],
-            device=self.model.device,
-        )
-        if (
-            not hasattr(self, "_proxy_particle_qd_before")
-            or self._proxy_particle_qd_before.shape != state.particle_qd.shape
-        ):
-            self._proxy_particle_qd_before = wp.empty_like(state.particle_qd)
-        wp.copy(self._proxy_particle_qd_before, state.particle_qd)
 
     def coupling_harvest_proxy_particle_forces(
         self,
@@ -4603,28 +4597,31 @@ def _sync_mpm_proxy_particle_velocities_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _rewind_mpm_proxy_particles_kernel(
-    dt: float,
-    particle_local_to_proxy_global: wp.array[int],
-    proxy_flag: int,
-    active_flag: int,
-    particle_flags: wp.array[wp.int32],
+def _mpm_particle_momentum_kernel(
+    mass: wp.array[float],
+    flags: wp.array[wp.int32],
     transfer_flags: wp.array[wp.int32],
-    particle_gravity_acceleration: wp.array[wp.vec3],
-    coupling_forces: wp.array[wp.vec3],
-    particle_inv_mass: wp.array[float],
-    particle_qd: wp.array[wp.vec3],
+    world: wp.array[int],
+    gravity: wp.array[wp.vec3],
+    qd: wp.array[wp.vec3],
+    dt: float,
+    accumulate: bool,
+    momentum: wp.array[wp.vec3],
+    indices: wp.array[int],
 ):
-    local_particle = wp.tid()
-    proxy_global = particle_local_to_proxy_global[local_particle]
-    if proxy_global < 0 or (particle_flags[local_particle] & proxy_flag) == 0:
+    row = wp.tid()
+    i = row
+    if indices:
+        i = indices[row]
+    if mass[i] <= 0.0 or (flags[i] & int(newton.ParticleFlags.ACTIVE)) == 0:
         return
-
-    delta_v = dt * particle_inv_mass[local_particle] * coupling_forces[proxy_global]
-    if (transfer_flags[local_particle] & active_flag) != 0:
-        delta_v = delta_v + dt * particle_gravity_acceleration[local_particle]
-
-    particle_qd[local_particle] = particle_qd[local_particle] - delta_v
+    if accumulate:
+        qd[i] += momentum[row] / mass[i]
+    else:
+        velocity = momentum[row] / mass[i]
+        if (transfer_flags[i] & int(newton.ParticleFlags.ACTIVE)) != 0:
+            velocity -= dt * gravity[world[i]]
+        qd[i] = velocity
 
 
 @wp.kernel(enable_backward=False)
@@ -4703,29 +4700,29 @@ def _clear_inactive_mpm_proxy_particle_forces_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _rewind_mpm_proxy_bodies_kernel(
-    dt: float,
-    body_local_to_proxy_global: wp.array[int],
-    coupling_forces: wp.array[wp.spatial_vector],
-    body_q: wp.array[wp.transform],
-    body_inv_inertia: wp.array[wp.mat33],
-    body_inv_mass: wp.array[float],
-    body_qd: wp.array[wp.spatial_vector],
+def _mpm_body_momentum_kernel(
+    mass: wp.array[float],
+    inv_inertia: wp.array[wp.mat33],
+    flags: wp.array[wp.int32],
+    q: wp.array[wp.transform],
+    qd: wp.array[wp.spatial_vector],
+    accumulate: bool,
+    momentum: wp.array[wp.spatial_vector],
+    indices: wp.array[int],
 ):
-    local_body = wp.tid()
-    proxy_global = body_local_to_proxy_global[local_body]
-    if proxy_global < 0:
+    row = wp.tid()
+    i = row
+    if indices:
+        i = indices[row]
+    if mass[i] <= 0.0 or (flags[i] & int(newton.BodyFlags.KINEMATIC)) != 0:
         return
-
-    f = coupling_forces[proxy_global]
-    delta_v = dt * body_inv_mass[local_body] * wp.spatial_top(f)
-    rot = wp.transform_get_rotation(body_q[local_body])
-    delta_w = dt * wp.quat_rotate(
-        rot,
-        body_inv_inertia[local_body] * wp.quat_rotate_inv(rot, wp.spatial_bottom(f)),
-    )
-
-    body_qd[local_body] = body_qd[local_body] - wp.spatial_vector(delta_v, delta_w)
+    rot = wp.transform_get_rotation(q[i])
+    linear = wp.spatial_top(momentum[row]) / mass[i]
+    angular = wp.quat_rotate(rot, inv_inertia[i] * wp.quat_rotate_inv(rot, wp.spatial_bottom(momentum[row])))
+    if accumulate:
+        qd[i] += wp.spatial_vector(linear, angular)
+    else:
+        qd[i] = wp.spatial_vector(linear, angular)
 
 
 @wp.kernel(enable_backward=False)
@@ -4760,3 +4757,16 @@ def _harvest_mpm_proxy_wrenches_kernel(
     center = wp.transform_point(body_q[local_body], body_com[local_body])
     r = collider_impulse_pos[i] - center
     wp.atomic_add(out_body_f, proxy_global, wp.spatial_vector(f_world, wp.cross(r, f_world)))
+
+
+@wp.kernel(enable_backward=False)
+def _mpm_particle_gravity_kernel(
+    transfer_flags: wp.array[wp.int32],
+    world: wp.array[int],
+    gravity: wp.array[wp.vec3],
+    out: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    out[i] = wp.vec3(0.0)
+    if (transfer_flags[i] & int(newton.ParticleFlags.ACTIVE)) != 0:
+        out[i] = gravity[world[i]]
