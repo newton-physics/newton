@@ -549,6 +549,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         expected.update(state)
 
         def camera_images(render_model, render_state):
+            shape_sources = render_model.shape_source_ptr.numpy().copy()
             sensor = SensorCamera(
                 render_model,
                 deformable_surface_mode=SensorCamera.DeformableSurfaceMode.VISUAL_ONLY,
@@ -558,6 +559,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                     max_distance=10.0,
                 ),
             )
+            np.testing.assert_array_equal(render_model.shape_source_ptr.numpy(), shape_sources)
             rays = sensor.compute_camera_rays_pinhole(16, 16, device=render_model.device, camera_fov=math.radians(40))
             cameras = wp.array(
                 [wp.transform(wp.vec3(0.4, 0.4, 3), wp.quat_identity())], dtype=wp.transform, device=render_model.device
@@ -565,6 +567,7 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
             depth = sensor.allocate_image_depth(render_model.world_count, 16, 16)
             rgb = sensor.allocate_image_color_hdr(render_model.world_count, 16, 16)
             sensor.update(render_state, cameras, rays, depth_image=depth, hdr_color_image=rgb)
+            np.testing.assert_array_equal(render_model.shape_source_ptr.numpy(), shape_sources)
             return depth.numpy(), rgb.numpy()
 
         expected_depth, expected_rgb = camera_images(model, state)

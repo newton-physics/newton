@@ -153,7 +153,8 @@ class _DeformableGaussianRenderData:
         self.entries = wp.empty(self.first_entry + len(entries), dtype=Gaussian.Data, device=device)
         wp.copy(self.entries, model.gaussians_data, count=self.first_entry)
         wp.copy(self.entries, wp.array(entries, dtype=Gaussian.Data, device=device), dest_offset=self.first_entry)
-        shape_source_ptr = model.shape_source_ptr.numpy()
+        # Camera-local indices must not overwrite the model's CPU array.
+        shape_source_ptr = model.shape_source_ptr.numpy().copy()
         shape_source_ptr[[field.shape for field in fields]] = self.first_entry + np.arange(len(fields))
         self.shape_source_ptr = wp.array(shape_source_ptr, dtype=wp.uint64, device=device)
 

@@ -1,1 +1,1 @@
-Keep deformed Gaussian render buffers in each `SensorCamera` without changing shared asset geometry. Batch direct evaluation, retain shared `DeformableVisuals` input, and size per-ray hit storage for multiple Gaussian shapes sharing an asset.
+Keep deformed Gaussian render buffers in each `SensorCamera` without changing shared asset geometry or model shape-source indices. Batch direct evaluation, retain shared `DeformableVisuals` input, and size per-ray hit storage for multiple Gaussian shapes sharing an asset.
