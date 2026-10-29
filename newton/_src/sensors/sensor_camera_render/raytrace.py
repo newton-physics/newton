@@ -195,6 +195,9 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
                             closest_hit.normal = hit_normal
                             closest_hit.shape_index = si
                             closest_hit.color = hit_color
+                            closest_hit.face_idx = -1
+                            closest_hit.bary_u = 0.0
+                            closest_hit.bary_v = 0.0
 
         return closest_hit
 
@@ -236,6 +239,8 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
                         closest_hit.normal = hit_normal
                         closest_hit.shape_index = PARTICLES_SHAPE_ID
                         closest_hit.face_idx = si
+                        closest_hit.bary_u = 0.0
+                        closest_hit.bary_v = 0.0
 
         return closest_hit
 

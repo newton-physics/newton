@@ -22,8 +22,8 @@ class CameraLens(IntEnum):
     and aperture offset."""
 
     CUSTOM = 1
-    """No built-in projection. The rendering sensor supplies the rays as a ray
-    bundle; the camera's intrinsics are ignored."""
+    """No built-in projection. The rendering sensor supplies the rays, either as
+    a ray bundle or as a ray function; the camera's intrinsics are ignored."""
 
 
 CAMERA_DEFAULT_VERTICAL_APERTURE = 0.024

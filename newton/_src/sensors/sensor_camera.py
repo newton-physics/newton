@@ -18,13 +18,14 @@ from ..geometry.deformable_visual import DeformableVisuals
 from ..geometry.flags import ShapeFlags
 from ..sim.camera import CameraLens
 from ..utils.selection import match_labels
-from .sensor_camera_render import Utils
+from .sensor_camera_render import Utils, raytrace
 from .sensor_camera_render.camera_utils import _pinhole_pixel_ray
 from .sensor_camera_render.types import (
     AntiAliasing,
     ClearData,
     DeformableSurfaceMode,
     GaussianRenderMode,
+    RayQuery,
     RenderConfig,
     RenderOrder,
     TextureProjectionMode,
@@ -37,6 +38,15 @@ if TYPE_CHECKING:
 
 # Enable NVTX ranges / timing around SensorCamera.update() when NEWTON_PROFILE is set.
 PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
+
+
+# Render contexts shared by bound sensors are stored on the model under this attribute, keyed by
+# ``load_textures`` and ``deformable_surface_mode``, so they are released together with the model.
+_SHARED_RENDER_CONTEXTS_ATTR = "_sensor_camera_render_contexts"
+
+_HIT_TRIANGLE_MESH = int(raytrace.TRIANGLE_MESH_SHAPE_ID)
+_HIT_PARTICLES = int(raytrace.PARTICLES_SHAPE_ID)
+_HIT_NONE = int(raytrace.NO_HIT_SHAPE_ID)
 
 
 @wp.kernel(enable_backward=False)
@@ -117,6 +127,19 @@ def _fill_pinhole_bundles_kernel(
     out_rays[row, px, sample_index, 1] = _pinhole_pixel_ray(
         px, py, sample_index, sample_count, width, height, bundle_pinhole[bundle]
     )
+
+
+@wp.kernel(enable_backward=False)
+def _apply_view_mask_kernel(
+    view_world: wp.array[wp.int32],
+    view_mask: wp.array[wp.bool],
+    out_world_indices: wp.array[wp.int32],
+):
+    view = wp.tid()
+    if view_mask[view]:
+        out_world_indices[view] = view_world[view]
+    else:
+        out_world_indices[view] = wp.static(int(WorldRenderFlag.DISABLE_PRESERVE))
 
 
 def _validate_camera_ray_output(
@@ -207,6 +230,24 @@ class SensorCamera:
         ANALYTIC = 1
         """Generate pinhole rays in the render kernel from the Model's camera intrinsics."""
 
+    HIT_TRIANGLE_MESH = _HIT_TRIANGLE_MESH
+    """``shape_index_image`` value of hits on deformable triangle surfaces; ``face_index_image``
+    then holds the triangle index into :attr:`~newton.Model.tri_indices`.
+
+    .. experimental::
+    """
+    HIT_PARTICLES = _HIT_PARTICLES
+    """``shape_index_image`` value of particle hits; ``face_index_image`` then holds the particle index.
+
+    .. experimental::
+    """
+    HIT_NONE = _HIT_NONE
+    """``shape_index_image`` value of rays that hit nothing.
+
+    .. experimental::
+    """
+
+    RayQuery = RayQuery
     AntiAliasing = AntiAliasing
     ClearData = ClearData
     DeformableSurfaceMode = DeformableSurfaceMode
@@ -227,6 +268,8 @@ class SensorCamera:
         height: int | None = None,
         sample_count: int = 1,
         ray_mode: SensorCamera.RayMode | int = RayMode.PRECOMPUTED,
+        ray_function: Any = None,
+        ray_params: wp.array2d[wp.float32] | None = None,
         clipping_range: tuple[float, float] | None = None,
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
@@ -239,18 +282,35 @@ class SensorCamera:
         view per selected camera or site and world, computes view poses from the
         state, and needs no camera transforms or rays in :meth:`update`.
 
+        All bound sensors of a model with the same ``load_textures`` and
+        ``deformable_surface_mode`` values share one internal renderer, so its
+        scene state is shared too: lights, ambient light,
+        and checkerboard materials set through :meth:`create_default_light`,
+        :meth:`set_ambient_light`, or :meth:`assign_checkerboard_material` on one bound
+        sensor apply to all of them. A sensor without ``cameras`` or ``sites`` keeps
+        its own renderer and scene state.
+
+        .. experimental::
+
+            ``ray_function`` and ``ray_params``, and the sharing of scene state
+            between bound sensors, may change without a deprecation period.
+
         Args:
             model: Newton simulation model to render. The sensor builds and owns
                 its internal renderer for this model.
             cameras: Model cameras to render, by label pattern or index (see
                 :ref:`label-matching`). Mutually exclusive with ``sites``.
             sites: Sites to render from, by label pattern or index. Sites only
-                provide a frame, so rays come from :meth:`set_camera_rays` or
-                :meth:`update`'s ``camera_rays``.
+                provide a frame, so rays come from :meth:`set_camera_rays`, a
+                ``ray_function`` or :meth:`update`'s ``camera_rays``.
             width: Image width [px]; defaults to the cameras' common nominal resolution.
             height: Image height [px]; defaults to the cameras' common nominal resolution.
             sample_count: Rays per pixel of generated rays.
             ray_mode: :class:`RayMode` used for pinhole cameras.
+            ray_function: Optional ``@wp.func`` ``(params: wp.array2d[float], query:
+                SensorCamera.RayQuery) -> (origin, direction)`` evaluated in the render
+                kernel for every view.
+            ray_params: Parameter table passed to ``ray_function``.
             clipping_range: Near and far clip distance [m] for every view, measured
                 along each ray from its origin. Defaults to the cameras' clip ranges,
                 or ``(0, 1e6)`` for sites. The far
@@ -290,19 +350,38 @@ class SensorCamera:
 
         from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
 
-        self._render_context = RenderContext(
-            model,
-            load_textures=load_textures,
-            deformable_surface_mode=DeformableSurfaceMode(deformable_surface_mode),
-        )
+        deformable_surface_mode = DeformableSurfaceMode(deformable_surface_mode)
         self._bound = cameras is not None or sites is not None
         if self._bound:
-            self._bind(cameras, sites, width, height, sample_count, SensorCamera.RayMode(ray_mode), clipping_range)
+            # Bound sensors share scene data (and lights) with the other bound sensors of the model.
+            contexts = model.__dict__.setdefault(_SHARED_RENDER_CONTEXTS_ATTR, {})
+            context_key = (load_textures, deformable_surface_mode)
+            render_context = contexts.get(context_key)
+            if render_context is None:
+                render_context = contexts[context_key] = RenderContext(
+                    model, load_textures=load_textures, deformable_surface_mode=deformable_surface_mode
+                )
+            self._render_context = render_context
+            self._bind(
+                cameras,
+                sites,
+                width,
+                height,
+                sample_count,
+                SensorCamera.RayMode(ray_mode),
+                ray_function,
+                ray_params,
+                clipping_range,
+            )
+        else:
+            self._render_context = RenderContext(
+                model, load_textures=load_textures, deformable_surface_mode=deformable_surface_mode
+            )
 
     # ------------------------------------------------------------------
     # Bound sensors (model cameras and sites)
 
-    def _bind(self, cameras, sites, width, height, sample_count, ray_mode, clipping_range):
+    def _bind(self, cameras, sites, width, height, sample_count, ray_mode, ray_function, ray_params, clipping_range):
         model = self._render_context.model
         if cameras is not None and sites is not None:
             raise ValueError("cameras and sites are mutually exclusive")
@@ -366,7 +445,10 @@ class SensorCamera:
         self._view_frame_np = np.asarray(view_frame, dtype=np.int32)
         self._view_lens_np = np.asarray([frame_lens[f] for f in view_frame], dtype=np.int32)
         self._ray_mode = ray_mode
+        self._ray_function = ray_function
+        self._ray_params = ray_params if ray_params is not None else wp.zeros((1, 1), dtype=wp.float32, device=device)
         self._view_transforms = wp.zeros(self.view_count, dtype=wp.transformf, device=device)
+        self._world_indices = wp.zeros(self.view_count, dtype=wp.int32, device=device)
         self._view_clip = wp.zeros(self.view_count, dtype=wp.vec2f, device=device)
         self._clip_override = clipping_range
         if clipping_range is None and self._from_sites:
@@ -378,8 +460,9 @@ class SensorCamera:
             self._view_clip.fill_(wp.vec2f(near, far))
         self._view_pinhole = wp.zeros(self.view_count, dtype=wp.vec4f, device=device)
 
-        if ray_mode == SensorCamera.RayMode.ANALYTIC and np.any(self._view_lens_np != int(CameraLens.PINHOLE)):
-            raise ValueError("RayMode.ANALYTIC needs PINHOLE cameras; use RayMode.PRECOMPUTED with set_camera_rays")
+        if ray_mode == SensorCamera.RayMode.ANALYTIC and ray_function is None:
+            if np.any(self._view_lens_np != int(CameraLens.PINHOLE)):
+                raise ValueError("RayMode.ANALYTIC needs PINHOLE cameras; use set_camera_rays or a ray_function")
 
         # Precomputed bundles: pinhole lens groups first, custom bundles appended by set_camera_rays().
         self._view_bundle_np = np.full(self.view_count, -1, dtype=np.int32)
@@ -389,7 +472,7 @@ class SensorCamera:
         self._custom_row_offset = 0  # bundle index of the first custom slot in _camera_rays
         self._camera_rays: wp.array | None = None
         self._view_ray_bundle = wp.zeros(self.view_count, dtype=wp.int32, device=device)
-        if ray_mode == SensorCamera.RayMode.PRECOMPUTED:
+        if ray_function is None and ray_mode == SensorCamera.RayMode.PRECOMPUTED:
             self.sync_camera_rays()
 
     @property
@@ -729,6 +812,27 @@ class SensorCamera:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
         """
         return self.allocate_image(view_count, width, height, wp.vec3f)
+
+    def allocate_image_face_index(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.int32]:
+        """Allocate a face-index output array (``int32``, ``-1`` where nothing is hit).
+
+        Holds the triangle index for deformable-surface hits, the face index for mesh
+        hits and the particle index for particle hits.
+
+        .. experimental::
+        """
+        return self.allocate_image(view_count, width, height, wp.int32)
+
+    def allocate_image_barycentric(
+        self, view_count: int | None = None, width: int | None = None, height: int | None = None
+    ) -> wp.array3d[wp.vec2f]:
+        """Allocate a barycentric-coordinate output array (``vec2f``) for triangle hits.
+
+        .. experimental::
+        """
+        return self.allocate_image(view_count, width, height, wp.vec2f)
 
     @staticmethod
     def compute_camera_rays_pinhole(
@@ -1289,6 +1393,9 @@ class SensorCamera:
     ) -> None:
         """Create a default directional light for the rendered scene.
 
+        On a bound sensor the light is shared with every bound sensor of the model
+        that uses the same ``load_textures`` and ``deformable_surface_mode`` settings.
+
         Args:
             enable_shadows: Enable shadow casting for this light. Shadows are
                 only rendered when the render config also enables them, i.e.
@@ -1314,7 +1421,9 @@ class SensorCamera:
         Surfaces facing the model's up axis receive *sky_color*, surfaces facing
         away receive *ground_color*, and other orientations blend between the
         two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
-        Changing the colors does not recompile the render kernel.
+        Changing the colors does not recompile the render kernel. On a bound sensor
+        the ambient light is shared with every bound sensor of the model that uses
+        the same ``load_textures`` and ``deformable_surface_mode`` settings.
 
         Args:
             sky_color: Linear RGB ambient radiance from above.
@@ -1335,6 +1444,9 @@ class SensorCamera:
         Each call sets the whole selection: the selected shapes show the
         checkerboard and every other shape is untextured. Skinned visual
         meshes keep their textures.
+
+        On a bound sensor the material is shared with every bound sensor of the
+        model that uses the same ``load_textures`` and ``deformable_surface_mode`` settings.
 
         Args:
             shape_indices: Shape indices that should use the checkerboard texture.
@@ -1411,6 +1523,9 @@ class SensorCamera:
         clear_data: ClearData | None = None,
         render_config: RenderConfig | None = None,
         sync_deformables: bool = True,
+        view_mask: wp.array[wp.bool] | None = None,
+        face_index_image: wp.array3d[wp.int32] | None = None,
+        barycentric_image: wp.array3d[wp.vec2f] | None = None,
         deformable_visuals: DeformableVisuals | None = None,
     ) -> None:
         """Render this camera sensor.
@@ -1478,6 +1593,26 @@ class SensorCamera:
                 to :meth:`sync_deformable_meshes` explicitly. Update or replay
                 supplied buffers before rendering; their freshness is not checked.
 
+            view_mask: Per-view render switch, shape ``(view_count,)`` of ``bool``.
+                Views set to ``False`` are skipped and keep their previous output
+                values. Requires a sensor constructed with ``cameras`` or
+                ``sites`` and cannot be combined with ``world_indices``.
+
+                .. experimental::
+            face_index_image: Output hit-element index (``int32``): the triangle
+                index into :attr:`~newton.Model.tri_indices` for deformable-surface
+                hits, the mesh face index for mesh shapes, the particle index for
+                particle hits, and ``-1`` for other shapes (analytic primitives,
+                Gaussians) and where nothing is hit.
+
+                .. experimental::
+            barycentric_image: Output barycentric coordinates ``(u, v)`` of
+                triangle hits (``vec2f``), with the hit point at
+                ``u * p0 + v * p1 + (1 - u - v) * p2``; ``(0, 0)`` for other hits
+                and where nothing is hit.
+
+                .. experimental::
+
         Raises:
             ValueError: If ``deformable_visuals`` is given with
                 ``sync_deformables=False``, plus the :meth:`sync_deformable_meshes`
@@ -1510,13 +1645,18 @@ class SensorCamera:
                 normal_image=normal_image,
                 albedo_image=albedo_image,
                 hdr_color_image=hdr_color_image,
+                face_index_image=face_index_image,
+                barycentric_image=barycentric_image,
                 world_indices=world_indices,
+                view_mask=view_mask,
                 clear_data=clear_data,
                 render_config=render_config,
             )
             return
         if camera_transforms is None or camera_rays is None:
             raise ValueError("camera_transforms and camera_rays are required for sensors without cameras or sites")
+        if view_mask is not None:
+            raise ValueError("view_mask requires a sensor constructed with cameras or sites")
 
         self._validate_render_array("camera_transforms", camera_transforms, wp.transformf, model.device)
         if camera_transforms.ndim != 1 or camera_transforms.shape[0] <= 0:
@@ -1552,6 +1692,8 @@ class SensorCamera:
                 shape_index_image=shape_index_image,
                 normal_image=normal_image,
                 albedo_image=albedo_image,
+                face_index_image=face_index_image,
+                barycentric_image=barycentric_image,
                 clear_data=clear_data if clear_data is not None else self.default_clear_data,
                 config=render_config if render_config is not None else self.default_render_config,
             )
@@ -1563,6 +1705,7 @@ class SensorCamera:
         camera_rays,
         *,
         world_indices,
+        view_mask,
         clear_data,
         render_config,
         **outputs,
@@ -1586,12 +1729,30 @@ class SensorCamera:
 
         if world_indices is None:
             world_indices = self.view_world
+            if view_mask is not None:
+                if view_mask.shape != (self.view_count,) or view_mask.dtype != wp.bool:
+                    raise ValueError(f"view_mask must be a bool array of shape ({self.view_count},)")
+                wp.launch(
+                    _apply_view_mask_kernel,
+                    dim=self.view_count,
+                    inputs=[self.view_world, view_mask],
+                    outputs=[self._world_indices],
+                    device=self.device,
+                )
+                world_indices = self._world_indices
+        elif view_mask is not None:
+            raise ValueError("Pass either world_indices or view_mask, not both")
 
-        ray_kwargs: dict[str, Any] = {"image_size": (self.width, self.height)}
+        ray_kwargs: dict[str, Any] = {"image_size": (self.width, self.height), "view_frame": self.view_camera}
         if camera_rays is not None:
             ray_kwargs["sample_count"] = int(camera_rays.shape[2])
             if tuple(camera_rays.shape[:2]) != (self.height, self.width):
                 raise ValueError(f"camera_rays must have shape ({self.height}, {self.width}, sample_count, 2)")
+        elif self._ray_function is not None:
+            camera_rays = self._placeholder_rays()
+            ray_kwargs.update(
+                sample_count=self.sample_count, ray_function=self._ray_function, ray_params=self._ray_params
+            )
         elif self._ray_mode == SensorCamera.RayMode.ANALYTIC:
             self._compute_pinhole_params(self._view_pinhole)
             camera_rays = self._placeholder_rays()

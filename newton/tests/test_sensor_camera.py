@@ -24,6 +24,20 @@ from newton.tests.unittest_utils import get_test_devices
 _IDENTITY_XFORM = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32)
 
 
+@wp.func
+def _parallel_ray_function(params: wp.array2d[wp.float32], query: SensorCamera.RayQuery):
+    """Parallel rays over a 2 m x 2 m window, facing -Z for one camera in one world and +Z elsewhere.
+
+    ``params[0, 0]`` holds the facing camera and ``params[1, 0]`` its world.
+    """
+    x = (float(query.x) + 0.5) / float(query.width) * 2.0 - 1.0
+    y = 1.0 - (float(query.y) + 0.5) / float(query.height) * 2.0
+    direction = wp.vec3f(0.0, 0.0, 1.0)
+    if query.camera == wp.int32(params[0, 0]) and query.world == wp.int32(params[1, 0]):
+        direction = wp.vec3f(0.0, 0.0, -1.0)
+    return wp.vec3f(x, y, 0.0), direction
+
+
 class TestSensorCamera(unittest.TestCase):
     @staticmethod
     def _rays(width: int, height: int, fov: float = math.radians(45.0), device: str = "cpu") -> wp.array4d[wp.vec3f]:
@@ -1067,7 +1081,7 @@ class TestSensorCamera(unittest.TestCase):
         self.assertTrue(all(float(depth.numpy()[v][center]) > 0.0 for v in range(2)))
 
     def test_bound_camera_outputs(self) -> None:
-        """Verify bound-sensor depth for hits and misses in every world across anti-aliasing modes."""
+        """Verify bound-sensor outputs for hits, misses, and masked views across anti-aliasing modes."""
         # A quad 2 m in front of a global camera, replicated into two worlds: the image center hits
         # the quad and the corners miss it.
         world = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -1098,13 +1112,36 @@ class TestSensorCamera(unittest.TestCase):
                     )
                     np.testing.assert_array_equal(camera.view_world.numpy(), [0, 1])
                     depth = camera.allocate_image_depth()
-                    camera.update(state, depth_image=depth)
+                    face = wp.full((2, height, width), 7, dtype=wp.int32, device=device)
+                    bary = wp.full((2, height, width), wp.vec2f(9.0, 9.0), dtype=wp.vec2f, device=device)
+                    mask = wp.array([True, False], dtype=wp.bool, device=device)
+                    camera.update(
+                        state, depth_image=depth, face_index_image=face, barycentric_image=bary, view_mask=mask
+                    )
 
-                    depth_np = depth.numpy()
-                    for view in range(2):
-                        # Hit: depth to the quad. Miss: the clear value.
-                        self.assertAlmostEqual(float(depth_np[view][center]), 2.0, delta=0.05)
-                        self.assertEqual(float(depth_np[view][corner]), 0.0)
+                    face_np, bary_np, depth_np = face.numpy(), bary.numpy(), depth.numpy()
+                    # Hit: a face of the quad, barycentrics inside the triangle, depth to the quad.
+                    self.assertIn(int(face_np[0][center]), (0, 1))
+                    b = bary_np[0][center]
+                    self.assertTrue(np.all(b >= 0.0) and b.sum() <= 1.0 + 1e-5)
+                    self.assertAlmostEqual(float(depth_np[0][center]), 2.0, delta=0.05)
+                    # Miss: the clear values.
+                    self.assertEqual(int(face_np[0][corner]), -1)
+                    np.testing.assert_array_equal(bary_np[0][corner], [0.0, 0.0])
+                    self.assertEqual(float(depth_np[0][corner]), 0.0)
+                    # Masked view: outputs keep their previous values.
+                    self.assertTrue(np.all(face_np[1] == 7))
+                    self.assertTrue(np.all(bary_np[1] == 9.0))
+
+            # Bound sensors share a renderer only when their scene settings match.
+            surfaces = SensorCamera.DeformableSurfaceMode
+            both = SensorCamera(model, cameras="cam", width=width, height=height)
+            both_again = SensorCamera(model, cameras="cam", width=width, height=height)
+            visual = SensorCamera(
+                model, cameras="cam", width=width, height=height, deformable_surface_mode=surfaces.VISUAL_ONLY
+            )
+            self.assertIs(both._render_context, both_again._render_context)
+            self.assertIsNot(both._render_context, visual._render_context)
 
     def test_bound_camera_ray_sources(self) -> None:
         """Verify analytic, precomputed, custom and site rays, clip ranges, and that custom rays are copied."""
@@ -1166,6 +1203,46 @@ class TestSensorCamera(unittest.TestCase):
                 camera = SensorCamera(model, sites="site", width=width, height=height)
                 camera.set_camera_rays(hit_rays)
                 self.assertAlmostEqual(float(render(camera)[0][center]), 2.0, delta=0.05)
+
+    def test_bound_camera_ray_function(self) -> None:
+        """Verify a ray function receives each view's camera, world, pixel and sample, and its parameters."""
+        # A quad 2 m in front of the cameras, replicated into two worlds.
+        world = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
+        world.add_shape_mesh(-1, mesh=newton.Mesh(quad.astype(np.float32), [0, 1, 2, 0, 2, 3]))
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_camera(-1, lens=newton.CameraLens.CUSTOM, label="cam_a")
+        builder.add_camera(-1, lens=newton.CameraLens.CUSTOM, label="cam_b")
+        builder.replicate(world, 2)
+        width, height = 8, 8
+        center, corner = (height // 2, width // 2), (0, 0)
+        for device in get_test_devices():
+            model = builder.finalize(device=device)
+            state = model.state()
+            # Row 0 holds the camera whose rays face the quad, row 1 the world it does so in.
+            params = wp.array([[1.0], [1.0]], dtype=wp.float32, device=device)
+            for mode, samples in ((SensorCamera.AntiAliasing.NONE, 1), (SensorCamera.AntiAliasing.SSAA, 4)):
+                with self.subTest(device=str(device), anti_aliasing=mode.name):
+                    camera = SensorCamera(
+                        model,
+                        cameras="*",
+                        width=width,
+                        height=height,
+                        sample_count=samples,
+                        ray_function=_parallel_ray_function,
+                        ray_params=params,
+                        default_render_config=SensorCamera.RenderConfig(anti_aliasing=mode),
+                    )
+                    depth = camera.allocate_image_depth()
+                    camera.update(state, depth_image=depth)
+                    depth_np = depth.numpy()
+                    view_camera, view_world = camera.view_camera.numpy(), camera.view_world.numpy()
+                    for view in range(camera.view_count):
+                        facing = view_camera[view] == 1 and view_world[view] == 1
+                        # Parallel rays spread over [-1, 1] m hit the quad at the center and miss at the corners.
+                        expected = 2.0 if facing else 0.0
+                        self.assertAlmostEqual(float(depth_np[view][center]), expected, delta=0.05, msg=f"view {view}")
+                        self.assertEqual(float(depth_np[view][corner]), 0.0)
 
     def test_camera_aperture_follows_image_aspect(self) -> None:
         """Verify apertures keep the camera's pixel aspect ratio at any image aspect ratio."""
