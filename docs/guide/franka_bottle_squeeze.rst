@@ -61,6 +61,13 @@ iteration count improves the solve without changing the supplied 3 GPa modulus.
 Because the fingers are kinematic, their prescribed closing motion can crush
 even a stiff shell; this example does not enforce a gripper force limit.
 
+``--shell-damping`` controls an additional mass-proportional numerical force
+:math:`\mathbf{f}_i = -c m_i \mathbf{v}_i` on the PET vertices, with
+:math:`c = 2\,\mathrm{s}^{-1}` by default. Use ``--shell-damping 0`` to disable
+this force. It changes transient settling while keeping the authored Young's
+modulus, yield stress, masses and plasticity law unchanged. This is an
+illustrative settling control, not calibrated PET viscosity or air drag.
+
 Each finger carries an aluminum squeeze plate with a 60 mm vertical extent,
 48 mm horizontal extent, and 3 mm thickness. The same body-local box geometry
 is used for collision and rendering. The contact faces are flush with the

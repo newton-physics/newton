@@ -89,6 +89,12 @@ def _advance_clock(clock: wp.array[float], dt: float):
 
 
 @wp.kernel
+def _damp_shell(velocities: wp.array[wp.vec3], masses: wp.array[float], damping: float, forces: wp.array[wp.vec3]):
+    i = wp.tid()
+    forces[i] -= damping * masses[i] * velocities[i]
+
+
+@wp.kernel
 def _scale_positions(source: wp.array[wp.vec3], output: wp.array[wp.vec3]):
     i = wp.tid()
     output[i] = 0.01 * source[i]
@@ -333,6 +339,8 @@ class Example:
         ):
             if not np.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
                 raise ValueError(f"{name.replace('_', '-')} must be finite and positive")
+        if not np.isfinite(args.shell_damping) or args.shell_damping < 0.0:
+            raise ValueError("shell-damping must be finite and nonnegative")
         if args.segments < 12 or args.rings < 12:
             raise ValueError("segments and rings must each be at least 12")
         if args.cuda_graph and args.substeps % 2:
@@ -363,6 +371,7 @@ class Example:
         self.sim_time = 0.0
         self.sim_substeps = args.substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
+        self.shell_damping = args.shell_damping
         self.plasticity = args.plasticity
         self.show_particles = args.show_particles
         self.bottle_opacity = args.bottle_opacity
@@ -642,6 +651,18 @@ class Example:
         )
         newton.eval_fk(self.model, self.joint_q, self.joint_qd, self.state_1)
         self.state_0.clear_forces()
+        if self.shell_damping:
+            wp.launch(
+                _damp_shell,
+                self.model.particle_count,
+                inputs=[
+                    self.state_0.particle_qd,
+                    self.model.particle_mass,
+                    self.shell_damping,
+                    self.state_0.particle_f,
+                ],
+                device=self.model.device,
+            )
         self.collision_pipeline.collide(self.state_0, self.contacts)
         self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
         self.state_0, self.state_1 = self.state_1, self.state_0
@@ -812,6 +833,12 @@ class Example:
         parser.add_argument("--rings", type=int, default=56)
         parser.add_argument("--substeps", type=int, default=8)
         parser.add_argument("--vbd-iterations", type=int, default=320)
+        parser.add_argument(
+            "--shell-damping",
+            type=float,
+            default=2.0,
+            help="Mass-proportional numerical damping [1/s]; zero disables it (not calibrated PET)",
+        )
         parser.add_argument("--fluid-iterations", type=int, default=8)
         parser.add_argument(
             "--minimum-opening",
