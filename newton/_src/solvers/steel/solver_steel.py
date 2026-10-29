@@ -4260,8 +4260,6 @@ class SolverSteel(SolverBase):
             and not self._has_free_rigid_bodies
             and not self._regularization_enabled
             and not self._contact_torsion_enabled
-            # The sparse-diagonal solve does not add the compliant residual term.
-            and not self._contact_compliance
             and self._mimic_count == 0
             and self._connect_count == 0
             and self._has_owned_dof_topology(model)
@@ -5437,6 +5435,7 @@ class SolverSteel(SolverBase):
                 device_arch,
                 contact_triples=triples,
                 speculative_contact_batches=self._sparse_diagonal_speculative_contact_batches,
+                contact_compliance=self._contact_compliance,
             )
             if self._sparse_diagonal_contact_solve
             else None
@@ -6008,6 +6007,7 @@ class SolverSteel(SolverBase):
                 self._fused_diagonal_limit_upper_rhs,
                 self._diagonal_inverse_mass,
                 self._cfm,
+                self._compliance.dense_gamma if self._compliance is not None else self._compliance_off_gamma,
                 int(iterations),
                 self._relaxation,
                 int(friction_start_iteration),
@@ -12241,7 +12241,6 @@ def _get_paired_hinv_jt_kernel(
     )
 
 
-@cache
 def _replace_once(source: str, old: str, new: str) -> str:
     """Replace one required generated-source fragment."""
     if source.count(old) != 1:
@@ -12249,6 +12248,7 @@ def _replace_once(source: str, old: str, new: str) -> str:
     return source.replace(old, new)
 
 
+@cache
 def _get_pgs_solve_paired_factor_kernel(
     max_constraints: int,
     max_world_dofs: int,
@@ -20583,6 +20583,7 @@ def _get_pgs_solve_sparse_diagonal_kernel(
     *,
     contact_triples: bool = False,
     speculative_contact_batches: bool = False,
+    contact_compliance: bool = False,
 ) -> "wp.Kernel":
     """Build the Gauss-Seidel kernel of sparse-diagonal worlds, one warp per world.
 
@@ -21055,6 +21056,28 @@ def _get_pgs_solve_sparse_diagonal_kernel(
 """
     snippet = snippet.replace("#if defined(__CUDA_ARCH__)", "#if defined(__CUDA_ARCH__)\n" + FRICTION_PAIR_CUDA, 1)
 
+    if contact_compliance:
+        # Compliant contact normals add gamma * lambda to their residual in each sweep.
+        snippet = _replace_once(
+            snippet,
+            "const float residual = __fadd_rn(normal_jv, s_rhs[normal]);",
+            "const float residual = __fadd_rn(normal_jv,\n"
+            "                        s_rhs[normal] + compliance_gamma.data[row_base + normal] * s_lambda[normal]);",
+        )
+        snippet = _replace_once(
+            snippet,
+            "* (candidate_velocity + s_rhs[candidate_normal]) / denominator;",
+            "* (candidate_velocity + s_rhs[candidate_normal]\n"
+            "                                + compliance_gamma.data[row_base + candidate_normal] * old_impulse)\n"
+            "                                / denominator;",
+        )
+        snippet = _replace_once(
+            snippet,
+            "            const float residual = velocity + s_rhs[row];\n",
+            f"            const float residual = velocity + (row_type == {int(PGS_CONSTRAINT_TYPE_CONTACT)}\n"
+            "                ? s_rhs[row] + compliance_gamma.data[row_base + row] * s_lambda[row] : s_rhs[row]);\n",
+        )
+
     @wp.func_native(snippet)
     def pgs_solve_sparse_diagonal_native(
         world: int,
@@ -21082,6 +21105,7 @@ def _get_pgs_solve_sparse_diagonal_kernel(
         fused_limit_upper_rhs: wp.array2d[float],
         diagonal_inverse_mass: wp.array[float],
         fused_limit_cfm: float,
+        compliance_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         friction_start_iteration: int,
@@ -21116,6 +21140,7 @@ def _get_pgs_solve_sparse_diagonal_kernel(
         fused_limit_upper_rhs: wp.array2d[float],
         diagonal_inverse_mass: wp.array[float],
         fused_limit_cfm: float,
+        compliance_gamma: wp.array2d[float],
         iterations: int,
         omega: float,
         friction_start_iteration: int,
@@ -21151,6 +21176,7 @@ def _get_pgs_solve_sparse_diagonal_kernel(
             fused_limit_upper_rhs,
             diagonal_inverse_mass,
             fused_limit_cfm,
+            compliance_gamma,
             iterations,
             omega,
             friction_start_iteration,
@@ -21165,6 +21191,8 @@ def _get_pgs_solve_sparse_diagonal_kernel(
         name += "_contact_groups"
     if speculative_contact_batches:
         name += "_speculative_batches"
+    if contact_compliance:
+        name += "_compliance"
     pgs_solve_sparse_diagonal_template.__name__ = name
     pgs_solve_sparse_diagonal_template.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(
