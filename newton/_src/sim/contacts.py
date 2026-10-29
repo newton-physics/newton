@@ -592,13 +592,22 @@ class Contacts:
         body-pair contact reduction.  Assigned on every
         :meth:`newton.CollisionPipeline.collide` call from the pipeline's mode
         (never a sticky observation), and checked by solvers or solver
-        configurations that require unreduced buffers."""
+        configurations that require unreduced buffers.
+
+        .. experimental::
+        """
         self.rigid_contacts_body_pair_reduced_capture = False
         """Whether a CUDA graph captured a body-pair reducer writing this buffer.
 
         Replay is invisible to host-side provenance, so this stays true across :meth:`clear` until
         :meth:`release_graph_capture`.
+
+        .. experimental::
         """
+        self._body_pair_reducer_bound = False
+        # Set once a body-pair reducer has written this buffer; before that, solver steps track no capture lease.
+        self._unreduced_capture_seen = False
+        # Set when a Warp capture recorded an unreduced-only solver step before any reducer wrote this buffer.
         self._graph_capture_role: str | None = None
         self._graph_capture_writer_token: object | None = None
         self._graph_capture_writer_owner: weakref.ref | None = None
@@ -685,6 +694,8 @@ class Contacts:
 
         Call it only after destroying every such graph, including graphs that embed one (for example via
         ``wp.capture_if``); Newton sees only the graph a capture ran under.
+
+        .. experimental::
         """
         if self.device.is_cuda and self.device.is_capturing:
             raise RuntimeError(
@@ -701,6 +712,7 @@ class Contacts:
         self._graph_capture_role = None
         self._graph_capture_writer_token = None
         self._graph_capture_writer_owner = None
+        self._unreduced_capture_seen = False
         self.rigid_contacts_body_pair_reduced_capture = False
 
     def clear(self, bump_generation: bool = True):

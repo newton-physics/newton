@@ -1457,7 +1457,7 @@ class SolverSteel(SolverBase):
     )
 
     # The default configuration is conformance-tested against body-pair-reduced contact buffers
-    # (test_contact_reduction_body_pairs). Compliance and warm start reject them in step().
+    # (test_contact_reduction_body_pairs). Contact compliance rejects them in step(); warm start accepts them.
     supports_body_pair_reduced_contacts: bool = True
 
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.

@@ -139,8 +139,6 @@ replaces the contents.
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 import warp as wp
 
@@ -1793,19 +1791,11 @@ class BodyPairContactReducer:
         world_count: int = 1,
     ):
         self.rigid_contact_max = rigid_contact_max
-        # Validate at KERNEL precision: the kernels receive float32, so a
-        # host-side double like 1e-50 would pass a double check and reach the
-        # cell division as zero, and a large finite double becomes inf.
+        # CollisionPipeline.ContactReductionConfig validates these at float32 precision.
         self.cell_size = float(np.float32(cell_size))
-        if not (math.isfinite(self.cell_size) and self.cell_size > 0.0):
-            raise ValueError(f"cell_size must be finite and positive in float32, got {cell_size}")
         self.device = device
         self.hysteresis = float(np.float32(hysteresis))
-        if not (math.isfinite(self.hysteresis) and self.hysteresis >= 0.0):
-            raise ValueError(f"hysteresis must be finite and non-negative in float32, got {hysteresis}")
         hashtable_headroom = float(hashtable_headroom)
-        if not (math.isfinite(hashtable_headroom) and hashtable_headroom > 0.0):
-            raise ValueError(f"hashtable_headroom must be finite and positive, got {hashtable_headroom}")
         # Per-shape reduction-group ids from build_reduction_groups (material-
         # equivalence classes), and the exact rotation mapping the model's up
         # axis into the bin table's Z-up frame.
@@ -2386,8 +2376,6 @@ class BodyPairContactReducer:
             counts trigger events, not kept contacts. A failure can mean a full
             table or a long hash cluster; sustained non-zero values usually
             call for a larger ``hashtable_headroom``, but inspect occupancy too.
-            ``failed_insertions`` is retained as a backwards-compatible alias
-            for the same value; it does not imply that the table was full.
             ``outranked_discards``: discarded contacts that out-rank their
             slot's recorded winner (verify mode only); non-zero means an atomic
             lost an update.
@@ -2436,7 +2424,6 @@ class BodyPairContactReducer:
         return {
             "invariant_violations": int(v64[STAT64_INVARIANT_VIOLATIONS]),
             "probe_failures": probe_failures,
-            "failed_insertions": probe_failures,
             "outranked_discards": int(v64[STAT64_OUTRANKED_DISCARDS]),
             "cell_clamp_events": int(v64[STAT64_CELL_CLAMP_EVENTS]),
             "max_contacts_in": int(v[STAT_CONTACTS_IN]),

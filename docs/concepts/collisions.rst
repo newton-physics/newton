@@ -1313,9 +1313,10 @@ rim points can strengthen torsional friction.
 
 The hysteresis margin keeps the previous winners unless a new contact beats
 them by more than the margin, which stops the kept set from churning on curved
-or mesh supports. Call :meth:`~CollisionPipeline.reset_body_pair_reduction_history`
-after resets or teleports, and :meth:`~CollisionPipeline.refresh_body_pair_reduction_groups`
-after changing shape materials at runtime. :meth:`~CollisionPipeline.body_pair_reduction_stats`
+or mesh supports. Call :meth:`~CollisionPipeline.reset_contact_matching` and the
+solver's ``reset()`` after resets or teleports, and
+:meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` after changing shape
+materials at runtime. :meth:`~CollisionPipeline.body_pair_reduction_stats`
 reports the input and kept totals; keep the pass off when it doesn't reduce the
 end-to-end step time.
 
@@ -1326,10 +1327,16 @@ warm start with ``contact_matching="latest"``. Body-pair reduction requires the
 mesh/heightfield producer reduction to stay on, and it doesn't support
 ``contact_matching="sticky"`` or hydroelastic contacts.
 
-CUDA graph capture binds the captured ``Contacts`` buffer to the reducer (or, for a
-solver that rejects reduced contacts, to that solver) until
+Before capturing a reducing ``collide`` in a CUDA graph, run one ordinary
+``pipeline.collide`` on the same ``Contacts`` buffer; capturing a buffer that has
+not been collided raises ``RuntimeError``. Capture binds the buffer to the reducer
+(or, for a solver that rejects reduced contacts, to that solver) until
 :meth:`~Contacts.release_graph_capture`. Call it after destroying every graph that
-captured the buffer, including graphs that embed one.
+captured the buffer, including graphs that embed one. Newton tracks captures made
+through Warp's capture API (``wp.capture_begin``, ``wp.ScopedCapture``); a step
+captured outside it on a buffer no reducer has written is not tracked.
+
+This body-pair reduction API is experimental and may change without prior notice.
 
 **Configuring contact reduction (HydroelasticSDF.Config):**
 

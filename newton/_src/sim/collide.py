@@ -1508,10 +1508,7 @@ class CollisionPipeline:
                 generated.  This is the behavior selected by the legacy
                 ``reduce_contacts=True`` value and is supported by every
                 solver.  It is automatically inactive when the scene has no
-                colliding mesh or heightfield shapes; inspect
-                ``pipeline.mesh_contact_reduction_enabled`` for that effective
-                state while ``pipeline.reduce_contacts`` preserves the
-                requested legacy policy.
+                colliding mesh or heightfield shapes.
             body_pairs: Post-reduce materialized ordinary contacts by body-pair
                 patch.  This is intended for compound bodies made from many
                 colliders and is currently supported by
@@ -1563,6 +1560,11 @@ class CollisionPipeline:
         runtime material changes.  CUDA graph capture requires one ordinary
         warm-up collide on the exact buffer before capture and binds the buffer to
         one reducer graph until :meth:`Contacts.release_graph_capture`.
+
+        .. experimental::
+
+            Body-pair reduction and its configuration fields may change without
+            prior notice.
         """
 
         mesh: bool = True
@@ -1737,11 +1739,7 @@ class CollisionPipeline:
             narrow_phase: Optional prebuilt narrow phase instance. Must be
                 provided together with a broad phase instance for expert usage.
                 Its effective ``reduce_contacts`` state is authoritative for
-                the mesh/heightfield producer stage; the pipeline exposes that
-                state through ``pipeline.mesh_contact_reduction_enabled``.
-                ``pipeline.reduce_contacts`` and
-                ``pipeline.contact_reduction_config.mesh`` retain the requested
-                policy for backwards-compatible inspection.
+                the mesh/heightfield producer stage.
                 If its voxel-resolution table is omitted, use the model's table.
                 A supplied table must match the model's shape count and device.
             shape_pairs_filtered: Precomputed shape pairs for EXPLICIT mode.
@@ -1941,6 +1939,12 @@ class CollisionPipeline:
         # effective state is exposed separately after its construction.
         self.reduce_contacts = reduction_config.mesh
         self.contact_reduction_config = reduction_config
+        """Requested contact-reduction stages.
+
+        .. experimental::
+
+            Body-pair reduction may change without prior notice.
+        """
         self.requires_grad = requires_grad
         self.include_static_kinematic_pairs = include_static_kinematic_pairs
         self.speculative_contact_gap_max = speculative_contact_gap_max
@@ -2270,14 +2274,10 @@ class CollisionPipeline:
 
         # NarrowPhase is authoritative for the producer stage: it disables
         # mesh/heightfield reduction when no such collision path exists, and
-        # expert construction may provide a preconfigured instance.  Publish
-        # the effective state separately from the released requested-policy
-        # ``reduce_contacts`` attribute.
-        self.mesh_contact_reduction_enabled = bool(self.narrow_phase.reduce_contacts)
-
+        # expert construction may provide a preconfigured instance.
         if (
             self.contact_reduction_config.body_pairs
-            and not self.mesh_contact_reduction_enabled
+            and not self.narrow_phase.reduce_contacts
             and (self.narrow_phase.has_meshes or self.narrow_phase.has_heightfields)
         ):
             raise ValueError(
@@ -2581,6 +2581,12 @@ class CollisionPipeline:
         material changes, not per-frame use.  Call it outside CUDA graph capture.
         Raises if the new class count exceeds the group-id budget.  No-op when
         reduction is disabled.
+
+        The group-pair table keeps the capacity sized at construction. If the
+        new classes exhaust it, the affected frames keep every contact; check
+        ``body_pair_reduction_stats()["fallback_frames"]`` after a material split.
+
+        .. experimental::
         """
         if self._body_pair_reducer is None:
             return
@@ -2601,30 +2607,6 @@ class CollisionPipeline:
         if self._contact_matcher is not None:
             self._contact_matcher.reset()
 
-    def reset_body_pair_reduction_history(self, world_mask=None):
-        """Erase the body-pair reduction's hysteresis history.
-
-        With ``ContactReductionConfig.body_pair_hysteresis > 0`` the pipeline carries
-        last step's slot winners between :meth:`collide` calls. This method
-        clears only that reduction history. For episode resets, teleports or
-        scene reloads, call :meth:`reset_contact_matching` and the solver's
-        reset method to also invalidate matched contacts and cached impulses.
-        No-op when reduction or hysteresis is disabled.
-
-        Args:
-            world_mask: ``None`` erases everything (host-side; call outside
-                CUDA graph capture).  Otherwise a length-``model.world_count``
-                1-D mask whose nonzero entries select the worlds to reset:
-                either an int32 device array -- a single fixed-size kernel
-                launch that may be recorded inside a CUDA graph with the
-                caller rewriting the mask buffer each step, for
-                per-environment resets in vectorized RL -- or a host integer
-                array (any integer width; nonzero selects), which is
-                normalized and uploaded and must stay outside capture.
-        """
-        if self._body_pair_reducer is not None:
-            self._body_pair_reducer.reset_history(world_mask)
-
     def body_pair_reduction_stats(self) -> dict:
         """Whole-run telemetry of the body-pair contact reduction.
 
@@ -2639,8 +2621,7 @@ class CollisionPipeline:
         * ``probe_failures`` -- group-table keys that could not be found or
           created within the bounded probe budget; each flags its whole frame
           for the keep-all fallback (trigger events, not kept contacts). This
-          can mean a full table or a long hash cluster. ``failed_insertions``
-          remains a backwards-compatible alias for the same value.
+          can mean a full table or a long hash cluster.
         * ``cell_clamp_events`` -- contacts whose spatial cell hit the packed
           coordinate range.
         * ``max_contacts_in`` / ``max_contacts_kept`` -- independent peak
@@ -2657,6 +2638,8 @@ class CollisionPipeline:
           sum_contacts_in`` is the achieved reduction ratio.  Overflow frames
           count toward ``total_frames`` but are excluded from both sums.
 
+        .. experimental::
+
         Raises:
             RuntimeError: If body-pair contact reduction is not enabled.
         """
@@ -2671,27 +2654,14 @@ class CollisionPipeline:
         per-phase telemetry. Additive counters are int64; capacity watermarks
         are int32 because the corresponding buffers and counts are int32.
 
+        .. experimental::
+
         Raises:
             RuntimeError: If body-pair contact reduction is not enabled.
         """
         if self._body_pair_reducer is None:
             raise RuntimeError("body-pair contact reduction is not enabled on this pipeline")
         self._body_pair_reducer.clear_stats()
-
-    def body_pair_reduction_description(self) -> dict:
-        """Currently allocated buffer footprint of the body-pair contact reduction by role.
-
-        Mostly fixed at construction. In deterministic mode the reducer borrows
-        the sorter's eagerly provisioned rich-schema scratch; otherwise its
-        owned material scratch is provisioned on first use of a rich external
-        buffer and the reported owned total can grow once.
-
-        Raises:
-            RuntimeError: If body-pair contact reduction is not enabled.
-        """
-        if self._body_pair_reducer is None:
-            raise RuntimeError("body-pair contact reduction is not enabled on this pipeline")
-        return self._body_pair_reducer.describe()
 
     @property
     def rigid_contact_max(self) -> int:
@@ -2797,6 +2767,8 @@ class CollisionPipeline:
             rigid_contact_surface_velocity=self._rigid_contact_surface_velocity,
         )
         contacts._contact_matching_mode = self.contact_matching
+        # Bound from allocation, so an unsupported solver captured before the first collide is still tracked.
+        contacts._body_pair_reducer_bound = self._body_pair_reducer is not None
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -3125,7 +3097,7 @@ class CollisionPipeline:
                     "per captured buffer, or destroy every graph that captured it and call "
                     "release_graph_capture() on the captured buffer before switching buffers."
                 )
-            if contacts._has_unreduced_solver_graph_lease:
+            if contacts._has_unreduced_solver_graph_lease or contacts._unreduced_capture_seen:
                 raise RuntimeError(
                     "body-pair contact reduction cannot write this Contacts buffer: a CUDA graph for an "
                     "unreduced-only solver configuration captured it; destroy that graph and call "
@@ -3155,6 +3127,7 @@ class CollisionPipeline:
                         "graph, repeating them on every replay."
                     )
                 contacts._acquire_graph_lease(graph, "reduced_writer", self)
+            contacts._body_pair_reducer_bound = True
 
         # Keep the buffer's full-surface capability marker in sync with this pipeline on every call.
         # collide() may be handed a Contacts created elsewhere (or by a flag-off pipeline); the edge/
