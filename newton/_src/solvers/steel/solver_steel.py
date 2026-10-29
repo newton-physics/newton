@@ -6425,9 +6425,11 @@ class SolverSteel(SolverBase):
         if computed_parent_f is not None:
             # Stage 7 replaces the start-of-step motion subspaces this reads.
             articulation_active = self._dynamics_art_active
-            if body_parent_f is None:
+            if self._sleeping is not None:
                 # Unrequested, the history only has to be current for articulations that may fall asleep.
-                articulation_active = self._sleeping.parent_wrench_history_mask(articulation_active, dt)
+                articulation_active = self._sleeping.parent_wrench_history_mask(
+                    articulation_active, dt, body_parent_f is not None
+                )
             self._compute_parent_wrenches(
                 state_in, state_aug, contacts, dt, computed_parent_f, parent_wrench_prescale, articulation_active
             )

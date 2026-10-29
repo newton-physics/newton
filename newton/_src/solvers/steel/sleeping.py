@@ -72,7 +72,9 @@ class _SleepState:
         # Joint wrenches computed every step, and the published history sleeping bodies keep.
         self.parent_wrenches = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         self.last_parent_wrenches = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
+        # Articulations whose wrench this step computes, and those whose last published wrench was computed.
         self.parent_wrench_history_active = wp.zeros(count, dtype=int, device=device)
+        self.last_parent_wrench_history_active = wp.zeros(count, dtype=int, device=device)
         articulation_world = model.articulation_world.numpy()
         gravity_world = articulation_world.copy()
         gravity_world[gravity_world < 0] = model.gravity.size - 1
@@ -410,12 +412,12 @@ class _SleepState:
                     device=device,
                 )
 
-    def parent_wrench_history_mask(self, active, dt):
-        """Mask the active articulations that can fall asleep by the end of the next step."""
+    def parent_wrench_history_mask(self, active, dt, requested):
+        """Mask the active articulations whose wrench this step computes: all if requested, else those near sleep."""
         wp.launch(
             _parent_wrench_history_active,
             self.quiet_age.size,
-            [active, self.quiet_age, int(2.0 * dt >= self.quiet_time)],
+            [active, self.quiet_age, dt, self.quiet_time, int(requested)],
             outputs=[self.parent_wrench_history_active],
             device=self.model.device,
         )
@@ -549,12 +551,14 @@ class _SleepState:
                     self.art_awake,
                     self.step_asleep,
                     self.root_veto,
+                    self.last_parent_wrench_history_active,
                     self.last_parent_wrenches,
                     self.parent_wrenches,
                 ],
                 device=device,
             )
             wp.copy(self.last_parent_wrenches, self.parent_wrenches)
+            wp.copy(self.last_parent_wrench_history_active, self.parent_wrench_history_active)
         wp.copy(self.last_q, state_out.joint_q)
         wp.copy(self.last_qd, state_out.joint_qd)
         wp.copy(self.last_body_q, state_out.body_q)
@@ -1049,12 +1053,17 @@ def _freeze_bodies(
 
 @wp.kernel(enable_backward=False)
 def _parent_wrench_history_active(
-    active: wp.array[int], quiet_age: wp.array[float], always: int, history_active: wp.array[int]
+    active: wp.array[int],
+    quiet_age: wp.array[float],
+    dt: float,
+    quiet_time: float,
+    requested: int,
+    history_active: wp.array[int],
 ):
-    # A freeze publishes the previous step's wrench, so it must be current one step before an island can sleep.
+    # Quiet articulations keep the previous step's wrench current for a freeze; one that can sleep this step computes.
     i = wp.tid()
     history_active[i] = 0
-    if active[i] != 0 and (always != 0 or quiet_age[i] > 0.0):
+    if active[i] != 0 and (requested != 0 or quiet_age[i] > 0.0 or quiet_age[i] + dt >= quiet_time):
         history_active[i] = 1
 
 
@@ -1065,12 +1074,14 @@ def _freeze_parent_wrenches(
     awake: wp.array[int],
     step_asleep: wp.array[int],
     veto: wp.array[int],
+    source_current: wp.array[int],
     source: wp.array[wp.spatial_vector],
     target: wp.array[wp.spatial_vector],
 ):
+    # A body whose last wrench was skipped keeps this step's, which the history mask computed.
     i = wp.tid()
     node = nodes[i]
-    if node >= 0 and _frozen(node, parent, awake, step_asleep, veto):
+    if node >= 0 and source_current[node] != 0 and _frozen(node, parent, awake, step_asleep, veto):
         target[i] = source[i]
 
 

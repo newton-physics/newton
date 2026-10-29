@@ -365,6 +365,37 @@ def test_unrequested_parent_wrench_history_skips_moving_articulations(test, devi
     resting = _resting_wrench(model, pipeline, reference, control)
     np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
 
+    # A gravity change wakes the pairs; a short then a long step put them back to sleep, the first one skipped.
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=0.01,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
+    )
+    states = [model.state(), model.state()]
+    contacts = pipeline.contacts()
+
+    def step(dt, observables=None):
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        solver.step(states[0], states[1], control, contacts, dt, observables=observables)
+        states.reverse()
+
+    for _ in range(120):
+        step(0.004)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    model.set_gravity((0.0, 0.0, -4.905))
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+    step(0.004)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1, 1, 1])
+    step(0.007)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
+    step(0.004, observables)
+    np.testing.assert_allclose(observables.body_parent_f.numpy(), 0.5 * resting, rtol=0.0, atol=1.0e-3)
+
 
 def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
     """Report the same frozen wrench in an observable after sleeping with only the legacy output."""
