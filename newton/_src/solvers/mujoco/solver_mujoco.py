@@ -697,7 +697,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     @update_data_interval.setter
     def update_data_interval(self, value: int) -> None:
         if value != 1:
-            warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, FutureWarning, stacklevel=2)
+            warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._update_data_interval = value
 
     @property
@@ -4469,8 +4469,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 :meth:`observables` and check the bitmask after each step.
         """
         if update_data_interval != 1:
-            # FutureWarning: DeprecationWarning is hidden unless raised from __main__.
-            warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, FutureWarning, stacklevel=2)
+            warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
         if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
