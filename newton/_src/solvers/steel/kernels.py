@@ -40,8 +40,9 @@ PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT = 4
 # Mimic row: the bilateral equality ``q_follower - coef1 * q_leader - coef0 = 0`` between
 # two DOFs of one articulation, with an unbounded impulse.
 PGS_CONSTRAINT_TYPE_MIMIC = 5
-# Connect row: one world axis of the point coincidence of a loop-closing BALL joint's
-# parent and child anchors (three rows per closure), with an unbounded impulse.
+# Connect row: one world axis of the point coincidence of a loop-closing joint's parent
+# and child anchors, or one hinge-axis alignment row of a REVOLUTE closure, with an
+# unbounded impulse.
 PGS_CONSTRAINT_TYPE_CONNECT = 6
 # Experimental contact torsion row: one bounded angular row per contact group about the
 # group normal (see ``contact_torsion.py``).
@@ -2672,8 +2673,8 @@ def build_mass_update_mask(
 # =============================================================================
 # Mimic rows enforce ``q_follower = coef0 + coef1 * q_leader`` between two DOFs of
 # one articulation, one row per follower coordinate. Connect rows close a kinematic
-# loop: three rows per loop-closing BALL joint pin its parent and child anchors
-# together. Both are bilateral equality rows with an unbounded impulse and the
+# loop: three rows per loop-closing BALL or REVOLUTE joint pin its parent and child
+# anchors together, and a REVOLUTE closure adds two hinge-axis rows. Both are bilateral equality rows with an unbounded impulse and the
 # Baumgarte bias ``baumgarte * phi / dt``. Coefficients, enable flags and anchors are
 # read from device arrays every step, so runtime changes need no re-initialization
 # and stay compatible with CUDA graph capture.
@@ -2818,6 +2819,7 @@ def populate_mimic_J_for_size(
 @wp.kernel
 def allocate_connect_slots(
     connect_joint: wp.array[int],
+    connect_rows: wp.array[int],
     joint_enabled: wp.array[bool],
     connect_world: wp.array[int],
     max_constraints: int,
@@ -2829,9 +2831,10 @@ def allocate_connect_slots(
     row_slot_mode: int,
     element_row_cursor: wp.array[int],
 ):
-    """Allocate three consecutive dense rows per loop closure enabled in ``Model.joint_enabled``.
+    """Allocate consecutive dense rows per loop closure enabled in ``Model.joint_enabled``.
 
-    A closure that does not fit is dropped whole (``connect_slot = -1``) rather than
+    A BALL closure takes three rows and a REVOLUTE closure five (``connect_rows``). A
+    closure that does not fit is dropped whole (``connect_slot = -1``) rather than
     enforced along some axes only.
     """
     k = wp.tid()
@@ -2840,7 +2843,7 @@ def allocate_connect_slots(
         return
     connect_slot[k] = _reserve_bilateral_rows(
         connect_world[k],
-        3,
+        connect_rows[k],
         max_constraints,
         world_slot_counter,
         first_rejected_slot,
@@ -2849,6 +2852,57 @@ def allocate_connect_slots(
         element_row_cursor,
         k,
     )
+
+
+@wp.func
+def _connect_hinge_frame(
+    body_p: int,
+    body_c: int,
+    joint: int,
+    axis_local: wp.vec3,
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    body_q: wp.array[wp.transform],
+):
+    """Return a REVOLUTE closure's world hinge axis in the parent and child anchor frames, and two normals.
+
+    ``(a_p, a_c, e1, e2)``: ``e1`` and ``e2`` are the parent frame's images of a fixed orthonormal
+    pair around the local axis, the two rotations the hinge forbids.
+    """
+    q_p = wp.transform_get_rotation(joint_X_p[joint])
+    if body_p >= 0:
+        q_p = wp.transform_get_rotation(body_q[body_p]) * q_p
+    q_c = wp.transform_get_rotation(body_q[body_c]) * wp.transform_get_rotation(joint_X_c[joint])
+    u = wp.normalize(axis_local)
+    helper = wp.vec3(0.0, 0.0, 1.0)
+    if wp.abs(u[2]) > 0.9:
+        helper = wp.vec3(1.0, 0.0, 0.0)
+    t1 = wp.normalize(wp.cross(u, helper))
+    t2 = wp.cross(u, t1)
+    return wp.quat_rotate(q_p, u), wp.quat_rotate(q_c, u), wp.quat_rotate(q_p, t1), wp.quat_rotate(q_p, t2)
+
+
+@wp.func
+def _accumulate_angular_jacobian_row(
+    body: int,
+    sign: float,
+    axis: wp.vec3,
+    body_to_joint: wp.array[int],
+    joint_ancestor: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_S_s: wp.array[wp.spatial_vector],
+    dof_start: int,
+    group_idx: int,
+    row: int,
+    J_group: wp.array3d[float],
+):
+    """Add ``sign * axis . omega(body)`` to a Jacobian row by walking up the body's tree."""
+    curr = body_to_joint[body]
+    while curr != -1:
+        for d in range(joint_qd_start[curr], joint_qd_start[curr + 1]):
+            S = joint_S_s[d]
+            J_group[group_idx, row, d - dof_start] += sign * wp.dot(axis, wp.vec3(S[3], S[4], S[5]))
+        curr = joint_ancestor[curr]
 
 
 @wp.kernel
@@ -2862,6 +2916,8 @@ def populate_connect_J_for_size(
     connect_joint: wp.array[int],
     connect_body_p: wp.array[int],
     connect_body_c: wp.array[int],
+    connect_rows: wp.array[int],
+    joint_axis: wp.array[wp.vec3],
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     connect_parent_prescribed: wp.array[int],
@@ -2895,6 +2951,11 @@ def populate_connect_J_for_size(
     A prescribed parent (a kinematic body outside the child's articulation, or the world
     when ``connect_body_p[k] < 0``) contributes no DOFs; its velocity at ``p_M`` enters the
     row target instead (``J v = -e . v_A``), so the child follows the moving parent.
+
+    A REVOLUTE closure adds two rows ``J = e_i . (omega_parent - omega_child)`` for the two
+    directions ``e_i`` perpendicular to the hinge axis, with ``phi_i = e_i . (a_child x a_parent)``,
+    the small rotation that realigns the child's hinge axis with the parent's. These rows are
+    pure couples. The axis is read from ``Model.joint_axis`` every step.
 
     Each row is normalized. On a planar linkage one axis is nearly redundant with the
     tree (``|J|`` around ``1e-4``), and an unnormalized row would relax a real velocity
@@ -2985,6 +3046,73 @@ def populate_connect_J_for_size(
             world_phi[world, slot] = phi_axis
             world_target_velocity[world, slot] = target
 
+        if connect_rows[k] < 5:
+            continue
+        a_p, a_c, e1, e2 = _connect_hinge_frame(
+            body_p, body_c, joint, joint_axis[joint_qd_start[joint]], joint_X_p, joint_X_c, body_q
+        )
+        misalign = wp.cross(a_c, a_p)
+        omega_a = wp.vec3(0.0, 0.0, 0.0)
+        if prescribed and body_p >= 0:
+            omega_a = wp.spatial_bottom(body_qd[body_p])
+        for i in range(2):
+            slot = base_slot + 3 + i
+            e = e1
+            if i == 1:
+                e = e2
+            for d in range(n_dofs):
+                J_group[group_idx, slot, d] = 0.0
+            target = float(0.0)
+            if prescribed:
+                target = -wp.dot(e, omega_a)
+            else:
+                _accumulate_angular_jacobian_row(
+                    body_p,
+                    1.0,
+                    e,
+                    body_to_joint,
+                    joint_ancestor,
+                    joint_qd_start,
+                    joint_S_s,
+                    dof_start,
+                    group_idx,
+                    slot,
+                    J_group,
+                )
+            _accumulate_angular_jacobian_row(
+                body_c,
+                -1.0,
+                e,
+                body_to_joint,
+                joint_ancestor,
+                joint_qd_start,
+                joint_S_s,
+                dof_start,
+                group_idx,
+                slot,
+                J_group,
+            )
+            norm_sq = float(0.0)
+            for d in range(n_dofs):
+                norm_sq += J_group[group_idx, slot, d] * J_group[group_idx, slot, d]
+            phi_axis = wp.dot(e, misalign)
+            if norm_sq > 1.0e-8:
+                inv_norm = 1.0 / wp.sqrt(norm_sq)
+                for d in range(n_dofs):
+                    J_group[group_idx, slot, d] *= inv_norm
+                phi_axis *= inv_norm
+                target *= inv_norm
+            else:
+                for d in range(n_dofs):
+                    J_group[group_idx, slot, d] = 0.0
+                phi_axis = 0.0
+                target = 0.0
+            world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_CONNECT
+            world_row_parent[world, slot] = -1
+            world_row_mu[world, slot] = 0.0
+            world_phi[world, slot] = phi_axis
+            world_target_velocity[world, slot] = target
+
 
 # =============================================================================
 # Bilateral Pre-elimination Kernels
@@ -3069,6 +3197,7 @@ def preelim_setup_for_size(
     n_mimic: int,
     connect_slot: wp.array[int],
     connect_art: wp.array[int],
+    connect_rows: wp.array[int],
     n_connect: int,
     J_group: wp.array3d[float],
     Y_group: wp.array3d[float],
@@ -3105,7 +3234,7 @@ def preelim_setup_for_size(
                 n += 1
     for k in range(n_connect):
         if connect_art[k] == art and connect_slot[k] >= 0:
-            for a in range(3):
+            for a in range(connect_rows[k]):
                 if n < PREELIM_MAX_ROWS:
                     preelim_slots[base + n] = connect_slot[k] + a
                     n += 1

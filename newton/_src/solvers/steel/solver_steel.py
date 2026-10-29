@@ -16,7 +16,7 @@ import numpy as np
 import warp as wp
 
 from ...core.reset import reset_world_selected
-from ...core.types import override
+from ...core.types import MAXVAL, override
 from ...exceptions import NewtonWarning
 from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
@@ -1286,13 +1286,17 @@ class SolverSteel(SolverBase):
       mimic constraints) within one articulation: one bilateral row per follower
       coordinate enforces ``q_follower = coeffs[0] + coeffs[1] * q_leader``. The
       coefficients are read every step.
-    - Loop-closing BALL joints (joints outside the articulation tree whose child belongs
-      to an articulation): three bilateral rows pin the joint's parent and child anchors
-      together. The parent is in the child's articulation, a kinematic body, or the
-      world. The closure rows read :attr:`~newton.Model.joint_enabled` and the
-      translations of :attr:`~newton.Model.joint_X_p` / :attr:`~newton.Model.joint_X_c`
-      every step, so a closure is released, engaged or re-anchored by editing those
-      arrays in place, also from a kernel between CUDA graph replays. An eager step reads
+    - Loop-closing BALL and REVOLUTE joints (joints outside the articulation tree whose
+      child belongs to an articulation): three bilateral rows pin the joint's parent and
+      child anchors together, and a REVOLUTE closure adds two rows that keep the child's
+      hinge axis aligned with the parent's. A closure has no joint coordinate, so limits
+      and drive gains on a loop-closing REVOLUTE joint are ignored, with a warning. The
+      parent is in the child's articulation, a kinematic body, or the world. The closure
+      rows read :attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_X_p` /
+      :attr:`~newton.Model.joint_X_c` and, for a REVOLUTE closure,
+      :attr:`~newton.Model.joint_axis` every step, so a closure is released, engaged,
+      re-anchored or re-aimed by editing those arrays in place, also from a kernel between
+      CUDA graph replays. An eager step reads
       a replaced array; a captured graph keeps the arrays it was captured with, so
       recapture after replacing one. With
       ``enable_bilateral_preelimination`` the mimic and connect rows are eliminated
@@ -3383,9 +3387,9 @@ class SolverSteel(SolverBase):
     def _build_connect_plan(self, model) -> None:
         """Build the static lookup tables of the connect (loop-closure) rows.
 
-        Loop-closing BALL joints are kept out of the articulation tree by
+        Loop-closing BALL and REVOLUTE joints are kept out of the articulation tree by
         :meth:`_SteelModelPlan.build` and enforced as three rows pinning the joint's
-        parent and child anchors together. A closure belongs to its child body's
+        parent and child anchors together, plus two hinge-axis rows for a REVOLUTE closure. A closure belongs to its child body's
         articulation. Its parent is either in that articulation or prescribed: a kinematic
         body (:attr:`~newton.BodyFlags.KINEMATIC`) or the world. A prescribed parent
         contributes no DOFs; its anchor velocity enters the row target. Other loop-closing
@@ -3407,14 +3411,32 @@ class SolverSteel(SolverBase):
         response_dof_count = self._model_plan.response_dof_count
         articulation_world = self._model_plan.articulation_world
 
+        joint_qd_start = model.joint_qd_start.numpy()
+        limit_lower, limit_upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
+        target_ke, target_kd = model.joint_target_ke.numpy(), model.joint_target_kd.numpy()
+
         art_l, body_p, body_c, prescribed_l = [], [], [], []
-        joint_l, foreign_l = [], []
+        joint_l, foreign_l, rows_l = [], [], []
         for j in loop_joints.tolist():
             art = int(loop_joint_articulation[j])
-            if int(joint_type[j]) != int(JointType.BALL):
+            if int(joint_type[j]) == int(JointType.BALL):
+                rows = 3
+            elif int(joint_type[j]) == int(JointType.REVOLUTE):
+                rows = 5
+                dof = int(joint_qd_start[j])
+                limited = abs(float(limit_lower[dof])) < MAXVAL or abs(float(limit_upper[dof])) < MAXVAL
+                driven = float(target_ke[dof]) != 0.0 or float(target_kd[dof]) != 0.0
+                if limited or driven:
+                    ignored = " and ".join(name for name, on in (("limits", limited), ("drive gains", driven)) if on)
+                    warnings.warn(
+                        f"SolverSteel: loop-closing REVOLUTE joint {j} has {ignored}, which a loop closure ignores.",
+                        NewtonWarning,
+                        stacklevel=3,
+                    )
+            else:
                 raise NotImplementedError(
                     f"SolverSteel: loop-closing joint {j} is a {JointType(joint_type[j]).name} joint; "
-                    "only BALL loop-closing joints are supported."
+                    "only BALL and REVOLUTE loop-closing joints are supported."
                 )
             parent = int(joint_parent[j])
             prescribed = 0
@@ -3438,6 +3460,7 @@ class SolverSteel(SolverBase):
             prescribed_l.append(prescribed)
             joint_l.append(j)
             foreign_l.append(foreign)
+            rows_l.append(rows)
 
         n = len(art_l)
         if n == 0:
@@ -3459,6 +3482,8 @@ class SolverSteel(SolverBase):
         self._connect_parent_prescribed = wp.array(self._connect_parent_prescribed_np, dtype=wp.int32, device=device)
         self._connect_sizes = frozenset(int(response_dof_count[a]) for a in np.unique(art_np))
         self._connect_slot = wp.full((n,), -1, dtype=wp.int32, device=device)
+        self._connect_rows_np = np.asarray(rows_l, dtype=np.int32)
+        self._connect_rows = wp.array(self._connect_rows_np, dtype=wp.int32, device=device)
         self._connect_count = n
 
     def _validate_connect_parent_membership(self) -> None:
@@ -3532,8 +3557,9 @@ class SolverSteel(SolverBase):
             for art, count in enumerate(np.diff(self._mimic_art_start_np)):
                 if count:
                     counts[art] = int(count)
-        for art in self._connect_art_np.tolist() if self._connect_count else ():
-            counts[art] = counts.get(art, 0) + 3
+        if self._connect_count:
+            for art, row_count in zip(self._connect_art_np.tolist(), self._connect_rows_np.tolist(), strict=True):
+                counts[art] = counts.get(art, 0) + row_count
         if not counts:
             return
         rows = max(counts.values())
@@ -3628,7 +3654,13 @@ class SolverSteel(SolverBase):
                 wp.launch(
                     allocate_connect_slots,
                     dim=self._connect_count,
-                    inputs=[self._connect_joint, model.joint_enabled, self._connect_world, max_constraints],
+                    inputs=[
+                        self._connect_joint,
+                        self._connect_rows,
+                        model.joint_enabled,
+                        self._connect_world,
+                        max_constraints,
+                    ],
                     outputs=[
                         self._connect_slot,
                         self._slot_counter,
@@ -3655,6 +3687,8 @@ class SolverSteel(SolverBase):
                         self._connect_joint,
                         self._connect_body_p,
                         self._connect_body_c,
+                        self._connect_rows,
+                        model.joint_axis,
                         model.joint_X_p,
                         model.joint_X_c,
                         self._connect_parent_prescribed,
@@ -3698,6 +3732,7 @@ class SolverSteel(SolverBase):
                     self._mimic_count if self._bilateral_preelimination_include_mimics else 0,
                     self._connect_slot if self._connect_count else self._dummy_is_free_rigid,
                     self._connect_art if self._connect_count else self._dummy_is_free_rigid,
+                    self._connect_rows if self._connect_count else self._dummy_is_free_rigid,
                     self._connect_count,
                     self._J_by_size[size],
                     self._Y_by_size[size],
