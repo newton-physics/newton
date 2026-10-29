@@ -9281,9 +9281,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
                     if mode == SOLREF_MODE_RAW:
                         spec.joints[mjc_jnt].solref_limit = solref
-                # Kinematic welds are Newton runtime machinery that importers would turn into fixed joints.
+                # Inactive welds would import as fixed joints. Active ones become ordinary
+                # welds holding their root at its qpos0 pose, as the runtime lock is not exported.
+                qpos0_data = mujoco.MjData(self.mj_model)
+                mujoco.mj_kinematics(self.mj_model, qpos0_data)
                 for eq in kinematic_welds:
-                    spec.delete(eq)
+                    if not eq.active:
+                        spec.delete(eq)
+                        continue
+                    body = self.mj_model.body(eq.name1).id
+                    # relpose is the world's pose in the root frame.
+                    world_pos = -qpos0_data.xmat[body].reshape(3, 3).T @ qpos0_data.xpos[body]
+                    world_quat = qpos0_data.xquat[body] * (1.0, -1.0, -1.0, -1.0)
+                    eq.data[0:11] = [0.0, 0.0, 0.0, *world_pos, *world_quat, 1.0]
+                    eq.solref = mujoco.MjSpec().default.equality.solref
                 with open(target_filename, "w") as f:
                     f.write(spec.to_xml())
                     logger.info("Saved mujoco model to %s", os.path.abspath(target_filename))
