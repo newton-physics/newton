@@ -411,7 +411,7 @@ class TestViewerUSD(unittest.TestCase):
         opacities = wp.array([0.25, 0.75], dtype=wp.float32)
 
         viewer.begin_frame(0.0)
-        viewer.log_mesh("/opacity_mesh", points, indices)
+        viewer.log_mesh("/opacity_mesh", points, indices, roughness=0.1, metallic=0.7)
         viewer.log_instances(
             "/opacity_instances",
             "/opacity_mesh",
@@ -431,6 +431,26 @@ class TestViewerUSD(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(shader0.GetInput("diffuseColor").Get()), [0.2, 0.4, 0.6], atol=1e-6)
         self.assertAlmostEqual(shader0.GetInput("roughness").Get(), 0.25, places=6)
         self.assertAlmostEqual(shader0.GetInput("metallic").Get(), 0.1, places=6)
+
+        viewer.log_instances("/default_instances", "/opacity_mesh", xforms, scales, colors, None)
+        default_prim = viewer.stage.GetPrimAtPath("/root/default_instances/instance_0")
+        default_shader = self._get_bound_preview_surface(default_prim)
+        self.assertAlmostEqual(default_shader.GetInput("roughness").Get(), 0.5)
+        self.assertAlmostEqual(default_shader.GetInput("metallic").Get(), 0.0)
+        viewer.log_mesh(
+            "/opacity_mesh",
+            points,
+            indices,
+            uvs=wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2),
+            texture=np.full((2, 2, 3), 255, dtype=np.uint8),
+        )
+        for prim, roughness, metallic in (
+            (default_prim, 0.5, 0.0),
+            (viewer.stage.GetPrimAtPath("/root/opacity_instances/instance_0"), 0.25, 0.1),
+        ):
+            shader = self._get_bound_preview_surface(prim)
+            self.assertAlmostEqual(shader.GetInput("roughness").Get(), roughness, places=6)
+            self.assertAlmostEqual(shader.GetInput("metallic").Get(), metallic, places=6)
 
     def test_log_instances_rejects_mismatched_opacity_count(self):
         """Reject opacity arrays that do not match instance count."""
