@@ -352,12 +352,11 @@ the mode from user code.
 
 .. note::
 
-   ``use_mujoco_contacts=True`` does not
-   apply the per-contact two-body factor — MuJoCo's internal
-   ``contact_params`` averages per-geom ``solref``, which cannot
-   reproduce the inverse-mass sum. ``SOLREF_MODE_FORCE_SPACE`` shapes
-   fall back to the legacy ``convert_solref(ke, kd, 1, 1)``
-   approximation on those paths.
+   ``use_mujoco_contacts=True`` does not apply the per-contact two-body
+   factor — MuJoCo's internal ``contact_params`` averages per-geom
+   ``solref``, which cannot reproduce the inverse-mass sum.
+   ``SOLREF_MODE_FORCE_SPACE`` shapes fall back to the legacy
+   ``convert_solref(ke, kd, 1, 1)`` approximation on that path.
 
 For parameter interpretation, stability tradeoffs, and task-oriented guidance,
 see :ref:`Tuning MuJoCo`.
@@ -707,7 +706,10 @@ When ``use_mujoco_cpu=True``, only the template world is simulated when
 
 With ``use_mujoco_cpu=True``, Newton contacts require a single-world model and
 Euler, implicit, or implicitfast integration.
-Unsupported integration modes raise an error. Excess contacts are truncated with a warning.
+Unsupported integration modes raise an error. Contacts are written directly to
+MuJoCo's native storage, independently of ``nconmax``. Contacts beyond the
+native storage capacity are dropped with a
+:class:`~newton.exceptions.NewtonWarning`.
 Request ``CONTACT_F`` through ``step``; ``update_contacts`` is
 unavailable in this mode. When MuJoCo's autoreset is enabled, invalid dynamics
 reset the simulation and abort the current step without integration or collision
@@ -1348,7 +1350,7 @@ API and subject to change.
 - :github:`newton/_src/solvers/mujoco/kernels.py` — Warp kernels for
   coordinate, contact, and state conversion (``quat_wxyz_to_xyzw``,
   ``convert_mj_coords_to_warp_kernel``,
-  ``convert_newton_contacts_to_mjwarp_kernel``, ``convert_solref``, …).
+  ``convert_newton_contacts_to_mujoco_kernel``, ``convert_solref``, …).
 - :class:`~newton.usd.SchemaResolverMjc`
   (:github:`newton/_src/usd/schemas.py`) — USD ``mjc:*`` attribute →
   Newton built-in property mapping.

@@ -145,8 +145,7 @@ step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this include
 the velocity impulse divided by ``dt``. MuJoCo computes ``BODY_QDD`` and
 ``BODY_PARENT_F`` even with ``disable_sensors=True`` by enabling the
 post-constraint RNE stage independently of sensors.
-When ``use_mujoco_cpu=True``, only the template world is simulated when
-``separate_worlds=True``. Body and contact observables are exported
+With ``use_mujoco_cpu=True``, body and contact observables are exported
 from the step's input dynamics, including with RK4; use the input state for
 contact positions. Body observables require Euler, RK4, implicit, or implicitfast
 integration. With MuJoCo collision detection, ``CONTACT_F`` supports any

@@ -87,14 +87,14 @@ def write_contact(
     worldid_in: int,
     contact_id_in: int,
     # Data out:
-    contact_dist_out: wp.array[float],
-    contact_pos_out: wp.array[wp.vec3],
-    contact_frame_out: wp.array[wp.mat33],
-    contact_includemargin_out: wp.array[float],
-    contact_friction_out: wp.array[vec5],
-    contact_solref_out: wp.array[wp.vec2],
-    contact_solreffriction_out: wp.array[wp.vec2],
-    contact_solimp_out: wp.array[vec5],
+    contact_dist_out: wp.array[Any],
+    contact_pos_out: wp.array[Any],
+    contact_frame_out: wp.array[Any],
+    contact_includemargin_out: wp.array[Any],
+    contact_friction_out: wp.array[Any],
+    contact_solref_out: wp.array[Any],
+    contact_solreffriction_out: wp.array[Any],
+    contact_solimp_out: wp.array[Any],
     contact_dim_out: wp.array[int],
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
@@ -103,17 +103,18 @@ def write_contact(
     # See function write_contact in mujoco_warp, file collision_primitive.py
 
     cid = contact_id_in
-    contact_dist_out[cid] = dist_in
-    contact_pos_out[cid] = pos_in
-    contact_frame_out[cid] = frame_in
+    contact_dist_out[cid] = contact_dist_out.dtype(dist_in)
+    contact_pos_out[cid] = contact_pos_out.dtype(pos_in)
+    contact_frame_out[cid] = contact_frame_out.dtype(frame_in)
     contact_geom_out[cid] = geoms_in
-    contact_worldid_out[cid] = worldid_in
-    contact_includemargin_out[cid] = margin_in
+    if contact_worldid_out:
+        contact_worldid_out[cid] = worldid_in
+    contact_includemargin_out[cid] = contact_includemargin_out.dtype(margin_in)
     contact_dim_out[cid] = condim_in
-    contact_friction_out[cid] = friction_in
-    contact_solref_out[cid] = solref_in
-    contact_solreffriction_out[cid] = solreffriction_in
-    contact_solimp_out[cid] = solimp_in
+    contact_friction_out[cid] = contact_friction_out.dtype(friction_in)
+    contact_solref_out[cid] = contact_solref_out.dtype(solref_in)
+    contact_solreffriction_out[cid] = contact_solreffriction_out.dtype(solreffriction_in)
+    contact_solimp_out[cid] = contact_solimp_out.dtype(solimp_in)
 
     # initialize constraint address to -1 (max 10 elements; populated during constraint generation)
     for i in range(contact_efc_address_out.shape[1]):
@@ -401,7 +402,7 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
 # Kernel functions
 # fast math only approximates div/sqrt here; keep transcendentals out of this kernel
 @wp.kernel(module="unique", module_options={"fast_math": True})
-def convert_newton_contacts_to_mjwarp_kernel(
+def convert_newton_contacts_to_mujoco_kernel(
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],
     body_flags: wp.array[int],
@@ -445,14 +446,14 @@ def convert_newton_contacts_to_mjwarp_kernel(
     # Mujoco warp contacts
     naconmax: int,
     nacon_out: wp.array[int],
-    contact_dist_out: wp.array[float],
-    contact_pos_out: wp.array[wp.vec3],
-    contact_frame_out: wp.array[wp.mat33],
-    contact_includemargin_out: wp.array[float],
-    contact_friction_out: wp.array[vec5],
-    contact_solref_out: wp.array[wp.vec2],
-    contact_solreffriction_out: wp.array[wp.vec2],
-    contact_solimp_out: wp.array[vec5],
+    contact_dist_out: wp.array[Any],
+    contact_pos_out: wp.array[Any],
+    contact_frame_out: wp.array[Any],
+    contact_includemargin_out: wp.array[Any],
+    contact_friction_out: wp.array[Any],
+    contact_solref_out: wp.array[Any],
+    contact_solreffriction_out: wp.array[Any],
+    contact_solimp_out: wp.array[Any],
     contact_dim_out: wp.array[int],
     contact_geom_out: wp.array[wp.vec2i],
     contact_efc_address_out: wp.array2d[int],
@@ -479,9 +480,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
     count = rigid_contact_count[0]
 
-    gen = contact_generation[0]
-    last_gen = last_contact_generation[0]
-    needs_full = gen != last_gen
+    needs_full = True
+    if last_contact_generation:
+        needs_full = contact_generation[0] != last_contact_generation[0]
 
     if needs_full:
         # ── FULL PATH ────────────────────────────────────────────────────
@@ -489,13 +490,14 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # the original kernel plus recording the tid→cid mapping.
 
         if tid == 0:
-            if count > naconmax:
+            if contact_worldid_out and count > naconmax:
                 wp.printf(
                     "Number of Newton contacts (%d) exceeded MJWarp limit (%d). Increase nconmax.\n",
                     count,
                     naconmax,
                 )
-            ncollision_out[0] = 0
+            if ncollision_out:
+                ncollision_out[0] = 0
 
         if count > naconmax:
             count = naconmax
@@ -685,37 +687,38 @@ def convert_newton_contacts_to_mjwarp_kernel(
                 solref = wp.vec2(timeconst, dampratio)
 
         cid = wp.atomic_add(nacon_out, 0, 1)
-        if cid >= naconmax:
+        if cid >= contact_dist_out.shape[0]:
             tid_to_cid[tid] = -1
             return
 
         tid_to_cid[tid] = cid
 
+        # Positional: Warp does not resolve generic function overloads from keyword arguments.
         write_contact(
-            dist_in=dist,
-            pos_in=pos,
-            frame_in=frame,
-            margin_in=margin,
-            condim_in=condim,
-            friction_in=friction,
-            solref_in=solref,
-            solreffriction_in=solreffriction,
-            solimp_in=solimp,
-            geoms_in=geoms,
-            worldid_in=worldid,
-            contact_id_in=cid,
-            contact_dist_out=contact_dist_out,
-            contact_pos_out=contact_pos_out,
-            contact_frame_out=contact_frame_out,
-            contact_includemargin_out=contact_includemargin_out,
-            contact_friction_out=contact_friction_out,
-            contact_solref_out=contact_solref_out,
-            contact_solreffriction_out=contact_solreffriction_out,
-            contact_solimp_out=contact_solimp_out,
-            contact_dim_out=contact_dim_out,
-            contact_geom_out=contact_geom_out,
-            contact_efc_address_out=contact_efc_address_out,
-            contact_worldid_out=contact_worldid_out,
+            dist,
+            pos,
+            frame,
+            margin,
+            condim,
+            friction,
+            solref,
+            solreffriction,
+            solimp,
+            geoms,
+            worldid,
+            cid,
+            contact_dist_out,
+            contact_pos_out,
+            contact_frame_out,
+            contact_includemargin_out,
+            contact_friction_out,
+            contact_solref_out,
+            contact_solreffriction_out,
+            contact_solimp_out,
+            contact_dim_out,
+            contact_geom_out,
+            contact_efc_address_out,
+            contact_worldid_out,
         )
     else:
         # ── FAST PATH ────────────────────────────────────────────────────
@@ -729,7 +732,8 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         # _sync_nacon_count restores nacon_out from the full pass.
         if tid == 0:
-            ncollision_out[0] = 0
+            if ncollision_out:
+                ncollision_out[0] = 0
 
         cid = tid_to_cid[tid]
         # Defensive bounds check: a stale tid_to_cid (e.g. cached from a
@@ -764,14 +768,16 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
         n = rigid_contact_normal[tid]
         # rigid_contact_margin includes shape_margin; MuJoCo handles it explicitly, subtract to recover radius_eff.
-        contact_dist_out[cid] = contact_surface_separation(
-            bx_a,
-            bx_b,
-            n,
-            rigid_contact_margin0[tid] - shape_margin[shape_a],
-            rigid_contact_margin1[tid] - shape_margin[shape_b],
+        contact_dist_out[cid] = contact_dist_out.dtype(
+            contact_surface_separation(
+                bx_a,
+                bx_b,
+                n,
+                rigid_contact_margin0[tid] - shape_margin[shape_a],
+                rigid_contact_margin1[tid] - shape_margin[shape_b],
+            )
         )
-        contact_pos_out[cid] = 0.5 * (point_a + point_b)
+        contact_pos_out[cid] = contact_pos_out.dtype(0.5 * (point_a + point_b))
 
         for i in range(contact_efc_address_out.shape[1]):
             contact_efc_address_out[cid, i] = -1
@@ -2505,7 +2511,7 @@ def update_geom_properties_kernel(
     geom_margin is zeroed when MuJoCo handles collisions because
     mujoco_warp's NATIVECCD broadphase still rejects non-zero margins at
     put_model() time (#2106).  When Newton provides contacts, margins are
-    restored from shape_margin so that ``convert_newton_contacts_to_mjwarp_kernel``
+    restored from shape_margin so that ``convert_newton_contacts_to_mujoco_kernel``
     can compute correct ``includemargin`` thresholds via ``contact_params``.
     """
     world, geom_idx = wp.tid()
@@ -2524,7 +2530,7 @@ def update_geom_properties_kernel(
     # > "Shape-material contact stiffness and damping". FORCE_SPACE and
     # MJCF_DEFAULT both write the legacy convert_solref round-trip here;
     # FORCE_SPACE additionally triggers the per-contact override in
-    # convert_newton_contacts_to_mjwarp_kernel.
+    # convert_newton_contacts_to_mujoco_kernel.
     if shape_mjc_solref_mode and shape_mjc_solref:
         mode = shape_mjc_solref_mode[shape_idx]
         if mode == SOLREF_MODE_RAW:

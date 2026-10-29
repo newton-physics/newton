@@ -146,7 +146,7 @@ class TestMuJoCoDeterminismConfig(unittest.TestCase):
                 mock.call(generated_options, module=solver_mujoco.kernels),
                 mock.call(
                     generated_options,
-                    module=solver_mujoco.convert_newton_contacts_to_mjwarp_kernel.module,
+                    module=solver_mujoco.convert_newton_contacts_to_mujoco_kernel.module,
                 ),
             ],
         )

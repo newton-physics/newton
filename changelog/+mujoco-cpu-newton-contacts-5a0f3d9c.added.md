@@ -1,1 +1,1 @@
-Support Newton-generated contacts with `use_mujoco_cpu=True` and Euler, implicit, or implicitfast integration, preserving supplied contact geometry and exporting contact forces in the original order. Autoreset aborts the current step and clears contact-force outputs; unsupported integration and multiple worlds are rejected.
+Support Newton-generated contacts in `SolverMuJoCo` on CPU for single-world models using Euler, implicit, or implicitfast integration.
