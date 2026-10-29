@@ -840,6 +840,26 @@ def test_parent_wrench_matches_mujoco_with_armature(test, device):
             np.testing.assert_allclose(steel, mujoco, rtol=1.0e-4, atol=1.0e-4)
 
 
+def test_parent_wrench_of_an_arm_resting_on_a_joint_limit(test, device):
+    """A horizontal arm held up by its hinge's limit row reports its full weight, and no axis torque about the COM."""
+    builder = newton.ModelBuilder()
+    arm = builder.add_link(mass=1.0, com=wp.vec3(0.5, 0.0, 0.0), inertia=wp.mat33(np.eye(3) * 0.01))
+    builder.add_articulation(
+        [builder.add_joint_revolute(-1, arm, axis=(0.0, 1.0, 0.0), limit_lower=-1.0, limit_upper=0.0, armature=0.0)]
+    )
+    model = builder.finalize(device=device)
+    solve_mode = "matrix_free" if wp.get_device(device).is_cuda else "split"
+    solver = SolverSteel(model, solve_mode=solve_mode, enable_joint_limits=True, iterations=32)
+    solver._rigid_body_angular_damping.zero_()
+    observables = solver.observables(FLAGS)
+    states, control = [model.state(), model.state()], model.control()
+    for _ in range(60):
+        solver.step(states[0], states[1], control, None, DT_parent_wrench, observables=observables)
+        states.reverse()
+    test.assertAlmostEqual(float(states[0].joint_q.numpy()[0]), 0.0, delta=1.0e-3)
+    np.testing.assert_allclose(observables.body_parent_f.numpy()[arm], [0.0, 0.0, 9.81, 0.0, 0.0, 0.0], atol=2.0e-3)
+
+
 class TestSteelParentWrench(unittest.TestCase):
     pass
 
@@ -858,6 +878,7 @@ for _name in (
     "test_parent_wrench_of_a_contact_stop_with_armature",
     "test_parent_wrench_of_a_commanded_free_joint",
     "test_parent_wrench_of_a_held_kinematic_joint",
+    "test_parent_wrench_of_an_arm_resting_on_a_joint_limit",
 ):
     add_function_test(TestSteelParentWrench, _name, globals()[_name], devices=get_test_devices())
 add_function_test(
