@@ -72,6 +72,7 @@ class _SleepState:
         # Joint wrenches computed every step, and the published history sleeping bodies keep.
         self.parent_wrenches = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
         self.last_parent_wrenches = wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device)
+        self.parent_wrench_history_active = wp.zeros(count, dtype=int, device=device)
         articulation_world = model.articulation_world.numpy()
         gravity_world = articulation_world.copy()
         gravity_world[gravity_world < 0] = model.gravity.size - 1
@@ -408,6 +409,17 @@ class _SleepState:
                     [self.dof_art, self.art_awake, self.solver._joint_limit_q_index, self.limit_q_index],
                     device=device,
                 )
+
+    def parent_wrench_history_mask(self, active, dt):
+        """Mask the active articulations that can fall asleep by the end of the next step."""
+        wp.launch(
+            _parent_wrench_history_active,
+            self.quiet_age.size,
+            [active, self.quiet_age, int(2.0 * dt >= self.quiet_time)],
+            outputs=[self.parent_wrench_history_active],
+            device=self.model.device,
+        )
+        return self.parent_wrench_history_active
 
     def finish(self, state_in, state_out, state_aug, dt):
         """Freeze quiet supported islands and publish synchronized state history."""
@@ -1033,6 +1045,17 @@ def _freeze_bodies(
         if _frozen(node, parent, awake, step_asleep, veto):
             target[i] = source[i]
             qd[i] = wp.spatial_vector()
+
+
+@wp.kernel(enable_backward=False)
+def _parent_wrench_history_active(
+    active: wp.array[int], quiet_age: wp.array[float], always: int, history_active: wp.array[int]
+):
+    # A freeze publishes the previous step's wrench, so it must be current one step before an island can sleep.
+    i = wp.tid()
+    history_active[i] = 0
+    if active[i] != 0 and (always != 0 or quiet_age[i] > 0.0):
+        history_active[i] = 1
 
 
 @wp.kernel(enable_backward=False)

@@ -620,6 +620,11 @@ def test_parent_wrench_warns_without_preeliminated_closures(test, device):
     state_0, state_1 = model.state(), model.state()
     with test.assertWarnsRegex(NewtonWarning, "pre-eliminated loop-closure"):
         solver.step(state_0, state_1, None, None, 1.0 / 240.0, observables=observables)
+    # Sleeping keeps a wrench history, which is no request.
+    sleeping = SolverSteel(model, solve_mode="matrix_free", enable_bilateral_preelimination=True, enable_sleeping=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", NewtonWarning)
+        sleeping.step(state_0, state_1, None, None, 1.0 / 240.0)
 
 
 def test_unattached_body_reports_zero(test, device):

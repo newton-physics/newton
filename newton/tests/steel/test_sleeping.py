@@ -350,6 +350,41 @@ def test_parent_wrench_first_requested_after_sleep(test, device):
     np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
 
 
+def test_unrequested_parent_wrench_history_skips_moving_articulations(test, device):
+    """Keep the unrequested wrench history only for articulations that can fall asleep by the next step."""
+    model, pipeline = _parent_wrench_scene(device)
+    solver, reference = _sleeping_wrench_solvers(model)
+    states, control = [model.state(), model.state()], model.control()
+    # Slide the second pair along the ground so it never turns quiet.
+    push = np.zeros((model.body_count, 6), dtype=np.float32)
+    push[2, 0] = 500.0
+    for state in states:
+        state.body_f.assign(push)
+    _advance_boxes(pipeline, solver, states, control, 20, clear=False)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 1, 1])
+    history = solver._sleeping.parent_wrenches.numpy()
+    np.testing.assert_array_equal(history[2:], 0.0)
+    np.testing.assert_allclose(history[0], 0.0, atol=1.0e-3)
+    np.testing.assert_allclose(history[1], [0.0, 0.0, model.body_mass.numpy()[1] * 9.81, 0.0, 0.0, 0.0], atol=1.0e-3)
+
+    # With a quiet time of one step an island can sleep two steps after it turns quiet.
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=DT,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
+    )
+    states = [model.state(), model.state()]
+    _advance_boxes(pipeline, solver, states, control, 120)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
+    _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
+    resting = _resting_wrench(model, pipeline, reference, control)
+    np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
+
+
 def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
     """Report the same frozen wrench in an observable after sleeping with only the legacy output."""
     model, pipeline = _parent_wrench_scene(device)
@@ -387,6 +422,7 @@ for _name in (
     "test_sleeping_body_keeps_its_legacy_parent_wrench",
     "test_sleeping_parent_wrench_is_independent_of_the_output",
     "test_parent_wrench_first_requested_after_sleep",
+    "test_unrequested_parent_wrench_history_skips_moving_articulations",
     "test_sleeping_parent_wrench_from_legacy_to_observable",
 ):
     add_function_test(TestSteelSleeping, _name, globals()[_name], devices=devices)

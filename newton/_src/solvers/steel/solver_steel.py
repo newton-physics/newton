@@ -1388,8 +1388,9 @@ class SolverSteel(SolverBase):
           anisotropic inertia can report a torque residual.
         - Contact wrenches are summed with atomics, so the last bits can differ run to run.
 
-        With sleeping enabled the solver computes the wrench every step into its own history, so
-        a sleeping body reports its last awake wrench in whichever output the caller passes.
+        With sleeping enabled the solver keeps each body's wrench from the steps before it falls
+        asleep, also while the wrench is not requested, so a sleeping body reports its last awake
+        wrench in whichever output the caller passes.
 
         :attr:`~newton.solvers.SolverBase.Observables.contact_f` is populated when
         :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` is requested. Each live rigid
@@ -6248,7 +6249,8 @@ class SolverSteel(SolverBase):
         self._stage1_joint_tau(state_in, state_aug, state_out, control, dt)
         parent_wrench_prescale = None
         if computed_parent_f is not None:
-            if self._preelim_active and self._connect_count and not self._parent_wrench_preelim_warned:
+            preelim_warning = self._preelim_active and self._connect_count and body_parent_f is not None
+            if preelim_warning and not self._parent_wrench_preelim_warned:
                 self._parent_wrench_preelim_warned = True
                 warnings.warn(
                     "BODY_PARENT_F leaves out pre-eliminated loop-closure reactions; "
@@ -6419,7 +6421,13 @@ class SolverSteel(SolverBase):
             self._integrate(state_in, state_aug, state_out, dt, self._v_out)
         if computed_parent_f is not None:
             # Stage 7 replaces the start-of-step motion subspaces this reads.
-            self._compute_parent_wrenches(state_in, state_aug, contacts, dt, computed_parent_f, parent_wrench_prescale)
+            articulation_active = self._dynamics_art_active
+            if body_parent_f is None:
+                # Unrequested, the history only has to be current for articulations that may fall asleep.
+                articulation_active = self._sleeping.parent_wrench_history_mask(articulation_active, dt)
+            self._compute_parent_wrenches(
+                state_in, state_aug, contacts, dt, computed_parent_f, parent_wrench_prescale, articulation_active
+            )
         self._stage7_update_kinematics(state_out)
         if self._sleeping is not None:
             self._sleeping.finish(state_in, state_out, state_aug, dt)
@@ -6662,6 +6670,7 @@ class SolverSteel(SolverBase):
         dt: float,
         body_parent_f: wp.array,
         prescale: wp.array | None,
+        articulation_active: wp.array,
     ) -> None:
         """Write each body's incoming joint wrench consistent with the step's solved velocities.
 
@@ -6774,7 +6783,7 @@ class SolverSteel(SolverBase):
                 model.body_mass,
                 model.body_inertia,
                 self._articulation_origin,
-                self._dynamics_art_active,
+                articulation_active,
                 body_a_s,
                 body_ft_s,
             ],
