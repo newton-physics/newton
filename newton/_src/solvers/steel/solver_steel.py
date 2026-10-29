@@ -5230,7 +5230,10 @@ class SolverSteel(SolverBase):
                 wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device),
                 wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device),
                 wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device),
-                wp.full((self._world_count, max(self._articulation_constraint_max, 1)), -1, dtype=int, device=device),
+                # Spin rows find their lead contact through this per-world slot map.
+                wp.full((self._world_count, max(self._articulation_constraint_max, 1)), -1, dtype=int, device=device)
+                if self._contact_torsion_enabled
+                else None,
             )
         # Drive-row parameters and their per-step force-drive coefficients; (1, 1)
         # placeholders keep the kernel signatures fixed when there are no drive rows.
@@ -6703,7 +6706,7 @@ class SolverSteel(SolverBase):
                     state_in.body_q,
                     self._body_to_articulation,
                     self._articulation_origin,
-                    *self._contact_force_inputs(contacts, inv_dt)[2:-1],
+                    *self._contact_row_impulse_inputs(),
                     *self._contact_anchor_args,
                     self._friction_patches.view,
                     inv_dt,
@@ -7665,6 +7668,13 @@ class SolverSteel(SolverBase):
         return [
             contacts.rigid_contact_count,
             contacts.rigid_contact_normal,
+            *self._contact_row_impulse_inputs(),
+            inv_dt,
+        ]
+
+    def _contact_row_impulse_inputs(self) -> list:
+        """Return the row arrays ``contact_row_impulses`` reads a contact's solved impulses from."""
+        return [
             self._contact_world,
             self._contact_slot,
             self._contact_path,
@@ -7675,7 +7685,6 @@ class SolverSteel(SolverBase):
             self._constraint_count,
             self._mf_constraint_count,
             self._propagation_constraint_count,
-            inv_dt,
         ]
 
     def _prepare_augmented_state(self, state_in: State) -> "SolverSteel":

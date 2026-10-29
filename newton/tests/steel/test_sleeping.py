@@ -15,7 +15,7 @@ import warp as wp
 import newton
 from newton._src.solvers.steel._testing import kernel_overrides
 from newton.solvers import SolverSteel
-from newton.tests.steel._fixtures import PROFILE, _advance, _articulations
+from newton.tests.steel._fixtures import PROFILE, _advance, _articulations, _parent_wrench_scene
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DT = 0.005
@@ -193,25 +193,6 @@ def test_cuda_graph_sleep_and_wake(test, device):
     states[1].body_f.assign(forces)
     wp.capture_launch(capture.graph)
     np.testing.assert_array_equal(observables.body_awake.numpy(), [True, False])
-
-
-def _parent_wrench_scene(device):
-    """Two free boxes resting on the ground, each carrying a smaller box welded on top."""
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    for x in (0.0, 0.5):
-        base = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.1), wp.quat_identity()))
-        builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
-        top = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.25), wp.quat_identity()))
-        builder.add_shape_box(top, hx=0.05, hy=0.05, hz=0.05)
-        free = builder.add_joint_free(base)
-        weld = builder.add_joint_fixed(
-            base, top, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity())
-        )
-        builder.add_articulation([free, weld])
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
-    return model, pipeline
 
 
 def _assert_resting_wrench(test, model, wrench):

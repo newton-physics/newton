@@ -13,31 +13,17 @@ import newton
 from newton._src.solvers.steel.kernels import accumulate_connect_wrenches_from_impulses, populate_connect_J_for_size
 from newton.exceptions import NewtonWarning
 from newton.solvers import SolverBase, SolverSteel
-from newton.tests.steel._fixtures import _build_carried_load, _build_four_bar, set_torsion_radius
+from newton.tests.steel._fixtures import (
+    _build_carried_load,
+    _build_four_bar,
+    _parent_wrench_scene,
+    set_torsion_radius,
+)
 from newton.tests.steel.test_articulation import _prescribe_carrier
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 FLAGS = {SolverBase.ObservableKind.BODY_PARENT_F}
 DT_parent_wrench = 1.0 / 120.0
-
-
-def _parent_wrench_scene(device):
-    """Two free boxes resting on the ground, each carrying a smaller box welded on top."""
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    for x in (0.0, 0.5):
-        base = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.1), wp.quat_identity()))
-        builder.add_shape_box(base, hx=0.1, hy=0.1, hz=0.1)
-        top = builder.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.25), wp.quat_identity()))
-        builder.add_shape_box(top, hx=0.05, hy=0.05, hz=0.05)
-        free = builder.add_joint_free(base)
-        weld = builder.add_joint_fixed(
-            base, top, parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.15), wp.quat_identity())
-        )
-        builder.add_articulation([free, weld])
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
-    return model, pipeline
 
 
 def test_parent_wrench_eager_step_before_first_replay(test, device):
