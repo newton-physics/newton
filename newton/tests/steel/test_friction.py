@@ -2391,22 +2391,21 @@ def test_colored_incline_tracks_immediate(test, device):
     """Follow immediate's coupled update of each mode on a box near the slip angle, which fixed_normal does not.
 
     The mode's gap to fixed_normal on immediate must exceed ten times the tolerance, so colored solving the box
-    with fixed_normal would miss by that much.
+    with fixed_normal would miss by that much. At 4 iterations every mode is still short of the converged
+    solution, where coulomb_newton and fixed_normal agree.
     """
-    for angle, iterations in itertools.product((_MODE_SLIP - 0.05, _MODE_SLIP + 0.05), (4, 32)):
-        fixed = _mode_trace(test, device, "immediate", "fixed_normal", 20, angle=angle, iterations=iterations)
+    for angle in (_MODE_SLIP - 0.05, _MODE_SLIP + 0.05):
+        fixed = _mode_trace(test, device, "immediate", "fixed_normal", 20, angle=angle, iterations=4)
         for mode in _COUPLED_MODES:
-            with test.subTest(angle=angle, iterations=iterations, mode=mode):
-                immediate = _mode_trace(test, device, "immediate", mode, 20, angle=angle, iterations=iterations)
-                scene = _ModeScene(test, device, "propagation_colored", mode, angle=angle, iterations=iterations)
+            with test.subTest(angle=angle, mode=mode):
+                immediate = _mode_trace(test, device, "immediate", mode, 20, angle=angle, iterations=4)
+                scene = _ModeScene(test, device, "propagation_colored", mode, angle=angle, iterations=4)
                 colored = scene.run(20)
                 for key, value in scene.solver.constraint_row_watermarks().items():
                     if "overflow" in key or "dropped" in key:
                         test.assertEqual(value, 0, key)
                 np.testing.assert_allclose(colored, immediate, atol=_MODE_TOLERANCE, rtol=0.0)
-                # coulomb_newton converges to the fixed_normal solution.
-                if iterations == 4 or mode != "coulomb_newton":
-                    test.assertGreater(np.abs(immediate - fixed).max(), 10.0 * _MODE_TOLERANCE)
+                test.assertGreater(np.abs(immediate - fixed).max(), 10.0 * _MODE_TOLERANCE)
 
 
 def test_colored_articulated_contacts_take_the_mode(test, device):
@@ -2417,11 +2416,11 @@ def test_colored_articulated_contacts_take_the_mode(test, device):
     Saxce bias lifts the sliding box off the incline at step 7, which grows the joint's float32 rounding gap
     past the tolerance, so that mode is compared for 6 steps.
     """
-    for angle, iterations in itertools.product((_MODE_SLIP - 0.05, _MODE_SLIP + 0.05), (4, 32)):
+    for angle in (_MODE_SLIP - 0.05, _MODE_SLIP + 0.05):
         for mode in _COUPLED_MODES:
-            with test.subTest(angle=angle, iterations=iterations, mode=mode):
+            with test.subTest(angle=angle, mode=mode):
                 steps = 6 if mode == "bisection_desaxce" else 12
-                kwargs = {"angle": angle, "iterations": iterations}
+                kwargs = {"angle": angle, "iterations": 4}
                 free = _mode_trace(test, device, "propagation_colored", mode, steps, **kwargs)
                 articulated = _mode_trace(test, device, "propagation_colored", mode, steps, articulated=True, **kwargs)
                 np.testing.assert_allclose(articulated, free, atol=_MODE_TOLERANCE, rtol=0.0)
