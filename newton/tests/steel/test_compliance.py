@@ -626,7 +626,8 @@ class _CompliantScene:
     """A compliant sphere-on-plane solver stepped from fixed buffers, so its steps can be captured."""
 
     def __init__(self, device, *, articulated, stiffness=3000.0, damping=5.0):
-        _, _, self.solver, _ = run_fixture(device=device, articulated=articulated, enabled=True, steps=1)
+        # Zero steps: the solver is constructed but never stepped, so the first capture is cold.
+        _, _, self.solver, _ = run_fixture(device=device, articulated=articulated, enabled=True, steps=0)
         self.model = model = self.solver.model
         with wp.ScopedDevice(device):
             self.pipeline = newton.CollisionPipeline(model, rigid_contact_max=32)
