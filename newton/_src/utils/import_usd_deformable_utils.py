@@ -191,16 +191,83 @@ def _read_deformable_element_array(
     return _DeformableElementArray(values, element_type, legacy_implicit_type)
 
 
+def _world_points(points, world_mat, *, translate: bool) -> np.ndarray:
+    """Apply the world affine, or only its linear part, to points in float64."""
+    m = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    transformed = pts @ m[:3, :3].T
+    return transformed + m[:3, 3] if translate else transformed
+
+
 def _bake_world_points(points, world_mat) -> list[wp.vec3]:
     """Bake the full world affine into points (vectorized), returning ``wp.vec3`` s.
 
     Applies non-uniform scale, shear, and reflection exactly -- a rotation/scale
     decomposition cannot represent either. Shared by the cable / cloth / volume passes.
     """
-    m = np.array(world_mat, dtype=np.float64).reshape(4, 4)
+    return [wp.vec3(float(x), float(y), float(z)) for x, y, z in _world_points(points, world_mat, translate=True)]
+
+
+def _rest_index_array(values, element_width: int, name: str) -> np.ndarray:
+    """Read integer rest indices without truncating malformed floating-point values."""
+    indices = np.asarray(values)
+    if indices.size == 0:
+        return np.empty((0, element_width), dtype=np.int64)
+    if not np.issubdtype(indices.dtype, np.integer):
+        raise ValueError(f"{name} must contain integer indices")
+    return indices.reshape(-1, element_width)
+
+
+def _rest_shape_indices(
+    authored_indices,
+    simulation_indices: np.ndarray,
+    simulation_point_count: int,
+    rest_point_count: int,
+    name: str,
+) -> np.ndarray:
+    """Default or validate rest topology, preserving simulation element order.
+
+    The simulation indices already have the caller's orientation correction. Explicit rest
+    indices retain their authored orientation for the caller to correct after validation.
+    """
+    if authored_indices is None or np.size(authored_indices) == 0:
+        if rest_point_count != simulation_point_count:
+            raise ValueError(f"restShapePoints must match points when {name} is omitted")
+        return simulation_indices
+    indices = _rest_index_array(authored_indices, simulation_indices.shape[1], name)
+    if len(indices) != len(simulation_indices):
+        raise ValueError(f"{name} must contain {len(simulation_indices)} elements to match the simulation topology")
+    if np.any(indices < 0) or np.any(indices >= rest_point_count):
+        raise ValueError(f"{name} contains an out-of-range point index")
+    return indices
+
+
+def _rest_topology_matches(rest_indices, simulation_indices, element_width: int) -> bool:
+    """Whether a rest topology authored without rest points equals the simulation topology.
+
+    The proposal derives ``restShapePoints`` from ``points`` only in that case; any other
+    authored rest topology is unusable without rest points.
+    """
+    try:
+        return np.array_equal(
+            _rest_index_array(rest_indices, element_width, "rest topology"),
+            np.asarray(simulation_indices, dtype=np.int64).reshape(-1, element_width),
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _transform_rest_points(points, world_mat) -> np.ndarray:
+    """Apply the world's linear transform to rest points in float64.
+
+    Rest geometry depends only on point differences, so the translation is omitted: it would
+    swamp small rest edges at large world offsets, and the live float32 bake already carries
+    the placement.
+    """
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    baked = pts @ m[:3, :3].T + m[:3, 3]
-    return [wp.vec3(float(x), float(y), float(z)) for x, y, z in baked]
+    if not np.all(np.isfinite(pts)):
+        raise ValueError("restShapePoints contains non-finite coordinates")
+    return _world_points(pts, world_mat, translate=False)
 
 
 class _UnionFind:
@@ -423,6 +490,21 @@ def _iter_deformable_collider_prims(body_root, ignore_paths: Sequence[str] = ())
             yield prim
 
 
+# Applied API schemas of the AOUSD proposal's deformable simulation families.
+_AOUSD_DEFORMABLE_SIM_APIS = frozenset(
+    {
+        "PhysicsCurvesDeformableSimAPI",
+        "PhysicsSurfaceDeformableSimAPI",
+        "PhysicsVolumeDeformableSimAPI",
+    }
+)
+
+
+def _is_aousd_deformable_sim_prim(prim) -> bool:
+    """Whether a prim applies one of the AOUSD deformable simulation APIs."""
+    return not _AOUSD_DEFORMABLE_SIM_APIS.isdisjoint(prim.GetPrimTypeInfo().GetAppliedAPISchemas())
+
+
 def _deformable_collision_enabled(prim, ignore_paths: Sequence[str] = ()) -> tuple[bool, list[str]]:
     """Resolve a deformable simulation geometry's collision participation.
 
@@ -589,23 +671,6 @@ def _mark_attachment_unsupported(attrs: dict, path: str, reason: str) -> None:
     """Record why a ``PhysicsAttachment`` was not imported and warn, preserving its attrs."""
     attrs["unsupported_reason"] = reason
     warnings.warn(f"{path}: {reason}", NewtonWarning, stacklevel=2)
-
-
-def _warn_unsupported_rest_fields(prim: Usd.Prim, path: str, names: Sequence[str], read_attr: Callable) -> None:
-    """Warn (once) if any authored rest-state field in ``names`` is present but not yet imported.
-
-    Rest-state import (rest shape, rest dihedral angles) is not implemented yet; warn rather than
-    silently drop an authored rest configuration.
-    """
-    authored = [name for name in names if read_attr(prim, name) is not None]
-    if not authored:
-        return
-    fields = ", ".join(f"'physics:{name}'" for name in authored)
-    if len(authored) == 1:
-        message = f"{fields} is authored but its import is not yet supported; it is ignored."
-    else:
-        message = f"{fields} are authored but their import is not yet supported; they are ignored."
-    warnings.warn(f"{path}: {message}", NewtonWarning, stacklevel=2)
 
 
 def _warn_dropped_velocities(prim: Usd.Prim, path: str) -> None:
@@ -1372,11 +1437,6 @@ def _scout_deformable_prims(
     # the traversal over just the discovered body subtrees, so a stage without
     # deformables pays nothing extra.
     if buckets.body_owner:
-        deformable_sim_apis = (
-            "PhysicsCurvesDeformableSimAPI",
-            "PhysicsSurfaceDeformableSimAPI",
-            "PhysicsVolumeDeformableSimAPI",
-        )
         stage = root_prim.GetStage()
         for body_path, owner_path in buckets.body_owner.items():
             body_prim = stage.GetPrimAtPath(body_path)
@@ -1386,12 +1446,10 @@ def _scout_deformable_prims(
                 path = str(prim.GetPath())
                 if _prim_has_collision_api(prim):
                     buckets.native_physics_exclude_paths.append(path)
-                elif path != owner_path and not (
-                    prim.IsA(UsdGeom.TetMesh)
-                    or any(s in deformable_sim_apis for s in prim.GetPrimTypeInfo().GetAppliedAPISchemas())
-                ):
+                elif path != owner_path and not (prim.IsA(UsdGeom.TetMesh) or _is_aousd_deformable_sim_prim(prim)):
                     # Simulation candidates of any family are handled (or warned) by their
-                    # own passes; everything else is unembedded graphics geometry.
+                    # own passes, and the volume pass warns about non-simulation TetMeshes
+                    # itself; everything else is unembedded graphics geometry.
                     buckets.native_physics_exclude_paths.append(path)
                     warnings.warn(
                         f"{path}: PointBased geometry under deformable body {body_path} cannot "
@@ -1440,5 +1498,7 @@ class _DeformableImportContext:
     path_soft_attrs: dict
     path_attachment_map: dict
     path_attachment_attrs: dict
+    # Articulation index -> self-collision flag, consumed by the importer's filter pass.
+    articulation_has_self_collision: dict[int, bool]
     # Filled by _scout_deformable_prims so the passes iterate buckets instead of the stage.
     prims: _DeformablePrimBuckets = field(default_factory=_DeformablePrimBuckets)

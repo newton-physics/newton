@@ -3,14 +3,17 @@
 
 from __future__ import annotations
 
+import copy
 import enum
 import hashlib
 import math
 import os
+import re
 import sys
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -19,6 +22,7 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
+from ..core.host_transform import transform_add_translation, transform_from_array, transform_multiply
 from ..core.types import MAXVAL, Axis
 from ..exceptions import NewtonWarning
 from .kernels import (
@@ -32,7 +36,6 @@ from .kernels import (
     repack_shape_opacities,
     transform_points,
 )
-from .transform import transform_add_translation, transform_from_array, transform_multiply
 from .utils import OPAQUE_OPACITY_THRESHOLD
 
 MAX_TRIANGLE_OPACITY_GROUPS = 32
@@ -46,6 +49,14 @@ _DEFAULT_LAYER_ID = "__default__"
 
 #: Fields that configure a layer itself rather than model/runtime state.
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
+
+_VIEWER_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_]")
+
+
+def _viewer_path_component(value: object) -> str:
+    """Return a stable viewer path component that is also valid in USD."""
+    component = _VIEWER_PATH_COMPONENT_RE.sub("_", str(value)).strip("_")
+    return component or "unnamed"
 
 
 def _mesh_texture_uvs(mesh: newton.Mesh) -> np.ndarray | None:
@@ -124,6 +135,8 @@ class ViewerBase(ABC):
         MARGIN_GAP = 2
         """Wireframe at ``shape_margin`` + ``shape_gap`` (outer contact threshold), not gap alone."""
 
+    _supports_deformable_visual_meshes = False
+
     def __init__(self):
         """Initialize shared viewer state and rendering caches."""
         self.time = 0.0
@@ -131,6 +144,10 @@ class ViewerBase(ABC):
         self.picking_enabled = True
         self._camera_speed = 4.0
         self._rendering_paused = False
+        # Built-in display controls record explicit edits for example switching.
+        # Constructor defaults must not become preferences for later examples.
+        # Contact force scale is stored as a gain relative to model calibration.
+        self._display_options_user: dict[str, Any] = {}
 
         # Layer registry. The default layer is always present and has an
         # empty name prefix to keep backward compatibility for code that
@@ -164,6 +181,106 @@ class ViewerBase(ABC):
         active_layer_id = self.__dict__.get("_active_layer_id")
         if layers is not None and active_layer_id in layers:
             setattr(layers[active_layer_id], name, value)
+
+    @staticmethod
+    def _apply_attrs(target: Any, values: dict[str, Any]) -> None:
+        """Apply a saved set of display attributes to its owner."""
+        for name, value in values.items():
+            setattr(target, name, value)
+
+    def _edit_display_option(self, target: Any, name: str, widget: Callable, label: str, *args) -> None:
+        """Apply a widget's value and remember only explicit user edits."""
+        changed, value = widget(label, getattr(target, name), *args)
+        setattr(target, name, value)
+        if changed:
+            self._display_options_user[name] = value
+
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Restore reset state, or explicit display choices when entering a new example."""
+        user_options = self._display_options_user
+        option_names = {
+            "visible",
+            "sdf_margin_mode",
+            "contact_mode_eps_force",
+            "contact_mode_eps_velocity",
+            "contact_viz_scale",
+            "gaussians_max_points",
+        }
+        saved = {
+            layer_id: {
+                name: value
+                for name, value in vars(layer).items()
+                if name.startswith("show_") or name in option_names or name in user_options
+            }
+            for layer_id, layer in self.layers.items()
+        }
+        force_gains = {
+            layer_id: layer.contact_force_scale / layer._contact_force_scale_default
+            for layer_id, layer in self.layers.items()
+        }
+        active_id = self.layer.layer_id
+        defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
+        globals_saved = {
+            name: user_options[name] if switching else getattr(self, name)
+            for name in ("show_ui", "vsync", "_paused", "camera_speed")
+            if hasattr(self, name) and (not switching or name in user_options)
+        }
+        camera = getattr(self, "camera", None)
+        # Reset keeps the navigated view in every interactive backend. A new
+        # scene chooses its own framing, projection, and navigation speed.
+        camera_saved = {
+            name: copy.deepcopy(getattr(camera, name))
+            for name in ("fov", "near", "far", "pos", "pitch", "yaw", "pivot")
+            if not switching and hasattr(camera, name)
+        }
+        renderer = getattr(self, "renderer", None)
+        # Include recorded names directly so new controls need no switch allowlist.
+        render_saved = {
+            name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
+            for name in (
+                "draw_sky",
+                "draw_shadows",
+                "draw_wireframe",
+                "draw_edges",
+                "wireframe_line_width",
+                "_light_color",
+                "sky_upper",
+                "sky_lower",
+                "arrow_scale",
+                "joint_scale",
+                "com_scale",
+                *user_options,
+            )
+            if hasattr(renderer, name) and (not switching or name in user_options)
+        }
+        try:
+            yield
+        finally:
+            for layer_id, layer in self.layers.items():
+                if switching:
+                    options = {name: value for name, value in user_options.items() if hasattr(layer, name)}
+                    if "contact_force_scale" in user_options:
+                        options["contact_force_scale"] = (
+                            layer._contact_force_scale_default * user_options["contact_force_scale"]
+                        )
+                else:
+                    options = dict(saved.get(layer_id, defaults))
+                    options["contact_force_scale"] = layer._contact_force_scale_default * force_gains.get(
+                        layer_id, force_gains.get(active_id, 1.0)
+                    )
+                for name, value in options.items():
+                    setattr(layer, name, value)
+                    if layer is self.layer and name != "visible":
+                        setattr(self, name, value)
+                layer.model_changed = True
+                if layer is self.layer:
+                    self.model_changed = True
+            self._apply_attrs(self, globals_saved)
+            camera = getattr(self, "camera", None)
+            if camera is not None:
+                self._apply_attrs(camera, camera_saved)
+            self._apply_attrs(getattr(self, "renderer", None), render_saved)
 
     @staticmethod
     def _snapshot_layer_runtime_fields(layer: Layer) -> frozenset[str]:
@@ -361,7 +478,7 @@ class ViewerBase(ABC):
 
         The transform is applied to every drawn position/orientation in the
         layer (shapes, contacts, joints, COM markers, inertia boxes,
-        hydroelastic contact surfaces, gaussians, SDF margin wireframes).
+        hydroelastic contact surfaces, visual meshes, gaussians, SDF margin wireframes).
         It is independent of the per-world spacing controlled by
         :meth:`set_world_offsets`: layer transforms reposition a whole
         layer (e.g. an entire solver's view in a multi-solver comparison)
@@ -619,6 +736,13 @@ class ViewerBase(ABC):
 
         # World offset support
         layer.world_offsets = None
+        # Deformable visual data and transformed viewer buffers.
+        layer._deformable_visuals: newton.geometry.DeformableVisuals | None = None
+        layer._deformable_visuals_explicit = False
+        layer._deformable_visual_mesh_names: dict[int, str] = {}
+        layer._deformable_visual_textures: dict[str, np.ndarray | None] = {}
+        layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array]] = {}
+        layer._deformable_visual_mesh_null_offsets: wp.array | None = None
         layer._user_spacing: tuple[float, float, float] | None = None
         layer._visible_worlds: set[int] | None = None
         layer._visible_worlds_mask: wp.array | None = None
@@ -639,6 +763,7 @@ class ViewerBase(ABC):
         layer.show_contact_forces = True  # Force arrows require CONTACT_F solver observable.
         layer.show_springs = False
         layer.show_triangles = True
+        layer.show_deformable_visual_meshes = self._supports_deformable_visual_meshes
         layer.show_gaussians = False
         layer.show_collision = False
         layer.show_visual = True
@@ -732,6 +857,40 @@ class ViewerBase(ABC):
 
             # Adapt contact-visualization scales to the model.
             self._auto_compute_contact_scales()
+
+    def set_deformable_visuals(self, visuals: newton.geometry.DeformableVisuals | None) -> None:
+        """Use precomputed deformable visuals when logging model states.
+
+        Passing shared visual data lets the viewer reuse the same evaluated
+        points and normals as other viewers or external renderers. Pass
+        ``None`` to restore automatic evaluation during :meth:`log_state`.
+        Update or replay before logging the corresponding state. The viewer waits
+        for the output but does not check which State produced it or its freshness.
+        Backends that do not draw skinned meshes keep the reference and never
+        read it.
+
+        Args:
+            visuals: Updated visual data for the current model, or ``None``.
+
+        Raises:
+            RuntimeError: If no model has been set.
+            TypeError: If ``visuals`` is not :class:`newton.geometry.DeformableVisuals`.
+            ValueError: If ``visuals`` belongs to another model.
+
+        .. experimental::
+        """
+        if visuals is None:
+            self._deformable_visuals = None
+            self._deformable_visuals_explicit = False
+            return
+        if self.model is None:
+            raise RuntimeError("Model must be set before calling set_deformable_visuals()")
+        if not isinstance(visuals, newton.geometry.DeformableVisuals):
+            raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
+        if visuals.model is not self.model:
+            raise ValueError("DeformableVisuals was created for another model.")
+        self._deformable_visuals = visuals
+        self._deformable_visuals_explicit = True
 
     def _should_render_world(self, world_idx: int) -> bool:
         """Check if a world should be rendered based on visible worlds."""
@@ -1028,17 +1187,19 @@ class ViewerBase(ABC):
         """Adapt contact-visualization scales to the current model.
 
         Sets the relative ``contact_viz_scale`` default and adapts
-        ``contact_force_scale`` to the aggregate model weight.
+        ``contact_force_scale`` to the mean dynamic mass of populated local
+        worlds plus shared global dynamic mass, multiplied by the first
+        gravity vector's magnitude.
 
-        Falls back to the literal defaults if the relevant model data is
-        unavailable (e.g. no shapes / no dynamic bodies / zero gravity).
+        Uses nominal gravity when gravity is zero or unavailable, and a unit
+        characteristic force when no dynamic mass is available.
         """
         # Save the previous defaults so we can detect user overrides set
         # before the model was attached (rare but possible).
         prev_default_scale = self._contact_viz_scale_default
         prev_default_force_scale = self._contact_force_scale_default
 
-        # Characteristic force F_char = sum(dynamic body mass) * |gravity|.
+        # Replicating identical worlds must not change force-arrow lengths.
         F_char = 0.0
         if (
             self.model is not None
@@ -1049,7 +1210,14 @@ class ViewerBase(ABC):
             mass_np = self.model.body_mass.numpy()
             inv_mass_np = self.model.body_inv_mass.numpy()
             dyn_mask = np.isfinite(mass_np) & (inv_mass_np > 0.0)
-            total_mass = float(mass_np[dyn_mask].sum()) if dyn_mask.any() else 0.0
+            dynamic_mass = mass_np[dyn_mask]
+            mean_mass = float(dynamic_mass.sum())
+            if self.model.body_world is not None:
+                worlds = self.model.body_world.numpy()[dyn_mask]
+                local_mask = worlds >= 0
+                # Global bodies are shared by local worlds, not another replica.
+                mean_mass = float(dynamic_mass[~local_mask].sum())
+                mean_mass += float(dynamic_mass[local_mask].sum()) / max(1, len(np.unique(worlds[local_mask])))
             g_mag = 9.81
             if self.model.gravity is not None:
                 g_np = self.model.gravity.numpy()
@@ -1058,7 +1226,7 @@ class ViewerBase(ABC):
                     g_mag = float(np.linalg.norm(g0))
                     if not np.isfinite(g_mag) or g_mag <= 0.0:
                         g_mag = 9.81
-            F_char = total_mass * g_mag
+            F_char = mean_mass * g_mag
         if not np.isfinite(F_char) or F_char <= 0.0:
             F_char = 1.0
 
@@ -1140,7 +1308,7 @@ class ViewerBase(ABC):
             materials = shapes.materials if self.model_changed else None
 
             # Capsules may be rendered via a specialized path by the concrete viewer/backend
-            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # (e.g., deforming a shared capsule prototype to batch different dimensions).
             # The base implementation of log_capsules() falls back to log_instances().
             if shapes.geo_type == newton.GeoType.CAPSULE:
                 self.log_capsules(
@@ -1282,6 +1450,7 @@ class ViewerBase(ABC):
         self._log_inertia_boxes(state)
         self._log_sdf_margin_wireframes(state)
 
+        self._log_deformable_visual_meshes(state)
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
@@ -1303,7 +1472,7 @@ class ViewerBase(ABC):
           (gated on :attr:`show_contact_normals`).
         * ``"/contacts/modes"`` — thin oriented disks at each contact, color
           coded by inferred contact mode (open / stick / slip) when contact
-          force output is available, else by a uniform default color
+          force output is available, else amber to indicate an unknown mode
           (gated on :attr:`show_contact_disks`).
         * ``"/contacts/forces"`` — arrows along the linear part of
           the contact-force output (gated on :attr:`show_contact_forces`;
@@ -1440,6 +1609,7 @@ class ViewerBase(ABC):
                     self.model.shape_world,
                     self.model.shape_collision_radius,
                     self.world_offsets,
+                    self.layer.xform,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
@@ -1447,8 +1617,9 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_point0,
                     contacts.rigid_contact_point1,
                     contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
-                    contact_f,  # may be None — kernel falls back to default color
+                    contact_f,  # may be None — kernel uses the unknown-mode color
                     contact_scale * 0.2,
                     contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
@@ -1456,6 +1627,7 @@ class ViewerBase(ABC):
                     wp.vec3(0.1, 0.1, 0.1),  # open: black
                     wp.vec3(0.6, 0.6, 0.6),  # stick: light gray
                     wp.vec3(0.2, 0.2, 0.9),  # slip: blue
+                    wp.vec3(0.95, 0.7, 0.3),  # unknown: amber
                 ],
                 outputs=[self._contact_disk_xforms, self._contact_disk_scales, self._contact_disk_colors],
                 device=self.device,
@@ -1492,6 +1664,7 @@ class ViewerBase(ABC):
                     self.model.shape_world,
                     self.model.shape_collision_radius,
                     self.world_offsets,
+                    self.layer.xform,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
@@ -3396,6 +3569,115 @@ class ViewerBase(ABC):
                         color=color,
                         opacity=opacity,
                     )
+
+    def _deformable_visual_texture(self, texture):
+        """Decode an immutable path texture once per model layer; image arrays pass through."""
+        if not isinstance(texture, str):
+            return texture
+        if texture not in self._deformable_visual_textures:
+            from .utils import prepare_viewer_texture  # noqa: PLC0415
+
+            self._deformable_visual_textures[texture] = prepare_viewer_texture(texture)
+        return self._deformable_visual_textures[texture]
+
+    def _log_deformable_visual_mesh(self, name, points, indices, **kwargs):
+        """Send evaluated geometry to the selected backend."""
+        self.log_mesh(name, points, indices, **kwargs)
+
+    def _log_deformable_visual_meshes(self, state: newton.State):
+        """Skin and draw the visual meshes embedded in deformables.
+
+        Skinning and normal recomputation run on-device through
+        :meth:`newton.geometry.DeformableVisuals.update`; backends receive the
+        deformed geometry through the visual-mesh hook.
+        Skinned meshes draw in
+        addition to the raw simulation triangles; toggle ``show_triangles`` and
+        ``show_deformable_visual_meshes`` independently from regular visual
+        shapes.
+        """
+        meshes = self.model.deformable_visual_meshes
+        if not meshes:
+            return
+        show = self.show_deformable_visual_meshes and not self._layer_force_hidden()
+        visible = show and any(self._should_render_world(mesh.world) for mesh in meshes)
+        if not self._supports_deformable_visual_meshes:
+            # Rendering backends without skin support reject the option instead of
+            # silently showing nothing; non-rendering backends override this hook.
+            if visible:
+                raise NotImplementedError(
+                    f"{type(self).__name__} does not draw deformable visual meshes yet; set "
+                    "show_deformable_visual_meshes to False to display the simulation geometry."
+                )
+            return
+
+        from .kernels import apply_world_offset_and_layer_transform_normals  # noqa: PLC0415
+
+        visuals = self._deformable_visuals
+        if visible:
+            if visuals is None:
+                visuals = newton.geometry.DeformableVisuals(self.model)
+                self._deformable_visuals = visuals
+            if not self._deformable_visuals_explicit:
+                visuals.update(state)
+            visuals.wait()
+
+        for rm in meshes:
+            name = self._deformable_visual_mesh_names.get(rm.index)
+            if name is None:
+                # The invariant index keeps replicated worlds' duplicate labels distinct, and the
+                # name is fixed at first use so a later label edit does not strand a stale object.
+                # Prefix the component with "mesh" so USD-backed viewers do not receive prim
+                # names that start with a digit.
+                suffix = f"_{_viewer_path_component(rm.label)}" if rm.label else ""
+                name = self._qualify(f"/model/deformable_visual_meshes/mesh_{rm.index}{suffix}")
+                self._deformable_visual_mesh_names[rm.index] = name
+            if not (show and self._should_render_world(rm.world)):
+                # Keep valid geometry registered so visibility can toggle back on.
+                self._log_deformable_visual_mesh(
+                    name,
+                    rm.rest_vertices,
+                    rm.indices,
+                    uvs=rm.uvs,
+                    texture=rm.texture,
+                    hidden=True,
+                    backface_culling=False,
+                )
+                continue
+
+            n = rm.vertex_count
+            scratch = self._deformable_visual_mesh_scratch.get(rm.index)
+            if scratch is None or len(scratch[0]) != n:
+                scratch = (
+                    wp.empty(n, dtype=wp.vec3, device=self.device),
+                    wp.zeros(n, dtype=wp.vec3, device=self.device),
+                )
+                self._deformable_visual_mesh_scratch[rm.index] = scratch
+            points, normals = scratch
+
+            # World offsets stay on-device; a missing offset buffer skips the add.
+            offsets = self.world_offsets
+            world_index = rm.world if offsets is not None else -1
+            if offsets is None:
+                if self._deformable_visual_mesh_null_offsets is None:
+                    self._deformable_visual_mesh_null_offsets = wp.zeros(1, dtype=wp.vec3, device=self.device)
+                offsets = self._deformable_visual_mesh_null_offsets
+            wp.launch(
+                apply_world_offset_and_layer_transform_normals,
+                dim=n,
+                inputs=[visuals.get_points(rm), visuals.get_normals(rm), offsets, world_index, self.layer.xform],
+                outputs=[points, normals],
+                device=self.device,
+            )
+            self._log_deformable_visual_mesh(
+                name,
+                points,
+                rm.indices,
+                normals=normals,
+                uvs=rm.uvs,
+                texture=rm.texture,
+                hidden=False,
+                backface_culling=False,
+            )
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:

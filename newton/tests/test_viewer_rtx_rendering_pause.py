@@ -20,7 +20,8 @@ class TestRenderingPauseRTX(unittest.TestCase):
         """Create a viewer without initializing a renderer or a window."""
         stack = contextlib.ExitStack()
         self.addCleanup(stack.close)
-        stack.enter_context(patch_sys_module("ovrtx", mock.Mock(__version__="0.3.0")))
+        stack.enter_context(patch_sys_module("ovrtx", mock.Mock()))
+        stack.enter_context(patch_sys_module("ovstage", mock.Mock()))
         with wp.ScopedDevice("cpu"):
             self.viewer = ViewerRTX(headless=True, num_frames=4)
         self.addCleanup(self.viewer.close)

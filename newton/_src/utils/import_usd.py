@@ -163,8 +163,6 @@ def parse_usd(
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
-    legacy_angular_velocity_units: bool = False,
-    legacy_springref_units: bool = False,
     return_deformable_results: bool = False,
     allow_unsafe_torch_checkpoints: bool = False,
 ) -> dict[str, Any]:
@@ -178,6 +176,8 @@ def parse_usd(
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
         source: The file path to the USD file, or an existing USD stage instance.
         xform: The transform to apply to the entire scene.
+            If ``parent_body`` is set, imported bodies are placed relative to that
+            body's frame; static shapes still use ``xform`` in the world frame.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
             preserving only the internal structure (relative body positions). Useful
@@ -256,7 +256,7 @@ def parse_usd(
         verbose: If True, log additional information about the parsed USD file. Default is False.
         ignore_paths: A list of regular expressions matching prim paths to ignore.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+        enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
         root_path: The USD path to import, defaults to "/". Bound physics materials
             outside this subtree are resolved without importing unrelated bodies
@@ -303,32 +303,6 @@ def parse_usd(
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
-        legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state angular velocity handling:
-            resolved ``state:angular:physics:velocity``
-            and D6 ``state:rot*:physics:velocity`` values are copied into
-            ``joint_qd`` without converting degrees/s to radians/s. Applies
-            to revolute, native D6, and merged joints. Rigid-body velocities,
-            linear joint velocities, positions, and drive targets retain their
-            usual unit conversion. Defaults to False.
-
-            .. deprecated:: 1.7
-                This temporary flag will be removed in Newton 1.8. Enabling
-                it emits a :class:`DeprecationWarning`. Migrate authored
-                asset values to their documented units and leave it False.
-
-        legacy_springref_units: If True, restore Newton 1.6 handling of ``mjc:springref`` as an
-            already converted Newton value, ignoring
-            ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
-            conversion is unchanged. Requires registered MuJoCo custom
-            attributes to load spring references. Defaults to False, which
-            interprets revolute spring references using the compiler's angle
-            units (degrees if unauthored) and converts them to radians.
-
-            .. deprecated:: 1.7
-                This temporary flag will be removed in Newton 1.8. Enabling
-                it emits a :class:`DeprecationWarning`. Migrate authored
-                asset values to their documented units and leave it False.
-
         return_deformable_results: If True, include the experimental deformable entries in the
             returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
@@ -455,18 +429,6 @@ def parse_usd(
             * - ``"actuator_count"``
               - Number of external actuators parsed from the USD stage
     """
-    for name, enabled in (
-        ("legacy_angular_velocity_units", legacy_angular_velocity_units),
-        ("legacy_springref_units", legacy_springref_units),
-    ):
-        if enabled:
-            warnings.warn(
-                f"{name}=True is deprecated and will be removed in Newton 1.8. "
-                "Migrate authored asset values to their documented units and leave this option False.",
-                NewtonDeprecationWarning,
-                stacklevel=_external_warning_stacklevel(),
-            )
-
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
     first_imported_joint = builder.joint_count
@@ -646,8 +608,6 @@ def parse_usd(
         limit_gains_configured=default_joint_limit_gains_configured,
         mjc_resolver=mjc_resolver,
         verbose=verbose,
-        legacy_angular_velocity_units=legacy_angular_velocity_units,
-        legacy_springref_units=legacy_springref_units,
     )
     solreflimit_mode_key = "mujoco:solreflimit_mode"
     solreflimit_gain_baseline_key = "mujoco:solreflimit_gain_baseline"
@@ -1674,6 +1634,8 @@ def parse_usd(
                     break
                 current_prim = current_prim.GetParent()
 
+    articulation_has_self_collision = {}
+
     _deformable_ctx = _DeformableImportContext(
         builder=builder,
         stage=stage,
@@ -1702,6 +1664,7 @@ def parse_usd(
         path_soft_attrs=path_soft_attrs,
         path_attachment_map=path_attachment_map,
         path_attachment_attrs=path_attachment_attrs,
+        articulation_has_self_collision=articulation_has_self_collision,
         prims=_deformable_prims,
     )
 
@@ -1746,9 +1709,6 @@ def parse_usd(
         if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
     ]
     authored_articulation_root_paths.sort(key=len, reverse=True)
-
-    # maps from articulation_id to bool indicating if self-collisions are enabled
-    articulation_has_self_collision = {}
 
     if UsdPhysics.ObjectType.Articulation in ret_dict:
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
