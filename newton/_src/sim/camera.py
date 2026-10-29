@@ -15,10 +15,7 @@ from enum import IntEnum
 
 
 class CameraLens(IntEnum):
-    """Lens model of a model camera.
-
-    .. experimental::
-    """
+    """Lens model of a model camera."""
 
     PINHOLE = 0
     """Ideal pinhole projection defined by the camera's focal length, aperture

@@ -1991,55 +1991,25 @@ class ModelBuilder:
 
         # cameras
         self.camera_label: list[str] = []
-        """Labels accumulated for :attr:`Model.camera_label`.
-
-        .. experimental::
-        """
+        """Labels accumulated for :attr:`Model.camera_label`."""
         self.camera_world: list[int] = []
-        """World indices accumulated for :attr:`Model.camera_world`.
-
-        .. experimental::
-        """
+        """World indices accumulated for :attr:`Model.camera_world`."""
         self.camera_body: list[int] = []
-        """Parent body indices accumulated for :attr:`Model.camera_body`.
-
-        .. experimental::
-        """
+        """Parent body indices accumulated for :attr:`Model.camera_body`."""
         self.camera_transform: list[Transform] = []
-        """Camera mount transforms accumulated for :attr:`Model.camera_transform`.
-
-        .. experimental::
-        """
+        """Camera mount transforms accumulated for :attr:`Model.camera_transform`."""
         self.camera_lens: list[int] = []
-        """Lens models accumulated for :attr:`Model.camera_lens`.
-
-        .. experimental::
-        """
+        """Lens models accumulated for :attr:`Model.camera_lens`."""
         self.camera_focal_length: list[float] = []
-        """Focal lengths [m] accumulated for :attr:`Model.camera_focal_length`.
-
-        .. experimental::
-        """
+        """Focal lengths [m] accumulated for :attr:`Model.camera_focal_length`."""
         self.camera_aperture: list[tuple[float, float]] = []
-        """Apertures [m] accumulated for :attr:`Model.camera_aperture`.
-
-        .. experimental::
-        """
+        """Apertures [m] accumulated for :attr:`Model.camera_aperture`."""
         self.camera_aperture_offset: list[tuple[float, float]] = []
-        """Aperture offsets [m] accumulated for :attr:`Model.camera_aperture_offset`.
-
-        .. experimental::
-        """
+        """Aperture offsets [m] accumulated for :attr:`Model.camera_aperture_offset`."""
         self.camera_clipping_range: list[tuple[float, float]] = []
-        """Clip ranges [m] accumulated for :attr:`Model.camera_clipping_range`.
-
-        .. experimental::
-        """
+        """Clip ranges [m] accumulated for :attr:`Model.camera_clipping_range`."""
         self.camera_resolution: list[tuple[int, int]] = []
-        """Nominal resolutions [px] accumulated for :attr:`Model.camera_resolution`.
-
-        .. experimental::
-        """
+        """Nominal resolutions [px] accumulated for :attr:`Model.camera_resolution`."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_label: list[str] = []
@@ -2499,10 +2469,7 @@ class ModelBuilder:
 
     @property
     def camera_count(self) -> int:
-        """Number of declared cameras.
-
-        .. experimental::
-        """
+        """Number of declared cameras."""
         return len(self.camera_label)
 
     @property
@@ -9557,8 +9524,6 @@ class ModelBuilder:
         right (USD, OpenGL and MuJoCo convention). Cameras added inside a world
         context belong to that world; cameras added at global scope (world ``-1``)
         are rendered once per world by :class:`~newton.sensors.SensorCamera`.
-
-        .. experimental::
 
         Args:
             body: Parent body index, or ``-1`` for a fixed camera.

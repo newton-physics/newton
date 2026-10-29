@@ -250,10 +250,7 @@ class Model:
         VOLUME = 25
         """Experimental frequency for recorded deformable volumes (see :attr:`~newton.Model.volume_count`)."""
         CAMERA = 26
-        """Attribute frequency follows the number of model cameras (see :attr:`~newton.Model.camera_count`).
-
-        .. experimental::
-        """
+        """Attribute frequency follows the number of model cameras (see :attr:`~newton.Model.camera_count`)."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -1054,66 +1051,33 @@ class Model:
 
         # cameras
         self.camera_count: int = 0
-        """Number of model cameras.
-
-        .. experimental::
-        """
+        """Number of model cameras."""
         self.camera_label: list[str] = []
-        """Camera labels, shape (camera_count,).
-
-        .. experimental::
-        """
+        """Camera labels, shape (camera_count,)."""
         self.camera_world: wp.array[wp.int32] | None = None
         """Owning world of each camera, shape [camera_count], int. ``-1`` is the global world;
-        a global camera is rendered once per world.
-
-        .. experimental::
-        """
+        a global camera is rendered once per world."""
         self.camera_body: wp.array[wp.int32] | None = None
-        """Parent body of each camera, shape [camera_count], int. ``-1`` means the camera is fixed.
-
-        .. experimental::
-        """
+        """Parent body of each camera, shape [camera_count], int. ``-1`` means the camera is fixed."""
         self.camera_transform: wp.array[wp.transformf] | None = None
         """Camera frame relative to its parent body, or its world pose for fixed cameras [m, unitless quaternion],
-        shape [camera_count], transform. The camera looks along its local -Z axis with +Y up.
-
-        .. experimental::
-        """
+        shape [camera_count], transform. The camera looks along its local -Z axis with +Y up."""
         self.camera_lens: wp.array[wp.int32] | None = None
-        """Lens model of each camera (:class:`~newton.CameraLens`), shape [camera_count], int.
-
-        .. experimental::
-        """
+        """Lens model of each camera (:class:`~newton.CameraLens`), shape [camera_count], int."""
         self.camera_focal_length: wp.array[wp.float32] | None = None
-        """Focal length of each pinhole camera [m], shape [camera_count], float.
-
-        .. experimental::
-        """
+        """Focal length of each pinhole camera [m], shape [camera_count], float."""
         self.camera_aperture: wp.array[wp.vec2f] | None = None
         """Horizontal and vertical aperture (sensor size) of each pinhole camera [m], shape [camera_count], vec2.
         A zero component is derived from the rendered image aspect ratio. When both are set, the aperture
         maps onto :attr:`camera_resolution`; at other image aspect ratios it is expanded to keep that pixel
-        aspect ratio (square pixels without a resolution), like USD's default ``expandAperture`` policy.
-
-        .. experimental::
-        """
+        aspect ratio (square pixels without a resolution), like USD's default ``expandAperture`` policy."""
         self.camera_aperture_offset: wp.array[wp.vec2f] | None = None
-        """Horizontal and vertical principal-point offset of each pinhole camera [m], shape [camera_count], vec2.
-
-        .. experimental::
-        """
+        """Horizontal and vertical principal-point offset of each pinhole camera [m], shape [camera_count], vec2."""
         self.camera_clipping_range: wp.array[wp.vec2f] | None = None
         """Near and far clip distance of each camera [m], shape [camera_count], vec2. Distances are measured
-        along each ray from the camera origin, not as planar depth.
-
-        .. experimental::
-        """
+        along each ray from the camera origin, not as planar depth."""
         self.camera_resolution: wp.array[wp.vec2i] | None = None
-        """Nominal (width, height) of each camera [px], shape [camera_count], vec2i. ``(0, 0)`` means unspecified.
-
-        .. experimental::
-        """
+        """Nominal (width, height) of each camera [px], shape [camera_count], vec2i. ``(0, 0)`` means unspecified."""
 
         # tendons (cable-driven mechanisms)
         self.tendon_count: int = 0

@@ -223,10 +223,7 @@ class SensorCamera:
     """
 
     class RayMode(enum.IntEnum):
-        """How a bound sensor obtains the rays of built-in pinhole lenses.
-
-        .. experimental::
-        """
+        """How a bound sensor obtains the rays of built-in pinhole lenses."""
 
         PRECOMPUTED = 0
         """Cache one ray bundle per distinct lens among the selected cameras."""
@@ -295,9 +292,8 @@ class SensorCamera:
 
         .. experimental::
 
-            ``cameras``, ``sites``, ``width``, ``height``, ``sample_count``,
-            ``ray_mode``, ``ray_function``, ``ray_params`` and ``clipping_range``
-            are part of the experimental model-camera API.
+            ``ray_function`` and ``ray_params``, and the sharing of scene state
+            between bound sensors, may change without a deprecation period.
 
         Args:
             model: Newton simulation model to render. The sensor builds and owns
@@ -434,35 +430,17 @@ class SensorCamera:
 
         device = self.device
         self.width = int(width)
-        """Image width [px] of a bound sensor.
-
-        .. experimental::
-        """
+        """Image width [px] of a bound sensor."""
         self.height = int(height)
-        """Image height [px] of a bound sensor.
-
-        .. experimental::
-        """
+        """Image height [px] of a bound sensor."""
         self.sample_count = int(sample_count)
-        """Rays per pixel of a bound sensor.
-
-        .. experimental::
-        """
+        """Rays per pixel of a bound sensor."""
         self.view_count = len(view_frame)
-        """Number of views rendered by a bound sensor.
-
-        .. experimental::
-        """
+        """Number of views rendered by a bound sensor."""
         self.view_camera = wp.array(view_frame, dtype=wp.int32, device=device)
-        """Model camera (or site) index of each view, shape ``(view_count,)``.
-
-        .. experimental::
-        """
+        """Model camera (or site) index of each view, shape ``(view_count,)``."""
         self.view_world = wp.array(view_world, dtype=wp.int32, device=device)
-        """World rendered by each view, shape ``(view_count,)``.
-
-        .. experimental::
-        """
+        """World rendered by each view, shape ``(view_count,)``."""
 
         self._view_frame_np = np.asarray(view_frame, dtype=np.int32)
         self._view_lens_np = np.asarray([frame_lens[f] for f in view_frame], dtype=np.int32)
@@ -499,10 +477,7 @@ class SensorCamera:
 
     @property
     def is_bound(self) -> bool:
-        """Whether this sensor renders model cameras or sites selected at construction.
-
-        .. experimental::
-        """
+        """Whether this sensor renders model cameras or sites selected at construction."""
         return self._bound
 
     def _require_bound(self) -> None:
@@ -539,10 +514,7 @@ class SensorCamera:
         ``camera_aperture_offset`` or ``camera_resolution`` when using
         :attr:`RayMode.PRECOMPUTED`. Views with
         identical intrinsics share one bundle. Custom bundles set with
-        :meth:`set_camera_rays` are kept.
-
-        .. experimental::
-        """
+        :meth:`set_camera_rays` are kept."""
         self._require_bound()
         pinhole_views = np.flatnonzero(self._view_lens_np == int(CameraLens.PINHOLE))
         bundle_params = np.zeros((0, 4), dtype=np.float32)
@@ -619,8 +591,6 @@ class SensorCamera:
         again with the same selection and shapes is a device copy that keeps the
         storage address, so it can run inside a captured CUDA graph.
 
-        .. experimental::
-
         Args:
             rays: One ``(height, width, sample_count, 2)`` bundle shared by the
                 selected views, or a sequence with one bundle per selected camera
@@ -682,8 +652,6 @@ class SensorCamera:
 
     def compute_view_transforms(self, state: State, out: wp.array[wp.transformf] | None = None) -> wp.array:
         """Compute the world-space pose of every view of a bound sensor.
-
-        .. experimental::
 
         Args:
             state: State providing ``body_q``.
