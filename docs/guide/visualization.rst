@@ -571,6 +571,13 @@ The camera's normal shape/particle BVH update requirements still apply; see
 device buffers. Binding is a one-time CPU operation and can be expensive for
 large meshes. Supply precomputed triangle or tet weights for large assets.
 
+Each camera owns its deformed Gaussian transforms, scales, and sample BVHs.
+It shares the asset's colors and opacity without changing the rest geometry.
+Supplying ``deformable_visuals`` skips Gaussian evaluation and uses those
+transforms and scales instead. The model's shape BVH is still shared: update
+each camera for the intended state before rendering. This does not provide
+independent concurrent snapshots of different states.
+
 Visual mesh textures are asset data. GL reuses them between geometry updates;
 do not mutate a visual texture image in place. Ordinary ``log_mesh()`` calls
 still upload image changes. Texture projection for UV-less skinned meshes is

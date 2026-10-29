@@ -14914,25 +14914,11 @@ class ModelBuilder:
             finalized_geos_by_identity = {}  # object id -> finalized geometry
             gaussians = []
             gaussian_bvhs = []
-            deformable_gaussian_shapes = {spec["shape"] for spec in self._deformable_visual_gaussians}
             heightfield_meshes = []
             mesh_keep_alive = []
-            for shape_index, geo in enumerate(generated_shape_sources):
+            for geo in generated_shape_sources:
                 if not geo:
                     geo_sources.append(0)
-                    continue
-
-                # Deformable Gaussian shapes need independent runtime buffers;
-                # replicated fields may share identical rest appearance but
-                # evaluate to different transforms in each world.
-                if shape_index in deformable_gaussian_shapes:
-                    gaussian_data = geo.finalize(
-                        device=device,
-                        bvh_constructor=self.default_bvh_cfg.gaussian_constructor,
-                    )
-                    geo_sources.append(len(gaussians))
-                    gaussians.append(gaussian_data)
-                    gaussian_bvhs.append(geo.bvh)
                     continue
 
                 # Replicated builders reuse geometry objects across worlds. Use

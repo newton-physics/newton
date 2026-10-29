@@ -703,26 +703,6 @@ class DeformableVisuals:
         return self.gaussian_scales[start:end]
 
 
-def skin_deformable_visual_gaussian(
-    visual: DeformableVisualGaussian,
-    state: State,
-    model: Model,
-    out_transforms: wp.array[wp.transform],
-    out_scales: wp.array[wp.vec3],
-    out_offset: int = 0,
-) -> None:
-    """Evaluate one field with the same bindings and math as the batched output."""
-    batch = model._get_deformable_visual_gaussian_batch()
-    start, end = batch.ranges[visual.index]
-    wp.launch(
-        _skin_deformable_visual_gaussians,
-        dim=end - start,
-        inputs=[state.particle_q, model.tet_indices, batch.bindings],
-        outputs=[out_transforms, out_scales, start, out_offset],
-        device=model.device,
-    )
-
-
 @wp.kernel
 def _skin_deformable_visual_batch_particle(
     particle_q: wp.array[wp.vec3],

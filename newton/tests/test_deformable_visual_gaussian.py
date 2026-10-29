@@ -781,6 +781,24 @@ class TestDeformableVisualGaussianEvaluation(unittest.TestCase):
 class TestDeformableVisualGaussianSensor(unittest.TestCase):
     """Camera consumption through the public deformable visual output."""
 
+    def test_shared_asset_keeps_per_shape_hit_capacity(self):
+        """Sharing asset storage must not reduce the number of shape hits a ray can keep."""
+        gaussian = newton.Gaussian([[0, 0, 0]], scales=[[0.2, 0.2, 0.2]], sh_coeffs=[[2, -1.7, -1.7]])
+        builder = newton.ModelBuilder()
+        for x in (-0.4, 0.4):
+            builder.add_shape_gaussian(-1, gaussian=gaussian, xform=wp.transform(wp.vec3(x, 0, 0), wp.quat_identity()))
+        model = builder.finalize(device="cpu")
+        sensor = SensorCamera(model, default_render_config=SensorCamera.RenderConfig(enable_particles=False))
+        self.assertEqual(sensor._render_context._render_state.num_gaussians, 2)
+        rays = sensor.compute_camera_rays_pinhole(48, 32, camera_fov=math.radians(55), device="cpu")
+        cameras = wp.array([wp.transform(wp.vec3(0, 0, 2), wp.quat_identity())], dtype=wp.transform, device="cpu")
+        rgb = sensor.allocate_image_color_hdr(1, 48, 32)
+        sensor.update(model.state(), cameras, rays, hdr_color_image=rgb)
+        image = rgb.numpy()[0]
+        red = (image[..., 0] > image[..., 1] + 0.3) & (image[..., 0] > image[..., 2] + 0.3)
+        self.assertGreater(np.count_nonzero(red[:, :24]), 3)
+        self.assertGreater(np.count_nonzero(red[:, 24:]), 3)
+
     def test_camera_bounds_cover_large_gaussian_field(self):
         """Render samples outside the first lane of a multi-tile Gaussian field."""
         builder = _soft_builder()
@@ -876,6 +894,7 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         )
         depth_image = sensor.allocate_image_depth(model.world_count, width, height)
 
+        rest_asset = gaussian._warp_data.transforms.numpy().copy()
         sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
         rest_depth = float(depth_image.numpy()[0, height // 2, width // 2])
 
@@ -888,12 +907,35 @@ class TestDeformableVisualGaussianSensor(unittest.TestCase):
         self.assertGreater(rest_depth, 0.0)
         self.assertGreater(moved_depth, 0.0)
         self.assertAlmostEqual(rest_depth - moved_depth, 0.4, delta=0.1)
+        # A camera must not deform the asset reused by ordinary Gaussian shapes or another camera.
+        np.testing.assert_array_equal(gaussian._warp_data.transforms.numpy(), rest_asset)
 
         direct_depth = depth_image.numpy().copy()
+        rgb = sensor.allocate_image_color_hdr(model.world_count, width, height)
+        sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image, hdr_color_image=rgb)
+        direct_rgb = rgb.numpy().copy()
         visuals = newton.geometry.DeformableVisuals(model)
         visuals.update(state)
-        sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image, deformable_visuals=visuals)
+        # Shared output is consumed as supplied; changing the source must not reskin it.
+        state.particle_q.assign(rest_particles)
+        sensor.update(
+            state,
+            camera_transforms,
+            camera_rays,
+            depth_image=depth_image,
+            hdr_color_image=rgb,
+            deformable_visuals=visuals,
+        )
         np.testing.assert_allclose(depth_image.numpy(), direct_depth, atol=1e-6)
+        np.testing.assert_allclose(rgb.numpy(), direct_rgb, atol=1e-6)
+        if model.device.is_cuda:
+            with wp.ScopedCapture(device=model.device) as capture:
+                sensor.update(state, camera_transforms, camera_rays, depth_image=depth_image)
+            wp.capture_launch(capture.graph)
+            self.assertAlmostEqual(float(depth_image.numpy()[0, height // 2, width // 2]), rest_depth, delta=1e-5)
+            state.particle_q.assign(moved)
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(depth_image.numpy(), direct_depth, atol=1e-6)
 
     def test_camera_keeps_replicated_gaussians_independent(self):
         """Render one independently deformed Gaussian field in each world."""
