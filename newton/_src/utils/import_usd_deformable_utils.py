@@ -1447,6 +1447,8 @@ def _scout_deformable_prims(
             if not body_prim or not body_prim.IsValid():
                 continue
             for prim in usd.find_deformable_visual_prims(body_prim):
+                if usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI"):
+                    continue
                 path = str(prim.GetPath())
                 if not prim.GetPath().HasPrefix(root_prim.GetPath()) or _is_ignored_path(path, ignore_paths):
                     continue
@@ -1526,3 +1528,4 @@ class _DeformableImportContext:
     cable_visual_bind_errors: dict[int, str] = field(default_factory=dict)
     cable_visual_sim_paths: set[str] = field(default_factory=set)
     cable_visual_bind_points: dict[str, np.ndarray | None] = field(default_factory=dict)
+    path_deformable_visual_map: dict[str, int] = field(default_factory=dict)

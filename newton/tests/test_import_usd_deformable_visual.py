@@ -64,9 +64,13 @@ class TestUSDDeformableVisual(unittest.TestCase):
         for family in ("curve", "surface", "volume"):
             self._object(stage, f"/World/{family}", family)
         prototype = newton.ModelBuilder()
-        prototype.add_usd(stage)
+        result = prototype.add_usd(stage, return_deformable_results=True)
+        visual_indices = result["path_deformable_visual_map"]
+        self.assertEqual(
+            visual_indices, {f"/World/{family}/Skin": i for i, family in enumerate(("curve", "surface", "volume"))}
+        )
         physics = newton.ModelBuilder()
-        physics.add_usd(stage, load_visual_shapes=False)
+        self.assertNotIn("path_deformable_visual_map", physics.add_usd(stage, load_visual_shapes=False))
         for field in ("particle_q", "particle_mass", "body_q", "body_mass", "joint_q"):
             np.testing.assert_array_equal(getattr(prototype, field), getattr(physics, field))
         self.assertEqual(physics.finalize(device="cpu").deformable_visual_mesh_count, 0)
@@ -76,10 +80,8 @@ class TestUSDDeformableVisual(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertEqual(model.deformable_visual_mesh_count, 6)
         self.assertEqual([mesh.world for mesh in model.deformable_visual_meshes], [0, 0, 0, 1, 1, 1])
-        for mesh in model.deformable_visual_meshes:
-            self.assertEqual(mesh.graphics_path, mesh.label)
-            self.assertEqual(mesh.sim_path, f"{mesh.body_path}/Sim")
-            self.assertEqual(mesh.graphics_path, f"{mesh.body_path}/Skin")
+        for path, index in visual_indices.items():
+            self.assertEqual(model.deformable_visual_meshes[index].label, path)
         self.assertEqual(
             {mesh.kind for mesh in model.deformable_visual_meshes},
             {
@@ -179,11 +181,14 @@ class TestUSDDeformableVisual(unittest.TestCase):
         """
         stage = _deformable_stage()
         sim, mesh, _ = self._object(stage, "/World/Object", "curve")
-        bind = np.asarray(sim.GetPointsAttr().Get())
+        bind = np.array(sim.GetPointsAttr().Get())
+        # Short segments must use the same unit-tangent frame transport as long ones.
+        bind[:, :2] *= 0.1
         self._bind(sim.GetPrim(), bind)
         # Initial geometry: the bind cable turned a quarter turn about +z.
         sim.GetPointsAttr().Set(np.column_stack([-bind[:, 1], bind[:, 0], bind[:, 2]]).tolist())
         skin = np.array([(0.5, 0.1, 1.0), (1.5, 0.1, 1.0), (1.0, 0.1, 1.2)])
+        skin[:, :2] *= 0.1
         mesh.GetPointsAttr().Set(skin.tolist())
         builder = newton.ModelBuilder()
         builder.add_usd(stage)
@@ -241,13 +246,17 @@ class TestUSDDeformableVisual(unittest.TestCase):
                     self._object(stage, f"/World/{family}/Good", family)
                 builder = newton.ModelBuilder()
                 with self.assertLogs("newton", level="WARNING") as logs:
-                    builder.add_usd(stage)
+                    result = builder.add_usd(stage, return_deformable_results=True)
                 for family in families:
                     self.assertTrue(any(f"/World/{family}/Bad/Skin" in message for message in logs.output))
                 model = builder.finalize(device="cpu")
                 self.assertEqual(
                     [mesh.label for mesh in model.deformable_visual_meshes],
                     [f"/World/{family}/Good/Skin" for family in families],
+                )
+                self.assertEqual(
+                    result["path_deformable_visual_map"],
+                    {mesh.label: mesh.index for mesh in model.deformable_visual_meshes},
                 )
                 self.assertGreater(model.body_count, 0)
                 self.assertGreater(model.particle_count, 0)
@@ -287,15 +296,21 @@ class TestUSDDeformableVisual(unittest.TestCase):
         UsdPhysics.RigidBodyAPI.Apply(rigid.GetPrim())
         self._object(stage, "/World/Rigid/Soft", "surface")
         UsdGeom.Points.Define(stage, "/World/Rigid/Soft/Points").CreatePointsAttr([(0, 0, 1)])
-        for load_visuals in (True, False):
-            with self.subTest(load_visuals=load_visuals):
+        sites = [f"/World/Rigid/Soft/{api}" for api in ("NewtonSiteAPI", "MjcSiteAPI")]
+        for path in sites:
+            site = self._mesh(stage, path, [(0, 0, 1), (1, 0, 1), (0, 1, 1)])
+            site.GetPrim().AddAppliedSchema(path.rsplit("/", 1)[1])
+        for load_visuals, load_sites in ((True, True), (False, True), (True, False)):
+            with self.subTest(load_visuals=load_visuals, load_sites=load_sites):
                 builder = newton.ModelBuilder()
                 with self.assertLogs("newton", level="WARNING") as logs:
-                    result = builder.add_usd(stage, load_visual_shapes=load_visuals)
+                    result = builder.add_usd(stage, load_visual_shapes=load_visuals, load_sites=load_sites)
                 self.assertTrue(
                     any("/World/Rigid/Soft/Points" in message and "skipping" in message for message in logs.output)
                 )
                 self.assertNotIn("/World/Rigid/Soft/Skin", result["path_shape_map"])
+                for path in sites:
+                    self.assertEqual(path in result["path_shape_map"], load_sites)
                 model = builder.finalize(device="cpu")
                 self.assertGreater(model.particle_count, 0)
                 self.assertEqual(model.deformable_visual_mesh_count, int(load_visuals))
@@ -312,9 +327,9 @@ class TestUSDDeformableVisual(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 builder.add_usd(stage, hide_collision_shapes=True, force_show_colliders=True)
                 self.assertGreater(builder.shape_count, 0)
-                self.assertTrue(
-                    all(bool(flags & newton.ShapeFlags.VISIBLE) != visible for flags in builder.shape_flags)
-                )
+                for body, flags in zip(builder.shape_body, builder.shape_flags, strict=True):
+                    # The small skin covers only the first of the two cable segments.
+                    self.assertEqual(bool(flags & newton.ShapeFlags.VISIBLE), not visible or body == 1)
                 self.assertTrue(all(flags & newton.ShapeFlags.COLLIDE_SHAPES for flags in builder.shape_flags))
 
 

@@ -4878,7 +4878,7 @@ class ModelBuilder:
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
             return_deformable_results: If True, include the experimental deformable entries in the
-                returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
+                returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
                 default return shape carries no deformable additions.
             allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
@@ -4968,6 +4968,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``return_deformable_results=True``.
                 * - ``"path_soft_map"``
                   - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
+                * - ``"path_deformable_visual_map"``
+                  - Mapping from graphics Mesh prim path (str) to its index in :attr:`Model.deformable_visual_meshes`. Includes only successfully imported visual meshes. Present only with ``return_deformable_results=True``. The indices describe this import, not copies created by later builder composition or replication.
                 * - ``"path_cable_attrs"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_attrs"``
@@ -14364,9 +14366,13 @@ class ModelBuilder:
             raise ValueError("add_deformable_visual_mesh(kind='body'): requires at least one body")
         if int(bodies.min()) < 0 or int(bodies.max()) >= self.body_count:
             raise ValueError("add_deformable_visual_mesh: bodies reference bodies outside the current builder")
-        body_q = np.asarray(
-            [self.body_q[body] for body in bodies] if poses is None else poses, dtype=np.float64
-        ).reshape(-1, 7)
+        if poses is None:
+            # Explicit parents can repeat a body for thousands of visual vertices.
+            unique_bodies, inverse = np.unique(bodies, return_inverse=True)
+            body_q = np.asarray([self.body_q[body] for body in unique_bodies], dtype=np.float64).reshape(-1, 7)
+            body_q = body_q[inverse]
+        else:
+            body_q = np.asarray(poses, dtype=np.float64).reshape(-1, 7)
         if nearest:
             # The center of mass sits inside a segment whatever its frame origin, so a rod binds
             # each vertex to the segment around it. Temporary memory is bound by the vertex count.
@@ -14513,6 +14519,14 @@ class ModelBuilder:
             )
         return parent.numpy().copy(), weights.numpy().copy()
 
+    def _set_deformable_visual_source_paths(
+        self, index: int, *, body_path: str, sim_path: str, graphics_path: str
+    ) -> None:
+        """Keep source metadata for preview recording and namespace rebasing."""
+        self._deformable_visual_meshes[index].update(
+            body_path=body_path, sim_path=sim_path, graphics_path=graphics_path
+        )
+
     def _finalize_deformable_visual_meshes(
         self,
     ) -> tuple[tuple[DeformableVisualMesh, ...], _DeformableVisualSkinBatches]:
@@ -14585,11 +14599,10 @@ class ModelBuilder:
                     world=int(worlds[0]),
                     label=spec["label"],
                     index=index,
-                    body_path=spec.get("body_path"),
-                    sim_path=spec.get("sim_path"),
-                    graphics_path=spec.get("graphics_path"),
                 )
             )
+            for name in ("body_path", "sim_path", "graphics_path"):
+                setattr(meshes[-1], f"_{name}", spec.get(name))
         batches.meshes = tuple(meshes)
         return batches.meshes, batches
 

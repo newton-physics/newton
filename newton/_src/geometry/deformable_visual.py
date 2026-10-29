@@ -77,9 +77,6 @@ class DeformableVisualMesh:
         world: int = -1,
         label: str = "",
         index: int = -1,
-        body_path: str | None = None,
-        sim_path: str | None = None,
-        graphics_path: str | None = None,
     ) -> None:
         """Store a visual mesh and its simulation binding.
 
@@ -95,9 +92,6 @@ class DeformableVisualMesh:
             world: Owning model world, or ``-1`` for global geometry.
             label: Display label.
             index: Index in :attr:`newton.Model.deformable_visual_meshes`.
-            body_path: Owning deformable body USD path, when imported.
-            sim_path: Driving simulation geometry USD path, when imported.
-            graphics_path: Visual mesh USD path, when imported.
         """
         self._kind = DeformableVisualMesh.Kind(kind)
         self._rest_vertices = rest_vertices
@@ -115,28 +109,10 @@ class DeformableVisualMesh:
         self.label = label
         """Display label. Imported path labels follow requested namespace rebasing.
         Not unique; use :attr:`index` for a stable identity."""
-        self._body_path = body_path
-        self._sim_path = sim_path
-        self._graphics_path = graphics_path
-
-    @property
-    def body_path(self) -> str | None:
-        """Owning USD deformable body path, or ``None`` for native meshes. Read-only."""
-        return self._body_path
-
-    @property
-    def sim_path(self) -> str | None:
-        """Simulation geometry USD path, or ``None`` for native meshes. Read-only."""
-        return self._sim_path
-
-    @property
-    def graphics_path(self) -> str | None:
-        """Graphics mesh USD path, or ``None`` for native meshes. Read-only.
-
-        Imported meshes start with this path as their :attr:`label`. All three paths
-        follow destination namespaces when replication explicitly requests rebasing.
-        """
-        return self._graphics_path
+        # Retained for preview recording and explicit namespace rebasing, not public lookup.
+        self._body_path: str | None = None
+        self._sim_path: str | None = None
+        self._graphics_path: str | None = None
 
     @property
     def kind(self) -> Kind:

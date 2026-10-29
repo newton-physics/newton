@@ -1007,7 +1007,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                 attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
                 for attr, value in data["attributes"].items()
             }
-            return DeformableVisualMesh(
+            mesh = DeformableVisualMesh(
                 kind=attributes["kind"],
                 rest_vertices=attributes["rest_vertices"],
                 indices=attributes["indices"],
@@ -1019,10 +1019,10 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                 world=attributes.get("world", -1),
                 label=attributes.get("label", ""),
                 index=attributes.get("index", -1),
-                body_path=attributes.get("body_path"),
-                sim_path=attributes.get("sim_path"),
-                graphics_path=attributes.get("graphics_path"),
             )
+            for name in ("body_path", "sim_path", "graphics_path"):
+                setattr(mesh, f"_{name}", attributes.get(name))
+            return mesh
 
         # Fallback: return a flat dict of decoded attributes for other custom classes.
         return {

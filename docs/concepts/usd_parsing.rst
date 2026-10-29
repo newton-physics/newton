@@ -639,11 +639,23 @@ whether a rigid shape is visible: the prim is visible and its purpose is
 ``default`` or ``proxy``. ``ignore_paths`` applies too. A malformed visual is
 logged and skipped without removing valid physics or sibling meshes.
 
-Imported meshes expose their source ``body_path``, ``sim_path``, and
-``graphics_path``. Composition and replication retain these paths by default; ``world`` identifies
-each copy. To rebase labels and paths into cloned USD namespaces, pass
+Use the optional import result to look up a visual mesh by its USD path:
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+   result = builder.add_usd("deformable.usda", return_deformable_results=True)
+   mesh_index = result["path_deformable_visual_map"]["/World/SoftToy/Skin"]
+   model = builder.finalize()
+   skin = model.deformable_visual_meshes[mesh_index]
+
+The map contains only successfully imported visual meshes. Its indices describe
+this builder after import; it does not track copies made by later composition or
+replication. Imported meshes use their graphics prim path as their initial label;
+``world`` identifies each copy. The preview keeps source metadata internally for
+recording. To rebase labels and that metadata into cloned USD namespaces, pass
 ``source_path_prefix`` and ``destination_path_prefixes`` to
-:meth:`ModelBuilder.replicate`.
+:meth:`ModelBuilder.replicate`. The import result map still describes the original import.
 
 Embeddings are computed at import time. Authored per-vertex mesh embedding weights and other PointBased graphics are
 not imported by this path. The Gaussian extension described above is separate.

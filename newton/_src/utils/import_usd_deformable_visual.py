@@ -111,8 +111,8 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
                 "add_usd",
                 "bindPose",
                 wp.quat(*body_q[3:7]),
-                wp.vec3(*initial_direction),
-                wp.vec3(*bind_direction),
+                ModelBuilder._rod_segment_direction(initial[start], initial[end])[0],
+                ModelBuilder._rod_segment_direction(points[start], points[end])[0],
             )
             origin = points[start] + along * bind_direction
             ctx.cable_visual_bind_poses[body] = wp.transform(wp.vec3(*origin), frame)
@@ -292,15 +292,14 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                         texture=texture,
                         label=path,
                     )
-                    skinned_bodies.update(bodies)
+                    # A partial skin must not hide unbound segments of the cable.
+                    skinned_bodies.update(builder._deformable_visual_meshes[index]["parent"])
             except ValueError as exc:
                 logger.warning("%s: could not embed visual mesh; skipping (%s)", path, exc)
                 continue
 
-            spec = builder._deformable_visual_meshes[index]
-            spec["body_path"] = body_path
-            spec["sim_path"] = sim_path
-            spec["graphics_path"] = path
+            ctx.path_deformable_visual_map[path] = index
+            builder._set_deformable_visual_source_paths(index, body_path=body_path, sim_path=sim_path, graphics_path=path)
             if ctx.verbose:
                 logger.info("  Embedded visual mesh %s (%d verts) in %s %s.", path, len(world_verts), family, sim_path)
 

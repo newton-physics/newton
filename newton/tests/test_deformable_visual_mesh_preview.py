@@ -120,9 +120,9 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         self.assertEqual(model.deformable_visual_mesh_count, 1)
         rm = model.deformable_visual_meshes[0]
         self.assertEqual(rm.kind, newton.geometry.DeformableVisualMesh.Kind.TETRAHEDRON)
-        self.assertEqual(rm.body_path, "/World/Tire")
-        self.assertEqual(rm.sim_path, "/World/Tire/Sim")
-        self.assertEqual(rm.graphics_path, "/World/Tire/Skin")
+        self.assertEqual(rm._body_path, "/World/Tire")
+        self.assertEqual(rm._sim_path, "/World/Tire/Sim")
+        self.assertEqual(rm.label, "/World/Tire/Skin")
 
         # Rigid translation of the soft body carries the skinned vertices exactly.
         state = model.state()
@@ -152,13 +152,13 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
             with self.subTest(world=world):
                 self.assertEqual(mesh.world, world)
                 self.assertEqual(mesh.label, f"{destination}/Skin")
-                self.assertEqual(mesh.body_path, destination)
-                self.assertEqual(mesh.sim_path, f"{destination}/Sim")
-                self.assertEqual(mesh.graphics_path, f"{destination}/Skin")
+                self.assertEqual(mesh._body_path, destination)
+                self.assertEqual(mesh._sim_path, f"{destination}/Sim")
+                self.assertEqual(mesh._graphics_path, f"{destination}/Skin")
                 self.assertEqual(mesh.parent.numpy().tolist(), [world, world, world])
 
         source_mesh = template.finalize().deformable_visual_meshes[0]
-        self.assertEqual(source_mesh.graphics_path, "/World/envs/env_0/Object/Skin")
+        self.assertEqual(source_mesh._graphics_path, "/World/envs/env_0/Object/Skin")
 
     def test_replicate_combines_label_and_visual_path_prefixes(self):
         """Prefix model labels while replacing deformable visual USD namespaces."""
@@ -181,7 +181,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         self.assertEqual(scene.body_label, ["left/marker", "right/marker"])
         self.assertEqual(scene.shape_label, ["left/marker_box", "right/marker_box"])
         self.assertEqual(
-            [mesh.graphics_path for mesh in model.deformable_visual_meshes],
+            [mesh._graphics_path for mesh in model.deformable_visual_meshes],
             ["/World/envs/env_4/Object/Skin", "/World/envs/env_9/Object/Skin"],
         )
 
@@ -215,10 +215,10 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
 
         builder = self._import(stage)
         model = builder.finalize()
-        by_path = {rm.graphics_path: rm for rm in model.deformable_visual_meshes}
+        by_path = {rm.label: rm for rm in model.deformable_visual_meshes}
         self.assertEqual(set(by_path), {"/World/Outer/SkinA", "/World/Outer/SkinB", "/World/Outer/Inner/Skin"})
-        self.assertEqual(by_path["/World/Outer/SkinA"].body_path, "/World/Outer")
-        self.assertEqual(by_path["/World/Outer/Inner/Skin"].body_path, "/World/Outer/Inner")
+        self.assertEqual(by_path["/World/Outer/SkinA"]._body_path, "/World/Outer")
+        self.assertEqual(by_path["/World/Outer/Inner/Skin"]._body_path, "/World/Outer/Inner")
         # The nested body's mesh embeds in the nested body's own tets.
         self.assertNotEqual(
             by_path["/World/Outer/SkinA"].parent.numpy()[0], by_path["/World/Outer/Inner/Skin"].parent.numpy()[0]
@@ -447,7 +447,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
                 self.assertIn("/World/Tire/BadSkin", "\n".join(logs.output))
                 model = builder.finalize()
                 self.assertEqual(model.deformable_visual_mesh_count, 1)
-                self.assertEqual(model.deformable_visual_meshes[0].graphics_path, "/World/Tire/GoodSkin")
+                self.assertEqual(model.deformable_visual_meshes[0].label, "/World/Tire/GoodSkin")
                 visuals = newton.geometry.DeformableVisuals(model)
                 visuals.update(model.state())
                 self.assertTrue(np.isfinite(visuals.points.numpy()).all())
@@ -513,7 +513,7 @@ class TestDeformableVisualMeshUSDImport(unittest.TestCase):
         self.assertEqual(model.deformable_visual_mesh_count, 1)
         rm = model.deformable_visual_meshes[0]
         self.assertEqual(rm.kind, newton.geometry.DeformableVisualMesh.Kind.BODY)
-        self.assertEqual(rm.body_path, "/World/Body")
+        self.assertEqual(rm._body_path, "/World/Body")
         parents = rm.parent.numpy()
         self.assertTrue((parents >= 0).all() and (parents < model.body_count).all())
 
