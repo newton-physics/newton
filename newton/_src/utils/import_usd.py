@@ -860,7 +860,8 @@ def parse_usd(
                 _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, False)
             return
 
-        if path_name in deformable_visual_exclude_paths:
+        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
+        if not is_site and path_name in deformable_visual_exclude_paths:
             if recurse:
                 _load_visual_shape_children(
                     parent_body_id, prim, body_xform, articulation_root_xform, allow_visual_shapes
@@ -871,7 +872,6 @@ def parse_usd(
         if type_name.endswith("joint"):
             return
 
-        is_site = usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI")
         if is_site and not load_sites:
             return
         if not is_site and not allow_visual_shapes:

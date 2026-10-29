@@ -290,13 +290,19 @@ class TestUSDDeformableVisual(unittest.TestCase):
         UsdPhysics.RigidBodyAPI.Apply(rigid.GetPrim())
         self._object(stage, "/World/Rigid/Soft", "surface")
         UsdGeom.Points.Define(stage, "/World/Rigid/Soft/Points").CreatePointsAttr([(0, 0, 1)])
-        for load_visuals in (True, False):
-            with self.subTest(load_visuals=load_visuals):
+        sites = [f"/World/Rigid/Soft/{api}" for api in ("NewtonSiteAPI", "MjcSiteAPI")]
+        for path in sites:
+            site = self._mesh(stage, path, [(0, 0, 1), (1, 0, 1), (0, 1, 1)])
+            site.GetPrim().AddAppliedSchema(path.rsplit("/", 1)[1])
+        for load_visuals, load_sites in ((True, True), (False, True), (True, False)):
+            with self.subTest(load_visuals=load_visuals, load_sites=load_sites):
                 builder = newton.ModelBuilder()
                 with self.assertLogs("newton", level="WARNING") as logs:
-                    result = builder.add_usd(stage, load_visual_shapes=load_visuals)
+                    result = builder.add_usd(stage, load_visual_shapes=load_visuals, load_sites=load_sites)
                 self.assertTrue(any("unsupported graphics" in message for message in logs.output))
                 self.assertNotIn("/World/Rigid/Soft/Skin", result["path_shape_map"])
+                for path in sites:
+                    self.assertEqual(path in result["path_shape_map"], load_sites)
                 model = builder.finalize(device="cpu")
                 self.assertGreater(model.particle_count, 0)
                 self.assertEqual(model.deformable_visual_mesh_count, int(load_visuals))
@@ -313,9 +319,9 @@ class TestUSDDeformableVisual(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 builder.add_usd(stage, hide_collision_shapes=True, force_show_colliders=True)
                 self.assertGreater(builder.shape_count, 0)
-                self.assertTrue(
-                    all(bool(flags & newton.ShapeFlags.VISIBLE) != visible for flags in builder.shape_flags)
-                )
+                for body, flags in zip(builder.shape_body, builder.shape_flags, strict=True):
+                    # The small skin covers only the first of the two cable segments.
+                    self.assertEqual(bool(flags & newton.ShapeFlags.VISIBLE), not visible or body == 1)
                 self.assertTrue(all(flags & newton.ShapeFlags.COLLIDE_SHAPES for flags in builder.shape_flags))
 
 

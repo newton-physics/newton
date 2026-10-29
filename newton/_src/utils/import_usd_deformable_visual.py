@@ -239,7 +239,8 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                         texture=texture,
                         label=path,
                     )
-                    skinned_bodies.update(bodies)
+                    # A partial skin must not hide unbound segments of the cable.
+                    skinned_bodies.update(builder._deformable_visual_meshes[index]["parent"])
             except ValueError as exc:
                 logger.warning("%s: could not embed visual mesh; skipping (%s)", path, exc)
                 continue

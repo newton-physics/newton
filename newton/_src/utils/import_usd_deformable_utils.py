@@ -1442,6 +1442,8 @@ def _scout_deformable_prims(
             if not body_prim or not body_prim.IsValid():
                 continue
             for prim in usd.find_deformable_visual_prims(body_prim):
+                if usd.has_applied_api_schema(prim, "NewtonSiteAPI") or usd.has_applied_api_schema(prim, "MjcSiteAPI"):
+                    continue
                 path = str(prim.GetPath())
                 if not prim.GetPath().HasPrefix(root_prim.GetPath()) or _is_ignored_path(path, ignore_paths):
                     continue
