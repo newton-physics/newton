@@ -990,5 +990,74 @@ add_function_test(
 )
 
 
+def test_propagation_constraint_max_sizes_the_propagation_family(test, device):
+    """Size the propagation rows from ``propagation_constraint_max`` instead of the summed budgets."""
+    model = _box_on_ground(device)
+    options = {"solve_mode": "matrix_free", "articulated_contact_response": "propagation_colored"}
+    summed = SolverSteel(model, articulation_constraint_max=32, free_body_constraint_max=256, **options)
+    test.assertIsNone(summed.propagation_constraint_max)
+    test.assertEqual(summed._propagation_max_constraints, 256 + 32)
+    decoupled = SolverSteel(
+        model, articulation_constraint_max=32, free_body_constraint_max=16, propagation_constraint_max=288, **options
+    )
+    test.assertEqual(decoupled.propagation_constraint_max, 288)
+    test.assertEqual(decoupled._propagation_max_constraints, 288)
+    test.assertEqual(decoupled.free_body_constraint_max, 16)
+    with test.assertRaisesRegex(ValueError, "propagation_constraint_max must be >= 1"):
+        SolverSteel(model, propagation_constraint_max=0, **options)
+    with test.assertRaisesRegex(ValueError, "propagation_constraint_max requires"):
+        SolverSteel(model, solve_mode="matrix_free", propagation_constraint_max=64)
+
+
+def test_propagation_constraint_max_keeps_contact_rows_with_a_small_free_body_budget(test, device):
+    """Keep every contact row when the propagation family is sized for them and the free-body budget is small."""
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    for i in range(3):
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1 + 0.2 * i), wp.quat_identity()))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+
+    def step_and_read_watermarks(**options):
+        solver = SolverSteel(
+            model,
+            solve_mode="matrix_free",
+            articulated_contact_response="propagation_colored",
+            free_body_constraint_max=4,
+            row_watermark=True,
+            warn_constraint_overflow=False,
+            **options,
+        )
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        for _ in range(5):
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 0.005)
+            state_0, state_1 = state_1, state_0
+        return solver.constraint_row_watermarks()
+
+    summed = step_and_read_watermarks()
+    test.assertGreater(summed["propagation_dropped_contact_rows_high_water"], 0)
+    sized = step_and_read_watermarks(propagation_constraint_max=256)
+    test.assertEqual(sized["propagation_dropped_contact_rows_high_water"], 0)
+    test.assertGreater(sized["propagation_high_water"], 4)
+
+
+add_function_test(
+    TestSteelRowAllocation,
+    "test_propagation_constraint_max_sizes_the_propagation_family",
+    test_propagation_constraint_max_sizes_the_propagation_family,
+    devices=get_cuda_test_devices(),
+)
+add_function_test(
+    TestSteelRowAllocation,
+    "test_propagation_constraint_max_keeps_contact_rows_with_a_small_free_body_budget",
+    test_propagation_constraint_max_keeps_contact_rows_with_a_small_free_body_budget,
+    devices=get_cuda_test_devices(),
+)
+
+
 if __name__ == "__main__":
     unittest.main()

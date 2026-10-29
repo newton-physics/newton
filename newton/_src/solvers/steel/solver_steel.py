@@ -646,8 +646,8 @@ def _warn_constraint_row_overflow(
         if propagation_requested > propagation_capacity and wp.atomic_exch(warning_emitted, 3, 1) == 0:
             wp.printf(
                 "Warning: Steel propagation constraint-row overflow in world %d: requested %d rows, "
-                "limit %d; dropped %d contact/friction rows. Increase free_body_constraint_max or "
-                "articulation_constraint_max.\n",
+                "limit %d; dropped %d contact/friction rows. Increase propagation_constraint_max or, when "
+                "it is unset, free_body_constraint_max or articulation_constraint_max.\n",
                 world,
                 propagation_requested,
                 propagation_capacity,
@@ -1470,6 +1470,7 @@ class SolverSteel(SolverBase):
     enable_joint_friction = _ConstructionOption()
     articulation_constraint_max = _ConstructionOption()
     free_body_constraint_max = _ConstructionOption()
+    propagation_constraint_max = _ConstructionOption()
     warn_constraint_overflow = _StepOption(lambda name, value: bool(value))
     row_watermark = _ConstructionOption()
     drive_mode = _ConstructionOption()
@@ -1621,6 +1622,7 @@ class SolverSteel(SolverBase):
         enable_joint_friction: bool = False,
         articulation_constraint_max: int = 32,
         free_body_constraint_max: int = 512,
+        propagation_constraint_max: int | None = None,
         warn_constraint_overflow: bool = True,
         row_watermark: bool = False,
         drive_mode: Literal["augmented", "rows"] = "augmented",
@@ -1753,6 +1755,12 @@ class SolverSteel(SolverBase):
                 world.
             free_body_constraint_max: Capacity of free-body contact rows per world. Rows beyond it
                 are dropped and reported, see :attr:`constraint_overflow`.
+            propagation_constraint_max: Capacity of the propagation row family per world in the
+                ``"propagation"`` and ``"propagation_colored"`` responses, which hold every contact
+                row. ``None`` (default) uses ``free_body_constraint_max +
+                articulation_constraint_max``. Setting it lets ``free_body_constraint_max`` shrink
+                to the rows that stay matrix-free under these responses. At least 1; rejected
+                with ``articulated_contact_response="immediate"``.
             warn_constraint_overflow: Print a device-side warning the first time a world
                 exceeds a row capacity. The warning does not synchronize the host and is
                 compatible with CUDA graph capture.
@@ -2041,7 +2049,8 @@ class SolverSteel(SolverBase):
                   of its tree. Each iteration solves these rows and then propagates the
                   accumulated body impulses through the trees to the joint velocities. All
                   contacts, including those of free bodies, use these rows, whose capacity per
-                  world is ``free_body_constraint_max + articulation_constraint_max``.
+                  world is ``propagation_constraint_max``, or ``free_body_constraint_max +
+                  articulation_constraint_max`` when that is ``None``.
                 - ``"propagation_colored"``: the ``"propagation"`` rows and capacity, with each
                   sweep solving the contacts of a world in batches of contacts that share no
                   responding body, one batch after the other. The batches are recolored every
@@ -2347,9 +2356,21 @@ class SolverSteel(SolverBase):
                 "propagation_same_articulation_rows requires articulated_contact_response='propagation', "
                 f"got {articulated_contact_response!r}"
             )
-        # The propagation responses route every contact row to the propagation family, so its
-        # capacity absorbs both the free-body and the dense contact budgets.
-        if articulated_contact_response != "immediate":
+        # The propagation responses route every contact row to the propagation family, so by
+        # default its capacity absorbs both the free-body and the dense contact budgets.
+        self._propagation_constraint_max = (
+            None if propagation_constraint_max is None else int(propagation_constraint_max)
+        )
+        if self._propagation_constraint_max is not None:
+            if articulated_contact_response == "immediate":
+                raise ValueError(
+                    "propagation_constraint_max requires articulated_contact_response 'propagation' or "
+                    "'propagation_colored'"
+                )
+            if self._propagation_constraint_max < 1:
+                raise ValueError("propagation_constraint_max must be >= 1")
+            self._propagation_max_constraints = self._propagation_constraint_max
+        elif articulated_contact_response != "immediate":
             self._propagation_max_constraints = self._free_body_constraint_max + self._requested_dense_max_constraints
         else:
             self._propagation_max_constraints = self._requested_dense_max_constraints
