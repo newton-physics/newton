@@ -38,8 +38,9 @@ HOST_TRANSFORMS_BIT_EXACT = platform.system() == "Linux" and platform.machine() 
 _PRE_RELEASE_RANK = {".dev": 0, "a": 1, "b": 2, "rc": 3, None: 4}
 
 
-def _version_key(version: str) -> tuple[int, ...]:
-    match = re.match(r"(\d+)\.(\d+)\.(\d+)(?:(\.dev|a|b|rc)(\d+))?", version)
+def _version_key(version: str, *, exact: bool = False) -> tuple[int, ...]:
+    # Thresholds must match exactly: a dropped suffix such as a local label would change their ordering.
+    match = (re.fullmatch if exact else re.match)(r"(\d+)\.(\d+)\.(\d+)(?:(\.dev|a|b|rc)(\d+))?", version)
     if match is None:
         raise ValueError(f"Unsupported version: {version!r}")
     major, minor, patch, pre, pre_number = match.groups()
@@ -49,7 +50,7 @@ def _version_key(version: str) -> tuple[int, ...]:
 
 def warp_version_at_least(version: str) -> bool:
     """Compare ``wp.__version__`` with ``version`` without the undeclared ``packaging`` dependency."""
-    return _version_key(wp.__version__) >= _version_key(version)
+    return _version_key(wp.__version__) >= _version_key(version, exact=True)
 
 
 # default test mode (see get_test_devices())

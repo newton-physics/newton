@@ -411,6 +411,12 @@ class TestWarpVersionAtLeast(unittest.TestCase):
                 with mock.patch.object(unittest_utils.wp, "__version__", installed):
                     self.assertEqual(unittest_utils.warp_version_at_least(required), expected)
 
+    def test_rejects_thresholds_it_cannot_order(self):
+        """Reject thresholds whose suffix would otherwise be ignored."""
+        for required in ("1.19.0+cu13", "1.19.0.post1", "1.19"):
+            with self.subTest(required=required), self.assertRaisesRegex(ValueError, "Unsupported version"):
+                unittest_utils.warp_version_at_least(required)
+
 
 class TestShardSelection(unittest.TestCase):
     def test_invalid_shard_arguments_are_usage_errors(self):
