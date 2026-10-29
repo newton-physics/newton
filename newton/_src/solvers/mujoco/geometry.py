@@ -61,7 +61,9 @@ def build_shape_layout(
     worlds = model.shape_world.numpy()
     bodies = model.shape_body.numpy()
     types = model.shape_type.numpy()
-    flags = model.shape_flags.numpy()
+    # A variant row keeps its role (collider, visual, or site) for every variant it can hold, but
+    # may be empty when the solver is built.
+    flags = model._shape_option_flags() if model._variant_row_max else model.shape_flags.numpy()
     body_count = model.body_count // model.world_count
     local_bodies = bodies.copy()
     local_bodies[bodies >= 0] %= body_count

@@ -7173,7 +7173,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # fills unused zero components. Keep those edits isolated from the model's
         # CPU-backed Warp array, for which ``numpy()`` may return a writable view.
         shape_size = model.shape_scale.numpy().copy()
-        shape_flags = model.shape_flags.numpy()
+        # A variant row is a geom or site by its role, even when it is empty at construction.
+        shape_flags = model._shape_option_flags() if model._variant_row_max else model.shape_flags.numpy()
         shape_collision_group = model.shape_collision_group.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()

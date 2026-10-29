@@ -71,7 +71,7 @@ def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndar
 class _VariantOptions:
     """The variant shapes that variant rows can hold, so that routing and capacities cover all of them.
 
-    Row ``r`` of a body can hold shape ``r`` of any of the body's variants.
+    A row of a body can hold the variant shape of its role at its position in any of the body's variants.
     """
 
     shape_count: int

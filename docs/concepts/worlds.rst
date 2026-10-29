@@ -428,11 +428,13 @@ Per-World Body Shape Variants
 A body can carry several alternative shape sets, such as the objects of an asset catalog, and
 each world can select a different one at reset. Declare the variants with
 :meth:`~newton.ModelBuilder.add_body_variants`, passing one single-body builder per variant, such
-as an asset loaded with :meth:`~newton.ModelBuilder.add_usd`. The body gets as many shape rows as
-its largest variant has shapes. At runtime, :meth:`~newton.Model.select_body_variants` copies the
-selected variant's shapes into those rows on the device, without host synchronization, empties the
-rows it does not use, and sets the body's mass properties to those of the body as built plus the
-variant. It returns the :class:`~newton.ModelFlags` to pass to solvers and viewers:
+as an asset loaded with :meth:`~newton.ModelBuilder.add_usd`. The body gets one block of shape rows
+per role: colliders, then other shapes such as visuals, then sites. Each block has as many rows as
+the variant with the most shapes of that role, so a row is a collider, a visual, or a site for
+every variant. At runtime, :meth:`~newton.Model.select_body_variants` copies each of the selected
+variant's shapes into the next row of its role, in the variant's order, on the device and without
+host synchronization. It empties the rows the variant does not use and sets the body's mass
+properties to those of the body as built plus the variant. It returns the :class:`~newton.ModelFlags` to pass to solvers and viewers:
 
 .. testcode::
 
@@ -469,7 +471,8 @@ stores once, so model memory grows with the number of rows, not with the catalog
 
 A row takes everything authored on the variant shape it holds: geometry, the collision data derived
 from it, flags, color, materials, and shape custom attributes. Apply domain randomization after
-selecting. A row keeps its label, world, collision group, filter pairs, and opacity. Empty rows have
+selecting. A row keeps its label, world, collision group, filter pairs, and opacity, so the i-th
+colliders of all variants must share a collision group. Empty rows have
 their collision and visibility flags cleared. Shapes added to the body directly stay in place for
 every variant.
 

@@ -123,7 +123,8 @@ def _select_body_variants_kernel(
     body_variant_rows: wp.array[wp.vec2i],
     body_variant_first: wp.array[wp.int32],
     body_variant_inertia_start: wp.array[wp.int32],
-    variant_shape_start: wp.array[wp.int32],
+    variant_row_shape_start: wp.array[wp.int32],
+    variant_row_shape: wp.array[wp.int32],
     variant_mass: wp.array[wp.float32],
     variant_com: wp.array[wp.vec3],
     variant_inertia: wp.array[wp.mat33],
@@ -142,13 +143,11 @@ def _select_body_variants_kernel(
     if body < 0:
         return
     global_variant = body_variant_first[body] + variant
-    first = variant_shape_start[global_variant]
     if shape >= 0:
-        if row < variant_shape_start[global_variant + 1] - first:
-            shape_variant_shape[shape] = first + row
-        else:
+        variant_shape = variant_row_shape[variant_row_shape_start[global_variant] + row]
+        shape_variant_shape[shape] = variant_shape
+        if variant_shape < 0:
             # An empty row neither collides nor renders; its other data keeps the last variant's.
-            shape_variant_shape[shape] = -1
             shape_flags[shape] = shape_flags[shape] & ~_EMPTY_ROW_CLEARED_FLAGS
     if row == 0:
         body_variant[body] = variant
@@ -537,7 +536,8 @@ class Model:
         "_variant_shape_geometry": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "_variant_shape_custom": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "_variant_shape_source": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "_variant_shape_start": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_row_shape_start": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_row_shape": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "_variant_set_labels": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "_variant_mass": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "_variant_com": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
@@ -1389,8 +1389,11 @@ class Model:
         """Start of each body's validated mass properties in ``_variant_mass/com/inertia``, shape [body_count], int."""
         self._variant_set_labels: list[list[str]] = []
         """Variant labels of each variant set."""
-        self._variant_shape_start: wp.array[wp.int32] | None = None
-        """Start of each variant's shapes among all variant shapes, shape [variant count + 1], int."""
+        self._variant_row_shape_start: wp.array[wp.int32] | None = None
+        """Start of each variant's entries in :attr:`_variant_row_shape`, shape [variant count + 1], int."""
+        self._variant_row_shape: wp.array[wp.int32] | None = None
+        """Per variant, the variant shape each row of its set holds, or ``-1`` for an empty row. Rows
+        form one block per role (colliders, other shapes, sites), so a row's role is fixed."""
         self._variant_shape_count: int = 0
         """Number of variant shapes over all variant sets."""
         self._variant_shape_geometry: dict[str, wp.array] = {}
@@ -2305,11 +2308,9 @@ class Model:
         )
 
     def _variant_row_options(self) -> tuple[np.ndarray, np.ndarray]:
-        """Each variant row with each variant shape it can hold, on the host.
-
-        Row ``r`` of a body can hold shape ``r`` of any of the body's variants.
-        """
-        shape_start = self._variant_shape_start.numpy()
+        """Each variant row with each variant shape it can hold, on the host."""
+        table = self._variant_row_shape.numpy()
+        table_start = self._variant_row_shape_start.numpy()
         body_set = self._body_variant_set
         rows = self._body_variant_rows.numpy()
         first = self._body_variant_first.numpy()
@@ -2319,10 +2320,10 @@ class Model:
             bodies = np.flatnonzero(body_set == k)
             body = bodies[0]
             # Row offset and variant shape of every option of the set, shared by its bodies.
-            starts = shape_start[first[body] : first[body] + counts[body]]
-            ends = shape_start[first[body] + 1 : first[body] + counts[body] + 1]
-            options = np.concatenate([np.arange(a, b) for a, b in zip(starts, ends, strict=True)])
-            offsets = np.concatenate([np.arange(b - a) for a, b in zip(starts, ends, strict=True)])
+            entries = table[table_start[first[body]] : table_start[first[body] + counts[body]]]
+            held = entries >= 0
+            options = entries[held]
+            offsets = (np.arange(len(entries)) % rows[body, 1])[held]
             row_shapes.append((rows[bodies, 0][:, None] + offsets[None]).ravel())
             variant_shapes.append(np.tile(options, len(bodies)))
         if not row_shapes:
@@ -2680,7 +2681,8 @@ class Model:
                 *selection,
                 self._body_variant_first,
                 self._body_variant_inertia_start,
-                self._variant_shape_start,
+                self._variant_row_shape_start,
+                self._variant_row_shape,
                 self._variant_mass,
                 self._variant_com,
                 self._variant_inertia,

@@ -589,6 +589,20 @@ def _combine_inertial_properties(
     return mass, com, inertia
 
 
+_VARIANT_ROW_ROLES = ("collider", "visual", "site")
+"""Roles of body variant shape rows, in row order. Static structures such as contact pairs, joint
+filters, collision groups, and the MuJoCo geom/site layout depend on a shape's role, so each row
+holds shapes of a single role."""
+
+
+def _variant_shape_role(shape: _VariantShape) -> int:
+    """Index in :data:`_VARIANT_ROW_ROLES` of a variant shape's role."""
+    flags = int(shape.values["shape_flags"])
+    if flags & ShapeFlags.SITE:
+        return 2
+    return 0 if flags & ShapeFlags.COLLIDE_SHAPES else 1
+
+
 @dataclass(frozen=True, eq=False)
 class _VariantShape:
     """One shape of a body variant: its builder attributes, finalized once for every body that selects it."""
@@ -628,10 +642,38 @@ class _VariantSet:
     variants: tuple[_Variant, ...]
     """The variants, indexed by variant id."""
 
+    @functools.cached_property
+    def role_counts(self) -> tuple[int, ...]:
+        """Rows per role in :data:`_VARIANT_ROW_ROLES`: the most shapes of that role in any variant."""
+        counts = [0] * len(_VARIANT_ROW_ROLES)
+        for variant in self.variants:
+            roles = [_variant_shape_role(shape) for shape in variant.shapes]
+            counts = [max(count, roles.count(role)) for role, count in enumerate(counts)]
+        return tuple(counts)
+
     @property
     def row_count(self) -> int:
         """Shape rows a body needs to hold any of the variants."""
-        return max(len(variant.shapes) for variant in self.variants)
+        return sum(self.role_counts)
+
+    @functools.cached_property
+    def row_shapes(self) -> tuple[tuple[int, ...], ...]:
+        """Per variant, the index of the shape each row holds, or ``-1`` for an empty row.
+
+        Rows form one block per role, so a row's role is the same for every variant. Within a
+        block, a variant's shapes of that role keep their order.
+        """
+        block_starts = np.concatenate(([0], np.cumsum(self.role_counts)[:-1])).tolist()
+        tables = []
+        for variant in self.variants:
+            table = [-1] * self.row_count
+            next_row = list(block_starts)
+            for index, shape in enumerate(variant.shapes):
+                role = _variant_shape_role(shape)
+                table[next_row[role]] = index
+                next_row[role] += 1
+            tables.append(tuple(table))
+        return tuple(tables)
 
 
 @dataclass(frozen=True)
@@ -5985,20 +6027,22 @@ class ModelBuilder:
 
         Each variant is a builder with exactly one body, such as an asset loaded with
         :meth:`add_usd` or :meth:`add_mjcf`: its shapes, colliders and visuals of any type and count,
-        and its body's mass, center of mass, and inertia. ``body`` gets as many shape rows as the
-        largest variant has shapes. Selecting a variant with :meth:`Model.select_body_variants
-        <newton.Model.select_body_variants>` copies its shapes into the first rows, empties the
-        others, and sets the body's mass properties to those of the body as built plus the
-        variant's. Shapes added to ``body`` directly stay in place for every variant.
+        and its body's mass, center of mass, and inertia. ``body`` gets one block of shape rows per
+        role (colliders, then other shapes such as visuals, then sites), each with as many rows as
+        the variant with the most shapes of that role has. Selecting a variant with
+        :meth:`Model.select_body_variants <newton.Model.select_body_variants>` copies each of its
+        shapes into the next row of its role's block, in the variant's order, empties the remaining
+        rows, and sets the body's mass properties to those of the body as built plus the variant's.
+        Shapes added to ``body`` directly stay in place for every variant.
 
         A row takes everything authored on the variant shape it holds: geometry, flags, color,
         materials, and shape custom attributes. It keeps its label, world, collision group, filter
-        pairs, and opacity. An empty row has its collision and visibility flags cleared, so it
-        neither collides nor renders. Variant shapes are expressed in the variant body's frame,
-        which maps onto ``body``'s frame; the variant body's pose, joints, and other entities are
-        ignored, as are body custom attributes and shape custom attributes that reference other
-        entities. The variants are copied at declaration, so later edits to the variant builders
-        have no effect.
+        pairs, and opacity, so the i-th colliders of all variants must share a collision group. An
+        empty row has its collision and visibility flags cleared, so it neither collides nor
+        renders. Variant shapes are expressed in the variant body's frame, which maps onto
+        ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
+        body custom attributes and shape custom attributes that reference other entities. The
+        variants are copied at declaration, so later edits to the variant builders have no effect.
 
         Bodies copied with :meth:`add_builder` or :meth:`replicate` share the variants, which
         :meth:`finalize` stores once, and select independently per world. Variant ids are positions
@@ -6017,9 +6061,10 @@ class ModelBuilder:
         Raises:
             IndexError: If ``body`` or ``initial`` is out of range.
             ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
-                or a variant builder is this builder, declares variants itself, uses a different
-                up axis, does not contain exactly one body, contains shapes not attached to it, or
-                contains planes, heightfields, Gaussians, or hydroelastic shapes.
+                colliders held by the same row have different collision groups, or a variant
+                builder is this builder, declares variants itself, uses a different up axis, does
+                not contain exactly one body, contains shapes not attached to it, or contains
+                planes, heightfields, Gaussians, or hydroelastic shapes.
         """
         if not 0 <= body < self.body_count:
             raise IndexError(f"Body index {body} out of range [0, {self.body_count}).")
@@ -6080,20 +6125,36 @@ class ModelBuilder:
             )
         )
 
-        # Row r is built from shape r of the initial variant, or of the first variant that has one,
-        # until the first selection. Its builder flags are the union over the shapes it can hold,
-        # so contact pairs and joint filters include every one of them.
+        # A row is built from the shape the initial variant places there, or from the first variant
+        # that places one, until the first selection. Its builder flags are the union over the
+        # shapes it can hold, which all have the row's role, so contact pairs and joint filters
+        # include every one of them. A collider row keeps its collision group, so its shapes must
+        # agree on one.
+        rows = []
+        role_rows = [0] * len(_VARIANT_ROW_ROLES)
+        for r in range(variant_set.row_count):
+            candidates = [
+                variant.shapes[table[r]]
+                for variant, table in zip(variant_set.variants, variant_set.row_shapes, strict=True)
+                if table[r] >= 0
+            ]
+            role = _variant_shape_role(candidates[0])
+            label = f"{self.body_label[body]}/variant_{_VARIANT_ROW_ROLES[role]}_{role_rows[role]}"
+            role_rows[role] += 1
+            groups = {int(candidate.values["shape_collision_group"]) for candidate in candidates}
+            if role == 0 and len(groups) > 1:
+                raise ValueError(
+                    f"Variant shapes held by row '{label}' have different collision groups {sorted(groups)}; "
+                    "the i-th colliders of all variants must share a collision group."
+                )
+            initial_shape = variant_set.row_shapes[initial][r]
+            seed = variant_set.variants[initial].shapes[initial_shape] if initial_shape >= 0 else candidates[0]
+            rows.append((seed, candidates, label))
+
         row_start = self.shape_count
         world = self.body_world[body]
-        for r in range(variant_set.row_count):
-            candidates = [variant.shapes[r] for variant in variant_set.variants if r < len(variant.shapes)]
-            initial_shapes = variant_set.variants[initial].shapes
-            row = self._append_shape_row(
-                initial_shapes[r] if r < len(initial_shapes) else candidates[0],
-                body,
-                world,
-                f"{self.body_label[body]}/variant_shape_{r}",
-            )
+        for seed, candidates, label in rows:
+            row = self._append_shape_row(seed, body, world, label)
             flags = 0
             for candidate in candidates:
                 flags |= int(candidate.values["shape_flags"])
@@ -16332,7 +16393,19 @@ class ModelBuilder:
         m._variant_shape_count = int(variant_shape_start[-1])
         m._variant_shape_geometry = {name: rows[name] for name in _SHAPE_VARIANT_ATTRIBUTES if name in rows}
         m._variant_shape_source = rows.get("shape_source", [])
-        m._variant_shape_start = wp.array(variant_shape_start, dtype=wp.int32, device=device)
+        # Per variant, the variant shape each row of its set holds, or -1 for an empty row.
+        tables = [table for variant_set in variant_sets for table in variant_set.row_shapes]
+        variant_row_shape_start = np.concatenate(([0], np.cumsum([len(table) for table in tables]))).astype(np.int32)
+        variant_row_shape = np.array(
+            [
+                first + index if index >= 0 else -1
+                for first, table in zip(variant_shape_start[:-1], tables, strict=True)
+                for index in table
+            ],
+            dtype=np.int32,
+        )
+        m._variant_row_shape_start = wp.array(variant_row_shape_start, dtype=wp.int32, device=device)
+        m._variant_row_shape = wp.array(variant_row_shape, dtype=wp.int32, device=device)
         m._variant_set_labels = [[variant.label for variant in variant_set.variants] for variant_set in variant_sets]
         m._variant_shape_custom = {}
         for key, attribute in self.custom_attributes.items():

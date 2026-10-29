@@ -68,7 +68,7 @@ class TestBodyVariants(unittest.TestCase):
         self.assertEqual(model._variant_shape_count, 3)
         self.assertEqual(model.body_variant_labels(1), ["a", "b"])
         np.testing.assert_array_equal(model.body_variant.numpy(), [1, 1])
-        self.assertEqual(model.shape_label[1], "object/variant_shape_0")
+        self.assertEqual(model.shape_label[1], "object/variant_collider_0")
         self.assertEqual(model.body_shapes[1], [3, 4, 5])
 
         # The fixed mass at z = 1 combines with the spheres' mass centered at the origin.
@@ -165,6 +165,10 @@ class TestBodyVariants(unittest.TestCase):
         builder.add_body_variants(body, [_variant("cube")])
         with self.assertRaisesRegex(ValueError, "already has variants"):
             builder.add_body_variants(body, [_variant("cube")])
+        grouped = _variant("cube")
+        grouped.shape_collision_group[0] = 2
+        with self.assertRaisesRegex(ValueError, "collision groups"):
+            builder.add_body_variants(builder.add_body(), [_variant("cube"), grouped])
         with self.assertRaises(NotImplementedError):
             builder.collapse_fixed_joints()
 
@@ -228,6 +232,47 @@ def test_contacts_follow_selection(test, device):
                 test.assertEqual(set(touching), shapes)
 
 
+def test_rows_keep_their_role(test, device):
+    """A row holds shapes of one role, so a site in one variant never takes a collider's row in another."""
+    with_site = newton.ModelBuilder()
+    body = with_site.add_body(label="with_site")
+    with_site.add_site(body, label="site")
+    with_site.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    two_boxes = newton.ModelBuilder()
+    body = two_boxes.add_body(label="two_boxes")
+    for x in (-0.15, 0.15):
+        two_boxes.add_shape_box(body, xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()), hx=0.1, hy=0.1, hz=0.1)
+    env = newton.ModelBuilder()
+    body = env.add_body(xform=wp.transform((0.0, 0.0, 0.15), wp.quat_identity()), label="object")
+    env.add_body_variants(body, [with_site, two_boxes])
+    scene = newton.ModelBuilder()
+    scene.replicate(env, 2)
+    scene.add_ground_plane()
+    model = scene.finalize(device=device)
+    test.assertEqual(
+        model.shape_label[:3], ["object/variant_collider_0", "object/variant_collider_1", "object/variant_site_0"]
+    )
+
+    # MuJoCo compiles its geoms while world 1's second collider row is still empty.
+    solver = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)
+    test.assertTrue(np.all(solver.newton_shape_to_mjc_geom.numpy()[[0, 1, 3, 4]] >= 0))
+    solver.notify_model_changed(_select(model, [0, 1]))
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    for _ in range(100):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, control, contacts, 1.0 / 100.0)
+        state_0, state_1 = state_1, state_0
+    count = contacts.rigid_contact_count.numpy()[0]
+    touching = set(contacts.rigid_contact_shape0.numpy()[:count]) | set(contacts.rigid_contact_shape1.numpy()[:count])
+    test.assertEqual(touching, {0, 3, 4, 6})
+    # Both bodies rest upright on their boxes.
+    body_q = state_0.body_q.numpy()
+    np.testing.assert_allclose(body_q[:, 2], [0.1, 0.1], atol=0.01)
+    np.testing.assert_allclose(np.abs(body_q[:, 6]), [1.0, 1.0], atol=1e-3)
+
+
 def test_mujoco_rest_height_follows_selection(test, device):
     """A falling body settles on the selected variant's geometry and mass."""
     model = _scene(2, height=0.5).finalize(device=device)
@@ -251,6 +296,7 @@ def test_mujoco_rest_height_follows_selection(test, device):
 
 devices = get_test_devices()
 add_function_test(TestBodyVariants, "test_contacts_follow_selection", test_contacts_follow_selection, devices=devices)
+add_function_test(TestBodyVariants, "test_rows_keep_their_role", test_rows_keep_their_role, devices=devices)
 add_function_test(
     TestBodyVariants,
     "test_mujoco_rest_height_follows_selection",
