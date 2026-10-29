@@ -19,7 +19,7 @@ from .input_processors import (
     InputProcessorEncoder,
 )
 from .joint_space_response import JointSpaceResponse
-from .motors import MotorDC
+from .motor_dc import MotorDC
 from .usd_parser import (
     ActuatorParsed,
     BatteryParsed,

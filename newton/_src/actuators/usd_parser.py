@@ -26,7 +26,7 @@ from .drives import (
 )
 from .input_processors import InputProcessorBase, InputProcessorEncoder
 from .input_processors.input_processor_delay import InputProcessorDelay
-from .motors import MotorDC
+from .motor_dc import MotorDC
 from .utils import _looks_like_torch_checkpoint, load_metadata
 
 _DEPRECATED_UNSET = object()

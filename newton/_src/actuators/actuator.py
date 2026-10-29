@@ -14,12 +14,13 @@ import warp as wp
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .clamping.base import ClampingBase
 from .drives.base import DriveBase
+from .drives.drive_voltage_controlled import DriveVoltageControlled
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
 from .input_processors.base import InputProcessorBase
 from .input_processors.input_processor_delay import InputProcessorDelay
 from .input_processors.input_processor_encoder import InputProcessorEncoder
-from .motors.motor_dc import MotorDC
+from .motor_dc import MotorDC
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -494,6 +495,8 @@ class Actuator:
         self._uses_battery = motor is not None and motor.uses_battery
         if self._uses_battery and actuator_indices is None:
             raise ValueError(f"{type(motor).__name__} draws from a battery, which requires actuator_indices")
+        if isinstance(drive, DriveVoltageControlled) and motor is None:
+            raise ValueError(f"{type(drive).__name__} requires a motor, such as MotorDC")
 
         self.device = indices.device
         self.requires_grad = requires_grad

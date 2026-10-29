@@ -2834,7 +2834,7 @@ def parse_usd(
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.input_processors.base import InputProcessorBase  # noqa: PLC0415
-    from ..actuators.motors import MotorDC  # noqa: PLC0415
+    from ..actuators.motor_dc import MotorDC  # noqa: PLC0415
     from ..actuators.usd_parser import BatteryParsed, parse_actuator_prim, parse_battery_prim  # noqa: PLC0415
 
     batteries: dict[str, BatteryParsed] = {}
@@ -2913,6 +2913,10 @@ def parse_usd(
                     "apply a motor schema such as NewtonDCMotorAPI"
                 )
             motor_spec[1]["supply_from_battery"] = True
+        if motor_spec is not None:
+            motor_class, motor_kwargs = motor_spec
+            resolved_motor = motor_class.resolve_arguments(motor_kwargs)
+            motor_spec = (motor_class, {k: v for k, v in motor_kwargs.items() if k in resolved_motor})
         actuator = builder.add_actuator(
             parsed.drive_class,
             index=dof_index,

@@ -100,7 +100,7 @@ if TYPE_CHECKING:
     from ..actuators.clamping.base import ClampingBase
     from ..actuators.drives.base import DriveBase
     from ..actuators.input_processors.base import InputProcessorBase
-    from ..actuators.motors.motor_dc import MotorDC
+    from ..actuators.motor_dc import MotorDC
     from ..geometry.types import TetMesh
 
     UsdStage = Usd.Stage
@@ -3292,8 +3292,9 @@ class ModelBuilder:
                 one, a joint parameter of an input
                 processor does not identify a single-DOF joint of the current
                 world or a global joint, of the same type as the actuated joint,
-                or a clamping takes parameters from a motor that does not have them (see
-                :attr:`~newton.actuators.ClampingBase.MOTOR_PARAMS`).
+                a clamping takes parameters from a motor that does not have them (see
+                :attr:`~newton.actuators.ClampingBase.MOTOR_PARAMS`), or a
+                :class:`~newton.actuators.DriveVoltageControlled` has no motor.
         """
         if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
             if drive_class is not None:
@@ -3404,6 +3405,10 @@ class ModelBuilder:
                     f"add_actuator: {comp_class.__name__} takes {', '.join(sorted(missing))} from the motor, "
                     "which requires a motor with these parameters"
                 )
+        from ..actuators.drives.drive_voltage_controlled import DriveVoltageControlled  # noqa: PLC0415
+
+        if issubclass(drive_class, DriveVoltageControlled) and motor is None:
+            raise ValueError(f"add_actuator: {drive_class.__name__} requires a motor, such as MotorDC")
 
         # --- Build entry key: identifies a group of compatible actuators ---
         # Groups differ when drive class, input processor types/shared-params,
