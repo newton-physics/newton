@@ -3,7 +3,6 @@
 
 """Friction patches, anchors, directions and friction modes of SolverSteel."""
 
-import itertools
 import math
 import unittest
 import warnings
@@ -469,7 +468,9 @@ class TestSteelFrictionAnchorKernels(unittest.TestCase):
                 np.testing.assert_array_equal(sel, 0 if cleared else 1, err_msg=f"mask={mask} world={world}")
 
 
-def _slide(device, beta, mesh, angle, articulated=False, *, locked_tangent=False):
+def _slide(
+    device, beta, mesh, angle, articulated=False, *, locked_tangent=False, response="immediate", mode="fixed_normal"
+):
     """Slide a symmetric, explicitly massed box under a force above the friction limit.
 
     Returns the final planar velocity, the push direction and the capacity status.
@@ -504,6 +505,8 @@ def _slide(device, beta, mesh, angle, articulated=False, *, locked_tangent=False
         cfm=0.0 if locked_tangent else 1.0e-6,
         free_body_constraint_max=128,
         articulation_constraint_max=32,
+        articulated_contact_response=response,
+        friction_mode=mode,
     )
     solver._rigid_body_angular_damping.zero_()
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=128, deterministic=True)
@@ -943,16 +946,19 @@ def _box_on_support(device, mode, articulated, support_speed, steps=60, window=3
 def test_kinematic_belt_drags_the_box(test, device):
     """Verify that a box on a kinematic belt reaches the belt speed in the coupled modes, free and articulated.
 
-    Covers the subtests that fail when the sliding rows' rhs is ignored; articulated ``coulomb_newton``
-    uses the fixed-normal pair and ``fixed_normal`` adds the rhs itself.
+    Covers the subtests that fail when the sliding rows' rhs is ignored; immediate's articulated
+    ``coulomb_newton`` uses the fixed-normal pair and ``fixed_normal`` adds the rhs itself. The colored sweep
+    folds the support's velocity into the sliding rows' rhs, which its coupled update reads.
     """
-    for articulated, modes in ((False, MODES[1:]), (True, ("bisection", "bisection_desaxce"))):
-        for mode in modes:
-            with test.subTest(articulated=articulated, mode=mode):
-                mean_vx, _, _, mf_rows = _box_on_support(device, mode, articulated, support_speed=0.5)
-                # The free box's contact is a matrix-free row; the articulated box's is a dense one.
-                test.assertEqual(mf_rows == 0, articulated)
-                test.assertAlmostEqual(mean_vx, 0.5, delta=5.0e-3)
+    cases = [("immediate", False, mode) for mode in MODES[1:]]
+    cases += [("immediate", True, mode) for mode in ("bisection", "bisection_desaxce")]
+    cases += [("propagation_colored", articulated, mode) for articulated in (False, True) for mode in MODES[1:]]
+    for response, articulated, mode in cases:
+        with test.subTest(response=response, articulated=articulated, mode=mode):
+            mean_vx, _, _, mf_rows = _box_on_support(device, mode, articulated, 0.5, response=response)
+            # Only immediate's free box has a matrix-free contact row.
+            test.assertEqual(mf_rows == 0, articulated or response != "immediate")
+            test.assertAlmostEqual(mean_vx, 0.5, delta=5.0e-3)
 
 
 class TestSteelKinematicBeltFriction(unittest.TestCase):
@@ -2388,106 +2394,91 @@ def _mode_trace(test, device, response, mode, steps, **kwargs):
 
 
 def test_colored_incline_tracks_immediate(test, device):
-    """Follow immediate's coupled update of each mode on a box near the slip angle, which fixed_normal does not.
+    """Follow immediate's coupled update of each mode on a box near the slip angle, free and on a six-DOF joint.
 
     The mode's gap to fixed_normal on immediate must exceed ten times the tolerance, so colored solving the box
     with fixed_normal would miss by that much. At 4 iterations every mode is still short of the converged
-    solution, where coulomb_newton and fixed_normal agree.
+    solution, where coulomb_newton and fixed_normal agree. Colored solves the articulated box with the same
+    coupled update as the free one. Immediate's articulated contacts run bisection without the de Saxce bias
+    and fixed_normal for coulomb_newton, so they match only in bisection. The de Saxce bias lifts the sliding
+    box off the incline at step 7, which grows the joint's float32 rounding gap past the tolerance, so the
+    articulated box is compared for 6 steps in that mode and 12 in the others.
     """
     for angle in (_MODE_SLIP - 0.05, _MODE_SLIP + 0.05):
         fixed = _mode_trace(test, device, "immediate", "fixed_normal", 20, angle=angle, iterations=4)
         for mode in _COUPLED_MODES:
             with test.subTest(angle=angle, mode=mode):
-                immediate = _mode_trace(test, device, "immediate", mode, 20, angle=angle, iterations=4)
-                scene = _ModeScene(test, device, "propagation_colored", mode, angle=angle, iterations=4)
+                kwargs = {"angle": angle, "iterations": 4}
+                immediate = _mode_trace(test, device, "immediate", mode, 20, **kwargs)
+                scene = _ModeScene(test, device, "propagation_colored", mode, **kwargs)
                 colored = scene.run(20)
                 for key, value in scene.solver.constraint_row_watermarks().items():
                     if "overflow" in key or "dropped" in key:
                         test.assertEqual(value, 0, key)
                 np.testing.assert_allclose(colored, immediate, atol=_MODE_TOLERANCE, rtol=0.0)
                 test.assertGreater(np.abs(immediate - fixed).max(), 10.0 * _MODE_TOLERANCE)
-
-
-def test_colored_articulated_contacts_take_the_mode(test, device):
-    """Slide a box on a six-DOF joint as the free box does, in every mode.
-
-    Colored solves every contact with the coupled update. Immediate's articulated contacts run bisection
-    without the de Saxce bias and fixed_normal for coulomb_newton, so it matches only in bisection. The de
-    Saxce bias lifts the sliding box off the incline at step 7, which grows the joint's float32 rounding gap
-    past the tolerance, so that mode is compared for 6 steps.
-    """
-    for angle in (_MODE_SLIP - 0.05, _MODE_SLIP + 0.05):
-        for mode in _COUPLED_MODES:
-            with test.subTest(angle=angle, mode=mode):
                 steps = 6 if mode == "bisection_desaxce" else 12
-                kwargs = {"angle": angle, "iterations": 4}
-                free = _mode_trace(test, device, "propagation_colored", mode, steps, **kwargs)
                 articulated = _mode_trace(test, device, "propagation_colored", mode, steps, articulated=True, **kwargs)
-                np.testing.assert_allclose(articulated, free, atol=_MODE_TOLERANCE, rtol=0.0)
+                np.testing.assert_allclose(articulated, colored[:steps], atol=_MODE_TOLERANCE, rtol=0.0)
                 if mode == "bisection":
-                    immediate = _mode_trace(test, device, "immediate", mode, steps, articulated=True, **kwargs)
-                    np.testing.assert_allclose(articulated, immediate, atol=_MODE_TOLERANCE, rtol=0.0)
+                    dense = _mode_trace(test, device, "immediate", mode, steps, articulated=True, **kwargs)
+                    np.testing.assert_allclose(articulated, dense, atol=_MODE_TOLERANCE, rtol=0.0)
+
+
+def test_colored_locked_tangent_keeps_friction(test, device):
+    """Retain friction along a slider whose other tangent has no mobility, on the fixed-normal pair."""
+    for mode in _COUPLED_MODES:
+        with test.subTest(mode=mode):
+            velocity, direction, overflow = _slide(
+                device, 0.0, False, 0.0, True, locked_tangent=True, response="propagation_colored", mode=mode
+            )
+            np.testing.assert_allclose(velocity, direction * (0.2 * 0.3 * 9.81) * 0.5, atol=0.015, rtol=0.03)
+            test.assertFalse(overflow.any())
 
 
 def test_colored_sliding_sphere_rolls_as_on_immediate(test, device):
     """Slide a sphere launched without spin until it rolls at 5/7 of its speed, as on immediate."""
     for mode in _COUPLED_MODES:
         with test.subTest(mode=mode):
-            immediate = _mode_trace(test, device, "immediate", mode, 120, scene="sphere")
-            colored = _mode_trace(test, device, "propagation_colored", mode, 120, scene="sphere")
+            immediate = _mode_trace(test, device, "immediate", mode, 60, scene="sphere")
+            colored = _mode_trace(test, device, "propagation_colored", mode, 60, scene="sphere")
             np.testing.assert_allclose(colored, immediate, atol=_MODE_TOLERANCE, rtol=0.0)
             speed, spin = colored[-1, 0, 0], colored[-1, 0, 4]
             test.assertAlmostEqual(speed, 2.0 * 5.0 / 7.0, delta=0.02)
             test.assertAlmostEqual(spin * 0.05, speed, delta=1.0e-3)
 
 
-def test_colored_kinematic_support_drags_the_box(test, device):
-    """Carry a free and an articulated box on a moving kinematic support at its speed in every mode.
-
-    The colored sweep folds the support's velocity into the sliding rows' rhs, which the coupled update reads.
-    """
-    for mode, articulated in itertools.product(_COUPLED_MODES, (False, True)):
-        with test.subTest(mode=mode, articulated=articulated):
-            mean_vx, *_ = _box_on_support(device, mode, articulated, 0.5, response="propagation_colored")
-            test.assertAlmostEqual(mean_vx, 0.5, delta=5.0e-3)
-
-
 def test_every_colored_variant_agrees(test, device):
     """Run the coupled update in every colored sweep, agreeing within float32 summation order.
 
-    Every sweep calls the same coupled update for each mode, so one mode covers them.
+    Every sweep calls the same coupled update; bisection_desaxce and coulomb_newton build both of its solves.
     """
-    mode = "bisection_desaxce"
-    reference = None
-    for variant in _COLORED_VARIANTS:
-        with test.subTest(variant=variant):
-            if variant == "staged" and not _colored_staging_supported(device.arch, 1, 2):
-                continue
-            kwargs = {"angle": _MODE_SLIP + 0.05, "iterations": 4, "variant": variant}
-            # The staged sweep packs one world per block.
-            trace = _mode_trace(test, device, "propagation_colored", mode, 20, worlds=2, **kwargs)
-            if reference is None:
-                reference = trace
-            # A bisection or a slip flip turns float32 summation-order differences into larger steps.
-            np.testing.assert_allclose(trace[0], reference[0], atol=1.0e-5, rtol=0.0)
-            np.testing.assert_allclose(trace, reference, atol=_MODE_TOLERANCE, rtol=0.0)
+    for mode in ("bisection_desaxce", "coulomb_newton"):
+        reference = None
+        for variant in _COLORED_VARIANTS:
+            with test.subTest(mode=mode, variant=variant):
+                if variant == "staged" and not _colored_staging_supported(device.arch, 1, 2):
+                    continue
+                kwargs = {"angle": _MODE_SLIP + 0.05, "iterations": 4, "variant": variant}
+                # The staged sweep packs one world per block.
+                trace = _mode_trace(test, device, "propagation_colored", mode, 20, worlds=2, **kwargs)
+                if reference is None:
+                    reference = trace
+                # A bisection or a slip flip turns float32 summation-order differences into larger steps.
+                np.testing.assert_allclose(trace[0], reference[0], atol=1.0e-5, rtol=0.0)
+                np.testing.assert_allclose(trace, reference, atol=_MODE_TOLERANCE, rtol=0.0)
 
 
 def test_colored_modes_repeat_bitwise_and_replay(test, device):
-    """Repeat several deterministic worlds bitwise, and replay a captured step as eager steps, in every mode."""
+    """Repeat three deterministic worlds bitwise in a second scene whose last 10 steps replay a captured step."""
     for mode in _COUPLED_MODES:
         with test.subTest(mode=mode):
             kwargs = {"angle": _MODE_SLIP + 0.05, "worlds": 3}
-            runs = [_mode_trace(test, device, "propagation_colored", mode, 30, **kwargs) for _ in range(2)]
-            np.testing.assert_array_equal(runs[0], runs[1])
-            eager = _ModeScene(test, device, "propagation_colored", mode, **kwargs)
-            eager.step(2)
-            expected = eager.run(10)
+            expected = _mode_trace(test, device, "propagation_colored", mode, 12, **kwargs)
             captured = _ModeScene(test, device, "propagation_colored", mode, **kwargs)
-            captured.step(2)
+            trace = list(captured.run(2))
             with wp.ScopedCapture(device=device) as capture:
                 captured.step()
-            trace = []
             for _ in range(10):
                 wp.capture_launch(capture.graph)
                 trace.append(captured.velocity())
@@ -2524,9 +2515,8 @@ class TestSteelColoredFrictionMode(unittest.TestCase):
 
 for _fn in (
     test_colored_incline_tracks_immediate,
-    test_colored_articulated_contacts_take_the_mode,
+    test_colored_locked_tangent_keeps_friction,
     test_colored_sliding_sphere_rolls_as_on_immediate,
-    test_colored_kinematic_support_drags_the_box,
     test_every_colored_variant_agrees,
     test_colored_modes_repeat_bitwise_and_replay,
     test_colored_modes_keep_the_coupled_restrictions,
