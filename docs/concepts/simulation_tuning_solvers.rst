@@ -239,6 +239,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``sleep_quiet_time``, ``sleep_skip_constraints``,
        ``articulated_contact_response``, ``propagation_same_articulation_rows``,
        ``propagation_cached_response``, ``propagation_cached_response_body_max``,
+       ``propagation_color_order``,
        ``contact_shared_anchor``, ``contact_friction_shared_anchor``,
        ``row_watermark``, ``row_schedule``, ``use_parallel_streams``,
        ``double_buffer``, ``friction_mode``.
@@ -334,7 +335,12 @@ repository examples spend tuning effort, not a shared solver API.
        parallel batches of contacts that share no responding body, which pays off on
        scenes with many contacts per world. ``propagation_cached_response`` replaces the
        per-iteration tree walk with cached per-body responses (on by default); which is
-       faster depends on the model. The propagation responses reject contact torsion,
+       faster depends on the model. ``propagation_color_order="longest_first"`` colors
+       contacts with more rows first, which shortens the ``"propagation_colored"`` sweep
+       when one body carries contacts with different row counts. The saving shrinks as the
+       world count grows, and the changed order can converge more slowly on stacks at a
+       fixed iteration count, so measure the full step at the target world count before
+       switching. The propagation responses reject contact torsion,
        contact compliance, sleeping and loop-closing joints, and fall back from bilateral
        pre-elimination to iterative mimic rows with a warning.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and

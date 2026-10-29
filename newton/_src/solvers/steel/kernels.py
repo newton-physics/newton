@@ -7935,7 +7935,8 @@ def accumulate_propagation_warmstart_body_impulses_ordered(
 # impulses overlap. The units of one color are body-disjoint and solve in parallel; colors run in
 # sequence, a Gauss-Seidel reordering of the serial sweep. A unit's friction rows share its bodies,
 # so a friction pair's sibling write has one writer. The coloring is first-fit greedy over the
-# world's units in contact-index order, which uses at most 2 * degree - 1 colors; units left
+# world's units in contact-index order, after row count with propagation_color_order="longest_first",
+# which uses at most 2 * degree - 1 colors; units left
 # without a color below the cap run in an ordered serial tail.
 
 PROPAGATION_COLOR_TAIL = 512
