@@ -55,8 +55,11 @@ Rod joints
    :class:`newton.Rod`, :attr:`newton.JointType.ROD`,
    :meth:`newton.ModelBuilder.add_rod`, and
    :meth:`newton.ModelBuilder.add_joint_rod` are experimental, together with
-   the Rod state and material layouts, structural-rest authoring and storage,
-   and Rod behavior in :func:`newton.eval_fk` and :func:`newton.eval_ik`.
+   the Rod slices of ``joint_q`` and ``joint_qd``, the Rod material-axis order
+   in :attr:`newton.Model.joint_target_ke` and
+   :attr:`newton.Model.joint_target_kd`, Rod structural rest stored in
+   :attr:`newton.Model.joint_target_q`, and Rod behavior in
+   :func:`newton.eval_fk` and :func:`newton.eval_ik`.
    These may change without prior notice.
 
 Newton uses *cable* for the modeled object and *rod* for this discrete
