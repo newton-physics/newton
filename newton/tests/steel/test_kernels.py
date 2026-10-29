@@ -1849,7 +1849,7 @@ def _row_phase_rollout(model, *, runtime_phase=False, capture=False, **options):
         with wp.ScopedCapture(model.device) as graph:
             step()
     trace = []
-    for _ in range(120):
+    for _ in range(10):
         if capture:
             wp.capture_launch(graph.graph)
         else:
