@@ -4835,6 +4835,7 @@ class ModelBuilder:
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
+                Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
             load_static_visual_shapes: If True, supported visual-only geometry outside
                 rigid-body hierarchies is loaded as static shapes when
                 ``load_visual_shapes`` is also True. Default is True.
@@ -4873,7 +4874,7 @@ class ModelBuilder:
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
             return_deformable_results: If True, include the experimental deformable entries in the
-                returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
+                returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` / ``path_deformable_visual_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
                 default return shape carries no deformable additions.
             allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
@@ -4963,6 +4964,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of a surface deformable (cloth) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tri"`` / ``"edge"``. Present only with ``return_deformable_results=True``.
                 * - ``"path_soft_map"``
                   - Mapping from prim path (str) of a soft body (a volume deformable, or a legacy bare TetMesh) to its ``[start, end)`` index ranges, keyed ``"particle"`` / ``"tet"``. Present only with ``return_deformable_results=True``.
+                * - ``"path_deformable_visual_map"``
+                  - Mapping from graphics Mesh prim path (str) to its index in :attr:`Model.deformable_visual_meshes`. Includes only successfully imported visual meshes. Present only with ``return_deformable_results=True``. The indices describe this import, not copies created by later builder composition or replication.
                 * - ``"path_cable_attrs"``
                   - Mapping from prim path (str) of a curve deformable (cable) to its validated, solver-neutral cable import metadata (``material``, ``resolved_density``, ``closed``). ``material`` contains supported per-mode structural values before per-joint discretization: stretch/shear stiffness [N] and damping [N·s]; bend/twist stiffness [N·m²] and damping [N·m²·s]. ``graph_component`` is present only for curves successfully welded into the same rod graph; curves in one graph share the identifier. Present only with ``return_deformable_results=True``.
                 * - ``"path_cloth_attrs"``
@@ -14159,6 +14162,43 @@ class ModelBuilder:
 
         .. experimental::
         """
+        return self._add_deformable_visual_mesh(
+            vertices,
+            indices,
+            kind=kind,
+            parent=parent,
+            weights=weights,
+            tri_range=tri_range,
+            tet_range=tet_range,
+            surface=surface,
+            volume=volume,
+            curve=curve,
+            bodies=bodies,
+            uvs=uvs,
+            texture=texture,
+            label=label,
+        )
+
+    def _add_deformable_visual_mesh(
+        self,
+        vertices,
+        indices,
+        *,
+        kind,
+        parent=None,
+        weights=None,
+        tri_range=None,
+        tet_range=None,
+        surface=None,
+        volume=None,
+        curve=None,
+        bodies=None,
+        uvs=None,
+        texture=None,
+        label=None,
+        body_poses=None,
+    ) -> int:
+        """Share validation and storage with importers that supply body bind poses."""
         vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
         indices = Mesh._normalize_indices(indices)
         vertex_count = len(vertices)
@@ -14188,9 +14228,11 @@ class ModelBuilder:
             candidates = self._resolve_visual_body_candidates(parent, bodies, curve)
             if parent is not None:
                 parent = self._validate_visual_parent(parent, vertex_count, self.body_count, "bodies")
-                parent, local_offsets = self._bind_visual_vertices_to_bodies(vertices, parent)
+                parent, local_offsets = self._bind_visual_vertices_to_bodies(vertices, parent, poses=body_poses)
             else:
-                parent, local_offsets = self._bind_visual_vertices_to_bodies(vertices, candidates, nearest=True)
+                parent, local_offsets = self._bind_visual_vertices_to_bodies(
+                    vertices, candidates, nearest=True, poses=body_poses
+                )
         else:
             if bodies is not None or curve is not None:
                 raise ValueError("add_deformable_visual_mesh: bodies and curve only apply to body bindings")
@@ -14335,7 +14377,7 @@ class ModelBuilder:
         return np.arange(self._curve_body_start[index], self._curve_body_end[index], dtype=np.int32)
 
     def _bind_visual_vertices_to_bodies(
-        self, vertices: np.ndarray, bodies: np.ndarray, *, nearest: bool = False
+        self, vertices: np.ndarray, bodies: np.ndarray, *, nearest: bool = False, poses: np.ndarray | None = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """Bind visual vertices to rigid bodies.
 
@@ -14346,19 +14388,24 @@ class ModelBuilder:
         visual vertex expressed in that body's frame, so skinning can
         reconstruct the world position from the body's current pose each frame.
         """
-        body_q = np.asarray(self.body_q, dtype=np.float64).reshape(-1, 7)
         verts = np.asarray(vertices, dtype=np.float64)
-
+        bodies = Mesh._normalize_indices(bodies)
+        if len(bodies) == 0:
+            raise ValueError("add_deformable_visual_mesh(kind='body'): requires at least one body")
+        if int(bodies.min()) < 0 or int(bodies.max()) >= self.body_count:
+            raise ValueError("add_deformable_visual_mesh: bodies reference bodies outside the current builder")
+        if poses is None:
+            # Explicit parents can repeat a body for thousands of visual vertices.
+            unique_bodies, inverse = np.unique(bodies, return_inverse=True)
+            body_q = np.asarray([self.body_q[body] for body in unique_bodies], dtype=np.float64).reshape(-1, 7)
+            body_q = body_q[inverse]
+        else:
+            body_q = np.asarray(poses, dtype=np.float64).reshape(-1, 7)
         if nearest:
-            bodies = Mesh._normalize_indices(bodies)
-            if len(bodies) == 0:
-                raise ValueError("add_deformable_visual_mesh(kind='body'): requires at least one body")
-            if int(bodies.min()) < 0 or int(bodies.max()) >= self.body_count:
-                raise ValueError("add_deformable_visual_mesh: bodies reference bodies outside the current builder")
             # The center of mass sits inside a segment whatever its frame origin, so a rod binds
             # each vertex to the segment around it. Temporary memory is bound by the vertex count.
-            com = body_q[bodies, :3] + quat_rotate_rows(
-                body_q[bodies, 3:7], np.asarray(self.body_com, dtype=np.float64)[bodies]
+            com = body_q[:, :3] + quat_rotate_rows(
+                body_q[:, 3:7], np.asarray([self.body_com[body] for body in bodies], dtype=np.float64)
             )
             chosen = np.zeros(len(verts), dtype=np.int32)
             best_distance = np.full(len(verts), np.inf)
@@ -14369,17 +14416,23 @@ class ModelBuilder:
                 chosen[closer] = index
                 best_distance[closer] = distance[closer]
             parent = bodies[chosen].astype(np.int32)
+            body_q = body_q[chosen]
         else:
             parent = np.asarray(bodies, dtype=np.int32)
 
         # local_offset = conjugate(q) rotated (vertex - body_pos)
-        quat = body_q[parent, 3:7].copy()  # (x, y, z, w)
+        quat = body_q[:, 3:7].copy()  # (x, y, z, w)
         quat[:, :3] *= -1.0
-        local = quat_rotate_rows(quat, verts - body_q[parent, :3])
+        local = quat_rotate_rows(quat, verts - body_q[:, :3])
         return parent, local.astype(np.float32)
 
     def _embed_visual_vertices_in_triangles(
-        self, vertices: np.ndarray, tri_range: tuple[int, int]
+        self,
+        vertices: np.ndarray,
+        tri_range: tuple[int, int],
+        positions: np.ndarray | None = None,
+        *,
+        particle_start: int = 0,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Project each visual vertex onto its closest owning simulation triangle.
 
@@ -14387,12 +14440,14 @@ class ModelBuilder:
         triangle range. The barycentric coordinates of the closest point are
         stored; the normal offset from the surface is dropped by design (the
         skinned vertex lies on the simulation surface).
+        When ``positions`` is supplied, ``particle_start`` is its first model particle index.
         """
         from ..geometry.deformable_visual_binding import embed_triangles  # noqa: PLC0415
 
         lo, hi = tri_range
-        tri_idx = np.asarray(self.tri_indices, dtype=np.int64).reshape(-1, 3)[lo:hi]
-        particles = np.asarray(self.particle_q, dtype=np.float64)
+        tri_idx = np.asarray(self.tri_indices[lo:hi], dtype=np.int64).reshape(-1, 3) - particle_start
+        # USD binding can use an authored reference pose instead of the initial state.
+        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
         a, b, c = (particles[tri_idx[:, i]] for i in range(3))
         ab = b - a
         ac = c - a
@@ -14425,7 +14480,12 @@ class ModelBuilder:
         return parent.numpy().copy(), weights.numpy().copy()
 
     def _embed_visual_vertices_in_tets(
-        self, vertices: np.ndarray, tet_range: tuple[int, int]
+        self,
+        vertices: np.ndarray,
+        tet_range: tuple[int, int],
+        positions: np.ndarray | None = None,
+        *,
+        particle_start: int = 0,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Compute the containing owning tet and barycentric weights per visual vertex.
 
@@ -14433,12 +14493,14 @@ class ModelBuilder:
         tet range, so a clamp can never cross deformable bodies. A vertex outside
         every owning tet (gaps, surface overhang) is clamped to the nearest owning
         tet by centroid distance and a warning-level log is emitted.
+        When ``positions`` is supplied, ``particle_start`` is its first model particle index.
         """
         from ..geometry.deformable_visual_binding import embed_tetrahedra  # noqa: PLC0415
 
         lo, hi = tet_range
-        tet_idx = np.asarray(self.tet_indices, dtype=np.int64).reshape(-1, 4)[lo:hi]
-        particles = np.asarray(self.particle_q, dtype=np.float64)
+        tet_idx = np.asarray(self.tet_indices[lo:hi], dtype=np.int64).reshape(-1, 4) - particle_start
+        # USD binding can use an authored reference pose instead of the initial state.
+        particles = np.asarray(self.particle_q if positions is None else positions, dtype=np.float64)
 
         v0, v1, v2, v3 = (particles[tet_idx[:, i]] for i in range(4))
         # Columns are the tet edge vectors; bary123 = T^-1 (p - v0), bary0 = 1 - sum.
