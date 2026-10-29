@@ -33,7 +33,12 @@ class _ConsoleFallbackHandler(logging.Handler):
         # logging.getLogger() takes the module lock, which must not be acquired under the handler lock.
         logger = logging.Logger.manager.loggerDict.get(name)
         while isinstance(logger, logging.Logger):
-            if any(handler is not self for handler in logger.handlers):
+            # Internal observers mirror records (for example, into the viewer)
+            # without taking ownership of the application's terminal output.
+            if any(
+                handler is not self and not getattr(handler, "_newton_console_observer", False)
+                for handler in logger.handlers
+            ):
                 return True
             if not logger.propagate:
                 return False

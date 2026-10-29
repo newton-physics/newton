@@ -54,6 +54,9 @@ class ConsoleBuffer(logging.Handler):
     avoiding accidental retention of scene objects through stack frames.
     """
 
+    # Tell Newton's fallback that this sink supplements application logging.
+    _newton_console_observer: ClassVar[bool] = True
+
     def __init__(self, *, capacity: int = 4000, max_characters: int = 4 * 1024 * 1024, max_lines: int = 20000) -> None:
         """Initialize a DEBUG-level logging handler bounded by entry count, characters, and rendered lines."""
         super().__init__(logging.DEBUG)
@@ -189,6 +192,10 @@ class ConsoleCapture:
                         logger.name, logging.WARNING, filename, lineno, "%s: %s", (category.__name__, message), None
                     )
                     logger.handle(record)
+                else:
+                    # A logging threshold must not silently discard a Python
+                    # warning that already passed the caller's warning filters.
+                    previous(message, category, filename, lineno, file=file, line=line)
             else:
                 previous(message, category, filename, lineno, file=file, line=line)
 
