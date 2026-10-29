@@ -331,7 +331,8 @@ repository examples spend tuning effort, not a shared solver API.
        contact compliance, sleeping and loop-closing joints, and fall back from bilateral
        pre-elimination to iterative mimic rows with a warning. ``"propagation_colored"``
        supports the ``friction_mode`` values other than ``"fixed_normal"`` and applies them
-       to articulated contacts as well; ``"propagation"`` requires ``"fixed_normal"``.
+       to the articulated contacts on its propagation rows as well; contacts between two links
+       of one articulation keep their dense rows. ``"propagation"`` requires ``"fixed_normal"``.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.

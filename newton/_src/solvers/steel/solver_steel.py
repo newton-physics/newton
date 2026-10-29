@@ -1820,8 +1820,8 @@ class SolverSteel(SolverBase):
             friction_anchor_beta: Position-correction gain of persistent friction patches;
                 ``0`` selects point friction. ``None`` selects ``0.2`` with
                 ``solve_mode="matrix_free"``, and point friction with ``solve_mode="split"``,
-                which has no friction patches, or when ``contact_compliance`` is enabled.
-                With a positive gain, the contacts of a body
+                which has no friction patches, or when ``contact_compliance`` is enabled or
+                ``friction_mode`` is not ``"fixed_normal"``. With a positive gain, the contacts of a body
                 pair whose normals, contact planes and friction coefficients agree and whose
                 shapes touch form a region. Each region's friction acts at up to two anchors
                 along its principal extent, which share the region's total normal impulse;
@@ -1870,9 +1870,12 @@ class SolverSteel(SolverBase):
                 ``"fixed_normal"`` update. The other modes use point friction: an omitted
                 ``friction_anchor_beta`` selects it with a warning, and friction patches,
                 contact torsion, contact compliance and ``articulated_contact_response="propagation"``
-                require ``"fixed_normal"``. ``"propagation_colored"`` solves every contact,
-                articulated ones included, with the free-body update of the selected mode. This option
-                may change without the normal deprecation period.
+                require ``"fixed_normal"``. The free-body and articulated rules above apply to
+                ``articulated_contact_response="immediate"``. ``"propagation_colored"`` solves every
+                contact on a propagation row, articulated ones included, with the free-body update of
+                the selected mode; contacts between two links of one articulation stay on dense rows
+                and keep the articulated update. This option may change without the
+                normal deprecation period.
             row_schedule: Row order of the matrix-free sweeps (``solve_mode="matrix_free"`` only).
                 ``"interleaved"`` sweeps every row family in each iteration: the dense rows,
                 the free-body contact rows, then the velocity limits. ``"contact_then_internal"``
