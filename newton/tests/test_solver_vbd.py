@@ -4474,78 +4474,36 @@ def _rigid_contact_reset_lifecycle(test, device):
 
 
 def _vbd_custom_attribute_registration_controls_dahl_defaults(test, device):
-    """Verify VBD solver and model custom-attribute registration."""
+    """Verify zero Dahl defaults and rejection of the removed compatibility option."""
     del device
 
     builder = newton.ModelBuilder()
     newton.solvers.SolverVBD.register_custom_attributes(builder)
-    expected = {
-        "vbd:rigid_contact_history": (False, "newton:vbd:rigid:contactHistory"),
-        "vbd:rigid_joint_linear_ke": (1.0e5, "newton:vbd:rigid:jointLinearStiffness"),
-        "vbd:rigid_joint_angular_ke": (1.0e5, "newton:vbd:rigid:jointAngularStiffness"),
-        "vbd:rigid_joint_linear_kd": (0.0, "newton:vbd:rigid:jointLinearDamping"),
-        "vbd:rigid_joint_angular_kd": (0.0, "newton:vbd:rigid:jointAngularDamping"),
-        "vbd:joint_is_hard": (1, "newton:vbd:joint_is_hard"),
-        "vbd:dahl_eps_max": (0.0, "newton:vbd:dahl_eps_max"),
-        "vbd:dahl_tau": (0.0, "newton:vbd:dahl_tau"),
-    }
-    for key, (default, usd_attribute_name) in expected.items():
-        with test.subTest(attribute=key):
-            attribute = builder.custom_attributes[key]
-            test.assertEqual(attribute.default, default)
-            test.assertEqual(attribute.usd_attribute_name, usd_attribute_name)
-
-    for key in expected.keys() - {"vbd:joint_is_hard", "vbd:dahl_eps_max", "vbd:dahl_tau"}:
-        with test.subTest(scene_attribute=key):
-            attribute = builder.custom_attributes[key]
-            test.assertEqual(attribute.frequency, newton.Model.AttributeFrequency.ONCE)
-            test.assertEqual(attribute.assignment, newton.Model.AttributeAssignment.MODEL)
+    test.assertIn("vbd:joint_is_hard", builder.custom_attributes)
+    test.assertIn("vbd:dahl_eps_max", builder.custom_attributes)
+    test.assertIn("vbd:dahl_tau", builder.custom_attributes)
+    test.assertEqual(builder.custom_attributes["vbd:joint_is_hard"].default, 1)
+    test.assertEqual(builder.custom_attributes["vbd:dahl_eps_max"].default, 0.0)
+    test.assertEqual(builder.custom_attributes["vbd:dahl_tau"].default, 0.0)
 
     with test.assertRaisesRegex(TypeError, "dahl_defaults_enabled"):
         newton.solvers.SolverVBD.register_custom_attributes(newton.ModelBuilder(), dahl_defaults_enabled=True)
 
 
-def _has_vbd_scene_schema():
-    """Return whether the installed USD packages provide NewtonVbdSceneAPI."""
-    if not USD_AVAILABLE:
-        return False
-    try:
-        import newton_usd_schemas  # noqa: F401, PLC0415
-        from pxr import Usd, UsdPhysics
-    except ImportError:
-        return False
-
-    stage = Usd.Stage.CreateInMemory()
-    scene = UsdPhysics.Scene.Define(stage, "/Scene").GetPrim()
-    try:
-        return bool(scene.ApplyAPI("NewtonVbdSceneAPI"))
-    except Exception:
-        return False
-
-
-@unittest.skipUnless(_has_vbd_scene_schema(), "Requires Newton USD schemas with VBD support")
+@unittest.skipUnless(USD_AVAILABLE, "Requires USD (pxr)")
 class TestVBDUsdParsing(unittest.TestCase):
     def test_scene_attributes_configure_solver(self):
         """Parse authored VBD scene values while preserving explicit solver overrides."""
-        from pxr import Usd, UsdPhysics
-
-        stage = Usd.Stage.CreateInMemory()
-        scene = UsdPhysics.Scene.Define(stage, "/Scene").GetPrim()
-        scene.ApplyAPI("NewtonVbdSceneAPI")
-        authored_values = {
-            "newton:vbd:rigid:contactHistory": True,
-            "newton:vbd:rigid:jointLinearStiffness": 120000.0,
-            "newton:vbd:rigid:jointAngularStiffness": 130000.0,
-            "newton:vbd:rigid:jointLinearDamping": 14.0,
-            "newton:vbd:rigid:jointAngularDamping": 15.0,
-        }
-        for name, value in authored_values.items():
-            scene.GetAttribute(name).Set(value)
-
-        builder = newton.ModelBuilder()
-        newton.solvers.SolverVBD.register_custom_attributes(builder)
-        builder.add_usd(stage, load_visual_shapes=False)
-        model = builder.finalize(device="cpu")
+        model = self._build_scene_model(
+            {
+                "newton:vbd:rigid:contactHistory": True,
+                "newton:vbd:rigid:jointLinearStiffness": 120000.0,
+                "newton:vbd:rigid:jointAngularStiffness": 130000.0,
+                "newton:vbd:rigid:jointLinearDamping": 14.0,
+                "newton:vbd:rigid:jointAngularDamping": 15.0,
+            },
+            with_body=True,
+        )
 
         self.assertTrue(bool(model.vbd.rigid_contact_history.numpy()[0]))
         self.assertAlmostEqual(float(model.vbd.rigid_joint_linear_ke.numpy()[0]), 120000.0)
@@ -4573,6 +4531,64 @@ class TestVBDUsdParsing(unittest.TestCase):
         self.assertAlmostEqual(solver.rigid_joint_angular_ke, 230000.0)
         self.assertAlmostEqual(solver.rigid_joint_linear_kd, 24.0)
         self.assertAlmostEqual(solver.rigid_joint_angular_kd, 25.0)
+
+    def _build_scene_model(self, authored_values, with_body=False):
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/Scene").GetPrim()
+        scene.ApplyAPI("NewtonVbdSceneAPI")
+        if with_body:
+            body = UsdGeom.Cube.Define(stage, "/Body").GetPrim()
+            UsdPhysics.RigidBodyAPI.Apply(body)
+            UsdPhysics.CollisionAPI.Apply(body)
+        for name, value in authored_values.items():
+            scene.GetAttribute(name).Set(value)
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
+        builder.add_usd(stage, load_visual_shapes=False)
+        if with_body:
+            builder.color()
+        return builder.finalize(device="cpu")
+
+    def test_registered_defaults_match_schema_fallbacks(self):
+        """With the API applied but nothing authored, registered defaults match the schema's fallbacks."""
+        from pxr import Usd, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        scene = UsdPhysics.Scene.Define(stage, "/Scene").GetPrim()
+        scene.ApplyAPI("NewtonVbdSceneAPI")
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverVBD.register_custom_attributes(builder)
+        for key, attribute in builder.custom_attributes.items():
+            if attribute.namespace != "vbd" or not attribute.usd_attribute_name.startswith("newton:vbd:rigid:"):
+                continue
+            with self.subTest(attribute=key):
+                fallback = scene.GetAttribute(attribute.usd_attribute_name).Get()
+                self.assertIsNotNone(fallback)
+                self.assertAlmostEqual(float(attribute.default), float(fallback), places=3)
+
+    def test_invalid_scene_values_are_rejected(self):
+        """Negative or non-finite scene stiffness/damping raises; an explicit argument overrides it."""
+        for usd_name, arg in (
+            ("newton:vbd:rigid:jointLinearStiffness", "rigid_joint_linear_ke"),
+            ("newton:vbd:rigid:jointAngularStiffness", "rigid_joint_angular_ke"),
+            ("newton:vbd:rigid:jointLinearDamping", "rigid_joint_linear_kd"),
+            ("newton:vbd:rigid:jointAngularDamping", "rigid_joint_angular_kd"),
+        ):
+            for bad in (-1.0, float("inf"), float("nan")):
+                with self.subTest(attribute=usd_name, value=bad):
+                    model = self._build_scene_model({usd_name: bad})
+                    with self.assertRaisesRegex(ValueError, usd_name):
+                        newton.solvers.SolverVBD(model)
+                    newton.solvers.SolverVBD(model, **{arg: 1.0})
+
+    def test_scene_contact_history_ignored_without_rigid_integration(self):
+        """Scene-authored contact history must not raise for a body-free model."""
+        model = self._build_scene_model({"newton:vbd:rigid:contactHistory": True})
+        self.assertEqual(model.body_count, 0)
+        solver = newton.solvers.SolverVBD(model)
+        self.assertFalse(solver.rigid_contact_history)
 
 
 def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):

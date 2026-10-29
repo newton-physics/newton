@@ -119,6 +119,16 @@ __all__ = ["SolverVBD"]
 
 _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
 
+# ``NewtonVbdSceneAPI`` settings: constructor argument -> (dtype, default, USD attribute name).
+# Read by both ``register_custom_attributes`` and ``SolverVBD.__init__``.
+_SCENE_ATTRIBUTES = {
+    "rigid_contact_history": (wp.bool, False, "newton:vbd:rigid:contactHistory"),
+    "rigid_joint_linear_ke": (wp.float32, 1.0e5, "newton:vbd:rigid:jointLinearStiffness"),
+    "rigid_joint_angular_ke": (wp.float32, 1.0e5, "newton:vbd:rigid:jointAngularStiffness"),
+    "rigid_joint_linear_kd": (wp.float32, 0.0, "newton:vbd:rigid:jointLinearDamping"),
+    "rigid_joint_angular_kd": (wp.float32, 0.0, "newton:vbd:rigid:jointAngularDamping"),
+}
+
 
 def _select_rigid_block_dim(launch_dim: int, device: wp.Device) -> int:
     """Expose more blocks on small rigid launches, allowing sub-warp blocks.
@@ -638,10 +648,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 penalty law.
             rigid_joint_linear_ke: Material stiffness for non-rod structural linear joint slots [N/m].
                 ``None`` (default) reads ``model.vbd.rigid_joint_linear_ke`` when
-                registered, otherwise uses ``1.0e5``.
+                registered, otherwise uses ``1.0e5``. A scene-authored value must be finite and
+                non-negative, and applies with and without ``rigid_compliant_alm``.
             rigid_joint_angular_ke: Material stiffness for non-rod structural angular joint slots [N·m/rad].
                 ``None`` (default) reads ``model.vbd.rigid_joint_angular_ke`` when
-                registered, otherwise uses ``1.0e5``.
+                registered, otherwise uses ``1.0e5``. A scene-authored value must be finite and
+                non-negative, and applies with and without ``rigid_compliant_alm``.
             rigid_joint_linear_k_start: Linear penalty seed for legacy AVBD ramping [N/m]. Used when
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the joint stiffness regardless of this value.
@@ -660,10 +672,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     default behavior) and author fixed joint stiffness instead.
             rigid_joint_linear_kd: Damping coefficient for non-rod linear joint constraints [N·s/m].
                 ``None`` (default) reads ``model.vbd.rigid_joint_linear_kd`` when
-                registered, otherwise uses ``0.0``. Negative values are clamped to 0.
+                registered, otherwise uses ``0.0``. Negative explicit values are clamped to 0; a
+                scene-authored value must be finite and non-negative. Scene values apply with and
+                without ``rigid_compliant_alm``.
             rigid_joint_angular_kd: Damping coefficient for non-rod angular joint constraints [N·m·s/rad].
                 ``None`` (default) reads ``model.vbd.rigid_joint_angular_kd`` when
-                registered, otherwise uses ``0.0``. Negative values are clamped to 0.
+                registered, otherwise uses ``0.0``. Negative explicit values are clamped to 0; a
+                scene-authored value must be finite and non-negative. Scene values apply with and
+                without ``rigid_compliant_alm``.
             rigid_soft_enable_dat: Whether to apply Divide-and-Truncate (DAT) penetration-free
                 truncation to rigid-soft contacts, symmetric to particle self-contact truncation.
                 Each rigid-soft contact reported by the owned collision pipeline defines a division
@@ -754,24 +770,40 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
               enabled only when positive Dahl parameters are authored.
 
         """
+        integrates_rigid_bodies = model.body_count > 0 and not integrate_with_external_rigid_solver
         vbd_attrs = getattr(model, "vbd", None)
 
-        def resolve_scene_attribute(name: str, explicit_value: Any, default: Any) -> Any:
-            """Resolve an explicit option before its model custom attribute and fallback."""
+        def resolve_scene_attribute(name: str, explicit_value: Any) -> tuple[Any, bool]:
+            """Resolve an explicit option before its model custom attribute and default.
+
+            Returns the value and whether it came from the scene (``model.vbd``).
+            """
             if explicit_value is not None:
-                return explicit_value
+                return explicit_value, False
             model_value = getattr(vbd_attrs, name, None)
             if model_value is None:
-                return default
-            return model_value.numpy()[0].item()
+                return _SCENE_ATTRIBUTES[name][1], False
+            value = model_value.numpy()[0].item()
+            usd_name = _SCENE_ATTRIBUTES[name][2]
+            if name != "rigid_contact_history" and not (np.isfinite(value) and value >= 0.0):
+                raise ValueError(
+                    f"Scene-authored {usd_name} (model.vbd.{name}) must be finite and >= 0, got {value}. "
+                    f"Fix the scene value or pass {name}= explicitly to SolverVBD."
+                )
+            return value, True
 
-        rigid_contact_history = bool(resolve_scene_attribute("rigid_contact_history", rigid_contact_history, False))
-        rigid_joint_linear_ke = float(resolve_scene_attribute("rigid_joint_linear_ke", rigid_joint_linear_ke, 1.0e5))
-        rigid_joint_angular_ke = float(resolve_scene_attribute("rigid_joint_angular_ke", rigid_joint_angular_ke, 1.0e5))
-        rigid_joint_linear_kd = float(resolve_scene_attribute("rigid_joint_linear_kd", rigid_joint_linear_kd, 0.0))
-        rigid_joint_angular_kd = float(resolve_scene_attribute("rigid_joint_angular_kd", rigid_joint_angular_kd, 0.0))
-
-        integrates_rigid_bodies = model.body_count > 0 and not integrate_with_external_rigid_solver
+        rigid_contact_history, history_from_scene = resolve_scene_attribute(
+            "rigid_contact_history", rigid_contact_history
+        )
+        rigid_contact_history = bool(rigid_contact_history)
+        if history_from_scene and not integrates_rigid_bodies:
+            # Contact history only applies to rigid bodies integrated by VBD; a scene-authored
+            # value must not make body-free or externally integrated models fail.
+            rigid_contact_history = False
+        rigid_joint_linear_ke = float(resolve_scene_attribute("rigid_joint_linear_ke", rigid_joint_linear_ke)[0])
+        rigid_joint_angular_ke = float(resolve_scene_attribute("rigid_joint_angular_ke", rigid_joint_angular_ke)[0])
+        rigid_joint_linear_kd = float(resolve_scene_attribute("rigid_joint_linear_kd", rigid_joint_linear_kd)[0])
+        rigid_joint_angular_kd = float(resolve_scene_attribute("rigid_joint_angular_kd", rigid_joint_angular_kd)[0])
 
         if rigid_compliant_alm is None:
             raise TypeError("rigid_compliant_alm must be True or False; omit it to use the default.")
@@ -953,6 +985,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "matching for the warm-start restore; construct the pipeline with "
                 "contact_matching='latest' (or 'sticky' for persistent friction anchors). "
                 "Alternatively, set rigid_contact_history=False."
+                + (
+                    " The value came from the scene (model.vbd.rigid_contact_history, "
+                    "newton:vbd:rigid:contactHistory); passing rigid_contact_history=False overrides it."
+                    if history_from_scene
+                    else ""
+                )
             )
         # Per-step schedule cache; refreshed at every step() so runtime
         # set_collision_frequency() changes take effect at the next step.
@@ -2469,12 +2507,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
-          - ``NewtonVbdSceneAPI`` solver configuration attributes
+          - ``vbd:rigid_contact_history``, ``vbd:rigid_joint_linear_ke``, ``vbd:rigid_joint_angular_ke``,
+            ``vbd:rigid_joint_linear_kd`` and ``vbd:rigid_joint_angular_kd`` for the ``NewtonVbdSceneAPI``
+            solver settings, authored in USD as ``newton:vbd:rigid:contactHistory``,
+            ``newton:vbd:rigid:jointLinearStiffness``, ``...jointAngularStiffness``,
+            ``...jointLinearDamping`` and ``...jointAngularDamping``. ``SolverVBD`` uses them as
+            defaults: explicit constructor argument > ``model.vbd.*`` > built-in default. Scene-authored
+            stiffness and damping must be finite and non-negative.
           - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode (non-rod joints)
           - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional rod angular Dahl friction
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
-        in scenes and in USD as ``newton:vbd:<attr>``.
+        in scenes. The Dahl and ``joint_is_hard`` attributes are authored in USD as
+        ``newton:vbd:<attr>``; the solver settings above use the names listed there.
 
         Dahl rod friction is enabled per joint only where both
         ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
@@ -2483,39 +2528,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Args:
             builder: Model builder to register attributes on.
         """
-        scene_attributes = (
-            (
-                "rigid_contact_history",
-                wp.bool,
-                False,
-                "newton:vbd:rigid:contactHistory",
-            ),
-            (
-                "rigid_joint_linear_ke",
-                wp.float32,
-                1.0e5,
-                "newton:vbd:rigid:jointLinearStiffness",
-            ),
-            (
-                "rigid_joint_angular_ke",
-                wp.float32,
-                1.0e5,
-                "newton:vbd:rigid:jointAngularStiffness",
-            ),
-            (
-                "rigid_joint_linear_kd",
-                wp.float32,
-                0.0,
-                "newton:vbd:rigid:jointLinearDamping",
-            ),
-            (
-                "rigid_joint_angular_kd",
-                wp.float32,
-                0.0,
-                "newton:vbd:rigid:jointAngularDamping",
-            ),
-        )
-        for name, dtype, default, usd_attribute_name in scene_attributes:
+        for name, (dtype, default, usd_attribute_name) in _SCENE_ATTRIBUTES.items():
             builder.add_custom_attribute(
                 ModelBuilder.CustomAttribute(
                     name=name,
