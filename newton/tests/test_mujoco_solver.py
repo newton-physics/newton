@@ -35,7 +35,7 @@ from newton._src.solvers.mujoco.enums import (
 )
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layout_collision_masks
-from newton._src.solvers.mujoco.kernels import convert_solref
+from newton._src.solvers.mujoco.kernels import convert_solref, update_body_inertia_kernel
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
 from newton.solvers import SolverMuJoCo
@@ -6104,6 +6104,31 @@ class TestMuJoCoValidation(unittest.TestCase):
 
 
 class TestMuJoCoConversion(unittest.TestCase):
+    def test_small_rotated_inertia_update(self):
+        """Preserve principal moments and orientation when updating tiny rotated inertias."""
+        rotation = np.array(
+            wp.quat_to_matrix(wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 1.0))
+        ).reshape(3, 3)
+        moments = np.array([2e-18, 1e-16, 1e-16])
+        inertia = (rotation @ np.diag(moments) @ rotation.T).astype(np.float32)
+        mapping = wp.array([[0]], dtype=wp.int32)
+        principal = wp.empty((1, 1), dtype=wp.vec3)
+        quaternion = wp.empty((1, 1), dtype=wp.quat)
+        wp.launch(
+            update_body_inertia_kernel,
+            dim=(1, 1),
+            inputs=[
+                mapping,
+                wp.array([inertia], dtype=wp.mat33),
+                principal,
+                quaternion,
+            ],
+        )
+        np.testing.assert_allclose(principal.numpy()[0, 0], moments[::-1], rtol=1e-5, atol=0.0)
+        w, x, y, z = quaternion.numpy()[0, 0]
+        frame = np.array(wp.quat_to_matrix(wp.quat(x, y, z, w))).reshape(3, 3)
+        np.testing.assert_allclose(frame @ np.diag(principal.numpy()[0, 0]) @ frame.T, inertia, rtol=1e-5, atol=1e-23)
+
     def test_cone_is_converted_to_mesh(self):
         """Convert Newton cones to meshes because MuJoCo has no cone primitive."""
         mujoco, _ = SolverMuJoCo.import_mujoco()

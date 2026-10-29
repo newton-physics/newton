@@ -49,11 +49,51 @@ _INERTIA_SYMMETRY_ATOL = 1.0e-8
 _MESH_INERTIA_TILE_SIZE = 256
 
 
-@wp.func
 def _inverse_inertia(inertia: wp.mat33) -> wp.mat33:
+    """Invert on the host in float64, preserving Warp's zero result for singular tensors."""
+    try:
+        return wp.mat33(np.linalg.inv(np.asarray(inertia, dtype=np.float64).reshape(3, 3)))
+    except np.linalg.LinAlgError:
+        return wp.mat33(0.0)
+
+
+@wp.func
+def _inverse_inertia_wp(inertia: wp.mat33) -> wp.mat33:
     # Small valid float32 inertias can underflow the determinant or overflow its
     # reciprocal. Use float64 intermediates, then store the inverse in float32.
     return wp.mat33(wp.inverse(wp.mat33d(inertia)))
+
+
+@wp.func
+def _eig_inertia(inertia: wp.mat33):
+    # eig3's absolute numerical thresholds assume entries near unit scale.
+    # Normalize before decomposition and restore the principal moments afterward.
+    scale = float(0.0)
+    for i in range(3):
+        for j in range(3):
+            scale = wp.max(scale, wp.abs(inertia[i, j]))
+    if scale == 0.0:
+        return wp.identity(n=3, dtype=wp.float32), wp.vec3(0.0)
+    # Float64 division also avoids reciprocal overflow for subnormal float32 scales.
+    vectors, values = wp.eig3(wp.mat33(wp.mat33d(inertia) / wp.float64(scale)))
+    return vectors, values * scale
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def compute_body_inverses_kernel(
+    body_mass: wp.array[wp.float32],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[wp.float32],
+    body_inv_inertia: wp.array[wp.mat33],
+):
+    """Derive inverse properties from final mass and inertia, independently of validation."""
+    tid = wp.tid()
+    if body_mass[tid] > 0.0:
+        body_inv_mass[tid] = 1.0 / body_mass[tid]
+        body_inv_inertia[tid] = _inverse_inertia_wp(body_inertia[tid])
+    else:
+        body_inv_mass[tid] = 0.0
+        body_inv_inertia[tid] = wp.mat33(0.0)
 
 
 def _validate_hollow_thickness(
@@ -1000,8 +1040,6 @@ def verify_and_correct_inertia(
 def validate_and_correct_inertia_kernel(
     body_mass: wp.array[wp.float32],
     body_inertia: wp.array[wp.mat33],
-    body_inv_mass: wp.array[wp.float32],
-    body_inv_inertia: wp.array[wp.mat33],
     balance_inertia: wp.bool,
     bound_mass: wp.float32,
     bound_inertia: wp.float32,
@@ -1086,7 +1124,7 @@ def validate_and_correct_inertia_kernel(
         inertia = sym
 
         # Use eigendecomposition for proper validation
-        _eigvecs, eigvals = wp.eig3(inertia)
+        _eigvecs, eigvals = _eig_inertia(inertia)
 
         # Sort eigenvalues to get principal moments (I1 <= I2 <= I3)
         I1, I2, I3 = eigvals[0], eigvals[1], eigvals[2]
@@ -1131,7 +1169,7 @@ def validate_and_correct_inertia_kernel(
         # threshold/extra shift is small. Check the matrix after rounding and
         # keep the final shift representable at the tensor's scale.
         if was_corrected:
-            _eigvecs, eigvals = wp.eig3(inertia)
+            _eigvecs, eigvals = _eig_inertia(inertia)
             min_eig = wp.min(eigvals[0], wp.min(eigvals[1], eigvals[2]))
             if min_eig <= 0.0:
                 scale = wp.max(wp.abs(inertia[0, 0]), wp.max(wp.abs(inertia[1, 1]), wp.abs(inertia[2, 2])))
@@ -1143,18 +1181,6 @@ def validate_and_correct_inertia_kernel(
     # Write back corrected values
     body_mass[tid] = mass
     body_inertia[tid] = output_inertia
-
-    # Update inverse mass
-    if mass > 0.0:
-        body_inv_mass[tid] = 1.0 / mass
-    else:
-        body_inv_mass[tid] = 0.0
-
-    # Update inverse inertia
-    if mass > 0.0:
-        body_inv_inertia[tid] = _inverse_inertia(output_inertia)
-    else:
-        body_inv_inertia[tid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     if was_corrected:
         wp.atomic_add(correction_count, 0, 1)

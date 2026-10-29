@@ -224,7 +224,6 @@ finalization:
 .. code-block:: python
 
     builder.inertia_absolute_tolerance = 1e-20
-    builder.inertia_correction = 0.0
     model = builder.finalize()
 
 This example value is specific to that scale, not a universal recommended
@@ -232,10 +231,15 @@ tolerance. Lowering ``inertia_correction`` alone does not prevent a tensor
 below the threshold from being adjusted. The numerical settings apply equally
 to the detailed CPU and fast Warp paths. They must be finite and within the
 float32 range; the absolute tolerance must remain positive in float32.
-With zero extra correction, a repair still includes a representable positive
-shift if float32 rounding would leave the tensor singular. Inverse inertia is
-computed with float64 intermediates and stored in float32; both the tensor and
-its inverse must remain representable in float32.
+Changing ``inertia_correction`` is a separate repair-policy choice. Setting it
+to zero removes the extra padding for tensors that fail validation; for example,
+a positive-mass body with zero inertia is repaired to approximately
+``inertia_absolute_tolerance * identity``. Retaining the default correction
+avoids that change and does not affect tensors that pass validation. A repair
+still includes a representable positive shift if rounding would leave the
+tensor singular. Inverse inertia is computed with float64 intermediates and
+stored in float32; both the tensor and its inverse must remain representable
+in float32.
 
 To skip the entire mass/inertia validation and correction stage:
 
@@ -243,8 +247,11 @@ To skip the entire mass/inertia validation and correction stage:
 
     model = builder.finalize(skip_validation_inertia=True)
 
-This preserves the builder's stored mass, inertia, and inverse properties,
-including invalid values. It skips finiteness, symmetry, positive-definiteness,
+This preserves the builder's mass and inertia, including invalid values.
+Finalization always recomputes derived inverses from the final properties,
+including after manual edits or imports. Non-positive masses receive zero
+inverse mass and zero inverse inertia; singular tensors receive zero inverse
+inertia. Validation skipping omits finiteness, symmetry, positive-definiteness,
 mass and inertia bounds, and triangle-inequality checks. The caller is
 responsible for supplying consistent properties supported by the chosen
 solver. ``finalize(skip_all_validations=True)`` also skips this stage.

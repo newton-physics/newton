@@ -73,6 +73,7 @@ from ..geometry.inertia import (
     _INERTIA_ABS_FLOOR,
     _INERTIA_REL_TOL,
     _inverse_inertia,
+    compute_body_inverses_kernel,
     validate_and_correct_inertia_kernel,
     verify_and_correct_inertia,
 )
@@ -14371,7 +14372,8 @@ class ModelBuilder:
                 close a loop; standalone world-root joints are allowed.
             skip_validation_shapes: If True, skips validation of shapes having valid contact margins. Default is False.
             skip_validation_inertia: If True, skips all rigid body mass/inertia validation and correction,
-                preserving the builder's mass, inertia, and stored inverses. This includes finiteness, symmetry,
+                preserving the builder's mass and inertia. Derived inverses are always recomputed.
+                Skipped checks include finiteness, symmetry,
                 positive-definiteness, bounds, and triangle-inequality checks. Does not undo earlier importer
                 processing, shape mass computation, or fixed-joint merging. Default is False.
             skip_validation_structure: If True, skips validation of structural invariants (body/joint references,
@@ -15587,14 +15589,10 @@ class ModelBuilder:
             # on the returned Model so that finalize() is side-effect-free.
             body_mass = self.body_mass
             body_inertia = self.body_inertia
-            body_inv_mass = self.body_inv_mass
-            body_inv_inertia = self.body_inv_inertia
             if validate_inertia and len(self.body_mass) > 0 and self.validate_inertia_detailed:
                 # Use detailed Python validation with per-body warnings on copies of the builder lists.
                 body_mass = list(body_mass)
                 body_inertia = list(body_inertia)
-                body_inv_mass = list(body_inv_mass)
-                body_inv_inertia = list(body_inv_inertia)
                 for i in range(len(body_mass)):
                     body_label = self.body_label[i] if i < len(self.body_label) else f"body_{i}"
                     new_mass, new_inertia, was_corrected = verify_and_correct_inertia(
@@ -15611,15 +15609,11 @@ class ModelBuilder:
                     if was_corrected:
                         body_mass[i] = new_mass
                         body_inertia[i] = new_inertia
-                        body_inv_mass[i] = 1.0 / new_mass if new_mass > 0.0 else 0.0
-                        body_inv_inertia[i] = (
-                            _inverse_inertia(new_inertia) if any(x for x in new_inertia) else new_inertia
-                        )
 
             m.body_mass = wp.array(body_mass, dtype=wp.float32, requires_grad=requires_grad)
-            m.body_inv_mass = wp.array(body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
+            m.body_inv_mass = wp.empty(len(body_mass), dtype=wp.float32, requires_grad=requires_grad)
             m.body_inertia = warp_array_from_values(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            m.body_inv_inertia = warp_array_from_values(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inv_inertia = wp.empty(len(body_mass), dtype=wp.mat33, requires_grad=requires_grad)
 
             if validate_inertia and len(self.body_mass) > 0 and not self.validate_inertia_detailed:
                 # Use fast Warp kernel validation, correcting the Model arrays in place on device.
@@ -15630,8 +15624,6 @@ class ModelBuilder:
                     inputs=[
                         m.body_mass,
                         m.body_inertia,
-                        m.body_inv_mass,
-                        m.body_inv_inertia,
                         self.balance_inertia,
                         self.bound_mass if self.bound_mass is not None else 0.0,
                         self.bound_inertia if self.bound_inertia is not None else 0.0,
@@ -15651,6 +15643,16 @@ class ModelBuilder:
                         NewtonWarning,
                         stacklevel=3,
                     )
+
+            if len(body_mass) > 0:
+                # Stored builder inverses can be stale after edits or importer overrides.
+                # Compute from the final properties even when validation is skipped.
+                wp.launch(
+                    compute_body_inverses_kernel,
+                    dim=len(body_mass),
+                    inputs=[m.body_mass, m.body_inertia],
+                    outputs=[m.body_inv_mass, m.body_inv_inertia],
+                )
 
             m.body_q = warp_array_from_values(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
             m.body_qd = warp_array_from_values(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
