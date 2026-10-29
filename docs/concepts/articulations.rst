@@ -50,6 +50,15 @@ Note that collision detection via :meth:`newton.CollisionPipeline.collide` requi
 Rod joints
 ^^^^^^^^^^
 
+.. experimental::
+
+   :class:`newton.Rod`, :attr:`newton.JointType.ROD`,
+   :meth:`newton.ModelBuilder.add_rod`, and
+   :meth:`newton.ModelBuilder.add_joint_rod` are experimental, together with
+   the Rod state and material layouts, structural-rest authoring and storage,
+   and Rod behavior in :func:`newton.eval_fk` and :func:`newton.eval_ik`.
+   These may change without prior notice.
+
 Newton uses *cable* for the modeled object and *rod* for this discrete
 stretch/shear/bend/twist representation. A cable may be assembled from rod
 joints or modeled with another formulation. :class:`newton.Rod` stores

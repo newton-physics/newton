@@ -190,7 +190,13 @@ class JointType(IntEnum):
 
     ROD = 7
     """Rod joint: 7-coordinate relative pose and 6-DoF relative
-    twist with stretch, shear, bend, and twist response."""
+    twist with stretch, shear, bend, and twist response.
+
+    .. experimental::
+
+        Rod joints may change without prior notice; see :ref:`Rod joints`
+        for the scope.
+    """
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """

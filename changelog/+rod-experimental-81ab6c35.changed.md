@@ -1,0 +1,1 @@
+Mark `JointType.ROD`, `Rod`, `ModelBuilder.add_rod()`, and `ModelBuilder.add_joint_rod()` as experimental, together with the Rod state and material layouts, structural-rest authoring and storage, and Rod behavior in `eval_fk()` and `eval_ik()`. These may change without prior notice. No code changes are required.

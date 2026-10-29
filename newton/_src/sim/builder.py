@@ -6704,6 +6704,8 @@ class ModelBuilder:
     ) -> int:
         """Adds a rod joint to the model.
 
+        .. experimental::
+
         Its kinematic state uses a 7-coordinate relative pose in ``joint_q`` and
         a 6-DoF relative twist in ``joint_qd``. See :ref:`Rod joints` for
         structural-rest conventions.
@@ -10175,6 +10177,8 @@ class ModelBuilder:
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
+
+        .. experimental::
 
         Uses the geometry, frames, topology, and optional constitutive data
         stored on a :class:`newton.Rod`, which may represent an ordered chain

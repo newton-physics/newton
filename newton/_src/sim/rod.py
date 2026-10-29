@@ -112,6 +112,8 @@ def _compute_parallel_transport_quaternions(
 class Rod:
     """Represents discrete rod input for model construction.
 
+    .. experimental::
+
     A rod stores initial centerline points, segment topology, and one material
     frame per segment, plus optional structural-rest points and frames.
     It may additionally store a capsule/cross-section radius
