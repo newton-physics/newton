@@ -45,7 +45,7 @@ from .camera import Camera
 from .gl.frame_cache import FrameCache
 from .gl.icon import set_window_icon
 from .image_logger import ImageLogger, _validate
-from .kernels import flag_changed_floats
+from .kernels import detect_shape_color_changes, flag_changed_floats
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
@@ -850,6 +850,32 @@ void main() {
 
     # ------------------------------------------------------------- OVRTX init
 
+    def _prepare_shape_color_materials(self) -> None:
+        """Let untextured shape materials read each instance's runtime color."""
+        from pxr import Sdf, UsdShade
+
+        for shapes in self._shape_instances.values():
+            if shapes.geo_type == newton.GeoType.PLANE:
+                continue
+            name = self._qualify(shapes.name)
+            # Match the built RTX scene, not batches repopulated by visibility or opacity changes.
+            self._shape_color_batches[name] = shapes.model_shapes.copy()
+            for path in self._instance_prim_paths.get(name, ()):
+                material, _ = UsdShade.MaterialBindingAPI(self.stage.GetPrimAtPath(path)).ComputeBoundMaterial()
+                surface = UsdShade.Shader(self.stage.GetPrimAtPath(f"{material.GetPath()}/PreviewSurface"))
+                if not surface:
+                    continue
+                diffuse = surface.GetInput("diffuseColor")
+                # Preserve texture connections and materials already prepared by another instance.
+                if not diffuse or diffuse.HasConnectedSource():
+                    continue
+                reader = UsdShade.Shader.Define(self.stage, f"{material.GetPath()}/ShapeColor")
+                reader.CreateIdAttr("UsdPrimvarReader_float3")
+                reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("displayColor")
+                reader.CreateInput("fallback", Sdf.ValueTypeNames.Float3).Set(diffuse.Get())
+                reader.CreateOutput("result", Sdf.ValueTypeNames.Float3)
+                diffuse.ConnectToSource(reader.ConnectableAPI(), "result")
+
     def _prepare_shape_opacity_materials(self) -> None:
         """Read per-instance RTX opacity and IOR without changing displayOpacity."""
         from pxr import Sdf, UsdGeom, UsdShade
@@ -899,6 +925,7 @@ void main() {
         self._apply_ground_material()
         self._use_layered_transform_updates = any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
         if self._borrowed_stage is None and not self._use_layered_transform_updates:
+            self._prepare_shape_color_materials()
             self._prepare_shape_opacity_materials()
         ovrtx_usd_path = None
         if self._borrowed_stage is None:
@@ -1339,6 +1366,8 @@ void main() {
 
     @override
     def _populate_shapes(self):
+        self._model_shape_colors_device = None
+        self._shape_colors_changed_device = None
         self._model_shape_opacities_device = None
         self._shape_opacities_changed_device = None
         # The flat RTX geometry and its model indices survive viewer batch repopulation.
@@ -1772,6 +1801,7 @@ void main() {
         self._apply_ovstage_population_changes()
         self._update_ovrtx_camera()
         self._update_ovrtx_transforms()
+        self._update_ovrtx_shape_colors()
         self._update_ovrtx_shape_opacities()
         self._update_ovrtx_instance_visibility()
         self._update_ovrtx_point_batches()
@@ -2375,6 +2405,46 @@ void main() {
                     device=matrices.device,
                 )
                 self._write_ovstage_matrix_attribute(paths[:count], matrices)
+
+    def _update_ovrtx_shape_colors(self) -> None:
+        """Publish changed single-model colors after the previous render finishes."""
+        if (
+            self._use_layered_transform_updates
+            or self.model is None
+            or self.model.shape_color is None
+            or not self._shape_color_batches
+        ):
+            return
+        if self._model_shape_colors_device is not None:
+            self._shape_colors_changed_device.zero_()
+            wp.launch(
+                kernel=detect_shape_color_changes,
+                dim=len(self.model.shape_color),
+                inputs=[self.model.shape_color, self._model_shape_colors_device],
+                outputs=[self._shape_colors_changed_device],
+                device=self.model.shape_color.device,
+                record_tape=False,
+            )
+            # Read only a scalar when the model colors still match the last published values.
+            if not self._shape_colors_changed_device.numpy()[0]:
+                return
+        colors = self.model.shape_color.numpy()
+        for name, shape_indices in self._shape_color_batches.items():
+            batch_colors = colors[shape_indices]
+            previous = self._instance_specs.get(name)
+            paths = self._instance_prim_paths.get(name)
+            if previous is None or paths is None:
+                continue
+            old_colors = previous[2][0]
+            if np.array_equal(batch_colors, old_colors):
+                continue
+            tensors = [self._make_laned_array_dltensor(color, lanes=3) for color in batch_colors]
+            self._write_runtime_attribute(paths, "primvars:displayColor", tensors, is_array=True)
+            self._instance_specs[name] = (previous[0], previous[1], (batch_colors.copy(), *previous[2][1:]))
+        if self._model_shape_colors_device is None:
+            self._model_shape_colors_device = wp.empty_like(self.model.shape_color)
+            self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.model.shape_color.device)
+        wp.copy(self._model_shape_colors_device, self.model.shape_color)
 
     def _update_ovrtx_shape_opacities(self) -> None:
         """Publish changed single-model opacities after the previous render finishes."""
@@ -3040,6 +3110,9 @@ void main() {
         self._prim_world = None
         self._prim_matrices = None
         self._use_layered_transform_updates = False
+        self._model_shape_colors_device = None
+        self._shape_colors_changed_device = None
+        self._shape_color_batches = {}
         self._model_shape_opacities_device = None
         self._shape_opacities_changed_device = None
         self._shape_opacity_batches = {}

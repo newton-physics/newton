@@ -369,6 +369,6 @@ jobs:
           env_vars: OS
           fail_ci_if_error: true
           files: ./coverage.xml
-          flags: unittests
+          flags: cpu
           plugins: noop
           token: ${{ secrets.CODECOV_TOKEN }}

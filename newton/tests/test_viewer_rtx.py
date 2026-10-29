@@ -177,6 +177,7 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         with (
             mock.patch.object(viewer, "_add_camera_lights_and_render_product"),
             mock.patch.object(viewer, "_apply_ground_material"),
+            mock.patch.object(viewer, "_prepare_shape_color_materials"),
             mock.patch.object(viewer, "_prepare_shape_opacity_materials"),
             mock.patch.object(viewer, "_init_window", side_effect=fail_after_window_creation),
             mock.patch.object(viewer, "_release_runtime_scene"),
@@ -685,6 +686,80 @@ class TestViewerRTXRendering(unittest.TestCase):
                     self.assertIs(viewer.get_frame(output=target), target)
                     np.testing.assert_array_equal(target.numpy(), rgb)
 
+                finally:
+                    viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_runtime_shape_colors(self):
+        """Recolor one of two initially identical shapes without changing its neighbor."""
+        builder = newton.ModelBuilder()
+        for y in (-0.4, 0.4):
+            builder.begin_world()
+            body = builder.add_body(xform=wp.transform((0.0, y, 0.0), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
+            builder.end_world()
+        model = builder.finalize()
+        state = model.state()
+        for asynchronous in (False, True):
+            with self.subTest(async_rendering=asynchronous):
+                model.shape_color.assign([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+                model.shape_opacity.fill_(1.0)
+                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=asynchronous)
+                try:
+                    viewer.set_model(model)
+                    viewer.set_world_offsets((0.0, 0.0, 0.0))
+                    viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
+                    opaque_blue_signal = None
+                    for frame_index, channel in enumerate((0, 1, 1, 2, 1, 2, 0, 1, 2, 0)):
+                        if frame_index >= 4:
+                            if frame_index == 8:
+                                # Force a batch split without changing the existing RTX geometry.
+                                model.shape_opacity.assign([0.5, 1.0])
+                            elif frame_index == 9:
+                                model.shape_opacity.fill_(1.0)
+                            worlds = {4: [1], 5: [0], 6: []}.get(frame_index)
+                            viewer.set_visible_worlds(worlds)
+                            self.assertIsNone(viewer._model_shape_colors_device)
+                        target = int(frame_index == 4)
+                        colors = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
+                        colors[target] = 0.0
+                        colors[target, channel] = 1.0
+                        model.shape_color.assign(colors)
+                        if frame_index == 3:
+                            viewer.set_rendering_paused(True)
+                            viewer.begin_frame(frame_index / 60.0)
+                            viewer.log_state(state)
+                            viewer.end_frame()
+                            viewer.set_rendering_paused(False)
+                        viewer.begin_frame(frame_index / 60.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        rgb = viewer.get_frame().numpy()
+                        if frame_index in (3, 8):
+                            blue = rgb[:, :32].astype(np.float32)
+                            signal = np.maximum(blue[:, :, 2] - np.max(blue[:, :, :2], axis=2), 0.0).sum()
+                            if frame_index == 3:
+                                opaque_blue_signal = signal
+                                self.assertGreater(opaque_blue_signal, 1000.0)
+                            else:
+                                # Recoloring and opacity updates must coexist after a batch split.
+                                self.assertGreater(signal, 0.1 * opaque_blue_signal)
+                                self.assertLess(signal, 0.85 * opaque_blue_signal)
+                        # World filtering itself is not implemented by the RTX flat-transform path.
+                        # Check colors on the requested worlds without asserting hidden-world behavior.
+                        visible = {4: (1,), 5: (0,), 6: ()}.get(frame_index, (0, 1))
+                        for shape in visible:
+                            half = rgb[:, shape * 32 : (shape + 1) * 32]
+                            expected = channel if shape == target else 0
+                            other = np.max(np.delete(half, expected, axis=2), axis=2)
+                            colored = (half[:, :, expected] > 32) & (half[:, :, expected] // 2 > other)
+                            self.assertGreater(np.count_nonzero(colored), 8, f"frame {frame_index}, channel {expected}")
+                        if frame_index in (2, 3):
+                            self.assertEqual(viewer._shape_colors_changed_device.numpy()[0], int(frame_index != 2))
+                    viewer.clear_model()
+                    self.assertIsNone(viewer._model_shape_colors_device)
+                    self.assertIsNone(viewer._shape_colors_changed_device)
+                    self.assertFalse(viewer._shape_color_batches)
                 finally:
                     viewer.close()
 
