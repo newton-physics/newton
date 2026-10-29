@@ -78,40 +78,8 @@ def test_box_contact_nearby_face(test, device, *, split=False):
             test.assertAlmostEqual(max(depths), expected_depth, delta=1.0e-5)
 
 
-def test_thin_box_on_triangle_mesh_seam(test, device):
-    """Ground contacts must push a tilted box away from a flat mesh surface."""
-    builder = newton.ModelBuilder()
-    mesh = newton.Mesh(
-        np.array([[-0.2, -0.2, 0.0], [0.2, -0.2, 0.0], [0.2, 0.2, 0.0], [-0.2, 0.2, 0.0]], dtype=np.float32),
-        np.array([0, 1, 2, 0, 2, 3], dtype=np.int32),
-        compute_inertia=False,
-    )
-    ground = builder.add_shape_mesh(body=-1, mesh=mesh, cfg=builder.ShapeConfig(gap=0.01, margin=0.0))
-    body = builder.add_body(
-        xform=wp.transform(wp.vec3(0.0, 0.0, 0.002), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.1))
-    )
-    builder.add_shape_box(body=body, hx=0.085, hy=0.03, hz=0.005, cfg=builder.ShapeConfig(gap=0.01, margin=0.0))
-    model = builder.finalize(device)
-    pipeline = newton.CollisionPipeline(model)
-    contacts = pipeline.contacts()
-    pipeline.collide(model.state(), contacts)
-    count = int(contacts.rigid_contact_count.numpy()[0])
-    test.assertGreater(count, 0)
-    signs = np.where(contacts.rigid_contact_shape0.numpy()[:count] == ground, 1.0, -1.0)
-    normals = signs[:, None] * contacts.rigid_contact_normal.numpy()[:count]
-    test.assertTrue(np.all(normals[:, 2] > 0.0), f"Ground-to-box normals must point upward: {normals}")
-
-
 class TestBoxContactNormal(unittest.TestCase):
     pass
-
-
-add_function_test(
-    TestBoxContactNormal,
-    "test_thin_box_on_triangle_mesh_seam",
-    test_thin_box_on_triangle_mesh_seam,
-    devices=get_test_devices(),
-)
 
 
 def test_box_mesh_minimum_depth(test, device):

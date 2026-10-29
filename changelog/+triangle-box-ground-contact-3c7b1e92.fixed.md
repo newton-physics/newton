@@ -1,1 +1,1 @@
-Restore portal-based penetration handling for triangle-box pairs to avoid downward ground-contact normals on thin boxes spanning a triangle-mesh seam.
+Prevent downward contact normals for boxes spanning triangle-mesh seams while preserving shallow triangle-box penetration depths.
