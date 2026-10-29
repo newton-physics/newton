@@ -75,7 +75,7 @@ def _save_edge_edge_rows_kernel(
     collision_info: TriMeshCollisionInfo,
     prev_count: wp.array[wp.int32],
     prev_edge: wp.array[wp.int32],
-    prev_anchor: wp.array[wp.vec3],
+    prev_anchor: wp.array[wp.vec2],
 ):
     e1, i = wp.tid()
     if rows_current[0] == 0:
@@ -131,13 +131,14 @@ def _replay_vertex_triangle_anchors_kernel(
 def _replay_edge_edge_anchors_kernel(
     world_count: int,
     pos_threshold: float,
+    parallel_epsilon: float,
     step_start_q: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
     edge_indices: wp.array2d[wp.int32],
     reset_world_mask: wp.array[wp.bool],
     prev_count: wp.array[wp.int32],
     prev_edge: wp.array[wp.int32],
-    prev_anchor: wp.array[wp.vec3],
+    prev_anchor: wp.array[wp.vec2],
     collision_info: TriMeshCollisionInfo,
 ):
     e1, i = wp.tid()
@@ -152,15 +153,13 @@ def _replay_edge_edge_anchors_kernel(
     p1 = step_start_q[edge_indices[e1, 3]]
     q0 = step_start_q[edge_indices[e2, 2]]
     q1 = step_start_q[edge_indices[e2, 3]]
-    anchor = edge_edge_anchor(p0, p1, q0, q1)
+    anchor = edge_edge_anchor(p0, p1, q0, q1, parallel_epsilon)
     prev_n = prev_count[e1]
     if reset_world_selected(particle_world[edge_indices[e1, 2]], reset_world_mask, world_count):
         prev_n = 0
     for j in range(offset, offset + prev_n):
         if prev_edge[j] == e2:
-            kept = prev_anchor[j]
-            if kept[0] != NO_ANCHOR and anchor[0] != NO_ANCHOR:
-                anchor = drag_edge_edge_anchor(kept, p0, p1, q0, q1, pos_threshold)
+            anchor = drag_edge_edge_anchor(prev_anchor[j], p0, p1, q0, q1, parallel_epsilon, pos_threshold)
             break
     collision_info.edge_colliding_edges_anchor[slot] = anchor
 
@@ -179,6 +178,7 @@ class SelfContactMatcher:
         edge_buffer_size: Self-contact capacity per edge row.
         world_count: Number of local worlds.
         pos_threshold: Largest drift [m] a pair keeps from its anchor across passes.
+        edge_edge_parallel_epsilon: Threshold the detector treats edge directions as parallel below.
         device: Device to allocate on.
     """
 
@@ -190,6 +190,7 @@ class SelfContactMatcher:
         edge_buffer_size: int,
         world_count: int,
         pos_threshold: float,
+        edge_edge_parallel_epsilon: float,
         device=None,
     ):
         with wp.ScopedDevice(device):
@@ -197,12 +198,13 @@ class SelfContactMatcher:
             self._edge_rows = (edge_count, edge_buffer_size)
             self._world_count = int(world_count)
             self._pos_threshold = pos_threshold
+            self._edge_edge_parallel_epsilon = edge_edge_parallel_epsilon
             self._prev_vertex_count = wp.zeros(particle_count, dtype=wp.int32)
             self._prev_triangle = wp.full(particle_count * vertex_buffer_size, -1, dtype=wp.int32)
             self._prev_triangle_anchor = wp.zeros(particle_count * vertex_buffer_size, dtype=wp.vec3)
             self._prev_edge_count = wp.zeros(edge_count, dtype=wp.int32)
             self._prev_edge = wp.full(edge_count * edge_buffer_size, -1, dtype=wp.int32)
-            self._prev_edge_anchor = wp.zeros(edge_count * edge_buffer_size, dtype=wp.vec3)
+            self._prev_edge_anchor = wp.zeros(edge_count * edge_buffer_size, dtype=wp.vec2)
             # Whether the last pass anchored its rows, so they are worth saving.
             self._rows_current = wp.zeros(1, dtype=wp.int32)
             self._reset_world_mask = wp.zeros(self._world_count + 1, dtype=wp.bool)
@@ -225,11 +227,19 @@ class SelfContactMatcher:
         collision_info.vertex_colliding_triangles_anchor = wp.zeros(
             self._prev_triangle.shape[0], dtype=wp.vec3, device=device
         )
-        collision_info.edge_colliding_edges_anchor = wp.zeros(self._prev_edge.shape[0], dtype=wp.vec3, device=device)
+        collision_info.edge_colliding_edges_anchor = wp.zeros(self._prev_edge.shape[0], dtype=wp.vec2, device=device)
 
     def save(self, contacts: Contacts) -> None:
         """Save the buffer's rows and anchors as the solver left them, before detection rewrites them."""
         collision_info = contacts.soft_self_contact_data
+        if (
+            collision_info.vertex_colliding_triangles_anchor.shape != self._prev_triangle.shape
+            or collision_info.edge_colliding_edges_anchor.shape != self._prev_edge.shape
+        ):
+            raise ValueError(
+                "This Contacts buffer has no sticky self-contact anchors; allocate it with "
+                "CollisionPipeline.contacts() after init_soft_self_contact()."
+            )
         device = self._rows_current.device
         wp.launch(
             _save_vertex_triangle_rows_kernel,
@@ -273,6 +283,7 @@ class SelfContactMatcher:
             inputs=[
                 self._world_count,
                 self._pos_threshold,
+                self._edge_edge_parallel_epsilon,
                 step_start_q,
                 model.particle_world,
                 model.edge_indices,

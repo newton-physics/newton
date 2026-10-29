@@ -2863,15 +2863,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Keep self-contact friction anchors within the friction regularization length."""
         if not self.particle_enable_self_contact or self.collision_pipeline is None:
             return
+        collision_info = self._pipeline_contacts.soft_self_contact_data
+        if collision_info.vertex_colliding_triangles_anchor.shape[0] == 0:
+            return
         wp.launch(
             relax_self_contact_anchors,
             dim=max(self.model.particle_count, self.model.edge_count),
             inputs=[
                 self.friction_epsilon * dt,
+                self._self_contact_edge_edge_parallel_epsilon,
                 state_out.particle_q,
                 self.model.tri_indices,
                 self.model.edge_indices,
-                self._pipeline_contacts.soft_self_contact_data,
+                collision_info,
             ],
             device=self.device,
         )
@@ -2921,7 +2925,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         history is intentionally left untouched: ``particle_q_prev`` is rebaselined
         from the incoming state at the start of the next :meth:`step`, self-contact
         and body-particle contacts rebuild per step, and tet/cloth elasticity is
-        stateless, so no particle history cold-start is required. Reset does not
+        stateless, so no particle history cold-start is required. Sticky
+        self-contact friction anchors live in the collision pipeline and survive
+        reset; call :meth:`~newton.CollisionPipeline.reset_contact_matching` to
+        forget them. Reset does not
         refresh the particle self-contact BVH; the next :meth:`step` refits it from
         the incoming positions. After a large reset displacement, call
         :meth:`rebuild_bvh` to restore acceleration-structure quality. Both reset

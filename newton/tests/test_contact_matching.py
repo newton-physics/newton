@@ -12,6 +12,7 @@ import newton
 from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
 from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
 from newton._src.geometry.contact_sort import ContactSorter
+from newton._src.geometry.tri_mesh_collision import edge_edge_anchor, edge_edge_anchor_slip
 from newton._src.solvers.vbd.particle_vbd_kernels import relax_self_contact_anchors
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -1296,7 +1297,14 @@ def _check_sticky_self_contact_anchors(test, device, *, use_capture):
         wp.launch(
             relax_self_contact_anchors,
             dim=model.particle_count,
-            inputs=[0.0001, state.particle_q, model.tri_indices, model.edge_indices, contacts.soft_self_contact_data],
+            inputs=[
+                0.0001,
+                1.0e-5,
+                state.particle_q,
+                model.tri_indices,
+                model.edge_indices,
+                contacts.soft_self_contact_data,
+            ],
         )
         np.testing.assert_allclose(anchor_x_at(0.0207), 0.0206, atol=1.0e-7)
         pipeline.reset_contact_matching()
@@ -1351,6 +1359,50 @@ def test_sticky_self_contact_history_follows_world_and_buffer(test, device):
             if fresh._soft_self_contact_detector is None:
                 fresh.init_soft_self_contact(margin=0.005, gap=0.005)
             test.assertEqual(fresh.contacts().soft_self_contact_data.vertex_colliding_triangles_anchor.shape[0], 0)
+            with test.assertRaises(ValueError):
+                pipeline.collide(state, fresh.contacts(), soft_self_contact=True)
+
+
+@wp.kernel
+def _edge_edge_twist_slip_kernel(
+    p: wp.array[wp.vec3], q: wp.array[wp.vec3], q_twisted: wp.array[wp.vec3], slip: wp.array[float]
+):
+    anchor = edge_edge_anchor(p[0], p[1], q[0], q[1], 1.0e-5)
+    offset = edge_edge_anchor_slip(anchor, p[0], p[1], q_twisted[0], q_twisted[1])
+    normal = wp.normalize(
+        edge_edge_anchor_slip(
+            edge_edge_anchor(p[0], p[1], q_twisted[0], q_twisted[1], 1.0e-5), p[0], p[1], q_twisted[0], q_twisted[1]
+        )
+    )
+    slip[0] = wp.length(offset - wp.dot(offset, normal) * normal)
+
+
+def test_edge_edge_anchor_slip_bounded_by_twist(test, device):
+    """Twisting one of two nearly parallel touching edges slips them by at most its length times the angle.
+
+    The closest points of the two lines lie half a meter outside the 1 cm edges, so an anchor there
+    would read the 1 mrad twist as half a millimeter of slip.
+    """
+    p = np.array([[0.0, 0.0, 0.0], [0.01, 0.0, 0.0]])
+    q0 = np.array([0.0, 0.001, 0.001])
+    q = np.array([q0, q0 + 0.01 * np.array([np.cos(2.0e-3), np.sin(2.0e-3), 0.0])])
+    twist = 1.0e-3
+    rotation = np.array([[np.cos(twist), -np.sin(twist), 0.0], [np.sin(twist), np.cos(twist), 0.0], [0.0, 0.0, 1.0]])
+    middle = q.mean(axis=0)
+    q_twisted = (q - middle) @ rotation.T + middle
+    slip = wp.zeros(1, dtype=float, device=device)
+    wp.launch(
+        _edge_edge_twist_slip_kernel,
+        dim=1,
+        inputs=[
+            wp.array(p, dtype=wp.vec3, device=device),
+            wp.array(q, dtype=wp.vec3, device=device),
+            wp.array(q_twisted, dtype=wp.vec3, device=device),
+        ],
+        outputs=[slip],
+        device=device,
+    )
+    test.assertLessEqual(slip.numpy()[0], 0.01 * twist)
 
 
 # ---------------------------------------------------------------------------
@@ -1537,6 +1589,12 @@ add_function_test(
     TestContactMatchingSticky,
     "test_sticky_self_contact_history_follows_world_and_buffer",
     test_sticky_self_contact_history_follows_world_and_buffer,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_edge_edge_anchor_slip_bounded_by_twist",
+    test_edge_edge_anchor_slip_bounded_by_twist,
     devices=devices,
 )
 

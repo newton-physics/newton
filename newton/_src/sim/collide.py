@@ -2514,6 +2514,7 @@ class CollisionPipeline:
                 edge_buffer_pre_alloc,
                 self.model.world_count,
                 pos_threshold=self._contact_matching_pos_threshold,
+                edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
                 device=self.model.device,
             )
 
@@ -2609,10 +2610,10 @@ class CollisionPipeline:
         from. ``None`` leaves them stale, for a pass that another detection replaces before any
         friction is evaluated.
         """
+        detector = self._get_soft_self_contact_detector(contacts)
         matcher = self._self_contact_matcher
         if matcher is not None:
             matcher.save(contacts)
-        detector = self._get_soft_self_contact_detector(contacts)
         detector.refit(particle_q)
         query_radius = self.soft_self_contact_margin + self.soft_self_contact_gap
         detector.vertex_triangle_collision_detection(

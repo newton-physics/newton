@@ -2628,11 +2628,10 @@ and edge-edge pair a friction anchor
 <newton.geometry.TriMeshCollisionInfo.vertex_colliding_triangles_anchor>` and
 :attr:`~newton.geometry.TriMeshCollisionInfo.edge_colliding_edges_anchor`).  An
 anchor names material points: the vertex position in the triangle's frame, or the
-closest points of the two edge lines and their separation.  A new pair anchors
-where it was at the start of the step.  A pair found again in the next pass keeps
-its anchor, dragged along so the pair is at most ``contact_matching_pos_threshold``
-from it.  Parallel edges get no anchor, and neither do the pairs of a pipeline with
-``requires_grad``.
+points of the two edges that touched.  A new pair anchors where it was at the
+start of the step.  A pair found again in the next pass keeps its anchor, dragged
+along so the pair is at most ``contact_matching_pos_threshold`` from it.  The pairs
+of a pipeline with ``requires_grad`` get no anchor.
 
 :class:`~newton.solvers.SolverVBD` measures self-contact friction slip as a pair's
 drift from its anchor, so stacked or folded soft bodies hold static tangential
@@ -2649,8 +2648,8 @@ Both enabled modes keep the previous frame's sorted keys, uniqueness claims,
 contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
 ``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
 ``contact_report=True`` adds 4.  With soft self-contact, ``"sticky"`` also keeps 28
-bytes per vertex-triangle and edge-edge pair slot (the self-contact buffer
-capacities) and 4 bytes per vertex and per edge.  ``"disabled"`` allocates no
+bytes per vertex-triangle and 20 per edge-edge pair slot (the self-contact
+buffer capacities) and 4 bytes per vertex and per edge.  ``"disabled"`` allocates no
 matching history.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,

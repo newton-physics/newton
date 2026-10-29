@@ -1038,7 +1038,7 @@ def evaluate_edge_edge_contact_2_vertices(
     friction_epsilon: float,
     dt: float,
     edge_edge_parallel_epsilon: float,
-    friction_anchors: wp.array[wp.vec3],
+    friction_anchors: wp.array[wp.vec2],
     slot: int,
 ):
     r"""
@@ -1095,9 +1095,7 @@ def evaluate_edge_edge_contact_2_vertices(
         dx = (c1 - c1_prev) - (c2 - c2_prev)
         slip = dx
         if friction_anchors.shape[0] > 0:
-            anchor = friction_anchors[slot]
-            if anchor[0] != NO_ANCHOR:
-                slip = edge_edge_anchor_slip(anchor, e1_v1_pos, e1_v2_pos, e2_v1_pos, e2_v2_pos)
+            slip = edge_edge_anchor_slip(friction_anchors[slot], e1_v1_pos, e1_v2_pos, e2_v1_pos, e2_v2_pos)
         axis_1, axis_2 = orthonormal_basis(collision_normal)
 
         T = mat32(
@@ -1579,6 +1577,7 @@ def convert_body_particle_contact_data_kernel(
 @wp.kernel(enable_backward=False)
 def relax_self_contact_anchors(
     max_slip: float,
+    edge_edge_parallel_epsilon: float,
     particle_q: wp.array[wp.vec3],
     tri_indices: wp.array2d[wp.int32],
     edge_indices: wp.array2d[wp.int32],
@@ -1590,8 +1589,6 @@ def relax_self_contact_anchors(
     body back once it stops; the collision pipeline replays the dragged anchors instead.
     """
     primitive = wp.tid()
-    if collision_info.vertex_colliding_triangles_anchor.shape[0] == 0:
-        return
     if primitive < collision_info.vertex_colliding_triangles_buffer_sizes.shape[0]:
         offset = collision_info.vertex_colliding_triangles_offsets[primitive]
         p = particle_q[primitive]
@@ -1615,10 +1612,15 @@ def relax_self_contact_anchors(
         for i in range(get_edge_colliding_edges_count(collision_info, primitive)):
             slot = offset + i
             e2 = collision_info.edge_colliding_edges[2 * slot + 1]
-            anchor = collision_info.edge_colliding_edges_anchor[slot]
-            if e2 >= 0 and anchor[0] != NO_ANCHOR:
+            if e2 >= 0:
                 collision_info.edge_colliding_edges_anchor[slot] = drag_edge_edge_anchor(
-                    anchor, p0, p1, particle_q[edge_indices[e2, 2]], particle_q[edge_indices[e2, 3]], max_slip
+                    collision_info.edge_colliding_edges_anchor[slot],
+                    p0,
+                    p1,
+                    particle_q[edge_indices[e2, 2]],
+                    particle_q[edge_indices[e2, 3]],
+                    edge_edge_parallel_epsilon,
+                    max_slip,
                 )
 
 
