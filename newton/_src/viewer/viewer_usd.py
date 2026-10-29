@@ -243,8 +243,8 @@ class ViewerUSD(ViewerBase):
             time: The simulation time for the new frame.
         """
         super().begin_frame(time)
-        # Round so accumulated float time just below a frame boundary maps to that frame.
-        self._frame_index = round(time * self.fps)
+        # Floor with a tolerance so accumulated float time just below a frame boundary maps to that frame.
+        self._frame_index = int(time * self.fps + 1.0e-4)
         self._frame_count += 1
 
         # Update stage end time if needed
