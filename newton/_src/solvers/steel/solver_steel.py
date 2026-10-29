@@ -57,15 +57,17 @@ from .kernels import (
     ROW_WATERMARK_CONTACT_SLOT,
     ROW_WATERMARK_FAMILY_STRIDE,
     WARP_DETERMINISM_OFF,
-    _compute_body_net_wrench,
     _get_tree_fk_kernel,
     _get_tree_tau_kernel,
+    accumulate_connect_wrenches_from_impulses,
     accumulate_contact_watermark,
+    accumulate_contact_wrenches_from_impulses,
     accumulate_group_diag_worlds,
     accumulate_propagation_warmstart_body_impulses,
     accumulate_propagation_warmstart_body_impulses_ordered,
     accumulate_row_watermarks,
     accumulate_sparse_diagonal_response_diag,
+    accumulate_torsion_wrenches_from_impulses,
     advance_world_contact_counters,
     advance_world_row_counters,
     allocate_connect_slots,
@@ -128,6 +130,7 @@ from .kernels import (
     diag_from_JY_par_art,
     diag_from_JY_world,
     eval_augmented_drives,
+    eval_post_solve_parent_wrenches,
     eval_rigid_fk_id,
     eval_rigid_tau,
     eval_rigid_tau_and_augmented_drives,
@@ -194,10 +197,12 @@ from .kernels import (
     snapshot_step_warmstart,
     solve_compact_diagonal_mass,
     solve_diagonal_mass,
+    subtract_arrays,
     trisolve_loop,
     update_body_qd_from_featherstone,
     update_qdd_from_velocity,
     vector_add_inplace,
+    zero_unattached_parent_wrenches,
 )
 from .sleeping import _publish_body_awake, _SleepState
 from .sparse_contact import (
@@ -653,36 +658,6 @@ def _warn_constraint_row_overflow(
                 propagation_capacity,
                 propagation_dropped,
             )
-
-
-@wp.kernel
-def compute_body_parent_f(
-    body_to_articulation: wp.array[int],
-    articulation_origin: wp.array[wp.vec3],
-    body_fb_s: wp.array[wp.spatial_vector],
-    body_ft_s: wp.array[wp.spatial_vector],
-    body_f_ext: wp.array[wp.spatial_vector],
-    body_flags: wp.array[wp.int32],
-    body_q: wp.array[wp.transform],
-    body_com: wp.array[wp.vec3],
-    body_parent_f: wp.array[wp.spatial_vector],
-):
-    """Publish the inverse-dynamics wrench transmitted through each body's inbound joint.
-
-    The backward pass leaves the net wrench of a body's subtree, referenced to the
-    articulation origin, in ``body_fb_s + body_ft_s - f_ext``. Translate it to the body's
-    center of mass in world frame (linear force first, torque second).
-    """
-    body = wp.tid()
-    articulation = body_to_articulation[body]
-    if articulation < 0:
-        body_parent_f[body] = wp.spatial_vector()
-        return
-    origin = articulation_origin[articulation]
-    f_s = _compute_body_net_wrench(body, body_ft_s[body], origin, body_fb_s, body_f_ext, body_flags, body_q, body_com)
-    force = wp.spatial_top(f_s)
-    com_rel = wp.transform_point(body_q[body], body_com[body]) - origin
-    body_parent_f[body] = wp.spatial_vector(force, wp.spatial_bottom(f_s) - wp.cross(com_rel, force))
 
 
 @dataclass(frozen=True)
@@ -1385,13 +1360,36 @@ class SolverSteel(SolverBase):
     Solver observables:
         :attr:`~newton.solvers.SolverBase.Observables.body_parent_f` is populated when
         :attr:`~newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` is requested from
-        :meth:`~newton.solvers.SolverBase.observables`. As in
-        :class:`~newton.solvers.SolverFeatherstone`, it is the per-body net spatial wrench
-        of the inverse-dynamics backward pass at the start of the step, translated to the
-        body's center of mass (linear force [N] first, torque [N·m] second, world frame).
-        It does not include constraint or contact impulses of the step. With sleeping enabled the
-        solver computes the wrench every step into its own history, so a sleeping body reports
-        its last awake wrench in whichever output the caller passes.
+        :meth:`~newton.solvers.SolverBase.observables`. It is the wrench the parent applies to
+        each body through its inbound joint, accounted from the step's solved motion: inverse
+        dynamics with the post-solve joint accelerations (taken from the velocities the dynamics
+        start from, after any velocity-limit prescaling), less gravity,
+        :attr:`~newton.State.body_f`, and the solved impulses divided by ``dt`` of the subtree's
+        contact normal, friction and spin rows and its loop-closure rows. Joint-space rows
+        (drives, limits, joint friction, mimic) enter through the accelerations. Linear force [N]
+        first, torque [N·m] about the body's center of mass second, world frame. Bodies outside
+        every articulation report zero.
+
+        Like :class:`~newton.solvers.SolverMuJoCo`, the reconstruction uses the bodies' rigid mass
+        and inertia, not :attr:`~newton.Model.joint_armature`. For a dynamic DOF the wrench
+        projected onto the joint's motion subspace is therefore its generalized load
+        (:attr:`~newton.Control.joint_f`, explicit passive spring and damping forces and
+        joint-space rows) less ``armature * qdd``. Kinematic DOFs report the rigid-body load of
+        carrying their subtree along the prescribed motion.
+
+        The accounting has these limits:
+
+        - With ``enable_bilateral_preelimination`` the loop-closure reactions are left out;
+          requesting the wrench warns once.
+        - A body whose inbound joint is FREE reports the residual of its discrete momentum
+          balance, its FREE ``joint_f`` less ``armature * qdd``; with neither, its force part is
+          zero up to solver tolerance. The stabilized gyroscopic update of single-body FREE
+          articulations is not the inverse dynamics' ``v x* (I v)`` term, so a spinning body with
+          anisotropic inertia can report a torque residual.
+        - Contact wrenches are summed with atomics, so the last bits can differ run to run.
+
+        With sleeping enabled the solver computes the wrench every step into its own history, so
+        a sleeping body reports its last awake wrench in whichever output the caller passes.
 
         :attr:`~newton.solvers.SolverBase.Observables.contact_f` is populated when
         :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` is requested. Each live rigid
@@ -3394,6 +3392,7 @@ class SolverSteel(SolverBase):
         """
         self._connect_count = 0
         self._connect_slot = None
+        self._connect_row_inv_norm = None
         loop_joint_articulation = self._model_plan.loop_joint_articulation
         loop_joints = np.flatnonzero(loop_joint_articulation >= 0)
         if loop_joints.size == 0:
@@ -3459,6 +3458,7 @@ class SolverSteel(SolverBase):
         self._connect_parent_prescribed = wp.array(self._connect_parent_prescribed_np, dtype=wp.int32, device=device)
         self._connect_sizes = frozenset(int(response_dof_count[a]) for a in np.unique(art_np))
         self._connect_slot = wp.full((n,), -1, dtype=wp.int32, device=device)
+        self._connect_row_inv_norm = wp.zeros((n, 3), dtype=float, device=device)
         self._connect_count = n
 
     def _validate_connect_parent_membership(self) -> None:
@@ -3674,6 +3674,7 @@ class SolverSteel(SolverBase):
                         self._row_mu,
                         self._phi,
                         self._target_velocity,
+                        self._connect_row_inv_norm,
                     ],
                     device=model.device,
                 )
@@ -5020,12 +5021,15 @@ class SolverSteel(SolverBase):
             self._qd_work = wp.zeros_like(model.joint_qd)
             # Velocity of the position solve, kept while the velocity-only iterations refine v_out.
             self._v_out_snap = wp.zeros_like(model.joint_qd) if self._velocity_iterations else None
+            self._parent_wrench_prescale = wp.empty_like(model.joint_qd) if self._enable_joint_velocity_limits else None
         else:
             self._mass_update_mask = None
             self._v_hat = None
             self._v_out = None
             self._qd_work = None
             self._v_out_snap = None
+            self._parent_wrench_prescale = None
+        self._parent_wrench_preelim_warned = False
 
         if model.body_count:
             self._body_I_m = wp.empty((model.body_count,), dtype=wp.spatial_matrix, device=model.device)
@@ -5217,6 +5221,15 @@ class SolverSteel(SolverBase):
         # Right-hand side of the velocity-only iterations.
         self._rhs_unbiased = wp.zeros(shape if self._velocity_iterations else (1, 1), dtype=wp.float32, device=device)
         self._constraint_count = wp.zeros((self._world_count,), dtype=wp.int32, device=device)
+        # BODY_PARENT_F scratch, allocated here because a buffer first allocated during capture is unmapped until replay.
+        self._parent_wrench_scratch = None
+        if model.articulation_count:
+            self._parent_wrench_scratch = (
+                wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device),
+                wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device),
+                wp.zeros(model.body_count, dtype=wp.spatial_vector, device=device),
+                wp.full((self._world_count, max(self._articulation_constraint_max, 1)), -1, dtype=int, device=device),
+            )
         # Drive-row parameters and their per-step force-drive coefficients; (1, 1)
         # placeholders keep the kernel signatures fixed when there are no drive rows.
         drive_shape = shape if self._has_drive_rows else (1, 1)
@@ -6227,7 +6240,26 @@ class SolverSteel(SolverBase):
         stage3_qd = self._stage1_fk_id(state_in, state_aug, state_out)
         # With sleeping, wrenches go to solver-owned history first, so frozen bodies never read a caller buffer.
         computed_parent_f = self._sleeping.parent_wrenches if self._sleeping is not None else body_parent_f
-        self._stage1_joint_tau(state_in, state_aug, state_out, control, dt, computed_parent_f)
+        self._stage1_joint_tau(state_in, state_aug, state_out, control, dt)
+        parent_wrench_prescale = None
+        if computed_parent_f is not None:
+            if self._preelim_active and self._connect_count and not self._parent_wrench_preelim_warned:
+                self._parent_wrench_preelim_warned = True
+                warnings.warn(
+                    "BODY_PARENT_F leaves out pre-eliminated loop-closure reactions; "
+                    "set enable_bilateral_preelimination=False to include them.",
+                    stacklevel=3,
+                )
+            if stage3_qd is not state_in.joint_qd:
+                # The dynamics start from prescaled velocities; joint_qdd will be measured from the input.
+                wp.launch(
+                    subtract_arrays,
+                    dim=model.joint_dof_count,
+                    inputs=[state_in.joint_qd, stage3_qd],
+                    outputs=[self._parent_wrench_prescale],
+                    device=model.device,
+                )
+                parent_wrench_prescale = self._parent_wrench_prescale
         self._stage1_crba(state_aug)
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
@@ -6357,6 +6389,9 @@ class SolverSteel(SolverBase):
                 outputs=[self._v_out, state_aug._joint_qdd],
                 device=model.device,
             )
+            if computed_parent_f is not None:
+                # Measure the wrench from the final velocity, transport-corrected as _integrate does.
+                self._remove_free_root_transport(state_in, state_aug)
             if self._free_root_joint_count:
                 # The integrator damped the position-solve velocity; damp the published one alike.
                 wp.launch(
@@ -6376,6 +6411,9 @@ class SolverSteel(SolverBase):
             wp.copy(state_out.joint_qd, self._v_out)
         else:
             self._integrate(state_in, state_aug, state_out, dt, self._v_out)
+        if computed_parent_f is not None:
+            # Stage 7 replaces the start-of-step motion subspaces this reads.
+            self._compute_parent_wrenches(state_in, state_aug, contacts, dt, computed_parent_f, parent_wrench_prescale)
         self._stage7_update_kinematics(state_out)
         if self._sleeping is not None:
             self._sleeping.finish(state_in, state_out, state_aug, dt)
@@ -6565,21 +6603,8 @@ class SolverSteel(SolverBase):
             outputs=[velocity, state_aug._joint_qdd],
             device=model.device,
         )
-        if self._free_root_joint_count:
-            # Invert the free-root transport of the integrator so it realizes the solved velocity.
-            wp.launch(
-                remove_free_root_transport_from_qdd,
-                dim=self._free_root_joint_count,
-                inputs=[
-                    self._free_root_joint_indices,
-                    model.joint_qd_start,
-                    self._kinematic_joint_mask,
-                    state_in.joint_qd,
-                    self._dynamics_joint_active,
-                ],
-                outputs=[state_aug._joint_qdd],
-                device=model.device,
-            )
+        # Invert the free-root transport of the integrator so it realizes the solved velocity.
+        self._remove_free_root_transport(state_in, state_aug)
         wp.launch(
             kernel=integrate_generalized_joints,
             dim=model.joint_count,
@@ -6601,6 +6626,161 @@ class SolverSteel(SolverBase):
                 self._dynamics_joint_active,
             ],
             outputs=[state_out.joint_q, state_out.joint_qd],
+            device=model.device,
+        )
+
+    def _remove_free_root_transport(self, state_in: State, state_aug: State) -> None:
+        """Remove the integrator's free-root transport term from ``joint_qdd``."""
+        if not self._free_root_joint_count:
+            return
+        model = self.model
+        wp.launch(
+            remove_free_root_transport_from_qdd,
+            dim=self._free_root_joint_count,
+            inputs=[
+                self._free_root_joint_indices,
+                model.joint_qd_start,
+                self._kinematic_joint_mask,
+                state_in.joint_qd,
+                self._dynamics_joint_active,
+            ],
+            outputs=[state_aug._joint_qdd],
+            device=model.device,
+        )
+
+    def _compute_parent_wrenches(
+        self,
+        state_in: State,
+        state_aug: State,
+        contacts: Contacts | None,
+        dt: float,
+        body_parent_f: wp.array,
+        prescale: wp.array | None,
+    ) -> None:
+        """Write each body's incoming joint wrench consistent with the step's solved velocities.
+
+        Must run once ``joint_qdd`` holds the post-solve acceleration and before stage 7 replaces
+        the start-of-step motion subspaces.
+        """
+        model = self.model
+        if not model.articulation_count:
+            body_parent_f.zero_()
+            return
+        contact_wrench, body_a_s, body_ft_s, dense_slot_contact = self._parent_wrench_scratch
+        contact_wrench.zero_()
+        inv_dt = 1.0 / dt
+        if contacts is not None and contacts.rigid_contact_max:
+            rigid_contact_max = min(contacts.rigid_contact_max, self._max_contacts_alloc)
+            wp.launch(
+                accumulate_contact_wrenches_from_impulses,
+                dim=rigid_contact_max,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    rigid_contact_max,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    model.shape_body,
+                    state_in.body_q,
+                    self._body_to_articulation,
+                    self._articulation_origin,
+                    *self._contact_force_inputs(contacts, inv_dt)[2:-1],
+                    *self._contact_anchor_args,
+                    self._friction_patches.view,
+                    inv_dt,
+                ],
+                outputs=[contact_wrench, dense_slot_contact],
+                device=model.device,
+            )
+            if self._contact_torsion_enabled:
+                wp.launch(
+                    accumulate_torsion_wrenches_from_impulses,
+                    dim=dense_slot_contact.shape,
+                    inputs=[
+                        self._constraint_count,
+                        self._row_type,
+                        self._row_parent,
+                        self._impulses,
+                        dense_slot_contact,
+                        contacts.rigid_contact_count,
+                        rigid_contact_max,
+                        self._contact_world,
+                        self._contact_slot,
+                        self._contact_path,
+                        contacts.rigid_contact_normal,
+                        contacts.rigid_contact_shape0,
+                        contacts.rigid_contact_shape1,
+                        model.shape_body,
+                        inv_dt,
+                    ],
+                    outputs=[contact_wrench],
+                    device=model.device,
+                )
+        if self._connect_count and not self._preelim_active:
+            wp.launch(
+                accumulate_connect_wrenches_from_impulses,
+                dim=self._connect_count,
+                inputs=[
+                    self._connect_slot,
+                    self._connect_art,
+                    self._connect_body_p,
+                    self._connect_body_c,
+                    self._connect_joint,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    self._connect_row_inv_norm,
+                    self._art_to_world,
+                    state_in.body_q,
+                    self._body_to_articulation,
+                    self._articulation_origin,
+                    self._constraint_count,
+                    self._row_type,
+                    self._impulses,
+                    inv_dt,
+                ],
+                outputs=[contact_wrench],
+                device=model.device,
+            )
+        wp.launch(
+            eval_post_solve_parent_wrenches,
+            dim=model.articulation_count,
+            inputs=[
+                model.articulation_start,
+                self._articulation_joint_end,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_qd_start,
+                model.joint_dof_dim,
+                state_aug._joint_S_s,
+                state_aug._joint_qdd,
+                prescale,
+                inv_dt,
+                state_aug._body_f_s,
+                state_in.body_f if state_in.body_count else None,
+                contact_wrench,
+                model.body_flags,
+                state_in.body_q,
+                model.body_com,
+                model.body_mass,
+                model.body_inertia,
+                self._articulation_origin,
+                self._dynamics_art_active,
+                body_a_s,
+                body_ft_s,
+            ],
+            outputs=[body_parent_f],
+            block_dim=self._serial_kernel_block_dim,
+            device=model.device,
+        )
+        wp.launch(
+            zero_unattached_parent_wrenches,
+            dim=model.body_count,
+            inputs=[self._body_to_articulation],
+            outputs=[body_parent_f],
             device=model.device,
         )
 
@@ -7603,7 +7783,6 @@ class SolverSteel(SolverBase):
         state_out: State,
         control: Control,
         dt: float,
-        body_parent_f: wp.array | None = None,
     ):
         """Accumulate ``joint_tau`` and the implicit-drive mass terms.
 
@@ -7614,10 +7793,8 @@ class SolverSteel(SolverBase):
         ``maxForce``). The implicit part ``K = dt * kd + dt^2 * ke`` is stored in
         ``aug_row_K`` and added to the mass-matrix diagonal by :meth:`_stage1_crba`. With
         ``drive_mode="rows"`` drives contribute nothing here; their rows are solved
-        with the constraints. ``body_parent_f`` defaults to ``state_out.body_parent_f``.
+        with the constraints.
         """
-        if body_parent_f is None:
-            body_parent_f = state_out.body_parent_f
         model = self.model
         body_f = state_in.body_f if state_in.body_count else None
         state_aug._body_ft_s.zero_()
@@ -7711,23 +7888,6 @@ class SolverSteel(SolverBase):
                 inputs=[*common_inputs, *tau_inputs, self._dynamics_art_active],
                 outputs=[state_aug._body_ft_s, state_aug._joint_tau],
                 block_dim=self._serial_kernel_block_dim,
-                device=model.device,
-            )
-        if body_parent_f is not None:
-            wp.launch(
-                compute_body_parent_f,
-                dim=model.body_count,
-                inputs=[
-                    self._body_to_articulation,
-                    self._articulation_origin,
-                    state_aug._body_f_s,
-                    state_aug._body_ft_s,
-                    body_f,
-                    model.body_flags,
-                    state_in.body_q,
-                    model.body_com,
-                ],
-                outputs=[body_parent_f],
                 device=model.device,
             )
 
