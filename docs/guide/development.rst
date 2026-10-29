@@ -693,9 +693,9 @@ additional observations below the command they apply to:
     """
 
 ``python -m newton.examples --describe <example_name>`` prints the docstring
-without importing or executing the example. It is human-readable prose, not a
-versioned data format. Validate descriptions, commands, and declared option
-names with ``uv run --extra dev -m newton.tests -k test_example_spec``.
+without importing or executing the example. Validate descriptions, commands,
+and declared option names with
+``uv run --extra dev -m newton.tests -k test_example_spec``.
 
 Shared visual QA procedures live in ``.agents/skills/example-testing/``;
 these human criteria do not imply equivalent automated assertions.

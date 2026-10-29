@@ -1,9 +1,7 @@
 # Example acceptance criteria
 
 The module docstring contains the teaching description, common success criteria,
-and run commands, with additional observations below the relevant command. Read
-it as prose; there is no metadata schema or JSON contract. Do not maintain a
-second criteria list here.
+and run commands, with additional observations below the relevant command.
 
 ## Extract and plan
 
