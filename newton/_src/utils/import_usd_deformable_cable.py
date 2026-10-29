@@ -59,6 +59,7 @@ from .import_usd_deformable_utils import (
     _warn_geometry_authored_material_attrs,
     _warn_subset_material_bindings,
 )
+from .import_usd_deformable_visual import _record_cable_visual_bind_poses
 
 logger = logging.getLogger(__name__)
 
@@ -1069,6 +1070,11 @@ def _deformable_prepare_cable_topology(
             label=cid,
             wrap_in_articulation=True,
         )
+        point_sources = [[] for _ in node_positions]
+        for key in comp_paths:
+            for point in range(len(curve_recs[key].positions)):
+                point_sources[global_node((key, point))].append((key, point))
+        _record_cable_visual_bind_poses(ctx, rod, body_ids, point_sources)
         # Any member disabling self-collision disables it for the shared articulation.
         authored_self_collisions = {
             value for p in comp_paths if (value := _authored_cable_self_collision(ctx, curve_recs[p].prim)) is not None
@@ -1397,15 +1403,15 @@ def _deformable_import_cable(
             articulation_root = cable_articulation_roots.get(path) if len(vertex_counts) == 1 and not closed else None
             if articulation_root is not None and articulation_root.cable_point == n - 1:
                 curve_joint_radii.reverse()
+            rod = Rod(
+                positions,
+                quaternions=quaternions,
+                rest_points=rest_positions,
+                rest_quaternions=rest_quaternions,
+                radius=curve_radii[0],
+                closed=closed,
+            )
             if articulation_root is None:
-                rod = Rod(
-                    positions,
-                    quaternions=quaternions,
-                    rest_points=rest_positions,
-                    rest_quaternions=rest_quaternions,
-                    radius=curve_radii[0],
-                    closed=closed,
-                )
                 # One deformable object per USD prim is recorded below; a multi-curve prim spans
                 # several add_rod calls, so per-call recording would split it.
                 with builder._suppress_curve_object_recording():
@@ -1448,6 +1454,10 @@ def _deformable_import_cable(
                     ),
                 )
                 path_attachment_map[articulation_root.attachment_path] = articulation_root_joints
+            point_sources = [[(path, start + i)] for i in range(n)]
+            if closed:
+                point_sources.append([(path, start)])
+            _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources)
             # A cable rooted on a rigid articulation keeps that articulation's flag instead.
             if self_collision is not None and (articulation_root is None or articulation_root.parent_body == -1):
                 ctx.articulation_has_self_collision[builder.articulation_count - 1] = self_collision

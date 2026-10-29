@@ -242,6 +242,19 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
         self.assertEqual(warning.call_count, 2)
         _assert_model_arrays_unchanged(model, snapshot)
 
+    def test_lox_negative_joint_effort_limit_raises(self):
+        """Reject negative effort limits when LOX validates model updates."""
+        model = _build_revolute(
+            dynamic=True,
+            effort_limit=5.0,
+            actuator_mode=newton.JointTargetMode.POSITION,
+        )
+        solver = SolverKamino(model, config=SolverKamino.Config(dynamics_solver="lox"))
+
+        model.joint_effort_limit.fill_(-1.0)
+        with self.assertRaisesRegex(ValueError, "Joint effort limits"):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+
     def test_aliased_properties_reference_newton(self):
         """Every aliased Newton array shares storage with Kamino, so in-place edits need no notify."""
         model = _build_revolute(limited=True)
@@ -253,7 +266,7 @@ class TestKaminoNotifyModelChanged(unittest.TestCase):
 
         # (Newton model attribute, Kamino container, Kamino attribute) for each direct alias.
         # ``body_inv_mass`` and ``body_inv_inertia`` are intentionally excluded:
-        # Kamino owns masked copies so it can zero KINEMATIC/PROXY rows without
+        # Kamino owns masked copies so it can zero KINEMATIC rows without
         # mutating the underlying Newton model.
         aliased_properties = [
             ("gravity", gravity, "vector"),

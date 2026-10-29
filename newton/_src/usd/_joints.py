@@ -126,7 +126,6 @@ def parse_joint(
         context={
             "builder": builder,
             "physics_scene_prim": physics_scene_prim,
-            "legacy_springref_units": joint_properties.legacy_springref_units,
         },
     )
     joint_params = {
@@ -498,9 +497,7 @@ def parse_joint(
                     )
 
             if vel is not None and qd_start + dof_idx < qd_end:
-                vel_val = (
-                    vel * DegreesToRadian if is_rot and not joint_properties.legacy_angular_velocity_units else vel
-                )
+                vel_val = vel * DegreesToRadian if is_rot else vel
                 builder.joint_qd[qd_start + dof_idx] = vel_val
                 if verbose:
                     logger.info(
@@ -629,7 +626,6 @@ def parse_merged_joints(
         context={
             "builder": builder,
             "physics_scene_prim": physics_scene_prim,
-            "legacy_springref_units": joint_properties.legacy_springref_units,
         },
     )
     # Per-DOF custom attributes accumulated separately for linear / angular
@@ -675,7 +671,6 @@ def parse_merged_joints(
             context={
                 "builder": builder,
                 "physics_scene_prim": physics_scene_prim,
-                "legacy_springref_units": joint_properties.legacy_springref_units,
             },
         )
         _shift_joint_limits_for_reference(dof, sibling_dof_attrs)

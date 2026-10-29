@@ -1582,6 +1582,7 @@ def create_convert_mjw_contacts_to_newton_kernel():
 
 CTRL_SOURCE_JOINT_TARGET = wp.constant(0)
 CTRL_SOURCE_CTRL_DIRECT = wp.constant(1)
+CTRL_TYPE_DCMOTOR = wp.constant(3)
 
 
 @wp.func
@@ -2151,6 +2152,7 @@ def update_axis_properties_kernel(
 def update_actuator_properties_kernel(
     mjc_actuator_ctrl_source: wp.array[wp.int32],
     mjc_actuator_to_newton_actuator_idx: wp.array[wp.int32],
+    newton_actuator_ctrl_type: wp.array[wp.int32],
     newton_actuator_gainprm: wp.array[vec10],
     newton_actuator_biasprm: wp.array[vec10],
     newton_actuator_dynprm: wp.array[vec10],
@@ -2160,6 +2162,7 @@ def update_actuator_properties_kernel(
     newton_actuator_gear: wp.array[wp.spatial_vector],
     newton_actuator_cranklength: wp.array[float],
     actuators_per_world: wp.int32,
+    actuator_gear_fixed: wp.array[wp.bool],
     # outputs
     actuator_gain: wp.array2d[vec10],
     actuator_bias: wp.array2d[vec10],
@@ -2178,6 +2181,7 @@ def update_actuator_properties_kernel(
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
         mjc_actuator_to_newton_actuator_idx: Index into Newton's mujoco:actuator arrays
+        newton_actuator_ctrl_type: Intrinsic actuator shortcut type
         newton_actuator_gainprm: Newton's model.mujoco.actuator_gainprm
         newton_actuator_biasprm: Newton's model.mujoco.actuator_biasprm
         newton_actuator_dynprm: Newton's model.mujoco.actuator_dynprm
@@ -2187,6 +2191,7 @@ def update_actuator_properties_kernel(
         newton_actuator_gear: Newton's model.mujoco.actuator_gear
         newton_actuator_cranklength: Newton's model.mujoco.actuator_cranklength
         actuators_per_world: Number of actuators per world in Newton model
+        actuator_gear_fixed: Actuators whose damping was folded using their compiled gear
     """
     world, actuator = wp.tid()
     source = mjc_actuator_ctrl_source[actuator]
@@ -2201,12 +2206,17 @@ def update_actuator_properties_kernel(
     if source != CTRL_SOURCE_CTRL_DIRECT:
         return
 
-    actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
-    actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
-    actuator_dynprm[world, actuator] = newton_actuator_dynprm[world_newton_idx]
-    actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
+    # High-level DC-motor parameters and force ranges are resolved together
+    # by native MuJoCo; preserve them as construction-time properties.
+    if newton_actuator_ctrl_type[world_newton_idx] != CTRL_TYPE_DCMOTOR:
+        actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
+        actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
+        actuator_dynprm[world, actuator] = newton_actuator_dynprm[world_newton_idx]
+        actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
+
     actuator_actrange[world, actuator] = newton_actuator_actrange[world_newton_idx]
-    actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
+    if not actuator_gear_fixed or not actuator_gear_fixed[actuator]:
+        actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
     actuator_cranklength[world, actuator] = newton_actuator_cranklength[world_newton_idx]
 
 
@@ -2215,6 +2225,7 @@ def update_dof_force_properties_kernel(
     mjc_dof_to_newton_dof: wp.array2d[wp.int32],
     joint_friction: wp.array[float],
     joint_damping: wp.array[float],
+    actuator_dof_damping: wp.array[float],
     dof_solimp: wp.array[vec5],
     dof_solref: wp.array[wp.vec2],
     # outputs
@@ -2236,6 +2247,8 @@ def update_dof_force_properties_kernel(
     dof_frictionloss[world, mjc_dof] = joint_friction[newton_dof]
     if joint_damping:
         dof_damping[world, mjc_dof] = joint_damping[newton_dof]
+        if actuator_dof_damping:
+            dof_damping[world, mjc_dof] += actuator_dof_damping[mjc_dof]
     if dof_solimp:
         dof_solimp_out[world, mjc_dof] = dof_solimp[newton_dof]
     if dof_solref:
@@ -2909,6 +2922,7 @@ def update_tendon_properties_kernel(
     # Newton tendon properties (inputs)
     tendon_stiffness: wp.array[wp.float32],
     tendon_damping: wp.array[wp.float32],
+    actuator_tendon_damping: wp.array[float],
     tendon_frictionloss: wp.array[wp.float32],
     tendon_range: wp.array[wp.vec2],
     tendon_margin: wp.array[wp.float32],
@@ -2948,6 +2962,8 @@ def update_tendon_properties_kernel(
         tendon_stiffness_out[world, mjc_tendon] = tendon_stiffness[newton_tendon]
     if tendon_damping:
         tendon_damping_out[world, mjc_tendon] = tendon_damping[newton_tendon]
+        if actuator_tendon_damping:
+            tendon_damping_out[world, mjc_tendon] += actuator_tendon_damping[mjc_tendon]
     if tendon_frictionloss:
         tendon_frictionloss_out[world, mjc_tendon] = tendon_frictionloss[newton_tendon]
     if tendon_range:
@@ -3168,8 +3184,27 @@ def convert_rigid_forces_from_mj_kernel(
 
 
 @wp.kernel
-def convert_qfrc_actuator_from_mj_kernel(
-    mjw_qfrc_actuator: wp.array2d[wp.float32],
+def frictionloss_force_from_efc_kernel(
+    nefc: wp.array[wp.int32],
+    efc_type: wp.array2d[wp.int32],
+    efc_id: wp.array2d[wp.int32],
+    efc_force: wp.array2d[wp.float32],
+    friction_dof_type: int,
+    # output
+    qfrc_frictionloss: wp.array2d[wp.float32],
+):
+    """Scatter the forces of MuJoCo's DOF friction-loss rows into ``[nworld, nv]``."""
+    worldid, efcid = wp.tid()
+    if efcid >= nefc[worldid]:
+        return
+    if efc_type[worldid, efcid] != friction_dof_type:
+        return
+    qfrc_frictionloss[worldid, efc_id[worldid, efcid]] = efc_force[worldid, efcid]
+
+
+@wp.kernel
+def convert_qfrc_from_mj_kernel(
+    mjw_qfrc: wp.array2d[wp.float32],
     qpos: wp.array2d[wp.float32],
     joints_per_world: int,
     joint_type: wp.array[wp.int32],
@@ -3182,9 +3217,9 @@ def convert_qfrc_actuator_from_mj_kernel(
     mj_q_start: wp.array[wp.int32],
     mj_qd_start: wp.array[wp.int32],
     # output
-    qfrc_actuator: wp.array[wp.float32],
+    qfrc: wp.array[wp.float32],
 ):
-    """Convert MuJoCo qfrc_actuator [nworld, nv] into Newton flat DOF array.
+    """Convert a MuJoCo generalized force [nworld, nv], e.g. qfrc_actuator, into Newton flat DOF array.
 
     Uses the same joint-based DOF mapping as the coordinate conversion
     kernels. For free joints the wrench is transformed from MuJoCo's
@@ -3209,7 +3244,7 @@ def convert_qfrc_actuator_from_mj_kernel(
     jtype = joint_type[joint_id]
 
     if jtype == JointType.FREE:
-        # MuJoCo qfrc_actuator for free joint:
+        # MuJoCo qfrc for free joint:
         #   [f_x, f_y, f_z] = linear force at body origin (world frame)
         #   [τ_x, τ_y, τ_z] = torque in body frame
         # Newton convention (dual of velocity transform):
@@ -3217,14 +3252,14 @@ def convert_qfrc_actuator_from_mj_kernel(
         #   tau_newton    = R * tau_body - r_com x f_lin
 
         f_lin = wp.vec3(
-            mjw_qfrc_actuator[worldid, qd_i + 0],
-            mjw_qfrc_actuator[worldid, qd_i + 1],
-            mjw_qfrc_actuator[worldid, qd_i + 2],
+            mjw_qfrc[worldid, qd_i + 0],
+            mjw_qfrc[worldid, qd_i + 1],
+            mjw_qfrc[worldid, qd_i + 2],
         )
         tau_body = wp.vec3(
-            mjw_qfrc_actuator[worldid, qd_i + 3],
-            mjw_qfrc_actuator[worldid, qd_i + 4],
-            mjw_qfrc_actuator[worldid, qd_i + 5],
+            mjw_qfrc[worldid, qd_i + 3],
+            mjw_qfrc[worldid, qd_i + 4],
+            mjw_qfrc[worldid, qd_i + 5],
         )
 
         # Body rotation (MuJoCo quaternion wxyz)
@@ -3242,12 +3277,12 @@ def convert_qfrc_actuator_from_mj_kernel(
         # Rotate torque body -> world and shift reference origin -> CoM
         tau_world = wp.quat_rotate(rot, tau_body) - wp.cross(com_world, f_lin)
 
-        qfrc_actuator[wqd_i + 0] = f_lin[0]
-        qfrc_actuator[wqd_i + 1] = f_lin[1]
-        qfrc_actuator[wqd_i + 2] = f_lin[2]
-        qfrc_actuator[wqd_i + 3] = tau_world[0]
-        qfrc_actuator[wqd_i + 4] = tau_world[1]
-        qfrc_actuator[wqd_i + 5] = tau_world[2]
+        qfrc[wqd_i + 0] = f_lin[0]
+        qfrc[wqd_i + 1] = f_lin[1]
+        qfrc[wqd_i + 2] = f_lin[2]
+        qfrc[wqd_i + 3] = tau_world[0]
+        qfrc[wqd_i + 4] = tau_world[1]
+        qfrc[wqd_i + 5] = tau_world[2]
     elif jtype == JointType.BALL:
         # Inverse of apply_mjc_qfrc_kernel BALL; same map as the qvel readback in convert_mj_coords_to_warp_kernel.
         q_cj = joint_X_c[joint_id].q
@@ -3255,18 +3290,18 @@ def convert_qfrc_actuator_from_mj_kernel(
             wp.quat(qpos[worldid, q_i + 0], qpos[worldid, q_i + 1], qpos[worldid, q_i + 2], qpos[worldid, q_i + 3])
         )
         tau_mj = wp.vec3(
-            mjw_qfrc_actuator[worldid, qd_i + 0],
-            mjw_qfrc_actuator[worldid, qd_i + 1],
-            mjw_qfrc_actuator[worldid, qd_i + 2],
+            mjw_qfrc[worldid, qd_i + 0],
+            mjw_qfrc[worldid, qd_i + 1],
+            mjw_qfrc[worldid, qd_i + 2],
         )
         tau = wp.quat_rotate(wp.quat_inverse(q_cj) * q_mj, tau_mj)
-        qfrc_actuator[wqd_i + 0] = tau[0]
-        qfrc_actuator[wqd_i + 1] = tau[1]
-        qfrc_actuator[wqd_i + 2] = tau[2]
+        qfrc[wqd_i + 0] = tau[0]
+        qfrc[wqd_i + 1] = tau[1]
+        qfrc[wqd_i + 2] = tau[2]
     else:
         axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
-            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
+            qfrc[wqd_i + i] = mjw_qfrc[worldid, qd_i + i]
 
 
 @wp.kernel

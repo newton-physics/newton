@@ -4,13 +4,16 @@
 from __future__ import annotations
 
 import collections
+import copy
 import inspect
 import logging
 import os
 import queue
+import re
 import time
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
@@ -205,7 +208,8 @@ class ViewerViser(ViewerBase):
             return max(abs(float(maximum) - float(minimum)) / 100.0, 1.0e-6)
 
         def text(self, value: Any) -> None:
-            content = str(value)
+            # ImGui text is literal; retain that behavior in Markdown widgets.
+            content = re.sub(r"([\\`*_{}\[\]<>()#+.!|~-])", r"\\\1", str(value)).replace("\n", "  \n")
 
             def create(_key):
                 return self._add(lambda: self._viewer._server.gui.add_markdown(content))
@@ -615,6 +619,41 @@ class ViewerViser(ViewerBase):
         self._reset_camera_to_default(self._get_camera_up_axis())
 
     @override
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Preserve native wireframe choices and each client's view on reset."""
+        wireframe = self._display_options_user.get("wireframe") if switching else self._wireframe
+        if not switching:
+            camera_request = copy.deepcopy(self._camera_request)
+            camera_fov = self._camera_fov_radians
+            camera_pitch, camera_yaw = self._camera_pitch, self._camera_yaw
+            client_cameras = {
+                client_id: {
+                    name: copy.deepcopy(getattr(client.camera, name))
+                    for name in ("position", "look_at", "up_direction", "fov", "near", "far")
+                }
+                for client_id, client in self._server.get_clients().items()
+            }
+        try:
+            with super()._preserve_display_options(switching=switching):
+                yield
+        finally:
+            if wireframe is not None:
+                self._set_wireframe(wireframe)
+            if not switching:
+                self._camera_fov_radians = camera_fov
+                self._camera_pitch, self._camera_yaw = camera_pitch, camera_yaw
+                if camera_request is not None:
+                    self._set_camera_request(*camera_request)
+                # Client navigation is independent of the cached request used
+                # for new connections. Restore each connected view separately.
+                for client_id, client in self._server.get_clients().items():
+                    if client_id in client_cameras:
+                        with client.atomic():
+                            self._apply_attrs(client.camera, client_cameras[client_id])
+            self._sync_gui_controls()
+
+    @override
     def _init_extra_layer_state(self, layer):
         """Initialize Viser-specific per-layer interaction state."""
         super()._init_extra_layer_state(layer)
@@ -640,9 +679,12 @@ class ViewerViser(ViewerBase):
         previous_up_axis = self._camera_up_axis
         super().set_model(model)
         self._build_packed_shape_arrays()
-        self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
+        self.picking = (
+            Picking(model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask)
+            if model is not None
+            else None
+        )
         if self.picking is not None:
-            self.picking.visible_worlds_mask = self._visible_worlds_mask
             try:
                 self.picking._load_kernels()
             except Exception:
@@ -1234,7 +1276,7 @@ class ViewerViser(ViewerBase):
     def _picking_world_offset(layer, picking: Picking) -> np.ndarray:
         """Return the visual world offset for the currently picked body."""
         offset = np.zeros(3, dtype=np.float32)
-        body_idx = int(picking.pick_body.numpy()[0])
+        body_idx = picking.pick_body
         if body_idx < 0 or layer.world_offsets is None or layer.world_offsets.shape[0] == 0:
             return offset
         if layer.model is None or layer.model.body_world is None:
@@ -1285,8 +1327,7 @@ class ViewerViser(ViewerBase):
         """
         layer = self._layers[layer_id]
         picking = layer.picking
-        pick_state = picking.pick_state.numpy()
-        target = self._picking_point_to_visual(layer, picking, pick_state[0]["picking_target_world"])
+        target = self._picking_point_to_visual(layer, picking, picking.pick_target)
         self._remove_picking_control(layer_id, release=False)
         handle = self._server.scene.add_transform_controls(
             name=self._picking_control_path(layer_id),
@@ -1342,9 +1383,7 @@ class ViewerViser(ViewerBase):
         )
         offset = self._picking_world_offset(layer, layer.picking)
         target = np.asarray(point_with_offset).copy() - offset
-        pick_state = layer.picking.pick_state.numpy()
-        pick_state[0]["picking_target_world"] = target
-        layer.picking.pick_state.assign(pick_state)
+        layer.picking.pick_target = wp.vec3(*target)
 
     def _process_interaction_events(self) -> None:
         """Apply browser callbacks on the simulation thread between frames."""
@@ -1400,6 +1439,7 @@ class ViewerViser(ViewerBase):
                         self._end_gizmo_drag(name)
             elif event_type == "viewer_option":
                 _, attribute, value = event
+                self._display_options_user[attribute] = value
                 if attribute == "wireframe":
                     self._set_wireframe(value)
                 else:
@@ -2298,8 +2338,8 @@ class ViewerViser(ViewerBase):
         self._sync_shape_colors_from_model()
         self._sync_shape_opacities_from_model()
 
-        from .kernels import update_model_shape_xforms  # noqa: PLC0415
-        from .viewer_viser_kernels import detect_shape_color_changes, detect_shape_opacity_changes  # noqa: PLC0415
+        from .kernels import detect_shape_color_changes, update_model_shape_xforms  # noqa: PLC0415
+        from .viewer_viser_kernels import detect_shape_opacity_changes  # noqa: PLC0415
 
         wp.launch(
             kernel=update_model_shape_xforms,
@@ -2426,14 +2466,8 @@ class ViewerViser(ViewerBase):
         if not self.picking_enabled or self.picking is None or not self.picking.is_picking():
             self.log_lines("picking_line", None, None, None)
             return
-        body_idx = int(self.picking.pick_body.numpy()[0])
-        if body_idx < 0:
-            self.log_lines("picking_line", None, None, None)
-            return
-
-        pick_state = self.picking.pick_state.numpy()
-        anchor = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picked_point_world"])
-        target = self._picking_point_to_visual(self.layer, self.picking, pick_state[0]["picking_target_world"])
+        anchor = self._picking_point_to_visual(self.layer, self.picking, self.picking.pick_point)
+        target = self._picking_point_to_visual(self.layer, self.picking, self.picking.pick_target)
         self.log_lines(
             "picking_line",
             np.asarray([anchor], dtype=np.float32),
@@ -2601,7 +2635,7 @@ class ViewerViser(ViewerBase):
         # pick-body sentinel controls whether graph replay applies a force.
         # Disabling picking releases that sentinel, including captured graphs.
         if self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
     def save_recording(self):
         """
