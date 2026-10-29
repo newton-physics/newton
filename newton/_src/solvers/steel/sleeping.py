@@ -541,7 +541,7 @@ class _SleepState:
             device=device,
         )
         if model.body_count:
-            # A frozen body keeps the joint wrench published before it fell asleep.
+            # A frozen body keeps the last computed joint wrench from before or at the step it fell asleep.
             wp.launch(
                 _freeze_parent_wrenches,
                 model.body_count,

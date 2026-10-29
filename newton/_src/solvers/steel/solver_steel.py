@@ -1388,9 +1388,10 @@ class SolverSteel(SolverBase):
           anisotropic inertia can report a torque residual.
         - Contact wrenches are summed with atomics, so the last bits can differ run to run.
 
-        With sleeping enabled the solver keeps each body's wrench from the steps before it falls
-        asleep, also while the wrench is not requested, so a sleeping body reports its last awake
-        wrench in whichever output the caller passes.
+        With sleeping enabled the solver keeps a computed wrench for each sleeping body, also while
+        the wrench is not requested, and reports it in whichever output the caller passes. It is the
+        wrench of the step before the body fell asleep, or of the step it fell asleep in when the
+        step before was not computed.
 
         :attr:`~newton.solvers.SolverBase.Observables.contact_f` is populated when
         :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` is requested. Each live rigid
