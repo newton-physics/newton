@@ -3590,6 +3590,31 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
                         np.testing.assert_array_equal(body_qd, np.array(self.PRESCRIBED_QD, dtype=np.float32))
 
 
+class TestSteelJointlessOnlyModel(unittest.TestCase):
+    def test_model_without_joints_publishes_its_prescribed_state(self):
+        """Pass a jointless kinematic body's state through a step of a model that has no joints."""
+        devices = [("cpu", "split")]
+        if wp.is_cuda_available():
+            devices.append((wp.get_cuda_device(), "matrix_free"))
+        for device, solve_mode in devices:
+            with self.subTest(device=str(device)):
+                builder = newton.ModelBuilder()
+                body = builder.add_link(is_kinematic=True)
+                builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+                model = builder.finalize(device=device)
+                self.assertEqual(model.joint_count, 0)
+                solver = SolverSteel(model, solve_mode=solve_mode)
+                state_in, state_out = model.state(), model.state()
+                body_q, body_qd = state_in.body_q.numpy(), state_in.body_qd.numpy()
+                body_q[body, 0] = 0.25
+                body_qd[body] = (0.3, -0.2, 0.0, 0.0, 0.0, 0.5)
+                state_in.body_q.assign(body_q)
+                state_in.body_qd.assign(body_qd)
+                solver.step(state_in, state_out, None, None, DEFAULT_DT)
+                np.testing.assert_array_equal(state_out.body_q.numpy()[body], body_q[body])
+                np.testing.assert_array_equal(state_out.body_qd.numpy()[body], body_qd[body])
+
+
 class TestSteelPairedResponse(unittest.TestCase):
     @unittest.skipUnless(wp.is_cuda_available(), "paired response ownership requires CUDA")
     def test_paired_response_matches_general_23_dof_trajectory(self):

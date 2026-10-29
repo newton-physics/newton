@@ -6187,6 +6187,14 @@ class SolverSteel(SolverBase):
         model = self.model
         if control is None:
             control = model.control(clone_variables=False)
+        if self._unarticulated_bodies.size:
+            wp.launch(
+                copy_unarticulated_body_state,
+                dim=self._unarticulated_bodies.size,
+                inputs=[self._unarticulated_bodies, state_in.body_q, state_in.body_qd],
+                outputs=[state_out.body_q, state_out.body_qd],
+                device=model.device,
+            )
         if not model.joint_count:
             self._step += 1
             return state_out
@@ -6226,14 +6234,6 @@ class SolverSteel(SolverBase):
         if self._double_buffered:
             self._select_double_buffer()
         state_aug = self._prepare_augmented_state(state_in)
-        if self._unarticulated_bodies.size:
-            wp.launch(
-                copy_unarticulated_body_state,
-                dim=self._unarticulated_bodies.size,
-                inputs=[self._unarticulated_bodies, state_in.body_q, state_in.body_qd],
-                outputs=[state_out.body_q, state_out.body_qd],
-                device=self.model.device,
-            )
         self._begin_dense_rows()
 
         # Stage 1: forward kinematics, inverse dynamics with implicit drives, and CRBA.
