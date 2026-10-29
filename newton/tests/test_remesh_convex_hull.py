@@ -44,23 +44,6 @@ def _assert_mesh_shape(test: unittest.TestCase, verts: np.ndarray, faces: np.nda
     test.assertTrue(np.all(faces < verts.shape[0]))
 
 
-def _has_outward_winding(verts: np.ndarray, faces: np.ndarray) -> bool:
-    """Return True if every triangle's normal points away from the mesh centroid.
-
-    Uses the same criterion the implementation uses to flip windings. Triangles
-    with zero-area normals are ignored (they're degenerate but not wrongly wound).
-    """
-    centre = verts.mean(axis=0)
-    for tri in faces:
-        a, b, c = verts[tri]
-        normal = np.cross(b - a, c - a)
-        if np.linalg.norm(normal) < 1e-12:
-            continue
-        if np.dot(normal, a - centre) < 0:
-            return False
-    return True
-
-
 def _signed_volume(verts: np.ndarray, faces: np.ndarray) -> float:
     """Return the divergence-theorem volume enclosed by the triangles, positive when they wind outward."""
     v = verts.astype(np.float64)
@@ -110,7 +93,7 @@ class TestRemeshConvexHullFull3D(unittest.TestCase):
         # A cube's convex hull: 8 unique corner vertices, 12 triangles.
         self.assertEqual(verts.shape[0], 8)
         self.assertEqual(faces.shape[0], 12)
-        self.assertTrue(_has_outward_winding(verts, faces), "cube must have outward-facing normals")
+        _assert_closed_outward_hull(self, verts, faces)
 
         # Every returned vertex must be one of the inputs.
         for v in verts:
@@ -132,7 +115,7 @@ class TestRemeshConvexHullFull3D(unittest.TestCase):
         _assert_mesh_shape(self, verts, faces)
         self.assertEqual(verts.shape[0], 4)
         self.assertEqual(faces.shape[0], 4)
-        self.assertTrue(_has_outward_winding(verts, faces))
+        _assert_closed_outward_hull(self, verts, faces)
 
     def test_interior_points_are_trimmed(self):
         # Cube corners plus an interior point. The interior point must be
@@ -170,7 +153,7 @@ class TestRemeshConvexHullFull3D(unittest.TestCase):
 
         self.assertGreater(verts_unlimited.shape[0], 16)
         self.assertLessEqual(verts_limited.shape[0], 16)
-        self.assertTrue(_has_outward_winding(verts_limited, faces_limited))
+        _assert_closed_outward_hull(self, verts_limited, faces_limited)
 
     def test_capped_cube_is_closed_and_outward(self):
         """Verify that a cube capped below its 8 corners still yields a closed, outward hull of the right volume."""
