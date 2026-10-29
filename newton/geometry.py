@@ -19,6 +19,7 @@ from ._src.geometry import (
     collide_sphere_cylinder,
     collide_sphere_sphere,
 )
+from ._src.geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals
 from ._src.geometry.inertia import compute_inertia_shape, transform_inertia
 from ._src.geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_mesh, sdf_plane, sdf_sphere
 from ._src.geometry.narrow_phase import NarrowPhase
@@ -30,6 +31,8 @@ __all__ = [
     "BroadPhaseAllPairs",
     "BroadPhaseExplicit",
     "BroadPhaseSAP",
+    "DeformableVisualMesh",
+    "DeformableVisuals",
     "HydroelasticSDF",
     "NarrowPhase",
     "ParticleSurface",

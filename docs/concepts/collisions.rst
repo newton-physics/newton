@@ -528,7 +528,7 @@ out many copies of a template environment builder into separate worlds in one ca
     # Combined builder: global geometry + 1024 replicated worlds
     main = newton.ModelBuilder()
     main.add_ground_plane()  # global (world -1), shared across all worlds
-    main.replicate(env_builder, world_count=1024)
+    main.replicate(env_builder, copy_count=1024)
     model = main.finalize()
 
 .. note::
@@ -1143,6 +1143,19 @@ call outside graph capture raises :class:`RuntimeError`; graph replays alone do 
 Mesh-plane and mesh-convex contacts read the current scale directly and do not trigger
 this diagnostic.
 
+Changing :attr:`~newton.Model.shape_scale` on mesh, convex-mesh, or heightfield shapes also
+requires updating :attr:`~newton.Model.shape_collision_radius`,
+:attr:`~newton.Model.shape_collision_aabb_lower`, and
+:attr:`~newton.Model.shape_collision_aabb_upper` to match the new scale. The local collision
+bounds already include scale, and collision does not rescale them again; stale bounds can
+cause broadphase culling to omit candidate pairs. ``dynamic_shape_scale=True`` changes only
+unbaked texture-SDF queries and does not update these bounds or rebuild baked SDFs or
+heightfield collision data. To rebuild, recreate the affected shapes on a
+:class:`~newton.ModelBuilder` with the new scale, then call
+:meth:`~newton.ModelBuilder.finalize` and construct a new :class:`~newton.CollisionPipeline`.
+For explicitly prebuilt mesh SDFs, first rerun :meth:`~newton.Mesh.build_sdf` with
+the new scale before adding the mesh to the builder.
+
 **Edge simplification.** ``mesh.build_sdf(...)`` also runs a dihedral-angle pre-filter over
 the mesh's manifold edges and caches the surviving subset on the mesh; the SDF-mesh contact
 pipeline picks up that cached set in preference to the unfiltered :attr:`~Mesh.edges`,
@@ -1647,16 +1660,21 @@ and body positions, including during CUDA graph replay. Selection can change
 without another collision detection; it does not change the contact count,
 row order, or detected geometry. Coupling copies ownership and mesh provenance;
 the consuming solver evaluates eligibility. If the source contact buffer
-has overflowed, VBD accepts all stored rows, including through coupling.
+has overflowed, VBD bypasses geometric selection for stored mesh rows, including
+through coupling. A mesh row still needs a resolved inside/outside sign and at
+least one active soft participant to contribute forces.
 Rigid-soft division-plane constraints consume the detected rows independently
 of force selection.
 
 Reverse rigid-vertex/soft-triangle contacts test the soft target's neighbors
 and retain one eligible owner for a shared soft edge or vertex. They remain
 separate force contributions from soft-vertex/rigid-triangle queries.
-Preserving returned rows does not guarantee complete contact topology:
-mesh detection may use SDF-selected rigid edges, and edge penetration-recovery
-records are not ordinary edge-edge quadrature samples.
+Full-surface mesh detection includes all rigid triangle edges, independently of
+SDF-selected edges. If the narrow vertex sign query fails, an expanded query
+supplies the sign for nearby vertex-triangle rows and, for an interior point, a
+recovery contact. Pairs whose sign remains unresolved are retained for DAT but
+do not contribute VBD forces until a subsequent detection resolves their sign.
+Edge penetration-recovery records are not ordinary edge-edge quadrature samples.
 
 .. _full-surface-mesh-contact-costs:
 
@@ -1832,6 +1850,13 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Total number of soft contacts (single element). With full-surface contact off, this equals the per-particle contact count and is unchanged from earlier releases.
    * - ``soft_contact_indices``
      - Soft-side particle ids per contact, a ``vec3i`` with ``-1`` padding: ``(p, -1, -1)`` particle, ``(v0, v1, -1)`` edge, ``(v0, v1, v2)`` face. The number of non-negative slots gives the feature kind; pair with ``soft_contact_barycentric`` to recover the contact point.
+   * - ``soft_contact_rigid_indices``
+     - Rigid mesh primitive corners per contact, a ``vec3i`` of offsets into the
+       rigid mesh's triangle index buffer: ``(i0, i1, i2)`` for a triangle (VT),
+       ``(i0, -1, -1)`` for a vertex (TV), and ``(i0, i1, -1)`` for an edge (EE).
+       The shape is identified by ``soft_contact_shape``; ``-1`` pads unused
+       slots. Analytic, particle-only, and penetration-recovery point records
+       use ``(-1, -1, -1)``.
    * - ``soft_contact_particle``
      - Particle id for particle contacts (``-1`` for edge/face records) — the particle-only view of ``soft_contact_indices``, for solvers that consume particle contacts exclusively.
    * - ``soft_contact_barycentric``
@@ -2286,6 +2311,85 @@ Example:
         restitution=0.5,  # Bouncy where supported
     )
 
+.. _Contact friction gain and adhesion:
+
+Friction gain and adhesion
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This section covers rigid shape-shape contacts in the penalty contact model of
+:class:`~newton.solvers.SolverSemiImplicit` and
+:class:`~newton.solvers.SolverFeatherstone`, which average ``ke``, ``kd``,
+``kf``, ``ka`` and ``mu`` of the two shapes. Particle-shape contacts in these
+solvers work differently: ``kf`` is averaged with ``Model.soft_contact_kf``, the
+shape's ``ka`` is ignored in favor of ``Model.particle_adhesion``, and damping
+and friction also act inside the adhesion zone. For
+:class:`~newton.solvers.SolverMuJoCo`, see
+:ref:`mujoco-contact-friction-solreffriction`.
+
+Let :math:`d` be the contact-space distance :math:`d = s - m` from
+:ref:`margin and gap semantics <margin-gap-semantics>`, where :math:`s` is the
+surface distance and :math:`m` the pair margin, so :math:`d` is negative once
+the surfaces come within the pair margin. Let :math:`v_n` and :math:`v_t` be the
+normal and tangential relative velocities. Per contact, the normal force
+:math:`f_n` acts along the contact normal and is negative (repulsive) for
+:math:`d < 0` and positive (attractive) inside the adhesion zone:
+
+.. math::
+
+   f_n &= k_e \, d \qquad (d < k_a) \\
+   f_d &= k_d \, \min(v_n, 0) \qquad (d < 0) \\
+   \lVert f_t \rVert &= \min(k_f \, \lVert v_t \rVert,\, \mu |f_n + f_d|) \qquad (d < 0)
+
+**Friction gain** ``kf`` **[N·s/m]** is the slope of a viscous regularization
+of Coulomb friction: at low slip speed the friction force is
+:math:`k_f \lVert v_t \rVert`, so a body at rest on a slope creeps instead of
+sticking. With :math:`N` contacts carrying the load, the creep speed is roughly
+:math:`m g \sin\theta / (N k_f)`. At higher slip speed the force is capped at
+:math:`\mu |f_n + f_d|`, including normal damping. Friction opposes tangential
+relative motion. For positive ``kf``, the transition speed is
+:math:`\mu |f_n + f_d| / k_f`.
+
+The viscous branch evaluates :math:`k_f v_t` directly, so its velocity
+derivative remains well-defined at rest without a separate smoothing
+parameter. The force is continuous at the Coulomb limit, where its derivative
+changes between the viscous and capped branches.
+
+The solver argument and attribute ``friction_smoothing`` are deprecated in
+Newton 1.8 and have no effect on friction. Explicit constructor values and
+attribute reads or assignments emit a deprecation warning. Constructor calls
+and attribute access remain supported, and the attribute retains its last
+assigned value; all values use the corrected force law above. Remove its use
+and configure ``kf`` for the low-speed slope and ``mu`` for the Coulomb limit.
+
+- Larger ``kf`` gives less creep but stiffens the friction force. With these
+  explicit solvers, keep :math:`N k_f \, \Delta t / m_\text{eff}` well below 1,
+  where :math:`m_\text{eff}` is the effective mass of the lightest contact pair,
+  or reduce the time step.
+- Smaller ``kf`` is more stable but makes contacts slide and objects creep.
+- ``kf = 0`` disables friction.
+
+**Adhesion distance** ``ka`` **[m]** lets the normal force act before the
+surfaces come within the pair margin. Contacts are processed while
+:math:`d < k_a` instead of :math:`d < 0`, so the adhesion zone is
+:math:`m \le s < m + k_a`. For :math:`0 \le d < k_a`, :math:`f_n = k_e \, d` is
+attractive and grows linearly with :math:`d` up to about :math:`k_e \, k_a`
+per contact just inside :math:`d = k_a`. At :math:`d \ge k_a` the contact applies
+no force. Damping and friction only act while :math:`d < 0`.
+
+- ``ka = 0`` (the default) disables adhesion.
+- Use a small nonzero value for sticky or suction-like contacts, for example to
+  hold a light object against a gripper pad. Choose ``ka`` so that
+  :math:`N k_e \, k_a` exceeds the force you want to resist.
+- Adhesion only acts on contacts the collision pipeline reports, so the pair
+  gap ``gap_a + gap_b`` (see :ref:`margin and gap semantics <margin-gap-semantics>`)
+  must be at least the pair's averaged ``ka``.
+- The force jumps from about :math:`k_e \, k_a` to zero at the cutoff. Shapes
+  that enter the zone are pulled in and bounce, and damping only acts for
+  :math:`d < 0`, so large values make contacts lively. Explicit stepping across
+  the cutoff also adds an error of order :math:`k_e \, k_a \, |v_n| \, \Delta t`
+  per step, which can add or remove energy. Keep ``ka`` small relative to the
+  shape size.
+
 .. _USD Collision:
 
 USD Integration
@@ -2405,6 +2509,14 @@ contributions across threads:
 
 Together these give bit-exact repeatability across runs on the same GPU
 architecture when the consuming solver is deterministic as well.
+For example, :class:`~newton.solvers.SolverSteel` reserves its constraint rows
+in contact-buffer order when constructed with
+``deterministic=wp.DeterministicMode.RUN_TO_RUN``:
+
+.. code-block:: python
+
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    solver = newton.solvers.SolverSteel(model, deterministic=wp.DeterministicMode.RUN_TO_RUN)
 
 .. note::
 
@@ -2718,7 +2830,21 @@ specializations. Rebuild the pipeline after modifying or resizing the pair array
 **Narrow phase**
 
 :class:`~geometry.NarrowPhase` accepts the candidate pairs from any broad phase and
-generates contacts:
+generates contacts. Low-level mesh-SDF collision requires packed edge indices and
+per-shape edge ranges; omitting them disables mesh edge contacts. Centers and
+half-vectors are optional acceleration arrays in unscaled mesh coordinates.
+Caller-owned arrays can use the full public :attr:`~newton.Mesh.edges` set and
+zero endpoint-ownership codes, but reproducing the pipeline's simplified edges
+and ownership requires internal data without a stable public accessor. Use
+:class:`~newton.CollisionPipeline` for model collision detection.
+
+.. deprecated:: 1.8
+
+   The ``Model.mesh_edge_indices``, ``Model.mesh_edge_centers``,
+   ``Model.mesh_edge_halves``, and ``Model.shape_edge_range`` aliases expose
+   internal collision acceleration data. They remain readable and writable with
+   :class:`~newton.exceptions.NewtonDeprecationWarning` through Newton 1.8 and
+   will be removed in 1.9. Use :class:`~newton.CollisionPipeline` instead.
 
 .. code-block:: python
 
@@ -2735,7 +2861,7 @@ generates contacts:
         shape_types=...,
         shape_data=...,
         shape_transform=...,
-        # ... remaining geometry arrays from Model
+        # ... remaining geometry arrays and caller-owned mesh edge data
         contact_pair=out_pairs,
         contact_position=out_positions,
         contact_normal=out_normals,

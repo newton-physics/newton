@@ -31,6 +31,7 @@ class Example:
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
+        self.dynamics_solver = args.dynamics_solver if args else "padmm"
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -63,9 +64,10 @@ class Example:
         self.model = builder.finalize()
 
         # Create the Kamino solver for the given model
-        self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        self.config = newton.solvers.SolverKamino.Config.from_model(self.model, dynamics_solver=self.dynamics_solver)
         self.config.use_collision_detector = self.use_kamino_contacts
-        self.config.padmm.warmstart_mode = "none"
+        if self.dynamics_solver == "padmm":
+            self.config.padmm.warmstart_mode = "none"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -159,6 +161,8 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        if self.dynamics_solver == "lox":
+            assert not self.solver.status.numpy()["failed"].any(), "The LOX backend failed"
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -182,6 +186,12 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
+        parser.add_argument(
+            "--dynamics-solver",
+            choices=("padmm", "lox"),
+            default="padmm",
+            help="Kamino dynamics solver to use.",
+        )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)
         return parser

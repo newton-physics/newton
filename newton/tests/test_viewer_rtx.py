@@ -4,7 +4,6 @@
 """Test ViewerRTX compatibility, frame capture, and runtime scene updates."""
 
 import builtins
-import importlib.metadata
 import importlib.util
 import os
 import subprocess
@@ -19,52 +18,17 @@ import warp as wp
 
 import newton
 from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, patch_sys_module
 from newton.viewer import ViewerRTX
 
 OVRTX_AVAILABLE = importlib.util.find_spec("ovrtx") is not None
 OVSTAGE_AVAILABLE = importlib.util.find_spec("ovstage") is not None
 
 
-def _borrowed_stage_supported() -> bool:
-    """Return whether the installed OVRTX and OVStage can render a borrowed stage."""
-    if not (OVRTX_AVAILABLE and OVSTAGE_AVAILABLE):
-        return False
-    from newton._src.viewer.viewer_rtx import _version_prefix  # noqa: PLC0415
-
-    return _version_prefix(importlib.metadata.version("ovrtx"), "OVRTX") >= (0, 4) and _version_prefix(
-        importlib.metadata.version("ovstage"), "OVStage"
-    ) >= (0, 2)
-
-
-BORROWED_STAGE_SUPPORTED = _borrowed_stage_supported()
-
-
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
-class TestViewerRTXVersionCompatibility(unittest.TestCase):
-    def test_legacy_ovrtx_does_not_require_ovstage(self):
-        """Construct ViewerRTX with legacy OVRTX without importing OVStage."""
-        import ovrtx
-
-        original_import = builtins.__import__
-
-        def import_without_ovstage(name, *args, **kwargs):
-            if name == "ovstage":
-                raise AssertionError("legacy OVRTX must not import ovstage")
-            return original_import(name, *args, **kwargs)
-
-        with (
-            mock.patch.object(ovrtx, "__version__", "0.3.0"),
-            mock.patch("builtins.__import__", side_effect=import_without_ovstage),
-        ):
-            viewer = ViewerRTX(headless=True)
-
-        viewer.close()
-
-    def test_modern_ovrtx_requires_ovstage(self):
-        """Require OVStage when constructing ViewerRTX with OVRTX 0.4 or newer."""
-        import ovrtx
-
+class TestViewerRTXConstruction(unittest.TestCase):
+    def test_requires_ovstage(self):
+        """Require OVStage when constructing ViewerRTX."""
         original_import = builtins.__import__
 
         def import_without_ovstage(name, *args, **kwargs):
@@ -73,40 +37,19 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
             return original_import(name, *args, **kwargs)
 
         with (
-            mock.patch.object(ovrtx, "__version__", "0.4.0"),
             mock.patch("builtins.__import__", side_effect=import_without_ovstage),
-            self.assertRaisesRegex(ImportError, "OVRTX 0.4 or newer"),
+            self.assertRaisesRegex(ImportError, "ovstage package is required"),
         ):
             ViewerRTX(headless=True)
 
-    @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
-    def test_borrowed_stage_requires_ovstage_0_2(self):
-        """Reject a borrowed stage on OVStage 0.1, whose GPU hierarchy computation misplaces prims."""
-        import ovrtx
-        import ovstage
-
-        with (
-            mock.patch.object(ovrtx, "__version__", "0.4.1"),
-            mock.patch.object(ovstage, "__version__", "0.1.1.355824"),
-            self.assertRaisesRegex(ValueError, "OVStage 0.2 or newer"),
-        ):
-            ViewerRTX(headless=True, ovstage=object())
-
     def _borrowed_viewer(self, labels, found, positions=None):
         """Build a borrowed-stage viewer whose stage holds the labels in ``found`` at the origin."""
-        import ovrtx
-        import ovstage
-
         builder = newton.ModelBuilder()
         for i, label in enumerate(labels):
             position = (0.0, 0.0, 0.0) if positions is None else positions[i]
             builder.add_body(xform=wp.transform(position, wp.quat_identity()), label=label)
         model = builder.finalize(device="cpu")
-        with (
-            mock.patch.object(ovrtx, "__version__", "0.5.0"),
-            mock.patch.object(ovstage, "__version__", "0.2.0"),
-        ):
-            viewer = ViewerRTX(headless=True, ovstage=object())
+        viewer = ViewerRTX(headless=True, ovstage=object())
         scale = np.diag([2.0, 2.0, 2.0, 1.0])
 
         def read(paths):
@@ -174,14 +117,7 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
     @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
     def test_borrowed_stage_rejects_lighting_preset(self):
         """Reject a lighting preset, since a borrowed stage brings its own lights."""
-        import ovrtx
-        import ovstage
-
-        with (
-            mock.patch.object(ovrtx, "__version__", "0.5.0"),
-            mock.patch.object(ovstage, "__version__", "0.2.0"),
-            self.assertRaisesRegex(ValueError, "lighting from the stage"),
-        ):
+        with self.assertRaisesRegex(ValueError, "lighting from the stage"):
             ViewerRTX(headless=True, ovstage=object(), environment="studio")
 
 
@@ -193,17 +129,14 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
 
         viewer = ViewerRTX.__new__(ViewerRTX)
         viewer.stage = mock.Mock()
-        viewer._use_ovstage = False
+        viewer._borrowed_stage = None
+        viewer._layers = {}
         viewer._headless = False
         viewer._window = None
         viewer.gui = None
         viewer._instance_prim_paths = {}
         viewer._mesh_prim_paths = {}
         viewer._point_batch_paths = {}
-        viewer._all_instance_paths = []
-        viewer._bound_instance_prim_paths = {}
-        viewer._runtime_transform_bindings = {}
-        viewer._transform_binding = None
         viewer._rtx = None
         viewer._tex_resource = None
         viewer._gl_texture = None
@@ -222,11 +155,14 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         with (
             mock.patch.object(viewer, "_add_camera_lights_and_render_product"),
             mock.patch.object(viewer, "_apply_ground_material"),
+            mock.patch.object(viewer, "_prepare_shape_color_materials"),
+            mock.patch.object(viewer, "_prepare_shape_opacity_materials"),
             mock.patch.object(viewer, "_init_window", side_effect=fail_after_window_creation),
             mock.patch.object(viewer, "_release_runtime_scene"),
             mock.patch.object(viewer, "_destroy_ovrtx"),
             mock.patch.object(ovrtx, "RendererConfig"),
             mock.patch.object(ovrtx, "Renderer"),
+            patch_sys_module("ovstage", mock.MagicMock()),
             self.assertRaisesRegex(RuntimeError, "Failed to create window"),
         ):
             viewer._init_ovrtx()
@@ -248,7 +184,6 @@ class TestViewerRTXOvstage(unittest.TestCase):
         self.ovstage = ovstage
         self.viewer = ViewerRTX.__new__(ViewerRTX)
         self.viewer._rtx = None
-        self.viewer._use_ovstage = True
         self.viewer._ovstage = self.ovstage.Stage("newton.test.ViewerRTX")
         self.viewer._ovstage_attached = False
         self.viewer._ovstage_paths = self.ovstage.PathDictionary(self.viewer._ovstage)
@@ -344,12 +279,10 @@ def Xform "World"
         np.testing.assert_allclose(values, points)
 
     def test_runtime_prim_population_uses_ovstage(self):
-        """Add and replace runtime USD through OVStage without legacy calls."""
+        """Add and replace runtime USD through OVStage."""
         from pxr import Usd, UsdGeom
 
         self.viewer._rtx = mock.Mock()
-        self.viewer._rtx.add_usd_reference_from_string.side_effect = DeprecationWarning
-        self.viewer._rtx.remove_usd.side_effect = DeprecationWarning
         self.viewer.stage = Usd.Stage.CreateInMemory()
         UsdGeom.Xform.Define(self.viewer.stage, "/World/RuntimeMarker")
         self.viewer._frame_index = 0
@@ -371,8 +304,6 @@ def Xform "World"
         self.viewer._ovstage_ordinal = 3
         self.viewer._apply_ovstage_population_changes()
         self.assertFalse(self.viewer._ovstage_population_dirty)
-        self.viewer._rtx.add_usd_reference_from_string.assert_not_called()
-        self.viewer._rtx.remove_usd.assert_not_called()
 
     def test_replacing_runtime_prim_releases_its_queries(self):
         """Drop cached queries of a replaced runtime prim so repeated replacements do not accumulate them."""
@@ -470,7 +401,6 @@ class TestViewerRTXPrimWorldMatrices(unittest.TestCase):
                 wp.array([world for _, world in rows], dtype=int),
                 wp.array(offsets, dtype=wp.vec3),
                 layer,
-                0,
             ],
             outputs=[out],
         )
@@ -535,14 +465,13 @@ class TestViewerRTXRenderSettings(unittest.TestCase):
 
 
 class TestViewerRTXRenderOutput(unittest.TestCase):
-    def test_ldr_color_lookup_accepts_legacy_and_ovrtx_05_names(self):
-        """Find the color output returned by legacy and OVRTX 0.5 renderers."""
-        for name in ("LdrColor", "/Render/Vars/LdrColor"):
-            with self.subTest(name=name):
-                render_var = object()
-                frame = mock.Mock(render_vars={name: render_var})
-                viewer = mock.Mock(_render_var_path="/Render/Vars/LdrColor")
-                self.assertIs(ViewerRTX._get_ldr_color_render_var(viewer, frame), render_var)
+    def test_ldr_color_lookup_uses_render_var_path(self):
+        """Find the color output by its full render-var path."""
+        render_var = object()
+        viewer = mock.Mock(_render_var_path="/Render/Vars/LdrColor")
+        frame = mock.Mock(render_vars={"/Render/Vars/LdrColor": render_var})
+        self.assertIs(ViewerRTX._get_ldr_color_render_var(viewer, frame), render_var)
+        self.assertIsNone(ViewerRTX._get_ldr_color_render_var(viewer, mock.Mock(render_vars={"LdrColor": render_var})))
 
     @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
     def test_display_uses_ovrtx_05_color_output(self):
@@ -668,6 +597,186 @@ class TestViewerRTXRendering(unittest.TestCase):
                     viewer.close()
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_runtime_shape_colors(self):
+        """Recolor one of two initially identical shapes without changing its neighbor."""
+        builder = newton.ModelBuilder()
+        for y in (-0.4, 0.4):
+            builder.begin_world()
+            body = builder.add_body(xform=wp.transform((0.0, y, 0.0), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
+            builder.end_world()
+        model = builder.finalize()
+        state = model.state()
+        for asynchronous in (False, True):
+            with self.subTest(async_rendering=asynchronous):
+                model.shape_color.assign([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+                model.shape_opacity.fill_(1.0)
+                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=asynchronous)
+                try:
+                    viewer.set_model(model)
+                    viewer.set_world_offsets((0.0, 0.0, 0.0))
+                    viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
+                    opaque_blue_signal = None
+                    for frame_index, channel in enumerate((0, 1, 1, 2, 1, 2, 0, 1, 2, 0)):
+                        if frame_index >= 4:
+                            if frame_index == 8:
+                                # Force a batch split without changing the existing RTX geometry.
+                                model.shape_opacity.assign([0.5, 1.0])
+                            elif frame_index == 9:
+                                model.shape_opacity.fill_(1.0)
+                            worlds = {4: [1], 5: [0], 6: []}.get(frame_index)
+                            viewer.set_visible_worlds(worlds)
+                            self.assertIsNone(viewer._model_shape_colors_device)
+                        target = int(frame_index == 4)
+                        colors = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
+                        colors[target] = 0.0
+                        colors[target, channel] = 1.0
+                        model.shape_color.assign(colors)
+                        if frame_index == 3:
+                            viewer.set_rendering_paused(True)
+                            viewer.begin_frame(frame_index / 60.0)
+                            viewer.log_state(state)
+                            viewer.end_frame()
+                            viewer.set_rendering_paused(False)
+                        viewer.begin_frame(frame_index / 60.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        rgb = viewer.get_frame().numpy()
+                        if frame_index in (3, 8):
+                            blue = rgb[:, :32].astype(np.float32)
+                            signal = np.maximum(blue[:, :, 2] - np.max(blue[:, :, :2], axis=2), 0.0).sum()
+                            if frame_index == 3:
+                                opaque_blue_signal = signal
+                                self.assertGreater(opaque_blue_signal, 1000.0)
+                            else:
+                                # Recoloring and opacity updates must coexist after a batch split.
+                                self.assertGreater(signal, 0.1 * opaque_blue_signal)
+                                self.assertLess(signal, 0.85 * opaque_blue_signal)
+                        # World filtering itself is not implemented by the RTX flat-transform path.
+                        # Check colors on the requested worlds without asserting hidden-world behavior.
+                        visible = {4: (1,), 5: (0,), 6: ()}.get(frame_index, (0, 1))
+                        for shape in visible:
+                            half = rgb[:, shape * 32 : (shape + 1) * 32]
+                            expected = channel if shape == target else 0
+                            other = np.max(np.delete(half, expected, axis=2), axis=2)
+                            colored = (half[:, :, expected] > 32) & (half[:, :, expected] // 2 > other)
+                            self.assertGreater(np.count_nonzero(colored), 8, f"frame {frame_index}, channel {expected}")
+                        if frame_index in (2, 3):
+                            self.assertEqual(viewer._shape_colors_changed_device.numpy()[0], int(frame_index != 2))
+                    viewer.clear_model()
+                    self.assertIsNone(viewer._model_shape_colors_device)
+                    self.assertIsNone(viewer._shape_colors_changed_device)
+                    self.assertFalse(viewer._shape_color_batches)
+                finally:
+                    viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_runtime_shape_opacities(self):
+        """Update one shared-material instance through transparent and opaque states."""
+        builder = newton.ModelBuilder()
+        for y in (-0.4, 0.4):
+            builder.begin_world()
+            body = builder.add_body(xform=wp.transform((0.0, y, 0.0), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
+            builder.end_world()
+        model = builder.finalize()
+        state = model.state()
+        for asynchronous in (False, True):
+            with self.subTest(async_rendering=asynchronous):
+                model.shape_opacity.fill_(1.0)
+                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=asynchronous)
+                try:
+                    viewer.set_model(model)
+                    viewer.set_world_offsets((0.0, 0.0, 0.0))
+                    viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
+                    opaque_signal = None
+                    for frame_index, opacity in enumerate((1.0, 0.0, 0.5, 0.5, 1.0, 0.0, 0.5, 0.0, 1.0)):
+                        if frame_index >= 4:
+                            viewer.set_visible_worlds({5: [1], 6: [0], 7: []}.get(frame_index))
+                            self.assertIsNone(viewer._model_shape_opacities_device)
+                        target = int(frame_index == 5)
+                        opacities = [1.0, 1.0]
+                        opacities[target] = opacity
+                        model.shape_opacity.assign(opacities)
+                        if frame_index == 2:
+                            viewer.set_rendering_paused(True)
+                            viewer.begin_frame(frame_index / 60.0)
+                            viewer.log_state(state)
+                            viewer.end_frame()
+                            viewer.set_rendering_paused(False)
+                        viewer.begin_frame(frame_index / 60.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        rgb = viewer.get_frame().numpy().astype(np.float32)
+                        signal = np.maximum(rgb[:, :, 0] - np.maximum(rgb[:, :, 1], rgb[:, :, 2]), 0.0)
+                        left, right = signal[:, :32].sum(), signal[:, 32:].sum()
+                        if opaque_signal is None:
+                            opaque_signal = left
+                            self.assertGreater(opaque_signal, 1000.0)
+                        # Only check requested worlds; actual world hiding is outside this fix.
+                        if frame_index == 7:
+                            continue
+                        if frame_index not in (5, 6):
+                            self.assertGreater(right, 0.7 * opaque_signal)
+                        target_signal = (left, right)[target]
+                        if opacity == 0.0:
+                            self.assertLess(target_signal, 0.1 * opaque_signal)
+                        elif opacity == 1.0:
+                            self.assertGreater(target_signal, 0.7 * opaque_signal)
+                        else:
+                            self.assertGreater(target_signal, 0.1 * opaque_signal)
+                            self.assertLess(target_signal, 0.85 * opaque_signal)
+                        if frame_index == 3:
+                            self.assertEqual(viewer._shape_opacities_changed_device.numpy()[0], 0)
+                    viewer.clear_model()
+                    self.assertIsNone(viewer._model_shape_opacities_device)
+                    self.assertIsNone(viewer._shape_opacities_changed_device)
+                    self.assertFalse(viewer._shape_opacity_batches)
+                    self.assertFalse(viewer._uses_fractional_opacity)
+                finally:
+                    viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_runtime_opacity_preserves_render_settings(self):
+        """Keep explicit fractional-opacity settings when a shape becomes translucent."""
+        import ovstage
+
+        setting = "omni:rtx:rt:fractionalOpacity"
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(builder.add_body(), hx=0.25, hy=0.25, hz=0.25)
+        model = builder.finalize()
+        viewer = ViewerRTX(
+            width=32,
+            height=24,
+            headless=True,
+            async_rendering=False,
+            render_settings={setting: ("bool", False)},
+        )
+        try:
+            viewer.set_model(model)
+            state = model.state()
+            for frame_index, opacity in enumerate((1.0, 0.5)):
+                model.shape_opacity.fill_(opacity)
+                viewer.begin_frame(frame_index / 60.0)
+                viewer.log_state(state)
+                viewer.end_frame()
+                query = viewer._get_ovstage_query([viewer._render_product_path])
+                token = viewer._ovstage_paths.intern_token(setting)
+                with viewer._ovstage.read_attributes(
+                    query, [token], ovstage.OrdinalRange.latest(viewer._ovstage_ordinal)
+                ) as read:
+                    read.wait()
+                    group = read.fetch_next()
+                    self.assertIsNotNone(group)
+                    try:
+                        value = bool(np.from_dlpack(group.dlpack(0)).reshape(-1)[0])
+                    finally:
+                        viewer._ovstage.release_group(group)
+                self.assertFalse(value, f"frame {frame_index}")
+        finally:
+            viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     @unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg") is not None, "Requires imageio-ffmpeg")
     def test_headless_video_recording(self):
         """Encode and decode a real RTX recording without OpenGL renderer attributes."""
@@ -782,7 +891,7 @@ def Xform "World"
         builder.add_usd(path, **add_usd_kwargs)
         return stage, builder.finalize()
 
-    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE, "Requires ovrtx and ovstage")
     def test_borrowed_stage_writes_above_caller_advanced_floor(self):
         """Keep writing to a borrowed stage after its owner advances the write floor."""
         import ovstage
@@ -801,7 +910,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE, "Requires ovrtx and ovstage")
     def test_borrowed_stage_keeps_authored_poses_until_first_state(self):
         """Render bound bodies at their authored poses on frames before the first logged state."""
         stage, model = self._borrowed_scene()
@@ -815,7 +924,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE, "Requires ovrtx and ovstage")
     def test_borrowed_stage_renders_reoriented_import_in_stage_frame(self):
         """Keep bodies at their stage poses when the import rotated a Y-up stage and applied an ``xform``."""
         xform = wp.transform((5.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.7))
@@ -838,7 +947,7 @@ def Xform "World"
         finally:
             viewer.close()
 
-    @unittest.skipUnless(BORROWED_STAGE_SUPPORTED, "Requires OVRTX 0.4+ and OVStage 0.2+")
+    @unittest.skipUnless(OVRTX_AVAILABLE and OVSTAGE_AVAILABLE, "Requires ovrtx and ovstage")
     def test_borrowed_stage_binds_replicated_clones(self):
         """Bind each replicated world's bodies to the prims the stage cloned into its environment."""
         envs = [f"/World/envs/env_{i}" for i in range(3)]
@@ -942,17 +1051,17 @@ class TestViewerRTXMeshUpdates(unittest.TestCase):
         viewer._pending_mesh_topology = {}
         viewer._pending_mesh_visibility = {}
         viewer._rtx = mock.Mock()
-        viewer._use_ovstage = False
-        # Avoid the optional OVRTX DLPack adapter, but retain the arrays sent to it.
-        viewer._make_point3f_dltensor = mock.Mock(side_effect=np.copy)
+        viewer._ovstage = mock.Mock()
+        # Skip the OVStage DLPack adapter, but retain the arrays sent to it.
+        viewer._make_laned_array_dltensor = mock.Mock(side_effect=lambda values, lanes: np.copy(values))
         attributes = {}
 
-        def write_array_attribute(prim_paths, attribute_name, tensors):
-            self.assertEqual(prim_paths, ["/root/mesh"])
-            self.assertEqual(len(tensors), 1)
-            attributes[attribute_name] = np.array(tensors[0], copy=True)
+        def write_runtime_attribute(prim_paths, attribute_name, values, *, is_array=False, **kwargs):
+            self.assertEqual(list(prim_paths), ["/root/mesh"])
+            if is_array:
+                attributes[attribute_name] = np.array(values, copy=True)
 
-        viewer._rtx.write_array_attribute.side_effect = write_array_attribute
+        viewer._write_runtime_attribute = mock.Mock(side_effect=write_runtime_attribute)
         return viewer, attributes
 
     def test_dynamic_mesh_generates_runtime_normals_after_topology_change(self):

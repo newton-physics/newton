@@ -150,7 +150,7 @@ class Example:
             length=0.0,
             label="ground_plane",
         )
-        main_scene.replicate(world_builder, world_count=self.world_count)
+        main_scene.replicate(world_builder, copy_count=self.world_count)
 
         self.model = main_scene.finalize()
 

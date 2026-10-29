@@ -104,8 +104,10 @@ the pipeline for the backend's export capacity:
 
 There is no ``pipeline.collide()`` call in this mode: the solver fills contact
 geometry and forces. Native Kamino similarly seeds the model's rigid capacity
-when constructed before the pipeline. Both backends reject insufficient contact
-capacity before allocating or stepping instead of resizing arrays inside a step.
+when constructed before the pipeline. Both MuJoCo backends and Kamino reject
+observable storage smaller than their configured export capacity.
+With ``use_mujoco_cpu=True``, ``nconmax`` bounds contact export, not simulation;
+excess contacts are omitted with a warning.
 
 A solver advertises available entries through
 :attr:`~newton.solvers.SolverBase.supported_observables` and rejects an
@@ -124,33 +126,30 @@ Standard observables
      - Solvers
    * - ``BODY_QDD`` / ``observables.body_qdd``
      - Rigid-body center-of-mass spatial accelerations in the world frame
-     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp or native MuJoCo CPU, and
+     - :class:`~newton.solvers.SolverMuJoCo` and
        :class:`~newton.solvers.SolverKamino`
    * - ``BODY_PARENT_F`` / ``observables.body_parent_f``
      - Incoming parent-joint wrenches on rigid bodies
-     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp or native MuJoCo CPU,
+     - :class:`~newton.solvers.SolverMuJoCo`,
        :class:`~newton.solvers.SolverFeatherstone`,
        :class:`~newton.solvers.SolverSteel`, and
        :class:`~newton.solvers.SolverXPBD`
    * - ``CONTACT_F`` / ``observables.contact_f``
      - Contact spatial forces in the row layout of the step's contacts
-     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
+     - :class:`~newton.solvers.SolverMuJoCo`,
        :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`,
        :class:`~newton.solvers.SolverKamino`, and :class:`~newton.solvers.SolverSteel`
 
 :class:`~newton.solvers.SolverKamino` computes acceleration as the discrete
 step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this includes
-the velocity impulse divided by ``dt``. MuJoCo Warp computes ``BODY_QDD`` and
+the velocity impulse divided by ``dt``. MuJoCo computes ``BODY_QDD`` and
 ``BODY_PARENT_F`` even with ``disable_sensors=True`` by enabling the
 post-constraint RNE stage independently of sensors.
-The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports ``BODY_QDD``,
-``BODY_PARENT_F``, and ``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR``. It runs
-the post-constraint RNE stage for requested body observables before integration,
-using the step's input dynamics, including with RK4. Contact and overflow
-observable requests are rejected. Native body observables require Euler, RK4,
-implicit, or implicitfast integration; discrete integration supports only
-``QFRC_ACTUATOR``. MuJoCo Warp supports body
-observables on both CPU and GPU.
+With ``use_mujoco_cpu=True``, body and contact observables are exported
+from the step's input dynamics, including with RK4; use the input state for
+contact positions. Body observables require Euler, RK4, implicit, or implicitfast
+integration. ``CONTACT_F`` requires ``use_mujoco_contacts=True`` and, like
+``QFRC_ACTUATOR``, supports any integrator; overflow observable requests are rejected.
 
 :class:`~newton.solvers.SolverSteel` reports only the linear part of each rigid
 contact force; the torque part is zero. Contacts without solved rows, such as rows
@@ -198,6 +197,24 @@ unknown names are rejected. ``ObservableKind`` is not iterable; query
 ``solver.supported_observables`` for the names accepted by the configured backend.
 An inherited name does not imply support for that observable.
 
+.. _steel_sleep_observable:
+
+Steel sleep flags
+^^^^^^^^^^^^^^^^^
+
+With ``enable_sleeping=True``, :class:`~newton.solvers.SolverSteel` exposes
+:attr:`~newton.solvers.SolverSteel.ObservableKind.BODY_AWAKE` through
+``observables.body_awake``, a ``bool`` array with shape ``(model.body_count,)``.
+A step that receives the container overwrites it with ``True`` for awake bodies and
+``False`` for sleeping ones as of the end of that step, also during graph replay;
+other steps leave it unchanged. A new container holds the solver's current flags.
+:meth:`~newton.solvers.SolverSteel.reset` and
+:meth:`~newton.solvers.SolverSteel.notify_model_changed` wake islands according to
+the sleeping rules but do not write existing containers; the next step that
+receives one reports the result. Bodies of articulations with no responding
+degrees of freedom, such as a body welded to the world, always read ``True``.
+Without sleeping the kind is unsupported and requesting it raises.
+
 .. _mujoco_overflow_observable:
 
 MuJoCo overflow diagnostics
@@ -207,8 +224,7 @@ MuJoCo overflow diagnostics
 :attr:`~newton.solvers.SolverMuJoCo.ObservableKind.OVERFLOW` through
 ``observables.overflow``, an ``int32`` array with shape ``(model.world_count,)``.
 It reports capacity overflow after a step without synchronizing the device in
-the solver. Requesting it requires the MuJoCo Warp backend
-(``use_mujoco_cpu=False``); the native MuJoCo CPU backend rejects the request.
+the solver. Requesting it requires ``use_mujoco_cpu=False``.
 
 Use :class:`~newton.solvers.SolverMuJoCo.OverflowBits` to interpret Newton's
 flags, and ``mujoco_warp.OverflowType`` for MuJoCo Warp's flags. For example,

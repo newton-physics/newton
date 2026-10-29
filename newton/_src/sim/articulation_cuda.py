@@ -15,10 +15,10 @@ FK_TILE_MAX_LEVEL_WIDTH = 512
 
 
 @functools.cache
-def create_eval_articulation_fk_tile(level_capacity: int, write_all: bool):
+def create_eval_articulation_fk_tile(level_capacity: int, write_all: bool, has_joint_mask: bool = False):
     buffer_capacity = wp.constant(2 * level_capacity)
     level_capacity = wp.constant(level_capacity)
-    preserve_body_q = not write_all
+    preserve_body_q = not write_all or has_joint_mask
 
     @wp.kernel(enable_backward=False, module="unique")
     def eval_articulation_fk_tile(
@@ -43,6 +43,7 @@ def create_eval_articulation_fk_tile(level_capacity: int, write_all: bool):
         body_com: wp.array[wp.vec3],
         body_flags: wp.array[int],
         body_flag_filter: int,
+        joint_mask: wp.array[bool],
         body_q: wp.array[wp.transform],
         body_qd: wp.array[wp.spatial_vector],
     ):
@@ -82,57 +83,58 @@ def create_eval_articulation_fk_tile(level_capacity: int, write_all: bool):
                 if active:
                     child_slot = cur_offset + scheduled_joint
                     joint = level_joints[level_joint_begin + scheduled_joint]
-                    type = joint_type[joint]
                     child = joint_child[joint]
-                    parent = joint_parent[joint]
-                    parent_pos = level_parent_pos[level_joint_begin + scheduled_joint]
-
-                    X_pj = joint_X_p[joint]
-                    X_cj = joint_X_c[joint]
-                    q_start = joint_q_start[joint]
-                    qd_start = joint_qd_start[joint]
-                    lin_axis_count = joint_dof_dim[joint, 0]
-                    ang_axis_count = joint_dof_dim[joint, 1]
-                    X_j, v_j = eval_joint_motion(
-                        type,
-                        q_start,
-                        qd_start,
-                        lin_axis_count,
-                        ang_axis_count,
-                        joint_q,
-                        joint_qd,
-                        joint_axis,
-                    )
-
-                    X_wp = wp.transform_identity()
-                    if parent_pos >= 0:
-                        X_wp = body_q_work[prev_offset + parent_pos]
-                    elif parent >= 0:
-                        X_wp = body_q[parent]
-                    X_wc, v_wc = eval_joint_child_state(
-                        type,
-                        parent,
-                        child,
-                        X_wp,
-                        X_pj,
-                        X_cj,
-                        X_j,
-                        v_j,
-                        body_qd,
-                        body_com,
-                    )
-
                     write_child = bool(True)
+                    if wp.static(has_joint_mask):
+                        write_child = joint_mask[joint]
                     if wp.static(not write_all):
-                        write_child = (body_flags[child] & body_flag_filter) != 0
+                        write_child = write_child and (body_flags[child] & body_flag_filter) != 0
+
                     if write_child:
+                        type = joint_type[joint]
+                        parent = joint_parent[joint]
+                        parent_pos = level_parent_pos[level_joint_begin + scheduled_joint]
+
+                        X_pj = joint_X_p[joint]
+                        X_cj = joint_X_c[joint]
+                        q_start = joint_q_start[joint]
+                        qd_start = joint_qd_start[joint]
+                        lin_axis_count = joint_dof_dim[joint, 0]
+                        ang_axis_count = joint_dof_dim[joint, 1]
+                        X_j, v_j = eval_joint_motion(
+                            type,
+                            q_start,
+                            qd_start,
+                            lin_axis_count,
+                            ang_axis_count,
+                            joint_q,
+                            joint_qd,
+                            joint_axis,
+                        )
+
+                        X_wp = wp.transform_identity()
+                        if parent_pos >= 0:
+                            X_wp = body_q_work[prev_offset + parent_pos]
+                        elif parent >= 0:
+                            X_wp = body_q[parent]
+                        X_wc, v_wc = eval_joint_child_state(
+                            type,
+                            parent,
+                            child,
+                            X_wp,
+                            X_pj,
+                            X_cj,
+                            X_j,
+                            v_j,
+                            body_qd,
+                            body_com,
+                        )
+
                         body_q[child] = X_wc
                         body_qd[child] = v_wc
-
-                    if wp.static(preserve_body_q):
-                        # Descendants of preserved bodies follow the existing pose.
-                        if not write_child:
-                            X_wc = body_q[child]
+                    elif wp.static(preserve_body_q):
+                        # Every active joint must stage its pose, including masked parents.
+                        X_wc = body_q[child]
 
                 wp.tile_scatter_masked(body_q_work, child_slot, X_wc, active)
 

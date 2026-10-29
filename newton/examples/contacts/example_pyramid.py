@@ -125,7 +125,7 @@ class Example:
 
         if self.world_count > 1:
             main_builder = newton.ModelBuilder()
-            main_builder.replicate(builder, world_count=self.world_count)
+            main_builder.replicate(builder, copy_count=self.world_count)
             self.model = main_builder.finalize()
         else:
             self.model = builder.finalize()

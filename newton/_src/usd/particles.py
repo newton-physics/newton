@@ -626,7 +626,7 @@ def find_particle_prims(root_prim, ignore_paths: list[str]) -> list[Any]:
     Returns:
         Points prims carrying ``NewtonPointsDeformableSimAPI`` in traversal order.
     """
-    from pxr import Usd, UsdGeom
+    from pxr import Usd
 
     if not root_prim or not root_prim.IsValid():
         return []
@@ -635,7 +635,7 @@ def find_particle_prims(root_prim, ignore_paths: list[str]) -> list[Any]:
         path = str(prim.GetPath())
         if any(re.match(pattern, path) for pattern in ignore_paths):
             continue
-        if prim.IsA(UsdGeom.Points) and usd.has_applied_api_schema(prim, "NewtonPointsDeformableSimAPI"):
+        if usd._is_particle_sim_prim(prim):
             particle_prims.append(prim)
     return particle_prims
 
