@@ -1361,27 +1361,24 @@ class TestUSDDeformableCloth(unittest.TestCase):
             self.assertEqual(len(approximations), 1)
             self.assertIn("/World/Body/Col", approximations[0])
 
-    def test_unembedded_graphics_geometry_warns_and_skips(self):
-        """A PointBased prim under a deformable body that is neither the simulation
-        geometry nor a collider should deform with the simulation geometry per the
-        proposal; embedding is not implemented, so it is skipped with a warning.
-        Importing it as a static shape would leave a frozen copy behind while the
-        deformable moves away."""
+    def test_graphics_mesh_is_skinned_not_rigid(self):
+        """Import a graphics mesh as a skin without leaving a frozen rigid copy."""
         from pxr import UsdGeom
 
         stage = _deformable_stage()
         body = UsdGeom.Xform.Define(stage, "/World/Body").GetPrim()
         _apply_deformable_body_api(body)
-        _add_cloth_mesh(stage, "/World/Body/Sim", collision=True)
+        sim = _add_cloth_mesh(stage, "/World/Body/Sim", collision=True)
+        _author_deformable_element_array(sim.GetPrim(), "thicknesses", [0.001], "constant")
         self._add_triangle_mesh(stage, "/World/Body/Graphics", collision=False)
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "/World/Body/Graphics.*cannot deform"):
-            result = builder.add_usd(stage, return_deformable_results=True)
+        result = builder.add_usd(stage, return_deformable_results=True)
 
         # The graphics mesh is excluded from the native loader: no shape imports for it.
         self.assertEqual(builder.shape_count, 0)
         self.assertNotIn("/World/Body/Graphics", result["path_shape_map"])
+        self.assertEqual(builder.finalize(device="cpu").deformable_visual_mesh_count, 1)
 
     def test_dedicated_mesh_collider_owned_by_deformable_pass(self):
         """A dedicated UsdGeom.Mesh collider under a deformable body belongs to the

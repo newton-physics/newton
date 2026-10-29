@@ -661,8 +661,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Each rigid-soft contact reported by the owned collision pipeline defines a division
                 plane at its detection-time reference configuration; rigid pose updates and particle
                 displacements are jointly truncated so neither side crosses it. Rigid rotation makes
-                trajectories curved, so crossing times against the contact's stored surface point are
-                found by sampling and bisection.
+                trajectories curved, so crossing times are found by sampling and bisection,
+                optionally certified with interval arithmetic. Full-surface mesh contacts use
+                complete VT/TV/EE primitives through Contacts.soft_contact_rigid_indices;
+                every corner stays on its assigned side of a certified separating plane.
                 Requires a solver-owned pipeline (``collision_pipeline=``); each side's motion budget
                 between detections is 0.5 x ``dat_conservative_bound_relaxation`` x the minimum
                 rigid-soft query radius,
@@ -678,12 +680,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 bounds the per-detection motion of every dynamic body and particle in the
                 model, not only those near soft geometry.
 
-                Truncation acts per reported contact against its own division plane; it does not
-                attempt dense primitive-pair coverage, so it does not by itself guarantee a globally
-                penetration-free rigid-soft state for general nonconvex geometry. If a soft-contact
-                overflow warning is reported, contacts were dropped and are not truncated on that pass.
-                Sampling and bisection alone can miss a rigid trajectory that crosses and returns
-                between samples; the optional interval path detects such cases but remains experimental.
+                Full-surface mesh coverage includes every mesh edge and nearby VT/TV/EE pair,
+                including rows ineligible for contact forces. It requires initially separated
+                geometry; topology, nonzero mesh scales, radii, and motion bounds must remain unchanged. Analytic
+                and penetration-recovery contacts retain their point-anchor behavior; this
+                is not a general initial-penetration recovery method. When no separating
+                plane can be certified, the affected primitives freeze. Contact overflow
+                makes DAT coverage incomplete; stop the simulation and increase contact
+                capacity if an overflow is reported.
+                Sampling and bisection alone can miss a rigid trajectory that crosses and
+                returns between samples; enable the experimental interval path to certify
+                the complete rigid trajectory.
             rigid_soft_dat_use_interval_arithmetic: Selector for rigid DAT trajectory
                 truncation. ``False`` uses sampling and bisection, plus an interval
                 derivative bound that releases rows starting inside the empty band only
@@ -3270,7 +3277,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_normal,
                     contacts.soft_contact_barycentric,
+                    contacts.soft_contact_rigid_indices,
                     self.model.shape_body,
+                    self.model.shape_transform,
+                    self.model.shape_scale,
+                    self.model.shape_source_ptr,
                     self.pos_prev_collision_detection,
                     self.particle_displacements,
                     self.body_q_prev_collision_detection,
@@ -3384,7 +3395,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contacts.soft_contact_body_pos,
                     contacts.soft_contact_normal,
                     contacts.soft_contact_barycentric,
+                    contacts.soft_contact_rigid_indices,
                     self.model.shape_body,
+                    self.model.shape_transform,
+                    self.model.shape_scale,
+                    self.model.shape_source_ptr,
                     self.pos_prev_collision_detection,
                     self.particle_displacements,
                     self.body_q_prev_collision_detection,

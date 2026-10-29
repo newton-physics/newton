@@ -695,6 +695,13 @@ Newton's pipeline supports non-convex meshes, SDF-based contacts, and
 hydroelastic contacts, which are not available through MuJoCo's collision
 detection.
 
+With :class:`~newton.solvers.SolverMuJoCo` using MuJoCo Warp,
+``integrator="rk4"`` and ``use_mujoco_contacts=False`` reuse contact positions,
+distances, and normals at RK4's intermediate stages. This can reduce contact
+accuracy as bodies move, and the solver warns at construction. Use
+``integrator="implicitfast"`` or ``use_mujoco_contacts=True`` to avoid this
+limitation.
+
 Collision filtering
 ~~~~~~~~~~~~~~~~~~~
 
@@ -856,17 +863,19 @@ same three-phase cycle:
    and ``Control`` inputs to MuJoCo's working data. When
    ``use_mujoco_contacts=False``, Newton-side contacts are also
    converted before the integrator runs. The joint-state re-sync
-   frequency can be controlled via the ``update_data_interval``
-   kwarg for substepping schemes.
+   frequency can be controlled via the deprecated
+   ``update_data_interval`` kwarg; it will be removed and the joint state
+   will then be synchronized on every step.
 2. **Integrate.** ``mujoco_warp`` steps the MuJoCo model forward by ``dt``.
 3. **Pull MuJoCo → Newton.** ``SolverMuJoCo._update_newton_state``
    populates the output ``State`` from the integrated MuJoCo data.
    Kinematic roots pass through unchanged from ``state_in`` (see
    `Kinematic links and fixed roots`_).
 
-Contacts are **not** pulled back into a Newton ``Contacts`` object
-automatically. Call :meth:`~newton.solvers.SolverMuJoCo.update_contacts`
-when you need contact points, forces, or material indices in Newton form.
+Request ``CONTACT_F`` with ``solver.observables(..., contacts=contacts)`` and pass
+the container to ``solver.step(..., observables=observables)``. Forces are written
+to ``observables.contact_f``; with ``use_mujoco_contacts=True``, the step also
+fills the supplied ``contacts`` with contact geometry. See :ref:`solver_observables`.
 
 Separated speculative contacts
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -909,9 +918,9 @@ interval until the next refresh. The solver's velocity bound uses each
 individual dynamics timestep. Speculative constraints can consume additional
 constraint rows, so check contact and constraint capacities for the scene.
 
-Push, pull, and contact-conversion are implemented by
+Push, pull, and contact export are implemented by
 ``SolverMuJoCo._apply_mjc_control``, ``SolverMuJoCo._update_newton_state``,
-and :meth:`~newton.solvers.SolverMuJoCo.update_contacts`, using kernels
+and ``SolverMuJoCo._populate_contact_observables``. The MuJoCo Warp path uses kernels
 from :github:`newton/_src/solvers/mujoco/kernels.py` — see
 `Code pointers`_ for the full anchor list.
 
@@ -1317,9 +1326,10 @@ API and subject to change.
   ``SolverMuJoCo._update_mjc_data``, and
   ``SolverMuJoCo._update_newton_state`` — per-step control, data, and
   state sync between Newton and MuJoCo.
-- :meth:`~newton.solvers.SolverMuJoCo.update_contacts` — explicit pull
-  of MuJoCo's resolved contacts into a Newton ``Contacts`` object
-  (default per-step path does not pull contacts back).
+- ``SolverMuJoCo._populate_contact_observables`` — requested contact
+  geometry and force export during ``step()``.
+- :meth:`~newton.solvers.SolverMuJoCo.update_contacts` — explicit
+  geometry-only contact export.
 - :meth:`~newton.solvers.SolverBase.notify_model_changed` —
   re-synchronize MuJoCo state after editing the Newton ``Model`` (e.g.
   fixed-root pose changes via :attr:`~newton.Model.joint_X_p` / :attr:`~newton.Model.joint_X_c`).
