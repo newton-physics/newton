@@ -310,6 +310,57 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
 
         self.assertTrue(result.wasSuccessful())
 
+    def _run_with_text_runner_on_stderr(self, cls: type[unittest.TestCase]) -> unittest.TestResult:
+        unittest_utils.wp.init()
+        stderr_capture = unittest_utils.StdErrCapture()
+        stderr_capture.begin()
+        try:
+            return unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(
+                unittest.defaultTestLoader.loadTestsFromTestCase(cls)
+            )
+        finally:
+            stderr_capture.end()
+
+    def test_text_runner_subtest_progress_is_not_captured(self):
+        """Keep the runner's subtest skip and failure lines out of the output contract."""
+
+        class SkipsSubtest(NewtonTestCase):
+            def test_variants(self):
+                with self.subTest(variant="skipped"):
+                    self.skipTest("optional dependency missing")
+                with self.subTest(variant="passed"):
+                    pass
+
+        class FailsSubtest(NewtonTestCase):
+            def test_variants(self):
+                with self.subTest(variant="failed"):
+                    self.fail("variant failed")
+
+        skip_result = self._run_with_text_runner_on_stderr(SkipsSubtest)
+        fail_result = self._run_with_text_runner_on_stderr(FailsSubtest)
+
+        self.assertTrue(skip_result.wasSuccessful(), skip_result.failures)
+        self.assertEqual(len(skip_result.skipped), 1)
+        self.assertEqual(len(fail_result.failures), 1, fail_result.failures)
+        self.assertIn("variant failed", fail_result.failures[0][1])
+
+    def test_subtest_skip_does_not_hide_other_output(self):
+        """Report unexpected output from one subtest when another subtest skips."""
+
+        class SkipsOneSubtest(NewtonTestCase):
+            def test_variants(self):
+                with self.subTest(variant="skipped"):
+                    self.skipTest("optional dependency missing")
+                with self.subTest(variant="prints"):
+                    print("unexpected output")
+
+        result = self._run_with_text_runner_on_stderr(SkipsOneSubtest)
+
+        self.assertEqual(len(result.failures), 1, result.failures)
+        self.assertIn("Unexpected stdout", result.failures[0][1])
+        self.assertIn("unexpected output", result.failures[0][1])
+        self.assertNotIn("skipped", result.failures[0][1])
+
     def test_text_runner_buffering_is_supported(self):
         class EmitsExpectedOutput(NewtonTestCase):
             def test_output(self):
