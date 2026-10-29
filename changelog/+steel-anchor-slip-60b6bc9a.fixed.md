@@ -1,0 +1,1 @@
+Fix `SolverSteel` friction patches keeping the anchors of a body that slides on a triangle mesh or another footprint with redundant contacts, which let it slide faster than its friction coefficient allows.
