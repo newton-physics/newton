@@ -100,13 +100,11 @@ def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec
 
 
 def compute_inertia_sphere_from_mass(mass: float, radius: float) -> wp.mat33:
-    """Helper to compute 3x3 inertia matrix of a solid box with given mass and half-extents.
+    """Helper to compute 3x3 inertia matrix of a solid sphere with given mass and radius.
 
     Args:
-        mass: The box mass [kg]
-        hx: The box half-extent along the x-axis [m]
-        hy: The box half-extent along the y-axis [m]
-        hz: The box half-extent along the z-axis [m]
+        mass: The sphere mass [kg]
+        radius: The sphere radius [m]
 
     Returns:
 

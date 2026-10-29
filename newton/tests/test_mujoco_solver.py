@@ -9837,6 +9837,38 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertIsNotNone(solver.mj_model)
 
+    def test_exported_mass_matches_newton(self):
+        """Export Newton's masses, including zero, instead of letting MuJoCo re-derive them from geoms."""
+        builder = newton.ModelBuilder()
+        massless_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+        # Fixed root whose only shape has no density.
+        fixed = builder.add_link(xform=wp.transform((1.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_box(fixed, hx=0.1, hy=0.1, hz=0.1, cfg=massless_cfg)
+        builder.add_articulation([builder.add_joint_fixed(-1, fixed)])
+        # Massless movable dummy carried by a welded child with mass (URDF base-link pattern).
+        dummy = builder.add_link()
+        builder.add_shape_box(dummy, hx=0.05, hy=0.05, hz=0.05, cfg=massless_cfg)
+        link = builder.add_link()
+        builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([builder.add_joint_free(dummy), builder.add_joint_fixed(dummy, link)])
+        model = builder.finalize()
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                mjc_body_to_newton = solver.mjc_body_to_newton.numpy()[0]
+                mapped = mjc_body_to_newton >= 0
+                newton_mass = model.body_mass.numpy()[mjc_body_to_newton[mapped]]
+                np.testing.assert_allclose(solver.mj_model.body_mass[mapped], newton_mass, rtol=1.0e-6)
+                self.assertEqual(float(newton_mass[mjc_body_to_newton[mapped] == fixed][0]), 0.0)
+                self.assertEqual(float(newton_mass[mjc_body_to_newton[mapped] == dummy][0]), 0.0)
+
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                for _ in range(10):
+                    solver.step(state_0, state_1, control, None, 0.002)
+                    state_0, state_1 = state_1, state_0
+                self.assertTrue(np.all(np.isfinite(state_0.body_q.numpy())))
+
 
 class TestMuJoCoSolverQpos0(unittest.TestCase):
     """Tests for qpos0, qpos_spring, ref/springref coordinate conversion, and FK correctness."""
@@ -10746,8 +10778,8 @@ class TestActuatorDampratio(unittest.TestCase):
     """Verify dampratio on position actuator shortcuts produces correct biasprm[2].
 
     MuJoCo's <position kp="K" dampratio="D"/> computes kd = D * 2 * sqrt(K * acc0)
-    during mj_setConst. Newton must use set_to_position on the MjSpec actuator so
-    the compiler resolves dampratio correctly.
+    during mj_setConst. Newton must keep the dampratio in biasprm[2] so the compiler
+    resolves it.
     """
 
     MJCF = """<?xml version="1.0" ?>
@@ -13836,15 +13868,25 @@ class TestActuatorTypes(unittest.TestCase):
                 assert_np_equal(mj_model.actuator_biastype, native.actuator_biastype)
 
     def test_unsupported_type_warns(self):
-        """Warn on an unsupported gaintype, naming the attribute, the value and the MJCF actuator."""
-        for gaintype in ("dcmotor", "so3", "pid", "bogus"):
-            with self.subTest(gaintype=gaintype):
+        """Warn on unsupported types, naming the attribute, value, and MJCF actuator."""
+        for attribute, value in (("gaintype", "pid"), ("gaintype", "bogus"), ("gaintype", "so3"), ("biastype", "so3")):
+            with self.subTest(attribute=attribute, value=value):
                 builder = newton.ModelBuilder()
                 with self.assertLogs("newton", level="WARNING") as logs:
-                    builder.add_mjcf(self._mjcf(gaintype=gaintype))
+                    builder.add_mjcf(self._mjcf(**{attribute: value}))
                 self.assertTrue(
-                    any(f"gaintype '{gaintype}' on actuator 'a'" in line for line in logs.output), logs.output
+                    any(f"{attribute} '{value}' on actuator 'a'" in line for line in logs.output), logs.output
                 )
+
+    def test_supported_dcmotor_types_parse(self):
+        """Parse supported DC-motor type names without warnings."""
+        builder = newton.ModelBuilder()
+        with self.assertNoLogs("newton", level="WARNING"):
+            builder.add_mjcf(self._mjcf(dyntype="dcmotor", gaintype="dcmotor", biastype="dcmotor"))
+
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_dyntype"].values[0], _ActuatorDynamicsType.DCMOTOR)
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_gaintype"].values[0], _ActuatorGainType.DCMOTOR)
+        self.assertEqual(builder.custom_attributes["mujoco:actuator_biastype"].values[0], _ActuatorBiasType.DCMOTOR)
 
 
 def _build_hull_world(count, *, offset=0.0, half_height=0.1, z=0.3):

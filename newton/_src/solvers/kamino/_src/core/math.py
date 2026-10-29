@@ -536,6 +536,16 @@ def compute_gyroscopic_torque(
 
 
 @wp.func
+def has_singular_inertia(inv_m_i: wp.float32, inv_i_I_i: wp.mat33f) -> bool:
+    """Whether a body has a zero inverse mass or a singular inverse inertia.
+
+    The inverse inertia must be the body-frame one, since the determinant of its rotation to the
+    world frame is not exactly zero in floating point.
+    """
+    return inv_m_i == 0.0 or wp.determinant(inv_i_I_i) == 0.0
+
+
+@wp.func
 def compute_body_twist_update_with_eom(
     dt: wp.float32,
     g: wp.vec3f,

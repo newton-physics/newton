@@ -1573,7 +1573,9 @@ class CollisionPipeline:
                 which the per-particle path misses. Meshes use exact feature contacts without
                 requiring a volume SDF and report every vertex-face, face-vertex, and edge-edge
                 pair within the contact band, including redundant representations of one surface
-                patch; the consuming solver selects the pairs it applies forces to. Only meshes
+                patch, inactive soft features, and pairs with unresolved mesh sign. All rigid
+                triangle edges participate, including edges omitted from SDF preprocessing.
+                The consuming solver selects the pairs it applies forces to. Only meshes
                 with :attr:`~newton.ShapeFlags.COLLIDE_PARTICLES` set at construction get them,
                 others keep per-particle contact. These full-surface contacts are consumed only by
                 :class:`~newton.solvers.SolverVBD`; other solvers raise on such contacts. Records are
@@ -1669,6 +1671,13 @@ class CollisionPipeline:
                 scale; routing a rescaled shape through mesh-SDF collision makes the device print a
                 warning once and a later :meth:`collide` call outside graph capture raise
                 :class:`RuntimeError`. Mesh-plane and mesh-convex contacts are unaffected.
+                This option does not update derived collision bounds. After rescaling meshes,
+                convex meshes, or heightfields, also update :attr:`Model.shape_collision_radius`,
+                :attr:`Model.shape_collision_aabb_lower`, and :attr:`Model.shape_collision_aabb_upper`
+                to match the new scale, or broadphase culling can miss contacts. It does not rebuild
+                baked SDFs or heightfield collision data. Recreate affected shapes at the new scale
+                on a :class:`ModelBuilder`, then finalize a new model and construct a new collision pipeline.
+                For explicitly prebuilt mesh SDFs, first rerun :meth:`Mesh.build_sdf` with the new scale.
                 Ignored when ``narrow_phase`` is provided. Defaults to ``False``.
             publish_capacity: Whether to publish the resolved capacities as the model's
                 default :attr:`~newton.Model.rigid_contact_max` and
@@ -1921,11 +1930,11 @@ class CollisionPipeline:
                 if (
                     hasattr(model, "_shape_sdf_index")
                     and model._shape_sdf_index is not None
-                    and hasattr(model, "shape_edge_range")
-                    and model.shape_edge_range is not None
+                    and hasattr(model, "_shape_edge_range")
+                    and model._shape_edge_range is not None
                 ):
                     shape_sdf_index = model._shape_sdf_index.numpy()
-                    shape_edge_range = model.shape_edge_range.numpy()
+                    shape_edge_range = model._shape_edge_range.numpy()
                     planar_sdf_mask = route_mask & (shape_sdf_index >= 0) & (shape_edge_range[:, 1] > 0)
                     has_planar_sdf_shapes = bool(np.any(planar_sdf_mask))
                     has_meshes = has_meshes or has_planar_sdf_shapes
@@ -2197,7 +2206,11 @@ class CollisionPipeline:
             self._soft_heightfield_face_pairs = _build_soft_face_rigid_contact_pairs(model, heightfield_capable)
             mesh_vertex_pairs = _build_soft_particle_rigid_contact_pairs(model, shape_ok=mesh_mask)
             if len(mesh_vertex_pairs):
-                self._soft_mesh_contact_data = MeshContactData(model, mesh_mask, mesh_vertex_pairs)
+                self._soft_mesh_contact_data = MeshContactData(
+                    model,
+                    mesh_mask,
+                    mesh_vertex_pairs,
+                )
         else:
             self.soft_edge_rigid_pairs = empty_pairs
             self.soft_face_rigid_pairs = empty_pairs
@@ -2686,6 +2699,10 @@ class CollisionPipeline:
         # afterwards -- otherwise the generation would advance by 2 per collide() call.
         if contacts.clear_buffers:
             contacts.clear(bump_generation=False)
+        elif self._soft_mesh_contact_data is not None or contacts._soft_contact_mesh_features is not None:
+            # Non-mesh emitters must not inherit rigid primitive IDs from mesh rows.
+            # Fresh particle-only buffers already contain -1, and clear() resets them.
+            contacts.soft_contact_rigid_indices.fill_(wp.vec3i(-1, -1, -1))
 
         model = self.model
         # update any additional parameters
@@ -2886,8 +2903,8 @@ class CollisionPipeline:
         narrow_phase_extension_kwargs = {}
         if type(self.narrow_phase).launch_custom_write is NarrowPhase.launch_custom_write:
             narrow_phase_extension_kwargs.update(
-                mesh_edge_centers=model.mesh_edge_centers,
-                mesh_edge_halves=model.mesh_edge_halves,
+                mesh_edge_centers=model._mesh_edge_centers,
+                mesh_edge_halves=model._mesh_edge_halves,
                 shape_support_data=model._shape_support_data,
                 support_lut=model._convex_support_lut,
                 support_vertex_offsets=model._convex_support_vertex_offsets,
@@ -2924,8 +2941,8 @@ class CollisionPipeline:
             shape_heightfield_index=model.shape_heightfield_index,
             heightfield_data=model.heightfield_data,
             heightfield_elevations=model.heightfield_elevations,
-            mesh_edge_indices=model.mesh_edge_indices,
-            shape_edge_range=model.shape_edge_range,
+            mesh_edge_indices=model._mesh_edge_indices,
+            shape_edge_range=model._shape_edge_range,
             writer_data=writer_data,
             device=self.device,
             **narrow_phase_extension_kwargs,

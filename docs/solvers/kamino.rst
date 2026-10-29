@@ -40,7 +40,7 @@ world.
 Choosing a dynamics solver
 --------------------------
 
-Kamino provides two forward-dynamics backends:
+Kamino provides three forward-dynamics backends:
 
 * ``"padmm"`` (default): proximal ADMM, dense Jacobians/dynamics, and the Euler
   integrator. It is the slower, more robust option because it solves equality
@@ -52,6 +52,10 @@ Kamino provides two forward-dynamics backends:
   inequality constraints. As a rule of thumb, DVI solves inequality constraints
   less accurately than PADMM, particularly as the number of active inequalities
   grows. Dual preconditioning is not supported.
+* ``"lox"`` (opt-in, experimental): a primal splitting method. Like DVI, it
+  alternates between solving for equality constraints (and smooth dynamics in
+  general) and solving for inequality constraints; however, in LOX the split is
+  performed at the velocity level, and ADMM is used to reach a consensus.
 
 Select the backend when constructing the configuration so dependent defaults
 initialize consistently:
@@ -98,6 +102,82 @@ Both support dense and sparse operators and bilateral Schur elimination.
 See the :class:`~newton.solvers.SolverKamino` configuration reference for
 subsolver selection and iteration controls.
 
+LOX prescribed bodies and shared settings
+-----------------------------------------
+
+LOX advances bodies flagged :attr:`~newton.BodyFlags.KINEMATIC`, and massless
+bodies whose only joints are free joints to the world, with their velocity in
+``state_in.body_qd``. To animate such a body, write the velocity that reaches its
+target pose within the step. PADMM and DVI keep the pose of these bodies and only
+read their velocity.
+
+Bodies welded to a kinematic body by fixed joints of its articulation move
+rigidly with it, like the bodies of a MuJoCo tree without joints: LOX sets their
+pose and velocity from the kinematic body at the beginning and at the end of each
+step. Massless bodies on other joints stay dynamic and move with the bodies they
+are attached to. With ``config.lox.eliminate_fixed_world_islands`` enabled, LOX
+also keeps the bodies welded to the world at their pose.
+
+LOX keeps speculative contacts, whose shapes are still separated, and lets each
+close its gap within the step. It ignores
+``config.dynamics.cull_speculative_contacts``.
+
+LOX bounds joint drift with ``config.lox.joint_max_correction``,
+``config.lox.position_tolerance`` and ``config.lox.rotation_tolerance``, so it
+ignores ``config.constraints.alpha``. ``config.collect_solver_info`` collects the
+PADMM and DVI iteration logs; LOX reports its iterations and residuals through
+:attr:`~newton.solvers.SolverKamino.status`.
+
+LOX solves its own primal problem, so ``sparse_dynamics``,
+``config.dynamics.linear_solver_type``, ``config.dynamics.linear_solver_kwargs``
+and ``config.dynamics.preconditioning`` only affect the dual problem of the
+optional solution metrics. LOX always warm-starts from its containers;
+``config.lox.contact_warmstart_method`` selects how it matches contacts.
+
+LOX unilateral projection
+-------------------------
+
+LOX projects contacts, joint limits, and joint friction with mass-split
+sweeps. ``config.lox.gauss_seidel_max_colors`` selects the sweep: one gives a
+fully parallel Jacobi sweep, and larger values process up to that many
+approximate constraint colors sequentially. ``config.lox.projection_acceleration``
+optionally accelerates the resulting map:
+
+* ``"none"`` (default) runs plain sweeps.
+* ``"apgd"`` applies restarted Nesterov extrapolation and requires
+  ``gauss_seidel_max_colors=1``.
+* ``"anderson"`` applies one safeguarded Anderson direction
+  after every sweep, for either the Jacobi or the colored map. Set
+  ``projection_anderson_recycle=False`` to discard the direction between
+  splitting iterations.
+
+LOX contact extensions
+----------------------
+
+Enable these features through ``config.lox`` after selecting
+``dynamics_solver="lox"``. They are disabled by default.
+
+* ``contact_compliance=True`` turns contacts with a positive per-contact
+  stiffness ``k`` [N/m] (:attr:`newton.Contacts.rigid_contact_stiffness`) into
+  implicit spring-dampers, with the damping ``d`` [N s/m] of
+  :attr:`newton.Contacts.rigid_contact_damping`. They add
+  ``1 / (dt (k dt + d))`` to the normal contact operator and recover the fraction
+  ``k dt / (k dt + d)`` of existing penetration per step. Their bounce comes from
+  the spring-damper, so they ignore restitution. Contacts without a positive
+  stiffness, and contacts detected by Kamino's own collision pipelines, remain
+  hard. :class:`newton.CollisionPipeline` provides per-contact stiffness only for
+  hydroelastic contacts.
+* ``contact_implicit_restitution=True`` decides the restitution of speculative
+  impacts inside each local contact update, from its current reaction-free normal
+  velocity, which better preserves energy in speculative impacts. Restitution
+  applies either way: by default, the bounce target is fixed at the beginning of
+  the step.
+* ``contact_spatial_friction=True`` accounts for the shape ``mu_torsional`` and
+  ``mu_rolling`` coefficients, both in metres. Sliding, torsion, and rolling
+  share one elliptic friction budget. Contacts with zero angular coefficients
+  retain the classical 3D contact solve. Kamino's primitive collision pipeline
+  provides no angular coefficients.
+
 Inspecting terminal status
 --------------------------
 
@@ -123,8 +203,23 @@ residual definitions are backend-specific:
   from the dual cone and the bilateral velocity violation [m/s or rad/s].
   ``r_c = max |lambda_k dot v_k|`` is the maximum inequality complementarity
   violation [J].
+* **LOX:** ``converged`` and ``iterations`` report LOX's native splitting
+  termination state. With body twists ``v`` of the smooth solve and ``p`` of
+  the unilateral projection, and the splitting body weight ``W``,
+  ``r_p = ||W (v - p)||_inf`` is the consensus residual [N·s or N·m·s] and
+  ``r_d = ||v - v_prev||_inf`` is the last change of the smooth solution
+  [m/s or rad/s]. ``r_c`` is the squared maximum Delassus-scaled natural-map
+  residual of the joint-friction, limit, and contact rows under their contact
+  law [J], which measures feasibility and complementarity together. These
+  residuals do not require solution metrics; they are NaN before a solve and
+  for failed worlds. LOX additionally reports ``failed``; a world that is
+  neither converged nor failed reached the iteration limit and uses its last
+  projected iterate. A failed world stays failed until it is reset, for example
+  with ``solver.reset(..., world_mask=...)``. Until then, LOX skips its solve,
+  and its bodies keep their input velocity, without gravity, joint or contact
+  forces, so check ``failed`` to detect and reset these worlds.
 
-These are absolute maxima: neither backend divides them by a reference norm,
+These are absolute maxima: no backend divides them by a reference norm,
 constraint count, or tolerance. Additional fields are not portable between
 backends.
 

@@ -56,9 +56,9 @@ joints or modeled with another formulation. :class:`newton.Rod` stores
 initial and structural-rest geometry, segment frames, topology, and optional rod
 constitutive data before :meth:`newton.ModelBuilder.add_rod` assembles the
 simulation representation. Pass prepared data with
-``builder.add_rod(rod=rod)``. The raw ``add_rod(positions=...)`` and
-``add_rod_graph()`` forms are deprecated compatibility APIs in Newton 1.6; use
-``newton.Rod(points, ...)`` or ``newton.Rod(points, edges=...)`` respectively.
+``builder.add_rod(rod=rod)``. Construct an ordered chain with
+``newton.Rod(points, ...)`` or an explicit graph with
+``newton.Rod(points, edges=...)``.
 A rod may specify either an isotropic elastic material or a complete set of
 homogeneous stretch, shear, bend, and twist rigidities. These parameterizations
 are mutually exclusive. Direct per-joint stiffness values remain assembly controls on
@@ -447,6 +447,10 @@ Implementation details differ by coordinate formulation:
   :class:`~newton.solvers.SolverSemiImplicit` currently preserves prescribed state but
   does not zero inverse mass/inertia inside its contact solver. Contacts against
   kinematic bodies can therefore be softer under SemiImplicit.
+- :class:`~newton.solvers.SolverKamino` with ``dynamics_solver="lox"`` advances the pose of
+  kinematic bodies with their prescribed :attr:`newton.State.body_qd` over the step, while its
+  PADMM and DVI backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
+  that reaches the target pose within the step.
 
 In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
 large internal armature value; see :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.

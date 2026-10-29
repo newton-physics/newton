@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from .....geometry import ShapeFlags
+from .....sim import JointTargetMode
 from .....sim.model import Model
 from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
@@ -30,7 +31,7 @@ from .joints import (
     JointActuationType,
     JointDoFType,
     JointsModel,
-    _validate_implicit_pd_gains,
+    _has_missing_implicit_pd_gains,
     has_dynamic_cts_wp,
     has_effort_cts_wp,
     has_friction_cts_wp,
@@ -92,19 +93,24 @@ def compute_body_immovability_kernel(
     newton_body_inv_mass: wp.array[wp.float32],
     newton_body_inv_inertia: wp.array[wp.mat33f],
     newton_body_flags: wp.array[wp.int32],
+    kinematic_only_immovable: wp.bool,
     # Outputs:
     kamino_body_is_immovable: wp.array[wp.int32],
 ):
     """Bake Kamino's per-body immovability decision from Newton's arrays.
 
     A body is immovable if it is physically massless (zero inverse mass and
-    zero inverse inertia) or flagged KINEMATIC / PROXY. The result is written
-    once at build and kept constant for the solver's lifetime; runtime flips
-    are rejected via ``StructuralUpdateViolation.IMMOVABILITY_FLIP``.
+    zero inverse inertia) or flagged KINEMATIC. Dynamics solvers that
+    simulate massless bodies only treat KINEMATIC bodies as immovable. The
+    result is written once at build and kept constant for the solver's lifetime;
+    runtime flips are rejected via ``StructuralUpdateViolation.IMMOVABILITY_FLIP``.
     """
     body_id = wp.tid()
     if is_immovable_for_kamino(
-        newton_body_inv_mass[body_id], newton_body_inv_inertia[body_id], newton_body_flags[body_id]
+        newton_body_inv_mass[body_id],
+        newton_body_inv_inertia[body_id],
+        newton_body_flags[body_id],
+        kinematic_only_immovable,
     ):
         kamino_body_is_immovable[body_id] = 1
     else:
@@ -425,6 +431,7 @@ def validate_body_immovability_updates_kernel(
     body_inv_inertia: wp.array[wp.mat33f],
     body_flags: wp.array[wp.int32],
     built_is_immovable: wp.array[wp.int32],
+    kinematic_only_immovable: wp.bool,
     # Outputs:
     violations: wp.array[wp.int32],
 ):
@@ -434,12 +441,14 @@ def validate_body_immovability_updates_kernel(
     ``is_immovable_for_kamino``): joint culling, contact culling, and the
     masking of ``inv_m_i`` / ``inv_i_I_i`` all key on the cached
     ``bodies.is_immovable`` snapshot. Flipping it at runtime, either by making
-    a body massless (or restoring its mass) or by toggling its KINEMATIC/PROXY
+    a body massless (or restoring its mass) or by toggling its KINEMATIC
     flag, would silently corrupt those layouts. We surface it as a single
     structural-update violation.
     """
     body = wp.tid()
-    current_immovable = is_immovable_for_kamino(body_inv_mass[body], body_inv_inertia[body], body_flags[body])
+    current_immovable = is_immovable_for_kamino(
+        body_inv_mass[body], body_inv_inertia[body], body_flags[body], kinematic_only_immovable
+    )
     if current_immovable != (built_is_immovable[body] != 0):
         wp.atomic_min(violations, StructuralUpdateViolation.IMMOVABILITY_FLIP, body)
 
@@ -619,7 +628,7 @@ def joint_conversion_kernel(
     joint_act_type[joint_id] = act_type_j
 
     # A joint between two bodies that Kamino treats as immovable (both massless
-    # and/or flagged KINEMATIC/PROXY) contributes only structurally singular
+    # and/or flagged KINEMATIC) contributes only structurally singular
     # Delassus rows that cannot affect any body's motion, so we cull all its
     # constraint rows regardless of joint-DoF regularization (armature, damping,
     # implicit PD). The joint entry is preserved with zero counts so joint
@@ -1101,6 +1110,7 @@ def validate_model_structural_updates(
     check_actuation: bool,
     check_axes: bool,
     check_body_immovability: bool,
+    kinematic_only_immovable: bool = False,
 ) -> int:
     """Validate that runtime edits preserve Kamino's structural layout.
 
@@ -1131,7 +1141,9 @@ def validate_model_structural_updates(
         check_actuation: Whether to check the actuation updates.
         check_axes: Whether to check universal and gimbal axes.
         check_body_immovability: Whether to check that no body's immovability
-            status changed (via mass, inertia, or KINEMATIC/PROXY flag flip).
+            status changed (via mass, inertia, or KINEMATIC flag flip).
+        kinematic_only_immovable: Whether only KINEMATIC bodies were built as immovable,
+            see :func:`convert_rigid_bodies`.
 
     Returns:
         The sentinel value indicating no violations.
@@ -1207,6 +1219,7 @@ def validate_model_structural_updates(
                 model.body_inv_inertia,
                 model.body_flags,
                 built_is_immovable,
+                kinematic_only_immovable,
                 # Outputs:
                 violations,
             ],
@@ -1428,6 +1441,7 @@ def convert_rigid_bodies(
     model: Model | ModelView,
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
+    kinematic_only_immovable: bool = False,
 ) -> RigidBodiesModel:
     """
     Converts the rigid bodies from a Newton model into Kamino's format. The function
@@ -1439,6 +1453,9 @@ def convert_rigid_bodies(
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
+        kinematic_only_immovable: Whether only KINEMATIC bodies are immovable. Dynamics
+            solvers that simulate massless bodies set it, so that Kamino keeps their
+            joints, limits, and inertia.
 
     Returns:
         Fully converted rigid bodies model in Kamino's format.
@@ -1477,7 +1494,7 @@ def convert_rigid_bodies(
     q_i_0 = wp.empty((model.body_count,), dtype=wp.transformf, device=model.device)
     convert_body_origin_to_com(model.body_com, model.body_q, q_i_0)
 
-    # Bake Kamino's per-body immovability decision once (kinematic/proxy or
+    # Bake Kamino's per-body immovability decision once (kinematic or
     # already massless) and mask its owned inverse mass / inertia copies with
     # it. See ``is_immovable_for_kamino`` for the predicate. Newton's arrays
     # are never mutated. Runtime flips are rejected via
@@ -1487,7 +1504,7 @@ def convert_rigid_bodies(
         wp.launch(
             kernel=compute_body_immovability_kernel,
             dim=model.body_count,
-            inputs=[model.body_inv_mass, model.body_inv_inertia, model.body_flags],
+            inputs=[model.body_inv_mass, model.body_inv_inertia, model.body_flags, kinematic_only_immovable],
             outputs=[body_is_immovable],
             device=model.device,
         )
@@ -1554,13 +1571,18 @@ def _warn_ignored_free_joint_friction(
     dof_type_np = joint_dof_type.numpy()
     friction_np = model.joint_friction.numpy()
     qd_start_np = model.joint_qd_start.numpy()
-    for jid in range(model.joint_count):
-        if dof_type_np[jid] != JointDoFType.FREE:
-            continue
-        dof_start = int(qd_start_np[jid])
-        dof_end = int(qd_start_np[jid + 1])
-        if np.any(friction_np[dof_start:dof_end] > 0.0):
-            msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+    positive_friction = friction_np > 0.0
+    free_joint_ids = np.flatnonzero(dof_type_np == JointDoFType.FREE)
+    positive_friction_prefix = np.empty(positive_friction.size + 1, dtype=np.intp)
+    positive_friction_prefix[0] = 0
+    np.cumsum(positive_friction, dtype=np.intp, out=positive_friction_prefix[1:])
+    # A prefix increase across a joint's range means at least one DoF has friction.
+    free_joint_has_friction = (
+        positive_friction_prefix[qd_start_np[free_joint_ids + 1]]
+        > positive_friction_prefix[qd_start_np[free_joint_ids]]
+    )
+    for jid in free_joint_ids[free_joint_has_friction].tolist():
+        msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
 
 
 def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
@@ -1568,9 +1590,15 @@ def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
     target_mode = model.joint_target_mode.numpy()
     k_p = model.joint_target_ke.numpy()
     k_d = model.joint_target_kd.numpy()
-    for dof in range(model.joint_dof_count):
+    act_types = np.full(target_mode.shape, -1, dtype=np.int32)
+    for mode in JointTargetMode:
+        act_types[target_mode == mode] = JointActuationType.from_newton(mode)
+    invalid = (act_types < 0) | _has_missing_implicit_pd_gains(act_types, k_p, k_d)
+    if np.any(invalid):
+        dof = int(np.flatnonzero(invalid)[0])
+        # `from_newton` raises for unsupported target modes.
         act_type = JointActuationType.from_newton(target_mode[dof])
-        _validate_implicit_pd_gains(act_type, k_p[dof], k_d[dof], label=f"DoF={dof}")
+        raise ValueError(f"Invalid implicit-PD actuation: {act_type.name} requires a non-zero gain (DoF={dof}).")
 
 
 def convert_joints(
@@ -2236,6 +2264,8 @@ def convert_geometries(
         params=model.shape_scale,
         offset=offset,
         material=geom_material,
+        torsional_friction=model.shape_material_mu_torsional,
+        rolling_friction=model.shape_material_mu_rolling,
         group=model.shape_collision_group,
         gap=model.shape_gap,
         margin=model.shape_margin,
