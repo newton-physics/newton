@@ -179,11 +179,14 @@ class TestUSDDeformableVisual(unittest.TestCase):
         """
         stage = _deformable_stage()
         sim, mesh, _ = self._object(stage, "/World/Object", "curve")
-        bind = np.asarray(sim.GetPointsAttr().Get())
+        bind = np.array(sim.GetPointsAttr().Get())
+        # Short segments must use the same unit-tangent frame transport as long ones.
+        bind[:, :2] *= 0.1
         self._bind(sim.GetPrim(), bind)
         # Initial geometry: the bind cable turned a quarter turn about +z.
         sim.GetPointsAttr().Set(np.column_stack([-bind[:, 1], bind[:, 0], bind[:, 2]]).tolist())
         skin = np.array([(0.5, 0.1, 1.0), (1.5, 0.1, 1.0), (1.0, 0.1, 1.2)])
+        skin[:, :2] *= 0.1
         mesh.GetPointsAttr().Set(skin.tolist())
         builder = newton.ModelBuilder()
         builder.add_usd(stage)

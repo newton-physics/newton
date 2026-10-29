@@ -14148,9 +14148,13 @@ class ModelBuilder:
             raise ValueError("add_deformable_visual_mesh(kind='body'): requires at least one body")
         if int(bodies.min()) < 0 or int(bodies.max()) >= self.body_count:
             raise ValueError("add_deformable_visual_mesh: bodies reference bodies outside the current builder")
-        body_q = np.asarray(
-            [self.body_q[body] for body in bodies] if poses is None else poses, dtype=np.float64
-        ).reshape(-1, 7)
+        if poses is None:
+            # Explicit parents can repeat a body for thousands of visual vertices.
+            unique_bodies, inverse = np.unique(bodies, return_inverse=True)
+            body_q = np.asarray([self.body_q[body] for body in unique_bodies], dtype=np.float64).reshape(-1, 7)
+            body_q = body_q[inverse]
+        else:
+            body_q = np.asarray(poses, dtype=np.float64).reshape(-1, 7)
         if nearest:
             # The center of mass sits inside a segment whatever its frame origin, so a rod binds
             # each vertex to the segment around it. Temporary memory is bound by the vertex count.

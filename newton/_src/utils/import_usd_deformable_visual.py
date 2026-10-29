@@ -109,8 +109,8 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
                 "add_usd",
                 "bindPose",
                 wp.quat(*body_q[3:7]),
-                wp.vec3(*initial_direction),
-                wp.vec3(*bind_direction),
+                ModelBuilder._rod_segment_direction(initial[start], initial[end])[0],
+                ModelBuilder._rod_segment_direction(points[start], points[end])[0],
             )
             origin = points[start] + along * bind_direction
             ctx.cable_visual_bind_poses[body] = wp.transform(wp.vec3(*origin), frame)
