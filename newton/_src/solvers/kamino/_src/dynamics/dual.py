@@ -326,9 +326,10 @@ class DualProblemData:
     - `alpha`, `beta`, `gamma` are the Baumgarte stabilization
         parameters for joints, limits and contacts, respectively
 
-    Recovery-time overrides and compliant rows instead use `r / (dt + time)`.
-    Positional biases are capped by their group's linear or angular recovery
-    speed; positive speculative contact gaps retain `gap / dt`.
+    Recovery-time overrides use `r / (dt + time)`. Compliant rows use the
+    remaining pose-update interval instead of `dt`: a full step for Euler
+    and a half-step for Moreau. Positional biases are capped by their group's
+    recovery speed; positive speculative contact gaps retain `gap / dt`.
 
     Shape of `(sum_of_max_total_cts,)`.
     """

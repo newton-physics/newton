@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from itertools import product
 
 import numpy as np
 import warp as wp
@@ -445,29 +446,28 @@ class TestGimbal(unittest.TestCase):
         )
 
     def test_limits(self):
-        """Drive each D6 coordinate to its own position limit."""
+        """Drive each D6 coordinate to its own limit with rigid and compliant stops."""
         lower = np.array([-0.15, -0.25, -0.35], dtype=np.float32)
         upper = np.array([0.2, 0.3, 0.4], dtype=np.float32)
         target = np.array([0.6, -0.6, 0.6], dtype=np.float32)
         expected = np.where(target > 0.0, upper, lower)
-        for axes in (_RH_AXES, _LH_AXES):
-            for fixed_base in (True, False):
-                with self.subTest(axes=axes, fixed_base=fixed_base):
-                    probe = _run(
-                        "kamino",
-                        fixed_base,
-                        axes,
-                        self.default_device,
-                        position_target=target,
-                        stiffness=100.0,
-                        drive_damping=15.0,
-                        lower=lower,
-                        upper=upper,
-                        limit_compliance=True,
-                        steps=50,
-                        record_trajectory=False,
-                    )
-                    np.testing.assert_allclose(probe.q[-1], expected, atol=1.0e-2, rtol=0.0)
+        for axes, fixed_base, limit_compliance in product((_RH_AXES, _LH_AXES), (True, False), (False, True)):
+            with self.subTest(axes=axes, fixed_base=fixed_base, limit_compliance=limit_compliance):
+                probe = _run(
+                    "kamino",
+                    fixed_base,
+                    axes,
+                    self.default_device,
+                    position_target=target,
+                    stiffness=100.0,
+                    drive_damping=15.0,
+                    lower=lower,
+                    upper=upper,
+                    limit_compliance=limit_compliance,
+                    steps=50,
+                    record_trajectory=False,
+                )
+                np.testing.assert_allclose(probe.q[-1], expected, atol=1.0e-2, rtol=0.0)
 
 
 @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
