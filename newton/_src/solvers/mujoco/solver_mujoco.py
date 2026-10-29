@@ -7860,11 +7860,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         def any_world(mask: np.ndarray) -> np.ndarray:
             return mask[: template_bodies * model.world_count].reshape(model.world_count, -1).any(axis=0)
 
-        # MuJoCo rejects movable bodies without mass and inertia. A massless body
-        # can never be dynamic, so a massless kinematic root is driven like a
-        # fixed root: as a mocap body without DOFs.
-        massless = (body_mass <= MJ_MINVAL) | (np.linalg.eigvalsh(body_inertia).min(axis=1) <= MJ_MINVAL)
-        body_massless = any_world(massless)
+        # MuJoCo rejects movable bodies without mass and inertia, unless a body
+        # welded to them has both. Such a massless body can never be dynamic,
+        # so a massless kinematic root is driven like a fixed root: as a mocap
+        # body without DOFs.
+        has_mass = (body_mass > MJ_MINVAL) & (np.linalg.eigvalsh(body_inertia).min(axis=1) > MJ_MINVAL)
+        has_mass = has_mass[: template_bodies * model.world_count].reshape(model.world_count, -1)
+        weld_group = np.arange(template_bodies)
+        for j in joint_order:
+            parent = int(joint_parent[j])
+            if parent >= 0 and joint_dof_dim[j][0] + joint_dof_dim[j][1] == 0:
+                weld_group[int(joint_child[j]) % template_bodies] = weld_group[parent % template_bodies]
+        group_has_mass = np.zeros_like(has_mass)
+        np.logical_or.at(group_has_mass.T, weld_group, has_mass.T)
+        body_massless = (~group_has_mass[:, weld_group]).any(axis=0)
         body_kinematic = any_world((body_flags & int(BodyFlags.KINEMATIC)) != 0)
         kinematic_mocap_root_joints = []
         for j in joints_with_bodies:

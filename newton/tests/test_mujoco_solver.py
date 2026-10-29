@@ -2660,6 +2660,26 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "mocap body in every world"):
             SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
 
+    def test_kinematic_root_with_massive_fixed_descendant_is_welded(self):
+        """A massless root takes the mass of bodies welded to it, so it stays switchable to dynamic."""
+        builder = newton.ModelBuilder()
+        root = builder.add_link(is_kinematic=True)
+        mid = builder.add_link()
+        tip = builder.add_link()
+        builder.add_shape_box(tip, hx=0.1, hy=0.1, hz=0.1)
+        joints = [
+            builder.add_joint_free(root),
+            builder.add_joint_fixed(root, mid),
+            builder.add_joint_fixed(mid, tip, parent_xform=wp.transform((0.3, 0.0, 0.0), wp.quat_identity())),
+        ]
+        builder.add_articulation(joints)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+        self.assertEqual(solver.mj_model.nmocap, 0)
+        self.assertEqual(solver.mj_model.nv, 6)
+        model.body_flags.fill_(int(BodyFlags.DYNAMIC))
+        solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+
     def test_fixed_root_attached_to_world_uses_mocap_and_tracks_pose(self):
         """Fixed and fully locked D6 roots become mocap bodies that follow joint-frame edits."""
         cases = itertools.product(("fixed", "locked_d6"), (False, True), (False, True))
