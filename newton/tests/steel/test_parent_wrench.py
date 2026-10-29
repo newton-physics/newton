@@ -40,7 +40,10 @@ def _parent_wrench_scene(device):
 
 
 def test_parent_wrench_eager_step_before_first_replay(test, device):
-    """Step eagerly between capturing a BODY_PARENT_F step and its first replay, and match an eager twin."""
+    """Step eagerly between capturing the first BODY_PARENT_F step and its first replay, and match an eager twin.
+
+    Each run first steps once without the observable, so the collision pipeline's lazily allocated buffers exist.
+    """
     colored = {"enable_joint_velocity_limits": True, "articulated_contact_response": "propagation_colored"}
     for options in ({"enable_joint_velocity_limits": False}, {"enable_joint_velocity_limits": True}, colored):
         with test.subTest(**options):
@@ -59,12 +62,21 @@ def test_parent_wrench_eager_step_before_first_replay(test, device):
                 states = [model.state(), model.state()]
                 runs.append((pipeline, contacts, solver, observables, states, model.control()))
 
-            def step(run):
+            def step(run, observe=True):
                 pipeline, contacts, solver, observables, states, control = run
                 for i in (0, 1):
                     pipeline.collide(states[i], contacts)
-                    solver.step(states[i], states[1 - i], control, contacts, DT_parent_wrench, observables=observables)
+                    solver.step(
+                        states[i],
+                        states[1 - i],
+                        control,
+                        contacts,
+                        DT_parent_wrench,
+                        observables=observables if observe else None,
+                    )
 
+            for run in runs:
+                step(run, observe=False)
             with wp.ScopedCapture(device) as capture:
                 step(runs[0])
             step(runs[0])
