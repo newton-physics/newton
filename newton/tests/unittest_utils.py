@@ -34,6 +34,24 @@ MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((
 # float32 round-off.
 HOST_TRANSFORMS_BIT_EXACT = platform.system() == "Linux" and platform.machine() == "x86_64"
 
+
+_PRE_RELEASE_RANK = {".dev": 0, "a": 1, "b": 2, "rc": 3, None: 4}
+
+
+def _version_key(version: str) -> tuple[int, ...]:
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)(?:(\.dev|a|b|rc)(\d+))?", version)
+    if match is None:
+        raise ValueError(f"Unsupported version: {version!r}")
+    major, minor, patch, pre, pre_number = match.groups()
+    # PEP 440 order: X.devN < XaN < XbN < XrcN < X.
+    return (int(major), int(minor), int(patch), _PRE_RELEASE_RANK[pre], int(pre_number or 0))
+
+
+def warp_version_at_least(version: str) -> bool:
+    """Compare ``wp.__version__`` with ``version`` without the undeclared ``packaging`` dependency."""
+    return _version_key(wp.__version__) >= _version_key(version)
+
+
 # default test mode (see get_test_devices())
 #   "basic" - only run on CPU and first GPU device
 #   "unique" - run on CPU and all unique GPU arches
