@@ -666,6 +666,42 @@ class TestViewerUSD(unittest.TestCase):
         self.assertEqual(len(mesh.GetNormalsAttr().Get(0)), 3)
         np.testing.assert_allclose(mesh.GetNormalsAttr().Get(1), [[0, 0, 1]] * 3)
 
+    def test_accumulated_frame_time_maps_to_consecutive_time_codes(self):
+        """Author one time code per frame when time is accumulated from a float step."""
+        num_frames = 32
+        for steps_per_frame in (1, 2):
+            with self.subTest(steps_per_frame=steps_per_frame):
+                viewer = self._make_viewer()
+                step_dt = 1.0 / (viewer.fps * steps_per_frame)
+                sim_time = 0.0
+                for step in range(num_frames * steps_per_frame):
+                    viewer.begin_frame(sim_time)
+                    points = wp.array([[float(step), 0.0, 0.0]], dtype=wp.vec3)
+                    path = viewer.log_points("/points", points, radii=0.01)
+                    viewer.end_frame()
+                    sim_time += step_dt
+
+                points_attr = UsdGeom.Points.Get(viewer.stage, path).GetPointsAttr()
+                self.assertEqual([int(t) for t in points_attr.GetTimeSamples()], list(range(num_frames)))
+                # Each time code holds the last step logged within its frame.
+                last_steps = [int(points_attr.Get(frame)[0][0]) for frame in range(num_frames)]
+                self.assertEqual(last_steps, [(frame + 1) * steps_per_frame - 1 for frame in range(num_frames)])
+                self.assertEqual(viewer.stage.GetEndTimeCode(), num_frames - 1)
+
+    def test_frame_time_maps_to_the_frame_containing_it(self):
+        """Map negative, zero and fractional times to the time code of the frame that contains them."""
+        viewer = self._make_viewer()
+        frame_codes = [-2.0, -1.5, -1.0, 0.0, 0.5]
+        for step, frame_code in enumerate(frame_codes):
+            viewer.begin_frame(frame_code / viewer.fps)
+            points = wp.array([[float(step), 0.0, 0.0]], dtype=wp.vec3)
+            path = viewer.log_points("/points", points, radii=0.01)
+            viewer.end_frame()
+
+        points_attr = UsdGeom.Points.Get(viewer.stage, path).GetPointsAttr()
+        self.assertEqual([int(t) for t in points_attr.GetTimeSamples()], [-2, -1, 0])
+        self.assertEqual([int(points_attr.Get(code)[0][0]) for code in (-2, -1, 0)], [1, 2, 4])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
