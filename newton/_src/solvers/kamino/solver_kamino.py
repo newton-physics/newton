@@ -1183,6 +1183,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 retain these input poses.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
             wp.copy(self._contact_observable_state.body_q, state_in.body_q)
         # Interface the input state containers to Kamino's equivalents

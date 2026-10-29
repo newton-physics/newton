@@ -192,6 +192,7 @@ class SolverStyle3D(SolverBase):
                 container is accepted.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         # Model masses and flags may change between solver steps.
         wp.copy(self._particle_flags, self.model.particle_flags)
         if self.model.particle_count > 0:

@@ -2132,6 +2132,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 container is accepted.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):

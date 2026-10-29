@@ -66,6 +66,14 @@ Contact geometry
    produce better force distribution for manipulation and non-convex geometry.
    See :ref:`Collisions`.
 
+Contact reduction
+   ``CollisionPipeline(reduce_contacts=...)`` controls the mesh/heightfield
+   reduction every solver consumes. The opt-in
+   ``CollisionPipeline.ContactReductionConfig(body_pairs=True)`` pass changes
+   which contacts the solver sees and is supported by
+   :class:`newton.solvers.SolverSteel` only. Keep it off unless it lowers the
+   measured step time, and check tipping and yaw behavior when it is on.
+
 Contact material
    Shape material arrays such as :attr:`~Model.shape_material_mu`,
    :attr:`~Model.shape_material_mu_torsional`,

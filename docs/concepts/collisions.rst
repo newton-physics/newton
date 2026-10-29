@@ -1279,6 +1279,58 @@ Contact reduction is enabled by default. For scenes with many mesh-mesh interact
 
 To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 
+**Body-pair contact reduction (opt-in):**
+
+Bodies built from many colliders (a foot made of several spheres or capsules, a
+hand of boxes) produce one manifold per shape pair, so a single physical patch
+can reach the solver as dozens of near-redundant contacts. An optional pass
+after the narrow phase compacts them per body pair. Select it with a
+:class:`~CollisionPipeline.ContactReductionConfig` passed as ``reduce_contacts``:
+
+.. testcode:: body-pair-reduction
+
+    import newton
+
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    model = builder.finalize()
+
+    reduction = newton.CollisionPipeline.ContactReductionConfig(
+        mesh=True,
+        body_pairs=True,
+        body_pair_cell_size=0.25,
+        body_pair_hysteresis=0.001,
+    )
+    pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+
+Contacts are grouped by body pair, material class, normal bin and spatial cell.
+Each group keeps one depth representative, up to six sampled footprint extremes
+over all its contacts and up to six more over its touching contacts only, so
+speculative contacts cannot displace the support polygon. The pass reduces
+``rigid_contact_count`` in place and never drops a contact it could not
+register. It is an approximation: support is sampled, not exact, and keeping
+rim points can strengthen torsional friction.
+
+The hysteresis margin keeps the previous winners unless a new contact beats
+them by more than the margin, which stops the kept set from churning on curved
+or mesh supports. Call :meth:`~CollisionPipeline.reset_body_pair_reduction_history`
+after resets or teleports, and :meth:`~CollisionPipeline.refresh_body_pair_reduction_groups`
+after changing shape materials at runtime. :meth:`~CollisionPipeline.body_pair_reduction_stats`
+reports the input and kept totals; keep the pass off when it doesn't reduce the
+end-to-end step time.
+
+A solver accepts reduced contacts only if it declares
+:attr:`~solvers.SolverBase.supports_body_pair_reduced_contacts`; the others raise
+in ``step()``. :class:`~solvers.SolverSteel` supports it, including contact
+warm start with ``contact_matching="latest"``. Body-pair reduction requires the
+mesh/heightfield producer reduction to stay on, and it doesn't support
+``contact_matching="sticky"`` or hydroelastic contacts.
+
+CUDA graph capture binds the captured ``Contacts`` buffer to the reducer (or, for a
+solver that rejects reduced contacts, to that solver) until
+:meth:`~Contacts.release_graph_capture`. Call it after destroying every graph that
+captured the buffer, including graphs that embed one.
+
 **Configuring contact reduction (HydroelasticSDF.Config):**
 
 For hydroelastic and SDF-based contacts, use :class:`~geometry.HydroelasticSDF.Config` to tune reduction behavior:

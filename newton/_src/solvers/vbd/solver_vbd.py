@@ -2773,6 +2773,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """
         contacts = self._resolve_step_contacts(contacts)
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         self._apply_module_options()
         update_rigid = self._update_rigid_history
         self._update_rigid_history = True
