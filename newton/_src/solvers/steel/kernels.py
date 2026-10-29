@@ -1671,7 +1671,13 @@ def eval_joint_friction_load(
             total = joint_friction[dof]
             coefficient = joint_friction_load_coefficient[dof]
             # Invalid friction stays as is so the DOF builds no row; invalid coefficients add nothing.
-            if coefficient > 0.0 and wp.isfinite(coefficient) and total >= 0.0 and friction_dof_supported[dof] != 0:
+            if (
+                coefficient > 0.0
+                and wp.isfinite(coefficient)
+                and total >= 0.0
+                and wp.isfinite(total)
+                and friction_dof_supported[dof] != 0
+            ):
                 # Saturate so a finite coefficient keeps its row when the product overflows float32.
                 total = wp.min(total + coefficient * load, _FLOAT32_MAX)
             joint_friction_total[dof] = total

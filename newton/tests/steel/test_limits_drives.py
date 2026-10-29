@@ -2338,6 +2338,18 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
                 _, qd = _advance_hinge(solver, model, effort, 3)
                 np.testing.assert_allclose(qd, 0.0, atol=1.0e-6)
 
+    def test_invalid_friction_keeps_no_row_with_a_load_coefficient(self):
+        """Build no row for an infinite joint_friction even when a load coefficient applies."""
+        model = _lateral_hinge_model(1.0)
+        solver = _friction_solver(model)
+        model.joint_friction.fill_(float("inf"))
+        effort = 0.5 * LOAD_COEFFICIENT * GRAVITY
+        _, qd = _advance_hinge(solver, model, effort, 1)
+        self.assertAlmostEqual(float(qd), effort / INERTIA_LOAD * DT_JOINT_FRICTION, delta=1.0e-5)
+        self.assertEqual(float(solver._joint_friction_total.numpy()[0]), float("inf"))
+        with self.assertRaisesRegex(RuntimeError, r"joint_friction was invalid at a step in worlds \[-1\]"):
+            solver.check_constraint_capacity()
+
     def test_rejects_wrong_shape_replacement(self):
         """Raise before any launch when a coefficient array is replaced with a wrong shape."""
         flags = newton.ModelFlags.JOINT_DOF_PROPERTIES
