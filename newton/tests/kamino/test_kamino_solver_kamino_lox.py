@@ -1321,7 +1321,7 @@ class TestSolverKaminoLOXConstraints(_LOXTestCase):
 
     def test_box_on_plane_projects_detected_contact(self):
         """Project detected contacts to keep a box above the plane with every projection schedule."""
-        schedules = ((1, "none"), (4, "none"), (1, "apgd"), (1, "anderson"), (4, "anderson"))
+        schedules = ((1, "none"), (4, "none"), (1, "apgd"), (4, "apgd"), (1, "anderson"), (4, "anderson"))
         for max_colors, acceleration in schedules:
             with self.subTest(gauss_seidel_max_colors=max_colors, projection_acceleration=acceleration):
                 model = ModelKamino.from_newton(build_box_on_plane(ground=True).finalize(device=self.default_device))

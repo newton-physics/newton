@@ -1,12 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Nesterov (APGD) extrapolation of the LOX Jacobi projection sweeps.
+"""Nesterov (APGD) extrapolation of the LOX projection sweeps.
 
 After every sweep but the last, the reactions are extrapolated along their
 last change, ``lambda <- lambda + beta (lambda - lambda_previous)``, with the
 usual ``theta`` recursion. The momentum restarts per world whenever the last
-sweep moved away from the previous extrapolation.
+sweep moved away from the previous extrapolation. When recycled across
+splitting iterations, the extrapolation of the last sweep is applied at the
+start of the next projection, after its warm start.
 
 The kernels run over the stacked reaction vector ``[box rows | contacts]``.
 """
@@ -73,6 +75,8 @@ class APGDRowState:
     contact_previous: wp.array[wp.vec3f]
     angular_trial: wp.array[wp.vec3f]
     angular_previous: wp.array[wp.vec3f]
+    theta: wp.array[wp.float32]
+    history: wp.array[wp.int32]
 
 
 ###
@@ -278,16 +282,20 @@ def extrapolate_contact_apgd_row(
 def _initialize_worlds(
     # Inputs:
     world_active: wp.array[wp.bool],
+    recycle: wp.bool,
     # Outputs:
     theta: wp.array[wp.float32],
     beta: wp.array[wp.float32],
     restart_dot: wp.array[wp.float32],
+    history: wp.array[wp.int32],
 ):
     wid = wp.tid()
     if world_active[wid]:
-        theta[wid] = 1.0
+        if not recycle:
+            theta[wid] = 1.0
         beta[wid] = 0.0
         restart_dot[wid] = 0.0
+        history[wid] = wp.int32(recycle)
 
 
 @wp.kernel
@@ -307,6 +315,8 @@ def _initialize_reactions(
     contact_friction: wp.array[wp.float32],
     angular_friction: wp.array[wp.vec2f],
     world_active: wp.array[wp.bool],
+    recycle: wp.bool,
+    history: wp.array[wp.int32],
     # Outputs:
     box_reaction: wp.array[wp.float32],
     box_trial: wp.array[wp.float32],
@@ -318,17 +328,20 @@ def _initialize_reactions(
     angular_trial: wp.array[wp.vec3f],
     angular_previous: wp.array[wp.vec3f],
 ):
-    """Clamp the warm-start reactions into their feasible sets and reset the momentum."""
+    """Clamp the warm-start reactions into their feasible sets and reset the momentum.
+
+    With ``recycle``, the worlds that hold the row history of the previous splitting iteration keep it.
+    """
     tid = wp.tid()
     if tid < box_capacity:
         row = tid
         wid = box_world[row]
-        if box_local[row] < world_box_count[wid] and world_active[wid]:
+        if box_local[row] < world_box_count[wid] and world_active[wid] and not (recycle and history[wid] == 1):
             initialize_box_apgd_row(row, box_lower, box_upper, box_reaction, box_trial, box_previous)
         return
     cid = tid - box_capacity
     wid = contact_world[cid]
-    if contact_local[cid] < world_contact_count[wid] and world_active[wid]:
+    if contact_local[cid] < world_contact_count[wid] and world_active[wid] and not (recycle and history[wid] == 1):
         initialize_contact_apgd_row(
             cid,
             contact_body_a,
@@ -503,7 +516,7 @@ def _extrapolate_reactions(
 
 
 class APGDAcceleration:
-    """Own the momentum state of APGD-accelerated Jacobi projection."""
+    """Own the momentum state of APGD-accelerated projection."""
 
     def __init__(self, problem_data: LOXProblemData, data: APGDData):
         self.problem_data = problem_data
@@ -511,7 +524,7 @@ class APGDAcceleration:
         self._capacity = problem_data.box_rows.capacity + problem_data.contact_rows.capacity
         self.row_state = APGDRowState()
         """Trial and previous reactions, for the per-world projection."""
-        for name in ("box_trial", "box_previous", "contact_trial", "contact_previous"):
+        for name in ("box_trial", "box_previous", "contact_trial", "contact_previous", "theta", "history"):
             setattr(self.row_state, name, getattr(data, name))
         if data.angular_trial is not None:
             self.row_state.angular_trial = data.angular_trial
@@ -521,19 +534,32 @@ class APGDAcceleration:
     # Public API
     ###
 
-    def begin(self, world_active: wp.array[wp.bool]) -> None:
-        """Clamp the warm-start reactions and restart the momentum of active worlds."""
+    def reset(self) -> None:
+        """Restart the momentum and the row history of every world, once per LOX solve."""
+        self._data.theta.fill_(1.0)
+        self._data.history.zero_()
+
+    def begin(self, world_active: wp.array[wp.bool], recycle: bool = False) -> None:
+        """Clamp the warm-start reactions and restart the row history.
+
+        With ``recycle``, the worlds keep ``theta`` and the row history of the previous splitting iteration,
+        whose deferred extrapolation :meth:`extrapolate` then applies after the warm start.
+        """
         p = self.problem_data
         angular_reaction, angular_friction, _frame = self._spatial_arrays()
+        if self._capacity > 0:
+            self._initialize_reactions(world_active, recycle, angular_reaction, angular_friction)
+        # After the rows, which read the history flags of the previous splitting iteration
         wp.launch(
             _initialize_worlds,
             dim=p.num_worlds,
-            inputs=[world_active],
-            outputs=[self._data.theta, self._data.beta, self._data.restart_dot],
+            inputs=[world_active, recycle],
+            outputs=[self._data.theta, self._data.beta, self._data.restart_dot, self._data.history],
             device=p.device,
         )
-        if self._capacity == 0:
-            return
+
+    def _initialize_reactions(self, world_active, recycle, angular_reaction, angular_friction) -> None:
+        p = self.problem_data
         wp.launch(
             _initialize_reactions,
             dim=self._capacity,
@@ -552,6 +578,8 @@ class APGDAcceleration:
                 p.contact_rows.friction,
                 angular_friction,
                 world_active,
+                recycle,
+                self._data.history,
             ],
             outputs=[
                 p.box_rows.reaction,

@@ -1278,22 +1278,25 @@ class LOXSolverConfig:
     impulses.
     """
 
-    projection_acceleration: Literal["none", "apgd", "anderson"] = "none"
+    projection_acceleration: Literal["none", "apgd", "anderson"] = "apgd"
     """Acceleration applied to the body-space projection map.
 
-    ``"apgd"`` applies restarted Nesterov extrapolation and requires the
-    mass-split Jacobi map, i.e. :attr:`gauss_seidel_max_colors` equal to one.
-    ``"anderson"`` applies one safeguarded Anderson direction to either the
-    Jacobi or the colored Gauss--Seidel map. Anderson acceleration retains one
-    direction and uses a delayed residual-growth safeguard.
+    Both accelerate either the Jacobi or the colored Gauss--Seidel map.
+    ``"apgd"`` applies restarted Nesterov extrapolation after every sweep but
+    the last. ``"anderson"`` applies one safeguarded Anderson direction after
+    every sweep; it retains one direction and uses a delayed residual-growth
+    safeguard.
     """
 
-    projection_anderson_recycle: bool = True
-    """Whether Anderson retains its direction across LOX splitting iterations.
+    projection_acceleration_recycle: bool = True
+    """Whether the projection acceleration carries its state across LOX splitting iterations.
 
-    Reuse is limited to one frozen LOX solve. Raw samples always restart when
-    the projection right-hand side changes; only secants formed under a single
-    right-hand side are retained.
+    Reuse is limited to one frozen LOX solve. APGD keeps its momentum and
+    reaction history, and applies the extrapolation of the last sweep of a
+    splitting iteration at the start of the next projection. Anderson
+    keeps its direction: raw samples always restart when the projection
+    right-hand side changes, and only secants formed under a single right-hand
+    side are retained.
     """
 
     inertial_warmstart_fraction: float = 0.0
@@ -1569,11 +1572,9 @@ class LOXSolverConfig:
                 f"Invalid projection_acceleration: {self.projection_acceleration}. "
                 "Must be 'none', 'apgd', or 'anderson'."
             )
-        if self.projection_acceleration == "apgd" and self.gauss_seidel_max_colors != 1:
-            raise ValueError("projection_acceleration='apgd' requires gauss_seidel_max_colors=1.")
-        if not isinstance(self.projection_anderson_recycle, bool):
+        if not isinstance(self.projection_acceleration_recycle, bool):
             raise ValueError(
-                f"Invalid projection_anderson_recycle: {self.projection_anderson_recycle}. Must be a boolean."
+                f"Invalid projection_acceleration_recycle: {self.projection_acceleration_recycle}. Must be a boolean."
             )
         if (
             not np.isfinite(self.inertial_warmstart_fraction)

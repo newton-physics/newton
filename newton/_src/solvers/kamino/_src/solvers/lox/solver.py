@@ -810,7 +810,7 @@ class LOXSolver:
             return
         self._projection.project(
             self._config.projection_sweeps_per_iteration,
-            self._config.projection_anderson_recycle,
+            self._config.projection_acceleration_recycle,
             self._data.state.world_active,
             self._data.state.world_failed,
             self._model.bodies.wid,

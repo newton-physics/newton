@@ -88,7 +88,7 @@ class ProjectionSchedule:
     Args:
         problem_data: Box rows, contacts, and body incidence of the LOX problem.
         color_count: Maximum number of Gauss--Seidel colors; one selects Jacobi.
-        acceleration: Acceleration of the projection sweeps; APGD requires the Jacobi schedule.
+        acceleration: Acceleration of the projection sweeps.
     """
 
     def __init__(
@@ -177,6 +177,8 @@ class ProjectionSchedule:
             self._prepare_blocks(inverse_weight, p.body_incidence, None, None, None, world_failed)
         if self.anderson is not None:
             self.anderson.reset()
+        if self.apgd is not None:
+            self.apgd.reset()
 
     def project(
         self,
@@ -194,7 +196,7 @@ class ProjectionSchedule:
 
         Args:
             iterations: Number of sweeps; a colored sweep visits every color once.
-            recycle: Whether Anderson retains its direction from the previous splitting iteration.
+            recycle: Whether the acceleration carries its state from the previous splitting iteration.
             world_active: Worlds to project.
             world_failed: Failure flag of each world.
             body_world: World of each body.
@@ -202,13 +204,18 @@ class ProjectionSchedule:
         """
         self._begin_outer_iteration(world_active, recycle=recycle)
         if self._by_world:
-            self._project_by_world(iterations, world_active, self._weights, projected_twist, world_failed)
+            self._project_by_world(iterations, recycle, world_active, self._weights, projected_twist, world_failed)
             return
 
         if self.apgd is not None:
-            self.apgd.begin(world_active)
+            self.apgd.begin(world_active, recycle=recycle)
         self._warmstart(world_active, self._weights, world_failed)
         self._apply(body_world, world_active, world_failed, projected_twist)
+        if self.apgd is not None and recycle:
+            # The extrapolation deferred from the last sweep of the previous splitting iteration;
+            # a world without row history restarts its momentum here and stays at its warm start
+            self.apgd.extrapolate(world_active, world_failed, self._weights, self._data.twist_delta)
+            self._apply(body_world, world_active, world_failed, projected_twist)
 
         if self.anderson is not None:
             self.anderson.begin_map(world_active, world_failed)
@@ -508,7 +515,7 @@ class ProjectionSchedule:
             device=self.device,
         )
 
-    def _project_by_world(self, iterations, world_active, weights, projected_twist, world_failed) -> None:
+    def _project_by_world(self, iterations, recycle, world_active, weights, projected_twist, world_failed) -> None:
         p = self.problem_data
         coloring = self._data.coloring
         spatial = self._data.spatial_blocks
@@ -527,6 +534,7 @@ class ProjectionSchedule:
             inputs=[
                 iterations,
                 self.color_count,
+                recycle,
                 p.world_body_offset,
                 p.world_body_count,
                 p.box_rows.capacity,
