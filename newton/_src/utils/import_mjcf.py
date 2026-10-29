@@ -655,10 +655,12 @@ def parse_mjcf(
 
     def material_attrib(element: ET.Element) -> dict:
         attrib = element.attrib.copy()
-        # Newton stores one base-color texture; other PBR layers are not albedo.
+        # Keep base-color roles separate until defaults have been resolved.
         for layer in element.findall("layer"):
-            if layer.get("role") in {"rgb", "rgba"}:
+            if layer.get("role") == "rgb":
                 attrib["texture"] = layer.get("texture")
+            elif layer.get("role") == "rgba":
+                attrib["texture_rgba"] = layer.get("texture")
         return attrib
 
     def parse_default(node, parent):
@@ -863,11 +865,12 @@ def parse_mjcf(
             if not mat_name:
                 continue
             mat_attrib = resolve_element_attrib(material, "material")
+            texture = mat_attrib.get("texture") or mat_attrib.get("texture_rgba")
             # Default to a neutral tint only when MJCF supplies a base-color texture.
-            default_rgba = "1 1 1 1" if mat_attrib.get("texture") else None
+            default_rgba = "1 1 1 1" if texture else None
             material_assets[mat_name] = {
                 "rgba": mat_attrib.get("rgba", default_rgba),
-                "texture": mat_attrib.get("texture"),
+                "texture": texture,
             }
             for key in ("roughness", "metallic"):
                 value = float(mat_attrib.get(key, "-1"))

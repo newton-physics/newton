@@ -2278,17 +2278,21 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
               face="0 1 2  0 3 1  0 2 3  1 3 2"
               texcoord="0 0  1 0  0 1  1 1"/>
         <texture name="texture" type="2d" file="{texture_path}"/>
+        <texture name="packed" type="2d" file="packed.png"/>
         <texture name="normal" type="2d" file="normal.png"/>
         <material name="legacy" texture="texture"/>
         <material name="rgb" roughness="0.2" metallic="1">
             <layer texture="normal" role="normal"/>
             <layer texture="texture" role="rgb"/>
+            <layer texture="packed" role="rgba"/>
         </material>
-        <material name="rgba" class="metal" roughness="0">
+        <material name="rgba" metallic="0.8" roughness="0" rgba="0.2 0.3 0.4 0.5">
             <layer texture="texture" role="rgba"/>
             <layer texture="normal" role="normal"/>
         </material>
-        <material name="inherited" class="metal"/>
+        <material name="inherited" class="metal">
+            <layer texture="packed" role="rgba"/>
+        </material>
         <material name="unset" metallic="-1" roughness="-1">
             <layer texture="normal" role="normal"/>
         </material>
