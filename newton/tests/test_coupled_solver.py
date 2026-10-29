@@ -1585,6 +1585,12 @@ class TestSolverCoupledBasic(unittest.TestCase):
         the remaining revolute subtree, so the reduced-coordinate arm falls
         with the base instead of staying welded in place.
         """
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                self._check_split_articulation_free_root(device)
+
+    def _check_split_articulation_free_root(self, device):
+        """Evaluate and step synthetic roots beside an unrelated child-first articulation."""
         world_count = 2
         template = newton.ModelBuilder()
         inertia = wp.mat33(np.eye(3) * 0.01)
@@ -1603,9 +1609,16 @@ class TestSolverCoupledBasic(unittest.TestCase):
             upper, lower, axis=(0.0, 1.0, 0.0), parent_xform=half, child_xform=half_back
         )
         template.add_articulation([root, shoulder, elbow])
+        unrelated_parent = template.add_link(mass=1.0, inertia=inertia)
+        unrelated_child = template.add_link(mass=1.0, inertia=inertia)
+        unrelated_joints = [
+            template.add_joint_fixed(unrelated_parent, unrelated_child),
+            template.add_joint_fixed(-1, unrelated_parent),
+        ]
+        template.add_articulation(unrelated_joints)
         builder = newton.ModelBuilder()
         builder.replicate(template, world_count)
-        model = builder.finalize(device="cpu")
+        model = builder.finalize(device=device)
 
         bpw, jpw = template.body_count, template.joint_count
 
@@ -1643,6 +1656,39 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(entry.joint_coord_local_to_global.numpy()[:7], [-1] * 7)
         self.assertEqual(entry.joint_dynamics_disabled_local_indices.shape[0], 0)
 
+        # An unrelated articulation's order must not omit the view's synthetic roots.
+        state = view.state()
+        q, qd = state.joint_q.numpy().copy(), state.joint_qd.numpy().copy()
+        expected_q, expected_qd = state.body_q.numpy().copy(), state.body_qd.numpy().copy()
+        for world in range(world_count):
+            position = np.array([1.0 + 10.0 * world, 2.0, 3.0])
+            velocity = np.array([1.0 + world, 2.0, 3.0])
+            q[8 * world : 8 * world + 3] = position
+            qd[7 * world : 7 * world + 3] = velocity
+            expected_q[2 * world, :3] = position
+            expected_q[2 * world + 1, :3] = position + np.array([0.3, 0.0, 0.0])
+            expected_qd[2 * world : 2 * world + 2, :3] = velocity
+        state.joint_q.assign(q)
+        state.joint_qd.assign(qd)
+        before_q, before_qd = state.body_q.numpy().copy(), state.body_qd.numpy().copy()
+        for selection in (
+            {"indices": wp.array([0], dtype=int, device=device)},
+            {},
+            {"joint_mask": wp.array([True] * view.joint_count, dtype=bool, device=device)},
+        ):
+            state.body_q.assign(before_q)
+            state.body_qd.assign(before_qd)
+            newton.eval_fk(view, state.joint_q, state.joint_qd, state, **selection)
+            selected_bodies = 2 if "indices" in selection else view.body_count
+            np.testing.assert_allclose(
+                state.body_q.numpy()[:selected_bodies], expected_q[:selected_bodies], atol=1.0e-6
+            )
+            np.testing.assert_allclose(
+                state.body_qd.numpy()[:selected_bodies], expected_qd[:selected_bodies], atol=1.0e-6
+            )
+            np.testing.assert_array_equal(state.body_q.numpy()[selected_bodies:], before_q[selected_bodies:])
+            np.testing.assert_array_equal(state.body_qd.numpy()[selected_bodies:], before_qd[selected_bodies:])
+
         state_0, state_1 = model.state(), model.state()
         for _ in range(10):
             coupled.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
@@ -1650,7 +1696,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         body_z = state_0.body_q.numpy()[:, 2].reshape(world_count, bpw)
         self.assertLess(body_z[0, base], -0.01)
-        np.testing.assert_allclose(body_z, np.full_like(body_z, body_z[0, base]), atol=1.0e-5)
+        np.testing.assert_allclose(body_z[:, :3], np.full((world_count, 3), body_z[0, base]), atol=1.0e-5)
 
     def test_split_articulation_free_roots_head_separate_articulations(self):
         """Keep one root per view articulation when a split leaves the original root in the view.
@@ -2137,22 +2183,36 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(solver_b.joint_target_q[0], np.array([13.0], dtype=np.float32))
 
     def test_compacted_joint_targets_use_local_layout(self):
-        """Joint targets and their derived starts should use compact layout."""
+        """Keep joint targets and FK traversal in the compact joint layout."""
+        for device in get_test_devices(mode="basic"):
+            with self.subTest(device=device):
+                self._check_compacted_joint_layout(device)
+
+    def _check_compacted_joint_layout(self, device):
+        """Check compact properties and FK using a child-first articulation."""
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         free_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         free_joint = builder.add_joint_free(child=free_body)
-        builder.add_articulation([free_joint])
+        fixed_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        fixed_joint = builder.add_joint_fixed(parent=free_body, child=fixed_body)
+        builder.add_articulation([free_joint, fixed_joint])
         first_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        first_joint = builder.add_joint_revolute(parent=-1, child=first_body, axis=(0.0, 0.0, 1.0))
         second_body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         second_joint = builder.add_joint_revolute(
             parent=first_body,
             child=second_body,
             axis=(0.0, 1.0, 0.0),
+            parent_xform=wp.transform(wp.vec3(0.0, 2.0, 0.0), wp.quat_identity()),
         )
-        builder.add_articulation([first_joint, second_joint])
-        model = builder.finalize(device="cpu")
+        first_joint = builder.add_joint_revolute(
+            parent=-1,
+            child=first_body,
+            axis=(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([second_joint, first_joint])
+        model = builder.finalize(device=device)
         model.joint_target_q.assign(np.arange(model.joint_coord_count, dtype=np.float32))
 
         coupled = SolverCoupled(
@@ -2168,7 +2228,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         view = coupled.view("revolute")
 
-        np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0])
+        np.testing.assert_array_equal(view.joint_ancestor.numpy(), [1, -1])
         np.testing.assert_array_equal(view.joint_target_q_start.numpy(), [0, 1, 2])
         np.testing.assert_array_equal(view.joint_target_q.numpy(), [7.0, 8.0])
         self.assertIsNotNone(model._fk_articulation_level_start)
@@ -2178,6 +2238,19 @@ class TestSolverCoupledBasic(unittest.TestCase):
         self.assertIsNone(view._fk_level_joints)
         self.assertIsNone(view._fk_level_parent_pos)
         self.assertEqual(view._fk_level_capacity, 0)
+
+        state = view.state()
+        state.joint_q.zero_()
+        state.joint_qd.assign([2.0, 1.0])
+        expected_q = [[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0], [1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 1.0]]
+        expected_qd = [[0.0, 0.0, 0.0, 0.0, 0.0, 1.0], [-2.0, 0.0, 0.0, 0.0, 2.0, 1.0]]
+        for joint_mask in (None, wp.array([True, True], dtype=wp.bool, device=device)):
+            with self.subTest(masked=joint_mask is not None):
+                state.body_q.assign(view.body_q)
+                state.body_qd.zero_()
+                newton.eval_fk(view, state.joint_q, state.joint_qd, state, joint_mask=joint_mask)
+                np.testing.assert_allclose(state.body_q.numpy(), expected_q, atol=1.0e-6)
+                np.testing.assert_allclose(state.body_qd.numpy(), expected_qd, atol=1.0e-6)
 
         model.joint_target_q.assign(10.0 + np.arange(model.joint_coord_count, dtype=np.float32))
         model.joint_target_ke.assign(100.0 + np.arange(model.joint_dof_count, dtype=np.float32))
@@ -4829,6 +4902,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
     (E7)."""
     # One particle soft contact: particle 0 on shape 0, unified record (0, -1, -1) + (1, 0, 0).
     dst_indices = wp.full(1, wp.vec3i(-1, -1, -1), dtype=wp.vec3i, device=device)
+    dst_rigid_indices = wp.full(1, wp.vec3i(-1, -1, -1), dtype=wp.vec3i, device=device)
     dst_barycentric = wp.zeros(1, dtype=wp.vec3, device=device)
     wp.launch(
         _filter_soft_contacts_global_shape_ids_kernel,
@@ -4843,6 +4917,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.array([wp.vec3(0.0, 0.0, 1.0)], dtype=wp.vec3, device=device),  # src_normal
             wp.array([7], dtype=wp.int32, device=device),  # src_tids
             wp.array([wp.vec3i(0, -1, -1)], dtype=wp.vec3i, device=device),  # src_indices
+            wp.array([wp.vec3i(3, 4, 5)], dtype=wp.vec3i, device=device),  # src_rigid_indices
             wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device),  # src_barycentric
             None,  # mesh feature records
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),  # shape_flags
@@ -4857,6 +4932,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.zeros(1, dtype=wp.vec3, device=device),  # dst_normal
             wp.full(1, -1, dtype=wp.int32, device=device),  # dst_tids
             dst_indices,
+            dst_rigid_indices,
             dst_barycentric,
             None,  # mesh feature records
             wp.full(1, -1, dtype=wp.int32, device=device),  # src_to_dst
@@ -4870,6 +4946,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
         "unified particle record must be copied through the filter, not left at the (-1,-1,-1) sentinel",
     )
     np.testing.assert_allclose(dst_barycentric.numpy()[0], [1.0, 0.0, 0.0])
+    np.testing.assert_array_equal(dst_rigid_indices.numpy()[0], [3, 4, 5])
 
 
 add_function_test(

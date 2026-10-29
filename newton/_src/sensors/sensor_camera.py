@@ -14,6 +14,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..geometry.deformable_visual import DeformableVisuals
 from ..geometry.flags import ShapeFlags
 from ..sim.camera import CameraLens
 from ..utils.selection import match_labels
@@ -22,6 +23,7 @@ from .sensor_camera_render.camera_utils import _multisample_offset
 from .sensor_camera_render.types import (
     AntiAliasing,
     ClearData,
+    DeformableSurfaceMode,
     GaussianRenderMode,
     RayQuery,
     RenderConfig,
@@ -182,8 +184,11 @@ class SensorCamera:
 
     Deformable triangle surfaces use :attr:`Model.tri_color` as sRGB albedo,
     like shape colors, and fall back to white when triangle colors are
-    unavailable. Set :attr:`RenderConfig.enable_backface_culling` to ``False``
-    to render both sides with camera-facing normals.
+    unavailable. Deformable visual meshes are skinned from the state each
+    frame and render white, or with their UV texture when
+    :attr:`RenderConfig.enable_textures` is set. Set
+    :attr:`RenderConfig.enable_backface_culling` to ``False`` to render both
+    sides with camera-facing normals.
 
     The render configuration types are exposed as nested attributes (e.g.
     ``SensorCamera.RenderConfig``, ``SensorCamera.ClearData``,
@@ -229,6 +234,7 @@ class SensorCamera:
     RayQuery = RayQuery
     AntiAliasing = AntiAliasing
     ClearData = ClearData
+    DeformableSurfaceMode = DeformableSurfaceMode
     GaussianRenderMode = GaussianRenderMode
     RenderConfig = RenderConfig
     RenderOrder = RenderOrder
@@ -252,6 +258,7 @@ class SensorCamera:
         default_clear_data: ClearData | None = None,
         default_render_config: RenderConfig | None = None,
         load_textures: bool = True,
+        deformable_surface_mode: DeformableSurfaceMode = DeformableSurfaceMode.BOTH,
     ):
         """Construct a camera sensor for a model.
 
@@ -259,8 +266,9 @@ class SensorCamera:
         view per selected camera or site and world, computes view poses from the
         state, and needs no camera transforms or rays in :meth:`update`.
 
-        All bound sensors of a model with the same ``load_textures`` value share one
-        internal renderer, so its scene state is shared too: lights, ambient light,
+        All bound sensors of a model with the same ``load_textures`` and
+        ``deformable_surface_mode`` values share one internal renderer, so its
+        scene state is shared too: lights, ambient light,
         and checkerboard materials set through :meth:`create_default_light`,
         :meth:`set_ambient_light`, or :meth:`assign_checkerboard_material` on one bound
         sensor apply to all of them. A sensor without ``cameras`` or ``sites`` keeps
@@ -296,9 +304,26 @@ class SensorCamera:
             default_render_config: Render settings used by :meth:`update` when
                 its ``render_config`` argument is ``None``. Defaults to
                 ``RenderConfig()``.
-            load_textures: Load mesh textures from disk. Set ``False`` for
-                checkerboard or custom-texture workflows (see
-                :meth:`assign_checkerboard_material`).
+            load_textures: Load the textures of shape meshes and deformable visual
+                meshes from file paths or in-memory images. A texture that cannot
+                be loaded raises ``ValueError`` here, so pass ``False`` for
+                depth-only use, for example when replaying a recording whose
+                texture files are elsewhere; it leaves all of them untextured.
+            deformable_surface_mode: Which deformable surfaces the sensor uploads
+                and renders: :attr:`DeformableSurfaceMode.BOTH` renders the
+                simulation triangles and the visual meshes, as the viewers do;
+                :attr:`DeformableSurfaceMode.SIMULATION_ONLY` leaves the visual
+                meshes out; :attr:`DeformableSurfaceMode.VISUAL_ONLY` leaves every
+                simulation triangle out, including surfaces without a visual
+                mesh, and their particles stay hidden. Like ``load_textures``,
+                this is decided at construction and cannot change later;
+                per-render switches live on :class:`RenderConfig`. See
+                :ref:`deformable-visual-camera-output` for how visual meshes
+                relate to the simulation surface.
+
+                .. experimental::
+                    This deformable-visual option may change without a formal
+                    deprecation cycle.
         """
         self.default_clear_data: ClearData = default_clear_data if default_clear_data is not None else ClearData()
         """Clear values used by :meth:`update` when its ``clear_data`` argument is ``None``."""
@@ -309,13 +334,17 @@ class SensorCamera:
 
         from .sensor_camera_render.render_context import RenderContext  # noqa: PLC0415
 
+        deformable_surface_mode = DeformableSurfaceMode(deformable_surface_mode)
         self._bound = cameras is not None or sites is not None
         if self._bound:
             # Bound sensors share scene data (and lights) with the other bound sensors of the model.
             contexts = model.__dict__.setdefault(_SHARED_RENDER_CONTEXTS_ATTR, {})
-            render_context = contexts.get(load_textures)
+            context_key = (load_textures, deformable_surface_mode)
+            render_context = contexts.get(context_key)
             if render_context is None:
-                render_context = contexts[load_textures] = RenderContext(model, load_textures=load_textures)
+                render_context = contexts[context_key] = RenderContext(
+                    model, load_textures=load_textures, deformable_surface_mode=deformable_surface_mode
+                )
             self._render_context = render_context
             self._bind(
                 cameras,
@@ -329,7 +358,9 @@ class SensorCamera:
                 clipping_range,
             )
         else:
-            self._render_context = RenderContext(model, load_textures=load_textures)
+            self._render_context = RenderContext(
+                model, load_textures=load_textures, deformable_surface_mode=deformable_surface_mode
+            )
 
     # ------------------------------------------------------------------
     # Bound sensors (model cameras and sites)
@@ -1326,7 +1357,7 @@ class SensorCamera:
         """Create a default directional light for the rendered scene.
 
         On a bound sensor the light is shared with every bound sensor of the model
-        that uses the same ``load_textures`` setting.
+        that uses the same ``load_textures`` and ``deformable_surface_mode`` settings.
 
         Args:
             enable_shadows: Enable shadow casting for this light. Shadows are
@@ -1355,7 +1386,7 @@ class SensorCamera:
         two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
         Changing the colors does not recompile the render kernel. On a bound sensor
         the ambient light is shared with every bound sensor of the model that uses
-        the same ``load_textures`` setting.
+        the same ``load_textures`` and ``deformable_surface_mode`` settings.
 
         Args:
             sky_color: Linear RGB ambient radiance from above.
@@ -1373,8 +1404,12 @@ class SensorCamera:
     ) -> None:
         """Assign a gray checkerboard texture material to selected shapes.
 
+        Each call sets the whole selection: the selected shapes show the
+        checkerboard and every other shape is untextured. Skinned visual
+        meshes keep their textures.
+
         On a bound sensor the material is shared with every bound sensor of the
-        model that uses the same ``load_textures`` setting.
+        model that uses the same ``load_textures`` and ``deformable_surface_mode`` settings.
 
         Args:
             shape_indices: Shape indices that should use the checkerboard texture.
@@ -1385,20 +1420,45 @@ class SensorCamera:
             shape_indices=shape_indices, resolution=resolution, checker_size=checker_size
         )
 
-    def sync_deformable_meshes(self, state: State) -> None:
+    def sync_deformable_meshes(self, state: State, *, deformable_visuals: DeformableVisuals | None = None) -> None:
         """Synchronize render-only deformable triangle-mesh points from *state*.
 
         :meth:`update` calls this by default (pass ``sync_deformables=False`` to
         skip it when you already synced). Call it explicitly only when you opt
-        out of the automatic sync. It syncs deformable mesh points (rigid-only
-        scenes are a no-op) but does not touch transforms; shape and particle
-        BVHs are refit separately via :meth:`~newton.Model.bvh_refit_shapes` and
-        :meth:`~newton.Model.bvh_refit_particles`.
+        out of the automatic sync. Scenes without simulation triangles or visual
+        meshes are a no-op. Shape and particle BVHs are refit separately via
+        :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
+        Deformable visual meshes are skinned from *state* in a few launches, however
+        many worlds were replicated. Supplied visual buffers are consumed as-is;
+        update or replay them before this call. Their source state and freshness
+        are not checked.
 
         Args:
-            state: Current simulation state with particle positions.
+            state: Current particle positions and body transforms.
+            deformable_visuals: Experimental precomputed visual buffers for this
+                model. Share these with a viewer to avoid skinning twice. If
+                omitted, skin directly into the camera's reusable point buffer.
+
+        Raises:
+            TypeError: If ``deformable_visuals`` is not :class:`~newton.geometry.DeformableVisuals`.
+            ValueError: If the buffers belong to another model, or if this camera
+                was constructed with :attr:`DeformableSurfaceMode.SIMULATION_ONLY`
+                and cannot render them.
+            RuntimeError: If supplied visual buffers have never been updated.
+
+        .. experimental::
+
+            The ``deformable_visuals`` argument is experimental.
         """
-        self._render_context.update(state)
+        if deformable_visuals is not None:
+            if not isinstance(deformable_visuals, DeformableVisuals):
+                raise TypeError(
+                    f"deformable_visuals must be DeformableVisuals, got {type(deformable_visuals).__name__}"
+                )
+            if deformable_visuals.model is not self._render_context.model:
+                raise ValueError("DeformableVisuals was created for another model.")
+            deformable_visuals.wait()
+        self._render_context.update(state, deformable_visuals)
 
     @staticmethod
     def _validate_render_array(name: str, array: Any, dtype: Any, device: wp.Device) -> None:
@@ -1429,6 +1489,7 @@ class SensorCamera:
         view_mask: wp.array[wp.bool] | None = None,
         face_index_image: wp.array3d[wp.int32] | None = None,
         barycentric_image: wp.array3d[wp.vec2f] | None = None,
+        deformable_visuals: DeformableVisuals | None = None,
     ) -> None:
         """Render this camera sensor.
 
@@ -1486,9 +1547,15 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
-            sync_deformables: Sync deformable triangle-mesh points from *state*
-                before rendering (a no-op for rigid-only scenes). Set ``False``
-                if you already called :meth:`sync_deformable_meshes` this frame.
+            sync_deformables: Sync simulation surfaces and visual mesh points
+                from *state* before rendering. Set ``False`` if you already
+                called :meth:`sync_deformable_meshes` this frame.
+            deformable_visuals: Experimental precomputed visual buffers for this
+                model. If omitted, skin directly into the camera's point buffer.
+                Requires ``sync_deformables=True``; otherwise pass the buffers
+                to :meth:`sync_deformable_meshes` explicitly. Update or replay
+                supplied buffers before rendering; their freshness is not checked.
+
             view_mask: Per-view render switch, shape ``(view_count,)`` of ``bool``.
                 Views set to ``False`` are skipped and keep their previous output
                 values. Requires a sensor constructed with ``cameras`` or
@@ -1507,9 +1574,26 @@ class SensorCamera:
                 hit.
 
                 .. experimental::
+
+        Raises:
+            ValueError: If ``deformable_visuals`` is given with
+                ``sync_deformables=False``, plus the :meth:`sync_deformable_meshes`
+                errors when it syncs.
+            TypeError: If supplied visual buffers have the wrong type.
+            RuntimeError: If supplied visual buffers have never been updated.
+
+        .. experimental::
+
+            The ``deformable_visuals`` argument is experimental. Other camera
+            arguments retain their existing API status.
         """
         render_context = self._render_context
         model = render_context.model
+
+        if not sync_deformables and deformable_visuals is not None:
+            raise ValueError("deformable_visuals requires sync_deformables=True")
+        if sync_deformables:
+            self.sync_deformable_meshes(state, deformable_visuals=deformable_visuals)
 
         if self._bound:
             self._update_bound(
@@ -1529,16 +1613,12 @@ class SensorCamera:
                 view_mask=view_mask,
                 clear_data=clear_data,
                 render_config=render_config,
-                sync_deformables=sync_deformables,
             )
             return
         if camera_transforms is None or camera_rays is None:
             raise ValueError("camera_transforms and camera_rays are required for sensors without cameras or sites")
         if view_mask is not None:
             raise ValueError("view_mask requires a sensor constructed with cameras or sites")
-
-        if sync_deformables:
-            render_context.update(state)
 
         self._validate_render_array("camera_transforms", camera_transforms, wp.transformf, model.device)
         if camera_transforms.ndim != 1 or camera_transforms.shape[0] <= 0:
@@ -1590,13 +1670,10 @@ class SensorCamera:
         view_mask,
         clear_data,
         render_config,
-        sync_deformables,
         **outputs,
     ) -> None:
         render_context = self._render_context
         model = render_context.model
-        if sync_deformables:
-            render_context.update(state)
 
         if camera_transforms is None:
             camera_transforms = self.compute_view_transforms(state, self._view_transforms)
