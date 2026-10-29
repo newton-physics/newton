@@ -12,17 +12,18 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.contact_compliance import (
-    _prepare_compliant_rows,
     material_coefficients,
     normal_coefficients,
+    prepare_rows,
     start_step,
 )
 from newton._src.solvers.steel.kernels import PGS_CONSTRAINT_TYPE_CONTACT, compute_world_contact_bias
 from newton.geometry import HydroelasticSDF
 from newton.solvers import SolverSteel
 from newton.tests.steel._compliance_reference import solve_reference, support_trajectory
-from newton.tests.steel._fixtures import _build_scissor_model, run_fixture
+from newton.tests.steel._fixtures import _build_mixed_response_model, _build_scissor_model, run_fixture
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -451,28 +452,11 @@ def _contacts(device, *, count=0):
 
 def test_input_overflow_rejected(test, device):
     """Fail explicitly for lost contact candidates."""
-    solver = SimpleNamespace(model=SimpleNamespace(device=device))
+    scene = _CompliantScene(device, articulated=True)
+    scene.collide()
+    scene.contacts.rigid_contact_count.fill_(scene.contacts.rigid_contact_max + 1)
     with test.assertRaisesRegex(RuntimeError, "overflowing contact"):
-        start_step(solver, _contacts(device, count=5), 0.005)
-
-
-def test_capture_rejected(test, device):
-    """Prevent a silent fallback under CUDA graph capture."""
-    solver = SimpleNamespace(model=SimpleNamespace(device=device))
-    contacts = _contacts(device)
-    with wp.ScopedCapture(device=device):
-        with test.assertRaisesRegex(RuntimeError, "CUDA graph"):
-            start_step(solver, contacts, 0.005)
-
-
-def test_solver_step_rejects_capture(test, device):
-    """Reject capturing a real compliant solver step before it launches any work."""
-    _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=True, steps=1)
-    model = solver.model
-    state, output = model.state(), model.state()
-    with wp.ScopedCapture(device=device):
-        with test.assertRaisesRegex(RuntimeError, "CUDA graph"):
-            solver.step(state, output, model.control(), None, 0.005)
+        scene.solve()
 
 
 def test_missing_material_arrays_rejected(test, device):
@@ -562,14 +546,16 @@ def test_rolled_back_capacity_fails_without_warnings(test, device):
 
 def test_solver_overflow_and_dropped_contact_rejected(test, device):
     """Reject overflowing rows and missing mappings for positive stiffness."""
-    _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=True, steps=1)
+    scene = _CompliantScene(device, articulated=True)
+    scene.step()
+    solver = scene.solver
     solver._constraint_count.fill_(solver.articulation_constraint_max + 1)
     with test.assertRaisesRegex(RuntimeError, "overflowing solver rows"):
-        _prepare_compliant_rows(solver)
+        prepare_rows(solver, scene.contacts, 0.005)
     solver._constraint_count.fill_(1)
     solver._contact_slot.fill_(-1)
     with test.assertRaisesRegex(RuntimeError, "dropped"):
-        _prepare_compliant_rows(solver)
+        prepare_rows(solver, scene.contacts, 0.005)
 
 
 def test_reset_and_open_gap_release(test, device):
@@ -582,7 +568,6 @@ def test_reset_and_open_gap_release(test, device):
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     before = {name: getattr(state, name).numpy().copy() for name in ("joint_q", "joint_qd", "body_q", "body_qd")}
     solver.reset(state)
-    test.assertIsNone(solver._compliant_contacts)
     test.assertEqual(solver.compliance_contact_count, 0)
     test.assertEqual(solver.compliance_skipped_contact_count, 0)
     for name, value in before.items():
@@ -622,8 +607,6 @@ class TestContactComplianceSafety(unittest.TestCase):
 
 for _fn in (
     test_input_overflow_rejected,
-    test_capture_rejected,
-    test_solver_step_rejects_capture,
     test_nonfinite_inputs_rejected,
     test_missing_material_arrays_rejected,
     test_invalid_contact_stiffness_rejected,
@@ -637,6 +620,276 @@ for _fn in (
     test_public_defaults_remain_hard,
 ):
     add_function_test(TestContactComplianceSafety, _fn.__name__, _fn, devices=devices)
+
+
+class _CompliantScene:
+    """A compliant sphere-on-plane solver stepped from fixed buffers, so its steps can be captured."""
+
+    def __init__(self, device, *, articulated, stiffness=3000.0, damping=5.0):
+        _, _, self.solver, _ = run_fixture(device=device, articulated=articulated, enabled=True, steps=1)
+        self.model = model = self.solver.model
+        with wp.ScopedDevice(device):
+            self.pipeline = newton.CollisionPipeline(model, rigid_contact_max=32)
+            self.contacts = self.pipeline.contacts()
+            # Collision rewrites the contact material arrays, so each step copies them from these sources.
+            self.stiffness = wp.full(32, stiffness, dtype=float)
+            self.damping = wp.full(32, damping, dtype=float)
+            self.friction = wp.full(32, 1.0, dtype=float)
+            for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+                setattr(self.contacts, name, wp.zeros(32, dtype=float))
+            self.states = [model.state(), model.state()]
+            self.control = model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, self.states[0])
+        self.solver.reset(self.states[0])
+
+    def collide(self):
+        self.pipeline.collide(self.states[0], self.contacts)
+        wp.copy(self.contacts.rigid_contact_stiffness, self.stiffness)
+        wp.copy(self.contacts.rigid_contact_damping, self.damping)
+        wp.copy(self.contacts.rigid_contact_friction, self.friction)
+
+    def solve(self):
+        self.solver.step(self.states[0], self.states[1], self.control, self.contacts, 0.005)
+        wp.copy(self.states[0].body_q, self.states[1].body_q)
+        wp.copy(self.states[0].body_qd, self.states[1].body_qd)
+        wp.copy(self.states[0].joint_q, self.states[1].joint_q)
+        wp.copy(self.states[0].joint_qd, self.states[1].joint_qd)
+
+    def step(self):
+        self.collide()
+        self.solve()
+
+    def capture(self):
+        with wp.ScopedCapture(device=self.model.device) as capture:
+            self.step()
+        return capture.graph
+
+    def pose(self):
+        return np.concatenate([self.states[0].body_q.numpy().ravel(), self.states[0].body_qd.numpy().ravel()])
+
+
+def test_captured_steps_match_eager_steps(test, device):
+    """Replay a compliant step captured cold, before any eager step, bitwise like eager stepping."""
+    for articulated in (True, False):
+        eager, captured = (_CompliantScene(device, articulated=articulated) for _ in range(2))
+        graph = captured.capture()
+        # The capture records the step without running it.
+        np.testing.assert_array_equal(captured.pose(), eager.pose())
+        for step in range(40):
+            eager.step()
+            wp.capture_launch(graph)
+            with test.subTest(articulated=articulated, step=step):
+                np.testing.assert_array_equal(captured.pose(), eager.pose())
+        test.assertEqual(captured.solver.compliance_contact_count, 1)
+        test.assertEqual(captured.solver.compliance_contact_count, eager.solver.compliance_contact_count)
+        captured.solver.check_constraint_capacity()
+
+
+def test_capture_interleaves_with_eager_steps_and_reset(test, device):
+    """Keep eager steps, replays and resets on one trajectory."""
+    reference, mixed = (_CompliantScene(device, articulated=True) for _ in range(2))
+    initial = [wp.clone(a) for a in (mixed.states[0].body_q, mixed.states[0].body_qd)]
+    initial_joint = [wp.clone(a) for a in (mixed.states[0].joint_q, mixed.states[0].joint_qd)]
+    trajectory = []
+    for _ in range(12):
+        reference.step()
+        trajectory.append(reference.pose())
+    for _ in range(3):
+        mixed.step()
+    graph = mixed.capture()
+    for _ in range(6):
+        wp.capture_launch(graph)
+    for _ in range(3):
+        mixed.step()
+    np.testing.assert_array_equal(mixed.pose(), trajectory[11])
+    for target, source in zip(
+        (mixed.states[0].body_q, mixed.states[0].body_qd, mixed.states[0].joint_q, mixed.states[0].joint_qd),
+        (*initial, *initial_joint),
+        strict=True,
+    ):
+        wp.copy(target, source)
+    mixed.solver.reset(mixed.states[0])
+    for step in range(4):
+        wp.capture_launch(graph)
+        np.testing.assert_array_equal(mixed.pose(), trajectory[step])
+
+
+def test_replay_reads_edited_contact_material(test, device):
+    """Read per-contact material edits made in place between replays."""
+    captured = _CompliantScene(device, articulated=True)
+    eager = _CompliantScene(device, articulated=True, stiffness=1500.0)
+    graph = captured.capture()
+    captured.stiffness.fill_(1500.0)
+    for _ in range(30):
+        wp.capture_launch(graph)
+        eager.step()
+    np.testing.assert_array_equal(captured.pose(), eager.pose())
+
+
+def test_captured_errors_are_deferred_until_reset(test, device):
+    """Report invalid input from replay through check_constraint_capacity until reset, then recover."""
+    scene = _CompliantScene(device, articulated=True)
+    graph = scene.capture()
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity()
+    scene.stiffness.fill_(float("nan"))
+    wp.capture_launch(graph)
+    for _ in range(2):
+        with test.assertRaisesRegex(RuntimeError, "contact compliance.*Invalid contact stiffness"):
+            scene.solver.check_constraint_capacity()
+    scene.solver.reset(scene.states[0])
+    scene.solver.check_constraint_capacity()
+    scene.stiffness.fill_(3000.0)
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity()
+    # A shape notification publishes the restitution that the captured step reads.
+    scene.model.shape_material_restitution.fill_(0.5)
+    scene.solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    wp.capture_launch(graph)
+    with test.assertRaisesRegex(RuntimeError, "contact compliance.*zero shape restitution"):
+        scene.solver.check_constraint_capacity()
+    scene.model.shape_material_restitution.zero_()
+    scene.solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+    scene.solver.reset(scene.states[0])
+    wp.capture_launch(graph)
+    scene.solver.check_constraint_capacity()
+    test.assertTrue(np.isfinite(scene.pose()).all())
+
+
+def _run_paired_fixture(device, *, hinv_jt_kernel, friction, steps=40):
+    """Drop a free box onto a 23-DOF arm (one articulation/free-body pair per world) with compliant contacts."""
+    with wp.ScopedDevice(device):
+        model = _build_mixed_response_model(device, dof_count=23, friction=friction)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, broad_phase="nxn", reduce_contacts=False)
+        model.rigid_contact_max = 64
+        contacts = pipeline.contacts()
+        for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+            setattr(contacts, name, wp.zeros(64, dtype=float))
+        with kernel_overrides({"hinv_jt_kernel": hinv_jt_kernel}):
+            solver = SolverSteel(
+                model,
+                contact_compliance=True,
+                friction_anchor_beta=0.0,
+                solve_mode="matrix_free",
+                enable_restitution=False,
+                contact_friction_scale=1.0 if friction > 0.0 else 0.0,
+                joint_limit_activation_gap=0.0,
+                iterations=8,
+                articulation_constraint_max=96,
+                free_body_constraint_max=32,
+            )
+        state, output = model.state(), model.state()
+        free = int(np.flatnonzero(solver._model_plan.is_free_rigid)[0])
+        start = int(solver._model_plan.articulation_dof_start[free])
+        qd = state.joint_qd.numpy()
+        qd[start] = 0.5
+        qd[start + 2] = -3.0
+        state.joint_qd.assign(qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        control = model.control()
+        trace = []
+        compliant = 0
+        for _ in range(steps):
+            state.clear_forces()
+            pipeline.collide(state, contacts)
+            contacts.rigid_contact_stiffness.fill_(2.0e4)
+            contacts.rigid_contact_damping.fill_(10.0)
+            contacts.rigid_contact_friction.fill_(1.0)
+            solver.step(state, output, control, contacts, 1.0 / 240.0)
+            state, output = output, state
+            trace.append(state.joint_q.numpy().copy())
+            compliant = max(compliant, solver.compliance_contact_count)
+        return solver, np.asarray(trace), compliant
+
+
+def test_paired_factor_owner_matches_general_owner(test, device):
+    """Apply the compliant residual in the paired factor-coordinate owner as in the general owner."""
+    # Frictional contacts take the contact-triple branch; frictionless normal-only rows take the general branch.
+    for friction in (0.7, 0.0):
+        with test.subTest(friction=friction):
+            general_solver, general, _ = _run_paired_fixture(device, hinv_jt_kernel="par_row", friction=friction)
+            paired_solver, paired, compliant = _run_paired_fixture(device, hinv_jt_kernel="auto", friction=friction)
+            test.assertFalse(general_solver._paired_factor_coordinates)
+            test.assertTrue(paired_solver._paired_factor_coordinates)
+            test.assertGreater(compliant, 0)
+            np.testing.assert_allclose(paired, general, rtol=5.0e-4, atol=1.0e-5)
+
+
+def _run_local_owner_scene(device, *, compliance, steps=40):
+    """Drop a free box onto a 13-DOF arm with joint limits, the scene that selects the articulation-local owners."""
+    with wp.ScopedDevice(device):
+        model = _build_mixed_response_model(device, dof_count=13, friction=0.0)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=64, broad_phase="nxn", reduce_contacts=False)
+        contacts = pipeline.contacts()
+        for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+            setattr(contacts, name, wp.zeros(64, dtype=float))
+        with kernel_overrides({"hinv_jt_kernel": "par_row"}):
+            solver = SolverSteel(
+                model,
+                solve_mode="matrix_free",
+                contact_compliance=compliance,
+                friction_anchor_beta=0.0,
+                enable_joint_limits=True,
+                joint_limit_activation_gap=0.0,
+                iterations=8,
+                articulation_constraint_max=32,
+                free_body_constraint_max=32,
+            )
+        state, output = model.state(), model.state()
+        qd = state.joint_qd.numpy()
+        free = int(np.flatnonzero(solver._model_plan.is_free_rigid)[0])
+        qd[int(solver._model_plan.articulation_dof_start[free]) + 2] = -3.0
+        state.joint_qd.assign(qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        control = model.control()
+        trace = []
+        for _ in range(steps):
+            state.clear_forces()
+            pipeline.collide(state, contacts)
+            solver.step(state, output, control, contacts, 1.0 / 240.0)
+            state, output = output, state
+            trace.append(np.concatenate([state.joint_q.numpy(), state.joint_qd.numpy()]))
+        return solver, np.asarray(trace)
+
+
+def test_enabled_option_keeps_rigid_contacts_on_local_owner_scene(test, device):
+    """Leave rigid contacts unchanged by the option on a scene whose rigid solve takes the local owners."""
+    rigid_solver, rigid = _run_local_owner_scene(device, compliance=False)
+    compliant_solver, enabled = _run_local_owner_scene(device, compliance=True)
+    np.testing.assert_allclose(enabled, rigid, rtol=5.0e-4, atol=2.0e-5)
+    test.assertEqual(compliant_solver.compliance_contact_count, 0)
+    test.assertTrue(rigid_solver._local_internal_fast_path)
+    # The local owners do not carry the compliant residual, so the option keeps the general owner.
+    test.assertFalse(compliant_solver._local_internal_fast_path)
+
+
+add_function_test(
+    TestContactComplianceIntegration,
+    test_enabled_option_keeps_rigid_contacts_on_local_owner_scene.__name__,
+    test_enabled_option_keeps_rigid_contacts_on_local_owner_scene,
+    devices=devices,
+)
+
+
+add_function_test(
+    TestContactComplianceIntegration,
+    test_paired_factor_owner_matches_general_owner.__name__,
+    test_paired_factor_owner_matches_general_owner,
+    devices=devices,
+)
+
+
+class TestContactComplianceCapture(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_captured_steps_match_eager_steps,
+    test_capture_interleaves_with_eager_steps_and_reset,
+    test_replay_reads_edited_contact_material,
+    test_captured_errors_are_deferred_until_reset,
+):
+    add_function_test(TestContactComplianceCapture, _fn.__name__, _fn, devices=devices)
 
 
 DT = 1.0 / 60.0
