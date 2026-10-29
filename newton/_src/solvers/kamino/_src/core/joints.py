@@ -392,6 +392,12 @@ def has_dynamic_cts_wp(act_type: int, k_p: float, k_d: float, tau_max: float, ar
 
 
 @wp.func
+def has_rod_dynamic_cts_wp(k_p: float, k_d: float) -> bool:
+    """Returns whether one rod joint DoF requires a dynamic row on its strain."""
+    return k_p > 0.0 or k_d > 0.0
+
+
+@wp.func
 def has_friction_cts_wp(dof_type: int, f_j: float) -> bool:
     """Returns whether one joint DoF has a Coulomb-friction constraint row."""
     return dof_type != JointDoFType.FREE and f_j > 0.0
@@ -644,6 +650,23 @@ class JointDoFType(IntEnum):
     the canonical right-handed joint-frame axis.
     """
 
+    ROD = 10
+    """
+    A 6-DoF elastic rod segment joint, with stretch, shear, bend, and twist stiffness and damping.
+
+    Each DoF with nonzero stiffness or damping adds a dynamic constraint on the corresponding
+    rod strain: the shear and stretch of the joint frames along the X, Y, and Z axes of the
+    joint frame on the base body, then the bend about X and Y and the twist about Z. The bend
+    and twist strains follow the discrete rod measure of :class:`~newton.solvers.SolverVBD`.
+
+    Coordinates:
+        7D relative pose: {x, y, z, qx, qy, qz, qw}
+    DoFs:
+        6D strain rates: {shear_x, shear_y, stretch_z, bend_x, bend_y, twist_z}
+    Constraints:
+        None
+    """
+
     ###
     # Operations
     ###
@@ -686,6 +709,8 @@ class JointDoFType(IntEnum):
             return 3  # 3D distances
         elif self.value == self.FIXED:
             return 0  # None
+        elif self.value == self.ROD:
+            return 7  # Relative pose coordinates
         else:
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
@@ -712,6 +737,8 @@ class JointDoFType(IntEnum):
             return 3  # 3D linear velocities
         elif self.value == self.FIXED:
             return 0  # None
+        elif self.value == self.ROD:
+            return 6  # 3D linear + 3D angular strain rates
         else:
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
@@ -738,6 +765,8 @@ class JointDoFType(IntEnum):
             return 3  # 3D vector for `{T_x, T_y, T_z}`
         elif self.value == self.FIXED:
             return 6  # 6D vector for `{T_x, T_y, T_z, R_x, R_y, R_z}`
+        elif self.value == self.ROD:
+            return 0  # None
         else:
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
@@ -746,7 +775,7 @@ class JointDoFType(IntEnum):
         """
         Returns the indices of the joint's constraint axes.
         """
-        if self.value == self.FREE:
+        if self.value == self.FREE or self.value == self.ROD:
             return []  # Empty vector (TODO: wp.constant(vec0i()))
         if self.value == self.REVOLUTE:
             return wp.constant(vec5i(0, 1, 2, 4, 5))
@@ -772,7 +801,7 @@ class JointDoFType(IntEnum):
         """
         Returns the indices of the joint's DoF axes.
         """
-        if self.value == self.FREE:
+        if self.value == self.FREE or self.value == self.ROD:
             return wp.constant(vec6i(0, 1, 2, 3, 4, 5))
         if self.value == self.REVOLUTE:
             return wp.constant(vec1i(3))
@@ -816,6 +845,8 @@ class JointDoFType(IntEnum):
             return wp.vec3f
         elif self.value == self.FIXED:
             return None
+        elif self.value == self.ROD:
+            return vec7f
         else:
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
@@ -842,6 +873,8 @@ class JointDoFType(IntEnum):
             return wp.vec3f
         elif self.value == self.FIXED:
             return None
+        elif self.value == self.ROD:
+            return wp.transformf
         else:
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
@@ -868,6 +901,8 @@ class JointDoFType(IntEnum):
             return [0.0, 0.0, 0.0]
         elif self.value == self.FIXED:
             return []
+        elif self.value == self.ROD:
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
         else:
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
@@ -896,6 +931,8 @@ class JointDoFType(IntEnum):
             return [JOINT_QMAX] * 3
         elif self.value == self.FIXED:
             return []
+        elif self.value == self.ROD:
+            return [JOINT_QMAX] * 7
         else:
             raise ValueError(f"Unknown joint DoF type: {self.value}")
 
@@ -923,6 +960,7 @@ class JointDoFType(IntEnum):
             JointDoFType.GIMBAL: JointType.D6,
             JointDoFType.GIMBAL_LEFT_HANDED: JointType.D6,
             JointDoFType.FIXED: JointType.FIXED,
+            JointDoFType.ROD: JointType.ROD,
             # All kamino-specific joint types map to D6
             JointDoFType.CARTESIAN: JointType.D6,
             JointDoFType.CYLINDRICAL: JointType.D6,
@@ -968,12 +1006,18 @@ class JointDoFType(IntEnum):
             JointType.PRISMATIC: JointDoFType.PRISMATIC,
             JointType.BALL: JointDoFType.SPHERICAL,
             JointType.FIXED: JointDoFType.FIXED,
+            JointType.ROD: JointDoFType.ROD,
             # NOTE: D6 joints require special handling
             # to infer the corresponding DoF type
             JointType.D6: None,
         }
         dof_type = _MAP_TO_KAMINO.get(type, None)
         if dof_type is not None:
+            if type == JointType.ROD and (q_count != 7 or qd_count != 6 or dof_dim != (3, 3)):
+                raise ValueError(
+                    "Unsupported ROD joint layout: expected q_count=7, qd_count=6, and dof_dim=(3, 3), "
+                    f"got q_count={q_count}, qd_count={qd_count}, and dof_dim={dof_dim}."
+                )
             return dof_type
 
         # If the type is not directly supported, attempt to infer the DoF type based on the number of DoFs
@@ -1098,6 +1142,10 @@ class JointDoFType(IntEnum):
             return JointDoFType.FIXED
         elif joint_type == JointType.FREE:
             return JointDoFType.FREE
+        elif joint_type == JointType.ROD:
+            if q_count == 7 and qd_count == 6 and dof_dim == wp.vec2i(3, 3):
+                return JointDoFType.ROD
+            return -1
 
         # If the type is not directly supported, attempt to infer the DoF type based
         # on the dimensions of the joint and number of DoFs.
@@ -1160,6 +1208,8 @@ class JointDoFType(IntEnum):
             return 3  # 3D distances
         elif dof_type == JointDoFType.FIXED:
             return 0  # None
+        elif dof_type == JointDoFType.ROD:
+            return 7  # Relative pose coordinates
         return -1
 
     @staticmethod
@@ -1193,6 +1243,8 @@ class JointDoFType(IntEnum):
             return 3  # 3D linear velocities
         elif dof_type == JointDoFType.FIXED:
             return 0  # None
+        elif dof_type == JointDoFType.ROD:
+            return 6  # 3D linear + 3D angular strain rates
         return -1
 
     @staticmethod
@@ -1226,6 +1278,8 @@ class JointDoFType(IntEnum):
             return 3  # 3D vector for `{T_x, T_y, T_z}`
         elif dof_type == JointDoFType.FIXED:
             return 6  # 6D vector for `{T_x, T_y, T_z, R_x, R_y, R_z}`
+        elif dof_type == JointDoFType.ROD:
+            return 0  # None
         return -1
 
     @staticmethod
@@ -1244,7 +1298,7 @@ class JointDoFType(IntEnum):
         Returns:
             Spatial twist component index in ``[0, 5]``.
         """
-        if dof_type == JointDoFType.FREE:
+        if dof_type == JointDoFType.FREE or dof_type == JointDoFType.ROD:
             return axis
         if dof_type == JointDoFType.REVOLUTE:
             return 3
@@ -1288,7 +1342,7 @@ class JointDoFType(IntEnum):
         R_axis_j = wp.identity(3, dtype=wp.float32)
 
         # Determine the joint axes matrix based on the DoF type and axes
-        if dof_type == JointDoFType.FIXED:
+        if dof_type == JointDoFType.FIXED or dof_type == JointDoFType.ROD:
             pass  # R_axis_j is already set to identity
         elif dof_type == JointDoFType.REVOLUTE:
             R_axis_j = _axis_rotmatn_from_vec3f(dof_axes[0])

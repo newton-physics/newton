@@ -19,9 +19,11 @@
 #
 # Run interactively:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme
+#   uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme --solver kamino
 #
 # Run as a test:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme --test --viewer null
+#   uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme --solver kamino --test --viewer null
 #
 ###########################################################################
 
@@ -61,6 +63,25 @@ def _drive_endpoints_kernel(
     body_q1[root_body] = root_pose
     body_q0[tip_body] = tip_pose
     body_q1[tip_body] = tip_pose
+
+
+@wp.kernel
+def _drive_endpoint_velocities_kernel(
+    root_anchor: int,
+    tip_anchor: int,
+    root_rest_rot: wp.quat,
+    tip_rest_rot: wp.quat,
+    twist_rate: wp.array[wp.float32],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    # Kamino advances the kinematic anchors of the endpoints with their velocity.
+    # The spin about the cable tangent keeps that axis fixed, so the counter-twist
+    # is an angular velocity along the rest axis of each endpoint.
+    rate = twist_rate[0]
+    root_axis = wp.quat_rotate(root_rest_rot, wp.vec3(0.0, 0.0, 1.0))
+    tip_axis = wp.quat_rotate(tip_rest_rot, wp.vec3(0.0, 0.0, 1.0))
+    body_qd[root_anchor] = wp.spatial_vector(wp.vec3(0.0), -0.5 * rate * root_axis)
+    body_qd[tip_anchor] = wp.spatial_vector(wp.vec3(0.0), 0.5 * rate * tip_axis)
 
 
 class Example:
@@ -104,6 +125,7 @@ class Example:
     def __init__(self, viewer, args=None):
         self.viewer = viewer
         self.args = args
+        self.solver_type = getattr(args, "solver", "vbd") if args is not None else "vbd"
 
         self.fps = self.FPS
         self.frame_dt = 1.0 / self.fps
@@ -129,6 +151,8 @@ class Example:
 
         points = [wp.vec3(*p) for p in nodes]
         builder = newton.ModelBuilder(gravity=self.GRAVITY)
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
         shape_cfg = newton.ModelBuilder.ShapeConfig(
             ke=self.CONTACT_STIFFNESS,
             kd=self.CONTACT_DAMPING,
@@ -153,24 +177,39 @@ class Example:
 
         self.root_body = self.bodies[0]
         self.tip_body = self.bodies[-1]
-        for body in (self.root_body, self.tip_body):
-            builder.body_mass[body] = 0.0
-            builder.body_inv_mass[body] = 0.0
-            builder.body_inertia[body] = wp.mat33(0.0)
-            builder.body_inv_inertia[body] = wp.mat33(0.0)
+        if self.solver_type == "vbd":
+            for body in (self.root_body, self.tip_body):
+                builder.body_mass[body] = 0.0
+                builder.body_inv_mass[body] = 0.0
+                builder.body_inertia[body] = wp.mat33(0.0)
+                builder.body_inv_inertia[body] = wp.mat33(0.0)
         builder.add_articulation(self.joints, label="plectoneme_articulation")
+        if self.solver_type == "kamino":
+            # Kamino simulates massless bodies, so it drives kinematic anchors
+            # with loop-closing welds to the endpoints
+            self.root_anchor, self.tip_anchor = (
+                self._add_kinematic_anchor(builder, body) for body in (self.root_body, self.tip_body)
+            )
 
         builder.color()
         self.model = builder.finalize()
 
         self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
         self.contacts = self.collision_pipeline.contacts()
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-            rigid_contact_history=True,
-            rigid_body_contact_buffer_size=1024,
-        )
+        if self.solver_type == "kamino":
+            # Rod joints require the LOX dynamics backend of Kamino
+            config = newton.solvers.SolverKamino.Config.from_model(self.model, dynamics_solver="lox")
+            config.use_collision_detector = False
+            # Integrating the projected twist keeps the strands from passing through each other at peak supercoiling
+            config.lox.projected_twist_fraction = 1.0
+            self.solver = newton.solvers.SolverKamino(self.model, config=config)
+        else:
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=self.sim_iterations,
+                rigid_contact_history=True,
+                rigid_body_contact_buffer_size=1024,
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -193,6 +232,8 @@ class Example:
         # End-to-end twist angle, kept in a device array so the simulate() loop
         # can be captured into a CUDA graph and replayed with a host update.
         self.twist_angle = wp.array([0.0], dtype=wp.float32, device=self.model.device)
+        # End-to-end twist rate over the current frame, which drives the Kamino endpoints.
+        self.twist_rate = wp.array([0.0], dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
@@ -219,6 +260,14 @@ class Example:
         x = min(1.0, max(0.0, float(x)))
         return x * x * (3.0 - 2.0 * x)
 
+    @staticmethod
+    def _add_kinematic_anchor(builder: newton.ModelBuilder, body: int) -> int:
+        anchor = builder.add_body(
+            xform=builder.body_q[body], is_kinematic=True, label=f"{builder.body_label[body]}_anchor"
+        )
+        builder.add_joint_fixed(parent=anchor, child=body, label=f"{builder.body_label[body]}_weld")
+        return anchor
+
     def _filter_near_rod_collision_pairs(self, builder, bodies: list[int], span: int) -> None:
         for i, body_i in enumerate(bodies):
             for j in range(i + 1, min(len(bodies), i + span + 1)):
@@ -238,6 +287,15 @@ class Example:
         return self.target_twist
 
     def _apply_command(self) -> None:
+        if self.solver_type == "kamino":
+            wp.launch(
+                _drive_endpoint_velocities_kernel,
+                dim=1,
+                inputs=[self.root_anchor, self.tip_anchor, self.root_rest_rot, self.tip_rest_rot, self.twist_rate],
+                outputs=[self.state_0.body_qd],
+                device=self.model.device,
+            )
+            return
         wp.launch(
             _drive_endpoints_kernel,
             dim=1,
@@ -272,7 +330,8 @@ class Example:
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
             self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.set_rigid_history_update(True)
+            if self.solver_type == "vbd":
+                self.solver.set_rigid_history_update(True)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -281,6 +340,8 @@ class Example:
         # frame's substeps) is sufficient and lets the substep loop be a graph.
         angle = self._command(self.sim_time)
         self.twist_angle.assign(np.array([angle], dtype=np.float32))
+        rate = (self._command(self.sim_time + self.frame_dt) - angle) / self.frame_dt
+        self.twist_rate.assign(np.array([rate], dtype=np.float32))
         if self.graph is not None:
             wp.capture_launch(self.graph)
         else:
@@ -309,6 +370,7 @@ class Example:
 
 if __name__ == "__main__":
     parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["vbd", "kamino"], default="vbd", help="Cable dynamics solver.")
     parser.add_argument("--iterations", dest="iterations", type=int, default=None)
     parser.add_argument("--substeps", dest="substeps", type=int, default=None)
     parser.set_defaults(num_frames=int(Example.FPS * Example.TOTAL_TIME))

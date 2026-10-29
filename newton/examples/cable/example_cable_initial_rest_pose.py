@@ -14,9 +14,13 @@
 #
 # Run interactively:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose
+#   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose --solver kamino
+#   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose --solver kamino --kamino-backend dvi
 #
 # Run as a test:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose --test --viewer null
+#   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose --solver kamino --test --viewer null
+#   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose --solver kamino --kamino-backend dvi --test --viewer null
 #
 ###########################################################################
 
@@ -52,10 +56,12 @@ class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.args = args
+        self.solver_type = getattr(args, "solver", "vbd") if args is not None else "vbd"
+        self.kamino_backend = getattr(args, "kamino_backend", "lox") if args is not None else "lox"
 
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
-        self.sim_substeps = 5
+        self.sim_substeps = 2 if self.solver_type == "kamino" else 5
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.sim_time = 0.0
@@ -70,6 +76,8 @@ class Example:
         bend_damping = 1.0e0
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 800.0
         cable_cfg.ke = 5.0e4
@@ -137,11 +145,31 @@ class Example:
 
         self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
         self.contacts = self.collision_pipeline.contacts()
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
-        )
+        if self.solver_type == "kamino":
+            # Rod joints run on the LOX and DVI dynamics backends of Kamino
+            use_dvi = self.kamino_backend == "dvi"
+            config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver=self.kamino_backend, sparse_dynamics=use_dvi
+            )
+            config.use_collision_detector = False
+            if use_dvi:
+                config.dynamics.preconditioning = False
+                config.dynamics.linear_solver_type = "CR"
+                config.dynamics.linear_solver_kwargs = {"maxiter": 9}
+                config.dvi.bilateral_solver_type = "LLTBRCM"
+                config.dvi.bilateral_solver_kwargs = {"parallel_factorization": True}
+                config.dvi.tolerance = 1e-5
+                config.dvi.regularization = 1e-8
+                config.dvi.max_alternating_iterations = 4
+                config.dvi.inequality_sweeps_per_iteration = 3
+                config.dvi.bilateral_solve_interval = 1
+            self.solver = newton.solvers.SolverKamino(self.model, config=config)
+        else:
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=self.sim_iterations,
+                rigid_compliant_alm=True,
+            )
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -206,6 +234,11 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["vbd", "kamino"], default="vbd", help="Cable dynamics solver.")
+    parser.add_argument(
+        "--kamino-backend", choices=["lox", "dvi"], default="lox", help="Kamino dynamics solver backend."
+    )
+    viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)

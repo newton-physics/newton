@@ -9,9 +9,13 @@
 #
 # Run interactively:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --solver kamino
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --solver kamino --kamino-backend dvi
 #
 # Run as a test:
 #   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --test --viewer null
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --solver kamino --test --viewer null
+#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --solver kamino --kamino-backend dvi --test --viewer null
 #
 ###########################################################################
 
@@ -40,11 +44,13 @@ class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
         self.args = args
+        self.solver_type = getattr(args, "solver", "vbd") if args is not None else "vbd"
+        self.kamino_backend = getattr(args, "kamino_backend", "lox") if args is not None else "lox"
 
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 20
+        self.sim_substeps = 2 if self.solver_type == "kamino" else 20
         self.sim_iterations = 5
         self.sim_dt = self.frame_dt / self.sim_substeps
 
@@ -59,6 +65,8 @@ class Example:
         bend_damping = 1.0e3
 
         builder = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
         builder.rigid_gap = contact_gap
         builder.default_shape_cfg.ke = 1.0e4
         builder.default_shape_cfg.kd = 0.0
@@ -100,10 +108,19 @@ class Example:
         tip_edge_idx = num_segments_per_branch - 1
         pinned_body = int(self.graph_bodies[tip_edge_idx])
         self.pinned_body = pinned_body
-        builder.body_mass[pinned_body] = 0.0
-        builder.body_inv_mass[pinned_body] = 0.0
-        builder.body_inertia[pinned_body] = wp.mat33(0.0)
-        builder.body_inv_inertia[pinned_body] = wp.mat33(0.0)
+        if self.solver_type == "kamino":
+            # Kamino simulates massless bodies, so weld the tip to the world with a loop-closing joint
+            builder.add_joint_fixed(
+                parent=-1,
+                child=pinned_body,
+                parent_xform=builder.body_q[pinned_body],
+                label="pinned_tip",
+            )
+        else:
+            builder.body_mass[pinned_body] = 0.0
+            builder.body_inv_mass[pinned_body] = 0.0
+            builder.body_inertia[pinned_body] = wp.mat33(0.0)
+            builder.body_inv_inertia[pinned_body] = wp.mat33(0.0)
 
         if getattr(args, "ground", True):
             builder.add_ground_plane()
@@ -114,10 +131,16 @@ class Example:
         self.model.set_gravity((0.0, 0.0, float(getattr(args, "gravity_z", -9.81))))
 
         self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.solver = newton.solvers.SolverVBD(
-            self.model,
-            iterations=self.sim_iterations,
-        )
+        if self.solver_type == "kamino":
+            # Rod joints run on the LOX and DVI dynamics backends of Kamino
+            config = newton.solvers.SolverKamino.Config.from_model(self.model, dynamics_solver=self.kamino_backend)
+            config.use_collision_detector = False
+            self.solver = newton.solvers.SolverKamino(self.model, config=config)
+        else:
+            self.solver = newton.solvers.SolverVBD(
+                self.model,
+                iterations=self.sim_iterations,
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -219,5 +242,10 @@ class Example:
 
 
 if __name__ == "__main__":
-    viewer, args = newton.examples.init()
+    parser = newton.examples.create_parser()
+    parser.add_argument("--solver", choices=["vbd", "kamino"], default="vbd", help="Cable dynamics solver.")
+    parser.add_argument(
+        "--kamino-backend", choices=["lox", "dvi"], default="lox", help="Kamino dynamics solver backend."
+    )
+    viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

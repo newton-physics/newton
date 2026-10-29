@@ -528,7 +528,12 @@ def _detect_active_joint_configuration_limits(
     #   a structurally-singular row; mirrors joint-bilateral and contact culling).
     #   ``bid_B < 0`` (joint against world) is treated as immovable, matching the
     #   joint-conversion culling predicate.
-    if dof_type_j == JointDoFType.FIXED or world_max_limits == 0 or model_max_limits == 0:
+    if (
+        dof_type_j == JointDoFType.FIXED
+        or dof_type_j == JointDoFType.ROD
+        or world_max_limits == 0
+        or model_max_limits == 0
+    ):
         return
     parent_immovable = bid_B_j < 0 or model_body_is_immovable[bid_B_j] != 0
     child_immovable = model_body_is_immovable[bid_F_j] != 0
