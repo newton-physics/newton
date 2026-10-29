@@ -2451,11 +2451,15 @@ def test_colored_sliding_sphere_rolls_as_on_immediate(test, device):
 def test_every_colored_variant_agrees(test, device):
     """Run the coupled update in every colored sweep, agreeing within float32 summation order.
 
-    Every sweep calls the same coupled update; bisection_desaxce and coulomb_newton build both of its solves.
+    Every sweep calls the same coupled update, so bisection_desaxce covers them; coulomb_newton also builds
+    the block sweeps, which the other tests never select.
     """
-    for mode in ("bisection_desaxce", "coulomb_newton"):
+    for mode, variants in (
+        ("bisection_desaxce", tuple(_COLORED_VARIANTS)),
+        ("coulomb_newton", ("packed", "block", "block global")),
+    ):
         reference = None
-        for variant in _COLORED_VARIANTS:
+        for variant in variants:
             with test.subTest(mode=mode, variant=variant):
                 if variant == "staged" and not _colored_staging_supported(device.arch, 1, 2):
                     continue
