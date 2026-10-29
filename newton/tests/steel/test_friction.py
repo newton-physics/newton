@@ -1474,7 +1474,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         np.testing.assert_allclose(patches.view.weight.numpy()[:2], [0.5, 0.5])
 
     def test_saturation_only_releases_an_anchor_with_sliding_motion(self):
-        """Keep history under impending slip, and release it under motion against saturated friction."""
+        """Keep history under impending slip; release it under motion against friction at or just inside the cone."""
         _, state, contacts, patches = _patch_fixture([[0, 0, 0]])
         zeros = wp.zeros(1, dtype=int, device=_DEVICE)
         lengths = wp.array([3], dtype=int, device=_DEVICE)
@@ -1509,31 +1509,8 @@ class TestFrictionPatchHistory(unittest.TestCase):
         velocity.assign([[0, -0.1, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]])
         wp.launch(finish_patch_impulses, dim=1, inputs=args, device=_DEVICE)
         self.assertEqual(patches.current.valid.numpy()[0], 0)
-
-    def test_anchor_just_inside_the_cone_releases_under_sliding_motion(self):
-        """Release a slipping anchor a few percent inside its cone, and keep one well inside it."""
-        _, state, contacts, patches = _patch_fixture([[0, 0, 0]])
-        zeros = wp.zeros(1, dtype=int, device=_DEVICE)
-        # Normal impulse 2 and mu 0.5 give a radius of 1.
-        impulses = wp.zeros((1, 3), dtype=float, device=_DEVICE)
-        velocity = wp.array([[0, -0.1, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]], dtype=wp.spatial_vector, device=_DEVICE)
-        args = [
-            contacts.rigid_contact_count,
-            patches.current,
-            state.body_q,
-            state.body_q,
-            velocity,
-            wp.zeros(2, dtype=wp.vec3, device=_DEVICE),
-            zeros,
-            zeros,
-            zeros,
-            wp.array([3], dtype=int, device=_DEVICE),
-            0,
-            wp.array([[0, 0, 0]], dtype=int, device=_DEVICE),
-            wp.array([[0.5, 0.5, 0.5]], dtype=float, device=_DEVICE),
-            impulses,
-            0.005,
-        ]
+        # Normal impulse 2 and mu 0.5 give a radius of 1. A slipping anchor a few percent inside it is
+        # released; one well inside it keeps its history.
         for tangent, retained in ((0.97, 0), (0.5, 1)):
             with self.subTest(tangent=tangent):
                 patches.current.valid.fill_(1)
