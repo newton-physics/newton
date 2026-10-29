@@ -46,7 +46,6 @@ def _configure_kamino_rigid_view(view: ModelView) -> None:
 
 
 def _make_kamino_config() -> SolverKamino.Config:
-    # LOX moves the PROXY-flagged ADMM joint proxies as dynamic bodies.
     config = SolverKamino.Config(dynamics_solver="lox")
     config.use_collision_detector = False
     config.use_fk_solver = False
