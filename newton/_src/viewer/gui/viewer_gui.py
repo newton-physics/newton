@@ -28,6 +28,7 @@ from newton.selection import ArticulationView
 
 from ...core.host_transform import transform_assign, transform_assign_matrix, transform_to_matrix
 from ...core.types import Axis
+from . import theme
 from .imgui_backend import ImGuiBackend
 
 if TYPE_CHECKING:
@@ -1207,11 +1208,11 @@ class ViewerGui:
         # Foreground covers docked/floating documents, popups and all panels.
         draw_list = imgui.get_foreground_draw_list(viewport)
 
-        dim_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 0.55))
-        ball_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.88, 0.88, 0.92, 1.0))
-        string_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.55, 0.55, 0.6, 1.0))
-        bar_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.45, 0.45, 0.5, 1.0))
-        text_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.9, 0.9, 0.9, 1.0))
+        dim_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(*theme.LOADING_DIM))
+        ball_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(*theme.LOADING_BALL))
+        string_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(*theme.LOADING_STRING))
+        bar_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(*theme.LOADING_BAR))
+        text_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(*theme.LOADING_TEXT))
 
         # Dim the underlying scene.  Drawn manually rather than via
         # ``set_next_window_bg_alpha`` so the dim color is independent
@@ -1296,7 +1297,7 @@ class ViewerGui:
         viewer = self._viewer
         imgui = self.ui.imgui
 
-        nav_highlight_color = self.ui.get_theme_color(imgui.Col_.nav_cursor, (1.0, 1.0, 1.0, 1.0))
+        nav_highlight_color = self.ui.get_theme_color(imgui.Col_.nav_cursor, theme.WHITE)
 
         io = self.ui.io
         # ``dpi_scale`` keeps the panel at a constant visual size on HiDPI
@@ -1543,7 +1544,7 @@ class ViewerGui:
         imgui = self.ui.imgui
         io = self.ui.io
         s = self.ui.dpi_scale
-        fps_color = (1.0, 1.0, 1.0, 1.0)
+        fps_color = theme.WHITE
 
         window_pos = (io.display_size[0] - 10 * s, 10 * s)
         if custom_only:
@@ -1645,7 +1646,7 @@ class ViewerGui:
         state = self._selection_ui_state
 
         if state["error_message"]:
-            imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(1.0, 0.3, 0.3, 1.0))
+            imgui.push_style_color(imgui.Col_.text, imgui.ImVec4(*theme.ERROR_TEXT))
             imgui.text(f"Error: {state['error_message']}")
             imgui.pop_style_color()
             imgui.separator()

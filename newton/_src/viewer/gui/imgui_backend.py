@@ -8,6 +8,7 @@ import os
 from time import perf_counter
 from typing import TYPE_CHECKING
 
+from . import theme
 from .icon_atlas import IconAtlas
 
 if TYPE_CHECKING:
@@ -287,62 +288,7 @@ class ImGuiBackend:
         style.button_text_align = (0.5, 0.5)
         style.selectable_text_align = (0.0, 0.0)
 
-        # fmt: off
-        # Colors
-        style.set_color_(self.imgui.Col_.text, self.imgui.ImVec4(0.9803921580314636, 0.9803921580314636, 0.9803921580314636, 1.0))
-        style.set_color_(self.imgui.Col_.text_disabled, self.imgui.ImVec4(0.4980392158031464, 0.4980392158031464, 0.4980392158031464, 1.0))
-        style.set_color_(self.imgui.Col_.window_bg, self.imgui.ImVec4(0.09411764889955521, 0.09411764889955521, 0.09411764889955521, 1.0))
-        style.set_color_(self.imgui.Col_.child_bg, self.imgui.ImVec4(0.1568627506494522, 0.1568627506494522, 0.1568627506494522, 1.0))
-        style.set_color_(self.imgui.Col_.popup_bg, self.imgui.ImVec4(0.09411764889955521, 0.09411764889955521, 0.09411764889955521, 1.0))
-        style.set_color_(self.imgui.Col_.border, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.border_shadow, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
-        style.set_color_(self.imgui.Col_.frame_bg, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.frame_bg_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.frame_bg_active, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0470588244497776))
-        style.set_color_(self.imgui.Col_.title_bg, self.imgui.ImVec4(0.1176470592617989, 0.1176470592617989, 0.1176470592617989, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg_active, self.imgui.ImVec4(0.1568627506494522, 0.1568627506494522, 0.1568627506494522, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg_collapsed, self.imgui.ImVec4(0.1176470592617989, 0.1176470592617989, 0.1176470592617989, 1.0))
-        style.set_color_(self.imgui.Col_.menu_bar_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
-        style.set_color_(self.imgui.Col_.scrollbar_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.1098039224743843))
-        style.set_color_(self.imgui.Col_.scrollbar_grab, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3921568691730499))
-        style.set_color_(self.imgui.Col_.scrollbar_grab_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.4705882370471954))
-        style.set_color_(self.imgui.Col_.scrollbar_grab_active, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.check_mark, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.slider_grab, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3921568691730499))
-        style.set_color_(self.imgui.Col_.slider_grab_active, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3137255012989044))
-        style.set_color_(self.imgui.Col_.button, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.button_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.button_active, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0470588244497776))
-        style.set_color_(self.imgui.Col_.header, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.header_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.header_active, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0470588244497776))
-        style.set_color_(self.imgui.Col_.separator, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.separator_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.separator_active, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.resize_grip, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.resize_grip_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.resize_grip_active, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.tab, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.09803921729326248))
-        style.set_color_(self.imgui.Col_.tab_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.tab_selected, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3137255012989044))
-        style.set_color_(self.imgui.Col_.tab_dimmed, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.1568627506494522))
-        style.set_color_(self.imgui.Col_.tab_dimmed_selected, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.2352941185235977))
-        style.set_color_(self.imgui.Col_.plot_lines, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3529411852359772))
-        style.set_color_(self.imgui.Col_.plot_lines_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.plot_histogram, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3529411852359772))
-        style.set_color_(self.imgui.Col_.plot_histogram_hovered, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.table_header_bg, self.imgui.ImVec4(0.1568627506494522, 0.1568627506494522, 0.1568627506494522, 1.0))
-        style.set_color_(self.imgui.Col_.table_border_strong, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.3137255012989044))
-        style.set_color_(self.imgui.Col_.table_border_light, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.196078434586525))
-        style.set_color_(self.imgui.Col_.table_row_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.0))
-        style.set_color_(self.imgui.Col_.table_row_bg_alt, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.01960784383118153))
-        style.set_color_(self.imgui.Col_.text_selected_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 1.0))
-        style.set_color_(self.imgui.Col_.drag_drop_target, self.imgui.ImVec4(0.168627455830574, 0.2313725501298904, 0.5372549295425415, 1.0))
-        style.set_color_(self.imgui.Col_.nav_cursor, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_windowing_highlight, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.699999988079071))
-        style.set_color_(self.imgui.Col_.nav_windowing_dim_bg, self.imgui.ImVec4(0.800000011920929, 0.800000011920929, 0.800000011920929, 0.2000000029802322))
-        style.set_color_(self.imgui.Col_.modal_window_dim_bg, self.imgui.ImVec4(0.0, 0.0, 0.0, 0.5647059082984924))
-        # fmt: on
+        theme.apply_palette(self.imgui, theme.GREY_PALETTE)
 
     def _setup_legacy_style(self) -> None:
         """Apply the original viewer palette and spacing without workspace customization."""
@@ -383,66 +329,7 @@ class ImGuiBackend:
         style.button_text_align = (0.5, 0.5)
         style.selectable_text_align = (0.0, 0.0)
 
-        # fmt: off
-
-        # Colors
-        style.set_color_(self.imgui.Col_.text, self.imgui.ImVec4(1.0, 1.0, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.text_disabled, self.imgui.ImVec4(0.2745098173618317, 0.3176470696926117, 0.4509803950786591, 1.0))
-        style.set_color_(self.imgui.Col_.window_bg, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.child_bg, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.popup_bg, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.border, self.imgui.ImVec4(0.1568627506494522, 0.168627455830574, 0.1921568661928177, 1.0))
-        style.set_color_(self.imgui.Col_.border_shadow, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.frame_bg, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.frame_bg_hovered, self.imgui.ImVec4(0.1568627506494522, 0.168627455830574, 0.1921568661928177, 1.0))
-        style.set_color_(self.imgui.Col_.frame_bg_active, self.imgui.ImVec4(0.2352941185235977, 0.2156862765550613, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg_active, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.title_bg_collapsed, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.menu_bar_bg, self.imgui.ImVec4(0.09803921729326248, 0.105882354080677, 0.1215686276555061, 1.0))
-        style.set_color_(self.imgui.Col_.scrollbar_bg, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.scrollbar_grab, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.scrollbar_grab_hovered, self.imgui.ImVec4(0.1568627506494522, 0.168627455830574, 0.1921568661928177, 1.0))
-        style.set_color_(self.imgui.Col_.scrollbar_grab_active, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.check_mark, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.slider_grab, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.slider_grab_active, self.imgui.ImVec4(0.5372549295425415, 0.5529412031173706, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.button, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.button_hovered, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 1.0))
-        style.set_color_(self.imgui.Col_.button_active, self.imgui.ImVec4(0.2352941185235977, 0.2156862765550613, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.header, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.header_hovered, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 1.0))
-        style.set_color_(self.imgui.Col_.header_active, self.imgui.ImVec4(0.2352941185235977, 0.2156862765550613, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.separator, self.imgui.ImVec4(0.1568627506494522, 0.1843137294054031, 0.250980406999588, 1.0))
-        style.set_color_(self.imgui.Col_.separator_hovered, self.imgui.ImVec4(0.1568627506494522, 0.1843137294054031, 0.250980406999588, 1.0))
-        style.set_color_(self.imgui.Col_.separator_active, self.imgui.ImVec4(0.1568627506494522, 0.1843137294054031, 0.250980406999588, 1.0))
-        # Resize grip uses a translucent white instead of a near-window-bg
-        # color so the corner handle is actually discoverable at rest. Hover
-        # / active states keep the accent-blue look.
-        style.set_color_(self.imgui.Col_.resize_grip, self.imgui.ImVec4(1.0, 1.0, 1.0, 0.20))
-        style.set_color_(self.imgui.Col_.resize_grip_hovered, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 0.85))
-        style.set_color_(self.imgui.Col_.resize_grip_active, self.imgui.ImVec4(0.5372549295425415, 0.5529412031173706, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.tab, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.tab_hovered, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.tab_selected, self.imgui.ImVec4(0.09803921729326248, 0.105882354080677, 0.1215686276555061, 1.0))
-        style.set_color_(self.imgui.Col_.tab_dimmed, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.tab_dimmed_selected, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.plot_lines, self.imgui.ImVec4(0.5215686559677124, 0.6000000238418579, 0.7019608020782471, 1.0))
-        style.set_color_(self.imgui.Col_.plot_lines_hovered, self.imgui.ImVec4(0.03921568766236305, 0.9803921580314636, 0.9803921580314636, 1.0))
-        style.set_color_(self.imgui.Col_.plot_histogram, self.imgui.ImVec4(1.0, 0.2901960909366608, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.plot_histogram_hovered, self.imgui.ImVec4(0.9960784316062927, 0.4745098054409027, 0.6980392336845398, 1.0))
-        style.set_color_(self.imgui.Col_.table_header_bg, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.table_border_strong, self.imgui.ImVec4(0.0470588244497776, 0.05490196123719215, 0.07058823853731155, 1.0))
-        style.set_color_(self.imgui.Col_.table_border_light, self.imgui.ImVec4(0.0, 0.0, 0.0, 1.0))
-        style.set_color_(self.imgui.Col_.table_row_bg, self.imgui.ImVec4(0.1176470592617989, 0.1333333402872086, 0.1490196138620377, 1.0))
-        style.set_color_(self.imgui.Col_.table_row_bg_alt, self.imgui.ImVec4(0.09803921729326248, 0.105882354080677, 0.1215686276555061, 1.0))
-        style.set_color_(self.imgui.Col_.text_selected_bg, self.imgui.ImVec4(0.2352941185235977, 0.2156862765550613, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.drag_drop_target, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_cursor, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_windowing_highlight, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_windowing_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
-        style.set_color_(self.imgui.Col_.modal_window_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
-        # fmt: on
+        theme.apply_palette(self.imgui, theme.LEGACY_PALETTE)
 
     def _setup_dark_style(self) -> None:
         """Apply the unscaled palette and spacing for the selected GUI mode."""
@@ -475,20 +362,7 @@ class ImGuiBackend:
         style.button_text_align = (0.5, 0.5)
         style.selectable_text_align = (0.0, 0.0)
 
-        # fmt: off
-
-        # Colors
-        style.set_color_(self.imgui.Col_.border_shadow, self.imgui.ImVec4(0.0784313753247261, 0.08627451211214066, 0.1019607856869698, 1.0))
-        style.set_color_(self.imgui.Col_.plot_lines_hovered, self.imgui.ImVec4(0.03921568766236305, 0.9803921580314636, 0.9803921580314636, 1.0))
-        style.set_color_(self.imgui.Col_.plot_histogram, self.imgui.ImVec4(1.0, 0.2901960909366608, 0.5960784554481506, 1.0))
-        style.set_color_(self.imgui.Col_.plot_histogram_hovered, self.imgui.ImVec4(0.9960784316062927, 0.4745098054409027, 0.6980392336845398, 1.0))
-        style.set_color_(self.imgui.Col_.drag_drop_target, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_windowing_highlight, self.imgui.ImVec4(0.4980392158031464, 0.5137255191802979, 1.0, 1.0))
-        style.set_color_(self.imgui.Col_.nav_windowing_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
-        style.set_color_(self.imgui.Col_.modal_window_dim_bg, self.imgui.ImVec4(0.196078434586525, 0.1764705926179886, 0.5450980663299561, 0.501960813999176))
-        # fmt: on
-
-        # Keep the complete neutral palette and unscaled metrics together.
+        # Keep the unscaled workspace metrics here; colors come from theme.py.
         style.window_padding = (10, 6)
         style.frame_padding = (6, 4)
         style.item_spacing = (6, 4)
@@ -501,65 +375,7 @@ class ImGuiBackend:
         style.tab_rounding = 4
         style.scrollbar_size = 9
         style.scrollbar_rounding = 4
-        palette = {
-            "text": (0.88, 0.88, 0.88, 1),
-            "text_disabled": (0.58, 0.58, 0.58, 1),
-            "window_bg": (0.145, 0.145, 0.145, 1),
-            "child_bg": (0.145, 0.145, 0.145, 1),
-            "popup_bg": (0.18, 0.18, 0.18, 1),
-            "border": (0.34, 0.34, 0.34, 1),
-            "frame_bg": (0.29, 0.29, 0.29, 1),
-            "frame_bg_hovered": (0.34, 0.34, 0.34, 1),
-            "frame_bg_active": (0.37, 0.37, 0.37, 1),
-            "button": (0.24, 0.24, 0.24, 1),
-            "button_hovered": (0.30, 0.30, 0.30, 1),
-            "button_active": (0.36, 0.36, 0.36, 1),
-            "header": (0.29, 0.29, 0.29, 1),
-            "header_hovered": (0.32, 0.32, 0.32, 1),
-            "header_active": (0.37, 0.37, 0.37, 1),
-            "check_mark": (0.96, 0.61, 0.32, 1),
-            "checkbox_selected_bg": (0.32, 0.32, 0.32, 1),
-            "slider_grab": (0.70, 0.70, 0.70, 1),
-            "slider_grab_active": (0.96, 0.61, 0.32, 1),
-            "tab": (0.18, 0.18, 0.18, 1),
-            "tab_selected": (0.26, 0.26, 0.26, 1),
-            "tab_hovered": (0.30, 0.30, 0.30, 1),
-            "tab_selected_overline": (0.96, 0.61, 0.32, 1),
-            "tab_dimmed": (0.18, 0.18, 0.18, 1),
-            "tab_dimmed_selected": (0.26, 0.26, 0.26, 1),
-            "tab_dimmed_selected_overline": (0.50, 0.50, 0.50, 1),
-            "title_bg": (0.13, 0.13, 0.13, 1),
-            "title_bg_active": (0.19, 0.19, 0.19, 1),
-            "title_bg_collapsed": (0.13, 0.13, 0.13, 1),
-            "menu_bar_bg": (0.18, 0.18, 0.18, 1),
-            "scrollbar_bg": (0.12, 0.12, 0.12, 1),
-            "scrollbar_grab": (0.31, 0.31, 0.31, 1),
-            "scrollbar_grab_hovered": (0.43, 0.43, 0.43, 1),
-            "scrollbar_grab_active": (0.53, 0.53, 0.53, 1),
-            "separator": (0.32, 0.32, 0.32, 1),
-            "separator_hovered": (0.55, 0.55, 0.55, 1),
-            "separator_active": (0.96, 0.61, 0.32, 1),
-            "table_header_bg": (0.18, 0.18, 0.18, 1),
-            "table_border_strong": (0.25, 0.25, 0.25, 1),
-            "table_border_light": (0.20, 0.20, 0.20, 1),
-            "table_row_bg": (0, 0, 0, 0),
-            "table_row_bg_alt": (1, 1, 1, 0.015),
-            "text_selected_bg": (0.55, 0.55, 0.55, 0.45),
-            "resize_grip": (0.55, 0.55, 0.55, 0.20),
-            "resize_grip_hovered": (0.70, 0.70, 0.70, 0.60),
-            "resize_grip_active": (0.96, 0.61, 0.32, 0.90),
-            "nav_cursor": (0.96, 0.61, 0.32, 1),
-            "input_text_cursor": (0.96, 0.61, 0.32, 1),
-            "tree_lines": (0.35, 0.35, 0.35, 1),
-            "docking_empty_bg": (0.13, 0.13, 0.13, 1),
-            "docking_preview": (0.65, 0.65, 0.65, 0.45),
-            "plot_lines": (0.72, 0.72, 0.72, 1),
-        }
-        for name, color in palette.items():
-            # Some palette entries were added after the minimum supported
-            # imgui-bundle version. Older versions keep their built-in colors.
-            if (slot := getattr(self.imgui.Col_, name, None)) is not None:
-                style.set_color_(slot, self.imgui.ImVec4(*color))
+        theme.apply_palette(self.imgui, theme.WORKSPACE_PALETTE)
 
     def cancel_mouse_interaction(self) -> None:
         """Discard pending input and release widgets without completing a click."""
@@ -682,7 +498,7 @@ class ImGuiBackend:
             self.dpi_scale = new_dpi_scale
             self._apply_dpi_scaling()
 
-    def get_theme_color(self, color_id, fallback_color=(1.0, 1.0, 1.0, 1.0)):
+    def get_theme_color(self, color_id, fallback_color=theme.WHITE):
         """Get a color from the current theme with fallback.
 
         Args:

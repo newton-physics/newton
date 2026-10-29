@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, ClassVar
 import numpy as np
 import warp as wp
 
+from . import theme
 from .icons import draw_icon
 
 if TYPE_CHECKING:
@@ -50,28 +51,10 @@ class PhysicsWidgets:
     labels alone are not unique across objects or custom namespaces.
     """
 
-    accent = (0.96, 0.61, 0.32, 1)
-    muted = (0.65, 0.65, 0.65, 1)
-    axes = ((0.87, 0.39, 0.38, 1), (0.44, 0.75, 0.47, 1), (0.38, 0.62, 0.91, 1), (0.71, 0.60, 0.88, 1))
-    explorer_colors: ClassVar[dict[str, tuple[float, float, float, float]]] = {
-        "root": (0.74, 0.74, 0.74, 1),
-        "group": (0.74, 0.74, 0.74, 1),
-        "elements": (0.68, 0.68, 0.68, 1),
-        "articulation": (0.82, 0.61, 0.40, 1),
-        "body": (0.88, 0.64, 0.38, 1),
-        "shape": (0.43, 0.73, 0.55, 1),
-        "joint": (0.48, 0.69, 0.80, 1),
-        "surface": (0.40, 0.73, 0.63, 1),
-        "volume": (0.76, 0.55, 0.68, 1),
-        "particle_set": (0.84, 0.71, 0.43, 1),
-        "particle": (0.84, 0.71, 0.43, 1),
-        "tri": (0.40, 0.73, 0.63, 1),
-        "tet": (0.76, 0.55, 0.68, 1),
-        "custom": (0.69, 0.61, 0.81, 1),
-        "sdf": (0.40, 0.74, 0.79, 1),
-        "bvh": (0.40, 0.74, 0.79, 1),
-        "texture": (0.76, 0.57, 0.82, 1),
-    }
+    accent = theme.ACCENT
+    muted = theme.MUTED
+    axes = theme.AXES
+    explorer_colors: ClassVar[dict[str, tuple[float, float, float, float]]] = theme.EXPLORER_COLORS
 
     def __init__(self, gui: ViewerGui) -> None:
         """Bind the GUI and initialize text-alignment and lazy property-tooltip state."""
@@ -147,9 +130,9 @@ class PhysicsWidgets:
         ui = self.ui
         if not accent:
             return ui.begin_tab_item(label, flags=flags)
-        ui.push_style_color(ui.Col_.tab, ui.ImVec4(0.29, 0.23, 0.18, 1))
-        ui.push_style_color(ui.Col_.tab_selected, ui.ImVec4(0.40, 0.29, 0.20, 1))
-        ui.push_style_color(ui.Col_.tab_hovered, ui.ImVec4(0.44, 0.32, 0.22, 1))
+        ui.push_style_color(ui.Col_.tab, ui.ImVec4(*theme.ACCENT_TAB))
+        ui.push_style_color(ui.Col_.tab_selected, ui.ImVec4(*theme.ACCENT_TAB_SELECTED))
+        ui.push_style_color(ui.Col_.tab_hovered, ui.ImVec4(*theme.ACCENT_TAB_HOVERED))
         ui.push_style_color(ui.Col_.text, ui.ImVec4(*self.accent))
         try:
             return ui.begin_tab_item(label, flags=flags)
@@ -172,7 +155,7 @@ class PhysicsWidgets:
         draw = ui.get_window_draw_list()
         if tint is not None and active:
             tint = (*(channel + (1 - channel) * 0.20 for channel in tint[:3]), tint[3])
-        rgba = (0.40, 0.40, 0.40, 1) if dim else tint or (self.accent if active else self.muted)
+        rgba = theme.ICON_DISABLED if dim else tint or (self.accent if active else self.muted)
         atlas = getattr(self.gui.ui, "icon_atlas", None)
         if atlas is not None and atlas.draw(
             draw, name, position, size, scale=self.scale, color=self.color(rgba), solid=solid
@@ -213,7 +196,13 @@ class PhysicsWidgets:
         if prominent:
             draw = ui.get_window_draw_list()
             pressed = enabled and ui.is_item_active()
-            fill = (0.24, 0.24, 0.24, 1) if pressed else (0.38, 0.38, 0.38, 1) if hovered else (0.30, 0.30, 0.30, 1)
+            fill = (
+                theme.TRANSPORT_BUTTON_PRESSED
+                if pressed
+                else theme.TRANSPORT_BUTTON_HOVERED
+                if hovered
+                else theme.TRANSPORT_BUTTON
+            )
             end = ui.ImVec2(pos.x + width, pos.y + size * s)
             draw.add_rect_filled(pos, end, self.color(fill), 3 * s)
         elif hovered or (not flat and (active or size >= 22)):
@@ -221,7 +210,7 @@ class PhysicsWidgets:
                 pos,
                 ui.ImVec2(pos.x + width, pos.y + size * s),
                 self.color(
-                    (0.30, 0.30, 0.30, 1) if active else (0.25, 0.25, 0.25, 1) if hovered else (0.19, 0.19, 0.19, 1)
+                    theme.TOOL_BUTTON_ACTIVE if active else theme.TOOL_BUTTON_HOVERED if hovered else theme.TOOL_BUTTON
                 ),
                 3 * s,
             )
@@ -277,7 +266,7 @@ class PhysicsWidgets:
             ui.get_font(),
             ui.get_font_size(),
             ui.ImVec2(pos.x, self.text_top(pos.y, height)),
-            self.color(color or (0.88, 0.88, 0.88, 1)),
+            self.color(color or theme.TEXT),
             text,
             cpu_fine_clip_rect=ui.ImVec4(pos.x, pos.y, pos.x + max(1, width - lock_width - unit_width), pos.y + height),
         )
@@ -305,10 +294,10 @@ class PhysicsWidgets:
         ui.push_style_var(ui.StyleVar_.child_border_size, 0)
         ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(8 * scale, 4 * scale))
         ui.push_style_var(ui.StyleVar_.item_spacing, ui.ImVec2(6 * scale, 5 * scale))
-        ui.push_style_color(ui.Col_.child_bg, ui.ImVec4(0.215, 0.215, 0.215, 1))
-        ui.push_style_color(ui.Col_.header, ui.ImVec4(0.215, 0.215, 0.215, 1))
-        ui.push_style_color(ui.Col_.header_hovered, ui.ImVec4(0.25, 0.25, 0.25, 1))
-        ui.push_style_color(ui.Col_.header_active, ui.ImVec4(0.28, 0.28, 0.28, 1))
+        ui.push_style_color(ui.Col_.child_bg, ui.ImVec4(*theme.GROUP_BACKGROUND))
+        ui.push_style_color(ui.Col_.header, ui.ImVec4(*theme.GROUP_BACKGROUND))
+        ui.push_style_color(ui.Col_.header_hovered, ui.ImVec4(*theme.GROUP_HOVERED))
+        ui.push_style_color(ui.Col_.header_active, ui.ImVec4(*theme.GROUP_ACTIVE))
         visible = ui.begin_child(
             "##group_" + label,
             ui.ImVec2(0, 0),
@@ -453,9 +442,9 @@ class PhysicsWidgets:
             ui.set_next_item_width(-1)
         ui.push_id(label)
         ui.push_style_color(
-            ui.Col_.frame_bg, ui.ImVec4(*(0.31, 0.31, 0.31, 1) if editable else (0.265, 0.265, 0.265, 1))
+            ui.Col_.frame_bg, ui.ImVec4(*theme.EDITOR_BACKGROUND if editable else theme.EDITOR_READONLY_BACKGROUND)
         )
-        ui.push_style_color(ui.Col_.text, ui.ImVec4(*(0.92, 0.92, 0.92, 1) if editable else (0.65, 0.65, 0.65, 1)))
+        ui.push_style_color(ui.Col_.text, ui.ImVec4(*theme.EDITOR_TEXT if editable else theme.EDITOR_READONLY_TEXT))
         ui.push_style_var(ui.StyleVar_.disabled_alpha, 1.0)
         ui.begin_disabled(not editable)
         font = getattr(self.gui.ui, "number_font", None)
@@ -486,7 +475,7 @@ class PhysicsWidgets:
         item_id = ui.get_id("##value")
         typing = ui.internal.temp_input_is_active(item_id)
         if not typing:
-            ui.push_style_color(ui.Col_.text, ui.ImVec4(0, 0, 0, 0))
+            ui.push_style_color(ui.Col_.text, ui.ImVec4(*theme.TRANSPARENT))
         if slider and bounds is not None and not integer:
             changed, result = ui.slider_float(
                 "##value", float(value), float(low), float(high), "%" + format_spec, flags
@@ -508,7 +497,7 @@ class PhysicsWidgets:
                 draw.add_line(
                     ui.ImVec2(lo.x + inset, lo.y + offset * scale),
                     ui.ImVec2(hi.x - inset, lo.y + offset * scale),
-                    self.color((0, 0, 0, alpha)),
+                    self.color((*theme.BLACK[:3], alpha)),
                     scale,
                 )
         if not typing:
@@ -520,7 +509,7 @@ class PhysicsWidgets:
                     ui.get_font(),
                     ui.get_font_size(),
                     ui.ImVec2(lo.x + padding.x, self.text_top(lo.y, hi.y - lo.y, numeric=True)),
-                    self.color((0.92, 0.92, 0.92, 1) if editable else (0.65, 0.65, 0.65, 1)),
+                    self.color(theme.EDITOR_TEXT if editable else theme.EDITOR_READONLY_TEXT),
                     text,
                     cpu_fine_clip_rect=ui.ImVec4(lo.x, lo.y, hi.x, hi.y),
                 )
@@ -967,7 +956,8 @@ class PhysicsWidgets:
             if i:
                 ui.same_line()
             ui.push_style_color(
-                ui.Col_.button, ui.ImVec4(*(*self.axes[i][:3], 0.35) if i == int(value) else (0.18, 0.18, 0.18, 1))
+                ui.Col_.button,
+                ui.ImVec4(*(*self.axes[i][:3], 0.35) if i == int(value) else theme.AXIS_BUTTON_BACKGROUND),
             )
             ui.begin_disabled(not editable)
             if self.button(name, ui.ImVec2(44 * self.scale, 0)):

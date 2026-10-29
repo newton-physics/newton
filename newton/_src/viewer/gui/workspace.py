@@ -24,6 +24,7 @@ from ...sim.state import State
 from ..viewer_bindings import InspectionBindings
 from ..viewer_history import FrameHistory, _component_arrays
 from ..viewer_model_tree import ModelTree
+from . import theme
 from .dockspace import ViewerDockspace
 from .timeline import TimelineView
 from .widgets import PhysicsWidgets
@@ -939,7 +940,7 @@ class ViewerWorkspace:
                         ("joint", "joints", model.joint_count),
                     )
                 )
-                items.append(("Scene", counts, (0.70, 0.70, 0.70)))
+                items.append(("Scene", counts, theme.STATUS_DETAIL[:3]))
             self._status_items = items
             self._status_perf = f"{self.gui._current_fps:.0f}", f"{self.draw_ms:.1f} ms"
             self._status_key, self._status_time = key, now
@@ -1022,9 +1023,9 @@ class ViewerWorkspace:
                 ui.set_tooltip(f"{label}: {value}\n{detail}")
             return value_x + width + 18 * scale
 
-        perf = [("FPS", self._status_perf[0], (0.70, 0.70, 0.70))]
+        perf = [("FPS", self._status_perf[0], theme.STATUS_DETAIL[:3])]
         if available > 1000 * scale:
-            perf.append(("UI", self._status_perf[1], (0.70, 0.70, 0.70)))
+            perf.append(("UI", self._status_perf[1], theme.STATUS_DETAIL[:3]))
         perf_width = (
             sum(
                 ui.calc_text_size(label).x + 6 * scale + value_width(label, value) + 18 * scale
@@ -1065,7 +1066,7 @@ class ViewerWorkspace:
         ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(0, 0))
         ui.push_style_var(ui.StyleVar_.window_min_size, ui.ImVec2(1, 1))
         ui.push_style_var(ui.StyleVar_.window_border_size, 0.0)
-        ui.push_style_color(ui.Col_.window_bg, ui.ImVec4(0, 0, 0, 0))
+        ui.push_style_color(ui.Col_.window_bg, ui.ImVec4(*theme.TRANSPARENT))
         if self._window("##split_" + name, x, y, w, h):
             ui.invisible_button("##handle", ui.ImVec2(w, h))
             if ui.is_item_hovered() or ui.is_item_active():
@@ -1129,7 +1130,7 @@ class ViewerWorkspace:
         draw.push_clip_rect(ui.ImVec2(left, pos.y), ui.ImVec2(max(left, right), pos.y + size.y), True)
         draw.add_text(
             ui.ImVec2(max(left, right - ui.calc_text_size(version).x), self.widgets.text_top(pos.y, size.y)),
-            self.widgets.color((0.46, 0.46, 0.46, 1)),
+            self.widgets.color(theme.VERSION_TEXT),
             version,
         )
         draw.pop_clip_rect()
@@ -1319,8 +1320,8 @@ class ViewerWorkspace:
             flags |= ui.TreeNodeFlags_.selected
         ui.set_next_item_open(key in tree.expanded, ui.Cond_.always)
         if key in self.selection:
-            ui.table_set_bg_color(ui.TableBgTarget_.row_bg0, widgets.color((0.23, 0.29, 0.42, 1)))
-            ui.push_style_color(ui.Col_.header, ui.ImVec4(0, 0, 0, 0))
+            ui.table_set_bg_color(ui.TableBgTarget_.row_bg0, widgets.color(theme.TREE_SELECTED))
+            ui.push_style_color(ui.Col_.header, ui.ImVec4(*theme.TRANSPARENT))
             ui.push_style_color(ui.Col_.text, ui.ImVec4(*widgets.accent))
         ui.tree_node_ex("        " + name + "##node", flags)
         if key in self.selection:
@@ -1848,7 +1849,9 @@ class ViewerWorkspace:
                 ui.text_disabled("›")  # noqa: RUF001 - breadcrumb chevron
                 ui.same_line(spacing=4 * scale)
             current = key == self.selected
-            ui.push_style_color(ui.Col_.button, ui.ImVec4(*(0.32, 0.26, 0.20, 1) if current else (0.22, 0.22, 0.22, 1)))
+            ui.push_style_color(
+                ui.Col_.button, ui.ImVec4(*theme.BREADCRUMB_SELECTED if current else theme.BREADCRUMB_BACKGROUND)
+            )
             if self.widgets.button(f"{name}##crumb:{key[0]}:{key[1]}", small=True) and not current:
                 navigate(key)
             ui.pop_style_color()

@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from . import theme
+
 if TYPE_CHECKING:
     from imgui_bundle import imgui
     from numpy.typing import ArrayLike
@@ -222,7 +224,7 @@ class OrientationGizmo:
 
         # Project fixed world-space endpoints just like the cube. Screen-space
         # normalization and overlap avoidance introduce jumps during orbiting.
-        axis_colors = ((0.94, 0.43, 0.40), (0.49, 0.84, 0.55), (0.43, 0.69, 1.0))
+        axis_colors = theme.ORIENTATION_AXES
         axis_hover = None
         if hovered:
             for axis in self._axis_order:
@@ -231,15 +233,15 @@ class OrientationGizmo:
                     axis_hover = int(axis)
                     hit = np.eye(3)[axis] * (-1 if io.key_shift else 1)
         for axis in self._axis_order:
-            rgb = axis_colors[axis]
+            rgb = axis_colors[axis][:3]
             draw.add_line(point(center), point(positions[axis]), color(*rgb, 0.90), 2 * s)
         self._hover_direction = hit
         self._highlight_faces = []
         for (facing, axis, sign, others, _vertices, polygon), path, caption in zip(
             faces, self._face_paths, self._face_labels, strict=True
         ):
-            shade = 0.17 + 0.17 * facing
-            draw.add_convex_poly_filled(path, color(shade, shade, shade, 0.98))
+            shade = (channel + channel * facing for channel in theme.ORIENTATION_FACE[:3])
+            draw.add_convex_poly_filled(path, color(*shade, 0.98))
             if hit is not None and hit[axis] == sign:
                 edges = (0, 0.23, 0.77, 1)
                 if np.count_nonzero(hit) == 1:
@@ -254,38 +256,40 @@ class OrientationGizmo:
                             for u, v in ((u0, v0), (u1, v0), (u1, v1), (u0, v1))
                         ]
                     )
-                draw.add_convex_poly_filled(self._polygon_path(region), color(0.96, 0.61, 0.32, 0.55))
+                draw.add_convex_poly_filled(self._polygon_path(region), color(*theme.ACCENT[:3], 0.55))
                 for i in range(4):
-                    draw.add_line(point(region[i]), point(region[(i + 1) % 4]), color(1.0, 0.74, 0.47, 0.85), s)
+                    draw.add_line(
+                        point(region[i]), point(region[(i + 1) % 4]), color(*theme.ORIENTATION_HIGHLIGHT[:3], 0.85), s
+                    )
                 self._highlight_faces.append((axis, sign))
-            draw.add_polyline(path, color(0.68, 0.68, 0.68, 0.9), thickness=s, flags=ui.ImDrawFlags_.closed)
+            draw.add_polyline(path, color(*theme.ORIENTATION_EDGE[:3], 0.9), thickness=s, flags=ui.ImDrawFlags_.closed)
             if caption is not None:
                 text, font_size, position = caption
-                draw.add_text(ui.get_font(), font_size, position, color(0.95, 0.95, 0.95), text)
+                draw.add_text(ui.get_font(), font_size, position, color(*theme.ORIENTATION_TEXT), text)
         # The compass has a restrained back arc and a brighter front rim.
         ring_center = self._ring_center
         ring_hover = (
             hovered and axis_hover is None and 0.65 < np.linalg.norm((mouse - ring_center) / (43 * s, 7 * s)) < 1.5
         )
         for arc, opacity in zip(self._ring_arcs, (0.70, 0.30), strict=True):
-            tint = color(0.96, 0.61, 0.32, 0.9) if ring_hover else color(0.64, 0.64, 0.64, opacity)
+            tint = color(*theme.ACCENT[:3], 0.9) if ring_hover else color(*theme.ORIENTATION_RING[:3], opacity)
             draw.add_polyline(arc, tint, thickness=s, flags=0)
         for side in (-1, 1):
             tick = ring_center + np.array((side * 43 * s, 0))
             extent = np.array((0, 2 * s))
-            draw.add_line(point(tick - extent), point(tick + extent), color(0.70, 0.70, 0.70, 0.7), s)
+            draw.add_line(point(tick - extent), point(tick + extent), color(*theme.ORIENTATION_TICK[:3], 0.7), s)
 
         for axis in self._axis_order:
-            rgb = axis_colors[axis]
+            rgb = axis_colors[axis][:3]
             position = positions[axis]
             over = axis == axis_hover
             radius = (8 if over else 7) * s
             # A darker rim and a small upper highlight give each cap depth.
-            draw.add_circle_filled(point(position), radius + s, color(0.12, 0.12, 0.12, 0.95), 24)
+            draw.add_circle_filled(point(position), radius + s, color(*theme.ORIENTATION_HANDLE_RIM[:3], 0.95), 24)
             shade = 0.72 + 0.18 * toward[axis]
             draw.add_circle_filled(point(position), radius, color(*(c * shade for c in rgb)), 24)
             draw.add_circle(point(position), radius, color(*rgb, 0.95), 24, s)
-            draw.add_circle_filled(point(position + np.array((-2, -3)) * s), 2 * s, color(1, 1, 1, 0.18), 12)
+            draw.add_circle_filled(point(position + np.array((-2, -3)) * s), 2 * s, color(*theme.WHITE[:3], 0.18), 12)
             label = "XYZ"[axis]
             font_size = 11 * s
             extent = ui.calc_text_size(label)
@@ -294,14 +298,14 @@ class OrientationGizmo:
                 ui.get_font(),
                 font_size,
                 point(position - np.array((extent.x, extent.y)) * 0.5 * fit),
-                color(0.09, 0.09, 0.09),
+                color(*theme.ORIENTATION_AXIS_TEXT),
                 label,
             )
         grip = np.array((x + width - 13 * s, y + 10 * s))
         if hovered or self._moving is not None:
             for dx in (-3, 1):
                 for dy in (-3, 1):
-                    draw.add_circle_filled(point(grip + np.array((dx, dy)) * s), s, color(0.70, 0.70, 0.70))
+                    draw.add_circle_filled(point(grip + np.array((dx, dy)) * s), s, color(*theme.ORIENTATION_TICK))
         if ui.is_item_activated():
             self._animation = None
             kind = "move" if np.linalg.norm(mouse - grip) < 13 * s else "yaw" if ring_hover else "orbit"

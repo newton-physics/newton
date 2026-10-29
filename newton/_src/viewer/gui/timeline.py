@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from . import theme
 from .widgets import PhysicsWidgets
 
 if TYPE_CHECKING:
@@ -76,13 +77,21 @@ class TimelineView:
         """Offer only contact families supported by the scene's entities."""
         channels = []
         if self.history.model.body_count:
-            channels.append(("Rigid contacts", "touching", "show_rigid_contacts", 0, (0.40, 0.84, 0.78)))
+            channels.append(("Rigid contacts", "touching", "show_rigid_contacts", 0, theme.CONTACT_RIGID[:3]))
         if self.history.model.particle_count:
             if self.history.model.shape_count:
                 channels.append(
-                    ("Soft-rigid contacts", "soft_shape_contacts", "show_soft_rigid_contacts", 1, (0.36, 0.65, 1.0))
+                    (
+                        "Soft-rigid contacts",
+                        "soft_shape_contacts",
+                        "show_soft_rigid_contacts",
+                        1,
+                        theme.CONTACT_SOFT_RIGID[:3],
+                    )
                 )
-            channels.append(("Soft contacts", "soft_self_contacts", "show_soft_self_contacts", 2, (1.0, 0.50, 0.64)))
+            channels.append(
+                ("Soft contacts", "soft_self_contacts", "show_soft_self_contacts", 2, theme.CONTACT_SOFT[:3])
+            )
         return channels
 
     def _readout_frame(self, viewer: ViewerBase, *, now: float | None = None) -> tuple[int, HistoryFrame]:
@@ -146,12 +155,12 @@ class TimelineView:
         corner = min(7 * scale, height / 2)
         end = ui.ImVec2(pos.x + width, pos.y + height)
 
-        body_color = color((0.70, 0.61, 1.0, 1))
-        particle_color = color((1.0, 0.72, 0.36, 1))
-        muted = color((0.63, 0.63, 0.63, 1))
-        grid = color((0.29, 0.29, 0.29, 1))
+        body_color = color(theme.BODY_SPEED)
+        particle_color = color(theme.PARTICLE_SPEED)
+        muted = color(theme.TIMELINE_TEXT)
+        grid = color(theme.TIMELINE_GRID)
         draw.add_rect_filled(
-            pos, end, color((0.24, 0.24, 0.24, 1) if hovered or active else (0.20, 0.20, 0.20, 1)), corner
+            pos, end, color(theme.TIMELINE_HOVERED if hovered or active else theme.TIMELINE_BACKGROUND), corner
         )
         x0, x1 = pos.x + 8 * scale, pos.x + width - 8 * scale
         y0 = pos.y + (2 if compact else 22) * scale
@@ -247,10 +256,14 @@ class TimelineView:
                 previous = point
         draw.pop_clip_rect()
         draw.add_rect(
-            pos, end, color((0.48, 0.48, 0.48, 1) if hovered or active else (0.30, 0.30, 0.30, 1)), corner, scale
+            pos,
+            end,
+            color(theme.TIMELINE_BORDER_HOVERED if hovered or active else theme.TIMELINE_BORDER),
+            corner,
+            scale,
         )
         x = x0 + plot_width * (self.history.index - low) / extent
-        accent = (1.0, 0.73, 0.30)
+        accent = theme.TIMELINE_CURSOR[:3]
         top, bottom = pos.y + scale, end.y - scale
         for thickness, alpha in ((8, 0.10), (4, 0.24), (1.75, 1.0)):
             draw.add_line(ui.ImVec2(x, top), ui.ImVec2(x, bottom), color((*accent, alpha)), thickness * scale)
@@ -314,7 +327,7 @@ class TimelineView:
                 ui.get_window_draw_list().add_line(
                     pos,
                     ui.ImVec2(pos.x, pos.y + ui.get_window_size().y),
-                    ui.get_color_u32(ui.ImVec4(0.34, 0.34, 0.34, 1)),
+                    ui.get_color_u32(ui.ImVec4(*theme.TIMELINE_SEPARATOR)),
                 )
                 self._draw_readouts(ui, viewer, widgets)
             ui.end_child()
@@ -435,7 +448,7 @@ class TimelineView:
 
     def status_items(self) -> list[tuple[str, str, tuple[float, float, float]]]:
         """Read-only metrics for the selected frame, without device transfers."""
-        neutral = (0.82, 0.82, 0.82)
+        neutral = theme.STATUS_VALUE[:3]
 
         def count(value: int) -> str:
             if value < 10_000:
@@ -459,8 +472,8 @@ class TimelineView:
         items.extend((("States", count(len(self.history.frames)), neutral), ("History", memory, neutral)))
         if self.history.frames:
             for label, attr, entities, rgb in (
-                ("Body speed", "body_speed", self.history.model.body_count, (0.70, 0.61, 1.0)),
-                ("Particle speed", "particle_speed", self.history.model.particle_count, (1.0, 0.72, 0.36)),
+                ("Body speed", "body_speed", self.history.model.body_count, theme.BODY_SPEED[:3]),
+                ("Particle speed", "particle_speed", self.history.model.particle_count, theme.PARTICLE_SPEED[:3]),
             ):
                 if not entities:
                     continue

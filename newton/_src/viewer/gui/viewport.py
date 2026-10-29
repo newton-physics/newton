@@ -11,6 +11,7 @@ import numpy as np
 
 from ...geometry.flags import ShapeFlags
 from ...geometry.types import GeoType
+from . import theme
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
@@ -196,9 +197,11 @@ class ViewportControls:
             expanded = ui.is_popup_open("##guides") or ui.is_popup_open("##render_settings")
             draw = ui.get_window_draw_list()
             draw.add_rect_filled(
-                pos, end, widgets.color((0.12, 0.12, 0.12, 0.94 if hovered or expanded else 0.65)), 7 * s
+                pos, end, widgets.color((*theme.VIEWPORT_BACKGROUND[:3], 0.94 if hovered or expanded else 0.65)), 7 * s
             )
-            draw.add_rect(pos, end, widgets.color((0.42, 0.42, 0.42, 0.55 if hovered or expanded else 0.28)), 7 * s)
+            draw.add_rect(
+                pos, end, widgets.color((*theme.VIEWPORT_BORDER[:3], 0.55 if hovered or expanded else 0.28)), 7 * s
+            )
             row_y = ui.get_cursor_pos_y()
             if widgets.icon_button(
                 "##view_guides",

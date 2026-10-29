@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
 from ...exceptions import NewtonDeprecationWarning, NewtonWarning
+from . import theme
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -296,12 +297,12 @@ class ViewerConsole:
     def color(level: int) -> tuple[float, float, float, float]:
         """Map logging severity to the console RGBA text palette."""
         if level >= logging.ERROR:
-            return (1.0, 0.43, 0.43, 1.0)
+            return theme.CONSOLE_ERROR
         if level >= logging.WARNING:
-            return (0.96, 0.74, 0.35, 1.0)
+            return theme.CONSOLE_WARNING
         if level >= logging.INFO:
-            return (0.85, 0.85, 0.85, 1.0)
-        return (0.58, 0.58, 0.58, 1.0)
+            return theme.CONSOLE_INFO
+        return theme.CONSOLE_DEBUG
 
     def toggle(self) -> None:
         """Toggle panel visibility and request scrolling to the end when follow mode is enabled."""
@@ -325,7 +326,7 @@ class ViewerConsole:
         draw = ui.get_window_draw_list()
         if ui.is_item_hovered() or self.open:
             draw.add_rect_filled(
-                ui.get_item_rect_min(), ui.get_item_rect_max(), widgets.color((0.22, 0.22, 0.22, 1)), 3 * s
+                ui.get_item_rect_min(), ui.get_item_rect_max(), widgets.color(theme.CONSOLE_BUTTON_HOVERED), 3 * s
             )
         widgets.icon("console", (pos.x, top + (height - 16 * s) / 2), 16 * s, active=self.open)
         text_y = widgets.text_top(top, height)
@@ -450,7 +451,7 @@ class ViewerConsole:
                     ui.table_next_row(0, row_height)
                     ui.table_set_column_index(0)
                     ui.push_id(f"{entry.sequence}:{line}")
-                    ui.push_style_color(ui.Col_.text, ui.ImVec4(0.58, 0.58, 0.58, 1))
+                    ui.push_style_color(ui.Col_.text, ui.ImVec4(*theme.TEXT_DISABLED))
                     clicked, _ = ui.selectable(
                         (entry.timestamp if line == 0 else "") + "##record",
                         self.selected == entry.sequence,
