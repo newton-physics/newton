@@ -78,14 +78,17 @@ def test_parent_wrench_eager_step_before_first_replay(test, device):
 
 
 def _branched_chains(device, world_count=2):
-    """Two-branch revolute trees on a fixed base plus a free box, with gravity, revolute joint forces and velocities."""
+    """Two-branch revolute trees on a fixed base plus a free box, with gravity, revolute joint forces and velocities.
+
+    The branches have three and four links, so the tree and the free box form two articulation-size groups.
+    """
     template = newton.ModelBuilder()
     root = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01))
     template.add_shape_box(root, hx=0.05, hy=0.05, hz=0.05)
     joints = [template.add_joint_fixed(parent=-1, child=root)]
-    for side in (-1.0, 1.0):
+    for side, levels in ((-1.0, 3), (1.0, 4)):
         parent = root
-        for level in range(3):
+        for level in range(levels):
             child = template.add_link(mass=0.5 + 0.1 * level, inertia=wp.mat33(np.eye(3) * 0.005))
             template.add_shape_capsule(child, radius=0.02, half_height=0.08)
             axis = (0.0, 1.0, 0.0) if level % 2 == 0 else (1.0, 0.0, 0.0)
