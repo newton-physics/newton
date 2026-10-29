@@ -1,1 +1,1 @@
-Apply coupled input-state notifications to `SolverMuJoCo` immediately when `update_data_interval` is not 1.
+Clear the flags of shapes outside a coupled entry view, including after shape-property refreshes.
