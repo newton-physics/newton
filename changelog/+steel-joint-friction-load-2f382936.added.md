@@ -1,1 +1,1 @@
-Add an experimental `steel:joint_friction_load_coefficient` joint DOF attribute to `SolverSteel` that grows a DOF's joint friction with the load its joint transmits, as PhysX articulation joint friction coefficients do.
+Add an experimental `steel:joint_friction_load_coefficient` joint DOF attribute to `SolverSteel` that grows a DOF's joint friction with the load its joint transmits, as PhysX articulation joint friction coefficients do. The load term is set up only when a coefficient is positive at construction.

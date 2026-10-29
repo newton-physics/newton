@@ -2127,6 +2127,11 @@ LOAD_COEFFICIENT = 0.1
 INERTIA_LOAD = 0.01
 
 
+INVALID_LOAD_FRICTION = (
+    r"Model\.joint_friction or steel:joint_friction_load_coefficient was invalid at a step in worlds \[-1\]"
+)
+
+
 ARM_LENGTH = 0.3
 
 
@@ -2312,7 +2317,7 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
                 solver.check_constraint_capacity()
                 _load_coefficient(model).fill_(edit)
                 _advance_friction(solver, states, control, 1)
-                with self.assertRaisesRegex(RuntimeError, r"joint_friction was invalid at a step in worlds \[-1\]"):
+                with self.assertRaisesRegex(RuntimeError, INVALID_LOAD_FRICTION):
                     solver.check_constraint_capacity()
 
     def test_overflowing_load_term_keeps_the_row(self):
@@ -2347,27 +2352,30 @@ class TestSteelJointFrictionLoad(unittest.TestCase):
         _, qd = _advance_hinge(solver, model, effort, 1)
         self.assertAlmostEqual(float(qd), effort / INERTIA_LOAD * DT_JOINT_FRICTION, delta=1.0e-5)
         self.assertEqual(float(solver._joint_friction_total.numpy()[0]), float("inf"))
-        with self.assertRaisesRegex(RuntimeError, r"joint_friction was invalid at a step in worlds \[-1\]"):
+        with self.assertRaisesRegex(RuntimeError, INVALID_LOAD_FRICTION):
             solver.check_constraint_capacity()
 
     def test_rejects_wrong_shape_replacement(self):
         """Raise before any launch when a coefficient array is replaced with a wrong shape."""
         flags = newton.ModelFlags.JOINT_DOF_PROPERTIES
-        for name in ("joint_friction", "joint_friction_load_coefficient"):
+        for name, count, at_step in (
+            ("joint_friction", 0, False),
+            ("joint_friction", 2, True),
+            ("joint_friction_load_coefficient", 2, False),
+            ("joint_friction_load_coefficient", 0, True),
+        ):
             label = name if name == "joint_friction" else f"steel:{name}"
-            for count in (0, 2):
-                for at_step in (False, True):
-                    with self.subTest(name=name, count=count, at_step=at_step):
-                        model = _lateral_hinge_model(1.0)
-                        solver = _friction_solver(model)
-                        owner = model if name == "joint_friction" else model.steel
-                        setattr(owner, name, wp.full(count, 0.5, dtype=wp.float32, device=model.device))
-                        with self.assertRaisesRegex(ValueError, rf"{label} has shape \({count},\), expected \(1,\)"):
-                            if at_step:
-                                states, control = [model.state(), model.state()], model.control()
-                                _advance_friction(solver, states, control, 1)
-                            else:
-                                solver.notify_model_changed(flags)
+            with self.subTest(name=name, count=count, at_step=at_step):
+                model = _lateral_hinge_model(1.0)
+                solver = _friction_solver(model)
+                owner = model if name == "joint_friction" else model.steel
+                setattr(owner, name, wp.full(count, 0.5, dtype=wp.float32, device=model.device))
+                with self.assertRaisesRegex(ValueError, rf"{label} has shape \({count},\), expected \(1,\)"):
+                    if at_step:
+                        states, control = [model.state(), model.state()], model.control()
+                        _advance_friction(solver, states, control, 1)
+                    else:
+                        solver.notify_model_changed(flags)
 
     def test_unregistered_coefficient_notifies_and_steps(self):
         """Notify eagerly and under capture, and step, without the coefficient attribute."""

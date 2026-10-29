@@ -1514,7 +1514,7 @@ class SolverSteel(SolverBase):
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
         """Register the body, shape and joint DOF attributes consumed by Steel in the ``steel`` namespace.
 
-        Each attribute maps to the matching PhysX rigid-body USD attribute:
+        Each body and shape attribute maps to the matching PhysX USD attribute:
 
         - ``steel:rigid_body_angular_damping`` [1/s] damps the angular velocity of free bodies and
           floating bases as ``w *= 1 - d dt`` each step (``physxRigidBody:angularDamping``,
@@ -1545,6 +1545,11 @@ class SolverSteel(SolverBase):
           friction law of PhysX articulations before PhysX 5.6, and the sum mixes units as it does there. USD
           reads it only from an explicitly authored ``newton:steel:jointFrictionLoadCoefficient``, not from
           ``physxJoint:jointFriction``, because the rows interact with drives differently from PhysX.
+
+          .. experimental::
+
+              ``steel:joint_friction_load_coefficient``, its USD name ``newton:steel:jointFrictionLoadCoefficient``
+              and its load law may change without the normal deprecation period.
 
         The solver reads them from the model at every step, for example
         ``model.steel.rigid_body_angular_damping``. Models built without these attributes use the defaults.
@@ -1775,7 +1780,7 @@ class SolverSteel(SolverBase):
                 the free dynamics and count toward the load; ``drive_mode="rows"`` leaves them out, as PhysX
                 does. The coefficients follow the validity rules and notify contract of
                 :attr:`~newton.Model.joint_friction`. A model built with every coefficient zero must keep them
-                zero.
+                zero; to randomize coefficients after construction, make at least one positive beforehand.
 
                 .. experimental::
 
@@ -7514,7 +7519,10 @@ class SolverSteel(SolverBase):
         invalid = np.flatnonzero(self._joint_friction_invalid.numpy())
         if invalid.size:
             worlds = np.where(invalid == self.model.world_count, -1, invalid)
-            raise RuntimeError(f"Steel: joint_friction was invalid at a step in worlds {worlds[:16].tolist()}.")
+            names = "Model.joint_friction"
+            if self._namespaced_attribute("joint_friction_load_coefficient") is not None:
+                names += " or steel:joint_friction_load_coefficient"
+            raise RuntimeError(f"Steel: {names} was invalid at a step in worlds {worlds[:16].tolist()}.")
         flags = self.constraint_overflow.numpy()
         worlds = np.flatnonzero(flags[:-1])
         global_flagged = bool(flags[-1])
