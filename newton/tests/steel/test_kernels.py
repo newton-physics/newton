@@ -24,6 +24,7 @@ from newton._src.solvers.steel.solver_steel import (
     _select_delassus_chunk_size,
     _select_hinv_jt_chunk_size,
     _SteelExecutionPlan,
+    _use_mfgs_pair_cache,
     _use_resident_mfgs_metadata,
 )
 from newton.solvers import SolverSteel
@@ -1915,6 +1916,92 @@ add_function_test(
     devices=get_cuda_test_devices(),
 )
 
+
+def _pair_cache_rollout(model, *, cached, torsion_radius=0.0, **options):
+    if torsion_radius > 0.0:
+        set_torsion_radius(model, torsion_radius)
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        iterations=12,
+        enable_joint_limits=True,
+        free_body_constraint_max=_ROWS,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
+        **options,
+    )
+    if not cached:
+        solver._pgs_solve_mf_gs_kernels = {0: solver._pgs_solve_mf_gs_kernel_for_phase(pair_cache=False)}
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
+    contacts = pipeline.contacts()
+    state, next_state, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    trace = []
+    for _ in range(120):
+        pipeline.collide(state, contacts)
+        solver.step(state, next_state, control, contacts, 1.0 / 240.0)
+        for name in ("joint_q", "joint_qd", "body_q", "body_qd"):
+            wp.copy(getattr(state, name), getattr(next_state, name))
+        trace.append(np.concatenate([state.body_q.numpy().ravel(), state.body_qd.numpy().ravel()]))
+    return solver, np.asarray(trace)
+
+
+def test_pair_cache_matches_the_uncached_solve(test, device, torsion_radius=0.0, **options):
+    """The friction-pair and row caches reproduce the uncached MF-GS solve bit for bit."""
+    model = _build_chains_on_boxes(device)
+    solver, cached = _pair_cache_rollout(model, cached=True, torsion_radius=torsion_radius, **options)
+    test.assertTrue(solver._mfgs_pair_cache)
+    test.assertIn("_paircache", solver._pgs_solve_mf_gs_kernel.key)
+    # Streamed metadata also selects the row type and parent cache.
+    test.assertEqual(options["articulation_constraint_max"] > _ROWS, "_gmeta" in solver._pgs_solve_mf_gs_kernel.key)
+    test.assertEqual(torsion_radius > 0.0, solver._contact_torsion_enabled)
+    _, uncached = _pair_cache_rollout(model, cached=False, torsion_radius=torsion_radius, **options)
+    test.assertTrue(np.isfinite(uncached).all())
+    np.testing.assert_array_equal(cached.view(np.uint32), uncached.view(np.uint32))
+
+
+def test_pair_cache_selection(test, device):
+    """Select the pair cache only for the fixed-normal pair solve with several sweeps per launch, all worlds resident."""
+    shape = {"shared_metadata": False, "has_drive_rows": True, "fuse_vel_limits": False}
+    test.assertTrue(_use_mfgs_pair_cache(128, 64, 39, 48 * 1024, world_count=64, sm_count=100, **shape))
+    test.assertFalse(_use_mfgs_pair_cache(128, 64, 39, 48 * 1024, world_count=100_000, sm_count=100, **shape))
+    model = _build_chains_on_boxes(device)
+    options = {"solve_mode": "matrix_free", "articulation_constraint_max": _ROWS, "free_body_constraint_max": _ROWS}
+    test.assertTrue(SolverSteel(model, **options)._mfgs_pair_cache)
+    for excluded in (
+        {"row_schedule": "phased"},
+        {"articulated_contact_response": "propagation"},
+        {"friction_mode": "bisection", "friction_anchor_beta": 0.0},
+    ):
+        with test.subTest(**excluded):
+            test.assertFalse(SolverSteel(model, **options, **excluded)._mfgs_pair_cache)
+
+
+class TestSteelMatrixFreePairCache(unittest.TestCase):
+    pass
+
+
+for _name, _options in (
+    ("resident_metadata", {"articulation_constraint_max": _ROWS}),
+    ("streamed_metadata", {"articulation_constraint_max": 192, "drive_mode": "rows"}),
+    (
+        "contact_then_internal",
+        {"articulation_constraint_max": 192, "drive_mode": "rows", "row_schedule": "contact_then_internal"},
+    ),
+    ("contact_torsion", {"articulation_constraint_max": 192, "drive_mode": "rows", "torsion_radius": 0.02}),
+):
+    add_function_test(
+        TestSteelMatrixFreePairCache,
+        f"test_pair_cache_matches_the_uncached_solve_{_name}",
+        test_pair_cache_matches_the_uncached_solve,
+        devices=get_cuda_test_devices(),
+        **_options,
+    )
+add_function_test(
+    TestSteelMatrixFreePairCache,
+    "test_pair_cache_selection",
+    test_pair_cache_selection,
+    devices=get_cuda_test_devices(),
+)
 
 if __name__ == "__main__":
     unittest.main()

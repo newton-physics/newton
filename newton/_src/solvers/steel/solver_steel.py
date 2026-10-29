@@ -976,6 +976,40 @@ def _use_resident_mfgs_metadata(
     return metadata_bytes <= _MFGS_RESIDENT_METADATA_MAX_BYTES and total_shared_bytes <= max_shared_memory
 
 
+def _use_mfgs_pair_cache(
+    max_constraints: int,
+    free_body_constraint_max: int,
+    max_world_dofs: int,
+    max_shared_memory: int,
+    *,
+    shared_metadata: bool,
+    has_drive_rows: bool,
+    fuse_vel_limits: bool,
+    world_count: int,
+    sm_count: int,
+) -> bool:
+    """Select the MF-GS friction-pair cache when a shared-memory estimate keeps every world resident.
+
+    The caches shorten each world's serial chain but lower blocks per SM; once worlds queue for SMs, the extra waves
+    cost more than they save. The estimate ignores register, block-count and carveout limits.
+    """
+    metadata_arrays = 4 + 4 * int(has_drive_rows) + int(fuse_vel_limits)
+    metadata_bytes = 4 * max_constraints * metadata_arrays if shared_metadata else 0
+    cache_bytes = 2 * max_constraints + 4 * 5 * _mfgs_pair_cache_capacity(max_constraints)
+    if not shared_metadata:
+        cache_bytes += 3 * max_constraints
+    base_shared_bytes = 4 * (max_world_dofs + max_constraints + free_body_constraint_max)
+    block_bytes = _MFGS_TILE_SHARED_STORAGE_BYTES + base_shared_bytes + metadata_bytes + cache_bytes
+    resident_worlds = sm_count * (max_shared_memory // block_bytes)
+    # Row parents are cached as short.
+    return max_constraints <= 32767 and block_bytes <= max_shared_memory and world_count <= resident_worlds
+
+
+def _mfgs_pair_cache_capacity(max_constraints: int) -> int:
+    """Return the most dense friction pairs a world holds; each pair owns a normal row and two tangent rows."""
+    return max(max_constraints // 3, 1)
+
+
 _HINV_JT_MAX_CHUNK_SIZE = 32
 
 
@@ -5871,11 +5905,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         if self._solve_mode == "split":
             self._pack_mf_meta_kernel = None
             self._pgs_solve_mf_gs_kernel = None
+            self._mfgs_pair_cache = False
             self._init_split_kernels(model)
             return
 
         self._pack_mf_meta_kernel = _get_pack_mf_meta_kernel(self._mf_meta_packed.shape[1] // 4, device_arch)
         self._pgs_solve_mf_gs_kernel = None
+        self._mfgs_pair_cache = False
         self._init_propagation_kernels(model)
         triples = self._sparse_diagonal_contact_triples
         self._mark_independent_sparse_contact_candidates_kernel = (
@@ -5922,6 +5958,24 @@ class SolverSteel(SolverBase, CouplingInterface):
                 fuse_vel_limits=self._velocity_limits_fused,
             )
             row_phases = self._propagation_active or self._row_schedule != "interleaved"
+            # The cache's prologue runs once per launch, so it pays off only when a launch runs several sweeps.
+            self._mfgs_pair_cache = (
+                self._friction_mode == "fixed_normal"
+                and not self._paired_factor_coordinates
+                and not self._propagation_active
+                and self._row_schedule != "phased"
+                and _use_mfgs_pair_cache(
+                    self._articulation_constraint_max,
+                    mf_rows,
+                    self._max_world_dofs,
+                    int(getattr(model.device, "max_shared_memory_per_block", 0)),
+                    shared_metadata=shared_metadata,
+                    has_drive_rows=self._has_drive_rows,
+                    fuse_vel_limits=self._velocity_limits_fused,
+                    world_count=self._world_count,
+                    sm_count=int(getattr(model.device, "sm_count", 0)),
+                )
+            )
             self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
                 _get_pgs_solve_mf_gs_kernel,
                 self._articulation_constraint_max,
@@ -5939,6 +5993,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 skip_local_internal_worlds=self._local_internal_fast_path,
                 joint_friction=bool(self._joint_friction_warp_kernels),
                 contact_compliance=self._contact_compliance,
+                pair_cache=self._mfgs_pair_cache,
             )
             if row_phases:
                 # One kernel per row phase the schedule launches, each with its phase compiled in.
@@ -14734,6 +14789,7 @@ def _get_pgs_solve_mf_gs_kernel(
     joint_friction: bool = False,
     contact_compliance: bool = False,
     row_phase: int | None = None,
+    pair_cache: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -14786,6 +14842,8 @@ def _get_pgs_solve_mf_gs_kernel(
         contact_torsion: Emit the contact torsion pass.
         row_phases: Honor the ``row_phase`` launch argument.
         row_phase: With ``row_phases``, compile this row phase in and ignore the launch argument.
+        pair_cache: Set up each dense friction pair's 2x2 operator once per launch, and with streamed metadata keep a
+            compact shared copy of the row types and parents.
         factor_coordinates: Skip the worlds without free-body rows, which the paired
             factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         skip_local_internal_worlds: Solve only the worlds that the articulation-local solves
@@ -14806,6 +14864,8 @@ def _get_pgs_solve_mf_gs_kernel(
         raise ValueError("fuse_vel_limits requires has_drive_rows")
     if row_phase is not None and not row_phases:
         raise ValueError("row_phase requires row_phases")
+    if pair_cache and (friction_mode != "fixed_normal" or factor_coordinates):
+        raise ValueError("the friction-pair cache requires the fixed-normal pair solve")
     if factor_coordinates and (
         friction_mode != "fixed_normal"
         or has_drive_rows
@@ -14842,6 +14902,16 @@ def _get_pgs_solve_mf_gs_kernel(
     )
     dense_dot = lanes("            if ({d} < " + str(D) + ") my_sum += cur_dJ_{k} * s_v[{d}];")
     # A friction pair's sibling J v and cross term J_i Y_sib, with row i's J from the prefetch registers.
+    dense_sib_dot = lanes(
+        "                        if ({d} < "
+        + str(D)
+        + ") sibling_residual += J_world.data[sib_row_base + {d}] * s_v[{d}];"
+    )
+    prologue_cross = lanes(
+        "            if ({d} < "
+        + str(D)
+        + ") cross += J_world.data[row_base + {d}] * Y_world.data[sib_row_base + {d}];"
+    )
     dense_pair_dot = lanes(
         "                    if ({d} < "
         + str(D)
@@ -14939,6 +15009,62 @@ def _get_pgs_solve_mf_gs_kernel(
     )
     torsion_skip = f"if (row_type == {int(PGS_CONSTRAINT_TYPE_TORSION)}) continue;" if contact_torsion else ""
     torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
+    pair_cache_capacity = _mfgs_pair_cache_capacity(M_D)
+    # Streamed metadata rereads row types and parents every sweep (patch chains, torsion members).
+    row_cache = pair_cache and not shared_metadata
+    row_cache_build = (
+        f"""
+    __shared__ unsigned char s_row_type[{M_D}];
+    __shared__ short s_row_parent[{M_D}];
+    {{
+        const int* row_type_source = &world_row_type.data[off_dense];
+        const int* row_parent_source = &world_row_parent.data[off_dense];
+        for (int r = lane; r < m_dense; r += 32) {{
+            s_row_type[r] = (unsigned char)row_type_source[r];
+            s_row_parent[r] = (short)row_parent_source[r];
+        }}
+        __syncwarp();
+    }}"""
+        if row_cache
+        else ""
+    )
+    pair_cache_build = (
+        f"""{row_cache_build}
+    // Each dense friction pair's 2x2 operator depends only on its rows, so it is set up once per launch.
+    __shared__ short s_pair_slot[{M_D}];
+    __shared__ float s_pair_op[5][{pair_cache_capacity}];
+    if (contact_rows) {{
+        int pairs = 0;
+        for (int i = 0; i < dense_main_end; i++) {{
+            if ((s_meta_dense[i] & {type_mask}) != {int(PGS_CONSTRAINT_TYPE_FRICTION)}) continue;
+            if (i != ((s_meta_dense[i] >> {type_bits}) - 1) + 1) continue;
+            if (pairs >= {pair_cache_capacity}) {{
+                if (lane == 0) s_pair_slot[i] = -1;
+                continue;
+            }}
+            int row_base = jy_world_base + i * {D};
+            int sib_row_base = jy_world_base + (i + 1) * {D};
+            float cross = 0.0f;
+{prologue_cross}
+            cross = warp_sum(cross);
+            float scale, largest, smallest, vx, vy;
+            friction_pair_setup(s_diag_dense[i], cross, s_diag_dense[i + 1], scale, largest, smallest, vx, vy);
+            if (lane == 0) {{
+                s_pair_slot[i] = pairs;
+                s_pair_op[0][pairs] = scale;
+                s_pair_op[1][pairs] = largest;
+                s_pair_op[2][pairs] = smallest;
+                s_pair_op[3][pairs] = vx;
+                s_pair_op[4][pairs] = vy;
+            }}
+            ++pairs;
+        }}
+        __syncwarp();
+    }}
+"""
+        if pair_cache
+        else ""
+    )
     joint_friction_projection = (
         f""" else if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)}) {{
                 // Joint friction box [-f dt, f dt]; mu holds the bound.
@@ -14977,6 +15103,38 @@ def _get_pgs_solve_mf_gs_kernel(
         torsion_sweep = f"        if (contact_rows) {{\n{torsion_sweep}\n        }}"
 
     friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
+    dense_pair_solve = (
+        """                    float sibling_residual = 0.0f;
+                    float cross = 0.0f;
+"""
+        + dense_pair_dot
+        + """
+                    sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
+                    cross = warp_sum(cross);
+                    float2 pair = friction_pair_candidate(denom, cross, s_diag_dense[sib],
+                        residual, sibling_residual, old_impulse, s_lam_dense[sib], radius, omega);
+"""
+    )
+    if pair_cache:
+        # The launch prologue set up the pair's operator; only its sibling residual changes between sweeps.
+        dense_pair_solve = (
+            """                    const int pair_slot = s_pair_slot[i];
+                    float2 pair;
+                    if (pair_slot >= 0) {
+                        float sibling_residual = 0.0f;
+"""
+            + dense_sib_dot
+            + """
+                        sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
+                        pair = friction_pair_solve(s_pair_op[0][pair_slot], s_pair_op[1][pair_slot],
+                            s_pair_op[2][pair_slot], s_pair_op[3][pair_slot], s_pair_op[4][pair_slot],
+                            residual, sibling_residual, old_impulse, s_lam_dense[sib], radius, omega);
+                    } else {
+"""
+            + dense_pair_solve.replace("float2 pair = ", "pair = ")
+            + """                    }
+"""
+        )
     dense_friction_update = f"""                // The first tangent row solves both tangents of its contact; the second
                 // row's impulse was written by the first.
                 int parent_idx = (s_meta_dense[i] >> {type_bits}) - 1;
@@ -14993,14 +15151,7 @@ def _get_pgs_solve_mf_gs_kernel(
                          patch_row = ((s_meta_dense[patch_row] >> {type_bits}) - 1))
                         lambda_n += s_lam_dense[patch_row];
                     float radius = fmaxf(s_mu_dense[i] * lambda_n, 0.0f);
-                    float sibling_residual = 0.0f;
-                    float cross = 0.0f;
-{dense_pair_dot}
-                    sibling_residual = warp_sum(sibling_residual) + s_rhs_dense[sib];
-                    cross = warp_sum(cross);
-                    float2 pair = friction_pair_candidate(denom, cross, s_diag_dense[sib],
-                        residual, sibling_residual, old_impulse, s_lam_dense[sib], radius, omega);
-                    float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
+{dense_pair_solve}                    float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
                     float scale = mag > radius ? radius / mag : 1.0f;
                     new_impulse = pair.x * scale;
                     float sib_delta = pair.y * scale - s_lam_dense[sib];
@@ -15148,7 +15299,7 @@ def _get_pgs_solve_mf_gs_kernel(
         s_v[d] = global_dof >= 0 ? v_out.data[global_dof] : 0.0f;
     }}
     __syncwarp();
-
+{pair_cache_build}
 {dense_pipe_decl}
 
     for (int iter = 0; iter < iterations; iter++) {{
@@ -15396,6 +15547,11 @@ def _get_pgs_solve_mf_gs_kernel(
         snippet = re.sub(r"s_meta_dense\[i\] & \d+", "world_row_type.data[off_dense + i]", snippet)
         if "s_meta_dense" in snippet:
             raise RuntimeError("streaming the dense row metadata left a reference to the shared array")
+        snippet = _prefetch_streamed_dense_metadata(snippet)
+    if row_cache:
+        # Every later row type or parent read comes from the compact shared copy.
+        snippet = re.sub(r"world_row_type\.data\[off_dense \+ ([^\]]+)\]", r"s_row_type[\1]", snippet)
+        snippet = re.sub(r"world_row_parent\.data\[off_dense \+ ([^\]]+)\]", r"s_row_parent[\1]", snippet)
 
     helpers = (
         FRICTION_PAIR_CUDA
@@ -15428,6 +15584,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 joint_friction,
                 contact_compliance,
                 row_phase,
+                pair_cache,
             )
             + "_local",
         )
@@ -15573,6 +15730,7 @@ def _get_pgs_solve_mf_gs_kernel(
         joint_friction,
         contact_compliance,
         row_phase,
+        pair_cache,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -15594,12 +15752,14 @@ def _mf_gs_kernel_name(
     joint_friction: bool,
     contact_compliance: bool,
     row_phase: int | None = None,
+    pair_cache: bool = False,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
         f"pgs_solve_mf_gs_{max_constraints}_{free_body_constraint_max}_{max_world_dofs}"
         f"_vlim{int(has_dense_velocity_limit_rows)}_drive{int(has_drive_rows)}_fvl{int(fuse_vel_limits)}"
         f"{'' if shared_metadata else '_gmeta'}"
+        f"{'_paircache' if pair_cache else ''}"
         f"{'_torsion' if contact_torsion else ''}"
         f"{('_phased' if row_phase is None else f'_phase{row_phase}') if row_phases else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
@@ -15607,6 +15767,56 @@ def _mf_gs_kernel_name(
         f"{'_jfric' if joint_friction else ''}"
         f"{'_compliance' if contact_compliance else ''}"
     )
+
+
+def _prefetch_streamed_dense_metadata(snippet: str) -> str:
+    """Load row i+1's streamed metadata with its prefetched J and Y rows in the MF-GS dense sweep.
+
+    The dense rows form a serial chain, so each row otherwise waits on these global loads.
+    """
+
+    def loads(row: str, indent: str) -> str:
+        return "".join(
+            f"{indent}{line}\n"
+            for line in (
+                f"pre_row_type = world_row_type.data[off_dense + {row}];",
+                f"pre_row_parent = world_row_parent.data[off_dense + {row}];",
+                f"pre_diag = world_diag.data[off_dense + {row}];",
+                f"pre_rhs = rhs_bias.data[off_dense + {row}];",
+                f"pre_row_w = regularize != 0 ? world_row_w.data[off_dense + {row}] : 1.0f;",
+            )
+        )
+
+    def after_line(source: str, fragment: str, text: str) -> str:
+        if source.count(fragment) != 1:
+            raise RuntimeError(f"expected one generated-source fragment {fragment.strip()!r}")
+        line_end = source.index("\n", source.index(fragment)) + 1
+        return source[:line_end] + text + source[line_end:]
+
+    start = snippet.index("// Dense rows, prefetching the response of the next row.")
+    end = snippet.index("// Free-body contact and friction rows, prefetching the next row.")
+    sweep = snippet[start:end]
+    sweep = after_line(sweep, "        if (dense_main_end > 0) {", loads("0", " " * 12))
+    sweep = after_line(
+        sweep,
+        "        for (int i = 0; i < dense_main_end; i++) {",
+        "            const int cur_row_type = pre_row_type, cur_row_parent = pre_row_parent;\n"
+        "            const float cur_diag = pre_diag, cur_rhs = pre_rhs, cur_row_w = pre_row_w;\n",
+    )
+    sweep = after_line(sweep, "int next_jy_base = ", loads("i + 1", " " * 16))
+    for source, register in (
+        ("world_row_type.data[off_dense + i]", "cur_row_type"),
+        ("world_row_parent.data[off_dense + i]", "cur_row_parent"),
+        ("world_diag.data[off_dense + (i)]", "cur_diag"),
+        ("rhs_bias.data[off_dense + (i)]", "cur_rhs"),
+        ("world_row_w.data[off_dense + i]", "cur_row_w"),
+    ):
+        sweep = sweep.replace(source, register)
+    declarations = (
+        "        int pre_row_type = 0, pre_row_parent = -1;\n"
+        "        float pre_diag = 0.0f, pre_rhs = 0.0f, pre_row_w = 1.0f;\n        "
+    )
+    return snippet[:start] + declarations + sweep + snippet[end:]
 
 
 def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
