@@ -4444,7 +4444,8 @@ class TestModelValidation(unittest.TestCase):
             )
             builder.add_shape_sphere(body=-1, cfg=cfg, label=f"collider_{builder.shape_count}")
 
-        for name in ("ke", "kd", "kf", "ka", "mu", "restitution", "mu_torsional", "mu_rolling", "kh"):
+        material_names = ("ke", "kd", "kf", "ka", "mu", "restitution", "mu_torsional", "mu_rolling", "kh")
+        for name in material_names:
             attribute = f"shape_material_{name}"
             values = getattr(builder, attribute)
             for shape in (1, 2):
@@ -4460,6 +4461,17 @@ class TestModelValidation(unittest.TestCase):
 
         model = builder.finalize(device="cpu")
         np.testing.assert_array_equal(model.shape_material_mu.numpy(), builder.shape_material_mu)
+
+        # Finiteness validation must not introduce positivity or unit-interval checks.
+        for value in (0.0, -0.2):
+            for name in material_names:
+                getattr(builder, f"shape_material_{name}")[1:] = [value, value]
+            model = builder.finalize(device="cpu")
+            for name in material_names:
+                with self.subTest(attribute=name, value=value):
+                    np.testing.assert_array_equal(
+                        getattr(model, f"shape_material_{name}").numpy()[1:], np.full(2, value, dtype=np.float32)
+                    )
 
     def test_finalize_contact_material_validation_opt_out(self):
         """Preserve validation opt-outs and ignore unused visual-only contact materials."""
