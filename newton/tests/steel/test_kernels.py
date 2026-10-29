@@ -1818,13 +1818,15 @@ def _row_phase_rollout(model, *, runtime_phase=False, capture=False, **options):
         drive_mode="rows",
         articulation_constraint_max=_ROWS,
         free_body_constraint_max=_ROWS,
+        deterministic=wp.DeterministicMode.RUN_TO_RUN,
         **options,
     )
     prebuilt = set(solver._pgs_solve_mf_gs_kernels)
     if runtime_phase:
         # Every launch takes the kernel that reads the phase argument.
         solver._pgs_solve_mf_gs_kernels = {0: solver._pgs_solve_mf_gs_kernel_for_phase()}
-    pipeline = newton.CollisionPipeline(model)
+    # Ordered contacts and rows, so separate rollouts can be compared bit for bit.
+    pipeline = newton.CollisionPipeline(model, deterministic=True)
     contacts = pipeline.contacts()
     state, next_state, control = model.state(), model.state(), model.control()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
