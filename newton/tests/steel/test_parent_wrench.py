@@ -54,12 +54,13 @@ def test_parent_wrench_eager_step_before_first_replay(test, device):
                     articulation_constraint_max=128,
                     **options,
                 )
-                runs.append((model, pipeline, solver, solver.observables(FLAGS), [model.state(), model.state()]))
+                contacts = pipeline.contacts()
+                observables = solver.observables(FLAGS)
+                states = [model.state(), model.state()]
+                runs.append((pipeline, contacts, solver, observables, states, model.control()))
 
             def step(run):
-                model, pipeline, solver, observables, states = run
-                contacts = pipeline.contacts()
-                control = model.control()
+                pipeline, contacts, solver, observables, states, control = run
                 for i in (0, 1):
                     pipeline.collide(states[i], contacts)
                     solver.step(states[i], states[1 - i], control, contacts, DT_parent_wrench, observables=observables)
