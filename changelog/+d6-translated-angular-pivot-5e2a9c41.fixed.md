@@ -1,0 +1,1 @@
+Fix D6 joints with both linear and angular axes in `SolverFeatherstone`, `SolverSteel` and `eval_jacobian` so that their angular axes pivot about the joint origin translated by the linear DOFs, matching `eval_fk`. Such articulations could gain energy and become unstable once they moved away from the joint anchor.
