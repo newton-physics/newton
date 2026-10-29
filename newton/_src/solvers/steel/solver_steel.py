@@ -20,7 +20,8 @@ from ...core.types import override
 from ...exceptions import NewtonWarning
 from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
-from ...sim.articulation import eval_fk
+from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
+from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
 from ._testing import current_kernel_overrides
@@ -228,6 +229,8 @@ _ROW_SLOT_UNBOUNDED = 2**31 - 1
 _CONTACT_BUILD_THREAD_CAP = 65536
 _CONTACT_JACOBIAN_WORKER_CAP = 4096
 _CONTACT_JACOBIAN_MAX_DOF = 10
+# Coupling endpoints whose point Jacobian is below this fraction of the link Jacobian's scale are immobile.
+_IMMOBILE_POINT_JACOBIAN_RATIO = 1.0e-5
 _JOINT_LIMIT_WARPS_PER_BLOCK = 4
 # Joint types whose DOFs can carry dry joint friction rows.
 _JOINT_FRICTION_TYPES = (int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.BALL), int(JointType.D6))
@@ -1208,7 +1211,7 @@ class _FrictionGapOption(_StepOption):
         super().__set__(instance, value)
 
 
-class SolverSteel(SolverBase):
+class SolverSteel(SolverBase, CouplingInterface):
     """Reduced-coordinate articulated dynamics with a projected Gauss-Seidel constraint solve.
 
     .. experimental::
@@ -2437,6 +2440,9 @@ class SolverSteel(SolverBase):
 
         self._step = 0
         self._force_mass_update = False
+        self._coupling_patch_history_snapshot_pending = False
+        self._coupling_patch_history_restore_pending = False
+        self._coupling_iteration_restarts = True
         self._mass_update_requested = wp.zeros(model.articulation_count, dtype=wp.int32, device=model.device)
         self._last_step_dt = None
 
@@ -2871,6 +2877,8 @@ class SolverSteel(SolverBase):
         world_mask = self._normalize_reset_world_mask(world_mask)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
+        self._coupling_patch_history_snapshot_pending = False
+        self._coupling_patch_history_restore_pending = False
         if self._sleeping is not None:
             self._sleeping.notify(flags)
         dof_inertial = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
@@ -3052,6 +3060,9 @@ class SolverSteel(SolverBase):
             flags: Unused; the solver's history is cleared regardless of the state flags.
         """
         del flags
+        # A reset distribution is not a repeated solve: unselected worlds keep their live history.
+        self._coupling_patch_history_snapshot_pending = False
+        self._coupling_patch_history_restore_pending = False
         if world_mask is None:
             # Restart the host-side cadence; graphs captured earlier keep the values baked into them.
             self._step = 0
@@ -3090,6 +3101,276 @@ class SolverSteel(SolverBase):
         if self._friction_anchors_enabled:
             self._friction_patches.reset(world_mask, int(self.model.world_count))
         self._clear_warmstart_history(world_mask)
+
+    # ------------------------------------------------------------------
+    # Coupling hooks (experimental)
+    # ------------------------------------------------------------------
+
+    @override
+    def coupling_notify_input_state_update(
+        self,
+        state: State,
+        flags: StateFlags | int,
+        *,
+        iteration_restart: bool = False,
+        dt: float = 0.0,
+    ) -> None:
+        """Schedule a save or rewind of the carried friction-patch history for the next step.
+
+        When the coupler may restart a step, the next step after a kinematic write saves the history and
+        the next step after an iteration restart restores the saved copy, so repeated solves of one
+        coupled step start from the same history.
+
+        Args:
+            state: Entry input state written by the coupler.
+            flags: :class:`~newton.StateFlags` of the arrays the coupler wrote.
+            iteration_restart: Whether the coupler is repeating the solve of the current step.
+            dt: Step duration [s], or ``0`` for a reset distribution.
+        """
+        del state, dt
+        self._require_coupling_support()
+        if not self._friction_anchors_enabled or not self._coupling_iteration_restarts:
+            return
+        kinematic = int(flags) & int(StateFlags.BODY_Q | StateFlags.BODY_QD | StateFlags.JOINT_Q | StateFlags.JOINT_QD)
+        # step() runs both, so a graph captured from the coupled step records them; a reset cancels both.
+        if iteration_restart:
+            self._coupling_patch_history_restore_pending = True
+        elif kinematic:
+            self._coupling_patch_history_snapshot_pending = True
+
+    @override
+    def coupling_notify_iteration_restarts(self, enabled: bool) -> None:
+        """Reject unsupported coupled options, and save the patch history only when a restart can follow.
+
+        A coupler that can restart a step requires ``update_mass_matrix_interval=1``.
+
+        Args:
+            enabled: Whether the coupler may restart a step's solve.
+        """
+        self._require_coupling_support()
+        if enabled and self._update_mass_matrix_interval != 1:
+            # A matrix rebuilt by a later substep would carry into the restarted solve.
+            raise NotImplementedError(
+                "SolverSteel coupling with iteration restarts does not support update_mass_matrix_interval > 1."
+            )
+        self._coupling_iteration_restarts = bool(enabled)
+        if enabled:
+            # Reserve outside graph capture; the coupled step saves the history, possibly while capturing.
+            self._friction_patches.reserve_history_snapshot()
+
+    @override
+    def coupling_effective_mass_refresh_flags(self) -> int:
+        """Return the model flags after which the articulated effective masses change."""
+        return int(
+            ModelFlags.JOINT_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.BODY_PROPERTIES
+            | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        )
+
+    @override
+    def coupling_eval_effective_mass(
+        self,
+        endpoint_kind: wp.array[int],
+        endpoint_index: wp.array[int],
+        endpoint_local_pos: wp.array[wp.vec3],
+        out: wp.array[float],
+    ) -> None:
+        """Evaluate articulated effective masses for coupling endpoints.
+
+        See :meth:`coupling_eval_effective_mass_block`. Evaluated on the host; call outside graph capture.
+
+        Args:
+            endpoint_kind: Endpoint kinds.
+            endpoint_index: Endpoint-local body or particle ids.
+            endpoint_local_pos: Body-frame endpoint offsets from the body COM [m].
+            out: Output effective masses [kg].
+        """
+        super().coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out)
+        weights = self._coupling_articulated_inverse_weights(endpoint_kind, endpoint_index, endpoint_local_pos)
+        if weights is not None:
+            rows, inv_mass, _inv_rot = weights
+            mass = out.numpy()
+            mass[rows] = 1.0 / inv_mass
+            out.assign(mass)
+
+    @override
+    def coupling_eval_effective_mass_block(
+        self,
+        endpoint_kind: wp.array[int],
+        endpoint_index: wp.array[int],
+        endpoint_local_pos: wp.array[wp.vec3],
+        out_mass: wp.array[float],
+        out_inertia: "wp.array[wp.mat33] | None" = None,
+    ) -> None:
+        """Evaluate articulated effective mass and inertia for coupling endpoints.
+
+        A body endpoint's mass is the inverse of the axis mean of ``J_p H^-1 J_p^T``: ``J_p`` is the point
+        Jacobian at ``endpoint_local_pos`` and ``H`` the tree-only joint-space mass matrix with armature at
+        ``model.joint_q``, where kinematic DOFs take the large armature of the solve; loop-closing joints,
+        drives, limits and contacts are excluded. The inertia scales the body inertia by the ratio of free
+        to articulated mean angular compliance, and is never smaller than the body inertia. Bodies without
+        mobile joint DOFs, and points that the joints cannot translate, keep the generic estimate.
+        Evaluated on the host; call outside graph capture.
+
+        Args:
+            endpoint_kind: Endpoint kinds.
+            endpoint_index: Endpoint-local body or particle ids.
+            endpoint_local_pos: Body-frame endpoint offsets from the body COM [m].
+            out_mass: Output effective masses [kg].
+            out_inertia: Optional output body inertia tensors [kg m^2].
+        """
+        if out_inertia is None or out_inertia.shape[0] == 0:
+            self.coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out_mass)
+            return
+        super().coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out_mass)
+        kind = endpoint_kind.numpy()
+        body = endpoint_index.numpy()
+        is_body = (kind == int(CouplingInterface.EndpointKind.BODY)) & (body >= 0) & (body < self.model.body_count)
+        inertia = np.zeros((kind.shape[0], 3, 3), dtype=np.float32)
+        inertia[is_body] = self.model.body_inertia.numpy()[body[is_body]]
+        weights = self._coupling_articulated_inverse_weights(endpoint_kind, endpoint_index, endpoint_local_pos)
+        if weights is not None:
+            rows, inv_mass, inv_rot = weights
+            mass = out_mass.numpy()
+            mass[rows] = 1.0 / inv_mass
+            out_mass.assign(mass)
+            for row, articulated_inv_rot in zip(rows, inv_rot, strict=True):
+                tensor = inertia[row]
+                if articulated_inv_rot > 0.0 and abs(np.linalg.det(tensor)) > 1.0e-30:
+                    free_inv_rot = np.trace(np.linalg.inv(tensor)) / 3.0
+                    inertia[row] = tensor * max(free_inv_rot / articulated_inv_rot, 1.0)
+        out_inertia.assign(inertia)
+
+    @override
+    def coupling_prepare_proxy_contacts(
+        self,
+        state: State,
+        contacts: Contacts | None,
+        *,
+        contacts_freshly_detected: bool = False,
+    ) -> Contacts | None:
+        """Reject use as a proxy destination."""
+        raise NotImplementedError("SolverSteel cannot be a proxy coupling destination.")
+
+    @override
+    def coupling_rewind_proxy_body(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        state: State,
+        coupling_forces: wp.array[wp.spatial_vector],
+        body_gravity_acceleration: wp.array[wp.vec3],
+        dt: float,
+    ) -> None:
+        """Reject use as a proxy destination."""
+        raise NotImplementedError("SolverSteel cannot be a proxy coupling destination.")
+
+    @override
+    def coupling_harvest_proxy_wrenches(
+        self,
+        body_local_to_proxy_global: wp.array[int],
+        out_body_f: wp.array[wp.spatial_vector],
+        *,
+        body_qd_before: wp.array[wp.spatial_vector],
+        state: State,
+        state_out: State,
+        contacts: Contacts | None,
+        dt: float,
+    ) -> None:
+        """Reject use as a proxy destination."""
+        raise NotImplementedError("SolverSteel cannot be a proxy coupling destination.")
+
+    def _coupling_articulated_inverse_weights(
+        self,
+        endpoint_kind: wp.array[int],
+        endpoint_index: wp.array[int],
+        endpoint_local_pos: wp.array[wp.vec3],
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """Return articulated endpoint rows with their mean inverse translational and rotational weights."""
+        self._require_coupling_support()
+        model = self.model
+        if endpoint_kind.shape[0] == 0 or not model.articulation_count:
+            return None
+        kind = endpoint_kind.numpy()
+        body = endpoint_index.numpy()
+        local_pos = endpoint_local_pos.numpy().astype(np.float64)
+        articulation_start = model.articulation_start.numpy()
+        tree_end = self._model_plan.articulation_joint_end
+        joint_child = model.joint_child.numpy()
+        body_joint = np.full(model.body_count, -1, dtype=np.int64)
+        for art in range(model.articulation_count):
+            tree_joints = np.arange(int(articulation_start[art]), int(tree_end[art]))
+            body_joint[joint_child[tree_joints]] = tree_joints
+        rows = np.nonzero((kind == int(CouplingInterface.EndpointKind.BODY)) & (body >= 0) & (body < model.body_count))[
+            0
+        ]
+        rows = rows[body_joint[body[rows]] >= 0]
+        rows = rows[(model.body_flags.numpy()[body[rows]] & int(BodyFlags.KINEMATIC)) == 0]
+        if rows.shape[0] == 0:
+            return None
+
+        state = model.state()
+        eval_fk(model, model.joint_q, model.joint_qd, state)
+        jacobian_device = eval_jacobian(model, state)
+        jacobian = jacobian_device.numpy()
+        mass_matrix = eval_mass_matrix(model, state, J=jacobian_device).numpy().astype(np.float64)
+        joint_articulation = model.joint_articulation.numpy()
+        joint_qd_start = model.joint_qd_start.numpy()
+        # The solve's armature replaces the authored one: kinematic DOFs carry a large one.
+        armature_delta = self._joint_armature_device.numpy().astype(np.float64) - model.joint_armature.numpy()
+        body_q = state.body_q.numpy().astype(np.float64)
+
+        inverse_mass_matrix: dict[int, np.ndarray] = {}
+        weights = []
+        for row in rows:
+            joint = int(body_joint[body[row]])
+            art = int(joint_articulation[joint])
+            first_joint = int(articulation_start[art])
+            dof_start = int(joint_qd_start[first_joint])
+            dof_count = int(joint_qd_start[int(tree_end[art])]) - dof_start
+            if dof_count == 0:
+                continue
+            if art not in inverse_mass_matrix:
+                h = mass_matrix[art, :dof_count, :dof_count] + np.diag(
+                    armature_delta[dof_start : dof_start + dof_count]
+                )
+                inverse_mass_matrix[art] = np.linalg.inv(h)
+            h_inv = inverse_mass_matrix[art]
+            link = 6 * (joint - first_joint)
+            linear, angular = jacobian[art, link : link + 3, :dof_count], jacobian[art, link + 3 : link + 6, :dof_count]
+            # World-frame lever: rotate the body-frame offset by the body orientation (x, y, z, w).
+            axis, w = body_q[body[row], 3:6], body_q[body[row], 6]
+            twice_cross = 2.0 * np.cross(axis, local_pos[row])
+            lever = local_pos[row] + w * twice_cross + np.cross(axis, twice_cross)
+            px, py, pz = lever
+            point = linear - np.array([[0.0, -pz, py], [pz, 0.0, -px], [-py, px, 0.0]]) @ angular
+            # A point Jacobian of float32 residue size means the joints cannot translate the point.
+            scale = np.linalg.norm(linear) + np.linalg.norm(angular) * np.linalg.norm(lever)
+            if np.linalg.norm(point) > _IMMOBILE_POINT_JACOBIAN_RATIO * scale:
+                inv_mass = np.trace(point @ h_inv @ point.T) / 3.0
+                weights.append((row, inv_mass, np.trace(angular @ h_inv @ angular.T) / 3.0))
+        if not weights:
+            return None
+        rows, inv_mass, inv_rot = (np.asarray(column) for column in zip(*weights, strict=True))
+        return rows, inv_mass, inv_rot
+
+    def _require_coupling_support(self) -> None:
+        """Reject solver options that are not validated inside a coupled simulation."""
+        unsupported = [
+            name
+            for name, enabled in (
+                ("enable_sleeping", self._sleeping is not None),
+                ("contact_warmstart", self._contact_warmstart),
+                ("contact_compliance", self._contact_compliance),
+                ("contact torsion", self._contact_torsion_enabled),
+                # The coupler routes contacts and sums coupling forces with atomics, so their order varies by run.
+                ("deterministic=RUN_TO_RUN", self._ordered_rows),
+            )
+            if enabled
+        ]
+        if unsupported:
+            raise NotImplementedError(f"SolverSteel coupling does not support {', '.join(unsupported)}.")
 
     def _compute_articulation_metadata(self, model):
         self._compute_articulation_indices(model)
@@ -6167,6 +6448,12 @@ class SolverSteel(SolverBase):
         body_parent_f: wp.array | None,
     ) -> State:
         """Run the stages of :meth:`step` after its input checks."""
+        if self._coupling_patch_history_restore_pending:
+            self._friction_patches.restore_history()
+        elif self._coupling_patch_history_snapshot_pending:
+            self._friction_patches.snapshot_history()
+        self._coupling_patch_history_restore_pending = False
+        self._coupling_patch_history_snapshot_pending = False
         if self._contact_torsion_enabled:
             validate_torsion_step(self)
             if self._device_torsion is not None:
