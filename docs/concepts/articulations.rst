@@ -399,7 +399,8 @@ The following patterns are valid and commonly used:
      - Fully used by dynamics
    * - Mass matrix / constraint role
      - No active DOFs when fixed to world
-     - Solver-dependent infinite-mass approximation along kinematic DOFs
+     - Solver-dependent: an infinite-mass approximation along kinematic DOFs, or a weld to the world
+       in :class:`~newton.solvers.SolverMuJoCo`
      - Standard articulated mass matrix
    * - Typical applications
      - Environment geometry, fixtures
