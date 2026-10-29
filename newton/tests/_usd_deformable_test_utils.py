@@ -176,6 +176,17 @@ def _apply_deformable_body_api(prim, *, mass=None, density=None):
         prim.CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(density)
 
 
+def _author_pose(prim, name, points, *, purposes=("bindPose",)):
+    """Author proposal pose attributes without requiring the proposal schema plugin."""
+    from pxr import Sdf
+
+    prim.AddAppliedSchema(f"PhysicsDeformablePoseAPI:{name}")
+    prefix = f"physics:deformablePose:{name}"
+    prim.CreateAttribute(f"{prefix}:purposes", Sdf.ValueTypeNames.TokenArray).Set(purposes)
+    if points is not None:
+        prim.CreateAttribute(f"{prefix}:points", Sdf.ValueTypeNames.Point3fArray).Set(points)
+
+
 def _deformable_stage(up_axis="z"):
     """Create an in-memory stage with the up axis and a physics scene already authored.
 

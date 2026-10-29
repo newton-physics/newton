@@ -136,8 +136,8 @@ spacing and layer placement also apply to skinned meshes.
 
 Update shared output before logging. Hidden meshes stop uploading geometry;
 showing them restores the latest evaluated points. Backend differences are
-listed below. :meth:`ModelBuilder.add_usd` does not import deformable visual
-bindings yet.
+listed below. :meth:`ModelBuilder.add_usd` can bind graphics meshes to imported
+deformables; see :ref:`usd-deformable-visual-import`.
 
 Pass per-vertex ``uvs`` and an image array or path as ``texture`` when adding a
 visual mesh. GL, USD, RTX, and Rerun viewers pick up a new ``mesh.texture``

@@ -8,19 +8,8 @@ import unittest
 import numpy as np
 
 import newton.usd
+from newton.tests._usd_deformable_test_utils import _author_pose
 from newton.tests.unittest_utils import USD_AVAILABLE
-
-
-def _author_pose(prim, name, points, *, purposes=("bindPose",)):
-    """Author proposal attributes without requiring the proposal schema plugin."""
-    from pxr import Sdf
-
-    prim.AddAppliedSchema(f"PhysicsDeformablePoseAPI:{name}")
-    prefix = f"physics:deformablePose:{name}"
-    prim.CreateAttribute(f"{prefix}:purposes", Sdf.ValueTypeNames.TokenArray).Set(purposes)
-    if points is not None:
-        prim.CreateAttribute(f"{prefix}:points", Sdf.ValueTypeNames.Point3fArray).Set(points)
-
 
 # The tire example of the AOUSD deformables proposal (commit 63c74d79, section "Geometry
 # Embeddings") with concrete points. It authors the pose attributes independently of the
