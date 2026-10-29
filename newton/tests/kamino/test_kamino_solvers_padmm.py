@@ -862,9 +862,12 @@ class TestPADMMSolver(unittest.TestCase):
 
         # Dense and sparse solves/reductions accumulate float32 roundoff
         # differently. Allow absolute error in near-zero components of these
-        # O(10) velocities, including when inertia inversion rounds differently.
-        for dense_values, sparse_values in zip(info_vectors[False], info_vectors[True], strict=True):
-            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=1e-5)
+        # O(10) velocities, which can shift with one-ULP changes in model inputs.
+        # Keep the tighter bound for the correction s.
+        for dense_values, sparse_values, atol in zip(
+            info_vectors[False], info_vectors[True], (1e-5, 1e-5, 1e-6), strict=True
+        ):
+            np.testing.assert_allclose(dense_values, sparse_values, rtol=1e-5, atol=atol)
 
     def test_09_apadmm_restart_matches_bilateral_reference(self):
         """Match a NumPy reference across an APADMM solve whose final iteration restarts.
