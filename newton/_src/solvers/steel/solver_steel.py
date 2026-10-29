@@ -2089,6 +2089,7 @@ class SolverSteel(SolverBase):
                 contact set. ``GPU_TO_GPU`` is not supported: passing it raises :class:`ValueError`, and an
                 inherited one emits a :class:`~newton.exceptions.NewtonWarning` and runs ``RUN_TO_RUN``.
                 :attr:`deterministic` reports the mode that runs, after any fallback.
+                ``BODY_PARENT_F`` sums contact wrenches with atomics, so it is outside this guarantee.
                 Steel's kernel modules always opt out of Warp's ``deterministic`` module option, so a
                 process-wide ``wp.config.deterministic`` only selects this mode.
         """
@@ -6195,6 +6196,10 @@ class SolverSteel(SolverBase):
         if control is None:
             control = model.control(clone_variables=False)
         if not model.joint_count:
+            # No body has an inbound joint, so every requested wrench is zero.
+            for target in (body_parent_f, state_out.body_parent_f):
+                if target is not None:
+                    target.zero_()
             self._step += 1
             return state_out
         wp.launch(
@@ -6248,6 +6253,7 @@ class SolverSteel(SolverBase):
                 warnings.warn(
                     "BODY_PARENT_F leaves out pre-eliminated loop-closure reactions; "
                     "set enable_bilateral_preelimination=False to include them.",
+                    NewtonWarning,
                     stacklevel=3,
                 )
             if stage3_qd is not state_in.joint_qd:

@@ -11,6 +11,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.steel.kernels import accumulate_connect_wrenches_from_impulses, populate_connect_J_for_size
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import _build_carried_load, _build_four_bar, set_torsion_radius
 from newton.tests.steel.test_articulation import _prescribe_carrier
@@ -617,7 +618,7 @@ def test_parent_wrench_warns_without_preeliminated_closures(test, device):
     solver = SolverSteel(model, solve_mode="matrix_free", enable_bilateral_preelimination=True)
     observables = solver.observables(FLAGS)
     state_0, state_1 = model.state(), model.state()
-    with test.assertWarnsRegex(UserWarning, "pre-eliminated loop-closure"):
+    with test.assertWarnsRegex(NewtonWarning, "pre-eliminated loop-closure"):
         solver.step(state_0, state_1, None, None, 1.0 / 240.0, observables=observables)
 
 
@@ -649,6 +650,19 @@ def _sphere_on_ground(device, armature):
     model = builder.finalize(device=device)
     model.joint_armature.fill_(armature)
     return model
+
+
+def test_jointless_model_reports_zero(test, device):
+    """A model without joints overwrites the requested wrench rows with zero."""
+    builder = newton.ModelBuilder()
+    body = builder.add_link(is_kinematic=True)
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, solve_mode="split")
+    observables = solver.observables(FLAGS)
+    observables.body_parent_f.fill_(wp.spatial_vector(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
+    solver.step(model.state(), model.state(), None, None, DT_parent_wrench, observables=observables)
+    np.testing.assert_array_equal(observables.body_parent_f.numpy(), 0.0)
 
 
 ARMATURE_DT = 0.01
@@ -885,6 +899,7 @@ add_function_test(
 )
 for _name in (
     "test_unattached_body_reports_zero",
+    "test_jointless_model_reports_zero",
     "test_closure_force_uses_the_row_builder_norm",
     "test_parent_wrench_matches_inverse_dynamics_on_every_path",
     "test_parent_wrench_excludes_joint_armature",
