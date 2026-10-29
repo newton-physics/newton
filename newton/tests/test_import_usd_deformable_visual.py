@@ -318,7 +318,9 @@ class TestUSDDeformableVisual(unittest.TestCase):
         from pxr import UsdGeom
 
         stage = _deformable_stage()
-        _, skin, _ = self._object(stage, "/World/Cable", "curve")
+        _, skin, points = self._object(stage, "/World/Cable", "curve")
+        # This point binds to the second segment but is not part of any rendered face.
+        skin.GetPointsAttr().Set(np.vstack([points, [1.5, 0.1, 1.0]]).tolist())
         for visible in (True, False):
             with self.subTest(visible=visible):
                 skin.CreateVisibilityAttr(UsdGeom.Tokens.inherited if visible else UsdGeom.Tokens.invisible)
