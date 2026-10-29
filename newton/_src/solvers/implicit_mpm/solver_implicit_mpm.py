@@ -1576,6 +1576,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             )
         )
 
+    _rheology_acceleration = "nesterov"
+    """Acceleration of the rheology iterations, ``"nesterov"`` or ``"none"``, see ``solve_rheology``."""
+
     def __init__(
         self,
         model: newton.Model,
@@ -4048,6 +4051,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 temporary_store=self.temporary_store,
                 use_graph=self._use_cuda_graph,
                 verbose=self.verbose,
+                acceleration=self._rheology_acceleration,
             )
 
         for temporary in contact_temporaries:
