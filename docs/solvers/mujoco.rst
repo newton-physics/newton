@@ -1125,7 +1125,8 @@ by joint type:
   ``mjData.mocap_pos`` and ``mjData.mocap_quat`` instead. A D6 root
   with all axes locked (e.g. imported from a generic USD
   ``PhysicsJoint``) is treated the same way.
-- **Kinematic roots without mass or inertia** also become mocap bodies,
+- **Kinematic roots without mass or inertia**, counting bodies attached
+  to them by fixed joints, also become mocap bodies,
   posed from :attr:`~newton.State.joint_q`, and cannot be switched to
   dynamic. MuJoCo mocap bodies have zero velocity, so contact friction and
   dynamic descendants follow the root's pose but not its velocity; give the
