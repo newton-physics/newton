@@ -1060,8 +1060,19 @@ body be the child of more than one joint in the range:
    builder.add_articulation([j_root, j_a, j_b, j_loop], allow_closed_loops=True)
 
 :class:`~newton.solvers.SolverVBD` with
-``rigid_articulation_solve="block_sparse_joints"`` uses this to include the
-closure in the articulation's direct block solve.
+``rigid_articulation_solve="block_sparse_joints"`` or
+``rigid_articulation_solve="block_sparse_levels"`` uses this to include the
+closure in the articulation's direct block solve. Both modes are experimental.
+
+``block_sparse_levels`` groups independent pivots into elimination levels and
+processes them together within one CUDA thread block per articulation. On a
+chain, this contracts alternating vertices each round, reducing the sequential
+factorization and triangular-solve depth. Shared Schur updates have one writer
+per destination entry and a fixed reduction order. Dense separators still
+serialize, and this ordering may increase symbolic fill. CPU execution uses
+the serial sparse solve with the same level ordering. The two sparse modes
+share joint/contact assembly and FP32 arithmetic; contact coupling remains on
+body-diagonal Hessian blocks. The default remains ``local``.
 
 The sparse solve is deliberately articulation-centric: bodies outside every
 declared articulation continue through VBD's regular colored local solve.

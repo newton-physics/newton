@@ -983,7 +983,7 @@ if __name__ == "__main__":
     parser = newton.examples.create_parser()
     parser.add_argument(
         "--rigid-articulation-solve",
-        choices=("local", "block_sparse_joints"),
+        choices=("local", "block_sparse_joints", "block_sparse_levels"),
         default="local",
     )
     viewer, args = newton.examples.init(parser)

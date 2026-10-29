@@ -65,6 +65,7 @@ from .rigid_sparse_articulation_kernels import (
     solve_articulation_sparse_serial_scalar,
     vec6f,
 )
+from .rigid_sparse_levels_kernels import solve_articulation_sparse_levels
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
     RigidContactHistory,
@@ -529,7 +530,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             rigid_joint_angular_kd: Damping coefficient for non-rod angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
             rigid_articulation_solve: Rigid articulation solve mode. ``"local"`` uses the existing
-                per-body diagonal VBD solve. ``"block_sparse_joints"`` enables a block-sparse
+                per-body diagonal VBD solve. The experimental ``"block_sparse_joints"`` and
+                ``"block_sparse_levels"`` modes enable a block-sparse
                 articulation solve for joint coupling while keeping contacts on body-diagonal
                 Hessian blocks. The implementation uses a serial block solve on CPU and a
                 cooperative single-CTA solve on CUDA. Each articulation is one factorization
@@ -540,8 +542,11 @@ class SolverVBD(SolverBase, CouplingInterface):
                 articulation ranges may connect standalone bodies, but may not touch an
                 articulation body. Cross-articulation joints and bodies shared by two articulations
                 are rejected at construction. The mode is intended for moderate-size articulations;
-                the local mode may be faster for very long chains because sparse factorization is
-                sequential in the elimination order.
+                ``"block_sparse_joints"`` processes pivots sequentially. ``"block_sparse_levels"``
+                uses independent pivot levels and register-local block math on CUDA, reducing
+                sequential work for chains. On CPU it uses the serial solve with the level
+                ordering. Level ordering can increase fill; dense separators still serialize.
+                Neither sparse mode changes contact assembly or numerical precision.
             rigid_articulation_relaxation: Under-relaxation factor for the experimental coupled
                 articulation position update. A value of ``1`` applies the full Newton update.
                 The default damps sparse articulation updates so they do not overstep stale
@@ -786,9 +791,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.iterations = iterations
         self.friction_epsilon = friction_epsilon
         self._joint_mode_deprecation_warned = False
-        if rigid_articulation_solve not in ("local", "block_sparse_joints"):
+        if rigid_articulation_solve not in ("local", "block_sparse_joints", "block_sparse_levels"):
             raise ValueError(
-                f"rigid_articulation_solve must be 'local' or 'block_sparse_joints', got {rigid_articulation_solve!r}"
+                "rigid_articulation_solve must be 'local', 'block_sparse_joints', or 'block_sparse_levels', "
+                f"got {rigid_articulation_solve!r}"
             )
         if not isfinite(rigid_articulation_relaxation) or not 0.0 < rigid_articulation_relaxation <= 1.0:
             raise ValueError(
@@ -860,8 +866,10 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.rigid_articulation_sparse_rhs_scalar = None
         self.rigid_articulation_sparse_delta_scalar = None
         self.rigid_articulation_sparse_joint_dof_dim = model.joint_dof_dim
-        if self.rigid_articulation_solve == "block_sparse_joints":
-            self.rigid_articulation_sparse_layout = build_rigid_articulation_sparse_layout(model, self.device)
+        if self.rigid_articulation_solve in ("block_sparse_joints", "block_sparse_levels"):
+            self.rigid_articulation_sparse_layout = build_rigid_articulation_sparse_layout(
+                model, self.device, use_levels=self.rigid_articulation_solve == "block_sparse_levels"
+            )
             if self.rigid_articulation_sparse_layout is not None:
                 self._rigid_articulation_sparse_values_scalar = wp.zeros(
                     self.rigid_articulation_sparse_layout.block_count * 36, dtype=float, device=self.device
@@ -3417,7 +3425,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
     ):
-        if self.rigid_articulation_solve == "block_sparse_joints":
+        if self.rigid_articulation_solve in ("block_sparse_joints", "block_sparse_levels"):
             self._solve_rigid_body_iteration_block_sparse_joints(state_in, state_out, control, contacts, dt)
         else:
             self._solve_rigid_body_iteration_local(state_in, state_out, control, contacts, dt)
@@ -3907,28 +3915,58 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
 
         if use_block32:
-            wp.launch(
-                kernel=solve_articulation_sparse_block32_scalar,
-                dim=layout.articulation_count * SPARSE_ARTICULATION_CTA_THREADS,
-                inputs=[
-                    layout.articulation_body_offsets,
-                    layout.articulation_block_row_offsets,
-                    layout.articulation_block_cols,
-                    layout.articulation_block_col_offsets,
-                    layout.articulation_block_col_rows,
-                    layout.articulation_block_col_slots,
-                    layout.articulation_factor_update_offsets,
-                    layout.articulation_factor_update_dst_slots,
-                    layout.articulation_factor_update_left_slots,
-                    layout.articulation_factor_update_right_slots,
-                    layout.articulation_diag_slots,
-                    self._rigid_articulation_sparse_values_scalar,
-                    self._rigid_articulation_sparse_rhs_scalar,
-                ],
-                outputs=[self._rigid_articulation_sparse_delta_scalar],
-                device=self.device,
-                block_dim=SPARSE_ARTICULATION_CTA_THREADS,
-            )
+            if layout.levels is not None:
+                wp.launch(
+                    kernel=solve_articulation_sparse_levels,
+                    dim=layout.articulation_count * SPARSE_ARTICULATION_CTA_THREADS,
+                    inputs=[
+                        layout.articulation_body_offsets,
+                        layout.articulation_block_row_offsets,
+                        layout.articulation_block_cols,
+                        layout.articulation_block_col_offsets,
+                        layout.articulation_block_col_rows,
+                        layout.articulation_block_col_slots,
+                        layout.articulation_diag_slots,
+                        layout.levels.articulation_level_offsets,
+                        layout.levels.level_body_offsets,
+                        layout.levels.level_column_offsets,
+                        layout.levels.level_column_slots,
+                        layout.levels.level_column_diag_slots,
+                        layout.levels.level_update_offsets,
+                        layout.levels.level_update_dst_slots,
+                        layout.levels.level_update_term_offsets,
+                        layout.levels.level_update_left_slots,
+                        layout.levels.level_update_right_slots,
+                        self._rigid_articulation_sparse_values_scalar,
+                        self._rigid_articulation_sparse_rhs_scalar,
+                    ],
+                    outputs=[self._rigid_articulation_sparse_delta_scalar],
+                    device=self.device,
+                    block_dim=SPARSE_ARTICULATION_CTA_THREADS,
+                )
+            else:
+                wp.launch(
+                    kernel=solve_articulation_sparse_block32_scalar,
+                    dim=layout.articulation_count * SPARSE_ARTICULATION_CTA_THREADS,
+                    inputs=[
+                        layout.articulation_body_offsets,
+                        layout.articulation_block_row_offsets,
+                        layout.articulation_block_cols,
+                        layout.articulation_block_col_offsets,
+                        layout.articulation_block_col_rows,
+                        layout.articulation_block_col_slots,
+                        layout.articulation_factor_update_offsets,
+                        layout.articulation_factor_update_dst_slots,
+                        layout.articulation_factor_update_left_slots,
+                        layout.articulation_factor_update_right_slots,
+                        layout.articulation_diag_slots,
+                        self._rigid_articulation_sparse_values_scalar,
+                        self._rigid_articulation_sparse_rhs_scalar,
+                    ],
+                    outputs=[self._rigid_articulation_sparse_delta_scalar],
+                    device=self.device,
+                    block_dim=SPARSE_ARTICULATION_CTA_THREADS,
+                )
 
             wp.launch(
                 kernel=apply_articulation_sparse_delta_scalar,

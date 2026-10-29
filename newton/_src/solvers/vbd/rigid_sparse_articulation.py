@@ -5,10 +5,27 @@
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
+
+
+@dataclass
+class RigidArticulationSparseLevels:
+    """Independent pivot levels and deterministic Schur-update reductions."""
+
+    articulation_level_offsets: wp.array[wp.int32]
+    level_body_offsets: wp.array[wp.int32]
+    level_column_offsets: wp.array[wp.int32]
+    level_column_slots: wp.array[wp.int32]
+    level_column_diag_slots: wp.array[wp.int32]
+    level_update_offsets: wp.array[wp.int32]
+    level_update_dst_slots: wp.array[wp.int32]
+    level_update_term_offsets: wp.array[wp.int32]
+    level_update_left_slots: wp.array[wp.int32]
+    level_update_right_slots: wp.array[wp.int32]
 
 
 @dataclass
@@ -37,6 +54,7 @@ class RigidArticulationSparseLayout:
     articulation_joint_count: int
     local_body_count: int
     block_count: int
+    levels: RigidArticulationSparseLevels | None = None
 
 
 def _symbolic_cholesky_pattern(body_count: int, edges: set[tuple[int, int]]) -> list[list[int]]:
@@ -76,8 +94,41 @@ def _minimum_degree_order(body_count: int, edges: set[tuple[int, int]]) -> list[
     return order
 
 
+def _independent_level_order(body_count: int, edges: set[tuple[int, int]]) -> tuple[list[int], list[int]]:
+    """Eliminate independent low-degree pivots together, including loop fill.
+
+    On a chain this contracts alternating vertices each round. The same
+    symbolic procedure remains valid for general graphs; dense separators
+    eventually serialize. Low degree first limits avoidable fill.
+    """
+    adjacency = [set() for _ in range(body_count)]
+    for a, b in edges:
+        adjacency[a].add(b)
+        adjacency[b].add(a)
+    remaining = set(range(body_count))
+    order, offsets = [], [0]
+    while remaining:
+        blocked = set()
+        pivots = []
+        for pivot in sorted(remaining, key=lambda i: (len(adjacency[i] & remaining), i)):
+            if pivot not in blocked:
+                pivots.append(pivot)
+                blocked.add(pivot)
+                blocked.update(adjacency[pivot] & remaining)
+        for pivot in pivots:
+            neighbors = sorted(adjacency[pivot] & remaining)
+            for i, a in enumerate(neighbors):
+                for b in neighbors[:i]:
+                    adjacency[a].add(b)
+                    adjacency[b].add(a)
+        remaining.difference_update(pivots)
+        order.extend(pivots)
+        offsets.append(len(order))
+    return order, offsets
+
+
 def build_rigid_articulation_sparse_layout(
-    model, device: wp.context.Devicelike
+    model, device: wp.context.Devicelike, *, use_levels: bool = False
 ) -> RigidArticulationSparseLayout | None:
     """Build the static sparse layout from Newton articulation ranges.
 
@@ -116,6 +167,13 @@ def build_rigid_articulation_sparse_layout(
     factor_update_right_slots_host: list[int] = []
     factor_update_offsets_host: list[int] = []
     diag_slots_host: list[int] = []
+    articulation_level_offsets = [0]
+    level_body_offsets = [0]
+    level_column_offsets = [0]
+    level_column_slots, level_column_diag_slots = [], []
+    level_update_offsets = [0]
+    level_update_dst_slots, level_update_left_slots, level_update_right_slots = [], [], []
+    level_update_term_offsets = [0]
 
     body_articulation_local_host = np.full((model.body_count,), -1, dtype=np.int32)
     for joint_idx in range(model.joint_count):
@@ -186,7 +244,7 @@ def build_rigid_articulation_sparse_layout(
 
     symbolic_cache: dict[
         tuple[int, tuple[tuple[int, int], ...]],
-        tuple[list[int], list[list[int]]],
+        tuple[list[int], list[list[int]], list[int]],
     ] = {}
     for bodies, joints in articulation_groups:
         local_index = {body: i for i, body in enumerate(bodies)}
@@ -203,13 +261,17 @@ def build_rigid_articulation_sparse_layout(
         )
         symbolic = symbolic_cache.get(topology_key)
         if symbolic is None:
-            order = _minimum_degree_order(len(bodies), edges) if len(bodies) > 1 else [0]
+            if use_levels:
+                order, levels = _independent_level_order(len(bodies), edges)
+            else:
+                order = _minimum_degree_order(len(bodies), edges) if len(bodies) > 1 else [0]
+                levels = []
             old_to_new = {old: new for new, old in enumerate(order)}
             ordered_edges = {(old_to_new[a], old_to_new[b]) for a, b in edges}
             pattern = _symbolic_cholesky_pattern(len(bodies), ordered_edges)
-            symbolic = (order, pattern)
+            symbolic = (order, pattern, levels)
             symbolic_cache[topology_key] = symbolic
-        order, pattern = symbolic
+        order, pattern, levels = symbolic
         ordered_bodies = [bodies[old] for old in order]
 
         body_start = len(articulation_bodies_host)
@@ -253,6 +315,36 @@ def build_rigid_articulation_sparse_layout(
                     factor_update_left_slots_host.append(left_slot)
                     factor_update_right_slots_host.append(right_slot)
 
+        # Each level has independent pivots. Several pivots may update the
+        # same remaining block, so group contributions by destination and
+        # reduce them in fixed order instead of racing or using float atomics.
+        for begin, end in itertools.pairwise(levels):
+            updates = {}
+            for local_col in range(begin, end):
+                later = [
+                    (row, block_lookup[(row, local_col)])
+                    for row in range(local_col + 1, len(bodies))
+                    if (row, local_col) in block_lookup
+                ]
+                assert all(row >= end for row, _ in later)
+                for _, slot in later:
+                    level_column_slots.append(slot)
+                    level_column_diag_slots.append(block_lookup[(local_col, local_col)])
+                for i, (left_row, left_slot) in enumerate(later):
+                    for right_row, right_slot in later[: i + 1]:
+                        dst = block_lookup[(left_row, right_row)]
+                        updates.setdefault(dst, []).append((left_slot, right_slot))
+            for dst, terms in sorted(updates.items()):
+                level_update_dst_slots.append(dst)
+                for left, right in terms:
+                    level_update_left_slots.append(left)
+                    level_update_right_slots.append(right)
+                level_update_term_offsets.append(len(level_update_left_slots))
+            level_body_offsets.append(body_start + end)
+            level_column_offsets.append(len(level_column_slots))
+            level_update_offsets.append(len(level_update_dst_slots))
+        articulation_level_offsets.append(len(level_body_offsets) - 1)
+
     articulation_bodies_np = np.asarray(articulation_bodies_host, dtype=np.int32)
     articulation_joints_np = np.asarray(articulation_joints_host, dtype=np.int32)
     articulation_joint_body_start_np = np.asarray(articulation_joint_body_start_host, dtype=np.int32)
@@ -294,4 +386,18 @@ def build_rigid_articulation_sparse_layout(
         articulation_joint_count=len(articulation_joints_host),
         local_body_count=local_body_count,
         block_count=len(block_cols_host),
+        levels=RigidArticulationSparseLevels(
+            articulation_level_offsets=wp.array(articulation_level_offsets, dtype=wp.int32, device=device),
+            level_body_offsets=wp.array(level_body_offsets, dtype=wp.int32, device=device),
+            level_column_offsets=wp.array(level_column_offsets, dtype=wp.int32, device=device),
+            level_column_slots=wp.array(level_column_slots, dtype=wp.int32, device=device),
+            level_column_diag_slots=wp.array(level_column_diag_slots, dtype=wp.int32, device=device),
+            level_update_offsets=wp.array(level_update_offsets, dtype=wp.int32, device=device),
+            level_update_dst_slots=wp.array(level_update_dst_slots, dtype=wp.int32, device=device),
+            level_update_term_offsets=wp.array(level_update_term_offsets, dtype=wp.int32, device=device),
+            level_update_left_slots=wp.array(level_update_left_slots, dtype=wp.int32, device=device),
+            level_update_right_slots=wp.array(level_update_right_slots, dtype=wp.int32, device=device),
+        )
+        if use_levels
+        else None,
     )

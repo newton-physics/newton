@@ -412,7 +412,7 @@ constraints, with opt-in unified compliant ALM and a deprecated legacy AVBD path
 
 | :sup:`3` Mimic constraints in MuJoCo are supported for REVOLUTE and PRISMATIC joints only.
 | :sup:`4` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
-| :sup:`5` VBD supports revolute-joint armature with the experimental ``block_sparse_joints`` articulation solve.
+| :sup:`5` VBD supports revolute-joint armature with the experimental ``block_sparse_joints`` and ``block_sparse_levels`` articulation solves.
 
 
 
