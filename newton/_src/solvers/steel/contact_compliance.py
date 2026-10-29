@@ -431,7 +431,8 @@ def _prepare_contacts(
     if wp.abs(gamma) > limit or wp.abs(bias) > limit:
         _latch(status, _FLOAT32_RANGE, contact)
         return
-    gamma32 = float(gamma)
+    # A positive gamma stays nonzero in float32: zero marks a row without compliance.
+    gamma32 = wp.max(float(gamma), 1.17549435e-38)
     bias32 = float(bias)
     if path == 0:
         if dense_type[world, slot] != PGS_CONSTRAINT_TYPE_CONTACT:

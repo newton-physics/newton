@@ -19,7 +19,11 @@ from newton._src.solvers.steel.contact_compliance import (
     prepare_rows,
     start_step,
 )
-from newton._src.solvers.steel.kernels import PGS_CONSTRAINT_TYPE_CONTACT, compute_world_contact_bias
+from newton._src.solvers.steel.kernels import (
+    PGS_CONSTRAINT_TYPE_CONTACT,
+    PGS_CONSTRAINT_TYPE_FRICTION,
+    compute_world_contact_bias,
+)
 from newton.geometry import HydroelasticSDF
 from newton.solvers import SolverSteel
 from newton.tests.steel._compliance_reference import solve_reference, support_trajectory
@@ -558,6 +562,29 @@ def test_solver_overflow_and_dropped_contact_rejected(test, device):
         prepare_rows(solver, scene.contacts, 0.005)
 
 
+def test_underflowing_compliance_keeps_friction_weight(test, device):
+    """Weight the friction rows of a compliant contact whose gamma is below the float32 range."""
+    # gamma = 1 / (dt (dt k + c)) is about 3e-47 [1/kg] here.
+    for articulated in (True, False):
+        _, _, solver, _ = run_fixture(
+            device=device,
+            articulated=articulated,
+            enabled=True,
+            steps=1,
+            dt=1.0e4,
+            stiffness=3.0e38,
+            friction_scale=0.25,
+        )
+        row_type, row_mu = (
+            (solver._row_type, solver._row_mu) if articulated else (solver._mf_row_type, solver._mf_row_mu)
+        )
+        friction = row_mu.numpy()[0][row_type.numpy()[0] == PGS_CONSTRAINT_TYPE_FRICTION]
+        with test.subTest(articulated=articulated):
+            test.assertEqual(solver.compliance_contact_count, 1)
+            test.assertGreater(friction.size, 0)
+            np.testing.assert_allclose(friction, 0.5 * 0.25)
+
+
 def test_reset_and_open_gap_release(test, device):
     """Clear only step-local compliance data and exert no force across an open gap."""
     _, _, solver, _ = run_fixture(device=device, articulated=True, enabled=True, steps=5)
@@ -615,6 +642,7 @@ for _fn in (
     test_nonresponding_contact_is_skipped,
     test_rolled_back_capacity_fails_without_warnings,
     test_solver_overflow_and_dropped_contact_rejected,
+    test_underflowing_compliance_keeps_friction_weight,
     test_reset_and_open_gap_release,
     test_actual_timestep_and_iterations,
     test_public_defaults_remain_hard,
