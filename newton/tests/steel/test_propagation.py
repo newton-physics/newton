@@ -2221,10 +2221,11 @@ def test_longest_first_reaches_the_hub_lower_bound(test, device):
 
     contact_rows = _sweep_cost(_first_fit_coloring(contact, body_a, body_b, length, longest_first=False)[0], length)
     test.assertGreater(contact_rows, hub_rows, "the case does not discriminate the order")
-    for longest_first, span in ((True, 0), (True, 256), (False, 0), (False, 256)):
-        with test.subTest(longest_first=longest_first, span=span):
+    # The sort-paths test's kernels; its larger world covers the global used-color masks.
+    for longest_first in (True, False):
+        with test.subTest(longest_first=longest_first):
             color, offsets, row_start, sorted_contact, slot = _run_prebuild(
-                device, [(contact, body_a, body_b, length)], 64, span, longest_first
+                device, [(contact, body_a, body_b, length)], 8192, 256, longest_first
             )[0]
             test.assertEqual(_sweep_cost(color, length), hub_rows if longest_first else contact_rows)
             test.assertFalse(np.any(color == PROPAGATION_COLOR_TAIL))
