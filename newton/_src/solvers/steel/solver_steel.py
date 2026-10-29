@@ -5469,10 +5469,13 @@ class SolverSteel(SolverBase):
             )
             if row_phases:
                 # One kernel per row phase the schedule launches, each with its phase compiled in.
-                if self._row_schedule == "contact_then_internal":
-                    phases = (4, 2) if self._propagation_active else (1, 2)
+                has_internal_rows, has_velocity_limits = self._internal_row_phases()
+                if self._row_schedule == "contact_then_internal" and not self._propagation_active:
+                    phases = (1, 2)
+                elif self._row_schedule == "contact_then_internal":
+                    phases = (4, 2) if has_internal_rows or has_velocity_limits else (4,)
                 else:
-                    phases = (3, 4, 5)
+                    phases = (3,) * has_internal_rows + (4,) + (5,) * has_velocity_limits
                 self._pgs_solve_mf_gs_kernels = {
                     phase: self._pgs_solve_mf_gs_kernel_for_phase(row_phase=phase) for phase in phases
                 }

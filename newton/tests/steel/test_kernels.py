@@ -1810,12 +1810,11 @@ def _build_chains_on_boxes(device):
 
 
 def _row_phase_rollout(model, *, runtime_phase=False, capture=False, **options):
+    options = {"enable_joint_limits": True, "drive_mode": "rows", **options}
     solver = SolverSteel(
         model,
         solve_mode="matrix_free",
         iterations=12,
-        enable_joint_limits=True,
-        drive_mode="rows",
         articulation_constraint_max=_ROWS,
         free_body_constraint_max=_ROWS,
         deterministic=wp.DeterministicMode.RUN_TO_RUN,
@@ -1825,6 +1824,14 @@ def _row_phase_rollout(model, *, runtime_phase=False, capture=False, **options):
     if runtime_phase:
         # Every launch takes the kernel that reads the phase argument.
         solver._pgs_solve_mf_gs_kernels = {0: solver._pgs_solve_mf_gs_kernel_for_phase()}
+    solver.launched_phases = set()
+    launch_phase = solver._launch_mf_gs_phase
+
+    def record_phase(row_phase, *args, **kwargs):
+        solver.launched_phases.add(row_phase)
+        launch_phase(row_phase, *args, **kwargs)
+
+    solver._launch_mf_gs_phase = record_phase
     # Ordered contacts and rows, so separate rollouts can be compared bit for bit.
     pipeline = newton.CollisionPipeline(model, deterministic=True)
     contacts = pipeline.contacts()
@@ -1856,8 +1863,9 @@ def test_compiled_row_phase_matches_runtime_phase(test, device, **options):
     model = _build_chains_on_boxes(device)
     solver, prebuilt, compiled = _row_phase_rollout(model, **options)
     _, _, runtime = _row_phase_rollout(model, runtime_phase=True, **options)
-    # Every phase the schedule launched was built at construction.
+    # Construction built exactly the phases the schedule launched.
     test.assertEqual(set(solver._pgs_solve_mf_gs_kernels), prebuilt)
+    test.assertEqual(solver.launched_phases, prebuilt)
     for phase, kernel in solver._pgs_solve_mf_gs_kernels.items():
         test.assertIn(f"_phase{phase}", kernel.key)
     test.assertTrue(np.isfinite(runtime).all())
@@ -1887,6 +1895,10 @@ for _name, _options in (
     (
         "propagation_contact_then_internal",
         {"articulated_contact_response": "propagation", "row_schedule": "contact_then_internal"},
+    ),
+    (
+        "propagation_contact_rows_only",
+        {"articulated_contact_response": "propagation", "enable_joint_limits": False, "drive_mode": "augmented"},
     ),
 ):
     add_function_test(
