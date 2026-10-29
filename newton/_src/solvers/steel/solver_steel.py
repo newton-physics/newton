@@ -6934,7 +6934,7 @@ class SolverSteel(SolverBase):
                     outputs=[self._J_world, self._Y_world],
                     device=model.device,
                 )
-        # Impacts replace the position bias by their rebound target, from the unconstrained velocity.
+        # An impact that touches or reaches the surface this step replaces its position bias by its rebound target.
         if self._sparse_diagonal_contact_solve:
             wp.launch(
                 apply_sparse_diagonal_contact_restitution,

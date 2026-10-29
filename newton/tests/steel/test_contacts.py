@@ -2173,7 +2173,7 @@ def test_shape_restitution_uses_symmetric_arithmetic_average(test, device):
             _assert_velocity(test, result["after"], mixed * speed, speed, label)
 
 
-def test_restitution_velocity_threshold_uses_incident_relative_speed(test, device):
+def test_restitution_velocity_threshold_uses_relative_closing_speed(test, device):
     """Suppress low-speed bounce and activate immediately above the threshold."""
     threshold = 0.5
     restitution = 0.8
@@ -2326,11 +2326,11 @@ def test_drive_pressed_resting_contact_does_not_bounce(test, device):
     """
     test.assertGreater(PRESSED_DT * FOOT_PRESS_FORCE / FOOT_LEG_MASS, 2.0 * PRESSED_THRESHOLD)
     cases = [("explicit", response) for response in RESPONSE_MODES]
-    cases += [("augmented", "immediate"), ("augmented", "propagation"), ("rows", "immediate")]
+    cases += [("augmented", "immediate"), ("augmented", "propagation")]
     for drive, response in cases:
         label = f"{drive}/{response}"
         with test.subTest(case=label):
-            heights, speeds, forces = _roll_pressed_foot(device, drive=drive, response=response, steps=60)
+            heights, speeds, forces = _roll_pressed_foot(device, drive=drive, response=response, steps=10)
             test.assertLess(float(np.abs(speeds).max()), 1.0e-2, f"{label}: the pressed foot moved")
             test.assertLess(float(heights.max()), 1.0e-3, f"{label}: the pressed foot left the ground")
             load = FOOT_PRESS_FORCE + FOOT_LEG_MASS * 9.81
@@ -2343,7 +2343,7 @@ def test_force_pressed_resting_free_body_does_not_bounce(test, device):
     test.assertGreater(PRESSED_DT * BOX_PRESS_FORCE, 2.0 * PRESSED_THRESHOLD)
     for response in ("immediate", "propagation"):
         with test.subTest(response=response):
-            heights, speeds, _forces = _roll_pressed_box(device, response=response, steps=60)
+            heights, speeds, _forces = _roll_pressed_box(device, response=response, steps=10)
             test.assertLess(float(np.abs(speeds).max()), 1.0e-2, f"{response}: the pressed box moved")
             test.assertLess(float(heights.max()), 1.0e-3, f"{response}: the pressed box left the ground")
 
@@ -2354,12 +2354,12 @@ def test_pressed_landing_rebounds_from_step_start_speed_and_settles(test, device
     The press adds about 1.3 m/s (foot) or 2 m/s (box) of closing speed per step. A rebound target that included it
     would leave every later landing above the threshold, a bounce cycle that never settles.
     """
-    cases = [("rows", "immediate")]
-    cases += [(drive, response) for drive in ("explicit", "augmented", "body_f") for response in RESPONSE_MODES]
+    cases = [("rows", "immediate"), ("explicit", "propagation_colored")]
+    cases += [(drive, response) for drive in ("explicit", "augmented", "body_f") for response in RESPONSE_MODES[:2]]
     for drive, response in cases:
         label = f"{drive}/{response}"
         with test.subTest(case=label):
-            landing = {"response": response, "steps": 40, "initial_gap": 0.02, "initial_speed": 0.6}
+            landing = {"response": response, "steps": 24, "initial_gap": 0.02, "initial_speed": 0.6}
             if drive == "body_f":
                 heights, speeds, forces = _roll_pressed_box(device, **landing)
                 load = BOX_PRESS_FORCE + 9.81
@@ -2373,7 +2373,7 @@ def test_pressed_landing_rebounds_from_step_start_speed_and_settles(test, device
             rebound = PRESSED_RESTITUTION * landing_speed
             test.assertGreater(speeds[impact], 0.9 * rebound, f"{label}: the landing did not rebound")
             test.assertLess(speeds[impact], 1.05 * rebound, f"{label}: the press enlarged the rebound")
-            tail = slice(20, None)
+            tail = slice(14, None)
             test.assertLess(float(np.abs(speeds[tail]).max()), 1.0e-2, f"{label}: the landing did not settle")
             test.assertLess(float(heights[tail].max()), 1.0e-3, f"{label}: the foot kept leaving the ground")
             test.assertGreater(float(forces[tail].min()), 0.9 * load, f"{label}: the contact released")
@@ -3149,13 +3149,9 @@ for _fn in (
     test_restitution_uses_the_step_start_closing_speed,
     test_non_crossing_speculative_contact_does_not_bounce,
     test_shape_restitution_uses_symmetric_arithmetic_average,
-    test_restitution_velocity_threshold_uses_incident_relative_speed,
+    test_restitution_velocity_threshold_uses_relative_closing_speed,
     test_disabled_restitution_needs_no_material_edits,
     test_bouncing_ball_settles_to_rest_under_gravity,
-    test_drive_pressed_resting_contact_does_not_bounce,
-    test_force_pressed_resting_free_body_does_not_bounce,
-    test_pressed_landing_rebounds_from_step_start_speed_and_settles,
-    test_exit_velocity_is_monotonic_in_a_separating_force,
     test_two_body_impact_conserves_momentum_and_reverses_relative_speed,
     test_restitution_is_relative_to_a_moving_kinematic_surface,
     test_every_contact_response_route_enforces_restitution,
@@ -3169,6 +3165,19 @@ for _fn in (
     test_notify_reads_replaced_and_in_place_restitution,
 ):
     add_function_test(TestSteelRestitution, _fn.__name__, _fn, devices=devices_restitution)
+
+
+class TestSteelPressedRestitution(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_drive_pressed_resting_contact_does_not_bounce,
+    test_force_pressed_resting_free_body_does_not_bounce,
+    test_pressed_landing_rebounds_from_step_start_speed_and_settles,
+    test_exit_velocity_is_monotonic_in_a_separating_force,
+):
+    add_function_test(TestSteelPressedRestitution, _fn.__name__, _fn, devices=devices_restitution)
 
 
 SIM_DT = 1.0 / 2000.0

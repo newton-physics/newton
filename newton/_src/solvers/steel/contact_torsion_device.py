@@ -445,7 +445,7 @@ def _apply_rows(
     mu: wp.array2d[float],
     phi: wp.array2d[float],
     target: wp.array2d[float],
-    restitution: wp.array2d[float],
+    rebound_velocity: wp.array2d[float],
     membership: wp.array2d[int],
     row_radius: wp.array2d[float],
 ):
@@ -468,7 +468,7 @@ def _apply_rows(
     mu[world, row] = work.coefficient[rep]
     row_radius[world, row] = work.radius[rep]
     phi[world, row] = 0.0
-    restitution[world, row] = 0.0
+    rebound_velocity[world, row] = 0.0
     velocity = float(0.0)
     for side in range(2):
         body = work.body_a[lead]

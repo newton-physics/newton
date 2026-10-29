@@ -7693,8 +7693,9 @@ def compute_propagation_effective_mass_and_rhs(
     depenetration velocity, and separated contacts may close ``contact_speculative_scale``
     times their gap during the step. An impacting contact whose rebound fires, judged from
     the twists in ``propagation_body_qd`` (the unconstrained velocity), gets its rebound
-    target, which ``propagation_restitution_bias`` keeps for the velocity-only iterations. Patch friction rows get their anchor bias. ``propagation_row_w`` receives
-    the regularization weight when regularization is on.
+    target, which ``propagation_restitution_bias`` keeps for the velocity-only iterations.
+    Patch friction rows get their anchor bias. ``propagation_row_w`` receives the
+    regularization weight when regularization is on.
     """
     tid = wp.tid()
     world = tid // propagation_max_constraints
