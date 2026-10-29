@@ -107,7 +107,7 @@ _EXAMPLE_SPEC = {{
         self.assertEqual(payload["name"], "robot_asroballet")
         self.assertIn("Demonstrates LQR and learned-policy control for the asRoBallet robot", payload["description"])
         self.assertIn('default; pass "--controller lqr" to use LQR.', payload["description"])
-        self.assertEqual(len(payload["runs"]), 2)
+        self.assertEqual(len(payload["runs"]), 3)
         self.assertEqual(
             payload["runs"][1]["command"],
             "python -m newton.examples robot_asroballet --controller lqr",
@@ -143,6 +143,65 @@ _EXAMPLE_SPEC = {{
                             errors.append(f"{example_name}: run uses undeclared option {option}")
 
         self.assertEqual(errors, [], "Invalid example specifications:\n- " + "\n- ".join(errors))
+
+    def test_preserves_documented_run_variants(self):
+        """Retain commands removed from descriptions in the rendered run catalog."""
+        documented_runs = {
+            "basic_conveyor": ((), ("--solver", "kamino")),
+            "basic_conveyor_forces": (("--solver", "kamino"),),
+            "basic_dzhanibekov": (("--solver", "xpbd"), ("--solver", "mujoco"), ("--solver", "kamino")),
+            "basic_heightfield": (("--solver", "mujoco"), ("--solver", "kamino")),
+            "basic_joints": (("--solver", "xpbd"), ("--solver", "vbd"), ("--solver", "kamino")),
+            "basic_pendulum": (("--solver", "xpbd"), ("--solver", "kamino")),
+            "basic_plotting": (("--world-count", "4"),),
+            "basic_shapes": ((), ("--solver", "kamino")),
+            "basic_urdf": ((), ("--solver", "kamino")),
+            "nut_bolt_hydro": (("--solver", "kamino"),),
+            "nut_bolt_sdf": ((), ("--solver", "kamino")),
+            "pyramid": ((), ("--solver", "kamino")),
+            "controller_differential_ik": (("--ik-method", "adaptive_damping"),),
+            "controller_joint_impedance_heterogeneous": (("--solver", "kamino"),),
+            "diffsim_spring_cage": ((),),
+            "ik_cube_stacking": (("--world-count", "16"),),
+            "kamino_basic_dr_testmech": (("--world-count", "16"),),
+            "kamino_basic_fourbar": (("--world-count", "16"),),
+            "kamino_robot_anymal_d": (("--world-count", "16"),),
+            "kamino_robot_dr_legs": (("--world-count", "16"),),
+            "mpm_anymal": (("--viewer", "gl"),),
+            "admm_contact_solver": (("--solver", "free"),),
+            "robot_allegro_hand": (("--world-count", "16"), ("--solver", "kamino")),
+            "robot_anymal_d": (("--world-count", "16"), ("--solver", "kamino")),
+            "robot_asroballet": ((),),
+            "robot_cartpole": (("--world-count", "100"),),
+            "robot_g1": (("--world-count", "16"),),
+            "robot_h1": (("--world-count", "16"), ("--solver", "kamino")),
+            "robot_panda_hydro": (("--scene", "pen", "--world-count", "1"),),
+            "robot_policy": (("--robot", "anymal", "--physx"),),
+            "robot_ur10": (("--world-count", "16"), ("--solver", "kamino")),
+            "selection_articulations": ((), ("--solver", "kamino")),
+            "selection_cartpole": (("--world-count", "16", "--max-worlds", "8"),),
+            "selection_materials": ((), ("--solver", "kamino")),
+            "selection_multiple": ((), ("--solver", "kamino")),
+        }
+        examples_directory = Path(newton.examples.get_source_directory())
+        examples = newton.examples.get_examples()
+        for example_name, expected_args in documented_runs.items():
+            with self.subTest(example=example_name):
+                relative_module = examples[example_name].removeprefix("newton.examples.")
+                source_path = examples_directory.joinpath(*relative_module.split(".")).with_suffix(".py")
+                spec = load_example_spec(source_path)
+                payload = json.loads(render_example_spec(example_name, spec, output_format="json"))
+                actual_args = {tuple(run["args"]) for run in payload["runs"]}
+                self.assertTrue(
+                    set(expected_args) <= actual_args, f"Missing commands: {set(expected_args) - actual_args}"
+                )
+                if example_name == "admm_contact_solver":
+                    criteria_by_args = {tuple(run["args"]): run["success_criteria"] for run in payload["runs"]}
+                    coupled_criterion = "The tray responds to particle contact through ADMM contact coupling."
+                    self.assertNotIn(coupled_criterion, payload["success_criteria"])
+                    self.assertIn(coupled_criterion, criteria_by_args[()])
+                    self.assertNotIn(coupled_criterion, criteria_by_args[("--solver", "free")])
+                    self.assertTrue(any("pass through the tray" in c for c in criteria_by_args[("--solver", "free")]))
 
     def test_describe_cli_renders_json_without_running_example(self):
         """Dispatch the JSON CLI without executing the selected example."""

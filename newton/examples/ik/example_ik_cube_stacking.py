@@ -713,10 +713,19 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "Four replicated setups appear, each consisting of a Franka robotic arm in front of a table with three cubes on it.",
+        "Replicated setups appear, each consisting of a Franka robotic arm in front of a table with three cubes on it.",
         "The Franka arm moves and stacks the three cubes together.",
     ),
-    "runs": ({"args": ("--world-count", "4"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "4"),
+            "success_criteria": ("Four replicated setups appear.",),
+        },
+        {
+            "args": ("--world-count", "16"),
+            "success_criteria": ("Sixteen replicated setups appear.",),
+        },
+    ),
 }
 
 

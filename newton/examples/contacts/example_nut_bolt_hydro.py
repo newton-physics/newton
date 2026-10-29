@@ -521,7 +521,10 @@ _EXAMPLE_SPEC = {
         "20 identical setups appear consisting of a nut and bolt system.",
         "The nut is slowly screwing into the bolt until reaching the end of the bolt.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

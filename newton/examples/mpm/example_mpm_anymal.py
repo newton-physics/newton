@@ -351,7 +351,10 @@ _EXAMPLE_SPEC = {
         "An Anymal robot is walking on a ground covered by particles.",
         "The particles are reacting realistically to the movement of the robot.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--viewer", "gl"), "success_criteria": ()},
+    ),
 }
 
 

@@ -521,6 +521,8 @@ _EXAMPLE_SPEC = {
     "runs": (
         {"args": ("--solver", "xpbd"), "success_criteria": ()},
         {"args": ("--solver", "vbd", "--belt-speed", "2.0"), "success_criteria": ()},
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
     ),
 }
 

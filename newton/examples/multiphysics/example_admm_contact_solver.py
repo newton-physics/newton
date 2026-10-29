@@ -411,11 +411,23 @@ _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
         "A ball-jointed rigid tray/drawer appears below a grid-like XPBD particle pad.",
-        "The XPBD particles fall into the tray under gravity.",
-        "The tray responds to particle contact through ADMM contact coupling.",
-        "The particles should contact the tray and each other instead of passing through the tray.",
+        "The XPBD particles fall under gravity.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": (),
+            "success_criteria": (
+                "The tray responds to particle contact through ADMM contact coupling.",
+                "The particles should contact the tray and each other instead of passing through the tray.",
+            ),
+        },
+        {
+            "args": ("--solver", "free"),
+            "success_criteria": (
+                "Without ADMM contact coupling, the particles pass through the tray instead of transferring contact forces to it.",
+            ),
+        },
+    ),
 }
 
 

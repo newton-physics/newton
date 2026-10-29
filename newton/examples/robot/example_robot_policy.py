@@ -455,8 +455,7 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "The selected robot appears on the ground and responds to forward/back, lateral, and "
-        "turning keyboard commands.",
+        "The selected robot appears on the ground and responds to forward/back, lateral, and turning keyboard commands.",
         "For ordinary commands the robot moves without falling; pressing P resets it.",
     ),
     "runs": (
@@ -466,6 +465,7 @@ _EXAMPLE_SPEC = {
         {"args": ("--robot", "g1_23dof"), "success_criteria": ()},
         {"args": ("--robot", "g1_23dof", "--physx"), "success_criteria": ()},
         {"args": ("--robot", "g1_29dof"), "success_criteria": ()},
+        {"args": ("--robot", "anymal", "--physx"), "success_criteria": ()},
     ),
 }
 

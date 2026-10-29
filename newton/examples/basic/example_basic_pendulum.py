@@ -170,7 +170,11 @@ _EXAMPLE_SPEC = {
         "The two-link pendulum swings back and forth with both joints connected.",
         "Motion stays bounded and in the pendulum plane without explosive separation.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "xpbd"), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

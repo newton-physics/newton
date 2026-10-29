@@ -408,13 +408,21 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "Four nut-and-bolt assemblies appear.",
+        "Nut-and-bolt assemblies appear, with the count matching the selected world count.",
         "The nuts rotate and descend along the threads toward the ends of the bolts.",
-        "Both solver variants show the same qualitative thread-engagement outcome; exact trajectories need not match.",
+        "All documented solver variants show the same qualitative thread-engagement outcome; exact trajectories need not match.",
     ),
     "runs": (
-        {"args": ("--world-count", "4", "--solver", "xpbd"), "success_criteria": ()},
-        {"args": ("--world-count", "4", "--solver", "mujoco"), "success_criteria": ()},
+        {
+            "args": ("--world-count", "4", "--solver", "xpbd"),
+            "success_criteria": ("Four nut-and-bolt assemblies appear.",),
+        },
+        {
+            "args": ("--world-count", "4", "--solver", "mujoco"),
+            "success_criteria": ("Four nut-and-bolt assemblies appear.",),
+        },
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
     ),
 }
 

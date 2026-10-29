@@ -256,10 +256,19 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "8 identical setups appear consisting of a double pendulum attached to a rail.",
+        "The displayed setups consist of a double pendulum attached to a rail.",
         "Each setup evolves from random initial cart and pole coordinates under a center-directed cart force.",
     ),
-    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "8"),
+            "success_criteria": ("8 cartpole setups appear.",),
+        },
+        {
+            "args": ("--world-count", "16", "--max-worlds", "8"),
+            "success_criteria": ("16 worlds are simulated, but only 8 are displayed because of --max-worlds.",),
+        },
+    ),
 }
 
 

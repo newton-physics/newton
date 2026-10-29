@@ -282,7 +282,10 @@ _EXAMPLE_SPEC = {
         "With --verbose, training iterations and loss values are printed.",
         "As training converges, the particle approaches its target and loss reaches below 1e-6.",
     ),
-    "runs": ({"args": ("--verbose",), "success_criteria": ()},),
+    "runs": (
+        {"args": ("--verbose",), "success_criteria": ()},
+        {"args": (), "success_criteria": ()},
+    ),
 }
 
 

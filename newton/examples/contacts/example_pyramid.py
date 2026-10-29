@@ -271,6 +271,8 @@ _EXAMPLE_SPEC = {
         {"args": ("--broad-phase", "nxn"), "success_criteria": ()},
         {"args": ("--broad-phase", "sap", "--num-pyramids", "5", "--pyramid-size", "40"), "success_criteria": ()},
         {"args": ("--broad-phase", "explicit", "--num-pyramids", "40", "--pyramid-size", "5"), "success_criteria": ()},
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
     ),
 }
 

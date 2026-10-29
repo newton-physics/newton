@@ -275,10 +275,17 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "8 Ants appear on the ground plane.",
+        "Ants appear on the ground plane.",
         "They are all moving back and forth with different behavior due to random friction applied to them.",
     ),
-    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "8"),
+            "success_criteria": ("8 Ants appear on the ground plane.",),
+        },
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

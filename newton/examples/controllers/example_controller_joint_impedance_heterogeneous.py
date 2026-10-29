@@ -255,7 +255,10 @@ _EXAMPLE_SPEC = {
         "The single pendulum rotates continuously through the horizontal pose despite gravity.",
         "Both mechanisms stay connected and follow bounded motion without unstable control oscillation.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

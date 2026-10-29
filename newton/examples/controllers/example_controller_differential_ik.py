@@ -637,7 +637,10 @@ _EXAMPLE_SPEC = {
         "Drag reachable targets: each arm follows its own configured task axes without moving unrelated robots.",
         "With targets stationary, arms remain near their solved poses without sustained jitter.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--ik-method", "adaptive_damping"), "success_criteria": ()},
+    ),
 }
 
 

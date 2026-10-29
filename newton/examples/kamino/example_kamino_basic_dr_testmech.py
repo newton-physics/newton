@@ -128,7 +128,10 @@ _EXAMPLE_SPEC = {
         "A mechanism with multiple linked pieces moves back and forth.",
         "Motion propagates through its joints and links without disconnection.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--world-count", "16"), "success_criteria": ()},
+    ),
 }
 
 

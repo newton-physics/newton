@@ -223,7 +223,14 @@ _EXAMPLE_SPEC = {
         "Quadrupeds drop onto the plane and remain supported on their four legs.",
         "The resting robots stay stable without sustained jitter or falling through the ground.",
     ),
-    "runs": ({"args": ("--world-count", "16"), "success_criteria": ("Sixteen quadrupeds appear.",)},),
+    "runs": (
+        {
+            "args": ("--world-count", "16"),
+            "success_criteria": ("Sixteen quadrupeds appear.",),
+        },
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

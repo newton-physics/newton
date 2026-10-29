@@ -295,12 +295,19 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "8 identical setups appear consisting of a floating stack of 3 Ants.",
+        "Replicated setups appear consisting of a floating stack of 3 Ants.",
         "The ants are rotating around the Z axis at different speeds and drop on the ground plane.",
         "They are then reset to their initial position.",
         "All setups behave differently and their behavior differs at every reset.",
     ),
-    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "8"),
+            "success_criteria": ("8 stacks of 3 Ants appear.",),
+        },
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

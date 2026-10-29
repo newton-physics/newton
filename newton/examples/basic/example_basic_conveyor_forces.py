@@ -1042,7 +1042,10 @@ _EXAMPLE_SPEC = {
         "After startup, every box has moved from its spawn location; the fleet does not stall at belt transitions.",
         "Boxes remain supported on the circuit without non-finite poses or falling through the floor.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

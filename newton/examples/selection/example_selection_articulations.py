@@ -319,11 +319,18 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "8 identical setups appear consisting of a floating MuJoCo humanoid on top of a floating ant.",
+        "Replicated setups appear consisting of a floating MuJoCo humanoid on top of a floating ant.",
         "Both robots fall down on the ground and are then reset to their initial position.",
         "All setups behave differently.",
     ),
-    "runs": ({"args": ("--world-count", "8"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "8"),
+            "success_criteria": ("8 replicated humanoid-and-ant setups appear.",),
+        },
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

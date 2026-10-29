@@ -216,11 +216,21 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "5 H1 humanoid robots appear standing on the ground and then collapse on the ground.",
+        "H1 humanoid robots appear standing on the ground and then collapse on the ground.",
         "The user can grasp every robot with a right click and move them around.",
         "The robots do not interact with each other but collide properly with the ground plane.",
     ),
-    "runs": ({"args": ("--world-count", "5"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "5"),
+            "success_criteria": ("5 H1 humanoid robots appear.",),
+        },
+        {
+            "args": ("--world-count", "16"),
+            "success_criteria": ("16 H1 humanoid robots appear.",),
+        },
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

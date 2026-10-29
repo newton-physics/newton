@@ -181,11 +181,13 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "A setup appears composed of a table with a four bars linkage sitting on top.",
-        "The user can grasp the four bar linkage, move it, and the four bar system react to "
-        "external forces while maintaining its integrity.",
+        "Each setup consists of a table with a four-bar linkage sitting on top.",
+        "The user can grasp the four bar linkage, move it, and the four bar system react to external forces while maintaining its integrity.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--world-count", "16"), "success_criteria": ()},
+    ),
 }
 
 

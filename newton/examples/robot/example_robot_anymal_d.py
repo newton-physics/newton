@@ -225,11 +225,21 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "4 Anymal robots appear standing on the ground.",
+        "ANYmal D robots appear standing on the ground.",
         "The user can grasp every robot with a right click and move them around.",
         "The robots do not interact with each other but collide properly with the ground plane.",
     ),
-    "runs": ({"args": ("--world-count", "4"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "4"),
+            "success_criteria": ("4 ANYmal D robots appear.",),
+        },
+        {
+            "args": ("--world-count", "16"),
+            "success_criteria": ("16 ANYmal D robots appear.",),
+        },
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

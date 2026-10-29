@@ -589,19 +589,29 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "Two worlds show a Franka arm, a support box, a cup, and the selected grasp object.",
+        "Each world shows a Franka arm, a support box, a cup, and the selected grasp object.",
         "The arm lifts and transports the object while the cup remains upright.",
     ),
     "runs": (
         {
             "args": ("--world-count", "2", "--scene", "cube"),
-            "success_criteria": ("The arm grasps the cube and releases it on top of the cup.",),
+            "success_criteria": (
+                "The arm grasps the cube and releases it on top of the cup.",
+                "Two worlds appear.",
+            ),
         },
         {
             "args": ("--world-count", "2", "--scene", "pen"),
             "success_criteria": (
-                "The arm grasps the pen, brings it above the cup, loosens its grip to let "
-                "the pen rotate downward, then drops it inside the cup.",
+                "The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate downward, then drops it inside the cup.",
+                "Two worlds appear.",
+            ),
+        },
+        {
+            "args": ("--scene", "pen", "--world-count", "1"),
+            "success_criteria": (
+                "One world appears.",
+                "The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate downward, then drops it inside the cup.",
             ),
         },
     ),

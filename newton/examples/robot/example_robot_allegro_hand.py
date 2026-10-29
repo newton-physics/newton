@@ -276,11 +276,21 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "18 floating Allegro hands appear with a cube on their palm.",
+        "Floating Allegro hands appear with a cube on each palm.",
         "The hands are manipulating the cube to make it turn.",
         "All hands have the same movement.",
     ),
-    "runs": ({"args": ("--world-count", "18"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "18"),
+            "success_criteria": ("18 floating Allegro hands appear.",),
+        },
+        {
+            "args": ("--world-count", "16"),
+            "success_criteria": ("16 floating Allegro hands appear.",),
+        },
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

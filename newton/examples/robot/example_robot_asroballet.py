@@ -1437,6 +1437,10 @@ _EXAMPLE_SPEC = {
             "args": ("--controller", "lqr"),
             "success_criteria": ("The LQR controller responds to the commanded motion.",),
         },
+        {
+            "args": (),
+            "success_criteria": ("The learned-policy controller responds to the commanded motion.",),
+        },
     ),
 }
 

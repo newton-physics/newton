@@ -217,10 +217,20 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "32 UR10 robotic arms appear standing on a cylinder.",
+        "UR10 robotic arms appear standing on cylinders.",
         "They are all moving, performing different motions.",
     ),
-    "runs": ({"args": ("--world-count", "32"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "32"),
+            "success_criteria": ("32 UR10 robotic arms appear.",),
+        },
+        {
+            "args": ("--world-count", "16"),
+            "success_criteria": ("16 UR10 robotic arms appear.",),
+        },
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

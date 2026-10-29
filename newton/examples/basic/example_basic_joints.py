@@ -340,13 +340,16 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "Three two-link systems appear: a revolute pendulum on the left, a prismatic slider in "
-        "the middle, and a ball joint on the right.",
+        "Three two-link systems appear: a revolute pendulum on the left, a prismatic slider in the middle, and a ball joint on the right.",
         "The revolute pendulum swings; the prismatic body initially slides downward along its constrained axis.",
-        "Right-drag the hanging bodies: the revolute joint stays in its plane, the slider "
-        "follows its axis, and the ball joint permits rotation about all three axes.",
+        "Right-drag the hanging bodies: the revolute joint stays in its plane, the slider follows its axis, and the ball joint permits rotation about all three axes.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "xpbd"), "success_criteria": ()},
+        {"args": ("--solver", "vbd"), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

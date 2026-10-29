@@ -226,10 +226,19 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "2 identical setups appear consisting of a double pendulum attached to a rail.",
+        "Replicated setups appear consisting of a double pendulum attached to a rail.",
         "The double pendulum is consistently moving.",
     ),
-    "runs": ({"args": ("--world-count", "2"), "success_criteria": ()},),
+    "runs": (
+        {
+            "args": ("--world-count", "2"),
+            "success_criteria": ("2 cartpole setups appear.",),
+        },
+        {
+            "args": ("--world-count", "100"),
+            "success_criteria": ("100 cartpole setups appear.",),
+        },
+    ),
 }
 
 

@@ -181,10 +181,13 @@ class Example:
 _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
-        "An ANYmal D robot stands on the ground.",
+        "ANYmal D robots stand on the ground.",
         "Right-drag the robot and release it; its articulation stays connected and collides with the ground.",
     ),
-    "runs": ({"args": ("--use-kamino-contacts",), "success_criteria": ()},),
+    "runs": (
+        {"args": ("--use-kamino-contacts",), "success_criteria": ()},
+        {"args": ("--world-count", "16"), "success_criteria": ()},
+    ),
 }
 
 

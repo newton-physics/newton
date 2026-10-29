@@ -380,10 +380,12 @@ _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
         "A torso-free biped with complex leg linkages appears.",
-        "Right-drag its movable bodies: leg joints remain connected and the mechanism responds "
-        "without explosive motion.",
+        "Right-drag its movable bodies: leg joints remain connected and the mechanism responds without explosive motion.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--world-count", "16"), "success_criteria": ()},
+    ),
 }
 
 

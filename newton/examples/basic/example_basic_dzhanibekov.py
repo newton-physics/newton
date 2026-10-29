@@ -206,7 +206,12 @@ _EXAMPLE_SPEC = {
         "The T-shaped body rotates freely and undergoes an intermediate-axis flip rather than falling under gravity.",
         "The center of mass stays in place and rotation remains bounded without visible energy growth.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--solver", "xpbd"), "success_criteria": ()},
+        {"args": ("--solver", "mujoco"), "success_criteria": ()},
+        {"args": ("--solver", "kamino"), "success_criteria": ()},
+    ),
 }
 
 

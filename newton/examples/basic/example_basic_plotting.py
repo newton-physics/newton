@@ -224,13 +224,14 @@ _EXAMPLE_SPEC = {
     "schema_version": 1,
     "success_criteria": (
         "Four humanoids fall onto the ground in the default run.",
-        "The example panel updates the step, solver iterations, kinetic energy, potential "
-        "energy, and active constraints.",
+        "The example panel updates the step, solver iterations, kinetic energy, potential energy, and active constraints.",
         "Four live scalar plots show solver iterations, kinetic energy, potential energy, and active constraints.",
-        "Picking and moving a humanoid in world 0 changes the energy and constraint plots; "
-        "solver effort reflects the maximum across worlds.",
+        "Picking and moving a humanoid in world 0 changes the energy and constraint plots; solver effort reflects the maximum across worlds.",
     ),
-    "runs": ({"args": (), "success_criteria": ()},),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {"args": ("--world-count", "4"), "success_criteria": ()},
+    ),
 }
 
 
