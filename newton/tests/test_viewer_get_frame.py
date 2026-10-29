@@ -228,6 +228,87 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertEqual(capture.call_count, 2)
             self.assertLessEqual(len(viewer._shape_prepare_graphs), 4)
 
+    def test_point_prototypes_follow_model_device(self) -> None:
+        """Reuse device-local point/splat meshes across CPU/CUDA model changes."""
+        if not wp.is_cuda_available():
+            self.skipTest("Device switching requires CUDA")
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self)
+        gaussian = newton.Gaussian(positions=np.array([[0.5, 0.0, 0.0]], dtype=np.float32))
+        prototypes = {}
+        try:
+            for device in (wp.get_device("cpu"), wp.get_device("cuda:0"), wp.get_device("cpu")):
+                viewer.set_model(_make_box_model(device))
+                viewer.begin_frame(0.0)
+                viewer.log_state(viewer.model.state())
+                viewer.log_gaussian("splats", gaussian)
+                viewer.end_frame()
+                point = viewer.objects["/model/com"]
+                splat = viewer.objects["splats"]
+                self.assertEqual(point.device, device)
+                self.assertEqual(splat.device, device)
+                np.testing.assert_allclose(point.world_xforms.numpy()[0, 3], [0.0, 0.0, 0.0, 1.0], atol=1e-6)
+                key = str(device)
+                if key in prototypes:
+                    self.assertIs(point.mesh, prototypes[key][0])
+                    self.assertIs(splat.mesh, prototypes[key][1])
+                prototypes[key] = (point.mesh, splat.mesh)
+        finally:
+            viewer.close()
+        self.assertFalse(viewer._point_meshes)
+        self.assertFalse(viewer._gaussian_meshes)
+
+    def test_nonworkspace_viewers_leave_optional_kernels_lazy(self) -> None:
+        """Headless and legacy viewers compile only the features their scenes use."""
+        _viewer_gl_unavailable_error_types(self)
+        modules = [
+            wp.get_module(import_module(name).__name__)
+            for name in (
+                "newton._src.geometry.sdf_texture",
+                "newton._src.geometry.raycast",
+                "newton._src.sim.articulation",
+                "newton._src.viewer.wind",
+                "newton._src.viewer.viewer_navigation",
+                "newton._src.viewer.viewer_history",
+            )
+        ]
+        initialize_renderer = RendererGL.__init__
+
+        def initialize_offscreen(renderer: RendererGL, **kwargs: object) -> None:
+            kwargs["headless"] = True
+            initialize_renderer(renderer, **kwargs)
+
+        for headless in (True, False):
+            with self.subTest(headless=headless):
+                for module in modules:
+                    module.unload()
+                try:
+                    with wp.ScopedDevice("cpu"), mock.patch.object(RendererGL, "__init__", initialize_offscreen):
+                        viewer = ViewerGL(width=64, height=48, headless=headless, legacy_gui=True)
+                except Exception as exc:
+                    if _is_viewer_gl_unavailable_error(self, exc):
+                        self.skipTest(f"ViewerGL display/backend not available: {exc}")
+                    raise
+                try:
+                    self.assertIsNone(viewer.renderer._selection_outline)
+                    devices = [wp.get_device("cpu"), *wp.get_cuda_devices()[:1]]
+                    for device in devices:
+                        with self.subTest(device=device):
+                            for module in modules:
+                                self.assertFalse(module.execs, f"Eagerly loaded {module.name}")
+                            viewer.set_model(_make_box_model(device))
+                            for module in modules:
+                                self.assertFalse(module.execs, f"Model binding loaded unused {module.name}")
+                            # Lazy compilation must still support rendering and graph reuse.
+                            state = viewer.model.state()
+                            for frame in range(2):
+                                viewer.begin_frame(float(frame))
+                                viewer.log_state(state)
+                                viewer.end_frame()
+                            self.assertEqual(viewer.get_frame().shape[-1], 3)
+                finally:
+                    viewer.close()
+
     def test_gui_preloads_interaction_kernels(self) -> None:
         """First selection and particle filtering reuse startup-compiled CPU/CUDA modules."""
         try:

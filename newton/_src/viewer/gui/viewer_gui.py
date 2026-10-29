@@ -47,9 +47,9 @@ class ViewerGui:
     def __init__(self, viewer: ViewerBase, window: Window, *, workspace_enabled: bool = False) -> None:
         """Initialize the shared GUI backend, input routing, callbacks, and camera interaction state.
 
-        Compile interaction kernels now, but defer workspace creation until the
-        first UI frame. Workspace-enabled viewers capture Newton logs when the
-        optional GUI backend is available.
+        Workspace-enabled viewers compile interaction kernels and capture Newton
+        logs when the optional GUI backend is available. Workspace creation is
+        deferred until the first UI frame; legacy GUIs compile on demand.
         """
         self._viewer = viewer
         self.ui = ImGuiBackend(window)
@@ -124,7 +124,7 @@ class ViewerGui:
         self.preload_kernels(viewer.device)
 
     def preload_kernels(self, device: wp.Device) -> None:
-        """Compile built-in GUI operations before the first interaction on a device.
+        """Compile workspace operations before the first interaction on a device.
 
         Call at construction and when binding a model on another device. Import
         kernel definitions eagerly, but leave workspace construction, inspection
@@ -132,37 +132,33 @@ class ViewerGui:
         a device does not recompile them. Load only GUI dependencies, not every
         imported solver or example kernel.
         """
-        if not self.is_available:
+        if not self.workspace_enabled or not self.is_available:
             return
-        from ...geometry import raycast  # noqa: PLC0415
+        from ...geometry import bvh, raycast  # noqa: PLC0415
         from ...sim import articulation  # noqa: PLC0415
         from ...utils import selection  # noqa: PLC0415
+        from .. import (  # noqa: PLC0415
+            viewer_bvh,
+            viewer_deformables,
+            viewer_history,
+            viewer_joint_selection,
+            viewer_navigation,
+        )
+        from . import collision, workspace  # noqa: PLC0415
 
-        modules = [raycast, articulation, selection]
-        if self.workspace_enabled:
-            from ...geometry import bvh  # noqa: PLC0415
-            from .. import (  # noqa: PLC0415
-                viewer_bvh,
-                viewer_deformables,
-                viewer_history,
-                viewer_joint_selection,
-                viewer_navigation,
-            )
-            from . import collision, workspace  # noqa: PLC0415
-
-            modules.extend(
-                (
-                    bvh,
-                    viewer_bvh,
-                    viewer_deformables,
-                    viewer_history,
-                    viewer_joint_selection,
-                    viewer_navigation,
-                    collision,
-                    workspace,
-                )
-            )
-        for module in modules:
+        for module in (
+            raycast,
+            articulation,
+            selection,
+            bvh,
+            viewer_bvh,
+            viewer_deformables,
+            viewer_history,
+            viewer_joint_selection,
+            viewer_navigation,
+            collision,
+            workspace,
+        ):
             wp.load_module(module, device=device)
 
     @property

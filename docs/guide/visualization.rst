@@ -452,7 +452,8 @@ views of available current bounds, not an export of every backend's BVH nodes.
 
 Images and plots logged by the example appear as dockable tabs alongside the
 viewport. The console receives Newton Python logging records, with level
-filtering; warnings and errors open it automatically. Explicit display choices
+filtering; warnings and errors open it automatically. Console capture preserves
+terminal output and application-configured logging handlers. Explicit display choices
 survive example switches. A new scene keeps its authored camera pose.
 
 To use the previous sidebar GUI, construct the viewer with
@@ -460,6 +461,11 @@ To use the previous sidebar GUI, construct the viewer with
 overlay, floating image/plot windows, and UI callbacks without creating the
 docked inspection workspace. The keyword-only flag defaults to ``False`` and
 has no effect when ``headless=True``.
+
+The workspace compiles its interaction kernels during construction and when
+binding a model on a different device, avoiding stalls on first selection or
+display-mode changes. Headless rendering and legacy GUIs compile optional
+features on demand instead.
 
 Inspecting a custom simulation loop
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

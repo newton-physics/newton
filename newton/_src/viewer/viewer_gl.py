@@ -327,10 +327,10 @@ class ViewerGL(ViewerBase):
             self.gui.register_ui_callback(self._ui_populate_layers_panel, position="panel")
 
         # a low resolution sphere mesh for point rendering
-        self._point_mesh = None
+        self._point_meshes: dict[str, MeshGL] = {}
 
         # Very low-poly sphere mesh dedicated to Gaussian splat rendering.
-        self._gaussian_mesh: MeshGL | None = None
+        self._gaussian_meshes: dict[str, MeshGL] = {}
 
         # Per-name cache of numpy arrays for Gaussian point cloud rendering.
         self._gaussian_cache: dict[str, dict] = {}
@@ -344,16 +344,20 @@ class ViewerGL(ViewerBase):
         self._pbo_host_buffer = None
 
         self._preload_kernels(self.device)
-        if self.gui is not None and self.gui.is_available:
+        if self.gui is not None and self.gui.workspace_enabled and self.gui.is_available:
             self.renderer.preload_inspection_shaders()
 
     def _preload_kernels(self, device: wp.Device) -> None:
-        """Compile render/guide kernels without allocating scene-dependent resources.
+        """Warm interactive workspace features without allocating scene resources.
 
         Include optional display paths (contacts, particles, wind, SDF guides,
         and image capture) so toggling them cannot trigger first-use compilation.
-        Explicit modules keep unrelated backends and solvers out of this warmup.
+        Headless, legacy, and unavailable GUIs retain on-demand compilation;
+        they must not pay for inspection features they cannot use. Apply this
+        policy on device changes as well as construction.
         """
+        if self.gui is None or not self.gui.workspace_enabled or not self.gui.is_available:
+            return
         from ..geometry import sdf_texture, sdf_utils  # noqa: PLC0415
         from ..utils import mesh, render  # noqa: PLC0415
         from . import image_logger, kernels, wind  # noqa: PLC0415
@@ -447,12 +451,10 @@ class ViewerGL(ViewerBase):
             self.gui.hide_loading_splash()
 
     # helper function to create a low resolution sphere mesh for point rendering
-    def _create_point_mesh(self):
-        """
-        Create a low-resolution sphere mesh for point rendering.
-        """
+    def _create_point_mesh(self) -> MeshGL:
+        """Cache a low-resolution sphere prototype on the current simulation device."""
         mesh = nt.Mesh.create_sphere(1.0, num_latitudes=6, num_longitudes=6, compute_inertia=False)
-        self._point_mesh = MeshGL(
+        point_mesh = MeshGL(
             len(mesh.vertices),
             len(mesh.indices),
             self.device,
@@ -464,7 +466,9 @@ class ViewerGL(ViewerBase):
         uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
         indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
 
-        self._point_mesh.update(points, indices, normals, uvs)
+        point_mesh.update(points, indices, normals, uvs)
+        self._point_meshes[str(self.device)] = point_mesh
+        return point_mesh
 
     @override
     def _arrow_scale(self) -> float:
@@ -704,10 +708,8 @@ class ViewerGL(ViewerBase):
             self.picking = Picking(
                 model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask
             )
-            try:
-                self.picking._load_kernels()
-            except Exception:
-                pass
+            # Workspace startup already warms picking. Other modes compile it
+            # on first use instead of compiling raycasts/Jacobians for every model.
         self.wind = Wind(model)
 
         # Build packed arrays for batched GPU rendering of shape instances
@@ -1546,11 +1548,11 @@ class ViewerGL(ViewerBase):
         getattr(self, "wireframe_shapes", {}).clear()
         getattr(self, "_wireframe_vbo_owners", {}).clear()
 
-        for mesh_name in ("_point_mesh", "_gaussian_mesh"):
-            mesh = getattr(self, mesh_name, None)
-            if mesh is not None:
+        for cache_name in ("_point_meshes", "_gaussian_meshes"):
+            cache = getattr(self, cache_name, {})
+            for mesh in cache.values():
                 destroy_once(mesh)
-                setattr(self, mesh_name, None)
+            cache.clear()
 
     @override
     def clear_wireframe_vbo_cache(self):
@@ -1629,8 +1631,12 @@ class ViewerGL(ViewerBase):
                 self.objects[name].hidden = True
             return
 
-        if self._point_mesh is None:
-            self._create_point_mesh()
+        # Instancers inherit their mesh's Warp device. Keep one prototype per
+        # device so a CPU/CUDA model switch cannot feed device pointers to a
+        # kernel launched on the previous device. Other layers retain theirs.
+        point_mesh = self._point_meshes.get(str(self.device))
+        if point_mesh is None:
+            point_mesh = self._create_point_mesh()
 
         num_points = len(points)
         workspace = getattr(self.gui, "workspace", None)
@@ -1642,7 +1648,7 @@ class ViewerGL(ViewerBase):
             initial_capacity = max(num_points, 256)
             self.objects[name] = MeshInstancerGL(
                 initial_capacity,
-                self._point_mesh,
+                point_mesh,
                 enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.POINTS),
             )
             object_recreated = True
@@ -1651,7 +1657,7 @@ class ViewerGL(ViewerBase):
             new_capacity = max(num_points, old.num_instances * 2)
             self.objects[name] = MeshInstancerGL(
                 new_capacity,
-                self._point_mesh,
+                point_mesh,
                 enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.POINTS),
             )
             del old
@@ -1670,10 +1676,10 @@ class ViewerGL(ViewerBase):
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
-    def _create_gaussian_mesh(self):
+    def _create_gaussian_mesh(self) -> MeshGL:
         """Create a very low-poly sphere mesh dedicated to Gaussian splat rendering."""
         mesh = nt.Mesh.create_sphere(1.0, num_latitudes=3, num_longitudes=4, compute_inertia=False)
-        self._gaussian_mesh = MeshGL(
+        gaussian_mesh = MeshGL(
             len(mesh.vertices),
             len(mesh.indices),
             self.device,
@@ -1683,7 +1689,9 @@ class ViewerGL(ViewerBase):
         normals = wp.array(mesh.normals, dtype=wp.vec3, device=self.device)
         uvs = wp.array(mesh.uvs, dtype=wp.vec2, device=self.device)
         indices = wp.array(mesh.indices, dtype=wp.int32, device=self.device)
-        self._gaussian_mesh.update(points, indices, normals, uvs)
+        gaussian_mesh.update(points, indices, normals, uvs)
+        self._gaussian_meshes[str(self.device)] = gaussian_mesh
+        return gaussian_mesh
 
     @override
     def log_gaussian(
@@ -1709,8 +1717,9 @@ class ViewerGL(ViewerBase):
                 self.objects[name].hidden = True
             return
 
-        if self._gaussian_mesh is None:
-            self._create_gaussian_mesh()
+        gaussian_mesh = self._gaussian_meshes.get(str(self.device))
+        if gaussian_mesh is None:
+            gaussian_mesh = self._create_gaussian_mesh()
 
         gaussian_cache_key = (id(gaussian), gaussian.count)
         cache = self._gaussian_cache.get(name)
@@ -1765,7 +1774,7 @@ class ViewerGL(ViewerBase):
         if name not in self.objects:
             self.objects[name] = MeshInstancerGL(
                 max(n, 256),
-                self._gaussian_mesh,
+                gaussian_mesh,
             )
             self.objects[name].cast_shadow = False
             recreated = True
@@ -1773,7 +1782,7 @@ class ViewerGL(ViewerBase):
             old = self.objects[name]
             self.objects[name] = MeshInstancerGL(
                 max(n, old.num_instances * 2),
-                self._gaussian_mesh,
+                gaussian_mesh,
             )
             self.objects[name].cast_shadow = False
             del old
