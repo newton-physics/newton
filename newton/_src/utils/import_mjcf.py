@@ -653,6 +653,14 @@ def parse_mjcf(
     class_children = {}
     class_defaults = {"__all__": {}}
 
+    def material_attrib(element: ET.Element) -> dict:
+        attrib = element.attrib.copy()
+        # Newton stores one base-color texture; other PBR layers are not albedo.
+        for layer in element.findall("layer"):
+            if layer.get("role") in {"rgb", "rgba"}:
+                attrib["texture"] = layer.get("texture")
+        return attrib
+
     def parse_default(node, parent):
         nonlocal class_parent
         nonlocal class_children
@@ -672,7 +680,9 @@ def parse_mjcf(
             if child.tag == "default":
                 parse_default(child, node.get("class"))
             else:
-                class_defaults[class_name][child.tag] = child.attrib
+                class_defaults[class_name][child.tag] = (
+                    material_attrib(child) if child.tag == "material" else child.attrib
+                )
 
     for default in root.findall("default"):
         parse_default(default, None)
@@ -719,7 +729,8 @@ def parse_mjcf(
         if ambient_defaults is None:
             ambient_defaults = class_defaults["__all__"]
         defaults = resolve_class_defaults(element.get("class"), ambient_defaults)
-        return merge_attrib(defaults.get(tag, {}), element.attrib, tag=tag)
+        attrib = material_attrib(element) if tag == "material" else element.attrib
+        return merge_attrib(defaults.get(tag, {}), attrib, tag=tag)
 
     explicit_pair_geom_names: set[str] = set()
     for contact in contact_sections:
@@ -851,10 +862,16 @@ def parse_mjcf(
             mat_name = material.attrib.get("name")
             if not mat_name:
                 continue
+            mat_attrib = resolve_element_attrib(material, "material")
             material_assets[mat_name] = {
-                "rgba": material.attrib.get("rgba"),
-                "texture": material.attrib.get("texture"),
+                "rgba": mat_attrib.get("rgba", "1 1 1 1"),
+                "texture": mat_attrib.get("texture"),
             }
+            for key in ("roughness", "metallic"):
+                value = float(mat_attrib.get(key, "-1"))
+                # Negative values mean unspecified in MJCF; keep mesh-file defaults.
+                if value >= 0.0:
+                    material_assets[mat_name][key] = value
         for hfield in asset.findall("hfield"):
             hfield_name = hfield.attrib.get("name")
             if not hfield_name:
@@ -1542,6 +1559,10 @@ def parse_mjcf(
                         explicit_mesh_density = geom_mass_explicit / unit_density_mass
                         explicit_mass_handled = True
                 for m_mesh in m_meshes:
+                    if "roughness" in material_info:
+                        m_mesh.roughness = material_info["roughness"]
+                    if "metallic" in material_info:
+                        m_mesh.metallic = material_info["metallic"]
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         if verbose:
                             logger.warning("mesh %s has a texture but no UVs; texture will be ignored.", mesh_label)
