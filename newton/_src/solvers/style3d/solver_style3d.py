@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+import warnings
+from dataclasses import dataclass
+from typing import Any
 
 import warp as wp
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...sim import Contacts, Control, Model, ModelBuilder, State
 from ..solver import SolverBase
 from .builder import PDMatrixBuilder, _compute_max_neighbors
@@ -30,7 +33,23 @@ from .linear_solver import PcgSolver, SparseMatrixELL
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
 
-_LEGACY_UNSET = object()
+
+class _LegacyUnset:
+    def __repr__(self) -> str:
+        return "_LEGACY_UNSET"
+
+
+_LEGACY_UNSET: Any = _LegacyUnset()
+
+
+def _warn_legacy_attribute(name: str, config_name: str) -> None:
+    """Point deprecated attribute warnings at the caller's read or assignment."""
+    warnings.warn(
+        f"SolverStyle3D.{name} is deprecated as of Newton 1.8; use solver.config.{config_name} instead.",
+        NewtonDeprecationWarning,
+        stacklevel=3,
+    )
+
 
 ########################################################################################################################
 #################################################    Style3D Solver    #################################################
@@ -125,7 +144,7 @@ class SolverStyle3D(SolverBase):
         """Number of non-linear iterations per step."""
 
         linear_iterations: int = 10
-        """Number of PCG iterations per non-linear iteration."""
+        """Number of PCG iterations per non-linear iteration, capped by PCG capacity (999 by default)."""
 
         drag_spring_stiff: float = 1e2
         """Stiffness of the mouse-dragging spring [N/m]."""
@@ -136,45 +155,68 @@ class SolverStyle3D(SolverBase):
     config: Config
     """Live solver options, retained by reference when supplied at construction.
 
-    Edit fields or replace this object with a :class:`Config` between steps.
-    Each :meth:`step` snapshots these values at entry. Captured CUDA graphs
-    must be recaptured after changes.
+    Edit fields or replace this object with a :class:`Config` between calls
+    to :meth:`step`. Captured CUDA graphs must be recaptured after changes.
     """
 
     @property
     def linear_iterations(self) -> int:
-        """Legacy alias for :attr:`Config.linear_iterations`."""
+        """Legacy alias for :attr:`Config.linear_iterations`.
+
+        .. deprecated:: 1.8
+            Use ``solver.config.linear_iterations`` instead.
+        """
+        _warn_legacy_attribute("linear_iterations", "linear_iterations")
         return self.config.linear_iterations
 
     @linear_iterations.setter
     def linear_iterations(self, value: int) -> None:
+        _warn_legacy_attribute("linear_iterations", "linear_iterations")
         self.config.linear_iterations = value
 
     @property
     def nonlinear_iterations(self) -> int:
-        """Legacy alias for :attr:`Config.iterations`."""
+        """Legacy alias for :attr:`Config.iterations`.
+
+        .. deprecated:: 1.8
+            Use ``solver.config.iterations`` instead.
+        """
+        _warn_legacy_attribute("nonlinear_iterations", "iterations")
         return self.config.iterations
 
     @nonlinear_iterations.setter
     def nonlinear_iterations(self, value: int) -> None:
+        _warn_legacy_attribute("nonlinear_iterations", "iterations")
         self.config.iterations = value
 
     @property
     def drag_spring_stiff(self) -> float:
-        """Legacy alias for :attr:`Config.drag_spring_stiff`."""
+        """Legacy alias for :attr:`Config.drag_spring_stiff`.
+
+        .. deprecated:: 1.8
+            Use ``solver.config.drag_spring_stiff`` instead.
+        """
+        _warn_legacy_attribute("drag_spring_stiff", "drag_spring_stiff")
         return self.config.drag_spring_stiff
 
     @drag_spring_stiff.setter
     def drag_spring_stiff(self, value: float) -> None:
+        _warn_legacy_attribute("drag_spring_stiff", "drag_spring_stiff")
         self.config.drag_spring_stiff = value
 
     @property
     def enable_mouse_dragging(self) -> bool:
-        """Legacy alias for :attr:`Config.enable_mouse_dragging`."""
+        """Legacy alias for :attr:`Config.enable_mouse_dragging`.
+
+        .. deprecated:: 1.8
+            Use ``solver.config.enable_mouse_dragging`` instead.
+        """
+        _warn_legacy_attribute("enable_mouse_dragging", "enable_mouse_dragging")
         return self.config.enable_mouse_dragging
 
     @enable_mouse_dragging.setter
     def enable_mouse_dragging(self, value: bool) -> None:
+        _warn_legacy_attribute("enable_mouse_dragging", "enable_mouse_dragging")
         self.config.enable_mouse_dragging = value
 
     def __init__(
@@ -182,12 +224,17 @@ class SolverStyle3D(SolverBase):
         model: Model,
         *,
         config: Config | None = None,
-        iterations: int | object = _LEGACY_UNSET,
-        linear_iterations: int | object = _LEGACY_UNSET,
-        drag_spring_stiff: float | object = _LEGACY_UNSET,
-        enable_mouse_dragging: bool | object = _LEGACY_UNSET,
+        iterations: int = _LEGACY_UNSET,
+        linear_iterations: int = _LEGACY_UNSET,
+        drag_spring_stiff: float = _LEGACY_UNSET,
+        enable_mouse_dragging: bool = _LEGACY_UNSET,
     ):
         """Initialize the Style3D solver.
+
+        .. deprecated:: 1.8
+            The ``iterations``, ``linear_iterations``, ``drag_spring_stiff``,
+            and ``enable_mouse_dragging`` keyword arguments are deprecated.
+            Pass their values through ``config=SolverStyle3D.Config(...)`` instead.
 
         Args:
             model: The :class:`~newton.Model` containing Style3D attributes to integrate.
@@ -195,10 +242,10 @@ class SolverStyle3D(SolverBase):
                 any supplied legacy keyword options. The solver keeps this object
                 publicly as :attr:`config`; changes take effect on the next step.
                 An explicit configuration cannot be combined with legacy options.
-            iterations: Legacy keyword option for :attr:`Config.iterations`.
-            linear_iterations: Legacy keyword option for :attr:`Config.linear_iterations`.
-            drag_spring_stiff: Legacy keyword option for :attr:`Config.drag_spring_stiff`.
-            enable_mouse_dragging: Legacy keyword option for :attr:`Config.enable_mouse_dragging`.
+            iterations: Deprecated keyword option for :attr:`Config.iterations`.
+            linear_iterations: Deprecated keyword option for :attr:`Config.linear_iterations`.
+            drag_spring_stiff: Deprecated keyword option for :attr:`Config.drag_spring_stiff`.
+            enable_mouse_dragging: Deprecated keyword option for :attr:`Config.enable_mouse_dragging`.
 
         Raises:
             TypeError: If ``config`` is not a :class:`Config` or ``None``, or if
@@ -221,6 +268,15 @@ class SolverStyle3D(SolverBase):
             raise TypeError(f"Expected config to be {self.Config.__qualname__}, got {type(config).__qualname__}.")
         elif legacy_options:
             raise TypeError("Specify either 'config' or legacy solver options, not both.")
+
+        if legacy_options:
+            warnings.warn(
+                "SolverStyle3D keyword options "
+                f"({', '.join(legacy_options)}) are deprecated as of Newton 1.8; "
+                "use config=SolverStyle3D.Config(...) instead.",
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
 
         super().__init__(model)
         if not hasattr(model, "style3d"):
@@ -293,9 +349,6 @@ class SolverStyle3D(SolverBase):
                 container is accepted.
         """
         self.validate_observables(observables, contacts)
-
-        cfg = replace(self.config)
-
         # Model masses and flags may change between solver steps.
         wp.copy(self._particle_flags, self.model.particle_flags)
         if self.model.particle_count > 0:
@@ -333,12 +386,12 @@ class SolverStyle3D(SolverBase):
             device=self.device,
         )
 
-        if cfg.enable_mouse_dragging:
+        if self.config.enable_mouse_dragging:
             wp.launch(
                 accumulate_dragging_pd_diag_kernel,
                 dim=1,
                 inputs=[
-                    cfg.drag_spring_stiff,
+                    self.config.drag_spring_stiff,
                     self.drag_index,
                     self.drag_bary_coord,
                     self.model.tri_indices,
@@ -348,7 +401,7 @@ class SolverStyle3D(SolverBase):
                 device=self.device,
             )
 
-        for _iter in range(cfg.iterations):
+        for _iter in range(self.config.iterations):
             wp.launch(
                 init_rhs_kernel,
                 dim=self.model.particle_count,
@@ -390,12 +443,12 @@ class SolverStyle3D(SolverBase):
                 device=self.device,
             )
 
-            if cfg.enable_mouse_dragging:
+            if self.config.enable_mouse_dragging:
                 wp.launch(
                     eval_drag_force_kernel,
                     dim=1,
                     inputs=[
-                        cfg.drag_spring_stiff,
+                        self.config.drag_spring_stiff,
                         self.drag_index,
                         self.drag_pos,
                         self.drag_bary_coord,
@@ -444,7 +497,7 @@ class SolverStyle3D(SolverBase):
                 self.rhs,
                 self.inv_A_diags,
                 self.dx,
-                cfg.linear_iterations,
+                self.config.linear_iterations,
                 None if self.collision is None else self.collision.hessian_multiply,
             )
 

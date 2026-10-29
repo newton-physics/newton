@@ -20,6 +20,7 @@ from newton.solvers import style3d
 
 class Example:
     def __init__(self, viewer, args):
+        """Build the hanging cloth scene with the selected solver."""
         self.args = args
 
         # setup simulation parameters first

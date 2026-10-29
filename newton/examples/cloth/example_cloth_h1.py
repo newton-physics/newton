@@ -28,6 +28,7 @@ from newton.solvers import style3d
 
 class Example:
     def __init__(self, viewer, args):
+        """Set up the H1 robot, cloth, and coupled simulation."""
         # frame timing
         self.fps = 60
         self.frame_dt = 1.0 / self.fps

@@ -10,6 +10,7 @@ import warp as wp
 
 import newton
 from newton._src.solvers.style3d.builder import PDMatrixBuilder, _compute_max_neighbors
+from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
@@ -71,10 +72,7 @@ def test_constructor_precomputes_fixed_pd_matrix(test, device):
     solver = newton.solvers.SolverStyle3D(model)
     config = newton.solvers.SolverStyle3D.Config()
 
-    test.assertEqual(solver.nonlinear_iterations, config.iterations)
-    test.assertEqual(solver.linear_iterations, config.linear_iterations)
-    test.assertEqual(solver.drag_spring_stiff, config.drag_spring_stiff)
-    test.assertEqual(solver.enable_mouse_dragging, config.enable_mouse_dragging)
+    test.assertEqual(solver.config, config)
 
     test.assertGreater(float(solver.pd_diags.numpy().sum()), 0.0)
     test.assertGreater(int(solver.pd_non_diags.num_nz.numpy().sum()), 0)
@@ -106,18 +104,15 @@ def test_config_constructor_options(test, device):
 
     solver = newton.solvers.SolverStyle3D(model, config=config)
     test.assertIs(solver.config, config)
-    test.assertEqual(solver.nonlinear_iterations, config.iterations)
-    test.assertEqual(solver.linear_iterations, config.linear_iterations)
-    test.assertEqual(solver.drag_spring_stiff, config.drag_spring_stiff)
-    test.assertEqual(solver.enable_mouse_dragging, config.enable_mouse_dragging)
-
-    legacy_solver = newton.solvers.SolverStyle3D(
-        model,
-        iterations=config.iterations,
-        linear_iterations=config.linear_iterations,
-        drag_spring_stiff=config.drag_spring_stiff,
-        enable_mouse_dragging=config.enable_mouse_dragging,
-    )
+    with test.assertWarnsRegex(NewtonDeprecationWarning, "config=SolverStyle3D.Config") as warning:
+        legacy_solver = newton.solvers.SolverStyle3D(
+            model,
+            iterations=config.iterations,
+            linear_iterations=config.linear_iterations,
+            drag_spring_stiff=config.drag_spring_stiff,
+            enable_mouse_dragging=config.enable_mouse_dragging,
+        )
+    test.assertEqual(warning.filename, __file__)
     test.assertIsNot(legacy_solver.config, config)
     test.assertEqual(legacy_solver.config, config)
 
@@ -152,7 +147,9 @@ def test_config_constructor_options(test, device):
             np.testing.assert_allclose(actual[1], expected[1], atol=1e-6)
             test.assertGreater(np.max(np.abs(actual[1] - previous[1])), 1e-6)
             legacy_name = "nonlinear_iterations" if name == "iterations" else name
-            test.assertEqual(getattr(solver, legacy_name), value)
+            with test.assertWarnsRegex(NewtonDeprecationWarning, f"solver.config.{name}") as warning:
+                test.assertEqual(getattr(solver, legacy_name), value)
+            test.assertEqual(warning.filename, __file__)
             previous = actual
 
     # Replacing the public configuration also updates the next solve.
@@ -163,21 +160,20 @@ def test_config_constructor_options(test, device):
     np.testing.assert_allclose(actual[1], outputs[0][1], atol=1e-6)
 
     # Legacy setters update the same configuration used by the solver.
-    solver.nonlinear_iterations = config.iterations
-    solver.linear_iterations = config.linear_iterations
-    solver.drag_spring_stiff = config.drag_spring_stiff
-    solver.enable_mouse_dragging = config.enable_mouse_dragging
+    for name in ("iterations", "linear_iterations", "drag_spring_stiff", "enable_mouse_dragging"):
+        legacy_name = "nonlinear_iterations" if name == "iterations" else name
+        with test.assertWarnsRegex(NewtonDeprecationWarning, f"solver.config.{name}") as warning:
+            setattr(solver, legacy_name, getattr(config, name))
+        test.assertEqual(warning.filename, __file__)
     test.assertEqual(solver.config, config)
     actual = solve(solver)
     np.testing.assert_allclose(actual[0], previous[0], atol=1e-6)
     np.testing.assert_allclose(actual[1], previous[1], atol=1e-6)
 
     default_config = newton.solvers.SolverStyle3D.Config()
-    partial_solver = newton.solvers.SolverStyle3D(model, config=None, iterations=2, drag_spring_stiff=0.0)
-    test.assertEqual(partial_solver.nonlinear_iterations, 2)
-    test.assertEqual(partial_solver.linear_iterations, default_config.linear_iterations)
-    test.assertEqual(partial_solver.drag_spring_stiff, 0.0)
-    test.assertEqual(partial_solver.enable_mouse_dragging, default_config.enable_mouse_dragging)
+    with test.assertWarnsRegex(NewtonDeprecationWarning, "config=SolverStyle3D.Config"):
+        partial_solver = newton.solvers.SolverStyle3D(model, config=None, iterations=2, drag_spring_stiff=0.0)
+    test.assertEqual(partial_solver.config, replace(default_config, iterations=2, drag_spring_stiff=0.0))
 
     for name, value in (
         ("iterations", default_config.iterations),
@@ -217,7 +213,9 @@ def test_high_valence_pd_matrix(test, device):
                 edge_aniso_ke=wp.vec3(2.0e-4, 1.0e-4, 5.0e-5),
             )
             model = builder.finalize(device=device)
-            solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+            solver = newton.solvers.SolverStyle3D(
+                model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
+            )
             test.assertEqual(int(solver.pd_non_diags.num_nz.numpy()[0]), n * (2 if outer_ring else 1))
             _assert_pd_matrix(test, model, solver)
 
@@ -284,12 +282,15 @@ def test_invalid_topology_is_rejected_before_precompute(test, device):
     with mock.patch.object(newton.solvers.SolverStyle3D, "_precompute") as precompute:
         with test.assertRaisesRegex(ValueError, "tri_indices.*particle count"):
             model = builder.finalize(device=device)
-            newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+            newton.solvers.SolverStyle3D(
+                model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
+            )
 
     precompute.assert_not_called()
 
 
 def test_zero_mass_isolated_particle_remains_finite(test, device):
+    """Keep an isolated zero-mass particle fixed with finite state."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_mesh(
@@ -305,7 +306,9 @@ def test_zero_mass_isolated_particle_remains_finite(test, device):
     test.assertEqual(float(model.particle_mass.numpy()[3]), 0.0)
     test.assertTrue(int(model.particle_flags.numpy()[3]) & int(newton.ParticleFlags.ACTIVE))
 
-    solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+    solver = newton.solvers.SolverStyle3D(
+        model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
+    )
     state_0 = model.state()
     state_1 = model.state()
     collision_pipeline = newton.CollisionPipeline(model)
@@ -322,6 +325,7 @@ def test_zero_mass_isolated_particle_remains_finite(test, device):
 
 
 def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
+    """Deactivate zero-mass solver particles without changing shared model flags."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_mesh(
@@ -337,7 +341,9 @@ def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
     model = builder.finalize(device=device)
     model_flags = model.particle_flags.numpy().copy()
 
-    solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+    solver = newton.solvers.SolverStyle3D(
+        model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
+    )
 
     np.testing.assert_array_equal(model.particle_flags.numpy(), model_flags)
     solver_flags = solver._particle_flags.numpy()
@@ -349,6 +355,7 @@ def test_solver_flags_deactivate_zero_mass_without_mutating_model(test, device):
 
 
 def test_solver_flags_track_runtime_model_changes(test, device):
+    """Refresh solver activity after model masses and flags change."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     newton.solvers.SolverStyle3D.register_custom_attributes(builder)
     newton.solvers.style3d.add_cloth_grid(
@@ -363,7 +370,9 @@ def test_solver_flags_track_runtime_model_changes(test, device):
         mass=0.1,
     )
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+    solver = newton.solvers.SolverStyle3D(
+        model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
+    )
 
     masses = model.particle_mass.numpy().copy()
     masses[0] = 0.0
@@ -404,7 +413,9 @@ def test_global_particles_use_global_gravity(test, device):
     builder.begin_world(gravity=(0.0, 0.0, 0.0))
     builder.end_world()
     model = builder.finalize(device=device)
-    solver = newton.solvers.SolverStyle3D(model, iterations=1, linear_iterations=1)
+    solver = newton.solvers.SolverStyle3D(
+        model, config=newton.solvers.SolverStyle3D.Config(iterations=1, linear_iterations=1)
+    )
     state_0, state_1 = model.state(), model.state()
     contacts = newton.CollisionPipeline(model).contacts()
 

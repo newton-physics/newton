@@ -350,7 +350,9 @@ repository examples spend tuning effort, not a shared solver API.
        :mod:`newton.solvers.style3d` helper functions. Examples tune
        ``Config.iterations`` and keep interaction-specific drag knobs
        separate from material stiffness. The original constructor keyword
-       options remain supported but cannot be combined with an explicit ``config``.
+       options and solver attribute aliases are deprecated as of Newton 1.8;
+       use ``Config`` and ``solver.config`` instead. Deprecated constructor
+       options cannot be combined with an explicit ``config``.
    * - :class:`~newton.solvers.SolverKamino`
      - :class:`~newton.solvers.SolverKamino.Config`, including
        ``sparse_jacobian``, ``sparse_dynamics``, ``use_collision_detector``,
