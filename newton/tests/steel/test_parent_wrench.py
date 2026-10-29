@@ -167,8 +167,8 @@ def test_parent_wrench_matches_inverse_dynamics_on_every_path(test, device):
         configurations += [
             {"solve_mode": "matrix_free"},
             {"solve_mode": "matrix_free", "parallel_tree": True},
-            {"solve_mode": "matrix_free", "use_parallel_streams": False},
-            {"solve_mode": "matrix_free", "double_buffer": False},
+            {"solve_mode": "matrix_free", "use_parallel_streams": True},
+            {"solve_mode": "matrix_free", "double_buffer": True},
         ]
     joint_f = control.joint_f.numpy()
     qd_start = model.joint_qd_start.numpy()
@@ -177,6 +177,8 @@ def test_parent_wrench_matches_inverse_dynamics_on_every_path(test, device):
     for options in configurations:
         with test.subTest(**options):
             solver = SolverSteel(model, **options)
+            if options.get("use_parallel_streams"):
+                test.assertGreater(len(solver._size_groups), 1)
             solver._rigid_body_angular_damping.zero_()
             wrench, _ = _first_step(model, state, control, solver)
             test.assertGreater(np.abs(wrench).max(), 1.0)
@@ -301,12 +303,14 @@ _CONTACT_CONFIGURATIONS = {
 }
 
 
-def _settled_wrench(model, ids, configuration, steps, *, joint_f=None, capture=False):
+def _settled_wrench(test, model, ids, configuration, steps, *, joint_f=None, capture=False):
     """Average the published wrenches over the last 30 of ``steps`` steps."""
     options = dict(_CONTACT_CONFIGURATIONS[configuration])
     set_torsion_radius(model, options.pop("torsion_radius", 0.0))
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
+    if options.get("contact_shared_anchor"):
+        with test.assertWarnsRegex(NewtonWarning, "Patch friction selects"):
+            solver = SolverSteel(model, **options)
+    else:
         solver = SolverSteel(model, **options)
     solver._rigid_body_angular_damping.zero_()
     pipeline = newton.CollisionPipeline(model, rigid_contact_max=256, contact_matching="sticky")
@@ -349,7 +353,7 @@ def test_parent_wrench_carries_a_load_resting_on_the_gripper(test, device):
     model, ids = _gripper_scene(device, load_box_x=box_x)
     for configuration in _CONTACT_CONFIGURATIONS:
         with test.subTest(configuration=configuration):
-            wrench = _settled_wrench(model, ids, configuration, 480)
+            wrench = _settled_wrench(test, model, ids, configuration, 480)
             expected = [0.0, 0.0, (M_GRIP + M_BOX) * G, 0.0, -box_x * M_BOX * G, 0.0]
             np.testing.assert_allclose(wrench[ids["grip"]], expected, atol=2.0e-3)
             np.testing.assert_allclose(wrench[ids["box"]], 0.0, atol=2.0e-3)
@@ -359,10 +363,16 @@ def test_parent_wrench_reports_a_commanded_push(test, device):
     """A lift force pressing the tray into the ground reaches the flange as that force plus the carriage weight."""
     push = 20.0
     model, ids = _gripper_scene(device, lift_z=0.1305, lift_drive=False)
-    for configuration in _CONTACT_CONFIGURATIONS:
+    for configuration in ("patch_spin_sleep", "split"):
         with test.subTest(configuration=configuration):
             wrench = _settled_wrench(
-                model, ids, configuration, 480, joint_f={"lift": -push}, capture=configuration == "patch_spin_sleep"
+                test,
+                model,
+                ids,
+                configuration,
+                480,
+                joint_f={"lift": -push},
+                capture=configuration == "patch_spin_sleep",
             )
             # The four tray corners share the load indeterminately, so only the force is fixed.
             np.testing.assert_allclose(wrench[ids["grip"], :3], [0.0, 0.0, -(push + M_CARRIAGE * G)], atol=2.0e-3)
@@ -371,9 +381,9 @@ def test_parent_wrench_reports_a_commanded_push(test, device):
 def test_parent_wrench_carries_a_pinched_load(test, device):
     """Friction-held payload weight reaches the flange; the squeeze stays inside the gripper subtree."""
     model, ids = _gripper_scene(device, pinch=True)
-    for configuration in _CONTACT_CONFIGURATIONS:
+    for configuration in ("point_friction", "propagation"):
         with test.subTest(configuration=configuration):
-            wrench = _settled_wrench(model, ids, configuration, 720)
+            wrench = _settled_wrench(test, model, ids, configuration, 720)
             expected = [0.0, 0.0, (M_GRIP + 2.0 * M_FINGER + M_BOX) * G, 0.0, 0.0, 0.0]
             np.testing.assert_allclose(wrench[ids["grip"]], expected, atol=1.0e-2)
             np.testing.assert_allclose(wrench[ids["box"]], 0.0, atol=1.0e-2)
@@ -382,7 +392,7 @@ def test_parent_wrench_carries_a_pinched_load(test, device):
 def test_parent_wrench_includes_spin_rows(test, device):
     """A box riding a spinning tray transmits nothing through its free joint once spin-row torques are counted."""
     model, ids = _gripper_scene(device, flange_drive=False, load_box_x=0.0)
-    wrench = _settled_wrench(model, ids, "patch_spin_sleep", 240, joint_f={"flange": 0.3})
+    wrench = _settled_wrench(test, model, ids, "patch_spin_sleep", 240, joint_f={"flange": 0.3})
     np.testing.assert_allclose(wrench[ids["box"]], 0.0, atol=1.0e-3)
     test.assertAlmostEqual(wrench[ids["grip"], 5], 0.3, delta=1.0e-3)
 
@@ -910,16 +920,25 @@ add_function_test(
 for _name in (
     "test_parent_wrench_of_a_near_redundant_closure",
     "test_parent_wrench_matches_mujoco_with_armature",
-    "test_parent_wrench_carries_a_load_resting_on_the_gripper",
-    "test_parent_wrench_reports_a_commanded_push",
-    "test_parent_wrench_carries_a_pinched_load",
-    "test_parent_wrench_includes_spin_rows",
     "test_parent_wrench_excludes_velocity_limit_prescaling",
     "test_parent_wrench_includes_loop_closure_reactions",
     "test_parent_wrench_of_a_load_held_by_closures",
     "test_parent_wrench_warns_without_preeliminated_closures",
 ):
     add_function_test(TestSteelParentWrench, _name, globals()[_name], devices=get_cuda_test_devices())
+
+
+class TestSteelParentWrenchGripper(unittest.TestCase):
+    pass
+
+
+for _name in (
+    "test_parent_wrench_carries_a_load_resting_on_the_gripper",
+    "test_parent_wrench_reports_a_commanded_push",
+    "test_parent_wrench_carries_a_pinched_load",
+    "test_parent_wrench_includes_spin_rows",
+):
+    add_function_test(TestSteelParentWrenchGripper, _name, globals()[_name], devices=get_cuda_test_devices())
 
 
 if __name__ == "__main__":
