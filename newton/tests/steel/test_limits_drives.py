@@ -1628,6 +1628,33 @@ def test_near_singular_passive_damping(test, device, solve_mode="matrix_free"):
             test.assertLess(previous, 1.0e-4)
 
 
+def test_passive_damping_replay_after_timestep_change(test, device):
+    """Refresh cached damping factors when eager steps and graphs use different dt."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    joint = builder.add_joint_prismatic(-1, body, armature=0.0, damping=100.0)
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+    for drive_mode in ("augmented", "rows"):
+        with test.subTest(drive_mode=drive_mode):
+            solver = SolverSteel(model, drive_mode=drive_mode, update_mass_matrix_interval=100)
+            state, output = model.state(), model.state()
+            state.joint_qd.fill_(1.0)
+            control = model.control()
+            graphs = []
+            for dt in (0.01, 0.02):
+                solver.step(state, output, control, None, dt)
+                with wp.ScopedCapture(device=device) as capture:
+                    solver.step(state, output, control, None, dt)
+                graphs.append(capture.graph)
+            for _ in range(2):
+                for graph, dt in zip(graphs, (0.01, 0.02), strict=True):
+                    wp.capture_launch(graph)
+                    np.testing.assert_allclose(output.joint_qd.numpy(), [1.0 / (1.0 + dt * 100.0)], atol=1.0e-6)
+                solver.step(state, output, control, None, 0.005)
+                np.testing.assert_allclose(output.joint_qd.numpy(), [2.0 / 3.0], atol=1.0e-6)
+
+
 class TestSteelAugmentedDrives(unittest.TestCase):
     pass
 
@@ -1641,6 +1668,14 @@ for _name, _func in (
 ):
     add_function_test(TestSteelAugmentedDrives, _name, _func, devices=devices)
     add_function_test(TestSteelAugmentedDrives, f"{_name}_split", _func, devices=split_devices, solve_mode="split")
+
+
+add_function_test(
+    TestSteelAugmentedDrives,
+    "test_passive_damping_replay_after_timestep_change",
+    test_passive_damping_replay_after_timestep_change,
+    devices=devices,
+)
 
 
 DT_JOINT_FRICTION = 0.01

@@ -2773,17 +2773,22 @@ def eval_rigid_tau_and_augmented_drives(
 @wp.kernel
 def build_mass_update_mask(
     global_flag: int,
+    dt: float,
     mass_update_requested: wp.array[int],
     articulation_active: wp.array[int],
     mass_update_mask: wp.array[int],
+    mass_factor_dt: wp.array[float],
 ):
+    """Refresh active factors whose timestep differs, including during graph replay."""
     tid = wp.tid()
     flag = 1 if global_flag != 0 else 0
-    if mass_update_requested[tid] != 0:
+    if mass_update_requested[tid] != 0 or mass_factor_dt[tid] != dt:
         flag = 1
     if articulation_active[tid] == 0:
         flag = 0
     mass_update_mask[tid] = flag
+    if flag != 0:
+        mass_factor_dt[tid] = dt
 
 
 # =============================================================================

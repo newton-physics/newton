@@ -1726,7 +1726,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 :meth:`notify_model_changed` still request a refresh of the affected
                 articulations. Under CUDA graph capture the
                 host-side cadence is baked into the graph, so the interval should divide the
-                number of steps captured per graph.
+                number of steps captured per graph. The timestep associated with each factor
+                is checked on the device, so replaying a graph after a step or graph with a
+                different timestep refreshes the factor even between scheduled rebuilds.
             enable_joint_limits: Enforce :attr:`~newton.Model.joint_limit_lower` and
                 :attr:`~newton.Model.joint_limit_upper` of PRISMATIC, REVOLUTE and D6 DOFs as
                 unilateral rows. When ``False`` (the default), no joint-limit rows are created,
@@ -2502,6 +2504,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._coupling_patch_history_restore_pending = False
         self._coupling_iteration_restarts = True
         self._mass_update_requested = wp.zeros(model.articulation_count, dtype=wp.int32, device=model.device)
+        self._mass_factor_dt = wp.zeros(model.articulation_count, dtype=wp.float32, device=model.device)
         self._last_step_dt = None
 
         self._model_plan: _SteelModelPlan | None = None
@@ -6600,7 +6603,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         # With sleeping, wrenches go to solver-owned history first, so frozen bodies never read a caller buffer.
         computed_parent_f = self._sleeping.parent_wrenches if self._sleeping is not None else body_parent_f
         self._stage1_joint_tau(state_in, state_aug, state_out, control, dt, computed_parent_f)
-        self._stage1_crba(state_aug)
+        self._stage1_crba(state_aug, dt)
 
         # Stage 2: factor the augmented mass matrix of every articulation group.
         self._profile_stage("factor")
@@ -8162,7 +8165,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=self.model.device,
             )
 
-    def _stage1_crba(self, state_aug: State):
+    def _stage1_crba(self, state_aug: State, dt: float):
         """Build the joint-space mass matrix of articulations due for a refresh and add drive terms."""
         model = self.model
         global_flag = 1 if ((self._step % self._update_mass_matrix_interval) == 0 or self._force_mass_update) else 0
@@ -8170,8 +8173,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         wp.launch(
             build_mass_update_mask,
             dim=model.articulation_count,
-            inputs=[global_flag, self._mass_update_requested, self._dynamics_art_active],
-            outputs=[self._mass_update_mask],
+            inputs=[global_flag, dt, self._mass_update_requested, self._dynamics_art_active],
+            outputs=[self._mass_update_mask, self._mass_factor_dt],
             device=model.device,
         )
         if not global_flag:
