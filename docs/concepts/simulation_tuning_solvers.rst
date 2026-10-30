@@ -334,7 +334,8 @@ repository examples spend tuning effort, not a shared solver API.
        rows, free bodies included, share one family of ``free_body_constraint_max +
        articulation_constraint_max`` rows per world, or of ``propagation_constraint_max`` rows
        when that is set. Contacts between two links of one articulation stay dense rows of
-       ``articulation_constraint_max`` unless ``propagation_same_articulation_rows`` is set.
+       ``articulation_constraint_max`` unless ``propagation_same_articulation_rows`` is set,
+       which only ``"propagation"`` accepts.
        Setting ``propagation_constraint_max`` lets ``free_body_constraint_max`` shrink to the
        free-body velocity-limit rows, the only free-body rows these responses keep.
        ``"propagation_colored"`` sweeps the propagation rows in parallel batches of contacts
