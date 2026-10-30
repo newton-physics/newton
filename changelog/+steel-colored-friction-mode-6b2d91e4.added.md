@@ -1,0 +1,1 @@
+Accept `friction_mode` values other than `"fixed_normal"` with `SolverSteel(articulated_contact_response="propagation_colored")`. Each contact on a propagation row, articulated ones included, solves its normal and sliding rows together with the coupled update the matrix-free solve applies to free-body contacts.

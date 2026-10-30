@@ -233,3 +233,207 @@ FRICTION_PAIR_CUDA = """
         return friction_pair_solve(scale, largest, smallest, vx, vy, r0, r1, old0, old1, radius, omega);
     };
 """
+
+
+_COUPLED_CONTACT_HEAD = """
+    // One contact's normal and sliding pair solved together on its 3x3 Delassus block G, from the
+    // velocities u (impulses old included), the normal target velocity, and the coefficient mu.
+    const auto contact_block_solve = [&](
+        float u_n, float u_t1, float u_t2,
+        float G_nn, float G_nt1, float G_nt2, float G_t1t1, float G_t1t2, float G_t2t2,
+        float target_vel_n, float mu, float old_lambda_n, float old_lambda_t1, float old_lambda_t2,
+        float& new_lambda_n, float& new_lambda_t1, float& new_lambda_t2) {
+        new_lambda_n = old_lambda_n;
+        new_lambda_t1 = old_lambda_t1;
+        new_lambda_t2 = old_lambda_t2;
+        // A singular block (a link with fewer than two tangential mobilities) keeps the normal
+        // impulse its contact row just solved and takes the fixed_normal pair on that disk.
+        // Rounding leaves a locked tangent a tiny response, so the test is relative to the trace.
+        const auto fixed_normal_pair = [&]() {
+            const float radius = fmaxf(mu * old_lambda_n, 0.0f);
+            const float2 pair = friction_pair_candidate(
+                G_t1t1, G_t1t2, G_t2t2, u_t1, u_t2, old_lambda_t1, old_lambda_t2, radius, 1.0f);
+            const float mag = sqrtf(pair.x * pair.x + pair.y * pair.y);
+            const float scale = mag > radius ? radius / mag : 1.0f;
+            new_lambda_t1 = pair.x * scale;
+            new_lambda_t2 = pair.y * scale;
+        };
+        const float tangent_trace = G_t1t1 + G_t2t2;
+        if (G_t1t1 * G_t2t2 - G_t1t2 * G_t1t2 <= 1.0e-6f * tangent_trace * tangent_trace) {
+            fixed_normal_pair();
+            return;
+        }
+"""
+
+# Repeats the arithmetic of _MF_BISECTION_FRICTION_SOURCE in solver_steel.py; change both together.
+_COUPLED_CONTACT_BISECTION = """
+        if (G_nn < 1.0e-20f) return;
+        // At zero load the cone also zeroes the sliding pair.
+        float u_n_at_zero = u_n - G_nn * old_lambda_n - G_nt1 * old_lambda_t1 - G_nt2 * old_lambda_t2;
+        if (u_n_at_zero >= target_vel_n) {
+            new_lambda_n = 0.0f;
+            new_lambda_t1 = 0.0f;
+            new_lambda_t2 = 0.0f;
+            return;
+        }
+        float lo = 0.0f;
+        float hi = fmaxf(old_lambda_n * 2.0f, (target_vel_n - u_n) / G_nn + old_lambda_n);
+        hi = fmaxf(hi, 1.0f);
+        float f_lo = u_n_at_zero - target_vel_n, f_hi = -1.0f;
+        for (int _bi = 0; _bi < 20; _bi++) {
+            float mid = 0.5f * (lo + hi);
+            float d_n = mid - old_lambda_n;
+            float ut1_eff = u_t1 + G_nt1 * d_n;
+            float ut2_eff = u_t2 + G_nt2 * d_n;
+            float det = G_t1t1 * G_t2t2 - G_t1t2 * G_t1t2;
+            float d_t1 = 0.0f, d_t2 = 0.0f;
+            if (fabsf(det) > 1.0e-20f) {
+                d_t1 = (-ut1_eff * G_t2t2 + ut2_eff * G_t1t2) / det;
+                d_t2 = ( ut1_eff * G_t1t2 - ut2_eff * G_t1t1) / det;
+            }
+            float trial_t1 = old_lambda_t1 + d_t1;
+            float trial_t2 = old_lambda_t2 + d_t2;
+            float flimit = mu * mid;
+            float tmag = sqrtf(trial_t1 * trial_t1 + trial_t2 * trial_t2);
+            if (tmag > flimit && tmag > 1.0e-20f) {
+                float sc = flimit / tmag;
+                trial_t1 *= sc;
+                trial_t2 *= sc;
+            }
+            float d_t1_actual = trial_t1 - old_lambda_t1;
+            float d_t2_actual = trial_t2 - old_lambda_t2;
+            float u_n_trial = u_n + G_nn * d_n + G_nt1 * d_t1_actual + G_nt2 * d_t2_actual;
+            if (u_n_trial < target_vel_n) { lo = mid; f_lo = u_n_trial - target_vel_n; }
+            else { hi = mid; f_hi = u_n_trial - target_vel_n; }
+        }
+        // Interpolate the root in the final bracket, whose width scales with the initial one.
+        new_lambda_n = f_hi >= 0.0f ? lo - f_lo * (hi - lo) / (f_hi - f_lo) : 0.5f * (lo + hi);
+        float d_n_final = new_lambda_n - old_lambda_n;
+        float ut1_f = u_t1 + G_nt1 * d_n_final;
+        float ut2_f = u_t2 + G_nt2 * d_n_final;
+        float det_f = G_t1t1 * G_t2t2 - G_t1t2 * G_t1t2;
+        float d_t1_f = 0.0f, d_t2_f = 0.0f;
+        if (fabsf(det_f) > 1.0e-20f) {
+            d_t1_f = (-ut1_f * G_t2t2 + ut2_f * G_t1t2) / det_f;
+            d_t2_f = ( ut1_f * G_t1t2 - ut2_f * G_t1t1) / det_f;
+        }
+        new_lambda_t1 = old_lambda_t1 + d_t1_f;
+        new_lambda_t2 = old_lambda_t2 + d_t2_f;
+        float flimit_f = mu * new_lambda_n;
+        float tmag_f = sqrtf(new_lambda_t1 * new_lambda_t1 + new_lambda_t2 * new_lambda_t2);
+        if (tmag_f > flimit_f && tmag_f > 1.0e-20f) {
+            float sc_f = flimit_f / tmag_f;
+            new_lambda_t1 *= sc_f;
+            new_lambda_t2 *= sc_f;
+        }
+    };
+"""
+
+# Repeats the arithmetic of _MF_COULOMB_NEWTON_FRICTION_SOURCE in solver_steel.py; change both together.
+_COUPLED_CONTACT_COULOMB_NEWTON = """
+        if (G_nn < 1.0e-20f) return;
+        float u_free_n = u_n - (G_nn * old_lambda_n + G_nt1 * old_lambda_t1 + G_nt2 * old_lambda_t2);
+        float u_free_t1 = u_t1 - (G_nt1 * old_lambda_n + G_t1t1 * old_lambda_t1 + G_t1t2 * old_lambda_t2);
+        float u_free_t2 = u_t2 - (G_nt2 * old_lambda_n + G_t1t2 * old_lambda_t1 + G_t2t2 * old_lambda_t2);
+        if (u_free_n >= target_vel_n) {
+            new_lambda_n = 0.0f;
+            new_lambda_t1 = 0.0f;
+            new_lambda_t2 = 0.0f;
+            return;
+        }
+        float bN = u_free_n - target_vel_n;
+        float bT0 = u_free_t1;
+        float bT1 = u_free_t2;
+        float WN = G_nn;
+        float wNT0 = G_nt1;
+        float wNT1 = G_nt2;
+        float AT00 = G_t1t1 - (wNT0 * wNT0) / WN;
+        float AT01 = G_t1t2 - (wNT0 * wNT1) / WN;
+        float AT10 = G_t1t2 - (wNT1 * wNT0) / WN;
+        float AT11 = G_t2t2 - (wNT1 * wNT1) / WN;
+        if (AT00 * AT11 - AT01 * AT10 <= 1.0e-6f * tangent_trace * tangent_trace) {
+            fixed_normal_pair();
+            return;
+        }
+        float cT0 = bT0 - (bN / WN) * wNT0;
+        float cT1 = bT1 - (bN / WN) * wNT1;
+        float inv_det0 = 1.0f / (AT00 * AT11 - AT01 * AT10);
+        float s0_0 = (AT11 * cT0 - AT01 * cT1) * inv_det0;
+        float s0_1 = (AT00 * cT1 - AT10 * cT0) * inv_det0;
+        float norm_s0 = sqrtf(s0_0 * s0_0 + s0_1 * s0_1);
+        float phi0 = norm_s0 - mu * (wNT0 * s0_0 + wNT1 * s0_1 - bN) / WN;
+        float last_s0 = 0.0f, last_s1 = 0.0f;
+        if (phi0 <= 0.0f) {
+            last_s0 = s0_0;
+            last_s1 = s0_1;
+        } else {
+            float hi = 1.0f;
+            for (int _e = 0; _e < 30; _e++) {
+                float a_hi = AT00 + hi;
+                float d_hi = AT11 + hi;
+                float idet_hi = 1.0f / (a_hi * d_hi - AT01 * AT10);
+                float sh0 = (d_hi * cT0 - AT01 * cT1) * idet_hi;
+                float sh1 = (a_hi * cT1 - AT10 * cT0) * idet_hi;
+                float ns_hi = sqrtf(sh0 * sh0 + sh1 * sh1);
+                float phi_hi = ns_hi - mu * (wNT0 * sh0 + wNT1 * sh1 - bN) / WN;
+                if (phi_hi < 0.0f) break;
+                hi *= 2.0f;
+            }
+            float lo = 0.0f;
+            float x = 0.5f * (lo + hi);
+            float tol = 1.0e-6f + 1.0e-6f * phi0;
+            for (int _it = 0; _it < 50; _it++) {
+                float ax = AT00 + x;
+                float dx = AT11 + x;
+                float idet = 1.0f / (ax * dx - AT01 * AT10);
+                float s0 = (dx * cT0 - AT01 * cT1) * idet;
+                float s1 = (ax * cT1 - AT10 * cT0) * idet;
+                float t0 = (dx * s0 - AT01 * s1) * idet;
+                float t1 = (ax * s1 - AT10 * s0) * idet;
+                float ns = sqrtf(s0 * s0 + s1 * s1);
+                float fx = ns - mu * (wNT0 * s0 + wNT1 * s1 - bN) / WN;
+                float dfx = -(s0 * t0 + s1 * t1) / ns + mu * (wNT0 * t0 + wNT1 * t1) / WN;
+                last_s0 = s0;
+                last_s1 = s1;
+                if (fabsf(fx) < tol || fabsf(hi - lo) < 1.0e-6f * (1.0f + hi)) break;
+                if (fx > 0.0f) lo = x;
+                else hi = x;
+                float x_new = 0.5f * (lo + hi);
+                if (dfx != 0.0f) {
+                    float x_newton = x - fx / dfx;
+                    if (x_newton > lo && x_newton < hi) x_new = x_newton;
+                }
+                x = x_new;
+            }
+        }
+        float rT0 = -last_s0;
+        float rT1 = -last_s1;
+        new_lambda_n = -(wNT0 * rT0 + wNT1 * rT1 + bN) / WN;
+        new_lambda_t1 = rT0;
+        new_lambda_t2 = rT1;
+        // The root search stops within a tolerance and leaves a residual tangent at mu = 0.
+        const float flimit = fmaxf(mu * new_lambda_n, 0.0f);
+        const float tmag = sqrtf(new_lambda_t1 * new_lambda_t1 + new_lambda_t2 * new_lambda_t2);
+        if (tmag > flimit) {
+            const float sc = flimit / tmag;
+            new_lambda_t1 *= sc;
+            new_lambda_t2 *= sc;
+        }
+    };
+"""
+
+
+def coupled_contact_cuda(friction_mode: str) -> str:
+    """CUDA for ``contact_block_solve``, the coupled contact update of a ``friction_mode`` other than fixed_normal.
+
+    The arithmetic is the matrix-free Gauss-Seidel kernel's for its free-rigid contact rows.
+    """
+    if friction_mode == "coulomb_newton":
+        return _COUPLED_CONTACT_HEAD + _COUPLED_CONTACT_COULOMB_NEWTON
+    if friction_mode == "bisection_desaxce":
+        # de Saxce: the normal target velocity gains mu times the tangential speed.
+        bias = "        target_vel_n = target_vel_n + mu * sqrtf(u_t1 * u_t1 + u_t2 * u_t2);\n"
+        return _COUPLED_CONTACT_HEAD + bias + _COUPLED_CONTACT_BISECTION
+    if friction_mode == "bisection":
+        return _COUPLED_CONTACT_HEAD + _COUPLED_CONTACT_BISECTION
+    raise ValueError(f"friction_mode {friction_mode!r} has no coupled contact solve")
