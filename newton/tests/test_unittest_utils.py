@@ -428,6 +428,34 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertFalse(output_capture.active)
 
 
+class TestWarpVersionAtLeast(unittest.TestCase):
+    def test_orders_pre_releases_before_their_release(self):
+        """Order releases, .devN, and rcN builds the way PEP 440 does."""
+        cases = (
+            ("1.19.0.dev20261020", "1.19.0.dev20261020", True),
+            ("1.19.0.dev20261021", "1.19.0.dev20261020", True),
+            ("1.19.0.dev20261019", "1.19.0.dev20261020", False),
+            ("1.19.0", "1.19.0.dev20261020", True),
+            ("1.19.0.dev20261020", "1.19.0", False),
+            ("1.18.0", "1.19.0.dev0", False),
+            ("1.20.0.dev0", "1.19.0", True),
+            ("1.19.0rc1", "1.19.0.dev20261020", True),
+            ("1.19.0rc1", "1.19.0", False),
+            ("1.19.0rc2", "1.19.0rc1", True),
+            ("1.17.0+cu12", "1.17.0", True),
+        )
+        for installed, required, expected in cases:
+            with self.subTest(installed=installed, required=required):
+                with mock.patch.object(unittest_utils.wp, "__version__", installed):
+                    self.assertEqual(unittest_utils.warp_version_at_least(required), expected)
+
+    def test_rejects_thresholds_it_cannot_order(self):
+        """Reject thresholds whose suffix would otherwise be ignored."""
+        for required in ("1.19.0+cu13", "1.19.0.post1", "1.19"):
+            with self.subTest(required=required), self.assertRaisesRegex(ValueError, "Unsupported version"):
+                unittest_utils.warp_version_at_least(required)
+
+
 class TestShardSelection(unittest.TestCase):
     def test_invalid_shard_arguments_are_usage_errors(self):
         """Reject a non-positive shard count and an out-of-range shard index."""
