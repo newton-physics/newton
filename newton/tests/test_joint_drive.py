@@ -429,7 +429,7 @@ def test_semi_implicit_revolute_winding(test, device):
     test.assertAlmostEqual(float(state.joint_q.grad.numpy()[0]), -0.002, delta=1.0e-5)
     tape.zero()
     tape.backward(grads={output.joint_q: wp.ones_like(output.joint_q)})
-    test.assertAlmostEqual(float(state.joint_q.grad.numpy()[0]), 1.0 - 2.0e-6, delta=1.0e-5)
+    test.assertAlmostEqual(float(state.joint_q.grad.numpy()[0]), 1.0 - 2.0e-6, delta=1.0e-7)
 
     # Reset an already-used state from maximal coordinates, explicitly discarding winding.
     model.joint_limit_upper.fill_(1.0e6)
