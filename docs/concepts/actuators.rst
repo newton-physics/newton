@@ -647,7 +647,8 @@ Drives
 * :class:`DriveNeuralLSTM` — LSTM neural-network drive
   (stateful: hidden/cell state).
 * :class:`DriveVoltageControlled` — firmware position controller of a
-  voltage-controlled servo as in BAM, which outputs a voltage for a motor
+  voltage-controlled servo as in `BAM <https://github.com/Rhoban/bam>`__
+  (Better Actuator Models), which outputs a voltage for a motor
   (stateless).
 
 See the API documentation for each drive's control-law equations.

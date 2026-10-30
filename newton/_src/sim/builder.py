@@ -3564,14 +3564,17 @@ class ModelBuilder:
             **kwargs: Per-battery parameters (e.g. ``nominal_voltage``, ``resistance``).
 
         Raises:
-            ValueError: *actuators* is empty, an actuator does not exist,
-                belongs to another world, does not draw from a battery or
-                already has a battery, or a battery parameter is invalid.
+            ValueError: *actuators* is empty or lists an actuator twice, an
+                actuator does not exist, belongs to another world, does not
+                draw from a battery or already has a battery, or a battery
+                parameter is invalid.
         """
         args = battery_class.resolve_arguments(kwargs)
         actuators = [int(actuator) for actuator in actuators]
         if not actuators:
             raise ValueError("add_battery: at least one actuator is required")
+        if len(set(actuators)) != len(actuators):
+            raise ValueError("add_battery: an actuator is listed more than once")
         with_battery = self._actuators_with_battery()
         for actuator in actuators:
             if not 0 <= actuator < self.actuator_count:
@@ -3679,8 +3682,7 @@ class ModelBuilder:
             if default_dtype == wp.int32 and all(isinstance(v, int) for v in values):
                 result[key] = wp.array(values, dtype=wp.int32, device=device)
             else:
-                rg = requires_grad and default_dtype != wp.int32
-                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=rg)
+                result[key] = wp.array(values, dtype=wp.float32, device=device, requires_grad=requires_grad)
 
         return result
 
@@ -16228,7 +16230,7 @@ class ModelBuilder:
                                 [args.pop(key) for args in proc_args_per_actuator], device
                             )
                     proc_arrays = self._stack_args_to_arrays(
-                        proc_args_per_actuator, device=device, default_dtype=wp.int32
+                        proc_args_per_actuator, device=device, requires_grad=requires_grad, default_dtype=wp.int32
                     )
                     input_processor_objs.append(proc_class(**proc_arrays, **index_arrays, **shared_kw))
 

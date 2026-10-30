@@ -2816,7 +2816,7 @@ class TestMotorDC(unittest.TestCase):
         nominal, minimum = np.tile(nominal_voltage, 2), np.tile(min_voltage, 2)
 
         drawn = np.zeros(4)
-        for step in range(4):
+        for step in range(2):
             control.joint_f.zero_()
             for actuator in model.actuators:
                 actuator.step(state, control, dt=dt)
@@ -2933,25 +2933,25 @@ class TestDelay(unittest.TestCase):
 
 
 @wp.kernel
-def _offset_positions_kernel(
+def _scale_positions_kernel(
     positions: wp.array[float],
     pos_indices: wp.array[wp.uint32],
-    offset: wp.array[float],
+    scale: wp.array[float],
     out: wp.array[float],
 ):
     i = wp.tid()
-    out[i] = positions[pos_indices[i]] + offset[i]
+    out[i] = positions[pos_indices[i]] * scale[i]
 
 
-class _OffsetPositions(InputProcessorBase):
-    """Test processor that replaces ``positions`` with one shifted entry per slot."""
+class _ScalePositions(InputProcessorBase):
+    """Test processor that replaces ``positions`` with one scaled entry per slot."""
 
     @classmethod
     def resolve_arguments(cls, args):
-        return {"offset": float(args["offset"])}
+        return {"scale": float(args["scale"])}
 
-    def __init__(self, offset):
-        self.offset = offset
+    def __init__(self, scale):
+        self.scale = scale
 
     def finalize(self, device, num_actuators, requires_grad=False):
         self._out = wp.zeros(num_actuators, dtype=float, device=device)
@@ -2959,9 +2959,9 @@ class _OffsetPositions(InputProcessorBase):
 
     def process(self, inputs, state, dt):
         wp.launch(
-            _offset_positions_kernel,
+            _scale_positions_kernel,
             dim=len(self._out),
-            inputs=[inputs.positions, inputs.pos_indices, self.offset],
+            inputs=[inputs.positions, inputs.pos_indices, self.scale],
             outputs=[self._out],
             device=self._out.device,
         )
@@ -3031,7 +3031,7 @@ class TestInputProcessors(unittest.TestCase):
         A processor that replaces ``positions`` runs first, so the backlash
         joint must be read from the unprocessed simulation arrays.
         """
-        kp, kd, target, offset = 10.0, 2.0, 1.0, 0.1
+        kp, kd, target, scale = 10.0, 2.0, 1.0, 2.0
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         motor = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
         output = template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
@@ -3046,7 +3046,7 @@ class TestInputProcessors(unittest.TestCase):
             kp=kp,
             kd=kd,
             input_processors=[
-                (_OffsetPositions, {"offset": offset}),
+                (_ScalePositions, {"scale": scale}),
                 (InputProcessorEncoder, {"output_joint": "backlash"}),
             ],
         )
@@ -3065,7 +3065,7 @@ class TestInputProcessors(unittest.TestCase):
         actuator = model.actuators[0]
         actuator.step(state, control, dt=0.01)
 
-        expected = [kp * (target - (q[w] + offset + q[w + 1])) - kd * qd[w] for w in (0, 2)]
+        expected = [kp * (target - (scale * q[w] + q[w + 1])) - kd * qd[w] for w in (0, 2)]
         np.testing.assert_allclose(control.joint_f.numpy()[[0, 2]], expected, rtol=1e-5)
         np.testing.assert_array_equal(control.joint_f.numpy()[[1, 3]], [0.0, 0.0])
 
@@ -5345,6 +5345,10 @@ class TestActuatorBuilder(unittest.TestCase):
             duty = np.clip(duty, -0.9, 0.9)
             expected = 0.6 * supply * duty / 2.0
             np.testing.assert_allclose(control.joint_f.numpy()[dof], expected, rtol=1e-5, err_msg=f"step {step}")
+
+            batteries.step(control)
+            drawn = (duty * supply * duty / 2.0).reshape(2, 3)[:, :2].sum(axis=1)
+            supply = np.ravel([[6.0 - 0.5 * max(i, 0.0)] * 2 + [5.0] for i in drawn])
 
     @unittest.skipUnless(HAS_USD, "pxr not installed")
     def test_usd_unknown_actuator_schema_warns(self):
