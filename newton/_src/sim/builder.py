@@ -14316,6 +14316,9 @@ class ModelBuilder:
             [spec["indices"] for spec in specs],
             wp.get_device(),
         )
+        if not specs:
+            # Most models have no visual meshes; skip the host-side index conversions below.
+            return (), batches
         particle_world = np.asarray(self.particle_world, dtype=np.int32)
         # Replicated copies of a mesh carry the same host arrays (add_builder copies the spec
         # shallowly) and equal meshes added separately have the same bytes, so the device holds
@@ -14358,16 +14361,16 @@ class ModelBuilder:
                     f"deformable visual mesh {spec['label']!r}: drivers span worlds "
                     f"{worlds.tolist()}; a visual mesh must be driven by a single world"
                 )
+            binding_parent, binding_drivers = batches.mesh_bindings(index)
+            is_body = spec["kind"] == DeformableVisualMesh.Kind.BODY
             meshes.append(
                 DeformableVisualMesh(
                     kind=spec["kind"],
                     rest_vertices=shared_asset(spec["rest_vertices"], np.float32, wp.vec3, 3),
                     indices=shared_asset(spec["indices"], np.int32, wp.int32, 1),
-                    parent=batches.mesh_bindings(index)[0],
-                    weights=batches.mesh_bindings(index)[1] if spec["kind"] != DeformableVisualMesh.Kind.BODY else None,
-                    local_offsets=batches.mesh_bindings(index)[1]
-                    if spec["kind"] == DeformableVisualMesh.Kind.BODY
-                    else None,
+                    parent=binding_parent,
+                    weights=None if is_body else binding_drivers,
+                    local_offsets=binding_drivers if is_body else None,
                     uvs=shared_asset(spec["uvs"], np.float32, wp.vec2, 2) if spec.get("uvs") is not None else None,
                     texture=spec.get("texture"),
                     world=int(worlds[0]),
