@@ -10,7 +10,17 @@ import warp as wp
 from ...geometry import Gaussian, GeoType
 from ...utils.color import ColorSpace, color_srgb_to_linear, linear_to_srgb_wp, srgb_to_linear_wp
 from . import lighting, raytrace, textures, tiling
-from .types import AntiAliasing, ClearData, MeshData, RenderConfig, RenderOrder, TextureData, WorldRenderFlag
+from .camera_utils import _pinhole_pixel_ray
+from .types import (
+    AntiAliasing,
+    ClearData,
+    MeshData,
+    RayGenerationMode,
+    RenderConfig,
+    RenderOrder,
+    TextureData,
+    WorldRenderFlag,
+)
 
 if TYPE_CHECKING:
     from .render_context import RenderContext
@@ -93,6 +103,31 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
     else:
         raytrace_closest_hit = raytrace.create_closest_hit_depth_only_function(config, state)
 
+    @wp.func
+    def generate_ray(
+        view_index: wp.int32,
+        px: wp.int32,
+        py: wp.int32,
+        sample_index: wp.int32,
+        sample_count: wp.int32,
+        img_width: wp.int32,
+        img_height: wp.int32,
+        camera_rays: wp.array4d[wp.vec3f],
+        view_ray_bundle: wp.array[wp.int32],
+        view_pinhole: wp.array[wp.vec4f],
+    ):
+        if wp.static(state.ray_mode == int(RayGenerationMode.BUNDLE)):
+            return camera_rays[py, px, sample_index, 0], camera_rays[py, px, sample_index, 1]
+        elif wp.static(state.ray_mode == int(RayGenerationMode.BUNDLE_INDEXED)):
+            row = view_ray_bundle[view_index] * img_height + py
+            return camera_rays[row, px, sample_index, 0], camera_rays[row, px, sample_index, 1]
+        else:
+            # view_pinhole = (horizontal aperture, vertical aperture, horizontal offset, vertical offset) / focal
+            direction = _pinhole_pixel_ray(
+                px, py, sample_index, sample_count, img_width, img_height, view_pinhole[view_index]
+            )
+            return wp.vec3f(0.0), direction
+
     if config.output_color_space == ColorSpace.LINEAR:
         clear_data = ClearData(
             clear_color=_srgb_packed_rgba_to_linear(clear_data.clear_color),
@@ -135,6 +170,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
     @wp.func
     def trace_sample(
         world_index: wp.int32,
+        near: wp.float32,
+        far: wp.float32,
         camera_transform: wp.transformf,
         camera_forward: wp.vec3f,
         forward_axis: wp.vec3f,
@@ -171,6 +208,12 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         if wp.dot(ray_dir_world, ray_dir_world) <= 1.0e-12:
             return result
 
+        # Near clipping starts the trace ``near`` along the ray; distances stay relative
+        # to the unshifted origin.
+        trace_origin_world = ray_origin_world
+        if wp.static(state.has_view_clip):
+            trace_origin_world = ray_origin_world + ray_dir_world * near
+
         closest_hit = raytrace_closest_hit(
             bvh_shapes_size,
             bvh_shapes_id,
@@ -179,7 +222,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             bvh_particles_id,
             bvh_particles_group_roots,
             world_index,
-            wp.static(config.max_distance),
+            far - near,
             shape_enabled,
             shape_types,
             shape_sizes,
@@ -193,13 +236,15 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             triangle_mesh_id,
             triangle_mesh_group_roots,
             gaussians_data,
-            ray_origin_world,
+            trace_origin_world,
             ray_dir_world,
             camera_forward,
         )
-        result.closest_hit = closest_hit
         if closest_hit.shape_index == raytrace.NO_HIT_SHAPE_ID:
+            result.closest_hit = closest_hit
             return result
+        closest_hit.distance = closest_hit.distance + near
+        result.closest_hit = closest_hit
 
         result.hit = wp.bool(True)
         if wp.static(state.render_forward_depth):
@@ -356,6 +401,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
     def render_sample(
         light_count: wp.int32,
         world_index: wp.int32,
+        near: wp.float32,
+        far: wp.float32,
         camera_transform: wp.transformf,
         camera_forward: wp.vec3f,
         forward_axis: wp.vec3f,
@@ -405,6 +452,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
 
         trace = trace_sample(
             world_index,
+            near,
+            far,
             camera_transform,
             camera_forward,
             forward_axis,
@@ -499,6 +548,10 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         camera_rays: wp.array4d[wp.vec3f],
         camera_transforms: wp.array[wp.transformf],
         world_indices: wp.array[wp.int32],
+        sample_count: wp.int32,
+        view_ray_bundle: wp.array[wp.int32],
+        view_pinhole: wp.array[wp.vec4f],
+        view_clip: wp.array[wp.vec2f],
         # Shapes BVH
         bvh_shapes_size: wp.int32,
         bvh_shapes_id: wp.uint64,
@@ -594,6 +647,13 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         else:
             world_index = view_index
 
+        near = wp.float32(0.0)
+        far = wp.float32(wp.static(config.max_distance))
+        if wp.static(state.has_view_clip):
+            clip = view_clip[view_index]
+            near = clip[0]
+            far = wp.min(clip[1], far)
+
         camera_transform = camera_transforms[view_index]
         camera_forward = wp.vec3f(0.0)
         if wp.static(state.num_gaussians > 0):
@@ -604,14 +664,28 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             forward_axis = wp.normalize(wp.transform_vector(camera_transform, wp.vec3f(0.0, 0.0, -1.0)))
 
         if wp.static(config.anti_aliasing == AntiAliasing.NONE):
+            ray_origin, ray_direction = generate_ray(
+                view_index,
+                px,
+                py,
+                0,
+                sample_count,
+                img_width,
+                img_height,
+                camera_rays,
+                view_ray_bundle,
+                view_pinhole,
+            )
             sample = render_sample(
                 light_count,
                 world_index,
+                near,
+                far,
                 camera_transform,
                 camera_forward,
                 forward_axis,
-                camera_rays[py, px, 0, 0],
-                camera_rays[py, px, 0, 1],
+                ray_origin,
+                ray_direction,
                 bvh_shapes_size,
                 bvh_shapes_id,
                 bvh_shapes_group_roots,
@@ -694,27 +768,39 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                 clear_albedo_rgb = srgb_to_linear_wp(wp.vec3f(clear_albedo[0], clear_albedo[1], clear_albedo[2]))
                 clear_albedo = wp.vec4f(clear_albedo_rgb[0], clear_albedo_rgb[1], clear_albedo_rgb[2], clear_albedo[3])
 
-        sample_count = camera_rays.shape[2]
-
         if wp.static(config.anti_aliasing == AntiAliasing.SSAA):
             color_sum = wp.vec4f(0.0)
             albedo_sum = wp.vec4f(0.0)
             hdr_color_sum = wp.vec3f(0.0)
-            nearest_distance = wp.float32(wp.static(config.max_distance)) + 1.0
+            nearest_distance = far + 1.0
             nearest_forward_depth = wp.float32(0.0)
             nearest_normal = wp.vec3f(0.0)
             nearest_shape_index = wp.uint32(raytrace.NO_HIT_SHAPE_ID)
             has_hit = wp.bool(False)
 
             for sample_index in range(sample_count):
+                ray_origin, ray_direction = generate_ray(
+                    view_index,
+                    px,
+                    py,
+                    sample_index,
+                    sample_count,
+                    img_width,
+                    img_height,
+                    camera_rays,
+                    view_ray_bundle,
+                    view_pinhole,
+                )
                 sample = render_sample(
                     light_count,
                     world_index,
+                    near,
+                    far,
                     camera_transform,
                     camera_forward,
                     forward_axis,
-                    camera_rays[py, px, sample_index, 0],
-                    camera_rays[py, px, sample_index, 1],
+                    ray_origin,
+                    ray_direction,
                     bvh_shapes_size,
                     bvh_shapes_id,
                     bvh_shapes_group_roots,
@@ -812,7 +898,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             return
 
         if wp.static(config.anti_aliasing == AntiAliasing.MSAA):
-            nearest_distance = wp.float32(wp.static(config.max_distance)) + 1.0
+            nearest_distance = far + 1.0
             nearest_forward_depth = wp.float32(0.0)
             nearest_normal = wp.vec3f(0.0)
             nearest_shape_index = wp.uint32(raytrace.NO_HIT_SHAPE_ID)
@@ -832,13 +918,27 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     slot_shape_sub_index[slot] = -1
 
             for sample_index in range(sample_count):
+                ray_origin, ray_direction = generate_ray(
+                    view_index,
+                    px,
+                    py,
+                    sample_index,
+                    sample_count,
+                    img_width,
+                    img_height,
+                    camera_rays,
+                    view_ray_bundle,
+                    view_pinhole,
+                )
                 trace = trace_sample(
                     world_index,
+                    near,
+                    far,
                     camera_transform,
                     camera_forward,
                     forward_axis,
-                    camera_rays[py, px, sample_index, 0],
-                    camera_rays[py, px, sample_index, 1],
+                    ray_origin,
+                    ray_direction,
                     bvh_shapes_size,
                     bvh_shapes_id,
                     bvh_shapes_group_roots,
