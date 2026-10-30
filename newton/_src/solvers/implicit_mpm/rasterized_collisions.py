@@ -1024,6 +1024,9 @@ def normalize_gradient(
 ):
     i = wp.tid()
     previous_normal = normal[i]
+    # Fully clamped distance stencils, far from colliders, leave no usable gradient
+    if wp.length_sq(gradient[i]) < 1.0e-6:
+        return
     corrected_normal = wp.normalize(gradient[i])
     if wp.length_sq(previous_normal) > 0.0 and dt > 0.0:
         velocity[i] += (wp.max(sdf[i] - stop_distance, 0.0) / dt) * (previous_normal - corrected_normal)

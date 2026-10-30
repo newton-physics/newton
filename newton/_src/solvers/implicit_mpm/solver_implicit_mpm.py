@@ -2643,9 +2643,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             gap: Maximum distance for closest-point queries. If None, the default is the voxel size times sqrt(3).
         """
 
-        if gap is not None:
-            # Update max query dist if provided
-            prev_gap, self._mpm_model.collider.query_max_dist = self._mpm_model.collider.query_max_dist, gap
+        collider = self._mpm_model.collider
+        prev_gap = collider.query_max_dist
+        # Particle contacts measure distances from the particle surface, one radius closer than its center
+        collider.query_max_dist = (gap if gap is not None else prev_gap) + self._contact_radius_reach()
 
         self._last_step_data.require_collider_previous_position(state_in.body_q)
         wp.launch(
@@ -2674,9 +2675,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             device=state_in.particle_q.device,
         )
 
-        if gap is not None:
-            # Restore previous max query dist
-            self._mpm_model.collider.query_max_dist = prev_gap
+        collider.query_max_dist = prev_gap
 
     def update_particle_frames(
         self,
@@ -3608,7 +3607,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         with self._timer("Rasterize collider"):
             self._mpm_model.collider.query_max_dist = max(
-                self._mpm_model.collider.query_max_dist, self.collider_contact_gap
+                self._mpm_model.collider.query_max_dist,
+                self._contact_radius_reach()
+                + max(self.collider_contact_gap, speculative_stop_distance(self._mpm_model.voxel_size)),
             )
             # volume associated to each collider node
             fem.integrate(
@@ -3875,7 +3876,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         wp.launch(
             max_particle_density,
             dim=mpm_model.particle_density.shape[0],
-            inputs=[mpm_model.particle_density, max_density],
+            inputs=[mpm_model.particle_density, mpm_model.material_particle_flags, max_density],
         )
         scratch.delassus_scale = wp.empty(shape=(1,), dtype=float)
         dt_over_dx_sq = dt * dt / (self.voxel_size * self.voxel_size)
@@ -3951,6 +3952,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 inputs=[values[:, YIELD_PARAM_LENGTH:], parameters],
             )
             scratch.strain_yield_parameters_field.dof_values = parameters.view(YieldParamVec)
+
+    def _contact_radius_reach(self) -> float:
+        """Largest particle radius, which particle collider bases subtract from collider distances."""
+        if self.collider_basis[:3] != "pic":
+            return 0.0
+        return self._mpm_model.max_particle_radius
 
     def _measures_density(self) -> bool:
         """Whether critical packing or density feedback needs a density measurement."""

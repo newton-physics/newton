@@ -561,8 +561,8 @@ def test_majorized_rheology_solve(test, device, capture=False):
         W = (B * inverse_mass) @ B.T + C
         delassus_scale = wp.array([np.mean(np.diag(W))], dtype=float, device=operator.momentum.velocity.device)
         modes = ("gs", "gs-soa", "gs-batched", "jacobi", ("cg", "gs"), ("cg", "jacobi", "gs-batched"))
-        for contact, mode in itertools.product((False, True), modes):
-            with test.subTest(contact=contact, solver=mode, capture=capture):
+        for contact, mode, acceleration in itertools.product((False, True), modes, ("nesterov", "none")):
+            with test.subTest(contact=contact, solver=mode, capture=capture, acceleration=acceleration):
                 friction = np.full(nv, -1.0, dtype=np.float32)
                 normals = np.zeros((nv, 3), dtype=np.float32)
                 if contact:
@@ -571,7 +571,7 @@ def test_majorized_rheology_solve(test, device, capture=False):
                 collision.collider_normals.assign(normals)
                 collision.has_colliders = contact
 
-                def solve(mode=mode):
+                def solve(mode=mode, acceleration=acceleration):
                     wp.copy(operator.rheology.elastic_strain_delta, q_device)
                     wp.copy(operator.momentum.velocity, free_device)
                     operator.rheology.stress.zero_()
@@ -587,6 +587,7 @@ def test_majorized_rheology_solve(test, device, capture=False):
                         temporary_store=store,
                         use_graph=capture,
                         verbose=False,
+                        acceleration=acceleration,
                     )
 
                 solve()
