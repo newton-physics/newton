@@ -15,7 +15,7 @@ from warp.fem import cache
 
 import newton
 
-from .rasterized_collisions import Collider, collision_sdf
+from .rasterized_collisions import Collider, collision_sdf, make_cell_locator, quadratic_bspline
 
 wp.set_module_options({"enable_backward": False, "max_unroll": 0})
 
@@ -24,16 +24,6 @@ PARTICLE_KERNEL_RADIUS = 1.0
 
 _PARTICLE_KERNEL_SCALE = wp.constant(PARTICLE_KERNEL_RADIUS / 2.0)
 """Scale of the cubic B-spline, whose support radius is two."""
-
-
-@wp.func
-def quadratic_bspline(x: float):
-    x = wp.abs(x)
-    if x < 0.5:
-        return 0.75 - x * x
-    if x < 1.5:
-        return 0.5 * (1.5 - x) * (1.5 - x)
-    return 0.0
 
 
 @wp.func
@@ -142,47 +132,6 @@ def free_box_mask(
         if phi >= 0.0:
             mask |= wp.uint32(1) << wp.uint32(k)
     return mask
-
-
-def make_cell_locator(grid):
-    """Functions locating a position's cell and its neighbor cells, on dense or sparse grids."""
-
-    @cache.dynamic_func(suffix=grid.name)
-    def containing_cell(geo: grid.CellArg, x: wp.vec3, environment: int, h: float):
-        """Lattice coordinates and center of the cell containing ``x``, and whether it exists."""
-        if wp.static(isinstance(grid, fem.Nanogrid)):
-            uvw = wp.volume_world_to_index(geo.cell_grid, x) + wp.vec3(0.5)
-            local_cell = wp.vec3i(int(wp.floor(uvw[0])), int(wp.floor(uvw[1])), int(wp.floor(uvw[2])))
-            return local_cell, wp.volume_index_to_world(geo.cell_grid, wp.vec3(local_cell)), True
-        sample = grid.cell_lookup(geo, x, 0.0, environment)
-        if sample.element_index < 0:
-            return wp.vec3i(0), wp.vec3(0.0), False
-        sample.element_coords = wp.vec3(0.5)
-        return wp.vec3i(0), grid.cell_position(geo, sample), True
-
-    @cache.dynamic_func(suffix=grid.name)
-    def neighbor_cell(
-        geo: grid.CellArg, local_cell: wp.vec3i, center: wp.vec3, offset: wp.vec3i, environment: int, h: float
-    ):
-        """Index of the cell ``offset`` away from the containing cell, or -1 outside the grid."""
-        if wp.static(isinstance(grid, fem.Nanogrid)):
-            ijk = local_cell + offset + geo.env_offsets[environment]
-            cell = wp.volume_lookup_index(geo.cell_grid, ijk[0], ijk[1], ijk[2])
-            if cell >= 0:
-                if geo.cell_env[cell] != environment:
-                    cell = -1
-            return cell
-        target_center = center + h * wp.vec3(float(offset[0]), float(offset[1]), float(offset[2]))
-        target = grid.cell_lookup(geo, target_center, 0.0, environment)
-        if target.element_index < 0:
-            return -1
-        # Grid3D lookups clamp at their boundary: reject clamped cells.
-        actual = grid.cell_position(geo, target)
-        if wp.length_sq(actual - target_center) >= 1.0e-8 * h * h:
-            return -1
-        return target.element_index
-
-    return containing_cell, neighbor_cell
 
 
 def make_free_box_mask_kernel(grid):

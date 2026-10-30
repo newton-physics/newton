@@ -1,0 +1,1 @@
+Fix `SolverImplicitMPM.Config.collider_normal_from_sdf_gradient` disabling the `"pic"` and `"picN"` particle contacts, which let material fall through colliders. Particle contacts now take their normals from the gradient of the collider signed distance rasterized at cell centers with quadratic B-spline weights, which turns smoothly around collider edges and seams.
