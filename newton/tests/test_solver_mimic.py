@@ -8,6 +8,7 @@ import warp as wp
 
 import newton
 from newton._src.sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_mimic_velocity
+from newton._src.solvers.featherstone.kernels import reduce_mimic_forces, reduce_mimic_inertia
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -144,6 +145,157 @@ def test_featherstone_mimic(test, device):
     """Enforce scalar and vectorized mimic relationships in Featherstone."""
     _test_solver_mimic(test, device, "featherstone")
     _test_featherstone_force_transfer(test, device)
+
+
+def test_featherstone_mimic_reduction(test, device):
+    """Match dense inertia and force reductions for interleaved articulation sizes."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for articulation, axes in enumerate(((newton.Axis.X,), (newton.Axis.X, newton.Axis.Y)) * 2):
+        if articulation == 2:
+            # Leave a DOF gap between articulations to guard flat row indexing.
+            builder.add_joint_revolute(-1, builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))))
+        joints = []
+        parent = -1
+        for _ in range(3):
+            link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joints.append(
+                builder.add_joint_d6(
+                    parent,
+                    link,
+                    linear_axes=[newton.ModelBuilder.JointDofConfig.create_unlimited(axis) for axis in axes],
+                )
+            )
+            parent = link
+        builder.add_articulation(joints)
+        if articulation < 3:
+            builder.set_joint_mimic(joints[1], joints[0], coeffs=(0.1, -0.5))
+            builder.set_joint_mimic(joints[2], joints[0], coeffs=(0.0, 2.0))
+    builder.joint_armature = np.linspace(0.1, 0.3, builder.joint_dof_count).tolist()
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    newton.eval_mimic(model, state_in)
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    control = model.control()
+    control.joint_f.assign(np.linspace(-1.0, 1.0, model.joint_dof_count, dtype=np.float32))
+    solver = newton.solvers.SolverFeatherstone(model)
+    solver.step(state_in, state_out, control, None, 1.0e-3)
+    test.assertTrue(np.isfinite(state_out.joint_qd.numpy()).all())
+
+    qd_start = model.joint_qd_start.numpy()
+    references = model.joint_mimic_joint.numpy()
+    coefficients = model.joint_mimic_coeffs.numpy()
+    h, reduced_h = solver.H.numpy(), solver.H_mimic.numpy()
+    tau, reduced_tau = solver.joint_tau.numpy(), solver.joint_tau_mimic.numpy()
+    armature = solver.joint_armature_effective.numpy()
+    h_starts = solver.articulation_H_start.numpy()
+    starts = model.articulation_start.numpy()[: model.articulation_count]
+    for art, (begin, end) in enumerate(zip(starts, model.articulation_end.numpy(), strict=True)):
+        first, last = qd_start[begin], qd_start[end]
+        count = last - first
+        transform, padding = np.zeros((count, count)), np.zeros((count, count))
+        for joint in range(begin, end):
+            follower = references[joint] >= 0
+            reference = references[joint] if follower else joint
+            for axis in range(qd_start[joint + 1] - qd_start[joint]):
+                row = qd_start[joint] + axis - first
+                column = qd_start[reference] + axis - first
+                transform[row, column] = coefficients[joint, 1] if follower else 1.0
+                padding[row, row] = float(follower)
+        matrix_slice = slice(h_starts[art], h_starts[art] + count * count)
+        matrix = h[matrix_slice].reshape(count, count) + np.diag(armature[first:last])
+        np.testing.assert_allclose(
+            reduced_h[matrix_slice].reshape(count, count), transform.T @ matrix @ transform + padding, atol=1.0e-6
+        )
+        np.testing.assert_allclose(reduced_tau[first:last], transform.T @ tau[first:last], atol=1.0e-6)
+    unassigned = np.repeat(model.joint_articulation.numpy() < 0, np.diff(qd_start))
+    np.testing.assert_array_equal(reduced_tau[unassigned], 0.0)
+
+
+def test_featherstone_mimic_reduction_gradients(test, device):
+    """Preserve inertia, force, armature, and coefficient gradients in vectorized mimic reduction."""
+    builder = newton.ModelBuilder()
+    axes = [newton.ModelBuilder.JointDofConfig.create_unlimited(axis) for axis in (newton.Axis.X, newton.Axis.Y)]
+    joints = [
+        builder.add_joint_d6(-1, builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))), linear_axes=axes)
+        for _ in range(3)
+    ]
+    builder.add_articulation(joints)
+    builder.set_joint_mimic(joints[1], joints[0], coeffs=(0.1, -1.5))
+    # The unrelated third joint also exercises the direct-copy fast path.
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverFeatherstone(model, deterministic=wp.DeterministicMode.NOT_GUARANTEED)
+    rng = np.random.default_rng(42)
+    h_np = rng.standard_normal((6, 6)).astype(np.float32)
+    armature_np = np.linspace(0.1, 0.6, 6, dtype=np.float32)
+    seed_np = rng.standard_normal((6, 6)).astype(np.float32)
+    h = wp.array(h_np.ravel(), device=device, requires_grad=True)
+    armature = wp.array(armature_np, device=device, requires_grad=True)
+    coeffs = wp.array(model.joint_mimic_coeffs.numpy(), dtype=wp.vec2, device=device, requires_grad=True)
+    output = wp.empty(36, device=device, requires_grad=True)
+    tau_np = rng.standard_normal(6).astype(np.float32)
+    tau_seed = rng.standard_normal(6).astype(np.float32)
+    tau = wp.array(tau_np, device=device, requires_grad=True)
+    reduced_tau = wp.empty(6, device=device, requires_grad=True)
+    # Probe the reduction kernels in isolation: both gathering and follower
+    # padding must use the cached topology, not the model's live array.
+    # Changing topology for a full solver step still requires rebuilding it.
+    model.joint_mimic_joint.fill_(-1)
+    with wp.Tape() as tape:
+        wp.launch(
+            reduce_mimic_inertia,
+            dim=model.joint_dof_count,
+            inputs=[
+                model.joint_articulation,
+                solver.articulation_H_start,
+                solver.articulation_H_rows,
+                solver.articulation_dof_start,
+                model.joint_qd_start,
+                coeffs,
+                solver._mimic_source_start,
+                solver._mimic_source_joint,
+                solver._mimic_dof_joint,
+                armature,
+                h,
+            ],
+            outputs=[output],
+            device=device,
+        )
+        wp.launch(
+            reduce_mimic_forces,
+            dim=model.joint_dof_count,
+            inputs=[
+                model.joint_articulation,
+                model.joint_qd_start,
+                coeffs,
+                solver._mimic_source_start,
+                solver._mimic_source_joint,
+                solver._mimic_dof_joint,
+                tau,
+            ],
+            outputs=[reduced_tau],
+            device=device,
+        )
+    tape.backward(
+        grads={output: wp.array(seed_np.ravel(), device=device), reduced_tau: wp.array(tau_seed, device=device)}
+    )
+    transform = np.eye(6)
+    transform[2:4, 2:4] = 0.0
+    transform[2:4, :2] = -1.5 * np.eye(2)
+    expected_grad = transform @ seed_np @ transform.T
+    np.testing.assert_allclose(h.grad.numpy().reshape(6, 6), expected_grad, atol=1.0e-6)
+    np.testing.assert_allclose(armature.grad.numpy(), np.diag(expected_grad), atol=1.0e-6)
+    np.testing.assert_allclose(reduced_tau.numpy(), transform.T @ tau_np, atol=1.0e-6)
+    np.testing.assert_allclose(tau.grad.numpy(), transform @ tau_seed, atol=1.0e-6)
+    derivative = np.zeros((6, 6))
+    derivative[2:4, :2] = np.eye(2)
+    matrix = h_np + np.diag(armature_np)
+    padding = np.diag([0.0, 0.0, 1.0, 1.0, 0.0, 0.0])
+    np.testing.assert_allclose(output.numpy().reshape(6, 6), transform.T @ matrix @ transform + padding, atol=1.0e-6)
+    multiplier_grad = np.sum(seed_np * (derivative.T @ matrix @ transform + transform.T @ matrix @ derivative))
+    multiplier_grad += tau_seed @ derivative.T @ tau_np
+    expected_coeffs = np.zeros((3, 2))
+    expected_coeffs[1, 1] = multiplier_grad
+    np.testing.assert_allclose(coeffs.grad.numpy(), expected_coeffs, atol=2.0e-6)
 
 
 def test_semi_implicit_mimic(test, device):
@@ -391,6 +543,15 @@ class TestSolverMimic(unittest.TestCase):
 devices = get_test_devices()
 add_function_test(TestSolverMimic, "test_eval_mimic_selection", test_eval_mimic_selection, devices=devices)
 add_function_test(TestSolverMimic, "test_featherstone_mimic", test_featherstone_mimic, devices=devices)
+add_function_test(
+    TestSolverMimic, "test_featherstone_mimic_reduction", test_featherstone_mimic_reduction, devices=devices
+)
+add_function_test(
+    TestSolverMimic,
+    "test_featherstone_mimic_reduction_gradients",
+    test_featherstone_mimic_reduction_gradients,
+    devices=devices,
+)
 add_function_test(TestSolverMimic, "test_semi_implicit_mimic", test_semi_implicit_mimic, devices=devices)
 add_function_test(
     TestSolverMimic,

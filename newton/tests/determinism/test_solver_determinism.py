@@ -250,6 +250,53 @@ def test_articulation_determinism(test, device, solver_name):
     _run_isolated(test, "_check_articulation_determinism", str(device), solver_name)
 
 
+def _check_featherstone_mimic_determinism(device):
+    """Check replicated mimic reductions and graph replay in an isolated process."""
+    chain = newton.ModelBuilder()
+    parent = -1
+    joints = []
+    for i in range(12):
+        link = chain.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joints.append(chain.add_joint_revolute(parent, link, axis=newton.Axis.X if i % 2 else newton.Axis.Y))
+        parent = link
+    chain.add_articulation(joints)
+    chain.set_joint_mimic(joints[-1], joints[-3], coeffs=(0.0, -1.0))
+    chain.set_joint_mimic(joints[-2], joints[-3], coeffs=(0.1, 0.5))
+    builder = newton.ModelBuilder()
+    # 64 worlds expose inertia overflow, but forces still fit the minimum
+    # record allocation. 256 worlds expose both reductions independently.
+    builder.replicate(chain, 256)
+    model = builder.finalize(device=device)
+    model.joint_q.assign(np.tile(np.linspace(0.05, 0.2, 12, dtype=np.float32), 256))
+    state_in, state_out = model.state(), model.state()
+    newton.eval_mimic(model, state_in)
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    control = model.control()
+    control.joint_f.assign(np.linspace(-1.0, 1.0, model.joint_dof_count, dtype=np.float32))
+    fields = ("joint_q", "joint_qd")
+    reference = newton.solvers.SolverFeatherstone(model, deterministic=wp.DeterministicMode.NOT_GUARANTEED)
+    reference.step(state_in, state_out, control, None, 1.0e-3)
+    expected = _snapshot(state_out, fields)
+
+    solver = newton.solvers.SolverFeatherstone(model, deterministic=DETERMINISTIC_MODE)
+    solver.step(state_in, state_out, control, None, 1.0e-3)
+    first = _snapshot(state_out, fields)
+    for field in fields:
+        np.testing.assert_allclose(first[field], expected[field], atol=1.0e-6, rtol=1.0e-5)
+        if not np.isfinite(first[field]).all():
+            raise AssertionError(f"Mimic reduction produced non-finite {field}")
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(state_in, state_out, control, None, 1.0e-3)
+    for _ in range(2):
+        wp.capture_launch(capture.graph)
+        _assert_snapshots_equal(first, _snapshot(state_out, fields))
+
+
+def test_featherstone_mimic_determinism(test, device):
+    """Avoid inertia and force record overflow in replicated mimic articulations."""
+    _run_isolated(test, "_check_featherstone_mimic_determinism", str(device))
+
+
 class TestSolverDeterminism(unittest.TestCase):
     pass
 
@@ -466,6 +513,13 @@ class TestSolverDeterminismOptions(unittest.TestCase):
 
 
 devices = get_cuda_test_devices(mode="basic")
+add_function_test(
+    TestSolverDeterminism,
+    "test_featherstone_mimic_determinism",
+    test_featherstone_mimic_determinism,
+    devices=devices,
+    check_output=False,
+)
 for solver_name in ("xpbd", "semi_implicit", "vbd"):
     add_function_test(
         TestSolverDeterminism,

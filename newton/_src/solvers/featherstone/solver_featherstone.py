@@ -212,6 +212,18 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     f"Follower joint {follower} belongs to articulation {articulations[follower]}; "
                     f"reference joint {reference} belongs to articulation {articulations[reference]}."
                 )
+            # Invert the fixed mimic topology, including each independent joint
+            # as its own source. Keep source order stable for deterministic sums.
+            destinations = np.where(mimic_joints >= 0, mimic_joints, np.arange(model.joint_count))
+            source_joints = np.argsort(destinations, kind="stable")
+            source_start = np.concatenate(([0], np.cumsum(np.bincount(destinations, minlength=model.joint_count))))
+            self._mimic_source_start = wp.array(source_start, dtype=int, device=model.device)
+            self._mimic_source_joint = wp.array(source_joints, dtype=int, device=model.device)
+            self._mimic_dof_joint = wp.array(
+                np.repeat(np.arange(model.joint_count), np.diff(model.joint_qd_start.numpy())),
+                dtype=int,
+                device=model.device,
+            )
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         if model.joint_count > 0:
             self._set_module_options(
@@ -969,19 +981,19 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             solve_H = self.H
                             solve_armature = self.joint_armature_effective
                             if self._has_joint_mimics:
-                                self.H_mimic.zero_()
                                 wp.launch(
                                     reduce_mimic_inertia,
-                                    dim=model.articulation_count,
+                                    dim=model.joint_dof_count,
                                     inputs=[
-                                        model.articulation_start,
-                                        model.articulation_end,
+                                        model.joint_articulation,
                                         self.articulation_H_start,
                                         self.articulation_H_rows,
                                         self.articulation_dof_start,
                                         model.joint_qd_start,
-                                        model.joint_mimic_joint,
                                         model.joint_mimic_coeffs,
+                                        self._mimic_source_start,
+                                        self._mimic_source_joint,
+                                        self._mimic_dof_joint,
                                         self.joint_armature_effective,
                                         self.H,
                                     ],
@@ -1022,16 +1034,16 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     solve_tau = state_aug.joint_tau
                     if self._has_joint_mimics:
                         solve_H = self.H_mimic
-                        state_aug.joint_tau_mimic.zero_()
                         wp.launch(
                             reduce_mimic_forces,
-                            dim=model.articulation_count,
+                            dim=model.joint_dof_count,
                             inputs=[
-                                model.articulation_start,
-                                model.articulation_end,
+                                model.joint_articulation,
                                 model.joint_qd_start,
-                                model.joint_mimic_joint,
                                 model.joint_mimic_coeffs,
+                                self._mimic_source_start,
+                                self._mimic_source_joint,
+                                self._mimic_dof_joint,
                                 state_aug.joint_tau,
                             ],
                             outputs=[state_aug.joint_tau_mimic],
