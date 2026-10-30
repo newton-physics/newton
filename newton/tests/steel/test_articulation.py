@@ -3658,12 +3658,25 @@ def test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows(test, device):
 
     def run(gain=False, **solver_options):
         builder, joint = _build_square_loop("revolute")
+        loop_dof = builder.joint_qd_start[joint]
+        # Moving tree hinges and a loop DOF far over its velocity limit, which a per-articulation
+        # velocity prescale would apply to the whole tree.
+        for tree_joint in range(1, joint):
+            builder.joint_qd[builder.joint_qd_start[tree_joint]] = 0.5
+        builder.joint_qd[loop_dof] = 2.0
+        builder.joint_velocity_limit[loop_dof] = 0.1
         if gain:
-            builder.joint_target_ke[builder.joint_qd_start[joint]] = 50.0
-            builder.joint_target_kd[builder.joint_qd_start[joint]] = 1.0
+            builder.joint_target_ke[loop_dof] = 50.0
+            builder.joint_target_kd[loop_dof] = 1.0
             builder.joint_target_q[builder.joint_q_start[joint]] = 0.3
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
+            context = test.assertWarnsRegex(
+                newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"
+            )
+        else:
+            context = warnings.catch_warnings()
+        with context:
+            if not gain:
+                warnings.simplefilter("error", newton.exceptions.NewtonWarning)
             _, _, poses, solver = _run_closure(
                 builder, joint, device, steps=100, solve_mode="matrix_free", **solver_options
             )
@@ -3711,6 +3724,44 @@ def test_revolute_loop_realigns_to_the_nearer_axis_direction(test, device):
     test.assertLess(line_error[-1], 0.05)
 
 
+def test_revolute_loop_from_fixed_root_matches_world_parent(test, device):
+    """Step an open REVOLUTE closure to a fixed articulation root like the same closure to the world."""
+
+    def run(parent):
+        b = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        root_xform = wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity())
+        root = b.add_link(xform=root_xform)
+        b.add_shape_box(root, hx=0.05, hy=0.05, hz=0.05)
+        load = b.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.8), wp.quat_identity()))
+        b.add_shape_box(load, hx=0.04, hy=0.04, hz=0.04)
+        b.add_articulation(
+            [
+                b.add_joint_fixed(parent=-1, child=root, parent_xform=root_xform),
+                b.add_joint_ball(
+                    parent=root, child=load, child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.2), wp.quat_identity())
+                ),
+            ]
+        )
+        # The child anchor is the load's center of mass; the parent anchor is 5 cm away and out of the rod's reach.
+        anchor = wp.vec3(0.03, 0.04, -0.2) if parent == root else wp.vec3(0.03, 0.04, 0.8)
+        add_loop_joint = functools.partial(
+            b.add_joint_revolute,
+            parent=parent,
+            child=load,
+            axis=wp.vec3(0.0, 0.0, 1.0),
+            parent_xform=wp.transform(anchor, wp.quat_identity()),
+        )
+        if parent == root:
+            joint = _expect_one_warning(
+                test, newton.exceptions.NewtonWarning, "another joint already connects these bodies", add_loop_joint
+            )
+        else:
+            joint = add_loop_joint()
+        return _run_closure(b, joint, device, steps=50, solve_mode="matrix_free")[2]
+
+    np.testing.assert_allclose(run(parent=0), run(parent=-1), atol=1.0e-6)
+
+
 class TestSteelRevoluteLoop(unittest.TestCase):
     pass
 
@@ -3726,6 +3777,7 @@ for _name in (
     "test_revolute_loop_warns_about_edits_it_ignores",
     "test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows",
     "test_revolute_loop_realigns_to_the_nearer_axis_direction",
+    "test_revolute_loop_from_fixed_root_matches_world_parent",
 ):
     add_function_test(TestSteelRevoluteLoop, _name, globals()[_name], devices=get_cuda_test_devices())
 
