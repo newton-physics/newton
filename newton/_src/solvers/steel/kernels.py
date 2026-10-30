@@ -2598,11 +2598,12 @@ def accumulate_contact_wrenches_from_impulses(
     # outputs
     body_contact_wrench: wp.array[wp.spatial_vector],
     dense_slot_contact: wp.array2d[int],
+    propagation_slot_contact: wp.array2d[int],
 ):
     """Add each contact's solved force on its two bodies at the points its rows act on.
 
-    Wrenches are world-frame force and torque about the body's articulation origin. With a
-    ``dense_slot_contact`` map, dense contacts record their index at their normal slot for spin rows.
+    Wrenches are world-frame force and torque about the body's articulation origin. With slot maps,
+    dense and propagation contacts record their index at their normal slot for spin rows.
     """
     c = wp.tid()
     if c >= wp.min(contact_count[0], rigid_contact_max):
@@ -2624,6 +2625,9 @@ def accumulate_contact_wrenches_from_impulses(
     if dense_slot_contact:
         if contact_path[c] == 0 and slot >= 0:
             dense_slot_contact[contact_world[c], slot] = c
+    if propagation_slot_contact:
+        if contact_path[c] == 2 and slot >= 0:
+            propagation_slot_contact[contact_world[c], slot] = c
     if lam[0] == 0.0 and lam[1] == 0.0 and lam[2] == 0.0:
         return
     shape_a = contact_shape0[c]
@@ -2663,6 +2667,7 @@ def accumulate_torsion_wrenches_from_impulses(
     world_row_parent: wp.array2d[wp.int32],
     world_impulses: wp.array2d[wp.float32],
     dense_slot_contact: wp.array2d[int],
+    path: int,
     contact_count: wp.array[wp.int32],
     rigid_contact_max: int,
     contact_world: wp.array[wp.int32],
@@ -2676,7 +2681,7 @@ def accumulate_torsion_wrenches_from_impulses(
     # outputs
     body_contact_wrench: wp.array[wp.spatial_vector],
 ):
-    """Add each solved spin row's torque about its lead contact's normal to the contact's bodies."""
+    """Add each spin row of family ``path`` (0 dense, 2 propagation) to its lead contact's bodies as a torque."""
     world, row = wp.tid()
     if row >= world_constraint_count[world] or world_row_type[world, row] != PGS_CONSTRAINT_TYPE_TORSION:
         return
@@ -2687,7 +2692,7 @@ def accumulate_torsion_wrenches_from_impulses(
     # The map is never cleared, so confirm the entry belongs to this step's lead contact.
     if c < 0 or c >= wp.min(contact_count[0], rigid_contact_max):
         return
-    if contact_path[c] != 0 or contact_world[c] != world or contact_slot[c] != lead:
+    if contact_path[c] != path or contact_world[c] != world or contact_slot[c] != lead:
         return
     torque = world_impulses[world, row] * inv_dt * (-contact_normal[c])
     if contact_shape0[c] >= 0 and shape_body[contact_shape0[c]] >= 0:

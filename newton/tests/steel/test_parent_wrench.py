@@ -303,6 +303,13 @@ _CONTACT_CONFIGURATIONS = {
         "articulation_constraint_max": 256,
     },
     "velocity_pass": {"solve_mode": "matrix_free", "velocity_iterations": 4, "articulation_constraint_max": 256},
+    "propagation_spin": {
+        "solve_mode": "matrix_free",
+        "articulated_contact_response": "propagation",
+        "torsion_radius": 0.01,
+        "contact_torsion_device": True,
+        "articulation_constraint_max": 256,
+    },
 }
 
 
@@ -395,9 +402,11 @@ def test_parent_wrench_carries_a_pinched_load(test, device):
 def test_parent_wrench_includes_spin_rows(test, device):
     """A box riding a spinning tray transmits nothing through its free joint once spin-row torques are counted."""
     model, ids = _gripper_scene(device, flange_drive=False, load_box_x=0.0)
-    wrench = _settled_wrench(test, model, ids, "patch_spin_sleep", 240, joint_f={"flange": 0.3})
-    np.testing.assert_allclose(wrench[ids["box"]], 0.0, atol=1.0e-3)
-    test.assertAlmostEqual(wrench[ids["grip"], 5], 0.3, delta=1.0e-3)
+    for configuration in ("patch_spin_sleep", "propagation_spin"):
+        with test.subTest(configuration=configuration):
+            wrench = _settled_wrench(test, model, ids, configuration, 240, joint_f={"flange": 0.3})
+            np.testing.assert_allclose(wrench[ids["box"]], 0.0, atol=1.0e-3)
+            test.assertAlmostEqual(wrench[ids["grip"], 5], 0.3, delta=1.0e-3)
 
 
 def test_parent_wrench_excludes_velocity_limit_prescaling(test, device):

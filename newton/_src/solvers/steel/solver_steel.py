@@ -5629,6 +5629,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 wp.full((self._world_count, max(self._articulation_constraint_max, 1)), -1, dtype=int, device=device)
                 if self._contact_torsion_enabled
                 else None,
+                wp.full((self._world_count, self._propagation_max_constraints), -1, dtype=int, device=device)
+                if self._propagation_torsion_rows
+                else None,
             )
         # Drive-row parameters and their per-step force-drive coefficients; (1, 1)
         # placeholders keep the kernel signatures fixed when there are no drive rows.
@@ -7096,7 +7099,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         if not model.articulation_count:
             body_parent_f.zero_()
             return
-        contact_wrench, body_a_s, body_ft_s, dense_slot_contact = self._parent_wrench_scratch
+        contact_wrench, body_a_s, body_ft_s, dense_slot_contact, propagation_slot_contact = self._parent_wrench_scratch
         contact_wrench.zero_()
         inv_dt = 1.0 / dt
         if contacts is not None and contacts.rigid_contact_max:
@@ -7123,19 +7126,36 @@ class SolverSteel(SolverBase, CouplingInterface):
                     self._friction_patches.view,
                     inv_dt,
                 ],
-                outputs=[contact_wrench, dense_slot_contact],
+                outputs=[contact_wrench, dense_slot_contact, propagation_slot_contact],
                 device=model.device,
             )
+            spin_families = []
             if self._contact_torsion_enabled:
+                spin_families.append(
+                    (0, self._constraint_count, self._row_type, self._row_parent, self._impulses, dense_slot_contact)
+                )
+            if self._propagation_torsion_rows:
+                spin_families.append(
+                    (
+                        2,
+                        self._propagation_constraint_count,
+                        self._propagation_row_type,
+                        self._propagation_row_parent,
+                        self._propagation_impulses,
+                        propagation_slot_contact,
+                    )
+                )
+            for path, count, row_type, row_parent, impulses, slot_contact in spin_families:
                 wp.launch(
                     accumulate_torsion_wrenches_from_impulses,
-                    dim=dense_slot_contact.shape,
+                    dim=slot_contact.shape,
                     inputs=[
-                        self._constraint_count,
-                        self._row_type,
-                        self._row_parent,
-                        self._impulses,
-                        dense_slot_contact,
+                        count,
+                        row_type,
+                        row_parent,
+                        impulses,
+                        slot_contact,
+                        path,
                         contacts.rigid_contact_count,
                         rigid_contact_max,
                         self._contact_world,
