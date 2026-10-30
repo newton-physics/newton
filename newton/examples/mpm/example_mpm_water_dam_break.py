@@ -127,6 +127,8 @@ class Example:
         mpm_config.strain_basis = args.strain_basis
         mpm_config.collider_basis = args.collider_basis
         mpm_config.velocity_basis = args.velocity_basis
+        mpm_config.volume_recovery_fraction = args.volume_recovery_fraction
+        mpm_config.volume_recovery_measurement = args.volume_recovery_measurement
         mpm_config.separate_worlds = self.world_count > 1
         self.solver = SolverImplicitMPM(self.model, config=mpm_config)
 
@@ -506,6 +508,19 @@ class Example:
         parser.add_argument("--strain-basis", "-sb", type=str, default="P0")
         parser.add_argument("--collider-basis", "-cb", type=str, default="pic")
         parser.add_argument("--velocity-basis", "-vb", type=str, default="Q1")
+        parser.add_argument(
+            "--volume-recovery-fraction",
+            type=float,
+            default=0.0,
+            help="Fraction of particle overpacking corrected per step, in [0, 1]; zero disables volume recovery",
+        )
+        parser.add_argument(
+            "--volume-recovery-measurement",
+            type=str,
+            default="grid",
+            choices=["grid", "particle"],
+            help="Packing measurement for volume recovery",
+        )
         parser.add_argument(
             "--projection-threshold",
             type=float,
