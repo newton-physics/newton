@@ -941,6 +941,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 free_root_joints=None if index_lists is None else index_lists.free_root_joints,
             )
 
+        restarts = self._iteration_restarts_possible()
+        for entry in self._entries.values():
+            entry.solver.coupling_notify_iteration_restarts(restarts)
+
         self._after_entries_constructed()
 
         for entry in self._entries.values():
@@ -2699,6 +2703,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _after_entries_constructed(self) -> None:
         """Hook called after sub-solvers are constructed and before state allocation."""
 
+    def _iteration_restarts_possible(self) -> bool:
+        """Return whether :meth:`step` may re-solve an entry within one step."""
+        return False
+
     def _after_entry_states_created(self) -> None:
         """Hook called after per-entry states and scratch buffers are allocated."""
         self._refresh_gravity_accelerations()
@@ -2706,6 +2714,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _entry_needs_gravity_acceleration(self, entry: SolverEntry) -> bool:
         del entry
         return False
+
+    def _effective_mass_refresh_flags(self) -> int:
+        """Return the model flags after which entry effective masses are evaluated again."""
+        flags = int(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        for entry in self._entries.values():
+            flags |= int(entry.solver.coupling_effective_mass_refresh_flags())
+        return flags
 
     def _gravity_acceleration_refresh_flags(self) -> int:
         return int(ModelFlags.MODEL_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES)
