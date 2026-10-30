@@ -169,7 +169,10 @@ dihedral angle :math:`\theta` across an interior edge of rest length
 
    E_{\text{b}} = \tfrac{1}{2}\,\texttt{edge\_ke}\;L_0\,(\theta - \theta_0)^2,
 
-and ``edge_kd`` damps :math:`\dot\theta`. The volumetric term is the stable
+and ``edge_kd`` damps the angle rate with the force
+:math:`\mathbf{f}_d = -\texttt{edge\_kd}\,L_0\,\dot\theta\,\partial\theta/\partial\mathbf{x}`,
+where :math:`\dot\theta` is the change of :math:`\theta` over the step divided
+by :math:`h`. The volumetric term is the stable
 Neo-Hookean energy of a tetrahedron of rest volume :math:`V_0`,
 
 .. math::
@@ -179,7 +182,8 @@ Neo-Hookean energy of a tetrahedron of rest volume :math:`V_0`,
 
 with :math:`\mu = \texttt{k\_mu}`, :math:`\lambda_{\text{NH}} = \texttt{k\_lambda} +
 \texttt{k\_mu}`, the same :math:`\alpha`, energy :math:`V_0\,\psi_{\text{v}}`,
-and ``k_damp`` as viscous damping. In both Neo-Hookean terms the user values are
+and ``k_damp`` damping the rate of the metric :math:`\mathbf{F}^{\mathsf T}\mathbf{F}`
+like ``tri_kd``. In both Neo-Hookean terms the user values are
 Lamé parameters; the kernels convert them to the Neo-Hookean parameters, which
 is why :math:`\lambda_{\text{NH}}` carries the extra :math:`\mu`.
 
@@ -199,9 +203,10 @@ shape ``ke``, and the law stays quadratic unless
 ``rigid_soft_contact_use_log_barrier`` is set. **Friction** follows the IPC
 form, :math:`\mathbf{f} = -\mu_f\, f_n\, \mathbf{T}\, f_1(\lVert\mathbf{u}\rVert)\,
 \hat{\mathbf{u}}`, where :math:`f_n` is the normal force, :math:`\mathbf{u}` the
-tangential displacement over the step, and :math:`f_1` ramps linearly to one
-over the smoothing length ``friction_epsilon`` x :math:`h`; the contact normal is
-held fixed inside the block solve. **Contact damping** acts on the gap rate
+tangential displacement over the step, and :math:`f_1(x) = 2x/\epsilon_u - x^2/\epsilon_u^2`
+ramps smoothly to one at the smoothing length :math:`\epsilon_u = \texttt{friction\_epsilon}\, h`
+and stays one beyond it; the contact normal is held fixed inside the block
+solve. **Contact damping** acts on the gap rate
 :math:`\dot d`, only while the gap closes: :math:`\mathbf{f}_d = -\texttt{soft\_contact\_kd}\;
 \dot d\,\mathbf{n}`. For rigid-soft contact the friction coefficient is the
 geometric mean of ``soft_contact_mu`` and the shape ``mu``, and the damping the
