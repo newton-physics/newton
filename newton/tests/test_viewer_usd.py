@@ -205,8 +205,8 @@ class TestViewerUSD(unittest.TestCase):
         self.assertFalse(prim_after.IsValid())
         self.assertTrue(os.path.exists(temp_file.name))
 
-    def test_partial_texture_rewrite_keeps_published_png_intact(self):
-        """A crash mid-write must not corrupt the previously published PNG."""
+    def test_partial_texture_write_can_be_retried(self):
+        """Keep failed exports unpublished so a retry writes a complete image."""
         from PIL import Image
 
         viewer = self._make_viewer()
@@ -242,15 +242,26 @@ class TestViewerUSD(unittest.TestCase):
                 partial_file.write(partial_png[: len(partial_png) // 2])
             raise OSError("simulated crash mid-write")
 
+        # Exports are named by content, so a crash can only hit a new image's file.
+        replacement = np.ascontiguousarray(255 - texture)
         viewer.clear_model()
         viewer.begin_frame(0.0)
         with mock.patch("PIL.Image.Image.save", partial_save), self.assertWarns(UserWarning):
-            viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+            viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=replacement)
 
         with open(tex_path, "rb") as published_file:
             self.assertEqual(published_file.read(), published)
         leaked = sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".tmp"))
         self.assertEqual(leaked, [])
+        self.assertEqual(
+            sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".png")),
+            [os.path.basename(tex_path)],
+        )
+        viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=replacement)
+        replacement_path = self._logged_texture_path(viewer, mesh_name)
+        self.assertNotEqual(replacement_path, tex_path)
+        with Image.open(replacement_path) as image:
+            np.testing.assert_array_equal(np.asarray(image), replacement)
 
     def test_save_texture_atomic_cleans_up_tmp_on_failure(self):
         """A failure during the temp-file write must not leave a `.tmp` sibling behind."""
@@ -400,7 +411,7 @@ class TestViewerUSD(unittest.TestCase):
         opacities = wp.array([0.25, 0.75], dtype=wp.float32)
 
         viewer.begin_frame(0.0)
-        viewer.log_mesh("/opacity_mesh", points, indices)
+        viewer.log_mesh("/opacity_mesh", points, indices, roughness=0.1, metallic=0.7)
         viewer.log_instances(
             "/opacity_instances",
             "/opacity_mesh",
@@ -420,6 +431,43 @@ class TestViewerUSD(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(shader0.GetInput("diffuseColor").Get()), [0.2, 0.4, 0.6], atol=1e-6)
         self.assertAlmostEqual(shader0.GetInput("roughness").Get(), 0.25, places=6)
         self.assertAlmostEqual(shader0.GetInput("metallic").Get(), 0.1, places=6)
+
+        viewer.log_instances("/default_instances", "/opacity_mesh", xforms, scales, colors, None)
+        default_prim = viewer.stage.GetPrimAtPath("/root/default_instances/instance_0")
+        default_shader = self._get_bound_preview_surface(default_prim)
+        self.assertAlmostEqual(default_shader.GetInput("roughness").Get(), 0.5)
+        self.assertAlmostEqual(default_shader.GetInput("metallic").Get(), 0.0)
+        self.assertFalse(default_shader.GetInput("diffuseColor").HasConnectedSource())
+        viewer.log_mesh(
+            "/opacity_mesh",
+            points,
+            indices,
+            uvs=wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2),
+            texture=np.full((2, 2, 3), 255, dtype=np.uint8),
+        )
+        for prim, roughness, metallic in (
+            (default_prim, 0.5, 0.0),
+            (viewer.stage.GetPrimAtPath("/root/opacity_instances/instance_0"), 0.25, 0.1),
+        ):
+            shader = self._get_bound_preview_surface(prim)
+            self.assertAlmostEqual(shader.GetInput("roughness").Get(), roughness, places=6)
+            self.assertAlmostEqual(shader.GetInput("metallic").Get(), metallic, places=6)
+        default_shader = self._get_bound_preview_surface(default_prim)
+        texture_source = default_shader.GetInput("diffuseColor").GetConnectedSource()
+        self.assertIsNotNone(texture_source)
+        self.assertEqual(texture_source[0].GetPrim().GetName(), "DiffuseTexture")
+
+        other_points = wp.array(points.numpy() + np.array([2.0, 0.0, 0.0]), dtype=wp.vec3)
+        uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.zeros((2, 2, 3), dtype=np.uint8))
+        previous_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        # USD currently keeps the old prototype when a group name is reused.
+        # A texture refresh must not apply the new prototype's material to it.
+        viewer.log_instances("/default_instances", "/other_mesh", xforms, scales, None, None)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.full((2, 2, 3), 127, dtype=np.uint8))
+        current_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        self.assertEqual(current_material.GetPath(), previous_material.GetPath())
+        np.testing.assert_allclose(UsdGeom.Mesh(default_prim).GetPointsAttr().Get(viewer._frame_index), points.numpy())
 
     def test_log_instances_rejects_mismatched_opacity_count(self):
         """Reject opacity arrays that do not match instance count."""
