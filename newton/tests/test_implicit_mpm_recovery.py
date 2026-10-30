@@ -223,7 +223,7 @@ def _make_volume_solver(device, fraction, *, scheme="pic"):
         solver="gs",
         max_iterations=3,
         tolerance=0.0,
-        density_strain_fraction=fraction,
+        volume_recovery_fraction=fraction,
     )
     return model, SolverImplicitMPM(model, config=config)
 
@@ -298,7 +298,7 @@ def test_density_offset_bounded_in_p1d_modes(test, device):
             solver="gs",
             max_iterations=3,
             tolerance=0.0,
-            density_strain_fraction=0.25,
+            volume_recovery_fraction=0.25,
         )
         solver = SolverImplicitMPM(model, config=config)
         apply_transform = solver._apply_strain_basis_transform
@@ -441,8 +441,8 @@ def test_recovery_config_validation(test, device):
         builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.1)
         model = builder.finalize(device=device)
         for options in (
-            {"density_strain_fraction": float("nan")},
-            {"density_strain_fraction": -0.1},
+            {"volume_recovery_fraction": float("nan")},
+            {"volume_recovery_fraction": -0.1},
             {"critical_fraction_measurement": "box"},
             {"collider_stabilization_fraction": float("inf")},
             {"collider_contact_gap": -0.01},
