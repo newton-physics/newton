@@ -79,7 +79,7 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
-from .camera import CAMERA_DEFAULT_VERTICAL_APERTURE, CameraLens
+from .camera import CAMERA_DEFAULT_VERTICAL_APERTURE, CameraLensType
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -1998,8 +1998,8 @@ class ModelBuilder:
         """Parent body indices accumulated for :attr:`Model.camera_body`."""
         self.camera_transform: list[Transform] = []
         """Camera mount transforms accumulated for :attr:`Model.camera_transform`."""
-        self.camera_lens: list[int] = []
-        """Lens models accumulated for :attr:`Model.camera_lens`."""
+        self.camera_lens_type: list[int] = []
+        """Lens types accumulated for :attr:`Model.camera_lens_type`."""
         self.camera_focal_length: list[float] = []
         """Focal lengths [m] accumulated for :attr:`Model.camera_focal_length`."""
         self.camera_aperture: list[tuple[float, float]] = []
@@ -9506,7 +9506,7 @@ class ModelBuilder:
         body: int,
         *,
         xform: Transform | None = None,
-        lens: CameraLens | int = CameraLens.PINHOLE,
+        lens_type: CameraLensType | int = CameraLensType.PINHOLE,
         fov: float | None = None,
         focal_length: float | None = None,
         horizontal_aperture: float | None = None,
@@ -9529,8 +9529,8 @@ class ModelBuilder:
             body: Parent body index, or ``-1`` for a fixed camera.
             xform: Camera frame relative to the parent body [m, unitless
                 quaternion]; the world pose for ``body == -1``. Defaults to identity.
-            lens: Lens model. :attr:`~newton.CameraLens.PINHOLE` uses the
-                intrinsics below; :attr:`~newton.CameraLens.CUSTOM` takes its rays
+            lens_type: Lens type. :attr:`~newton.CameraLensType.PINHOLE` uses the
+                intrinsics below; :attr:`~newton.CameraLensType.CUSTOM` takes its rays
                 from the rendering sensor and ignores the intrinsics.
             fov: Vertical field of view [rad], in ``(0, pi)``. Mutually exclusive with
                 ``focal_length``. The horizontal extent then follows the image aspect
@@ -9564,7 +9564,7 @@ class ModelBuilder:
         body = int(body)
         if body < -1 or body >= self.body_count:
             raise ValueError(f"Camera body {body} is out of range for a builder with {self.body_count} bodies")
-        lens = CameraLens(lens)
+        lens_type = CameraLensType(lens_type)
 
         if fov is not None and focal_length is not None:
             raise ValueError("fov and focal_length are mutually exclusive")
@@ -9616,7 +9616,7 @@ class ModelBuilder:
         self.camera_world.append(self.body_world[body] if body >= 0 else self.current_world)
         self.camera_body.append(body)
         self.camera_transform.append(camera_xform)
-        self.camera_lens.append(int(lens))
+        self.camera_lens_type.append(int(lens_type))
         self.camera_focal_length.append(focal_length)
         self.camera_aperture.append((horizontal, vertical))
         self.camera_aperture_offset.append(aperture_offset)
@@ -15666,7 +15666,7 @@ class ModelBuilder:
             m.camera_world = wp.array(self.camera_world, dtype=wp.int32)
             m.camera_body = wp.array(self.camera_body, dtype=wp.int32)
             m.camera_transform = wp.array(self.camera_transform, dtype=wp.transformf)
-            m.camera_lens = wp.array(self.camera_lens, dtype=wp.int32)
+            m.camera_lens_type = wp.array(self.camera_lens_type, dtype=wp.int32)
             m.camera_focal_length = wp.array(self.camera_focal_length, dtype=wp.float32)
             m.camera_aperture = wp.array(self.camera_aperture, dtype=wp.vec2f)
             m.camera_aperture_offset = wp.array(self.camera_aperture_offset, dtype=wp.vec2f)

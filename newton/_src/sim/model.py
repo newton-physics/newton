@@ -319,7 +319,7 @@ class Model:
         "camera_world": AttributeSpec(AttributeFrequency.CAMERA, references=AttributeFrequency.WORLD),
         "camera_body": AttributeSpec(AttributeFrequency.CAMERA, references=AttributeFrequency.BODY),
         "camera_transform": AttributeSpec(AttributeFrequency.CAMERA),
-        "camera_lens": AttributeSpec(AttributeFrequency.CAMERA),
+        "camera_lens_type": AttributeSpec(AttributeFrequency.CAMERA),
         "camera_focal_length": AttributeSpec(AttributeFrequency.CAMERA),
         "camera_aperture": AttributeSpec(AttributeFrequency.CAMERA),
         "camera_aperture_offset": AttributeSpec(AttributeFrequency.CAMERA),
@@ -1062,8 +1062,8 @@ class Model:
         self.camera_transform: wp.array[wp.transformf] | None = None
         """Camera frame relative to its parent body, or its world pose for fixed cameras [m, unitless quaternion],
         shape [camera_count], transform. The camera looks along its local -Z axis with +Y up."""
-        self.camera_lens: wp.array[wp.int32] | None = None
-        """Lens model of each camera (:class:`~newton.CameraLens`), shape [camera_count], int."""
+        self.camera_lens_type: wp.array[wp.int32] | None = None
+        """Lens type of each camera (:class:`~newton.CameraLensType`), shape [camera_count], int."""
         self.camera_focal_length: wp.array[wp.float32] | None = None
         """Focal length of each pinhole camera [m], shape [camera_count], float."""
         self.camera_aperture: wp.array[wp.vec2f] | None = None

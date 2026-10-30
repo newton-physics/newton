@@ -1153,8 +1153,8 @@ class TestSensorCamera(unittest.TestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         fov = math.radians(60.0)
         builder.add_camera(-1, fov=fov, label="pinhole")
-        custom_a = builder.add_camera(-1, lens=newton.CameraLens.CUSTOM, label="custom_a")
-        builder.add_camera(-1, lens=newton.CameraLens.CUSTOM, label="custom_b")
+        custom_a = builder.add_camera(-1, lens_type=newton.CameraLensType.CUSTOM, label="custom_a")
+        builder.add_camera(-1, lens_type=newton.CameraLensType.CUSTOM, label="custom_b")
         builder.replicate(world, 1)
         width, height = 8, 8
         center = (height // 2, width // 2)
@@ -1211,8 +1211,8 @@ class TestSensorCamera(unittest.TestCase):
         quad = np.array([[-0.5, -0.5, -2.0], [0.5, -0.5, -2.0], [0.5, 0.5, -2.0], [-0.5, 0.5, -2.0]])
         world.add_shape_mesh(-1, mesh=newton.Mesh(quad.astype(np.float32), [0, 1, 2, 0, 2, 3]))
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.add_camera(-1, lens=newton.CameraLens.CUSTOM, label="cam_a")
-        builder.add_camera(-1, lens=newton.CameraLens.CUSTOM, label="cam_b")
+        builder.add_camera(-1, lens_type=newton.CameraLensType.CUSTOM, label="cam_a")
+        builder.add_camera(-1, lens_type=newton.CameraLensType.CUSTOM, label="cam_b")
         builder.replicate(world, 2)
         width, height = 8, 8
         center, corner = (height // 2, width // 2), (0, 0)
