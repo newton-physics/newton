@@ -1154,9 +1154,20 @@ stiffness or damping. Before every step the weld is re-centered on the root's
 current pose, because MuJoCo's weld adds acceleration away from its reference
 that grows with the root's velocity. The weld locks the root's acceleration,
 so through each step the root keeps the pose and velocity pushed from
-:attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd`. Constraints and contacts treat the root as
-immovable, while the mass matrix stays physical and the root keeps its authored
-:attr:`~newton.Model.joint_armature`.
+:attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd`. Constraints
+and contacts treat the root as immovable, while the mass matrix stays physical
+and the root keeps its authored :attr:`~newton.Model.joint_armature`.
+
+A weld keeps the root's angular velocity, and the velocity of its joint origin,
+constant through each step. For revolute, prismatic, ball, and free roots, and
+for D6 roots with at most one angular axis, this is the same as keeping the
+pushed joint velocities. A D6 root with two or three angular axes instead keeps
+its body angular velocity, so its joint velocities drift within a step, by
+about ω²·Δt for angular speed ω. Between sparse pushes
+(``update_data_interval > 1``), such a root coasts at constant body angular
+velocity rather than at constant joint velocities. Newton still returns the
+prescribed state, and each push resets the drift, but contacts and dynamic
+descendants see the motion MuJoCo integrates.
 
 The weld is resolved by MuJoCo's constraint solver, so dynamic bodies attached
 to a kinematic root by joints follow fixed-base dynamics only as closely as
