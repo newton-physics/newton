@@ -6065,6 +6065,11 @@ def _rod_builder_rejects_invalid_inputs_without_partial_assembly(test, device):
             {"cfg": newton.ModelBuilder.ShapeConfig(density=-1.0), "body_frame_origin": "start"},
             "density must be finite and >= 0",
         ),
+        (
+            graph,
+            {"cfg": newton.ModelBuilder.ShapeConfig(is_site=True), "body_frame_origin": "start"},
+            "cannot have collision enabled",
+        ),
         (graph, {"stretch_stiffness": -1.0, "body_frame_origin": "start"}, "add_rod: stretch_stiffness"),
         (
             graph,
