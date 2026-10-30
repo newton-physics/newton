@@ -4357,10 +4357,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 via a ``wp.printf`` message; to detect it in Python without a
                 GPU sync, request ``ObservableKind.OVERFLOW`` via
                 :meth:`observables` and check the bitmask after each step.
-            kinematic_switchable_roots: If ``False``, only roots that are kinematic in
-                some world at construction can be switched to kinematic later, which
-                will become the default. ``True`` adds an inactive weld for every
-                movable root; switching those roots to kinematic is deprecated.
+            kinematic_switchable_roots: If ``True``, every movable root gets an inactive
+                weld so it can be switched to kinematic at runtime. If ``False``, only roots
+                that are kinematic in some world at construction get one, which keeps the
+                compiled MuJoCo model free of unused welds.
         """
         super().__init__(model)
         self._kinematic_switchable_roots = kinematic_switchable_roots
@@ -4457,8 +4457,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._kinematic_weld_body: np.ndarray | None = None
         self._kinematic_weld_eq: wp.array[wp.int32] | None = None
         self._kinematic_unsupported_bodies: np.ndarray | None = None
-        # Welded roots that were dynamic in every world at construction.
-        self._kinematic_late_roots: np.ndarray | None = None
         self._root_bodies: np.ndarray | None = None
         # Active welds per world that njmax has rows for, or None if unbounded.
         self._kinematic_weld_capacity: int | None = None
@@ -8946,9 +8944,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._kinematic_weld_jnt = wp.array(weld_jnt, dtype=wp.int32)
                 self._kinematic_weld_body = joint_child[weld_jnt]
                 self._kinematic_unsupported_bodies[self._kinematic_weld_body.ravel()] = False
-                late = ~np.array([t[3] for t in kinematic_weld_roots], dtype=bool)
-                self._kinematic_late_roots = np.zeros(model.body_count, dtype=bool)
-                self._kinematic_late_roots[self._kinematic_weld_body[:, late].ravel()] = True
                 weld_eq = np.array([eq.id for eq in kinematic_welds], dtype=np.int32)
                 self._kinematic_weld_eq = wp.array(weld_eq, dtype=wp.int32)
                 jnt_weld = np.full(n_template_joints, -1, dtype=np.int32)
@@ -9696,7 +9691,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 raise ValueError(
                     f"Body {self.model.body_label[body]!r} cannot be switched to kinematic: with "
                     "kinematic_switchable_roots=False, only roots kinematic when SolverMuJoCo is created can. Mark "
-                    "the body kinematic before creating the solver; it can then be switched to dynamic and back."
+                    "the body kinematic before creating the solver, or pass kinematic_switchable_roots=True."
                 )
             if self._kinematic_weld_disabled_by is not None and self._kinematic_weld_body is not None:
                 welded = self._kinematic_weld_body.ravel()
@@ -9708,17 +9703,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"kinematic roots with a weld constraint, which MuJoCo's '{flag}' disable flag turns off."
                         f" Enable the '{flag}' flag or make the body dynamic."
                     )
-            late = (
-                np.flatnonzero(switched & self._kinematic_late_roots) if self._kinematic_late_roots is not None else []
-            )
-            if len(late):
-                warnings.warn(
-                    f"Making body {self.model.body_label[int(late[0])]!r} kinematic in SolverMuJoCo when it was "
-                    "dynamic at solver creation is deprecated. Mark the body kinematic before creating the solver; "
-                    "it can then be switched to dynamic and back.",
-                    NewtonDeprecationWarning,
-                    stacklevel=_external_warning_stacklevel(),
-                )
             if self._kinematic_weld_capacity is not None and self._kinematic_weld_body is not None:
                 active = kinematic[self._kinematic_weld_body].sum(axis=1)
                 newly_short = (active > self._kinematic_weld_capacity) & switched[self._kinematic_weld_body].any(axis=1)

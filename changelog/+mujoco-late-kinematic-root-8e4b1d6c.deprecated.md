@@ -1,1 +1,0 @@
-Deprecate making a root kinematic in `SolverMuJoCo` that was dynamic in every world when the solver was created. Mark such roots kinematic before creating the solver and switch them to dynamic afterwards; `kinematic_switchable_roots=False` opts into the future behavior.

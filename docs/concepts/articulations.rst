@@ -453,9 +453,8 @@ Implementation details differ by coordinate formulation:
   PADMM and DVI backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
   that reaches the target pose within the step.
 
-:class:`~newton.solvers.SolverMuJoCo` holds kinematic roots with a weld to the world. Making a root
-kinematic that was dynamic when the solver was created is deprecated, and massless kinematic roots
-cannot become dynamic. See :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
+:class:`~newton.solvers.SolverMuJoCo` holds kinematic roots with a weld constraint to the world, and
+massless kinematic roots cannot become dynamic. See :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
 
 .. _Joint types:
 

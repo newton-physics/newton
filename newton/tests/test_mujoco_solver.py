@@ -37,7 +37,7 @@ from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layo
 from newton._src.solvers.mujoco.kernels import convert_solref
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
-from newton.exceptions import NewtonDeprecationWarning, NewtonWarning
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, patch_sys_module
 
@@ -2979,17 +2979,17 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
 
     @staticmethod
     def _set_body_flag(solver: SolverMuJoCo, body: int, flag: BodyFlags) -> list:
-        """Publish one body's flag and return the deprecation warnings raised."""
+        """Publish one body's flag and return the warnings raised."""
         body_flags = solver.model.body_flags.numpy().copy()
         body_flags[body] = int(flag)
         solver.model.body_flags.assign(body_flags)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-        return [w for w in caught if issubclass(w.category, NewtonDeprecationWarning)]
+        return list(caught)
 
-    def test_deprecated_switchable_roots(self):
-        """Deprecated: a root dynamic at creation gets an inactive weld and can still turn kinematic."""
+    def test_switchable_roots(self):
+        """Give a root dynamic at creation an inactive weld, so it can turn kinematic without warnings."""
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 model, root_body = self._build_model(root_kinematic=False)
@@ -3006,9 +3006,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     state_0, state_1 = state_1, state_0
                 self.assertAlmostEqual(float(state_0.body_q.numpy()[root_body, 2]), -0.5 * 9.81 * 0.1**2, delta=2.0e-3)
 
-                deprecations = self._set_body_flag(solver, root_body, BodyFlags.KINEMATIC)
-                self.assertEqual(len(deprecations), 1)
-                self.assertIn("dynamic at solver creation is deprecated", str(deprecations[0].message))
+                self.assertEqual(self._set_body_flag(solver, root_body, BodyFlags.KINEMATIC), [])
                 self._assert_kinematic_state_matches_flags(model, solver)
 
                 # Once kinematic, the root holds its pose against gravity.
@@ -3025,9 +3023,8 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     xpos = solver.mjw_data.xpos.numpy()[0, mjc_body]
                 np.testing.assert_allclose(xpos, 0.0, atol=1.0e-4)
 
-                # Warn once per switch, not on repeated notifications.
-                for flag, count in ((BodyFlags.KINEMATIC, 0), (BodyFlags.DYNAMIC, 0), (BodyFlags.KINEMATIC, 1)):
-                    self.assertEqual(len(self._set_body_flag(solver, root_body, flag)), count)
+                for flag in (BodyFlags.KINEMATIC, BodyFlags.DYNAMIC, BodyFlags.KINEMATIC):
+                    self.assertEqual(self._set_body_flag(solver, root_body, flag), [])
 
         # Roots switched late share njmax's headroom with contacts.
         builder = newton.ModelBuilder()

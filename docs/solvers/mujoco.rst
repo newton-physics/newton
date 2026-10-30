@@ -1162,18 +1162,18 @@ either flag is disabled.
 Switching kinematic roots at runtime
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-MuJoCo cannot add constraints to a compiled model, so the solver gives every
-movable root an inactive weld, and :attr:`~newton.Model.body_flags` can switch
+MuJoCo cannot add constraints to a compiled model, so by default the solver
+gives every movable root an inactive weld, and :attr:`~newton.Model.body_flags` can switch
 roots between kinematic and dynamic per world, followed by
 ``notify_model_changed(ModelFlags.BODY_PROPERTIES)``. Inactive welds add no
 constraint rows; roots made kinematic later share ``njmax`` with contacts.
 Body-flag checks run on the host and are skipped for notifications replayed
 from a CUDA graph.
 
-Making a root kinematic that was dynamic in every world at solver creation is
-deprecated. Pass ``kinematic_switchable_roots=False`` for the future behavior,
-in which only roots kinematic at creation get a weld. To start such a root
-dynamic, mark it kinematic before creating the solver and switch it right after:
+With ``kinematic_switchable_roots=False``, only roots that are kinematic in
+some world at solver creation get a weld, so the compiled MuJoCo model has no
+unused welds. To start such a root dynamic, mark it kinematic before creating
+the solver and switch it right after:
 
 .. testcode:: mujoco-kinematic-switching
 
