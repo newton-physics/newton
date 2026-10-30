@@ -264,7 +264,7 @@ def preprocess_stress_and_strain(
 ):
     """Prepare stress and strain for the rheology solve.
 
-    Adds the unilateral strain offset to ``strain_rhs`` (removed in
+    Adds the signed strain offset to ``strain_rhs`` (removed in
     :func:`postprocess_stress_and_strain`), disables cohesion for nodes
     with a positive offset, and projects the initial stress guess onto
     the yield surface.
@@ -275,13 +275,13 @@ def preprocess_stress_and_strain(
     yield_params = yield_stress[tau_i]
     offset = unilateral_strain_offset[tau_i]
 
-    if offset > 0.0:
-        # add unilateral strain offset to strain rhs
-        # will be removed in postprocess_stress_and_strain
+    if offset != 0.0:
+        # Accept signed feedback; postprocessing removes the offset again.
         b = strain_rhs[tau_i]
         b += unilateral_offset_to_strain_rhs(offset)
         strain_rhs[tau_i] = b
 
+    if offset > 0.0:
         yield_params[1] = 0.0  # disable cohesion if offset > 0 (not compact)
         yield_stress[tau_i] = yield_params
 

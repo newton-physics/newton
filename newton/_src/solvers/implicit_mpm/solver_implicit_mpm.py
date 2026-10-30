@@ -25,6 +25,18 @@ from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
+from .density_measurement import (
+    critical_offset_values,
+    deformed_particle_volumes,
+    feedback_offset_values,
+    make_free_box_mask_kernel,
+    make_grid_capacity_kernel,
+    make_grid_readback_kernel,
+    make_grid_volume_kernel,
+    make_particle_capacity_kernel,
+    make_particle_volume_kernel,
+    point_density_offset,
+)
 from .implicit_mpm_model import ImplicitMPMModel
 from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
 from .rasterized_collisions import (
@@ -47,6 +59,7 @@ from .implicit_mpm_solver_kernels import (
     YIELD_PARAM_LENGTH,
     YieldMomentVec,
     _rebuild_capacity,
+    add_critical_strain_offset,
     advect_particles,
     allocate_by_voxels,
     average_elastic_parameters,
@@ -57,7 +70,6 @@ from .implicit_mpm_solver_kernels import (
     compute_color_offsets,
     compute_lattice_node_keys,
     compute_nodal_diagonalization,
-    compute_unilateral_strain_offset,
     fill_uniform_color_block_indices,
     free_velocity,
     gather_point_dof_values,
@@ -67,8 +79,6 @@ from .implicit_mpm_solver_kernels import (
     gimp_store_point_stress,
     inertial_delassus_scale,
     integrate_active_fraction,
-    integrate_collider_fraction,
-    integrate_collider_fraction_apic,
     integrate_elastic_parameters,
     integrate_fraction,
     integrate_gimp_point_stress,
@@ -296,6 +306,7 @@ class ImplicitMPMScratchpad:
         self.particle_cells = None
         self.contact_pic = None
         self.collision_pic = None
+        self.density_pic = None
         self.pic_domain_element_indices = False
         self.gimp_particle_contact_nodes = None
         self.gimp_domain_corners = None
@@ -343,8 +354,7 @@ class ImplicitMPMScratchpad:
         self.delassus_scale = None
         self.strain_basis_transform = None
         self.strain_stress_transform = None
-        self.strain_node_volume = None
-        self.strain_node_collider_volume = None
+        self.critical_strain_offset = None
 
         self.collider_total_volumes = None
         self.collider_node_volume = None
@@ -675,7 +685,7 @@ class ImplicitMPMScratchpad:
         self,
         collider_count: int,
         has_compliant_bodies: bool,
-        has_critical_fraction: bool,
+        has_critical_offset: bool,
         max_colors: int,
         temporary_store: fem.TemporaryStore,
     ):
@@ -697,11 +707,8 @@ class ImplicitMPMScratchpad:
         wps.bsr_set_zero(self.strain_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=vel_node_count)
         wps.bsr_set_zero(self.compliance_matrix, rows_of_blocks=strain_node_count, cols_of_blocks=strain_node_count)
 
-        if has_critical_fraction:
-            self.strain_node_volume = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
-            self.strain_node_collider_volume = fem.borrow_temporary(
-                temporary_store, shape=strain_node_count, dtype=float
-            )
+        if has_critical_offset:
+            self.critical_strain_offset = fem.borrow_temporary(temporary_store, shape=strain_node_count, dtype=float)
 
         if has_compliant_bodies:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
@@ -729,9 +736,9 @@ class ImplicitMPMScratchpad:
         self.strain_node_particle_volume.release()
         self.unilateral_strain_offset.release()
 
-        if self.strain_node_volume is not None:
-            self.strain_node_volume.release()
-            self.strain_node_collider_volume.release()
+        if self.critical_strain_offset is not None:
+            self.critical_strain_offset.release()
+            self.critical_strain_offset = None
 
         if self.collider_total_volumes is not None:
             self.collider_total_volumes.release()
@@ -1029,7 +1036,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # material / background
         critical_fraction: float = 0.0
-        """Fraction for particles under which the yield surface collapses."""
+        """Packing fraction below which cohesion is disabled and recompression is allowed.
+
+        Each particle compares its measured packing with the available space
+        outside colliders, both from :attr:`critical_fraction_measurement`.
+        Underfilled material may recompress under external forces without
+        an attractive correction.
+        """
         air_drag: float = 1.0
         """Numerical drag for the background air."""
 
@@ -1050,6 +1063,53 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         .. experimental::
 
             Cell-local contact solver ordering may change.
+        """
+        density_strain_fraction: float = 0.0
+        """Fraction of particle overpacking corrected per step.
+
+        Values in ``[0, 1]`` add the nonpositive offset
+        ``fraction * min(available / measured - 1, 0)`` to the divergence
+        constraint, the volumetric strain that would bring the measured
+        particle volume fraction back to the space left free by colliders,
+        with fractions from :attr:`density_strain_measurement`. The strain
+        quadrature samples the offsets like the elastic strain, so they vary
+        continuously as particles move. The target filling fraction is one.
+        Overfilled regions produce negative offsets, requesting expansion.
+        Underfilled regions, such as free surfaces, receive no correction.
+        Zero disables this feedback.
+
+        .. experimental::
+
+            Density-based divergence feedback may change without prior notice.
+        """
+        density_strain_measurement: Literal["grid", "particle"] = "grid"
+        """Measurement of the packing fractions for :attr:`density_strain_fraction`.
+
+        Each particle contributes its deformed volume, the reference volume
+        times ``det(F_e)`` of its elastic deformation gradient. The measured
+        fraction and the available fraction, the part of the same kernel
+        outside colliders, use matching kernels, so packed material reads
+        full against walls. ``"grid"`` deposits volumes into cells with
+        quadratic B-splines and reads them back linearly at each particle,
+        averaging over about two voxels. ``"particle"`` sums neighbor volumes
+        with a cubic B-spline of one voxel radius around each particle, which
+        keeps the band that reads as loose at free surfaces thin, at the cost
+        of a neighbor search and a slight overestimate in disordered packings.
+
+        .. experimental::
+
+            Density measurements may change without prior notice.
+        """
+        critical_fraction_measurement: Literal["grid", "particle"] = "particle"
+        """Measurement of the packing fractions for :attr:`critical_fraction`.
+
+        Accepts the measurements of :attr:`density_strain_measurement`. The
+        default ``"particle"`` keeps free surfaces from reading as loose over
+        a thick band, which would let them recompress without friction.
+
+        .. experimental::
+
+            Density measurements may change without prior notice.
         """
         collider_normal_from_sdf_gradient: bool = False
         """Compute collider normals from sdf gradient rather than closest point"""
@@ -1642,6 +1702,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.temporary_store = temporary_store
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
         self.enable_timers = enable_timers
+
+        self.density_strain_fraction = float(config.density_strain_fraction)
+        if not math.isfinite(self.density_strain_fraction) or not 0.0 <= self.density_strain_fraction <= 1.0:
+            raise ValueError("density_strain_fraction must be finite and in [0, 1]")
+        for name in ("density_strain_measurement", "critical_fraction_measurement"):
+            if getattr(config, name) not in ("grid", "particle"):
+                raise ValueError(f"{name} must be 'grid' or 'particle', got {getattr(config, name)!r}")
+        self.density_strain_measurement = config.density_strain_measurement
+        self.critical_fraction_measurement = config.critical_fraction_measurement
 
         self.velocity_basis = "Q1"
         self.strain_basis = config.strain_basis
@@ -3000,7 +3069,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             scratch.allocate_temporaries(
                 collider_count=self._mpm_model.collider.collider_mesh.shape[0],
                 has_compliant_bodies=self._mpm_model.has_compliant_colliders,
-                has_critical_fraction=self._mpm_model.critical_fraction > 0.0,
+                has_critical_offset=self._mpm_model.critical_fraction > 0.0,
                 max_colors=self._max_colors(),
                 temporary_store=self.temporary_store,
             )
@@ -3087,14 +3156,19 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     use_domain_element_indices=use_domain_element_indices,
                 )
                 self._scratchpad.particle_cells = particle_locations[0]
-                if self.collider_basis[:3] == "pic":
-                    self._scratchpad.contact_pic = _PicQuadrature(
+                center_pic = None
+                if self.collider_basis[:3] == "pic" or "particle" in self._density_measurements():
+                    center_pic = _PicQuadrature(
                         domain=domain,
                         positions=self._particle_cell_locations(domain, positions, self._particle_environment),
                         measures=self._mpm_model.particle_volume,
                         temporary_store=self.temporary_store,
                         use_domain_element_indices=use_domain_element_indices,
                     )
+                if self.collider_basis[:3] == "pic":
+                    self._scratchpad.contact_pic = center_pic
+                # Particle-centered density measurements gather neighbors through one point per particle center
+                self._scratchpad.density_pic = center_pic
             else:
                 particle_locations = self._particle_cell_locations(domain, positions, self._particle_environment)
                 self._scratchpad.particle_cells = particle_locations[0].reshape((-1, 1))
@@ -3105,6 +3179,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     temporary_store=self.temporary_store,
                     use_domain_element_indices=use_domain_element_indices,
                 )
+                self._scratchpad.density_pic = pic
 
         return pic
 
@@ -3721,58 +3796,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 temporary_store=self.temporary_store,
             )
 
-        # Void fraction (unilateral incompressibility offset)
-        if mpm_model.critical_fraction > 0.0:
-            with self._timer("Unilateral offset"):
-                fem.integrate(
-                    integrate_fraction,
-                    fields={"phi": scratch.divergence_test},
-                    values={"inv_cell_volume": inv_cell_volume},
-                    output=scratch.strain_node_volume,
-                    temporary_store=self.temporary_store,
-                )
-
-                if isinstance(scratch.collider_distance_field.space.basis, fem.PointBasisSpace):
-                    fem.integrate(
-                        integrate_collider_fraction_apic,
-                        fields={
-                            "phi": scratch.divergence_test,
-                            "sdf": scratch.collider_distance_field,
-                            "sdf_gradient": scratch.collider_normal_field,
-                        },
-                        values={
-                            "inv_cell_volume": inv_cell_volume,
-                        },
-                        output=scratch.strain_node_collider_volume,
-                        temporary_store=self.temporary_store,
-                    )
-                else:
-                    fem.integrate(
-                        integrate_collider_fraction,
-                        fields={
-                            "phi": scratch.divergence_test,
-                            "sdf": scratch.collider_distance_field,
-                        },
-                        values={
-                            "inv_cell_volume": inv_cell_volume,
-                        },
-                        output=scratch.strain_node_collider_volume,
-                        temporary_store=self.temporary_store,
-                    )
-
-                wp.launch(
-                    compute_unilateral_strain_offset,
-                    dim=scratch.strain_node_count,
-                    inputs=[
-                        mpm_model.critical_fraction,
-                        scratch.strain_node_particle_volume,
-                        scratch.strain_node_collider_volume,
-                        scratch.strain_node_volume,
-                        scratch.unilateral_strain_offset,
-                    ],
-                )
-        else:
-            scratch.unilateral_strain_offset.zero_()
+        scratch.unilateral_strain_offset.zero_()
+        if self._measures_density():
+            self._build_density_strain_offset(state_in, scratch, pic)
 
         # Strain jacobian
         with self._timer("Strain matrix"):
@@ -3827,6 +3853,189 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 inputs=[values[:, YIELD_PARAM_LENGTH:], parameters],
             )
             scratch.strain_yield_parameters_field.dof_values = parameters.view(YieldParamVec)
+
+    def _measures_density(self) -> bool:
+        """Whether critical packing or density feedback needs a density measurement."""
+        return self._mpm_model.critical_fraction > 0.0 or self.density_strain_fraction > 0.0
+
+    def _density_measurements(self) -> set[str]:
+        """Measurements needed this step, among ``"grid"`` and ``"particle"``."""
+        measurements = set()
+        if self._mpm_model.critical_fraction > 0.0:
+            measurements.add(self.critical_fraction_measurement)
+        if self.density_strain_fraction > 0.0:
+            measurements.add(self.density_strain_measurement)
+        return measurements
+
+    def _build_density_strain_offset(
+        self,
+        state_in: newton.State,
+        scratch: ImplicitMPMScratchpad,
+        pic: fem.PicQuadrature,
+    ):
+        """Measure packing independently of the mass and strain quadrature.
+
+        Each particle gets a measured and an available volume fraction from the measurement of
+        each consumer: density feedback pushes overfilled particles apart, and the critical bound
+        lets underfilled particles compress. The strain quadrature samples both offsets like the
+        elastic strain, so they share the weights of the strain mass and stay bounded in every
+        strain mode.
+        """
+        model = self._mpm_model
+        device = state_in.particle_q.device
+        particle_count = state_in.particle_q.shape[0]
+        volumes = fem.borrow_temporary_like(model.material_particle_volume, self.temporary_store)
+        wp.launch(
+            deformed_particle_volumes,
+            dim=volumes.shape[0],
+            inputs=[model.material_particle_volume, state_in.mpm.particle_elastic_strain, volumes],
+            device=device,
+        )
+
+        grid = scratch.grid
+        environments = self._particle_environment if self._separate_worlds else None
+        collider = model.collider
+        old_query_distance = collider.query_max_dist
+        # Wall masks need distances up to the cell half-diagonal
+        collider.query_max_dist = max(old_query_distance, model.voxel_size)
+        try:
+            masks = fem.borrow_temporary(self.temporary_store, shape=grid.cell_count(), dtype=wp.uint32, device=device)
+            collider_inputs = [collider, state_in.body_q, None, None, self._separate_worlds]
+            wp.launch(
+                make_free_box_mask_kernel(grid),
+                dim=grid.cell_count(),
+                inputs=[grid.cell_arg_value(device), *collider_inputs, model.voxel_size, masks],
+                device=device,
+            )
+
+            fractions = {}
+            for measurement in self._density_measurements():
+                measured = fem.borrow_temporary(self.temporary_store, shape=particle_count, dtype=float, device=device)
+                available = fem.borrow_temporary_like(measured, self.temporary_store)
+                if measurement == "grid":
+                    cell_values = fem.borrow_temporary(
+                        self.temporary_store, shape=grid.cell_count(), dtype=float, device=device
+                    )
+                    cell_values.zero_()
+                    wp.launch(
+                        make_grid_volume_kernel(grid),
+                        dim=particle_count,
+                        inputs=[
+                            grid.cell_arg_value(device),
+                            state_in.particle_q,
+                            volumes,
+                            model.material_particle_flags,
+                            environments,
+                            model.voxel_size,
+                            cell_values,
+                        ],
+                        device=device,
+                    )
+                    readback = make_grid_readback_kernel(grid)
+                    readback_inputs = [
+                        grid.cell_arg_value(device),
+                        state_in.particle_q,
+                        model.material_particle_flags,
+                        environments,
+                    ]
+                    wp.launch(
+                        readback,
+                        dim=particle_count,
+                        inputs=[*readback_inputs, cell_values, model.voxel_size, measured],
+                        device=device,
+                    )
+                    wp.launch(
+                        make_grid_capacity_kernel(grid),
+                        dim=grid.cell_count(),
+                        inputs=[grid.cell_arg_value(device), masks, *collider_inputs, model.voxel_size, cell_values],
+                        device=device,
+                    )
+                    wp.launch(
+                        readback,
+                        dim=particle_count,
+                        inputs=[*readback_inputs, cell_values, model.voxel_size, available],
+                        device=device,
+                    )
+                else:
+                    center_pic = scratch.density_pic
+                    wp.launch(
+                        make_particle_volume_kernel(center_pic),
+                        dim=particle_count,
+                        inputs=[
+                            grid.cell_arg_value(device),
+                            center_pic.domain.element_index_arg_value(device),
+                            center_pic.cell_particle_offsets,
+                            center_pic.cell_particle_indices,
+                            state_in.particle_q,
+                            volumes,
+                            model.material_particle_flags,
+                            environments,
+                            model.voxel_size,
+                            measured,
+                        ],
+                        device=device,
+                    )
+                    wp.launch(
+                        make_particle_capacity_kernel(grid),
+                        dim=particle_count,
+                        inputs=[
+                            grid.cell_arg_value(device),
+                            state_in.particle_q,
+                            model.material_particle_flags,
+                            environments,
+                            masks,
+                            *collider_inputs,
+                            model.voxel_size,
+                            available,
+                        ],
+                        device=device,
+                    )
+                fractions[measurement] = (measured, available)
+        finally:
+            collider.query_max_dist = old_query_distance
+
+        values = fem.borrow_temporary(self.temporary_store, shape=particle_count, dtype=float, device=device)
+        laws = []
+        if model.critical_fraction > 0.0:
+            scratch.critical_strain_offset.zero_()
+            laws.append(
+                (
+                    critical_offset_values,
+                    self.critical_fraction_measurement,
+                    model.critical_fraction,
+                    scratch.critical_strain_offset,
+                )
+            )
+        if self.density_strain_fraction > 0.0:
+            laws.append(
+                (
+                    feedback_offset_values,
+                    self.density_strain_measurement,
+                    self.density_strain_fraction,
+                    scratch.unilateral_strain_offset,
+                )
+            )
+        for law, measurement, parameter, output in laws:
+            measured, available = fractions[measurement]
+            wp.launch(
+                law,
+                dim=particle_count,
+                inputs=[measured, available, model.material_particle_flags, parameter, values],
+                device=device,
+            )
+            fem.integrate(
+                point_density_offset,
+                quadrature=pic,
+                fields={"tau": scratch.divergence_test},
+                values={
+                    "values": values,
+                    "flags": model.material_particle_flags,
+                    "inv_cell_volume": 1.0 / model.voxel_size**3,
+                },
+                output=output,
+                add=True,
+                temporary_store=self.temporary_store,
+            )
 
     def _build_strain_basis_transform(
         self,
@@ -3887,7 +4096,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             wp.launch(
                 rotate_matrix_rows, dim=B.nnz, inputs=[basis_transform, B.offsets, B.columns, B.values, strain_mat_tmp]
             )
-            B.values = strain_mat_tmp
+            # Captured assembly retains this pointer; replacing it can free the
+            # warm-up allocation before the first graph replay.
+            wp.copy(B.values, strain_mat_tmp)
 
             C = scratch.compliance_matrix
             compliance_mat_tmp = wp.empty_like(C.values)
@@ -3914,6 +4125,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     _as_2d_array(scratch.stress_field.dof_values, shape=(node_count, 6), dtype=float),
                     _as_2d_array(scratch.unilateral_strain_offset, shape=(node_count, 1), dtype=float),
                 ],
+            )
+
+        if scratch.critical_strain_offset is not None:
+            wp.launch(
+                add_critical_strain_offset,
+                dim=node_count,
+                inputs=[basis_transform, scratch.critical_strain_offset, scratch.unilateral_strain_offset],
             )
 
         M_diag = scratch.strain_node_particle_volume
