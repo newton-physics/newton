@@ -1,0 +1,1 @@
+Fix `SolverSteel` leaving a stale `body_q` and an unwritten `body_qd` in the output state for bodies outside every articulation, such as a jointless kinematic link; they now pass their input state through the step.

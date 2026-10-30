@@ -1406,6 +1406,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
         mu = wp.array([[0.5, 0.5, 0.5]], dtype=float, device=_DEVICE)
         impulses = wp.array([[2, 1, 0]], dtype=float, device=_DEVICE)
         velocity = wp.zeros(2, dtype=wp.spatial_vector, device=_DEVICE)
+        articulation = wp.zeros(2, dtype=int, device=_DEVICE)
         args = [
             contacts.rigid_contact_count,
             patches.current,
@@ -1413,6 +1414,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
             state.body_q,
             velocity,
             wp.zeros(2, dtype=wp.vec3, device=_DEVICE),
+            articulation,
             zeros,
             zeros,
             zeros,
@@ -1433,6 +1435,11 @@ class TestFrictionPatchHistory(unittest.TestCase):
         velocity.assign([[0, -0.1, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0]])
         wp.launch(finish_patch_impulses, dim=1, inputs=args, device=_DEVICE)
         self.assertEqual(patches.current.valid.numpy()[0], 0)
+        # Contact rows see a body outside every articulation at rest, so its passed-through velocity is not sliding.
+        patches.current.valid.fill_(1)
+        articulation.fill_(-1)
+        wp.launch(finish_patch_impulses, dim=1, inputs=args, device=_DEVICE)
+        self.assertEqual(patches.current.valid.numpy()[0], 1)
 
     def test_convex_shapes_share_one_body_patch(self):
         """Pool friction load across adjacent convex pieces with compatible materials."""
@@ -1602,6 +1609,7 @@ class TestFrictionPatchHistory(unittest.TestCase):
                         state.body_q,
                         qd,
                         com,
+                        wp.zeros(2, dtype=int, device=_DEVICE),
                         zeros,
                         wp.array([slot], dtype=int, device=_DEVICE),
                         zeros,
