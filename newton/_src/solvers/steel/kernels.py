@@ -2999,8 +2999,9 @@ def populate_connect_J_for_size(
 
     A REVOLUTE closure adds two rows ``J = e_i . (omega_parent - omega_child)`` for the two
     directions ``e_i`` perpendicular to the hinge axis, with ``phi_i = e_i . (a_child x a_parent)``,
-    the small rotation that realigns the child's hinge axis with the parent's. These rows are
-    pure couples. The axis is read from ``Model.joint_axis`` every step.
+    the small rotation that realigns the child's hinge axis with the parent's, or with its reverse
+    when they are more than 90 degrees apart. These rows are pure couples. The axis is read from
+    ``Model.joint_axis`` every step.
 
     Each row is normalized. On a planar linkage one axis is nearly redundant with the
     tree (``|J|`` around ``1e-4``), and an unnormalized row would relax a real velocity
@@ -3093,6 +3094,9 @@ def populate_connect_J_for_size(
             body_p, body_c, joint, joint_axis[joint_qd_start[joint]], joint_X_p, joint_X_c, body_q
         )
         misalign = wp.cross(a_c, a_p)
+        # A closure has no joint coordinate, so it holds the hinge line and realigns toward the nearer direction.
+        if wp.dot(a_c, a_p) < 0.0:
+            misalign = -misalign
         omega_a = wp.vec3(0.0, 0.0, 0.0)
         if prescribed and body_p >= 0:
             omega_a = wp.spatial_bottom(body_qd[body_p])

@@ -3634,6 +3634,36 @@ def test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows(test, device):
         np.testing.assert_array_equal(poses, reference)
 
 
+def test_revolute_loop_realigns_to_the_nearer_axis_direction(test, device):
+    """Realign a REVOLUTE closure that starts 179 degrees off along the short way to the hinge line."""
+    b = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    body = b.add_link(
+        xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(0.02, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.01),
+    )
+    b.add_articulation([b.add_joint_free(child=body)])
+    flipped = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(np.radians(179.0)))
+    joint = _expect_one_warning(
+        test,
+        newton.exceptions.NewtonWarning,
+        "another joint already connects these bodies",
+        functools.partial(
+            b.add_joint_revolute,
+            parent=-1,
+            child=body,
+            axis=wp.vec3(1.0, 0.0, 0.0),
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity()),
+            child_xform=wp.transform(wp.vec3(), flipped),
+        ),
+    )
+    _, _, poses, solver = _run_closure(b, joint, device, steps=200)
+    frames = _closure_frames(solver.model, joint)
+    line_error = [min(m, 180.0 - m) for m in (_closure_metrics(frames, body_q)[1] for body_q in poses)]
+    test.assertLess(max(line_error), 1.01)
+    test.assertLess(line_error[-1], 0.05)
+
+
 class TestSteelRevoluteLoop(unittest.TestCase):
     pass
 
@@ -3648,6 +3678,7 @@ for _name in (
     "test_revolute_loop_warns_about_ignored_limits_and_drives",
     "test_revolute_loop_warns_about_edits_it_ignores",
     "test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows",
+    "test_revolute_loop_realigns_to_the_nearer_axis_direction",
 ):
     add_function_test(TestSteelRevoluteLoop, _name, globals()[_name], devices=get_cuda_test_devices())
 
