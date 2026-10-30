@@ -75,7 +75,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
                 "update_sys_path(root); "
                 "benchmarks = disc_benchmarks(root); "
                 "data = [{key: getattr(benchmark, key, None) "
-                "for key in ('name', 'params', 'repeat', 'rounds', 'setup_cache_key')} "
+                "for key in ('name', 'params', 'repeat', 'rounds', 'setup_cache_key', 'timeout')} "
                 "for benchmark in benchmarks]; "
                 "print('ASV_INVENTORY=' + json.dumps(data))"
             )
@@ -206,7 +206,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
 
     def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
-        """Keep large cases nightly and guard coarse cloth in the PR gate."""
+        """Keep large cases nightly with longer timeouts than PR-gated coarse cloth."""
         benchmark_names = (
             "simulation.bench_cloth.DeformableRigidCollision.time_collide",
             "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
@@ -217,10 +217,12 @@ class TestSimulationBenchmarks(unittest.TestCase):
             with self.subTest(benchmark_name=benchmark_name):
                 self.assertIn(benchmark_name, inventory)
                 self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
+                self.assertEqual(inventory[benchmark_name]["timeout"], 1800)
         self.assertEqual(bench_cloth.DeformableRigidCollision.repeat, 3)
         self.assertEqual(bench_cloth.DeformableRigidCollisionScale.repeat, 1)
         coarse_name = "simulation.bench_cloth.FastDeformableRigidCoarseCloth.time_collide"
         self.assertIn(coarse_name, inventory)
+        self.assertEqual(inventory[coarse_name]["timeout"], 600)
         self.assertTrue(any(pattern.search(coarse_name) for pattern in patterns))
         self.assertEqual(
             {case[1] for case in bench_cloth.FastDeformableRigidCoarseCloth.params[0]},
@@ -228,6 +230,7 @@ class TestSimulationBenchmarks(unittest.TestCase):
         )
         vbd_name = "simulation.bench_cloth.FastDeformableRigidCoarseClothVBD.time_simulate"
         self.assertIn(vbd_name, inventory)
+        self.assertEqual(inventory[vbd_name]["timeout"], 600)
         self.assertTrue(any(pattern.search(vbd_name) for pattern in patterns))
         self.assertIn(
             ("box_coarse_cloth_256", "box", 8, 256, 1, False),

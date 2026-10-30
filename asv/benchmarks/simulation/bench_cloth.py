@@ -231,7 +231,8 @@ class DeformableRigidCollision:
     number = 1
     warmup_count = 2
     launch_count = 10
-    timeout = 600
+    # ASV's subprocess timeout also covers setup, warmup, and graph capture.
+    timeout = 1800
 
     def setup(self, case):
         device = wp.get_device()
@@ -301,6 +302,7 @@ class FastDeformableRigidCoarseCloth(DeformableRigidCollision):
 
     params = (COARSE_CLOTH_RIGID_CASES,)
     repeat = pr_gate_repeat(5)
+    timeout = 600
 
 
 class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
@@ -308,6 +310,7 @@ class FastDeformableRigidCoarseClothVBD(DeformableRigidCollision):
 
     params = (COARSE_CLOTH_VBD_CASES,)
     repeat = pr_gate_repeat(5)
+    timeout = 600
     launch_count = 5
     # This graph includes the solve; expose it only through time_simulate.
     time_collide = None
