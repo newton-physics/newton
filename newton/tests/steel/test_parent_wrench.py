@@ -10,7 +10,11 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.steel.kernels import accumulate_connect_wrenches_from_impulses, populate_connect_J_for_size
+from newton._src.solvers.steel.kernels import (
+    PGS_CONSTRAINT_TYPE_CONNECT,
+    accumulate_connect_wrenches_from_impulses,
+    populate_connect_J_for_size,
+)
 from newton.exceptions import NewtonWarning
 from newton.solvers import SolverBase, SolverSteel
 from newton.tests.steel._fixtures import (
@@ -537,6 +541,7 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     anchor_xform,
                     anchor_xform,
                     zero,  # connect_parent_prescribed
+                    ints([1, 1]),  # body_has_response_dofs
                     body_q,
                     wp.zeros(2, dtype=wp.spatial_vector, device=device),
                     wp.zeros(2, dtype=wp.vec3, device=device),
@@ -562,6 +567,8 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
                     zero,  # connect_joint
                     anchor_xform,
                     anchor_xform,
+                    zero,  # connect_parent_prescribed
+                    ints([1, 1]),  # body_has_response_dofs
                     inv_norm,
                     zero,  # art_to_world
                     body_q,
@@ -579,6 +586,51 @@ def test_closure_force_uses_the_row_builder_norm(test, device):
             float32_lever = 1.0 + float(motion.numpy()[1, 1])
             force = wrench.numpy()[:, 1]
             np.testing.assert_allclose(force, [1.0 / float32_lever, -1.0 / float32_lever], rtol=1.0e-5)
+
+
+def test_open_closure_force_acts_where_the_rows_do(test, device):
+    """An open closure's force acts at the anchors' midpoint, or at each anchor when one body has no response DOFs."""
+
+    def ints(values):
+        return wp.array(values, dtype=wp.int32, device=device)
+
+    p_a, p_b = np.array([1.0, 0.0, 0.0]), np.array([1.0, 0.2, 0.0])
+    force = np.array([1.0, 0.0, 0.0])
+    for response_dofs, parent_point, child_point in (
+        ([1, 1], 0.5 * (p_a + p_b), 0.5 * (p_a + p_b)),
+        ([0, 1], p_a, p_b),
+    ):
+        with test.subTest(response_dofs=response_dofs):
+            zero = ints([0])
+            wrench = wp.zeros(2, dtype=wp.spatial_vector, device=device)
+            wp.launch(
+                accumulate_connect_wrenches_from_impulses,
+                dim=1,
+                inputs=[
+                    zero,  # connect_slot
+                    zero,  # connect_art
+                    zero,  # connect_body_p
+                    ints([1]),  # connect_body_c
+                    zero,  # connect_joint
+                    wp.array([wp.transform(p_a, wp.quat_identity())], dtype=wp.transform, device=device),
+                    wp.array([wp.transform(p_b, wp.quat_identity())], dtype=wp.transform, device=device),
+                    zero,  # connect_parent_prescribed
+                    ints(response_dofs),
+                    wp.array([[1.0, 0.0, 0.0]], dtype=float, device=device),  # connect_row_inv_norm
+                    zero,  # art_to_world
+                    wp.array([wp.transform_identity()] * 2, dtype=wp.transform, device=device),
+                    ints([0, 0]),  # body_to_articulation
+                    wp.zeros(1, dtype=wp.vec3, device=device),
+                    ints([3]),  # world_constraint_count
+                    ints([[PGS_CONSTRAINT_TYPE_CONNECT] * 3]),
+                    wp.array([[1.0, 0.0, 0.0]], dtype=wp.float32, device=device),
+                    1.0,
+                ],
+                outputs=[wrench],
+                device=device,
+            )
+            expected = [[*force, *np.cross(parent_point, force)], [*-force, *np.cross(child_point, -force)]]
+            np.testing.assert_allclose(wrench.numpy(), expected, atol=1.0e-6)
 
 
 def test_parent_wrench_of_a_near_redundant_closure(test, device):
@@ -914,6 +966,7 @@ for _name in (
     "test_unattached_body_reports_zero",
     "test_jointless_model_reports_zero",
     "test_closure_force_uses_the_row_builder_norm",
+    "test_open_closure_force_acts_where_the_rows_do",
     "test_parent_wrench_matches_inverse_dynamics_on_every_path",
     "test_parent_wrench_excludes_joint_armature",
     "test_parent_wrench_of_a_contact_stop_with_armature",
