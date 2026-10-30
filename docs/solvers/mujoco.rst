@@ -890,23 +890,19 @@ model. The MJCF importer honors ``filterparent="disable"`` by creating the
 imported non-fixed joints with ``collision_filter_parent=False``, and the USD
 importer does the same for a PhysicsScene with ``mjc:flag:filterparent =
 false``, except for joints that author ``physics:collisionEnabled`` (that
-explicit value wins). Both follow the ``parse_mujoco_options`` gate. The
-resulting per-joint choice is exported as
-:attr:`~newton.Model.joint_collision_filter_parent`.
+explicit value wins). Both follow the ``parse_mujoco_options`` gate.
 
-MuJoCo's own parent-child filter works on weld groups and cannot be set per
-joint. When a non-fixed tree joint of the template world has
-``collision_filter_parent=False``, whether it was authored in the builder,
-imported from MJCF or USD, or comes from a USD joint with
-``physics:collisionEnabled=true``, :class:`~newton.solvers.SolverMuJoCo`
-disables the native rule and exports the weld-group body pairs of the joints
-that still filter as excludes, so assets that filter keep filtering
-(including across fixed joints and shapeless bodies, which Newton does not
-store as filter pairs). A joint that opted out collides with its parent's
-whole weld group, as in Newton's collision pipeline. Models whose joints all
-filter keep MuJoCo's native rule unchanged. Per-world mesh layouts
-(``separate_worlds=True`` with differing mesh assets) and models where Newton
-provides the contacts do not apply this rule.
+Newton's collision filter pairs decide which bodies may touch.
+:class:`~newton.solvers.SolverMuJoCo` always disables MuJoCo's own
+parent-child rule (``filterparent``) and exports the body pairs that Newton
+filters as contact excludes, or as per-slot collision masks for per-world mesh
+layouts. Since :class:`~newton.ModelBuilder` filters a joint's child weld group
+against its parent's weld group (see :doc:`/concepts/collisions`), a default
+model collides the same way in both pipelines, and a joint with
+``collision_filter_parent=False``, whether authored in the builder, imported
+from MJCF or USD, or coming from a USD joint with
+``physics:collisionEnabled=true``, lets its parent and child collide in MuJoCo
+as well.
 
 ``gravity="disable"`` sets Newton's builder gravity to zero, affecting
 all solvers and content already added to the shared builder. Inside

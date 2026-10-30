@@ -2672,10 +2672,37 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
 
         self.assertTrue(result.skipped)
 
-    def test_unfiltered_parent_joint_disables_native_parent_filter(self):
-        """A joint with collision_filter_parent=False lets parent and child collide in MuJoCo as well."""
+    @staticmethod
+    def _contact_counts(model):
+        """Contacts in the initial pose from Newton's pipeline and from native MuJoCo, plus the solver."""
         import mujoco
 
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        mujoco.mj_forward(solver.mj_model, solver.mj_data)
+        return int(contacts.rigid_contact_count.numpy()[0]), int(solver.mj_data.ncon), solver
+
+    @staticmethod
+    def _excludes(solver):
+        """Newton body pairs that the conversion exported as MuJoCo excludes."""
+        to_newton = solver.mjc_body_to_newton.numpy()[0]
+        return {
+            tuple(sorted(int(to_newton[b]) for b in divmod(int(signature), 1 << 16)))
+            for signature in solver.mj_model.exclude_signature
+        }
+
+    @staticmethod
+    def _native_parent_filter_off(solver):
+        import mujoco
+
+        return bool(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
+
+    def test_parent_filter_follows_newton_pairs(self):
+        """MuJoCo filters a parent-child pair exactly when Newton does; its own rule stays off."""
         for filter_parent in (True, False):
             with self.subTest(collision_filter_parent=filter_parent):
                 builder = newton.ModelBuilder()
@@ -2698,22 +2725,18 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
                 builder.add_articulation([root, hinge])
                 model = builder.finalize(device="cpu")
 
-                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
-                native_filter = bool(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
-                self.assertEqual(native_filter, not filter_parent)
+                newton_contacts, mujoco_contacts, solver = self._contact_counts(model)
+                self.assertTrue(self._native_parent_filter_off(solver))
                 self.assertEqual(solver.mj_model.nexclude, 1 if filter_parent else 0)
-                mujoco.mj_forward(solver.mj_model, solver.mj_data)
-                self.assertEqual(solver.mj_data.ncon, 0 if filter_parent else 1)
+                self.assertEqual((newton_contacts, mujoco_contacts), (0, 0) if filter_parent else (1, 1))
 
-    def test_opted_out_joint_keeps_other_assets_weld_parent_filter(self):
-        """Disabling MuJoCo's native parent filter for one joint must not expose weld-parent pairs elsewhere.
+    def test_weld_group_filters_match_mujoco(self):
+        """Filters across welds and shapeless bodies reach MuJoCo as excludes; an opt-out stays local.
 
-        Asset A: hand (free) > palm (no shapes, welded by a fixed joint or by a zero-DOF D6) > finger (hinge).
-        MuJoCo filters hand-finger natively through the weld; Newton stores no filter pair for it. Asset B
-        opts out of the parent filter, which switches the native rule off, so hand-finger must be exported
-        as an exclude, which requires the solver to recognise both weld kinds.
+        Asset A: hand (free) > palm (no shapes, welded by a fixed joint or by a zero-DOF D6) > finger
+        (hinge). The builder filters hand-finger through the weld, as MuJoCo's own rule would. Asset B
+        may opt out of the parent filter; neither pipeline lets that reach asset A.
         """
-        import mujoco
 
         def add_hand(builder, x, weld_type):
             hand = builder.add_link(
@@ -2766,26 +2789,15 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
                 parent, child = add_pair(builder, 5.0, filter_parent=not opt_out)
                 model = builder.finalize(device="cpu")
 
-                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
-                native_off = bool(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
-                self.assertEqual(native_off, opt_out)
-                mujoco.mj_forward(solver.mj_model, solver.mj_data)
+                newton_contacts, mujoco_contacts, solver = self._contact_counts(model)
                 # the hand-finger pair stays filtered either way; only the opted-out pair touches
-                self.assertEqual(solver.mj_data.ncon, 1 if opt_out else 0)
-                # Newton never stores the hand-finger pair; it must be exported as an exclude exactly
-                # when the native rule is off, while asset B's direct pair is excluded only when it filters
-                to_newton = solver.mjc_body_to_newton.numpy()[0]
-                excludes = {
-                    tuple(sorted(int(to_newton[b]) for b in divmod(int(signature), 1 << 16)))
-                    for signature in solver.mj_model.exclude_signature
-                }
-                self.assertEqual((min(hand, finger), max(hand, finger)) in excludes, opt_out)
+                self.assertEqual((newton_contacts, mujoco_contacts), (1, 1) if opt_out else (0, 0))
+                excludes = self._excludes(solver)
+                self.assertIn((min(hand, finger), max(hand, finger)), excludes)
                 self.assertEqual((min(parent, child), max(parent, child)) in excludes, not opt_out)
 
     def test_opted_out_joint_collides_with_weld_parent_across_shapeless_body(self):
-        """An opted-out hinge below a shapeless fixed body must reach the shaped weld parent in MuJoCo."""
-        import mujoco
-
+        """An opted-out hinge below a shapeless fixed body reaches the shaped weld parent in both pipelines."""
         for filter_parent in (True, False):
             with self.subTest(collision_filter_parent=filter_parent):
                 builder = newton.ModelBuilder()
@@ -2814,9 +2826,8 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
                 builder.add_articulation([root, weld, hinge])
                 model = builder.finalize(device="cpu")
 
-                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
-                mujoco.mj_forward(solver.mj_model, solver.mj_data)
-                self.assertEqual(solver.mj_data.ncon, 0 if filter_parent else 1)
+                newton_contacts, mujoco_contacts, _ = self._contact_counts(model)
+                self.assertEqual((newton_contacts, mujoco_contacts), (0, 0) if filter_parent else (1, 1))
 
     def test_sparse_filters_query_only_selected_pairs(self):
         """Query filters only for pairs in the selected collision graph."""
@@ -14328,6 +14339,55 @@ class TestMuJoCoPerWorldMeshContacts(unittest.TestCase):
         solver.step(state, state_next, model.control(), contacts, 0.002)
         count = int(solver.mjw_data.nacon.numpy()[0])
         return solver.mjw_data.contact.worldid.numpy()[:count], solver.mjw_data.contact.dist.numpy()[:count]
+
+    def test_parent_filter_in_per_world_mesh_layout(self):
+        """Per-slot masks carry Newton's parent-child filters; MuJoCo's own rule is off here as well."""
+        import mujoco
+
+        def hull_world_with_finger(count, filter_parent):
+            builder = newton.ModelBuilder()
+            body = builder.add_link(
+                xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), wp.quat_identity()),
+                mass=1.0,
+                inertia=wp.mat33(np.diag([0.02, 0.03, 0.04])),
+            )
+            mesh = newton.Mesh.create_box(0.25 / count, 0.1, 0.1, compute_inertia=False)
+            cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+            for i in range(count):
+                builder.add_shape_convex_hull(
+                    body,
+                    mesh=mesh,
+                    cfg=cfg,
+                    xform=wp.transform(wp.vec3(-0.25 + (i + 0.5) * 0.5 / count, 0.0, 0.0), wp.quat_identity()),
+                )
+            # a hinged sphere inside the hulls: it touches them only when the hinge does not filter
+            finger = builder.add_link(
+                xform=wp.transform(wp.vec3(0.0, 0.0, 0.3), wp.quat_identity()),
+                mass=0.1,
+                inertia=wp.mat33(np.eye(3) * 1.0e-3),
+            )
+            builder.add_shape_sphere(finger, radius=0.08, cfg=cfg)
+            root = builder.add_joint_free(child=body)
+            hinge = builder.add_joint_revolute(body, finger, axis=newton.Axis.Z, collision_filter_parent=filter_parent)
+            builder.add_articulation([root, hinge])
+            return builder
+
+        for filter_parent in (True, False):
+            with self.subTest(collision_filter_parent=filter_parent):
+                builder = newton.ModelBuilder()
+                builder.add_world(hull_world_with_finger(2, filter_parent))
+                builder.add_world(hull_world_with_finger(3, filter_parent))
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, nconmax=32, njmax=64)
+                self.assertEqual(solver.mjw_model.nmesh, 2)
+                self.assertEqual(solver.mj_model.nexclude, 0)
+                self.assertTrue(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
+                worlds, dist = self._step_once(model, solver, native=True)
+                if filter_parent:
+                    self.assertEqual(len(worlds), 0)
+                else:
+                    np.testing.assert_array_equal(np.unique(worlds), [0, 1])
+                    self.assertLess(dist.min(), 0.0)
 
     def test_collision_flags_differ_across_worlds(self):
         """Share slots whose collision flags differ across worlds when Newton supplies contacts."""

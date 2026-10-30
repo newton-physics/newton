@@ -741,6 +741,7 @@ class ModelBuilder:
             references=Model.AttributeFrequency.JOINT_CONSTRAINT,
             compaction_policy="start",
         ),
+        "shape_collision_filter_parent": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_narrow_band_range": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_sdf_max_resolution": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
         "shape_force_sdf": Model.AttributeSpec(Model.AttributeFrequency.SHAPE),
@@ -1892,6 +1893,9 @@ class ModelBuilder:
         self.shape_sdf_padding: list[float | None] = []
         """Per-shape SDF generation margins [m] retained until :meth:`finalize <ModelBuilder.finalize>`.
         When ``None``, :attr:`shape_gap` is used for primitive texture SDF generation."""
+        self.shape_collision_filter_parent: list[bool] = []
+        """Per-shape :attr:`ShapeConfig.collision_filter_parent` flags. Builder-only: a shape that opted out
+        takes no part in parent-child collision filtering."""
         # Mesh SDF storage (texture SDF arrays created at finalize)
 
         # filtering to ignore certain collision pairs
@@ -2450,6 +2454,10 @@ class ModelBuilder:
         if parent == -1:
             return joint_type == JointType.FIXED
         return True
+
+    def _shape_filters_parent(self, shape: int) -> bool:
+        """Whether a shape takes part in parent-child filtering: it collides and its config did not opt out."""
+        return bool(self.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES) and self.shape_collision_filter_parent[shape]
 
     @staticmethod
     def _custom_attribute_specs_match(existing: CustomAttribute, incoming: CustomAttribute) -> bool:
@@ -6007,10 +6015,10 @@ class ModelBuilder:
 
         if collision_filter_parent:
             for child_shape in self.body_shapes[child]:
-                if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                if not self._shape_filters_parent(child_shape):
                     continue
                 for parent_shape in self.body_shapes[parent]:
-                    if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    if not self._shape_filters_parent(parent_shape):
                         continue
                     self.add_shape_collision_filter_pair(parent_shape, child_shape)
 
@@ -8453,20 +8461,21 @@ class ModelBuilder:
         self.shape_force_sdf.append(cfg.force_sdf)
         self.shape_sdf_texture_format.append(cfg.sdf_texture_format)
         self.shape_sdf_padding.append(cfg.sdf_padding)
+        self.shape_collision_filter_parent.append(cfg.collision_filter_parent)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
             for parent_body, joint_idx in self.joint_parents.get(body, ()):
                 if not self.joint_collision_filter_parent[joint_idx]:
                     continue
                 for parent_shape in self.body_shapes[parent_body]:
-                    if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    if not self._shape_filters_parent(parent_shape):
                         continue
                     self.add_shape_collision_filter_pair(parent_shape, shape)
             for child_body, joint_idx in self.joint_children.get(body, ()):
                 if not self.joint_collision_filter_parent[joint_idx]:
                     continue
                 for child_shape in self.body_shapes[child_body]:
-                    if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    if not self._shape_filters_parent(child_shape):
                         continue
                     self.add_shape_collision_filter_pair(shape, child_shape)
 
@@ -15237,7 +15246,6 @@ class ModelBuilder:
             m.joint_limit_ke = wp.array(self.joint_limit_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_limit_kd = wp.array(self.joint_limit_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_enabled = wp.array(self.joint_enabled, dtype=wp.bool)
-            m.joint_collision_filter_parent = wp.array(self.joint_collision_filter_parent, dtype=wp.bool)
 
             # 'close' the start index arrays with a sentinel value
             joint_q_start = copy.copy(self.joint_q_start)
@@ -15505,6 +15513,106 @@ class ModelBuilder:
                 )
             yield (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
 
+    def _weld_group_filter_pairs(self) -> np.ndarray:
+        """Shape pairs that filtering joints add across weld groups, shape [pair_count, 2].
+
+        A joint with ``collision_filter_parent=True`` filters the colliding shapes of its
+        child's weld group against those of its parent's weld group. Weld groups are the
+        bodies connected by FIXED or zero-DOF joints, so a filtering weld joint filters its
+        whole group against itself. Bodies welded to the world form no group, as in MuJoCo,
+        so a joint below one of them filters that body alone. Shapes whose
+        :attr:`ShapeConfig.collision_filter_parent` is ``False`` take no part.
+
+        :meth:`add_joint` and :meth:`add_shape` already add the direct parent-child pairs;
+        this computes the remaining pairs in :meth:`finalize`, so the result does not depend
+        on the order in which joints and shapes were added.
+        """
+        empty = np.empty((0, 2), dtype=np.int64)
+        body_count = self.body_count
+        if self.joint_count == 0 or body_count == 0 or self.shape_count == 0:
+            return empty
+        joint_parent = np.asarray(self.joint_parent, dtype=np.int64)
+        joint_child = np.asarray(self.joint_child, dtype=np.int64)
+        joint_type = np.asarray(self.joint_type, dtype=np.int64)
+        dof_count = np.asarray(self.joint_dof_dim, dtype=np.int64).reshape(-1, 2).sum(axis=1)
+        is_weld = (joint_type == JointType.FIXED) | (dof_count == 0)
+        welded = is_weld & (joint_parent >= 0)
+        if not np.any(welded):
+            # Every weld group is a single body: the direct pairs already cover the rule.
+            return empty
+
+        # Weld root per body: the smallest body index of its group, by label propagation
+        # with pointer jumping (a chain of welds converges in a few passes).
+        weld_a = joint_parent[welded]
+        weld_b = joint_child[welded]
+        root = np.arange(body_count, dtype=np.int64)
+        while True:
+            merged = np.minimum(root[weld_a], root[weld_b])
+            new_root = root.copy()
+            np.minimum.at(new_root, weld_a, merged)
+            np.minimum.at(new_root, weld_b, merged)
+            new_root = new_root[new_root]
+            if np.array_equal(new_root, root):
+                break
+            root = new_root
+
+        # A group welded to the world is no group: each of its bodies stands for itself.
+        world_welded = np.zeros(body_count, dtype=bool)
+        world_welded[joint_child[is_weld & (joint_parent < 0)]] = True
+        world_root = np.zeros(body_count, dtype=bool)
+        np.logical_or.at(world_root, root, world_welded)
+        side = np.where(world_root[root], np.arange(body_count, dtype=np.int64), root)
+        side_body_count = np.bincount(side, minlength=body_count)
+
+        shape_body = np.asarray(self.shape_body, dtype=np.int64)
+        shape_flags = np.asarray(self.shape_flags, dtype=np.int64)
+        takes_part = (shape_body >= 0) & ((shape_flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0)
+        takes_part &= np.asarray(self.shape_collision_filter_parent, dtype=bool)
+        shapes = np.flatnonzero(takes_part)
+        if shapes.shape[0] == 0:
+            return empty
+        shape_side = side[shape_body[shapes]]
+        order = np.argsort(shape_side, kind="stable")
+        shapes = shapes[order]
+        shape_side = shape_side[order]
+        sides = np.arange(body_count, dtype=np.int64)
+        side_start = np.searchsorted(shape_side, sides, side="left")
+        side_count = np.searchsorted(shape_side, sides, side="right") - side_start
+
+        def product(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+            """All (left shape, right shape) pairs of each (left side, right side) task."""
+            n_left = side_count[left]
+            n_right = side_count[right]
+            totals = n_left * n_right
+            total = int(totals.sum())
+            if total == 0:
+                return empty
+            task = np.repeat(np.arange(totals.shape[0]), totals)
+            local = np.arange(total, dtype=np.int64) - np.repeat(np.cumsum(totals) - totals, totals)
+            index_left, index_right = np.divmod(local, n_right[task])
+            return np.column_stack(
+                (shapes[side_start[left][task] + index_left], shapes[side_start[right][task] + index_right])
+            )
+
+        filtering = np.asarray(self.joint_collision_filter_parent, dtype=bool) & (joint_parent >= 0)
+        parent_side = side[np.maximum(joint_parent, 0)]
+        child_side = side[joint_child]
+        # Joints between two groups, where at least one group is more than its direct body.
+        across = filtering & (parent_side != child_side)
+        across &= (side_body_count[parent_side] > 1) | (side_body_count[child_side] > 1)
+        pairs = product(parent_side[across], child_side[across])
+        # Filtering joints inside a group (its welds) filter the group against itself; a
+        # two-body group is its direct pair already.
+        within = filtering & (parent_side == child_side) & (side_body_count[child_side] > 2)
+        groups = np.unique(child_side[within])
+        if groups.shape[0]:
+            clique = product(groups, groups)
+            pairs = np.concatenate((pairs, clique[clique[:, 0] < clique[:, 1]]), axis=0)
+        if pairs.shape[0] == 0:
+            return empty
+        pairs = pairs[shape_body[pairs[:, 0]] != shape_body[pairs[:, 1]]]
+        return np.sort(pairs, axis=1)
+
     def _build_shape_collision_filter_packed(self) -> np.ndarray:
         """Build the canonical filter store handed to :class:`Model`.
 
@@ -15537,6 +15645,9 @@ class ModelBuilder:
             pairs = tuple(self._iter_validated_shape_collision_filter_pairs(filter_pairs))
             if pairs:
                 chunks.append(np.asarray(pairs, dtype=np.int64).reshape((-1, 2)))
+        weld_pairs = self._weld_group_filter_pairs()
+        if weld_pairs.shape[0]:
+            chunks.append(weld_pairs)
         if not chunks:
             return np.empty(0, dtype=np.int64)
         all_pairs = np.concatenate(chunks, axis=0)

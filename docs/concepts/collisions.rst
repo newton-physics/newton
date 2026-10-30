@@ -705,9 +705,15 @@ in the explicit filter-pair list.
 Filter pairs are automatically populated in several cases:
 
 - **Adjacent bodies**: Parent-child body pairs connected by joints (when
-  ``collision_filter_parent=True``). For USD joints with two explicit bodies,
-  ``physics:collisionEnabled`` controls this filter with inverse polarity; joints to world do not
-  create a body-pair filter. Also applies to max-coordinate jointed bodies.
+  ``collision_filter_parent=True``). The filter works on weld groups, like MuJoCo's: the
+  bodies joined by fixed and zero-DOF joints count as one, so a joint filters its child's
+  weld group against its parent's weld group, and a filtering weld joint filters its whole
+  group against itself. Bodies welded to the world form no group. The pairs are completed in
+  :meth:`~ModelBuilder.finalize`, so the order in which joints and shapes are added does not
+  matter, and shapes with ``ShapeConfig(collision_filter_parent=False)`` take no part. For USD
+  joints with two explicit bodies, ``physics:collisionEnabled`` controls this filter with
+  inverse polarity; joints to world do not create a body-pair filter. Also applies to
+  max-coordinate jointed bodies.
 - **Disabled self-collision**: All shape pairs within an articulation when ``enable_self_collisions=False``
 - **USD filtered pairs**: Pairs defined by ``physics:filteredPairs`` relationships in USD files
 - **USD collision disabled**: Shapes with ``physics:collisionEnabled=false`` (filtered against all other shapes)

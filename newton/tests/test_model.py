@@ -4733,19 +4733,135 @@ class TestRemovedJointTargetAliases(unittest.TestCase):
                 self.assertIsNotNone(obj.joint_target_qd)
 
 
-class TestJointCollisionFilterParent(unittest.TestCase):
-    def test_joint_collision_filter_parent_exported(self):
-        """The per-joint parent-filter choice is available on the finalized model."""
+class TestParentCollisionFilterWeldGroups(unittest.TestCase):
+    """Parent-child collision filters cover weld groups, whatever the build order."""
+
+    @staticmethod
+    def _link(builder, z, shape=True, cfg=None):
+        body = builder.add_link(
+            xform=wp.transform((0.0, 0.0, z), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+        )
+        shape = builder.add_shape_sphere(body, radius=0.05, cfg=cfg) if shape else None
+        return body, shape
+
+    def _hand(self, builder, *, weld="fixed", filter_parent=True, order="bodies_first"):
+        """hand -(weld)- shapeless palm -(hinge)- finger, with a thumb base welded to the palm.
+
+        Returns the shapes of hand, finger and thumb. ``order`` builds the same model with the
+        shapes before the joints, after them, or with the hinge added before the welds.
+        """
+
+        def add_weld(parent, child):
+            if weld == "fixed":
+                return builder.add_joint_fixed(parent, child)
+            return builder.add_joint_d6(parent, child, linear_axes=[], angular_axes=[])
+
+        with_shapes = order != "joints_first"
+        hand, s_hand = self._link(builder, 1.0, with_shapes)
+        palm, _ = self._link(builder, 1.05, False)
+        finger, s_finger = self._link(builder, 1.1, with_shapes)
+        thumb, s_thumb = self._link(builder, 1.0, with_shapes)
+        joints = [builder.add_joint_free(hand)]
+        if order == "hinge_first":
+            joints.append(
+                builder.add_joint_revolute(palm, finger, axis=newton.Axis.Z, collision_filter_parent=filter_parent)
+            )
+            joints += [add_weld(hand, palm), add_weld(palm, thumb)]
+        else:
+            joints.append(add_weld(hand, palm))
+            joints.append(
+                builder.add_joint_revolute(palm, finger, axis=newton.Axis.Z, collision_filter_parent=filter_parent)
+            )
+            joints.append(add_weld(palm, thumb))
+        builder.add_articulation(joints)
+        if not with_shapes:
+            s_hand = builder.add_shape_sphere(hand, radius=0.05)
+            s_finger = builder.add_shape_sphere(finger, radius=0.05)
+            s_thumb = builder.add_shape_sphere(thumb, radius=0.05)
+        return s_hand, s_finger, s_thumb
+
+    @staticmethod
+    def _pairs(model):
+        return set(model.shape_collision_filter_pairs)
+
+    def test_weld_groups_filter_as_one_body(self):
+        """A joint filters its child's weld group against its parent's; a filtering weld filters its group."""
+        for weld in ("fixed", "d6"):
+            for filter_parent in (True, False):
+                with self.subTest(weld=weld, collision_filter_parent=filter_parent):
+                    builder = newton.ModelBuilder()
+                    s_hand, s_finger, s_thumb = self._hand(builder, weld=weld, filter_parent=filter_parent)
+                    pairs = self._pairs(builder.finalize(device="cpu"))
+                    # the welds make hand, palm and thumb one group, filtered against itself
+                    self.assertIn((s_hand, s_thumb), pairs)
+                    # the hinge filters the finger against that whole group only when it filters
+                    self.assertEqual((s_hand, s_finger) in pairs, filter_parent)
+                    self.assertEqual((s_finger, s_thumb) in pairs, filter_parent)
+
+    def test_weld_group_filters_ignore_build_order(self):
+        """The same model yields the same filter pairs whether shapes or joints come first."""
+        for order in ("bodies_first", "joints_first", "hinge_first"):
+            with self.subTest(order=order):
+                builder = newton.ModelBuilder()
+                s_hand, s_finger, s_thumb = self._hand(builder, order=order)
+                pairs = self._pairs(builder.finalize(device="cpu"))
+                self.assertEqual(pairs, {(s_hand, s_finger), (s_hand, s_thumb), (s_finger, s_thumb)})
+
+    def test_world_weld_is_not_a_group(self):
+        """Bodies welded to the world filter only their direct joints, as in MuJoCo."""
         builder = newton.ModelBuilder()
-        parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        tool = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        root = builder.add_joint_free(parent)
-        hinge = builder.add_joint_revolute(parent, child, axis=newton.Axis.Z, collision_filter_parent=False)
-        weld = builder.add_joint_fixed(child, tool)
-        builder.add_articulation([root, hinge, weld])
+        builder.add_ground_plane()
+        table, s_table = self._link(builder, 0.5)
+        bracket, s_bracket = self._link(builder, 0.6)
+        drawer, s_drawer = self._link(builder, 0.55)
+        to_world = builder.add_joint_fixed(-1, table)
+        weld = builder.add_joint_fixed(table, bracket)
+        hinge = builder.add_joint_revolute(table, drawer, axis=newton.Axis.Z)
+        builder.add_articulation([to_world, weld, hinge])
+        pairs = self._pairs(builder.finalize(device="cpu"))
+        self.assertIn((s_table, s_drawer), pairs)  # the hinge's direct parent
+        self.assertIn((s_table, s_bracket), pairs)  # the weld's direct pair
+        self.assertNotIn((s_bracket, s_drawer), pairs)  # no world weld group to expand to
+
+    def test_shape_opt_out_ignores_build_order(self):
+        """``ShapeConfig.collision_filter_parent=False`` keeps a shape out of the filter in either order."""
+        opt_out = newton.ModelBuilder.ShapeConfig(collision_filter_parent=False)
+        for shapes_first in (True, False):
+            with self.subTest(shapes_first=shapes_first):
+                builder = newton.ModelBuilder()
+                parent, s_parent = self._link(builder, 1.0, shapes_first)
+                child, _ = self._link(builder, 1.1, False)
+                if shapes_first:
+                    s_free = builder.add_shape_sphere(child, radius=0.05, cfg=opt_out)
+                    s_filtered = builder.add_shape_sphere(child, radius=0.05)
+                root = builder.add_joint_free(parent)
+                hinge = builder.add_joint_revolute(parent, child, axis=newton.Axis.Z)
+                builder.add_articulation([root, hinge])
+                if not shapes_first:
+                    s_parent = builder.add_shape_sphere(parent, radius=0.05)
+                    s_free = builder.add_shape_sphere(child, radius=0.05, cfg=opt_out)
+                    s_filtered = builder.add_shape_sphere(child, radius=0.05)
+                pairs = self._pairs(builder.finalize(device="cpu"))
+                self.assertEqual(pairs, {(s_parent, s_filtered)})
+                self.assertNotIn((s_parent, s_free), pairs)
+
+    def test_replicated_worlds_keep_weld_group_filters(self):
+        """Weld-group pairs are completed for every world added from a template builder."""
+        template = newton.ModelBuilder()
+        s_hand, s_finger, s_thumb = self._hand(template)
+        builder = newton.ModelBuilder()
+        for _ in range(3):
+            builder.add_world(template)
         model = builder.finalize(device="cpu")
-        self.assertEqual(model.joint_collision_filter_parent.numpy().tolist(), [False, False, True])
+        expected = set()
+        for world in range(3):
+            offset = world * template.shape_count
+            expected |= {
+                (s_hand + offset, s_finger + offset),
+                (s_hand + offset, s_thumb + offset),
+                (s_finger + offset, s_thumb + offset),
+            }
+        self.assertEqual(self._pairs(model), expected)
 
 
 if __name__ == "__main__":
