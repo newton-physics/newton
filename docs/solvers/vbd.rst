@@ -161,44 +161,117 @@ becomes the new velocity through :math:`\mathbf{v} = (\mathbf{x}_{\text{new}} -
 Rigid bodies and joints
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-A rigid body is one block with 6 degrees of freedom: the translation of its
-centre of mass and a rotation vector about it. Its inertia term is the second
-sum of the step objective, with the target pose from forward integration.
-Every term that touches the body (joints, body-body contacts, rigid-soft
-contacts, attachments, tendons) adds a force, a torque and the three 3x3
-blocks of the 6x6 Hessian. The block is solved by one :math:`LDL^{\mathsf T}`
-factorisation (``ldlt6_solve``); the translation increment moves the centre of
-mass and the rotation increment becomes a quaternion applied to the current
-orientation (``solve_rigid_body``).
+A rigid body :math:`b` is one block with 6 degrees of freedom: the position
+:math:`\mathbf{c}_b` of its centre of mass and a rotation vector about it. With
+the target pose :math:`(\mathbf{c}_b^*, \mathbf{R}_b^*)` from forward
+integration and :math:`\boldsymbol{\theta}_b` the body-frame rotation vector
+from the current rotation :math:`\mathbf{R}_b` to :math:`\mathbf{R}_b^*`, the
+inertia term of the step objective contributes
 
-Joints are constraint rows between a parent and a child body, handled as
-compliant augmented-Lagrangian rows (``evaluate_joint_force_hessian``). A
-structural row measures a residual :math:`C`: the linear row is the world
-offset between the two joint anchors, the angular row the rotation away from
-the rest relative orientation (``compute_kappa_and_jacobian``). A projector
-removes the free axes of the joint type (``build_joint_projectors``): BALL
-keeps the three linear rows; REVOLUTE the three linear rows and two angular
-rows; PRISMATIC two linear rows and the three angular rows; FIXED all six; D6
-whatever its free axes leave; FREE adds no row. Each row has a material
-stiffness :math:`k` (``rigid_joint_linear_ke``, ``rigid_joint_angular_ke``),
-an internal metric :math:`\rho = \max(\text{support}, 9k)` chosen per step so
-that :math:`k_{\text{eff}} \ge 0.9\,k` (``_bilateral_auto_rho``), and a
-multiplier :math:`\lambda`. The row force is :math:`k_{\text{eff}}\,C +
-s\,\lambda` with the same :math:`k_{\text{eff}}` and :math:`s` as body-body
-contact; after every iteration :math:`\lambda \leftarrow s\,(\lambda + \rho
-C)` (``update_duals_joint``), and :math:`\lambda` is retained between steps by
-``rigid_avbd_gamma``. ``rigid_joint_linear_kd`` and ``rigid_joint_angular_kd``
-add absolute damping to the structural rows. Drives are bilateral rows on the
-free axes of REVOLUTE, PRISMATIC and D6 joints: a spring-damper toward the
-target with ``joint_target_ke`` and ``joint_target_kd``, each axis with its own
-scalar multiplier (``_evaluate_drive_axis``). Limits are unilateral rows at
-the nearer bound with ``joint_limit_ke`` and ``joint_limit_kd``; their
-multiplier is projected onto the admissible half-line
+.. math::
+
+   \mathbf{f}^{\text{in}}_b = \frac{m_b}{h^2}\,(\mathbf{c}_b^* - \mathbf{c}_b),
+   \qquad
+   \boldsymbol{\tau}^{\text{in}}_b = \frac{1}{h^2}\,\mathbf{R}_b\,\mathbf{I}_b\,\boldsymbol{\theta}_b,
+   \qquad
+   \mathbf{H}^{\text{in}}_{ll} = \frac{m_b}{h^2}\,\mathbf{1},
+   \qquad
+   \mathbf{H}^{\text{in}}_{aa} = \frac{1}{h^2}\,\mathbf{R}_b\,\mathbf{I}_b\,\mathbf{R}_b^{\mathsf T}.
+
+Every term that touches the body (joints, body-body contacts, rigid-soft
+contacts, attachments, tendons) adds its force, its torque and the three
+:math:`3 \times 3` blocks of the Hessian. The block then solves one
+:math:`6 \times 6` system by :math:`LDL^{\mathsf T}` (``ldlt6_solve``) and
+applies the increments (``solve_rigid_body``; the rotation increment acts in
+world space):
+
+.. math::
+
+   \begin{bmatrix} \mathbf{H}_{ll} & \mathbf{H}_{al}^{\mathsf T} \\ \mathbf{H}_{al} & \mathbf{H}_{aa} \end{bmatrix}
+   \begin{bmatrix} \Delta\mathbf{c} \\ \Delta\boldsymbol{\theta} \end{bmatrix}
+   =
+   \begin{bmatrix} \mathbf{f} \\ \boldsymbol{\tau} \end{bmatrix},
+   \qquad
+   \mathbf{c}_b \leftarrow \mathbf{c}_b + \Delta\mathbf{c},
+   \qquad
+   \mathbf{R}_b \leftarrow \exp(\Delta\boldsymbol{\theta})\,\mathbf{R}_b .
+
+Joints and body-body contacts are constraint rows between two bodies, handled
+as compliant augmented-Lagrangian (ALM) rows. A row has a residual :math:`C`,
+a material stiffness :math:`k`, an internal metric :math:`\rho` that the solver
+sets once per step, and a multiplier :math:`\lambda`. Its force along the row
+and the dual update after every iteration are
+
+.. math::
+
+   f = k_{\text{eff}}\,C + s\,\lambda,
+   \qquad
+   k_{\text{eff}} = \frac{k\,\rho}{k + \rho},
+   \qquad
+   s = \frac{k}{k + \rho},
+   \qquad
+   \lambda \leftarrow s\,(\lambda + \rho\,C),
+
+and :math:`k_{\text{eff}}` enters the Hessian blocks through the row's
+Jacobian. A bilateral row keeps the full force. A unilateral row keeps only
+the admissible sign: for contact :math:`f_n = \max(f, 0)` and
+:math:`\lambda_n \leftarrow \max(\,\cdot\,, 0)`. Joint multipliers persist
+across steps, scaled by ``rigid_avbd_gamma`` (0.999); body-body contacts
+restart theirs at zero unless ``rigid_contact_history=True``.
+
+*Joints* (``evaluate_joint_force_hessian``). The structural rows of a joint
+between parent :math:`p` and child :math:`c` are the offset of the two joint
+anchors and the rotation away from the rest relative orientation, each
+projected onto the locked axes of the joint type
+(``compute_kappa_and_jacobian``, ``build_joint_projectors``):
+
+.. math::
+
+   \mathbf{C}_{\text{lin}} = \mathbf{P}_{\text{lin}}\,(\mathbf{x}_c - \mathbf{x}_p),
+   \qquad
+   \mathbf{C}_{\text{ang}} = \mathbf{P}_{\text{ang}}\,\boldsymbol{\kappa}(\mathbf{R}_p, \mathbf{R}_c),
+   \qquad
+   \mathbf{P} = \mathbf{1} - \sum_{\text{free axes}} \mathbf{a}\,\mathbf{a}^{\mathsf T},
+
+so BALL keeps the three linear rows; REVOLUTE the three linear rows and two
+angular rows; PRISMATIC two linear rows and the three angular rows; FIXED all
+six; D6 whatever its free axes leave; FREE adds no row. The material stiffness
+is ``rigid_joint_linear_ke`` or ``rigid_joint_angular_ke``, and the metric is
+:math:`\rho = \max(\text{support}, 9k)`, chosen so that :math:`k_{\text{eff}}
+\ge 0.9\,k` in every local solve (``_bilateral_auto_rho``);
+``rigid_joint_linear_kd`` and ``rigid_joint_angular_kd`` add absolute damping.
+Drives are bilateral rows on the free axes of REVOLUTE, PRISMATIC and D6
+joints, with the spring and the damper folded into one row
+(``_spring_damper_step``, ``_evaluate_drive_axis``):
+
+.. math::
+
+   K = k_t + \frac{d_t}{h},
+   \qquad
+   e = \frac{k_t\,(q - q^*) + d_t\,(\dot q - \dot q^*)}{K},
+   \qquad
+   f_d = K_{\text{eff}}\,e + s\,\lambda_d,
+
+with :math:`k_t = \mathtt{joint\_target\_ke}`, :math:`d_t =
+\mathtt{joint\_target\_kd}`, and :math:`K_{\text{eff}}, s` formed from
+:math:`K` and the axis metric as above. Limits are unilateral rows at the
+nearer bound with ``joint_limit_ke`` and ``joint_limit_kd``; only forces into
+the bound are kept, and the multiplier is projected onto its half-line
 (``_evaluate_limit_axis``, ``_update_limit_lambda``). ROD joints use four rows,
 stretch, shear, bend and twist, with ``joint_target_ke`` and
 ``joint_target_kd`` as their stiffness and damping. DISTANCE joints are not
-supported. The deprecated legacy path (``rigid_compliant_alm=False``) replaces
-the finite-material rows with ramped penalties and hard or soft slots.
+supported.
+
+*Body-body contact* is the unilateral row of the same family: :math:`C` is the
+penetration of the two effective surfaces, :math:`k` the pair average of the
+shape stiffness, :math:`\rho_n` the pair's inverse Delassus support over
+:math:`h^2`, :math:`f_n = \max(k_{\text{eff}}\,C + s\,\lambda_n,\ 0)`, and
+friction is a Coulomb projection carrying :math:`\boldsymbol{\lambda}_t`. The
+complete law, with the material mixing and the damping, is in
+:ref:`vbd-energy-terms`.
+
+The deprecated legacy path (``rigid_compliant_alm=False``) replaces the
+finite-material rows with ramped penalties and hard or soft slots.
 
 .. _vbd-energy-terms:
 
