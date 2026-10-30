@@ -683,6 +683,13 @@ Motors
   optionally on a battery.  It models the back-EMF itself, so do not combine
   it with :class:`ClampingDCMotor`.
 
+BAM also identifies friction models of a servo, which the actuator does not
+model.  Model Coulomb friction with the joint's
+:attr:`~newton.Model.joint_friction`, viscous friction with
+:attr:`~newton.Model.joint_damping`, and the rotor inertia with
+:attr:`~newton.Model.joint_armature`.  Stribeck, load-dependent, directional
+and quadratic friction are not supported yet.
+
 .. _actuator-battery:
 
 Battery
@@ -713,7 +720,10 @@ entry per actuator of the model
   :attr:`BatteryBase.actuators` and :attr:`BatteryBase.actuator_start` give
   the actuators of each battery.
 * :meth:`BatteryBase.step` updates the supply voltage from the current.  Call
-  it once per step after the actuators.
+  it once per step after the actuators.  The motors read the supply voltage in
+  the next :meth:`Actuator.step`, so a change of a battery parameter, e.g. a
+  randomized ``nominal_voltage`` after :meth:`BatteryBase.reset`, reaches the
+  motors one step later, after the next :meth:`BatteryBase.step`.
 * :meth:`BatteryBase.reset` resets all batteries or the batteries in the worlds
   of a mask.  Call it after resetting worlds.  As in :meth:`SolverBase.reset() <newton.solvers.SolverBase.reset>`,
   the mask has ``world_count + 1`` entries, and the last one selects batteries

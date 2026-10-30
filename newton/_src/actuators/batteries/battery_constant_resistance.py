@@ -70,6 +70,11 @@ class BatteryConstantResistance(BatteryBase):
     regeneration does not raise the voltage above nominal. Each battery sums
     its actuators in a fixed order, so the voltage is deterministic.
 
+    This is BAM's battery law since Rhoban/bam commit ``5f9341bd`` (July
+    2026). Earlier versions, and battery resistances fitted with them,
+    estimate the current as the motor current :math:`\\sum |\\tau| / k_t`
+    instead, which drops the voltage more for the same resistance.
+
     The supply and the motors form an explicit feedback loop. For a
     :class:`~newton.actuators.MotorDC` behind a
     :class:`~newton.actuators.DriveVoltageControlled` and a
