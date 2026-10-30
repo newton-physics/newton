@@ -65,7 +65,7 @@ _SMALL_LENGTH_EPS = wp.constant(1.0e-9)
 _USE_SMALL_ANGLE_APPROX = wp.constant(True)
 """If True use first-order small-angle rotation approximation; if False use closed-form rotation update.
 
-The closed form needs accurate small-angle sin/cos, which the fast-math rigid kernels don't provide.
+Keep enabled when using fast math: the closed form needs accurate small-angle sin/cos.
 """
 
 _DAHL_KAPPADOT_DEADBAND = wp.constant(1.0e-6)
@@ -6210,8 +6210,8 @@ def compute_body_particle_contact_forces(
 def create_solve_rigid_body(has_tendons: bool):
     """Specialize the body solve to exclude tendon assembly for tendon-free models."""
 
-    # fast math: approximate sin/cos are inaccurate for small angles; keep them out of reachable code here
-    @wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": True})
+    # Separate module so SolverVBD can enable fast math; keep small-angle sin/cos out of reachable code
+    @wp.kernel(module="unique", enable_backward=False)
     def solve_rigid_body(
         dt: float,
         body_ids_in_color: wp.array[wp.int32],
@@ -6540,8 +6540,8 @@ def create_solve_rigid_body(has_tendons: bool):
     return solve_rigid_body
 
 
-# fast math: approximate sin/cos are inaccurate for small angles; keep them out of reachable code here
-@wp.kernel(module="unique", enable_backward=False, module_options={"fast_math": True})
+# Separate module for fast math, same constraint as solve_rigid_body
+@wp.kernel(module="unique", enable_backward=False)
 def update_duals_joint(
     # Inputs
     joint_type: wp.array[int],

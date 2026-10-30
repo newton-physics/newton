@@ -17,6 +17,7 @@ import warp as wp
 import newton
 from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
 from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
+from newton._src.solvers.vbd import particle_vbd_kernels, rigid_vbd_kernels
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -6017,6 +6018,36 @@ class TestSolverVBD(unittest.TestCase):
             options = wp.get_module_options(module=kernel.module) | kernel.options
             self.assertEqual(options["deterministic"], wp.DeterministicMode.RUN_TO_RUN)
             self.assertFalse(options["enable_backward"])
+
+    def test_enable_fast_math_sets_module_options(self):
+        """Apply ``enable_fast_math`` to exactly the opted-in kernel modules."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_cloth_grid(
+            pos=wp.vec3(0.0, 0.0, 1.0),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, 0.0),
+            dim_x=2,
+            dim_y=2,
+            cell_x=0.1,
+            cell_y=0.1,
+            mass=0.1,
+        )
+        builder.color()
+        model = builder.finalize()
+
+        for enable_fast_math in (True, False):
+            solver = newton.solvers.SolverVBD(model, enable_fast_math=enable_fast_math)
+            fast_modules = [
+                particle_vbd_kernels,
+                solver._solve_rigid_body_kernel.module,
+                update_duals_joint.module,
+            ]
+            if solver._tiled_elasticity_kernel is not None:
+                fast_modules.append(solver._tiled_elasticity_kernel.module)
+            for module in fast_modules:
+                self.assertEqual(wp.get_module_options(module=module)["fast_math"], enable_fast_math)
+            self.assertFalse(wp.get_module_options(module=rigid_vbd_kernels)["fast_math"])
 
     def test_rigid_block_dim(self):
         """Validate adaptive block sizes and the CPU fallback."""
