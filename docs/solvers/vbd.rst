@@ -116,9 +116,10 @@ Precedence is explicit constructor argument, then ``model.vbd.*``, then the
 built-in default. Scene-authored stiffness and damping must be finite and
 non-negative, otherwise the constructor raises ``ValueError``. A scene-authored
 ``contactHistory`` is ignored when VBD does not integrate rigid bodies (no
-bodies, or ``integrate_with_external_rigid_solver=True``); with an owned
-collision pipeline that integrates bodies it requires ``contact_matching`` other
-than ``"disabled"``, or pass ``rigid_contact_history=False`` to override it.
+bodies, or ``integrate_with_external_rigid_solver=True``). When VBD integrates
+bodies and is given a collision pipeline, the pipeline needs ``contact_matching``
+other than ``"disabled"``; pass ``rigid_contact_history=False`` to override the
+scene value.
 Scene values apply in both constraint modes: they are not skipped when the
 deprecated ``rigid_compliant_alm=False`` path is selected, even though the
 schema scopes them to the compliant ALM path.

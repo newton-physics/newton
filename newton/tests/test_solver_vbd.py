@@ -4584,11 +4584,29 @@ class TestVBDUsdParsing(unittest.TestCase):
                     newton.solvers.SolverVBD(model, **{arg: 1.0})
 
     def test_scene_contact_history_ignored_without_rigid_integration(self):
-        """Scene-authored contact history must not raise for a body-free model."""
+        """A body-free model ignores scene history even when given a collision pipeline."""
         model = self._build_scene_model({"newton:vbd:rigid:contactHistory": True})
         self.assertEqual(model.body_count, 0)
-        solver = newton.solvers.SolverVBD(model)
+        solver = newton.solvers.SolverVBD(model, collision_pipeline=newton.CollisionPipeline(model))
         self.assertFalse(solver.rigid_contact_history)
+
+    def test_scene_contact_history_ignored_with_external_rigid_solver(self):
+        """External rigid integration disables scene-authored contact history."""
+        model = self._build_scene_model({"newton:vbd:rigid:contactHistory": True}, with_body=True)
+        self.assertGreater(model.body_count, 0)
+        solver = newton.solvers.SolverVBD(
+            model,
+            collision_pipeline=newton.CollisionPipeline(model),
+            integrate_with_external_rigid_solver=True,
+        )
+        self.assertFalse(solver.rigid_contact_history)
+
+    def test_scene_contact_history_error_names_scene_attribute(self):
+        """The matching error identifies a scene-authored contact-history value."""
+        model = self._build_scene_model({"newton:vbd:rigid:contactHistory": True}, with_body=True)
+        self.assertGreater(model.body_count, 0)
+        with self.assertRaisesRegex(ValueError, "newton:vbd:rigid:contactHistory"):
+            newton.solvers.SolverVBD(model, collision_pipeline=newton.CollisionPipeline(model))
 
 
 def _make_vbd_dahl_detection_model(device, *, dahl_eps_max=None, dahl_tau=None):
