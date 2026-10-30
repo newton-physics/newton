@@ -14,7 +14,14 @@ from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .batteries import BatteryBase, BatteryConstantResistance
-from .clamping import ClampingBase, ClampingCurrentPWM, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
+from .clamping import (
+    ClampingBase,
+    ClampingCurrentPWM,
+    ClampingDCMotor,
+    ClampingMaxEffort,
+    ClampingPositionBased,
+    CommandClampingBase,
+)
 from .drives import (
     DriveBase,
     DriveNeuralGRU,
@@ -96,9 +103,9 @@ class ActuatorParsed:
 
     drive_class: type[DriveBase]
     drive_kwargs: dict[str, Any] = field(default_factory=dict)
-    component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]] = field(
-        default_factory=list
-    )
+    component_specs: list[
+        tuple[type[ClampingBase | CommandClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]
+    ] = field(default_factory=list)
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
     battery_path: str | None = None
@@ -108,7 +115,10 @@ class ActuatorParsed:
         self,
         drive_class: type[DriveBase] | object = _DEPRECATED_UNSET,
         drive_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
-        component_specs: list[tuple[type[ClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]] | None = None,
+        component_specs: list[
+            tuple[type[ClampingBase | CommandClampingBase | InputProcessorBase | MotorDC], dict[str, Any]]
+        ]
+        | None = None,
         target_path: str = "",
         *,
         battery_path: str | None = None,
@@ -322,6 +332,7 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
 _BASE_SCHEMAS = {
     "NewtonActuatorControlBaseAPI",
     "NewtonActuatorClampingBaseAPI",
+    "NewtonActuatorCommandClampingBaseAPI",
     "NewtonActuatorInputProcessorBaseAPI",
 }
 

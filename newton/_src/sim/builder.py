@@ -101,7 +101,7 @@ if TYPE_CHECKING:
     from pxr import Usd
 
     from ..actuators.batteries.base import BatteryBase
-    from ..actuators.clamping.base import ClampingBase
+    from ..actuators.clamping.base import ClampingBase, CommandClampingBase
     from ..actuators.drives.base import DriveBase
     from ..actuators.input_processors.base import InputProcessorBase
     from ..actuators.motor_dc import MotorDC
@@ -3314,7 +3314,7 @@ class ModelBuilder:
         self,
         drive_class: type[DriveBase] | None = None,
         index: int | None = None,
-        clamping: list[tuple[type[ClampingBase], dict[str, Any]]] | None = None,
+        clamping: list[tuple[type[ClampingBase | CommandClampingBase], dict[str, Any]]] | None = None,
         delay_steps: int | None = None,
         pos_index: int | None = None,
         *,
@@ -3366,7 +3366,8 @@ class ModelBuilder:
                 processor does not identify a single-DOF joint of the current
                 world or a global joint, of the same type as the actuated joint,
                 a clamping takes parameters from a motor that does not have them (see
-                :attr:`~newton.actuators.ClampingBase.MOTOR_PARAMS`), a
+                :attr:`~newton.actuators.CommandClampingBase.MOTOR_PARAMS`), a
+                :class:`~newton.actuators.CommandClampingBase` has no motor, a
                 :class:`~newton.actuators.DriveVoltageControlled` has no motor,
                 or another drive, which outputs an effort, has a motor.
         """
@@ -3472,7 +3473,13 @@ class ModelBuilder:
             motor_shared_names = getattr(motor_class, "SHARED_PARAMS", set())
             motor_shared = {k: resolved_motor[k] for k in motor_shared_names if k in resolved_motor}
             motor_array_params = {k: v for k, v in resolved_motor.items() if k not in motor_shared_names}
+        from ..actuators.clamping.base import CommandClampingBase  # noqa: PLC0415
+
         for comp_class in clamping_classes:
+            if issubclass(comp_class, CommandClampingBase) and motor is None:
+                raise ValueError(
+                    f"add_actuator: {comp_class.__name__} bounds the motor command and requires a motor, such as MotorDC"
+                )
             missing = getattr(comp_class, "MOTOR_PARAMS", set()) - set(motor_array_params)
             if missing:
                 raise ValueError(

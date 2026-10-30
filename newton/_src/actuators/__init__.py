@@ -3,7 +3,14 @@
 
 from .actuator import Actuator
 from .batteries import BatteryBase, BatteryConstantResistance
-from .clamping import ClampingBase, ClampingCurrentPWM, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
+from .clamping import (
+    ClampingBase,
+    ClampingCurrentPWM,
+    ClampingDCMotor,
+    ClampingMaxEffort,
+    ClampingPositionBased,
+    CommandClampingBase,
+)
 from .drives import (
     DriveBase,
     DriveNeuralGRU,
@@ -41,6 +48,7 @@ __all__ = [
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
+    "CommandClampingBase",
     "ComponentKind",
     "DriveBase",
     "DriveNeuralGRU",

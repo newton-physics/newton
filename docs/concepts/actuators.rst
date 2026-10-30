@@ -29,7 +29,7 @@ customize and extend for specific actuator models.
 Architecture
 ------------
 
-An actuator is composed of four building blocks, applied in this order:
+An actuator is composed of five building blocks, applied in this order:
 
 .. code-block:: text
 
@@ -38,13 +38,14 @@ An actuator is composed of four building blocks, applied in this order:
    │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
    │   └── InputProcessorEncoder     (position encoder, e.g. behind a backlash joint)
    ├── Drive      (control law that computes raw effort, or the motor command)
-   ├── Clamping[]  (clamps raw effort to model actuator limits)
-   │   ├── ClampingMaxEffort        (±max_effort symmetric clamp)
-   │   ├── ClampingCurrentPWM       (current and PWM limits of a servo firmware)
-   │   ├── ClampingDCMotor         (velocity-dependent saturation)
-   │   └── ClampingPositionBased   (position-dependent lookup table)
-   └── Motor       (optional: turns the motor command into the effort of a motor)
-       └── MotorDC                 (PWM-driven DC motor, optionally on a battery)
+   ├── CommandClamping[]  (optional, with a motor: clamps the motor command)
+   │   └── ClampingCurrentPWM       (current and PWM limits of a servo firmware)
+   ├── Motor       (optional: turns the motor command into the effort of a motor)
+   │   └── MotorDC                 (PWM-driven DC motor, optionally on a battery)
+   └── Clamping[]  (clamps effort to model actuator limits)
+       ├── ClampingMaxEffort        (±max_effort symmetric clamp)
+       ├── ClampingDCMotor         (velocity-dependent saturation)
+       └── ClampingPositionBased   (position-dependent lookup table)
 
 **Input processor**
    Transforms the inputs to the drive: the simulation state (positions,
@@ -66,33 +67,35 @@ An actuator is composed of four building blocks, applied in this order:
    motor.  Drives that compute an effort, such as :class:`DrivePD`, cannot be
    combined with a motor.
 
-**Clamping**
-   Clamps raw effort to model actuator limits.  Examples include saturation,
-   back-EMF losses, performance envelopes and position-dependent effort
-   limits.  Multiple clamping stages can be combined
-   on a single actuator.
-
-   A clamp limits the drive output.  With a motor, this is the motor command,
-   not the effort, e.g. the voltage that :class:`ClampingCurrentPWM` bounds by
-   the current and PWM limits of a servo firmware.  Such a clamp may take
-   parameters from the motor (:attr:`ClampingBase.MOTOR_PARAMS`), so they are
-   authored once.
+**Command clamping**
+   Clamps the motor command to model the limits of the motor's electronics,
+   e.g. the current and PWM limits of a servo firmware
+   (:class:`ClampingCurrentPWM`) on its voltage.  Requires a motor.  A command
+   clamp may take parameters from the motor
+   (:attr:`CommandClampingBase.MOTOR_PARAMS`), so they are authored once.
 
 **Motor**
    Provides the supply voltage, and turns the motor command into the effort a
    motor produces at the joint velocity, e.g. with back-EMF.  A motor may draw
    from a battery (see :ref:`actuator-battery`).  At most one motor per
-   actuator; it always runs last.
+   actuator.
+
+**Clamping**
+   Clamps effort to model actuator limits.  Examples include saturation,
+   back-EMF losses, performance envelopes and position-dependent effort
+   limits.  Multiple clamping stages can be combined
+   on a single actuator.  With a motor, it clamps the effort of the motor.
 
 The per-step pipeline is:
 
 .. code-block:: text
 
-   Input processors → Supply voltage → Drive → Clamping → Motor → Scatter-add → Drive state update
+   Input processors → Supply voltage → Drive → Command clamping → Motor → Clamping → Scatter-add → Drive state update
 
-Drives, clamping objects and input processors are pluggable: implement the
-:class:`DriveBase`, :class:`ClampingBase` or :class:`InputProcessorBase` class
-to add new models.
+Drives, clamping and command clamping objects, and input processors are
+pluggable: implement the :class:`DriveBase`, :class:`ClampingBase`,
+:class:`CommandClampingBase` or :class:`InputProcessorBase` class to add new
+models.
 
 .. deprecated:: 1.8
 
@@ -653,9 +656,6 @@ Clamping
 ^^^^^^^^
 
 * :class:`ClampingMaxEffort` — symmetric clamp to ±max_effort per actuator.
-* :class:`ClampingCurrentPWM` — current and PWM limits of the firmware of a
-  servo as in BAM, on the voltage command of a :class:`MotorDC`, applied in
-  this order.
 * :class:`ClampingDCMotor` — velocity-dependent effort saturation using the DC
   motor effort-speed characteristic.
 * :class:`ClampingPositionBased` — position-dependent effort limits via
@@ -663,6 +663,16 @@ Clamping
 
 Multiple clamping objects can be stacked on a single actuator; they are applied
 in sequence.
+
+Command clamping
+^^^^^^^^^^^^^^^^
+
+* :class:`ClampingCurrentPWM` — current and PWM limits of the firmware of a
+  servo as in BAM, on the voltage command of a :class:`MotorDC`, applied in
+  this order.
+
+Command clamps are passed in the same ``clamping`` list as the other clamps and
+run in sequence before the motor.
 
 Motors
 ^^^^^^
@@ -849,7 +859,9 @@ Torch-backed neural checkpoint. Leaving
 
 Similarly, a custom clamping stage subclasses :class:`ClampingBase` and
 implements :meth:`~ClampingBase.modify_forces` (which reads effort from a source
-buffer and writes bounded effort to a destination buffer).
+buffer and writes bounded effort to a destination buffer).  A clamp of the
+motor command subclasses :class:`CommandClampingBase` instead, whose
+:meth:`~CommandClampingBase.modify_forces` also receives the supply voltage.
 
 See Also
 --------

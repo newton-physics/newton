@@ -61,11 +61,11 @@ class MotorDC:
 
     The command :math:`u` is the output of the drive, e.g. a
     :class:`~newton.actuators.DriveVoltageControlled`, bounded by the
-    clampings, e.g. a :class:`~newton.actuators.ClampingCurrentPWM`, which
-    takes ``kt`` and ``resistance`` from this motor.
+    command clamping, e.g. a :class:`~newton.actuators.ClampingCurrentPWM`,
+    which takes ``kt`` and ``resistance`` from this motor. The other clamping
+    bounds the effort of the motor.
 
-    The motor is the last stage of an actuator, after the drive and the
-    clamping. It provides the supply voltage :math:`V` of the actuator: ``vin``,
+    The motor runs after the drive and the command clamping. It provides the supply voltage :math:`V` of the actuator: ``vin``,
     or the battery voltage with ``supply_from_battery=True``. It then
     reports the current :math:`d\\, I` it draws, with the duty cycle
     :math:`d = u / V`, since the battery supplies the motor current only

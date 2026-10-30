@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-from .base import ClampingBase
+from .base import ClampingBase, CommandClampingBase
 from .clamping_current_pwm import ClampingCurrentPWM
 from .clamping_dc_motor import ClampingDCMotor
 from .clamping_max_effort import ClampingMaxEffort
@@ -13,4 +13,5 @@ __all__ = [
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
+    "CommandClampingBase",
 ]

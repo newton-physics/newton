@@ -7,7 +7,7 @@ from typing import Any, ClassVar
 
 import warp as wp
 
-from .base import ClampingBase
+from .base import CommandClampingBase
 
 
 @wp.kernel
@@ -32,7 +32,7 @@ def _current_pwm_clamp_kernel(
     dst[i] = wp.clamp(voltage, -limit, limit)
 
 
-class ClampingCurrentPWM(ClampingBase):
+class ClampingCurrentPWM(CommandClampingBase):
     """Current and PWM limits of the firmware of a servo, as in BAM (Better Actuator Models).
 
     Bounds the voltage command :math:`u_0` of a motor, e.g. from a
@@ -53,7 +53,7 @@ class ClampingCurrentPWM(ClampingBase):
     * :math:`d_{\\max}`: ``max_pwm``;
     * :math:`k_t`: ``kt`` and :math:`R`: ``resistance``, taken from the
       :class:`~newton.actuators.MotorDC` of the actuator (see
-      :attr:`~newton.actuators.ClampingBase.MOTOR_PARAMS`).
+      :attr:`~newton.actuators.CommandClampingBase.MOTOR_PARAMS`).
 
     The current limit keeps the motor current :math:`(u - k_t \\dot q) / R`
     of the :class:`~newton.actuators.MotorDC` within :math:`\\pm I_{\\max}`.
@@ -115,18 +115,12 @@ class ClampingCurrentPWM(ClampingBase):
         vel_indices: wp.array[wp.uint32],
         device: wp.Device | None = None,
         *,
-        supply_voltage: wp.array[float] | None = None,
+        supply_voltage: wp.array[float],
     ) -> None:
         """Bound the voltage command by the current and PWM limits.
 
-        Raises:
-            ValueError: *supply_voltage* is ``None``, i.e. the actuator has
-                no motor.
-
-        See :meth:`ClampingBase.modify_forces` for the arguments.
+        See :meth:`CommandClampingBase.modify_forces` for the arguments.
         """
-        if supply_voltage is None:
-            raise ValueError("ClampingCurrentPWM requires a motor, such as MotorDC, that provides the supply voltage.")
         wp.launch(
             kernel=_current_pwm_clamp_kernel,
             dim=len(src_forces),

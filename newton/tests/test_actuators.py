@@ -3120,7 +3120,7 @@ class TestClampingCurrentPWM(unittest.TestCase):
         link = builder.add_link()
         joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
         clamping = [(ClampingCurrentPWM, {"max_current": 1.0})]
-        with self.assertRaisesRegex(ValueError, "kt, resistance from the motor"):
+        with self.assertRaisesRegex(ValueError, "bounds the motor command and requires a motor"):
             builder.add_actuator(DriveVoltageControlled, index=builder.joint_qd_start[joint], kp=1.0, clamping=clamping)
         builder.add_actuator(
             DriveVoltageControlled,
