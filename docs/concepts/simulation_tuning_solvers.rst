@@ -239,6 +239,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``sleep_quiet_time``, ``sleep_skip_constraints``,
        ``articulated_contact_response``, ``propagation_same_articulation_rows``,
        ``propagation_cached_response``, ``propagation_cached_response_body_max``,
+       ``propagation_color_order``,
        ``contact_shared_anchor``, ``contact_friction_shared_anchor``,
        ``row_watermark``, ``row_schedule``, ``use_parallel_streams``,
        ``double_buffer``, ``friction_mode``.
@@ -254,7 +255,14 @@ repository examples spend tuning effort, not a shared solver API.
        Joint limits are enforced only with ``enable_joint_limits=True`` (off by
        default). Joint friction (:attr:`~newton.Model.joint_friction`, for
        example from MJCF ``frictionloss``) is enforced only with
-       ``enable_joint_friction=True`` (off by default). Contacts and joint limits are hard
+       ``enable_joint_friction=True`` (off by default). A positive per-DOF
+       ``steel:joint_friction_load_coefficient`` adds the joint friction law of
+       PhysX articulations before PhysX 5.6, a bound that grows with the force
+       and torque the joint transmits.
+       The solver sets up this load term only if some coefficient is positive
+       at construction; to randomize coefficients after construction, make at
+       least one positive before creating the solver.
+       Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``iterations`` reduce residual penetration and
        slip, and ``baumgarte`` sets how much position error is corrected per
@@ -327,7 +335,12 @@ repository examples spend tuning effort, not a shared solver API.
        parallel batches of contacts that share no responding body, which pays off on
        scenes with many contacts per world. ``propagation_cached_response`` replaces the
        per-iteration tree walk with cached per-body responses (on by default); which is
-       faster depends on the model. ``"propagation"`` solves contact torsion with
+       faster depends on the model. ``propagation_color_order="longest_first"`` colors
+       contacts with more rows first, which shortens the ``"propagation_colored"`` sweep
+       when one body carries contacts with different row counts. The saving shrinks as the
+       world count grows, and the changed order can converge more slowly on stacks at a
+       fixed iteration count, so measure the full step at the target world count before
+       switching. ``"propagation"`` solves contact torsion with
        ``contact_torsion_device=True`` and ``velocity_iterations=0``; ``"propagation_colored"``
        rejects it. The propagation responses reject contact compliance, sleeping and
        loop-closing joints, and fall back from bilateral pre-elimination to iterative mimic
