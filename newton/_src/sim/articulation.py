@@ -1171,27 +1171,33 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start] = S_s
 
     elif joint_type_value == JointType.D6:
+        pos = wp.vec3()
         if lin_axis_count > 0:
             axis = joint_axis[qd_start + 0]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 0] = S_s
+            pos += axis * joint_q[q_start + 0]
         if lin_axis_count > 1:
             axis = joint_axis[qd_start + 1]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 1] = S_s
+            pos += axis * joint_q[q_start + 1]
         if lin_axis_count > 2:
             axis = joint_axis[qd_start + 2]
             S_s = transform_twist(X_pa_world, wp.spatial_vector(axis, wp.vec3()))
             joint_S_s[qd_start + 2] = S_s
+            pos += axis * joint_q[q_start + 2]
+        # FK translates before it rotates, so the angular axes pivot about the translated origin.
+        X_pivot = X_pa_world * wp.transform(pos, wp.quat_identity())
         iqd = qd_start + lin_axis_count
         iq = q_start + lin_axis_count
         if ang_axis_count == 1:
             axis = joint_axis[iqd]
-            joint_S_s[iqd] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), axis))
+            joint_S_s[iqd] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), axis))
         if ang_axis_count == 2:
             a0, a1 = transform_2d_rotational_axes(joint_axis[iqd + 0], joint_axis[iqd + 1], joint_q[iq + 0])
-            joint_S_s[iqd + 0] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a0))
-            joint_S_s[iqd + 1] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a1))
+            joint_S_s[iqd + 0] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a1))
         if ang_axis_count == 3:
             a0, a1, a2 = transform_3d_rotational_axes(
                 joint_axis[iqd + 0],
@@ -1200,9 +1206,9 @@ def jcalc_motion_subspace(
                 joint_q[iq + 0],
                 joint_q[iq + 1],
             )
-            joint_S_s[iqd + 0] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a0))
-            joint_S_s[iqd + 1] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a1))
-            joint_S_s[iqd + 2] = transform_twist(X_pa_world, wp.spatial_vector(wp.vec3(), a2))
+            joint_S_s[iqd + 0] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a0))
+            joint_S_s[iqd + 1] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a1))
+            joint_S_s[iqd + 2] = transform_twist(X_pivot, wp.spatial_vector(wp.vec3(), a2))
 
     elif joint_type_value == JointType.BALL:
         S_0 = transform_twist(X_pa_world, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))

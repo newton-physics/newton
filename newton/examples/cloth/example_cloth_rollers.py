@@ -1,13 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cloth Rollers
-#
-# A rolled cloth mesh that unrolls as the inner seam rotates.
-# Command: uv run -m newton.examples cloth_rollers
-#
-###########################################################################
+"""Cloth Rollers
+
+A rolled cloth mesh that unrolls as the inner seam rotates.
+
+Success criteria:
+- One roller initially carries the cloth while the other is empty.
+- Rotation transfers cloth from the full roller to the empty one without visible tearing, explosive
+  stretching, or persistent interpenetration.
+
+Runs:
+- `python -m newton.examples cloth_rollers`
+"""
 
 import math
 

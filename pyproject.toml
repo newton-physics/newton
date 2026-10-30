@@ -229,6 +229,7 @@ extend-immutable-calls = ["newton.solvers.SolverBase.Observables.field"]
 # TID253 (banned module-level imports) only applies to newton/_src and newton/tests
 "docs/**/*" = ["TID253"]
 "asv/**/*" = ["TID253"]
+"scripts/**/*" = ["TID253"]
 # T201 (print) only applies to library code in newton/_src
 "!newton/_src/**/*" = ["T201"]
 "newton/_src/**/tests/**/*" = ["T201"]
@@ -251,6 +252,7 @@ banned-module-level-imports = [
     "openmesh",
     "ovstage",
     "ovrtx",
+    "packaging",
     "PIL",
     "point_cloud_utils",
     "pxr",

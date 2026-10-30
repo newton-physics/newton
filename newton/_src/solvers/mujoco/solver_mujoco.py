@@ -80,7 +80,7 @@ from .kernels import (
     compute_physical_meaninertia_kernel,
     convert_mj_coords_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
-    convert_qfrc_actuator_from_mj_kernel,
+    convert_qfrc_from_mj_kernel,
     convert_rigid_forces_from_mj_kernel,
     convert_solref,
     convert_warp_coords_to_mj_kernel,
@@ -90,6 +90,7 @@ from .kernels import (
     eval_mujoco_coupling_effective_mass_block_kernel,
     eval_mujoco_coupling_effective_mass_kernel,
     eval_mujoco_coupling_gravity_acceleration_kernel,
+    frictionloss_force_from_efc_kernel,
     hinge_connect_anchor,
     recompute_jnt_eq_anchor1_kernel,
     repeat_array_kernel,
@@ -535,6 +536,12 @@ _MJW_BATCHED_MODEL_FIELDS = (
     # "mat_rgba",
 )
 
+_UPDATE_DATA_INTERVAL_DEPRECATION_MSG = (
+    "SolverMuJoCo update_data_interval is deprecated in Newton 1.8 and will be removed; "
+    "MuJoCo data will then be synchronized from the input state on every step. "
+    "Remove its use to adopt that behavior now."
+)
+
 
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
@@ -618,6 +625,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         QFRC_ACTUATOR = "qfrc_actuator"
         """Actuator forces in Newton generalized-coordinate order."""
 
+        QFRC_BIAS = "qfrc_bias"
+        """Coriolis, centrifugal and gravity forces ``C(q, qd)`` in Newton generalized-coordinate order."""
+
+        QFRC_CONSTRAINT = "qfrc_constraint"
+        """Constraint forces in Newton generalized-coordinate order, including DOF friction loss."""
+
+        QFRC_FRICTIONLOSS = "qfrc_frictionloss"
+        """DOF friction-loss constraint forces in Newton generalized-coordinate order."""
+
         OVERFLOW = "overflow"
         """Per-world capacity-overflow bitmask for the most recent step; see :ref:`mujoco_overflow_observable`."""
 
@@ -643,6 +659,36 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             frequency=AttributeFrequency.JOINT_DOF,
         )
         """Actuator forces [N or N·m], shape ``(joint_dof_count,)``."""
+
+        qfrc_bias: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.float32,
+            frequency=AttributeFrequency.JOINT_DOF,
+        )
+        """Coriolis, centrifugal and gravity forces from MuJoCo's last force evaluation of the step [N or N·m], shape ``(joint_dof_count,)``.
+
+        That is the start of the step, except for RK4, where it is the last stage.
+        """
+
+        qfrc_constraint: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.float32,
+            frequency=AttributeFrequency.JOINT_DOF,
+        )
+        """Constraint forces [N or N·m], shape ``(joint_dof_count,)``.
+
+        From the same force evaluation as :attr:`qfrc_bias`.
+        """
+
+        qfrc_frictionloss: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.float32,
+            frequency=AttributeFrequency.JOINT_DOF,
+        )
+        """DOF friction-loss forces [N or N·m], shape ``(joint_dof_count,)``.
+
+        Part of :attr:`qfrc_constraint`; ``qfrc_constraint - qfrc_frictionloss``
+        is the constraint load on a DOF without its own friction. As in MuJoCo,
+        the force opposes the DOF motion. From the same force evaluation as
+        :attr:`qfrc_bias`.
+        """
 
         overflow: wp.array[wp.int32] | None = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.int32,
@@ -673,9 +719,28 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             SolverBase.ObservableKind.BODY_PARENT_F,
             SolverBase.ObservableKind.CONTACT_F,
             ObservableKind.QFRC_ACTUATOR,
+            ObservableKind.QFRC_BIAS,
+            ObservableKind.QFRC_CONSTRAINT,
+            ObservableKind.QFRC_FRICTIONLOSS,
             ObservableKind.OVERFLOW,
         }
     )
+
+    @property
+    def update_data_interval(self) -> int:
+        """Steps between MuJoCo data synchronizations from the input state.
+
+        .. deprecated:: 1.8
+            Reading or assigning this attribute warns; data will always be
+            synchronized on every step.
+        """
+        warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        return self._update_data_interval
+
+    @update_data_interval.setter
+    def update_data_interval(self, value: int) -> None:
+        warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+        self._update_data_interval = value
 
     @property
     def supported_observables(self):
@@ -722,6 +787,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             if observables.contacts is not None:
                 self._validate_native_contact_export(observables, observables.contacts)
+            if (
+                observables.is_requested(self.ObservableKind.QFRC_FRICTIONLOSS)
+                and not self.use_mujoco_cpu
+                and self._mjw_qfrc_frictionloss is None
+            ):
+                self._mjw_qfrc_frictionloss = wp.zeros_like(self.mjw_data.qfrc_constraint)
             return observables
 
     @override
@@ -4351,7 +4422,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         sleep_tolerance: float | None = None,
         disable_contacts: bool | None = None,
         disable_sensors: bool | None = None,
-        update_data_interval: int = 1,
+        update_data_interval: int | None = None,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
         use_speculative_contacts: bool = False,
@@ -4413,7 +4484,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default.
             disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
-            update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
+            update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization. If None, Data is updated on every step.
+
+                .. deprecated:: 1.8
+                    Passing any value is deprecated; Data will always be updated on every step.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             use_speculative_contacts: Add frictionless normal constraints for separated Newton
@@ -4445,6 +4519,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 GPU sync, request ``ObservableKind.OVERFLOW`` via
                 :meth:`observables` and check the bitmask after each step.
         """
+        if update_data_interval is not None:
+            warnings.warn(_UPDATE_DATA_INTERVAL_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         super().__init__(model)
         if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
             raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
@@ -4733,6 +4809,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # notify_model_changed() may invalidate them during conversion. The
         # contact map is allocated below once the converted capacity is known.
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
+        self._mjw_qfrc_frictionloss: wp.array2d[wp.float32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Placeholder for collect_overflow_kernel's rigid_contact_count arg when contacts is None.
@@ -4827,7 +4904,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._create_inverse_shape_mapping()
             self._contact_tid_to_cid = wp.full(self.mjw_data.naconmax, -1, dtype=wp.int32, device=self.device)
         self._initial_model_sync = False
-        self.update_data_interval = update_data_interval
+        self._update_data_interval = 1 if update_data_interval is None else update_data_interval
         self._step = 0
 
         if self.mjw_model is not None:
@@ -5006,7 +5083,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
-            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
+            if self._update_data_interval > 0 and self._step % self._update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self._update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
@@ -5040,7 +5117,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
                 self._enable_rne_postconstraint(state_out, observables)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
-                if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
+                if self._update_data_interval > 0 and self._step % self._update_data_interval == 0:
                     self._update_mjc_data(self.mjw_data, self.model, state_in)
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
@@ -5122,9 +5199,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         (and particle) flags are not actionable here and are ignored.
 
         ``qpos`` / ``qvel`` are normally synced from the reset ``state`` at the
-        start of the next :meth:`step`. When ``update_data_interval != 1`` that
-        per-step sync is disabled or sparse, so the reset joint coordinates are
-        pushed into ``qpos`` / ``qvel`` immediately for the selected worlds.
+        start of the next :meth:`step`. When the deprecated ``update_data_interval``
+        is not 1, that per-step sync is disabled or sparse, so the reset joint
+        coordinates are pushed into ``qpos`` / ``qvel`` immediately for the
+        selected worlds.
         When sleeping is enabled, reset synchronizes immediately, rebuilds
         MuJoCo Warp's cached position- and velocity-dependent data, and restores
         the initial sleep state in the selected worlds.
@@ -5175,7 +5253,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # reset on the next step. Otherwise push it now so it is not
                 # lost before the next sync. The sleeping path synchronizes
                 # below before rebuilding its cached data.
-                if self.update_data_interval != 1 and not self.enable_sleeping:
+                if self._update_data_interval != 1 and not self.enable_sleeping:
                     data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
                     if data is not None and native_template_world_selected:
                         self._update_mjc_data(data, self.model, state, world_mask=world_mask)
@@ -6350,34 +6428,79 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if qfrc_actuator is None:
             qfrc_actuator = legacy_qfrc_actuator
         if qfrc_actuator is not None:
-            if is_mjwarp:
-                mjw_qfrc = mj_data.qfrc_actuator
-                mjw_qpos = mj_data.qpos
-            else:
-                mjw_qfrc = wp.array([mj_data.qfrc_actuator], dtype=wp.float32, device=model.device)
-                mjw_qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
-            wp.launch(
-                convert_qfrc_actuator_from_mj_kernel,
-                dim=(nworld, joints_per_world),
-                inputs=[
-                    mjw_qfrc,
-                    mjw_qpos,
-                    joints_per_world,
-                    model.joint_type,
-                    model.joint_q_start,
-                    model.joint_qd_start,
-                    model.joint_dof_dim,
-                    model.joint_child,
-                    model.joint_X_c,
-                    model.body_com,
-                    self.mj_q_start,
-                    self.mj_qd_start,
-                ],
-                outputs=[qfrc_actuator],
-                device=model.device,
-            )
+            self._convert_mj_qfrc(model, mj_data, mj_data.qfrc_actuator, nworld, joints_per_world, qfrc_actuator)
             if legacy_qfrc_actuator is not None and legacy_qfrc_actuator.ptr != qfrc_actuator.ptr:
                 legacy_qfrc_actuator.assign(qfrc_actuator)
+
+        if not isinstance(observables, self.Observables):
+            return
+        for kind, qfrc in (
+            (self.ObservableKind.QFRC_BIAS, observables.qfrc_bias),
+            (self.ObservableKind.QFRC_CONSTRAINT, observables.qfrc_constraint),
+            (self.ObservableKind.QFRC_FRICTIONLOSS, observables.qfrc_frictionloss),
+        ):
+            if not observables.is_requested(kind):
+                continue
+            if kind != self.ObservableKind.QFRC_FRICTIONLOSS:
+                mj_qfrc = getattr(mj_data, kind)
+            elif is_mjwarp:
+                self._mjw_qfrc_frictionloss.zero_()
+                wp.launch(
+                    frictionloss_force_from_efc_kernel,
+                    dim=(nworld, mj_data.njmax),
+                    inputs=[
+                        mj_data.nefc,
+                        mj_data.efc.type,
+                        mj_data.efc.id,
+                        mj_data.efc.force,
+                        int(self._mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF),
+                    ],
+                    outputs=[self._mjw_qfrc_frictionloss],
+                    device=model.device,
+                )
+                mj_qfrc = self._mjw_qfrc_frictionloss
+            else:
+                rows = mj_data.efc_type == self._mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+                mj_qfrc = np.zeros(self.mj_model.nv, dtype=np.float32)
+                mj_qfrc[mj_data.efc_id[rows]] = mj_data.efc_force[rows]
+            self._convert_mj_qfrc(model, mj_data, mj_qfrc, nworld, joints_per_world, qfrc)
+
+    def _convert_mj_qfrc(
+        self,
+        model: Model,
+        mj_data: Any,
+        mj_qfrc: Any,
+        nworld: int,
+        joints_per_world: int,
+        out: wp.array[wp.float32],
+    ):
+        """Convert a MuJoCo generalized force ``[nworld, nv]``, or ``[nv]`` on the CPU backend, to Newton DOF order."""
+        if isinstance(mj_qfrc, wp.array):
+            mjw_qfrc = mj_qfrc
+            mjw_qpos = mj_data.qpos
+        else:
+            mjw_qfrc = wp.array([mj_qfrc], dtype=wp.float32, device=model.device)
+            mjw_qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
+        wp.launch(
+            convert_qfrc_from_mj_kernel,
+            dim=(nworld, joints_per_world),
+            inputs=[
+                mjw_qfrc,
+                mjw_qpos,
+                joints_per_world,
+                model.joint_type,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_dof_dim,
+                model.joint_child,
+                model.joint_X_c,
+                model.body_com,
+                self.mj_q_start,
+                self.mj_qd_start,
+            ],
+            outputs=[out],
+            device=model.device,
+        )
 
     @staticmethod
     def _find_body_collision_filter_pairs(

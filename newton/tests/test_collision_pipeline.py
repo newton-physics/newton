@@ -13,7 +13,6 @@ from unittest import mock
 import numpy as np
 import warp as wp
 import warp.examples
-from packaging.version import Version
 
 import newton
 from newton import GeoType
@@ -68,11 +67,12 @@ from newton.tests.unittest_utils import (
     configure_sdf_for_collision_shapes,
     get_cuda_test_devices,
     get_test_devices,
+    warp_version_at_least,
 )
 from newton.tests.utils.soft_contacts import evaluate_soft_contact_force_mask
 
 # Older Warp destroys textures immediately during CUDA capture (NVIDIA/warp#2066).
-_WARP_NEEDS_CAPTURE_GC_GUARD = Version(wp.__version__) < Version("1.19.0.dev20261020")
+_WARP_NEEDS_CAPTURE_GC_GUARD = not warp_version_at_least("1.19.0.dev20261020")
 
 
 class TestLevel(IntFlag):

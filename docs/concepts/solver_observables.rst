@@ -149,7 +149,7 @@ With ``use_mujoco_cpu=True``, body and contact observables are exported
 from the step's input dynamics, including with RK4; use the input state for
 contact positions. Body observables require Euler, RK4, implicit, or implicitfast
 integration. ``CONTACT_F`` requires ``use_mujoco_contacts=True`` and, like
-``QFRC_ACTUATOR``, supports any integrator; overflow observable requests are rejected.
+the ``SolverMuJoCo.ObservableKind.QFRC_*`` kinds, supports any integrator; overflow observable requests are rejected.
 
 :class:`~newton.solvers.SolverSteel` reports only the linear part of each rigid
 contact force; the torque part is zero. Contacts without solved rows, such as rows
@@ -185,6 +185,15 @@ example, MuJoCo adds ``QFRC_ACTUATOR`` and returns a
            solver.ObservableKind.QFRC_ACTUATOR,
        }
    )
+
+MuJoCo also exports ``QFRC_BIAS``, ``QFRC_CONSTRAINT``, and
+``QFRC_FRICTIONLOSS`` on both backends. ``qfrc_frictionloss`` is the part of
+``qfrc_constraint`` that comes from each DOF's own friction loss, so
+``qfrc_constraint - qfrc_frictionloss`` is the constraint load on a DOF without
+it. All three come from MuJoCo's last force evaluation of the step: the start of
+the step, or the last stage with RK4. The solver writes observables only during :meth:`~newton.solvers.SolverBase.step`
+and :meth:`~newton.solvers.SolverMuJoCo.reset` leaves them unchanged, so zero
+them for reset worlds if a consumer reads them before the next step.
 
 The constants are strings, so literal names work too:
 

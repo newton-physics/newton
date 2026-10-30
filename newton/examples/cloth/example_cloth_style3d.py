@@ -1,6 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Drape a shirt around a mannequin using the Style3D cloth solver.
+
+Success criteria:
+- A mannequin wearing a shirt appears.
+
+Runs:
+- `python -m newton.examples cloth_style3d`
+"""
+
 import warp as wp
 from pxr import Usd
 

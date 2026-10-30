@@ -3184,8 +3184,27 @@ def convert_rigid_forces_from_mj_kernel(
 
 
 @wp.kernel
-def convert_qfrc_actuator_from_mj_kernel(
-    mjw_qfrc_actuator: wp.array2d[wp.float32],
+def frictionloss_force_from_efc_kernel(
+    nefc: wp.array[wp.int32],
+    efc_type: wp.array2d[wp.int32],
+    efc_id: wp.array2d[wp.int32],
+    efc_force: wp.array2d[wp.float32],
+    friction_dof_type: int,
+    # output
+    qfrc_frictionloss: wp.array2d[wp.float32],
+):
+    """Scatter the forces of MuJoCo's DOF friction-loss rows into ``[nworld, nv]``."""
+    worldid, efcid = wp.tid()
+    if efcid >= nefc[worldid]:
+        return
+    if efc_type[worldid, efcid] != friction_dof_type:
+        return
+    qfrc_frictionloss[worldid, efc_id[worldid, efcid]] = efc_force[worldid, efcid]
+
+
+@wp.kernel
+def convert_qfrc_from_mj_kernel(
+    mjw_qfrc: wp.array2d[wp.float32],
     qpos: wp.array2d[wp.float32],
     joints_per_world: int,
     joint_type: wp.array[wp.int32],
@@ -3198,9 +3217,9 @@ def convert_qfrc_actuator_from_mj_kernel(
     mj_q_start: wp.array[wp.int32],
     mj_qd_start: wp.array[wp.int32],
     # output
-    qfrc_actuator: wp.array[wp.float32],
+    qfrc: wp.array[wp.float32],
 ):
-    """Convert MuJoCo qfrc_actuator [nworld, nv] into Newton flat DOF array.
+    """Convert a MuJoCo generalized force [nworld, nv], e.g. qfrc_actuator, into Newton flat DOF array.
 
     Uses the same joint-based DOF mapping as the coordinate conversion
     kernels. For free joints the wrench is transformed from MuJoCo's
@@ -3225,7 +3244,7 @@ def convert_qfrc_actuator_from_mj_kernel(
     jtype = joint_type[joint_id]
 
     if jtype == JointType.FREE:
-        # MuJoCo qfrc_actuator for free joint:
+        # MuJoCo qfrc for free joint:
         #   [f_x, f_y, f_z] = linear force at body origin (world frame)
         #   [τ_x, τ_y, τ_z] = torque in body frame
         # Newton convention (dual of velocity transform):
@@ -3233,14 +3252,14 @@ def convert_qfrc_actuator_from_mj_kernel(
         #   tau_newton    = R * tau_body - r_com x f_lin
 
         f_lin = wp.vec3(
-            mjw_qfrc_actuator[worldid, qd_i + 0],
-            mjw_qfrc_actuator[worldid, qd_i + 1],
-            mjw_qfrc_actuator[worldid, qd_i + 2],
+            mjw_qfrc[worldid, qd_i + 0],
+            mjw_qfrc[worldid, qd_i + 1],
+            mjw_qfrc[worldid, qd_i + 2],
         )
         tau_body = wp.vec3(
-            mjw_qfrc_actuator[worldid, qd_i + 3],
-            mjw_qfrc_actuator[worldid, qd_i + 4],
-            mjw_qfrc_actuator[worldid, qd_i + 5],
+            mjw_qfrc[worldid, qd_i + 3],
+            mjw_qfrc[worldid, qd_i + 4],
+            mjw_qfrc[worldid, qd_i + 5],
         )
 
         # Body rotation (MuJoCo quaternion wxyz)
@@ -3258,12 +3277,12 @@ def convert_qfrc_actuator_from_mj_kernel(
         # Rotate torque body -> world and shift reference origin -> CoM
         tau_world = wp.quat_rotate(rot, tau_body) - wp.cross(com_world, f_lin)
 
-        qfrc_actuator[wqd_i + 0] = f_lin[0]
-        qfrc_actuator[wqd_i + 1] = f_lin[1]
-        qfrc_actuator[wqd_i + 2] = f_lin[2]
-        qfrc_actuator[wqd_i + 3] = tau_world[0]
-        qfrc_actuator[wqd_i + 4] = tau_world[1]
-        qfrc_actuator[wqd_i + 5] = tau_world[2]
+        qfrc[wqd_i + 0] = f_lin[0]
+        qfrc[wqd_i + 1] = f_lin[1]
+        qfrc[wqd_i + 2] = f_lin[2]
+        qfrc[wqd_i + 3] = tau_world[0]
+        qfrc[wqd_i + 4] = tau_world[1]
+        qfrc[wqd_i + 5] = tau_world[2]
     elif jtype == JointType.BALL:
         # Inverse of apply_mjc_qfrc_kernel BALL; same map as the qvel readback in convert_mj_coords_to_warp_kernel.
         q_cj = joint_X_c[joint_id].q
@@ -3271,18 +3290,18 @@ def convert_qfrc_actuator_from_mj_kernel(
             wp.quat(qpos[worldid, q_i + 0], qpos[worldid, q_i + 1], qpos[worldid, q_i + 2], qpos[worldid, q_i + 3])
         )
         tau_mj = wp.vec3(
-            mjw_qfrc_actuator[worldid, qd_i + 0],
-            mjw_qfrc_actuator[worldid, qd_i + 1],
-            mjw_qfrc_actuator[worldid, qd_i + 2],
+            mjw_qfrc[worldid, qd_i + 0],
+            mjw_qfrc[worldid, qd_i + 1],
+            mjw_qfrc[worldid, qd_i + 2],
         )
         tau = wp.quat_rotate(wp.quat_inverse(q_cj) * q_mj, tau_mj)
-        qfrc_actuator[wqd_i + 0] = tau[0]
-        qfrc_actuator[wqd_i + 1] = tau[1]
-        qfrc_actuator[wqd_i + 2] = tau[2]
+        qfrc[wqd_i + 0] = tau[0]
+        qfrc[wqd_i + 1] = tau[1]
+        qfrc[wqd_i + 2] = tau[2]
     else:
         axis_count = joint_dof_dim[joint_id, 0] + joint_dof_dim[joint_id, 1]
         for i in range(axis_count):
-            qfrc_actuator[wqd_i + i] = mjw_qfrc_actuator[worldid, qd_i + i]
+            qfrc[wqd_i + i] = mjw_qfrc[worldid, qd_i + i]
 
 
 @wp.kernel

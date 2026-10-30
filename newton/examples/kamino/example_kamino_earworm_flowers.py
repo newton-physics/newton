@@ -19,7 +19,16 @@ The custom garden layout is assigned once after model setup. Calling the
 viewer's set_visible_worlds() or set_world_offsets() afterward replaces it;
 reapply viewer.world_offsets.assign(example.world_offsets) to restore it.
 
-Command: python -m newton.examples kamino_earworm_flowers
+Success criteria:
+- Seven articulated flowers form a compact garden, with their bases remaining anchored.
+- The stacked platforms sway, bounce, twist, and bow with small timing differences between flowers.
+- The spherical scissor mechanisms at the tips open and close while remaining attached and connected.
+- Motion stays bounded without joints separating or the flower mechanisms collapsing.
+
+Runs:
+- `python -m newton.examples kamino_earworm_flowers`
+- `python -m newton.examples kamino_earworm_flowers --mute`
+  - No background audio plays.
 """
 
 import argparse

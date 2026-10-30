@@ -34,6 +34,25 @@ MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((
 # float32 round-off.
 HOST_TRANSFORMS_BIT_EXACT = platform.system() == "Linux" and platform.machine() == "x86_64"
 
+
+_PRE_RELEASE_RANK = {".dev": 0, "a": 1, "b": 2, "rc": 3, None: 4}
+
+
+def _version_key(version: str, *, exact: bool = False) -> tuple[int, ...]:
+    # Thresholds must match exactly: a dropped suffix such as a local label would change their ordering.
+    match = (re.fullmatch if exact else re.match)(r"(\d+)\.(\d+)\.(\d+)(?:(\.dev|a|b|rc)(\d+))?", version)
+    if match is None:
+        raise ValueError(f"Unsupported version: {version!r}")
+    major, minor, patch, pre, pre_number = match.groups()
+    # PEP 440 order: X.devN < XaN < XbN < XrcN < X.
+    return (int(major), int(minor), int(patch), _PRE_RELEASE_RANK[pre], int(pre_number or 0))
+
+
+def warp_version_at_least(version: str) -> bool:
+    """Compare ``wp.__version__`` with ``version`` without the undeclared ``packaging`` dependency."""
+    return _version_key(wp.__version__) >= _version_key(version, exact=True)
+
+
 # default test mode (see get_test_devices())
 #   "basic" - only run on CPU and first GPU device
 #   "unique" - run on CPU and all unique GPU arches
@@ -276,7 +295,16 @@ class StreamCapture:
             write_through=True,
         )
 
-        # Redirect the stream
+        self.resume()
+
+    def suspend(self):
+        if LIBC is not None:
+            LIBC.fflush(None)
+        os.dup2(self.target, self.stream_fd)
+        setattr(sys, self.stream_name, self.saved)
+
+    def resume(self):
+        self.saved.flush()
         os.dup2(self.tempfile.fileno(), self.stream_fd)
         setattr(sys, self.stream_name, self.tempfile)
 
@@ -393,6 +421,20 @@ class _OutputCapture:
             raise
         self.active = True
 
+    @contextlib.contextmanager
+    def suspended(self):
+        if not self.active:
+            yield
+            return
+
+        self.stderr_capture.suspend()
+        self.stdout_capture.suspend()
+        try:
+            yield
+        finally:
+            self.stdout_capture.resume()
+            self.stderr_capture.resume()
+
     def add_pattern(self, pattern: str, *, stream: str, required: bool, report: bool = False):
         if stream not in {"stdout", "stderr", "any"}:
             raise ValueError(f"Unknown stream {stream!r}; expected 'stdout', 'stderr', or 'any'")
@@ -504,6 +546,13 @@ class NewtonTestCase(unittest.TestCase):
 
     _output_capture: _OutputCapture | None = None
 
+    def run(self, result=None):
+        if result is None:
+            return super().run()
+
+        super().run(_UncapturedReportingResult(result, self))
+        return result
+
     def _callSetUp(self):
         self._output_capture = _OutputCapture()
         self._output_capture.begin()
@@ -564,6 +613,26 @@ class NewtonTestCase(unittest.TestCase):
                 return True
 
         return False
+
+
+class _UncapturedReportingResult:
+    """Report outcomes outside the output capture, which is still active for subtest outcomes and skips."""
+
+    def __init__(self, result: unittest.TestResult, test: NewtonTestCase):
+        self._result = result
+        self._test = test
+
+    def __getattr__(self, name):
+        attr = getattr(self._result, name)
+        if not name.startswith("add") or not callable(attr):
+            return attr
+
+        def report(*args, **kwargs):
+            output_capture = self._test._output_capture
+            with output_capture.suspended() if output_capture is not None else contextlib.nullcontext():
+                return attr(*args, **kwargs)
+
+        return report
 
 
 def _format_command(command) -> str:

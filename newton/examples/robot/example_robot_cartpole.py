@@ -1,15 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot Cartpole
-#
-# Shows how to set up a simulation of a rigid-body cartpole articulation
-# from a USD stage using newton.ModelBuilder.add_usd().
-#
-# Command: python -m newton.examples robot_cartpole --world-count 100
-#
-###########################################################################
+"""Example Robot Cartpole
+
+Shows how to set up a simulation of a rigid-body cartpole articulation
+from a USD stage using newton.ModelBuilder.add_usd().
+
+Success criteria:
+- Replicated setups appear consisting of a double pendulum attached to a rail.
+- The double pendulum is consistently moving.
+
+Runs:
+- `python -m newton.examples robot_cartpole --world-count 2`
+  - 2 cartpole setups appear.
+- `python -m newton.examples robot_cartpole --world-count 100`
+  - 100 cartpole setups appear.
+"""
 
 import numpy as np
 import warp as wp
