@@ -74,9 +74,11 @@ def _eig_inertia(inertia: wp.mat33):
             scale = wp.max(scale, wp.abs(inertia[i, j]))
     if scale == 0.0:
         return wp.identity(n=3, dtype=wp.float32), wp.vec3(0.0)
-    # Float64 division also avoids reciprocal overflow for subnormal float32 scales.
-    vectors, values = wp.eig3(wp.mat33(wp.mat33d(inertia) / wp.float64(scale)))
-    return vectors, values * scale
+    # Decompose in float64 to resolve small negative moments accurately during
+    # validation and after a float32 repair. Double-precision division also
+    # avoids reciprocal overflow for subnormal float32 scales.
+    vectors, values = wp.eig3(wp.mat33d(inertia) / wp.float64(scale))
+    return wp.mat33(vectors), wp.vec3(values * wp.float64(scale))
 
 
 @wp.kernel(enable_backward=False, module="unique")

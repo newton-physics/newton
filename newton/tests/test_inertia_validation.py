@@ -487,6 +487,20 @@ class TestInertiaValidationParity(unittest.TestCase):
                 result["model_inv_inertia"] @ result["model_inertia"], np.eye(3), atol=1e-6, rtol=1e-6
             )
 
+        # A rotated tensor can still have a negative moment after the first
+        # float32 repair. Check both repair and initial validation of that tensor.
+        axis = np.array([2.0, 5.0, 5.0])
+        indefinite = (np.eye(3) - 1.1 * np.outer(axis, axis) / 54.0).astype(np.float32)
+        for shift in (0.0, 0.1):
+            inertia = indefinite + np.eye(3, dtype=np.float32) * np.float32(shift)
+            self.assertLess(np.linalg.eigvalsh(inertia.astype(np.float64))[0], 0.0)
+            results = self._finalize_both_paths(
+                mass=1.0, inertia=inertia, inertia_relative_tolerance=0.0, inertia_correction=0.0
+            )
+            for mode, result in results.items():
+                with self.subTest(shift=shift, mode=mode):
+                    self.assertGreater(np.linalg.eigvalsh(result["model_inertia"].astype(np.float64))[0], 0.0)
+
     def test_parity_nonsymmetric_inertia(self):
         """Both paths should symmetrize non-symmetric inertia."""
         inertia = np.array([[1.0, 2.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
