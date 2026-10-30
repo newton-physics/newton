@@ -308,6 +308,18 @@ makes the scheme safe between detections: two primitives farther apart than the
 query radius at detection cannot meet before the next detection, because each
 side moves at most half of the relaxation factor times that radius.
 
+*Rigid-soft DAT* (``rigid_soft_enable_dat``, off by default) applies both
+parts to contacts between soft geometry and shapes. Both sides of a contact are
+truncated against the same plane: the soft vertices as above, the rigid body by
+scaling its whole pose update, translation and rotation together. The budget is
+half of the relaxation factor times the smallest rigid-soft query radius (the
+pipeline's ``soft_contact_gap`` plus particle radius plus shape margin). It is
+fixed when the solver is built, and it caps every dynamic body and particle in
+the model while the option is on. Kinematic bodies are not truncated. A pair
+without a certifiable separating plane freezes. The option needs a solver-owned
+collision pipeline; for fast bodies raise the pipeline gap first, then the
+detection frequency.
+
 Both parts remove motion. A cloth that falls fast onto a shape, or a sheet
 pressed between fingers, can therefore move slower than physics would predict,
 hover at a fixed offset, or stop. This is DAT damping. The radius cap grows with

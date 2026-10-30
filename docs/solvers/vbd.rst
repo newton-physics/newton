@@ -410,10 +410,32 @@ capped at one half of ``dat_conservative_bound_relaxation`` times the query
 radius, isotropically. Two primitives farther apart than the query radius at
 detection therefore cannot meet before the next detection.
 
-The same scheme can be enabled for rigid-soft contacts with
-``rigid_soft_enable_dat``; rigid poses are then truncated against the same
-planes and the budget is the smaller of the two. :ref:`vbd-contact-handling`
-describes both parts for tuning and illustrates the planes.
+**Rigid-soft DAT** (``rigid_soft_enable_dat``, off by default) applies the
+same two parts to contacts between soft geometry and shapes
+(``_rigid_penetration_free_truncation``). One thread per contact record builds
+the division plane from the detection-time configuration and truncates both
+sides against it (``apply_rigid_soft_truncation``). The soft vertices of the
+record move on straight rays, as in self-contact. The vertices of the rigid
+primitive move on curved trajectories because the body rotates, so their
+crossing times are found by sampling and bisection, with an interval bound on
+the signed-distance derivative for rows that start inside the plane's band;
+``rigid_soft_dat_use_interval_arithmetic`` additionally certifies the sampled
+prefix with interval arithmetic (experimental). Full-surface mesh contacts
+name the exact rigid triangle, edge or vertex through
+``Contacts.soft_contact_rigid_indices``; analytic SDF contacts and
+penetration-recovery contacts truncate only their stored rigid surface point.
+Each body then scales its whole pose update, translation and rotation about
+the centre of mass, by the smallest factor of its contacts
+(``apply_body_truncation_ts``). The radius truncation caps the motion of every
+point of the body, bounded by the translation plus the rotation angle times
+the body's bounding radius, at one half of the relaxation factor times the
+smallest rigid-soft query radius (pipeline gap plus soft feature radius plus
+shape margin); that budget is fixed at construction. The pass runs after the
+forward step and after every body colour of every iteration, and the particle
+pass re-enforces the same planes after the particles move. Kinematic bodies
+move outside the solver and are not truncated. A pair for which no separating
+plane can be certified freezes. :ref:`vbd-contact-handling` describes the
+parts for tuning and illustrates the planes.
 
 The guarantee has a price: a vertex cannot move faster than about one motion
 budget per detection cycle. The motion that the truncation removes is called
