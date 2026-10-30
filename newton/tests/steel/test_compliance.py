@@ -574,13 +574,14 @@ def test_solver_overflow_and_dropped_contact_rejected(test, device):
         with test.subTest(articulated=articulated):
             with test.assertRaisesRegex(RuntimeError, r"one-to-one to normal rows \(contact [01]\)"):
                 prepare_rows(solver, scene.contacts, 0.005)
-    scene.contacts.rigid_contact_count.fill_(1)
+        scene.contacts.rigid_contact_count.fill_(1)
+        solver._contact_slot.fill_(-1)
+        begin_rows(solver)
+        with test.subTest(articulated=articulated, case="unmapped"):
+            with test.assertRaisesRegex(RuntimeError, r"dropped or routed to an unsupported path \(contact 0\)"):
+                prepare_rows(solver, scene.contacts, 0.005)
     solver._constraint_count.fill_(solver.articulation_constraint_max + 1)
     with test.assertRaisesRegex(RuntimeError, "overflowing solver rows"):
-        prepare_rows(solver, scene.contacts, 0.005)
-    solver._constraint_count.fill_(1)
-    solver._contact_slot.fill_(-1)
-    with test.assertRaisesRegex(RuntimeError, "dropped"):
         prepare_rows(solver, scene.contacts, 0.005)
 
 
@@ -809,7 +810,7 @@ def test_captured_errors_are_deferred_until_reset(test, device):
     test.assertTrue(np.isfinite(scene.pose()).all())
 
 
-def _run_paired_fixture(device, *, hinv_jt_kernel, friction, steps=40):
+def _run_paired_fixture(device, *, hinv_jt_kernel, friction, friction_gap_max=None, steps=40):
     """Drop a free box onto a 23-DOF arm (one articulation/free-body pair per world) with compliant contacts."""
     with wp.ScopedDevice(device):
         model = _build_mixed_response_model(device, dof_count=23, friction=friction)
@@ -826,6 +827,7 @@ def _run_paired_fixture(device, *, hinv_jt_kernel, friction, steps=40):
                 solve_mode="matrix_free",
                 enable_restitution=False,
                 contact_friction_scale=1.0 if friction > 0.0 else 0.0,
+                contact_friction_gap_max=friction_gap_max,
                 joint_limit_activation_gap=0.0,
                 iterations=8,
                 articulation_constraint_max=96,
@@ -857,13 +859,18 @@ def _run_paired_fixture(device, *, hinv_jt_kernel, friction, steps=40):
 
 def test_paired_factor_owner_matches_general_owner(test, device):
     """Apply the compliant residual in the paired factor-coordinate owner as in the general owner."""
-    # Frictional contacts take the contact-triple branch; frictionless normal-only rows take the general branch.
-    for friction in (0.7, 0.0):
+    # Contacts with friction rows take the contact-triple branch; a -inf gap leaves normal rows for the general branch.
+    for friction, gap in ((0.7, None), (0.0, -float("inf"))):
         with test.subTest(friction=friction):
-            general_solver, general, _ = _run_paired_fixture(device, hinv_jt_kernel="par_row", friction=friction)
-            paired_solver, paired, compliant = _run_paired_fixture(device, hinv_jt_kernel="auto", friction=friction)
+            general_solver, general, _ = _run_paired_fixture(
+                device, hinv_jt_kernel="par_row", friction=friction, friction_gap_max=gap
+            )
+            paired_solver, paired, compliant = _run_paired_fixture(
+                device, hinv_jt_kernel="auto", friction=friction, friction_gap_max=gap
+            )
             test.assertFalse(general_solver._paired_factor_coordinates)
             test.assertTrue(paired_solver._paired_factor_coordinates)
+            test.assertEqual(paired_solver._factor_coordinate_contact_triples, gap is None)
             test.assertGreater(compliant, 0)
             np.testing.assert_allclose(paired, general, rtol=5.0e-4, atol=1.0e-5)
 
