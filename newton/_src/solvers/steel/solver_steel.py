@@ -3104,7 +3104,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             | ModelFlags.SHAPE_PROPERTIES
         ):
             self._clear_warmstart_history(world_mask)
-        capturing = wp.get_stream(self.model.device).is_capturing
+        capturing = self.model.device.is_capturing
         if self._enable_joint_friction and flags & dof_force and not capturing:
             self._validate_joint_friction()
         if flags & ModelFlags.SHAPE_PROPERTIES and not capturing:
