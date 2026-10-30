@@ -43,8 +43,11 @@ from .rasterized_collisions import (
     Collider,
     build_rigidity_operator,
     interpolate_collider_normals,
+    point_contact_radii,
     project_outside_collider,
     rasterize_collider,
+    speculative_stop_distance,
+    stabilize_collider_velocity,
 )
 from .render_grains import sample_render_grains, update_render_grains
 from .solve_rheology import CollisionData, MomentumData, RheologyData, YieldParamVec, solve_rheology
@@ -1064,6 +1067,29 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Cell-local contact solver ordering may change.
         """
+        collider_stabilization_fraction: float = 0.0
+        """Fraction of particle contact penetration corrected per step.
+
+        Values in ``[0, 1]`` add an outward normal target velocity of
+        ``fraction * penetration / dt``. Zero disables penetration recovery.
+        Requires a particle collider basis (``"pic"`` or ``"picN"``).
+
+        .. experimental::
+
+            Contact stabilization may change without prior notice.
+        """
+        collider_contact_gap: float = 0.0
+        """Predictive contact activation distance [m].
+
+        Positive values activate contacts before penetration for any
+        supported collider basis. Separated collider samples may approach
+        at ``gap / dt`` so they can reach the contact band during the step.
+        Zero retains the default activation distance.
+
+        .. experimental::
+
+            Predictive contact gaps may change without prior notice.
+        """
         density_strain_fraction: float = 0.0
         """Fraction of particle overpacking corrected per step.
 
@@ -1122,9 +1148,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         form with integer ``N`` is accepted. Particle bases require an explicit
         per-cell limit for graph capture (``"picN"``).
 
-        Particle contacts activate within 0.25 voxels of the surface. Activated
-        contacts allow a normal approach speed up to the positive gap divided
-        by the timestep, so material can reach the surface without early stopping.
+        Particle contacts activate within 0.25 voxels of the surface, measured
+        from the particle radius. Activated contacts allow a normal approach
+        speed up to the gap beyond that band divided by the timestep, so
+        material stops in the band where grid contacts activate, and particles
+        near walls keep sampling the volume around them instead of bunching
+        against the surface.
         """
         strain_basis: _MPMStrainBasisName = "P0"
         """Strain basis function. Common values are ``"P0"``, ``"P1d"``,
@@ -1759,6 +1788,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
         if self.gs_colored_contacts and not supports_colored_contacts:
             raise ValueError("Colored contacts require discontinuous grid strain, particle contacts, and GS or GS-SOA")
+        self.collider_stabilization_fraction = float(config.collider_stabilization_fraction)
+        self.collider_contact_gap = float(config.collider_contact_gap)
+        if (
+            not math.isfinite(self.collider_stabilization_fraction)
+            or not 0.0 <= self.collider_stabilization_fraction <= 1.0
+        ):
+            raise ValueError("collider_stabilization_fraction must be finite and in [0, 1]")
+        if not math.isfinite(self.collider_contact_gap) or self.collider_contact_gap < 0.0:
+            raise ValueError("collider_contact_gap must be finite and nonnegative")
+        if self.collider_stabilization_fraction > 0.0 and not self.collider_basis.startswith("pic"):
+            raise ValueError("Contact stabilization requires a particle collider basis")
 
         if config.collider_velocity_mode not in ("forward", "backward"):
             raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
@@ -2619,6 +2659,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 state_in.body_qd if self.collider_velocity_mode == "forward" else None,
                 self._last_step_data.body_q_prev if self.collider_velocity_mode == "backward" else None,
                 dt,
+                # Particle contacts keep particles one radius from collider surfaces
+                self._mpm_model.particle_radius if self.collider_basis[:3] == "pic" else None,
             ],
             outputs=[
                 state_out.particle_q,
@@ -3557,7 +3599,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         collider_node_count = scratch.collider_node_count
         vel_node_count = scratch.velocity_node_count
 
+        # Particle contacts close their gap in the rasterized velocity
+        speculative = self.collider_basis[:3] == "pic"
+
         with self._timer("Rasterize collider"):
+            self._mpm_model.collider.query_max_dist = max(
+                self._mpm_model.collider.query_max_dist, self.collider_contact_gap
+            )
             # volume associated to each collider node
             fem.integrate(
                 integrate_fraction,
@@ -3567,6 +3615,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 output=scratch.collider_node_volume,
                 temporary_store=self.temporary_store,
             )
+
+            # Point contacts keep their particle's radius from collider surfaces
+            node_radii = None
+            if speculative:
+                node_radii = fem.borrow_temporary(self.temporary_store, shape=collider_node_count, dtype=float)
+                wp.launch(
+                    point_contact_radii,
+                    dim=collider_node_count,
+                    inputs=[
+                        scratch.collider_fraction_test.space_restriction.space_partition.space_node_indices(),
+                        scratch.collision_pic.cell_particle_indices,
+                        self._mpm_model.particle_radius,
+                    ],
+                    outputs=[node_radii],
+                )
 
             # rasterize sdf and properties to grid
             rasterize_collider(
@@ -3587,6 +3650,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 scratch.collider_ids,
                 temporary_store=self.temporary_store,
                 node_environment_offsets=scratch.collider_environment_offsets,
+                contact_gap=self.collider_contact_gap,
+                node_radii=node_radii,
             )
 
             # normal interpolation
@@ -3598,6 +3663,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     temporary_store=self.temporary_store,
                     collider_velocity=scratch.collider_velocity,
                     dt=dt,
+                    stop_distance=speculative_stop_distance(self._mpm_model.voxel_size),
                 )
 
             contact_nodes = scratch.gimp_particle_contact_nodes
@@ -3631,6 +3697,20 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     temporary_store=self.temporary_store,
                     # Preserve first-sample arithmetic; older Warp falls back to triplets.
                     bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
+                )
+
+            if self.collider_stabilization_fraction > 0.0 or self.collider_contact_gap > 0.0:
+                wp.launch(
+                    stabilize_collider_velocity,
+                    dim=collider_node_count,
+                    inputs=[
+                        dt,
+                        self.collider_stabilization_fraction,
+                        not speculative,
+                        scratch.collider_distance_field.dof_values,
+                        scratch.collider_normal_field.dof_values,
+                        scratch.collider_velocity,
+                    ],
                 )
 
     def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:

@@ -427,6 +427,7 @@ def project_outside_collider(
     body_qd: wp.array[wp.spatial_vector],
     body_q_prev: wp.array[wp.transform],
     dt: float,
+    particle_radius: wp.array[float],
     positions_out: wp.array[wp.vec3],
     velocities_out: wp.array[wp.vec3],
     velocity_gradients_out: wp.array[wp.mat33],
@@ -451,6 +452,8 @@ def project_outside_collider(
         body_qd: Rigid body velocities.
         body_q_prev: Previous rigid body transforms (for finite-difference velocity).
         dt: Timestep length.
+        particle_radius: Per-particle radius kept between particle centers and collider surfaces,
+            or null to project particle centers onto the surfaces.
         positions_out: Output particle positions.
         velocities_out: Output particle velocities.
         velocity_gradients_out: Output particle velocity gradients.
@@ -475,6 +478,8 @@ def project_outside_collider(
     sdf, sdf_gradient, sdf_vel, _collider_id, material_id = collision_sdf(
         pos_adv, environment_index, collider, body_q, body_qd, body_q_prev, dt
     )
+    if particle_radius:
+        sdf -= particle_radius[i]
 
     sdf_end = sdf - wp.dot(sdf_vel, sdf_gradient) * dt + collider.material_projection_threshold[material_id]
     if sdf_end < 0:
@@ -505,10 +510,12 @@ def rasterize_collider_kernel(
     voxel_size: float,
     activation_distance: float,
     speculative: bool,
+    stop_distance: float,
     dt: float,
     node_positions: wp.array[wp.vec3],
     node_environment_offsets: wp.array[int],
     node_volumes: wp.array[float],
+    node_radii: wp.array[float],
     collider_sdf: wp.array[float],
     collider_velocity: wp.array[wp.vec3],
     collider_normals: wp.array[wp.vec3],
@@ -532,11 +539,14 @@ def rasterize_collider_kernel(
         voxel_size: Grid voxel size [m], used to scale the activation distance.
         activation_distance: Distance (in voxels) below which to activate the collider.
         speculative: Whether to offset the collider velocity so a positive gap can close within the step.
+        stop_distance: Distance [m] from the surface where speculative approach stops.
         dt: Timestep length (used to scale adhesion and finite-difference velocity).
         node_positions: Grid node positions to sample at.
         node_environment_offsets: Packed node offsets by world, or null to query every collider.
         node_volumes: Per-node integration volumes.
-        collider_sdf: Output signed distance per node.
+        node_radii: Per-node radius kept from collider surfaces, such as the radius of the particle
+            carrying a point contact, or null for none.
+        collider_sdf: Output signed distance per node, less its radius.
         collider_velocity: Output collider velocity per node, with the speculative offset if enabled.
         collider_normals: Output contact normals per node.
         collider_friction: Output friction coefficient per node, or -1 if inactive.
@@ -556,6 +566,8 @@ def rasterize_collider_kernel(
         sdf, sdf_gradient, sdf_vel, collider_id, material_id = collision_sdf(
             x, environment_index, collider, body_q, body_qd, body_q_prev, dt
         )
+        if node_radii:
+            sdf -= node_radii[i]
         bc_active = sdf < activation_distance * voxel_size
 
     collider_sdf[i] = sdf
@@ -572,16 +584,31 @@ def rasterize_collider_kernel(
     collider_normals[i] = sdf_gradient
 
     collider_friction[i] = collider.material_friction[material_id]
-    # Speculative contacts adhere once touching, so adhesion pulls no material across the gap.
+    # Speculative contacts adhere once within their stopping distance, so adhesion pulls no material across the gap.
     adhesion = 0.0
-    if not speculative or sdf <= 0.0:
+    if not speculative or sdf <= stop_distance:
         adhesion = collider.material_adhesion[material_id] * dt * node_volumes[i] / voxel_size
     collider_adhesion[i] = adhesion
 
-    # Allow approach until the end-of-step gap closes; penetrating nodes keep the collider velocity.
+    # Allow approach until the end-of-step gap reaches the stopping distance, in the activation band of
+    # grid contacts, so particles near a wall keep sampling the volume around them instead of bunching
+    # against it; nodes within that distance keep the collider velocity.
     if speculative and dt > 0.0:
-        sdf_vel -= (wp.max(sdf, 0.0) / dt) * sdf_gradient
+        sdf_vel -= (wp.max(sdf - stop_distance, 0.0) / dt) * sdf_gradient
     collider_velocity[i] = sdf_vel
+
+
+@wp.kernel
+def point_contact_radii(
+    collider_space_node: wp.array[int],
+    evaluation_particle: wp.array[int],
+    particle_radius: wp.array[float],
+    node_radii: wp.array[float],
+):
+    """Radius of the particle carrying each point contact node."""
+    n = wp.tid()
+    space_node = collider_space_node[n]
+    node_radii[n] = wp.where(space_node >= 0, particle_radius[evaluation_particle[wp.max(space_node, 0)]], 0.0)
 
 
 @wp.func
@@ -589,6 +616,32 @@ def collider_is_deformable(collider_id: int, collider: Collider):
     if collider_id < 0:
         return False
     return collider.collider_particle_offsets[collider_id + 1] > collider.collider_particle_offsets[collider_id]
+
+
+@wp.kernel
+def stabilize_collider_velocity(
+    dt: float,
+    fraction: float,
+    close_gap: bool,
+    collider_sdf: wp.array[float],
+    collider_normals: wp.array[wp.vec3],
+    collider_velocity: wp.array[wp.vec3],
+):
+    """Correct penetration and, with ``close_gap``, allow separated contacts to close their gap.
+
+    Speculative point contacts already close their gap during rasterization.
+    """
+    i = wp.tid()
+    normal = collider_normals[i]
+    if wp.length_sq(normal) == 0.0:
+        return
+    gap = collider_sdf[i]
+    target = float(0.0)
+    if gap < 0.0:
+        target = -fraction * gap / dt
+    elif close_gap:
+        target = -gap / dt
+    collider_velocity[i] += target * normal
 
 
 @wp.kernel
@@ -745,13 +798,22 @@ def normalize_gradient(
     sdf: wp.array[float],
     velocity: wp.array[wp.vec3],
     dt: float,
+    stop_distance: float,
 ):
     i = wp.tid()
     previous_normal = normal[i]
     corrected_normal = wp.normalize(gradient[i])
     if wp.length_sq(previous_normal) > 0.0 and dt > 0.0:
-        velocity[i] += (wp.max(sdf[i], 0.0) / dt) * (previous_normal - corrected_normal)
+        velocity[i] += (wp.max(sdf[i] - stop_distance, 0.0) / dt) * (previous_normal - corrected_normal)
     normal[i] = corrected_normal
+
+
+def speculative_stop_distance(voxel_size: float) -> float:
+    """Distance [m] from collider surfaces where speculative particle contacts stop approaching.
+
+    It matches the particle contact activation band, where grid contacts activate too.
+    """
+    return float(_PIC_COLLIDER_ACTIVATION_DISTANCE) * voxel_size
 
 
 def _is_speculative(field: fem.DiscreteField) -> bool:
@@ -777,6 +839,9 @@ def rasterize_collider(
     collider_ids: wp.array[int],
     temporary_store: fem.TemporaryStore,
     node_environment_offsets: wp.array | None = None,
+    *,
+    contact_gap: float = 0.0,
+    node_radii: wp.array | None = None,
 ):
     """Rasterize collider signed-distance, normals, velocity, and material onto grid nodes.
 
@@ -803,6 +868,9 @@ def rasterize_collider(
         temporary_store: Temporary storage for intermediate buffers.
         node_environment_offsets: Packed collision-node offsets by world. If ``None``, every node
             queries every collider in stable order.
+        contact_gap: Minimum contact activation distance [m].
+        node_radii: Per-node radius subtracted from the signed distance, or ``None`` for none.
+            Point contacts pass the radius of their particle, so particles rest on their surface.
     """
     collision_node_count = collider_position_field.dof_values.shape[0]
 
@@ -820,6 +888,7 @@ def rasterize_collider(
         if collider_position_field.degree == 0
         else _COLLIDER_ACTIVATION_DISTANCE / collider_position_field.degree
     )
+    activation_distance = max(activation_distance, contact_gap / voxel_size)
 
     wp.launch(
         rasterize_collider_kernel,
@@ -832,10 +901,12 @@ def rasterize_collider(
             voxel_size,
             activation_distance,
             _is_speculative(collider_position_field),
+            speculative_stop_distance(voxel_size),
             dt,
             collider_position_field.dof_values,
             node_environment_offsets,
             collider_node_volume,
+            node_radii,
             collider_distance_field.dof_values,
             collider_velocity,
             collider_normal_field.dof_values,
@@ -854,6 +925,7 @@ def interpolate_collider_normals(
     *,
     collider_velocity: wp.array[wp.vec3],
     dt: float,
+    stop_distance: float = 0.0,
 ):
     """Smooth collider normals by computing the gradient of the distance field.
 
@@ -868,6 +940,8 @@ def interpolate_collider_normals(
         temporary_store: Temporary storage for intermediate buffers.
         collider_velocity: Collider constraint velocities, updated for the corrected normals [m/s].
         dt: Timestep length [s].
+        stop_distance: Distance [m] where speculative contacts stop approaching, as in
+            :func:`rasterize_collider`.
     """
     corrected_normal = wp.empty_like(collider_normal_field.dof_values)
     fem.interpolate(
@@ -889,6 +963,7 @@ def interpolate_collider_normals(
             collider_distance_field.dof_values,
             collider_velocity,
             dt if _is_speculative(collider_normal_field) else 0.0,
+            stop_distance,
         ],
     )
 

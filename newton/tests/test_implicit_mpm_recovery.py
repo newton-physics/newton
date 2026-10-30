@@ -7,10 +7,150 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.implicit_mpm.rasterized_collisions import stabilize_collider_velocity
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 wp.set_module_options({"enable_backward": False})
+
+_PARTICLE_RADIUS = 0.1
+
+
+def test_contact_target(test, device):
+    """Correct penetration, allow gap closure, and preserve tangential collider motion."""
+    with wp.ScopedDevice(device):
+        sdf = wp.array([-0.02, 0.05, 0.0, -0.02], dtype=float, device=device)
+        normals = wp.array([(0, 0, 1)] * 3 + [(0, 0, 0)], dtype=wp.vec3, device=device)
+        for close_gap, gap_velocity in ((True, -0.4), (False, 0.1)):
+            with test.subTest(close_gap=close_gap):
+                velocity = wp.array([(0.2, -0.3, 0.1)] * 4, dtype=wp.vec3, device=device)
+                wp.launch(
+                    stabilize_collider_velocity,
+                    dim=4,
+                    inputs=[0.1, 0.25, close_gap, sdf, normals, velocity],
+                    device=device,
+                )
+                np.testing.assert_allclose(
+                    velocity.numpy(),
+                    [(0.2, -0.3, 0.15), (0.2, -0.3, gap_velocity), (0.2, -0.3, 0.1), (0.2, -0.3, 0.1)],
+                    atol=1.0e-7,
+                )
+
+
+def _make_contact_solver(device, height, velocity, fraction, gap):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_particle(pos=(0.5, 0.5, height), vel=velocity, mass=1.0, radius=_PARTICLE_RADIUS)
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.0))
+    model = builder.finalize(device=device)
+    config = SolverImplicitMPM.Config(
+        voxel_size=1.0,
+        strain_basis="P0",
+        collider_basis="pic8",
+        solver="jacobi",
+        max_iterations=1,
+        tolerance=0.0,
+        warmstart_mode="none",
+        air_drag=1.0e-6,
+        collider_stabilization_fraction=fraction,
+        collider_contact_gap=gap,
+    )
+    return model, SolverImplicitMPM(model, config=config)
+
+
+def test_contact_recovery_truncated(test, device):
+    """Push a penetrating particle back to its radius from the surface over one-iteration P0 steps."""
+    with wp.ScopedDevice(device):
+        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS - 0.02, (0.0, 0.0, 0.0), 0.25, 0.1)
+        state = model.state()
+        for _ in range(8):
+            solver.step(state, state, None, None, 0.1)
+        height = state.particle_q.numpy()[0, 2]
+        test.assertGreater(height, _PARTICLE_RADIUS - 0.003)
+        test.assertLess(height, _PARTICLE_RADIUS + 0.03)
+
+
+def test_predictive_contact_truncated(test, device):
+    """Stop an approaching particle at the contact band edge, one radius plus 0.25 voxel out, in one P0 iteration."""
+    with wp.ScopedDevice(device):
+        model, solver = _make_contact_solver(device, _PARTICLE_RADIUS + 0.6, (0.2, 0.0, -10.0), 0.25, 1.0)
+        state = model.state()
+        solver.step(state, state, None, None, 0.1)
+        test.assertAlmostEqual(float(state.particle_q.numpy()[0, 2]), _PARTICLE_RADIUS + 0.25, delta=2.0e-5)
+        test.assertAlmostEqual(float(state.particle_qd.numpy()[0, 0]), 0.2, delta=2.0e-3)
+
+
+def test_project_outside_keeps_particle_radius(test, device):
+    """Project penetrating particles to one radius from collider surfaces with particle contacts only."""
+    with wp.ScopedDevice(device):
+        model = _make_contact_solver(device, -0.05, (0.0, 0.0, 0.0), 0.0, 0.0)[0]
+        # Projection lets particles sink up to the default threshold of 0.01 voxel
+        threshold = 0.01
+        for collider_basis, height in (("pic8", _PARTICLE_RADIUS - threshold), ("S2", -threshold)):
+            with test.subTest(collider_basis=collider_basis):
+                solver = SolverImplicitMPM(
+                    model, config=SolverImplicitMPM.Config(voxel_size=1.0, collider_basis=collider_basis)
+                )
+                state = model.state()
+                solver.project_outside(state, state, 0.1)
+                test.assertAlmostEqual(float(state.particle_q.numpy()[0, 2]), height, delta=1.0e-5)
+
+
+def test_predictive_contact_grid_bases(test, device):
+    """Prevent a wall crossing with predictive contacts on grid collider bases."""
+    with wp.ScopedDevice(device):
+        capture_modes = (False, True) if wp.get_device(device).is_cuda else (False,)
+        for basis in ("Q1", "S2", "S3"):
+            for captured in capture_modes:
+                for gap in (0.0, 1.0):
+                    with test.subTest(basis=basis, captured=captured, gap=gap):
+                        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                        SolverImplicitMPM.register_custom_attributes(builder)
+                        builder.add_particle(pos=(0.5, 0.5, 1.0), vel=(0.2, 0.0, -10.0), mass=1000.0, radius=0.1)
+                        builder.add_ground_plane(height=0.25, cfg=newton.ModelBuilder.ShapeConfig(mu=0.0))
+                        model = builder.finalize(device=device)
+                        # Isolate contact response from elasticity and material pressure.
+                        model.mpm.young_modulus.fill_(1.0e15)
+                        model.mpm.yield_pressure.zero_()
+                        model.mpm.yield_stress.zero_()
+                        model.mpm.friction.zero_()
+                        model.mpm.viscosity.zero_()
+                        solver = SolverImplicitMPM(
+                            model,
+                            config=SolverImplicitMPM.Config(
+                                voxel_size=1.0,
+                                grid_type="fixed",
+                                grid_padding=2,
+                                max_active_cell_count=128,
+                                collider_basis=basis,
+                                transfer_scheme="pic",
+                                solver="gs",
+                                max_iterations=50,
+                                tolerance=0.0,
+                                warmstart_mode="none",
+                                air_drag=1.0e-6,
+                                collider_contact_gap=gap,
+                            ),
+                        )
+                        state = model.state()
+                        if captured:
+                            solver.step(state, state, None, None, 0.1)
+                            wp.copy(state.particle_q, model.particle_q)
+                            wp.copy(state.particle_qd, model.particle_qd)
+                            solver.reset(state)
+                            with wp.ScopedCapture(device=device) as capture:
+                                solver.step(state, state, None, None, 0.1)
+                            wp.capture_launch(capture.graph)
+                        else:
+                            solver.step(state, state, None, None, 0.1)
+                        position = state.particle_q.numpy()[0]
+                        velocity = state.particle_qd.numpy()[0]
+                        test.assertTrue(np.isfinite(position).all())
+                        test.assertAlmostEqual(float(velocity[0]), 0.2, delta=2.0e-4)
+                        if gap > 0.0:
+                            test.assertAlmostEqual(float(position[2]), 0.25, delta=2.0e-5)
+                        else:
+                            test.assertLess(float(position[2]), 0.25)
 
 
 def _make_volume_solver(device, fraction, *, scheme="pic"):
@@ -247,7 +387,7 @@ def test_critical_fraction_flags_loose_material(test, device):
 
 
 def test_recovery_config_validation(test, device):
-    """Reject invalid recovery fractions and unsupported combinations."""
+    """Reject invalid recovery fractions, gaps, and unsupported combinations."""
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder()
         SolverImplicitMPM.register_custom_attributes(builder)
@@ -257,6 +397,9 @@ def test_recovery_config_validation(test, device):
             {"density_strain_fraction": float("nan")},
             {"density_strain_fraction": -0.1},
             {"critical_fraction_measurement": "box"},
+            {"collider_stabilization_fraction": float("inf")},
+            {"collider_contact_gap": -0.01},
+            {"collider_stabilization_fraction": 0.1, "collider_basis": "S2"},
         ):
             with test.subTest(options=options), test.assertRaises(ValueError):
                 SolverImplicitMPM(model, config=SolverImplicitMPM.Config(**options))
@@ -267,6 +410,11 @@ class TestImplicitMPMRecovery(unittest.TestCase):
 
 
 for function in (
+    test_contact_target,
+    test_contact_recovery_truncated,
+    test_predictive_contact_truncated,
+    test_project_outside_keeps_particle_radius,
+    test_predictive_contact_grid_bases,
     test_volume_recovery_truncated,
     test_density_measures_elastic_volume,
     test_density_offset_bounded_in_p1d_modes,
