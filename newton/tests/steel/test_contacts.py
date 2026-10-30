@@ -3611,9 +3611,13 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
                 xform=wp.transform(wp.vec3(0.0, 0.0, -0.02)),
                 cfg=newton.ModelBuilder.ShapeConfig(mu=mu),
             )
-            box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, half)), mass=mass)
+            box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, half)))
             builder.add_shape_box(
-                box, hx=half, hy=half, hz=half, cfg=newton.ModelBuilder.ShapeConfig(mu=mu, density=0.0)
+                box,
+                hx=half,
+                hy=half,
+                hz=half,
+                cfg=newton.ModelBuilder.ShapeConfig(mu=mu, density=mass / (2 * half) ** 3),
             )
             model = builder.finalize(device=wp.get_cuda_device())
             solver = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.2)
@@ -3625,7 +3629,7 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
                 body_qd[floor, 0] = floor_velocity
                 state.body_qd.assign(body_qd)
             body_f = np.zeros((model.body_count, 6), dtype=np.float32)
-            body_f[box, 0] = mu * mass * 9.81
+            body_f[box, 0] = mu * float(model.body_mass.numpy()[box]) * 9.81
             control = model.control()
             kept = []
             for _ in range(60):
