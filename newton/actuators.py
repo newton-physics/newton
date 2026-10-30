@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from ._src.actuators import (
     Actuator,
     ActuatorParsed,
+    ActuatorView,
     ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -43,6 +44,7 @@ from ._src.exceptions import NewtonDeprecationWarning
 __all__ = [
     "Actuator",
     "ActuatorParsed",
+    "ActuatorView",
     "ClampingBase",
     "ClampingDCMotor",
     "ClampingMaxEffort",

@@ -28,6 +28,7 @@ construction.
 
    Actuator
    ActuatorParsed
+   ActuatorView
    ClampingBase
    ClampingDCMotor
    ClampingMaxEffort

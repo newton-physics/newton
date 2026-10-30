@@ -2648,6 +2648,8 @@ class _BorrowedActuatorView:
             )
         }
 
+    get_actuator_view = ArticulationView.get_actuator_view
+    _get_actuator_view = ArticulationView._get_actuator_view
     get_actuator_parameter = ArticulationView.get_actuator_parameter
     set_actuator_parameter = ArticulationView.set_actuator_parameter
     _get_actuator_dof_mapping = ArticulationView._get_actuator_dof_mapping

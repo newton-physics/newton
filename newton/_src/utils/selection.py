@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import operator
 import re
@@ -16,6 +17,7 @@ import numpy as np
 import warp as wp
 from warp.types import is_array, type_size, type_size_in_bytes
 
+from ..actuators.view import ActuatorView
 from ..exceptions import NewtonDeprecationWarning
 from ..sim import (
     Control,
@@ -263,38 +265,6 @@ def _map_explicit_dofs_to_actuator_kernel(
     """Gather ``mapping[world, arti, value] = lookup[model_indices[world, arti, value]]``."""
     world, arti, value = wp.tid()
     mapping[world, arti, value] = lookup[model_indices[world, arti, value]]
-
-
-@wp.kernel
-def _gather_1d_kernel(
-    src: Any,
-    indices: wp.array[int],
-    dst: Any,
-):
-    """Gather ``dst[tid] = src[indices[tid]]``. Index -1 means skip (leave dst unchanged)."""
-    tid = wp.tid()
-    idx = indices[tid]
-    if idx >= 0:
-        dst[tid] = src[idx]
-
-
-@wp.kernel
-def _scatter_masked_2d_kernel(
-    values: Any,
-    mapping: wp.array[int],
-    mask: wp.array[bool],
-    cols: int,
-    dst: Any,
-):
-    """Scatter ``dst[mapping[row * cols + col]] = values[row, col]`` where ``mask[row]`` is true.
-
-    Mapping entries of -1 are skipped.
-    """
-    row, col = wp.tid()
-    if mask[row]:
-        dst_idx = mapping[row * cols + col]
-        if dst_idx >= 0:
-            dst[dst_idx] = values[row, col]
 
 
 # ========================================================================================
@@ -2485,7 +2455,7 @@ class ArticulationView:
         Note:
             Assumes one DOF per actuator.
 
-        Returns array of shape (world_count * dofs_per_world,) where each element is:
+        Returns array of shape (world_count, dofs_per_world) where each element is:
         - actuator parameter index if that DOF is actuated
         - -1 if that DOF is not actuated by this actuator
         """
@@ -2500,7 +2470,7 @@ class ArticulationView:
         mapping_shape = (self.world_count, self.count_per_world, dof_layout.selected_value_count)
 
         if self.world_count * self.count_per_world * dof_layout.selected_value_count == 0:
-            return wp.empty(0, dtype=int, device=device)
+            return wp.empty((self.world_count, 0), dtype=int, device=device)
 
         if device.is_cuda and wp.get_stream(device).is_capturing and not wp.is_mempool_enabled(device):
             raise RuntimeError(
@@ -2549,9 +2519,26 @@ class ArticulationView:
                 outputs=[mapping],
                 device=device,
             )
-        return mapping.flatten()
+        return mapping.reshape((self.world_count, self.count_per_world * dof_layout.selected_value_count))
 
-    def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str):
+    def get_actuator_view(self, actuators: list[Actuator]) -> ActuatorView:
+        """Get a cached actuator view over the selected velocity-DOF columns.
+
+        Args:
+            actuators: Actuators to expose through the returned view.
+
+        Returns:
+            A model-independent actuator view.
+        """
+        return self._get_actuator_view(tuple(actuators))
+
+    @functools.cache  # noqa: B019 - cache is tied to view lifetime
+    def _get_actuator_view(self, actuators: tuple[Actuator, ...]) -> ActuatorView:
+        return ActuatorView._from_mappings(
+            {actuator: self._get_actuator_dof_mapping(actuator) for actuator in actuators}
+        )
+
+    def get_actuator_parameter(self, actuator: Actuator, component: Any, name: str) -> wp.array2d[Any]:
         """Read an actuator-component parameter for every DOF in this view.
 
         The returned array covers all DOFs selected by the view (one column
@@ -2559,17 +2546,11 @@ class ArticulationView:
         *actuator* are left at zero; driven DOFs contain the
         corresponding value gathered from ``component.<name>``.
 
-        The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
-        an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
-        captured in a CUDA graph before then builds a mapping that only that graph uses: it
-        requires the device's memory pool, and every replay rebuilds it. Call either method once
-        before capturing to keep the build out of the graph. This method allocates its result on
-        every call, so capturing it always requires the memory pool.
-
         Args:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
-            component: The component that owns the parameter — a
+            component: The component that owns the parameter, or its
+                actuator-relative string path — a
                 :class:`~newton.actuators.DriveBase`,
                 :class:`~newton.actuators.ClampingBase`, or
                 :class:`~newton.actuators.Delay` instance.
@@ -2581,22 +2562,7 @@ class ArticulationView:
             ``dofs_per_world`` is the total number of DOFs in the view (not
             just the actuated subset).
         """
-        mapping = self._get_actuator_dof_mapping(actuator)
-        if len(mapping) == 0:
-            return wp.empty((self.world_count, 0), dtype=float, device=self.device)
-
-        src = getattr(component, name)
-        dofs_per_world = len(mapping) // self.world_count
-
-        dst = wp.zeros(len(mapping), dtype=src.dtype, device=self.device)
-        wp.launch(
-            _gather_1d_kernel,
-            dim=len(mapping),
-            inputs=[src, mapping],
-            outputs=[dst],
-            device=self.device,
-        )
-        return dst.reshape((self.world_count, dofs_per_world))
+        return self.get_actuator_view([actuator]).get_actuator_parameter(actuator, component, name)
 
     def set_actuator_parameter(
         self,
@@ -2612,16 +2578,11 @@ class ArticulationView:
         per world).  Only entries whose DOFs are actually driven by *actuator*
         are written back to ``component.<name>``; the rest are ignored.
 
-        The first eager :meth:`get_actuator_parameter` or :meth:`set_actuator_parameter` call for
-        an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
-        captured in a CUDA graph before then builds a mapping that only that graph uses: it
-        requires the device's memory pool, and every replay rebuilds it. Call either method once
-        before capturing to keep the build out of the graph.
-
         Args:
             actuator: Actuator instance whose DOF indices determine which
                 view DOFs are considered actuated.
-            component: The component that owns the parameter — a
+            component: The component that owns the parameter, or its
+                actuator-relative string path — a
                 :class:`~newton.actuators.DriveBase`,
                 :class:`~newton.actuators.ClampingBase`, or
                 :class:`~newton.actuators.Delay` instance.
@@ -2632,27 +2593,7 @@ class ArticulationView:
             mask: Per-world mask ``(world_count,)``. Only masked worlds are updated.
         """
         mask = self._resolve_world_mask(mask)
-        mapping = self._get_actuator_dof_mapping(actuator)
-        if len(mapping) == 0:
-            return
-
-        dst = getattr(component, name)
-        dofs_per_world = len(mapping) // self.world_count
-        expected_shape = (self.world_count, dofs_per_world, *dst.shape[1:])
-
-        if not is_array(values):
-            values = wp.array(values, dtype=dst.dtype, shape=expected_shape, device=self.device, copy=False)
-
-        if values.shape[:2] != expected_shape[:2]:
-            raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
-
-        wp.launch(
-            _scatter_masked_2d_kernel,
-            dim=(self.world_count, dofs_per_world),
-            inputs=[values, mapping, mask, dofs_per_world],
-            outputs=[dst],
-            device=self.device,
-        )
+        self.get_actuator_view([actuator]).set_actuator_parameter(actuator, component, name, values, mask)
 
 
 @wp.kernel
