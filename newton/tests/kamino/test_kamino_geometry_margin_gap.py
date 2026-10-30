@@ -374,7 +374,7 @@ class TestMarginGapSolver(unittest.TestCase):
     """Verify that the solver treats margin as the rest offset and gap as detection-only.
 
     Uses a single free-joint sphere above a static ground box (same pattern as
-    ``build_free_joint_test``).  Only 5 steps at dt=0.005 — enough to observe
+    ``build_free_joint_test``).  Only 5 steps at dt=0.01 — enough to observe
     the solver's immediate response without waiting for convergence.
     """
 

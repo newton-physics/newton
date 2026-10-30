@@ -1479,6 +1479,12 @@ class JointsModel:
     Shape of ``(sum_of_num_joint_dofs,)``.
     """
 
+    limit_ke: wp.array[wp.float32] | None = None
+    """Limit stiffness [N/m or N m/rad], indexed by joint DoF."""
+
+    limit_kd: wp.array[wp.float32] | None = None
+    """Limit damping [N s/m or N m s/rad], indexed by joint DoF."""
+
     tau_j_max: wp.array[wp.float32] | None = None
     """
     Maximum joint torque limits of each joint (as flat array).
