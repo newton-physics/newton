@@ -1739,14 +1739,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
         self.enable_timers = enable_timers
 
-        self.volume_recovery_fraction = float(config.volume_recovery_fraction)
-        if not math.isfinite(self.volume_recovery_fraction) or not 0.0 <= self.volume_recovery_fraction <= 1.0:
+        self._volume_recovery_fraction = float(config.volume_recovery_fraction)
+        if not math.isfinite(self._volume_recovery_fraction) or not 0.0 <= self._volume_recovery_fraction <= 1.0:
             raise ValueError("volume_recovery_fraction must be finite and in [0, 1]")
         for name in ("volume_recovery_measurement", "critical_fraction_measurement"):
             if getattr(config, name) not in ("grid", "particle"):
                 raise ValueError(f"{name} must be 'grid' or 'particle', got {getattr(config, name)!r}")
-        self.volume_recovery_measurement = config.volume_recovery_measurement
-        self.critical_fraction_measurement = config.critical_fraction_measurement
+        self._volume_recovery_measurement = config.volume_recovery_measurement
+        self._critical_fraction_measurement = config.critical_fraction_measurement
 
         self.velocity_basis = "Q1"
         self.strain_basis = config.strain_basis
@@ -1795,13 +1795,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
         if self.gs_colored_contacts and not supports_colored_contacts:
             raise ValueError("Colored contacts require discontinuous grid strain, particle contacts, and GS or GS-SOA")
-        self.collider_recovery_fraction = float(config.collider_recovery_fraction)
-        self.collider_contact_gap = float(config.collider_contact_gap)
-        if not math.isfinite(self.collider_recovery_fraction) or not 0.0 <= self.collider_recovery_fraction <= 1.0:
+        self._collider_recovery_fraction = float(config.collider_recovery_fraction)
+        self._collider_contact_gap = float(config.collider_contact_gap)
+        if not math.isfinite(self._collider_recovery_fraction) or not 0.0 <= self._collider_recovery_fraction <= 1.0:
             raise ValueError("collider_recovery_fraction must be finite and in [0, 1]")
-        if not math.isfinite(self.collider_contact_gap) or self.collider_contact_gap < 0.0:
+        if not math.isfinite(self._collider_contact_gap) or self._collider_contact_gap < 0.0:
             raise ValueError("collider_contact_gap must be finite and nonnegative")
-        if self.collider_recovery_fraction > 0.0 and not self.collider_basis.startswith("pic"):
+        if self._collider_recovery_fraction > 0.0 and not self.collider_basis.startswith("pic"):
             raise ValueError("Collider recovery requires a particle collider basis")
 
         if config.collider_velocity_mode not in ("forward", "backward"):
@@ -2649,33 +2649,34 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         collider.query_max_dist = (gap if gap is not None else prev_gap) + self._contact_radius_reach()
 
         self._last_step_data.require_collider_previous_position(state_in.body_q)
-        wp.launch(
-            project_outside_collider,
-            dim=state_in.particle_count,
-            inputs=[
-                state_in.particle_q,
-                state_in.particle_qd,
-                state_in.mpm.particle_qd_grad,
-                self._mpm_model.particle_flags,
-                self.model.particle_mass,
-                self._particle_environment,
-                self._mpm_model.collider,
-                state_in.body_q,
-                state_in.body_qd if self.collider_velocity_mode == "forward" else None,
-                self._last_step_data.body_q_prev if self.collider_velocity_mode == "backward" else None,
-                dt,
-                # Particle contacts keep particles one radius from collider surfaces
-                self._mpm_model.particle_radius if self.collider_basis[:3] == "pic" else None,
-            ],
-            outputs=[
-                state_out.particle_q,
-                state_out.particle_qd,
-                state_out.mpm.particle_qd_grad,
-            ],
-            device=state_in.particle_q.device,
-        )
-
-        collider.query_max_dist = prev_gap
+        try:
+            wp.launch(
+                project_outside_collider,
+                dim=state_in.particle_count,
+                inputs=[
+                    state_in.particle_q,
+                    state_in.particle_qd,
+                    state_in.mpm.particle_qd_grad,
+                    self._mpm_model.particle_flags,
+                    self.model.particle_mass,
+                    self._particle_environment,
+                    self._mpm_model.collider,
+                    state_in.body_q,
+                    state_in.body_qd if self.collider_velocity_mode == "forward" else None,
+                    self._last_step_data.body_q_prev if self.collider_velocity_mode == "backward" else None,
+                    dt,
+                    # Particle contacts keep particles one radius from collider surfaces
+                    self._mpm_model.particle_radius if self.collider_basis[:3] == "pic" else None,
+                ],
+                outputs=[
+                    state_out.particle_q,
+                    state_out.particle_qd,
+                    state_out.mpm.particle_qd_grad,
+                ],
+                device=state_in.particle_q.device,
+            )
+        finally:
+            collider.query_max_dist = prev_gap
 
     def update_particle_frames(
         self,
@@ -3609,7 +3610,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._mpm_model.collider.query_max_dist = max(
                 self._mpm_model.collider.query_max_dist,
                 self._contact_radius_reach()
-                + max(self.collider_contact_gap, speculative_stop_distance(self._mpm_model.voxel_size)),
+                + max(self._collider_contact_gap, speculative_stop_distance(self._mpm_model.voxel_size)),
             )
             # volume associated to each collider node
             fem.integrate(
@@ -3655,7 +3656,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 scratch.collider_ids,
                 temporary_store=self.temporary_store,
                 node_environment_offsets=scratch.collider_environment_offsets,
-                contact_gap=self.collider_contact_gap,
+                contact_gap=self._collider_contact_gap,
                 node_radii=node_radii,
             )
 
@@ -3718,13 +3719,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
 
-            if self.collider_recovery_fraction > 0.0 or self.collider_contact_gap > 0.0:
+            if self._collider_recovery_fraction > 0.0 or self._collider_contact_gap > 0.0:
                 wp.launch(
                     stabilize_collider_velocity,
                     dim=collider_node_count,
                     inputs=[
                         dt,
-                        self.collider_recovery_fraction,
+                        self._collider_recovery_fraction,
                         not speculative,
                         scratch.collider_distance_field.dof_values,
                         scratch.collider_normal_field.dof_values,
@@ -3961,15 +3962,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def _measures_density(self) -> bool:
         """Whether critical packing or density feedback needs a density measurement."""
-        return self._mpm_model.critical_fraction > 0.0 or self.volume_recovery_fraction > 0.0
+        return self._mpm_model.critical_fraction > 0.0 or self._volume_recovery_fraction > 0.0
 
     def _density_measurements(self) -> set[str]:
         """Measurements needed this step, among ``"grid"`` and ``"particle"``."""
         measurements = set()
         if self._mpm_model.critical_fraction > 0.0:
-            measurements.add(self.critical_fraction_measurement)
-        if self.volume_recovery_fraction > 0.0:
-            measurements.add(self.volume_recovery_measurement)
+            measurements.add(self._critical_fraction_measurement)
+        if self._volume_recovery_fraction > 0.0:
+            measurements.add(self._volume_recovery_measurement)
         return measurements
 
     def _build_density_strain_offset(
@@ -4106,17 +4107,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             laws.append(
                 (
                     critical_offset_values,
-                    self.critical_fraction_measurement,
+                    self._critical_fraction_measurement,
                     model.critical_fraction,
                     scratch.critical_strain_offset,
                 )
             )
-        if self.volume_recovery_fraction > 0.0:
+        if self._volume_recovery_fraction > 0.0:
             laws.append(
                 (
                     feedback_offset_values,
-                    self.volume_recovery_measurement,
-                    self.volume_recovery_fraction,
+                    self._volume_recovery_measurement,
+                    self._volume_recovery_fraction,
                     scratch.unilateral_strain_offset,
                 )
             )
