@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="440" viewBox="0 0 960 440" font-family="DejaVu Sans, Arial, sans-serif" font-size="15">
+  <rect x="0" y="0" width="960" height="440" fill="#ffffff"/>
+
+  <!-- Left panel: self-contact -->
+  <text x="40" y="34" font-size="18" font-weight="bold" fill="#222">Self-contact (vertex against a triangle)</text>
+
+  <!-- other surface (triangle, edge-on) -->
+  <line x1="60" y1="330" x2="440" y2="330" stroke="#8c6d31" stroke-width="5" stroke-linecap="round"/>
+  <text x="60" y="356" fill="#8c6d31">other triangle, edge-on</text>
+
+  <!-- query radius (margin + gap) -->
+  <circle cx="250" cy="200" r="130" fill="none" stroke="#999" stroke-width="2" stroke-dasharray="7 6"/>
+  <!-- interaction distance (margin) -->
+  <circle cx="250" cy="200" r="90" fill="#dbe9f6" fill-opacity="0.55" stroke="#2b6ca3" stroke-width="2.5"/>
+  <!-- vertex -->
+  <circle cx="250" cy="200" r="6" fill="#222"/>
+  <text x="262" y="196" fill="#222">vertex</text>
+
+  <!-- margin arrow -->
+  <line x1="250" y1="200" x2="250" y2="110" stroke="#2b6ca3" stroke-width="2"/>
+  <polygon points="250,104 245,116 255,116" fill="#2b6ca3"/>
+  <text x="258" y="150" fill="#2b6ca3">interaction distance</text>
+  <text x="258" y="168" fill="#2b6ca3" font-size="13">particle_self_contact_margin</text>
+
+  <!-- gap arrow -->
+  <line x1="250" y1="110" x2="250" y2="70" stroke="#777" stroke-width="2"/>
+  <polygon points="250,64 245,76 255,76" fill="#777"/>
+  <text x="258" y="92" fill="#555">detection slack</text>
+  <text x="258" y="108" fill="#555" font-size="13">particle_self_contact_gap</text>
+
+  <!-- query radius label -->
+  <text x="40" y="60" fill="#777" font-size="13">query radius = margin + gap (dashed)</text>
+
+  <!-- motion budget -->
+  <line x1="130" y1="250" x2="185" y2="250" stroke="#b3471e" stroke-width="3"/>
+  <polygon points="192,250 180,244 180,256" fill="#b3471e"/>
+  <text x="60" y="282" fill="#b3471e" font-size="13">motion budget between detections</text>
+  <text x="60" y="298" fill="#b3471e" font-size="13">0.5 x relaxation x query radius</text>
+
+  <!-- Divider -->
+  <line x1="480" y1="20" x2="480" y2="420" stroke="#ddd" stroke-width="1.5"/>
+
+  <!-- Right panel: rigid-soft contact -->
+  <text x="510" y="34" font-size="18" font-weight="bold" fill="#222">Rigid-soft contact (particle against a shape)</text>
+
+  <!-- shape surface -->
+  <rect x="530" y="330" width="390" height="70" fill="#c9c9c9" stroke="#666" stroke-width="2"/>
+  <text x="540" y="372" fill="#444">shape (rigid or static)</text>
+
+  <!-- shape margin band -->
+  <rect x="530" y="300" width="390" height="30" fill="#f1e3c8" fill-opacity="0.8" stroke="none"/>
+  <line x1="530" y1="300" x2="920" y2="300" stroke="#b08a3e" stroke-width="2"/>
+  <text x="720" y="322" fill="#8c6d31" font-size="13">shape margin (ShapeConfig.margin)</text>
+
+  <!-- pipeline gap band (dashed) -->
+  <line x1="530" y1="262" x2="920" y2="262" stroke="#999" stroke-width="2" stroke-dasharray="7 6"/>
+  <text x="720" y="284" fill="#666" font-size="13">+ soft_contact_gap (detection only)</text>
+
+  <!-- particle -->
+  <circle cx="640" cy="232" r="52" fill="#dbe9f6" fill-opacity="0.55" stroke="#2b6ca3" stroke-width="2.5"/>
+  <circle cx="640" cy="232" r="6" fill="#222"/>
+  <line x1="640" y1="232" x2="640" y2="284" stroke="#2b6ca3" stroke-width="2"/>
+  <polygon points="640,290 635,278 645,278" fill="#2b6ca3"/>
+  <text x="560" y="160" fill="#2b6ca3">particle radius</text>
+  <text x="560" y="178" fill="#2b6ca3" font-size="13">particle_radius</text>
+  <line x1="612" y1="184" x2="636" y2="206" stroke="#2b6ca3" stroke-width="1.5"/>
+
+  <!-- interaction distance statement -->
+  <text x="510" y="420" fill="#222" font-size="14">contact acts when surface distance &lt; particle radius + shape margin</text>
+  <text x="510" y="62" fill="#777" font-size="13">detected when distance &lt; particle radius + shape margin + soft_contact_gap</text>
+
+  <!-- footer -->
+  <text x="40" y="420" fill="#222" font-size="14">contact acts when distance &lt; margin; pairs are found out to margin + gap</text>
+</svg>
