@@ -2865,6 +2865,7 @@ def populate_connect_J_for_size(
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     connect_parent_prescribed: wp.array[int],
+    body_has_response_dofs: wp.array[int],
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_com: wp.array[wp.vec3],
@@ -2890,7 +2891,8 @@ def populate_connect_J_for_size(
     pair acts at one world point and adds no couple while the closure is open. Once the
     closure is satisfied this is the per-anchor Jacobian. Shared ancestors cancel. The
     anchors are the translations of the closure joint's ``joint_X_p`` / ``joint_X_c``,
-    read every step.
+    read every step. If either body has no response DOFs (such as a fixed root of the
+    articulation), only one side takes the impulse, so each body keeps its own anchor.
 
     A prescribed parent (a kinematic body outside the child's articulation, or the world
     when ``connect_body_p[k] < 0``) contributes no DOFs and takes no reaction, so the row
@@ -2934,7 +2936,7 @@ def populate_connect_J_for_size(
         rel_a = p_a - origin
         rel_b = p_b - origin
         delta = p_a - p_b
-        if not prescribed:
+        if not prescribed and body_has_response_dofs[body_p] != 0 and body_has_response_dofs[body_c] != 0:
             # Both walks take their lever arm from the anchors' midpoint, so the impulse pair
             # is not a couple across an open closure.
             rel_a = (p_a - 0.5 * delta) - origin
