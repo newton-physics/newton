@@ -4996,6 +4996,14 @@ class ModelBuilder:
         (included in ``newton[sim]``) to resolve native defaults, and raises
         :class:`ImportError` if it is unavailable. Other MJCF import remains independent of MuJoCo.
 
+        Geom material defaults and RGBA are preserved. Meshes also retain base-color textures
+        (the ``texture`` attribute or ``rgb``/``rgba`` layers) and non-negative ``roughness``
+        and ``metallic`` values. Texture paths are retained for lazy loading by renderers.
+        RGB bindings take precedence over RGBA bindings, including inherited defaults.
+        MJCF textures default to a white tint. Without an MJCF color or base-color texture,
+        mesh-file appearance and primitive palette colors are retained for compatibility.
+        Other PBR texture layers are not imported.
+
         Args:
             source: The filename of the MuJoCo file to parse, or the MJCF XML string content.
             xform: The transform to apply to the imported mechanism.

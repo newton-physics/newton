@@ -1929,18 +1929,21 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
 class TestImportMjcfMeshFileCache(unittest.TestCase):
     """A mesh file referenced by several geoms is parsed once per import."""
 
-    _OBJ_TRIANGLE = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+    _OBJ_TRIANGLE = "mtllib mesh.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nusemtl paint\nf 1/1 2/2 3/3\n"
 
     _MJCF = """\
 <mujoco>
   <asset>
     <mesh name="m" file="mesh.obj"/>
     <mesh name="m_big" file="mesh.obj" scale="2 2 2"/>
+    <material name="metal" metallic="0.8" roughness="0.2"/>
+    <material name="matte" metallic="0" roughness="0.9"/>
+    <material name="unset" metallic="-1" roughness="-1" specular="0.5"/>
   </asset>
   <worldbody>
-    <body name="a"><freejoint/><geom type="mesh" mesh="m"/><geom type="mesh" mesh="m_big"/></body>
-    <body name="b" pos="1 0 0"><freejoint/><geom type="mesh" mesh="m"/></body>
-    <body name="c" pos="2 0 0"><freejoint/><geom type="mesh" mesh="m"/></body>
+    <body name="a"><freejoint/><geom type="mesh" mesh="m" material="metal"/><geom type="mesh" mesh="m_big" material="metal"/></body>
+    <body name="b" pos="1 0 0"><freejoint/><geom type="mesh" mesh="m" material="matte"/></body>
+    <body name="c" pos="2 0 0"><freejoint/><geom type="mesh" mesh="m" material="unset"/></body>
   </worldbody>
 </mujoco>"""
 
@@ -1958,6 +1961,10 @@ class TestImportMjcfMeshFileCache(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             with open(os.path.join(tmpdir, "mesh.obj"), "w") as f:
                 f.write(self._OBJ_TRIANGLE)
+            with open(os.path.join(tmpdir, "mesh.mtl"), "w") as f:
+                f.write("newmtl paint\nKd 0.2 0.4 0.6\nNs 0.25\nmap_Kd texture.ppm\n")
+            with open(os.path.join(tmpdir, "texture.ppm"), "w") as f:
+                f.write("P3\n1 1\n255\n51 102 153\n")
             mjcf_path = os.path.join(tmpdir, "test.xml")
             with open(mjcf_path, "w") as f:
                 f.write(self._MJCF)
@@ -1977,6 +1984,11 @@ class TestImportMjcfMeshFileCache(unittest.TestCase):
         self.assertEqual(len({id(m) for m in meshes}), 4)
         extents = sorted(float(np.ptp(np.asarray(m.vertices))) for m in meshes)
         np.testing.assert_allclose(extents, [1.0, 1.0, 1.0, 2.0], atol=1e-6)
+        self.assertEqual([mesh.metallic for mesh in meshes], [0.8, 0.8, 0.0, None])
+        self.assertEqual([mesh.roughness for mesh in meshes], [0.2, 0.2, 0.9, 0.75])
+        np.testing.assert_allclose(builder.shape_color, [[0.2, 0.4, 0.6]] * 4)
+        for mesh in meshes:
+            np.testing.assert_array_equal(mesh.texture, [[[51, 102, 153]]])
 
 
 class TestImportMjcfMeshScale(unittest.TestCase):
@@ -2248,30 +2260,66 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
         np.testing.assert_array_equal(mesh.indices, [0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2])
 
     def test_inline_mesh_preserves_texcoords_for_textures(self):
-        """Preserve per-vertex UVs on a textured inline mesh."""
+        """Import base-color bindings and material defaults without loading image pixels."""
         with tempfile.TemporaryDirectory() as tmpdir:
             texture_path = os.path.join(tmpdir, "texture.png")
             mjcf = f"""
 <mujoco>
+    <default>
+        <default class="metal">
+            <material metallic="0.8" roughness="0.4" rgba="0.2 0.3 0.4 0.5">
+                <layer texture="texture" role="rgb"/>
+            </material>
+        </default>
+    </default>
     <asset>
         <mesh name="tetra"
               vertex="0 0 0  1 0 0  0 1 0  0 0 1"
               face="0 1 2  0 3 1  0 2 3  1 3 2"
               texcoord="0 0  1 0  0 1  1 1"/>
         <texture name="texture" type="2d" file="{texture_path}"/>
-        <material name="textured" texture="texture"/>
+        <texture name="packed" type="2d" file="packed.png"/>
+        <texture name="normal" type="2d" file="normal.png"/>
+        <material name="legacy" texture="texture"/>
+        <material name="rgb" roughness="0.2" metallic="1">
+            <layer texture="normal" role="normal"/>
+            <layer texture="texture" role="rgb"/>
+            <layer texture="packed" role="rgba"/>
+        </material>
+        <material name="rgba" metallic="0.8" roughness="0" rgba="0.2 0.3 0.4 0.5">
+            <layer texture="texture" role="rgba"/>
+            <layer texture="normal" role="normal"/>
+        </material>
+        <material name="inherited" class="metal">
+            <layer texture="packed" role="rgba"/>
+        </material>
+        <material name="unset" metallic="-1" roughness="-1">
+            <layer texture="normal" role="normal"/>
+        </material>
     </asset>
     <worldbody>
-        <geom type="mesh" mesh="tetra" material="textured" mass="1"/>
+        <geom type="mesh" mesh="tetra" material="legacy" mass="1"/>
+        <geom type="mesh" mesh="tetra" material="rgb" mass="1"/>
+        <geom type="mesh" mesh="tetra" material="rgba" mass="1"/>
+        <geom type="mesh" mesh="tetra" material="inherited" rgba="0.6 0.7 0.8 0.9" mass="1"/>
+        <geom type="mesh" mesh="tetra" material="unset" mass="1"/>
     </worldbody>
 </mujoco>
 """
             builder = newton.ModelBuilder()
             builder.add_mjcf(mjcf)
 
-        mesh = builder.shape_source[0]
-        np.testing.assert_allclose(mesh.uvs, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
-        self.assertEqual(mesh.texture, texture_path)
+        self.assertEqual(builder.shape_count, 5)
+        for index, (roughness, metallic) in enumerate(((None, None), (0.2, 1.0), (0.0, 0.8), (0.4, 0.8), (None, None))):
+            with self.subTest(material=index):
+                mesh = builder.shape_source[index]
+                np.testing.assert_allclose(mesh.uvs, [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])
+                self.assertEqual(mesh.texture, texture_path if index < 4 else None)
+                self.assertEqual(mesh.roughness, roughness)
+                self.assertEqual(mesh.metallic, metallic)
+        np.testing.assert_allclose(builder.shape_color[:4], [[1, 1, 1], [1, 1, 1], [0.2, 0.3, 0.4], [0.6, 0.7, 0.8]])
+        self.assertIsNone(builder.shape_source[4].color)
+        np.testing.assert_allclose(builder.shape_opacity, [1, 1, 0.5, 0.9, 1])
 
     def test_inline_mesh_applies_reference_pose_to_vertices_and_normals(self):
         """Apply the MJCF reference pose and scale to inline mesh data."""
