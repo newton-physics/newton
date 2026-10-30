@@ -31,6 +31,7 @@ from .contact_angular_friction import (
     free_rigid_route_bodies,
     launch_free_rigid_angular_friction_rows,
     refresh_free_rigid_angular_friction,
+    validate_free_rigid_angular_friction,
 )
 from .contact_torsion import (
     configure_contact_torsion,
@@ -1562,8 +1563,9 @@ class SolverSteel(SolverBase, CouplingInterface):
           share a patch only if their angular coefficients match. A contact with angular rows takes up
           to 6 free-body rows instead of 3; raise ``free_body_constraint_max`` if
           :attr:`constraint_overflow` reports dropped rows. The solver reads ``steel:condim`` at
-          construction and at :meth:`notify_model_changed` with ``SHAPE_PROPERTIES``; a solver built
-          without any condim above 3 must be rebuilt to gain the rows.
+          construction and, on a solver built with the rows, at :meth:`notify_model_changed` with
+          ``SHAPE_PROPERTIES``; a solver built without any condim above 3 ignores the attribute and must be
+          rebuilt to gain the rows.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see
         ``enable_joint_friction``:
@@ -3029,10 +3031,10 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         With ``enable_joint_friction``, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_friction` and ``steel:joint_friction_load_coefficient`` on the host and
-        raises :class:`ValueError` for invalid values, after applying every other update. Likewise, when the
-        ``steel:condim`` attribute is registered, an eager shape notification reads it on the host and raises
-        :class:`ValueError` for a value other than 3, 4 or 6, or for a value above 3 on a solver constructed
-        without one. A captured notification skips these checks.
+        raises :class:`ValueError` for invalid values, after applying every other update. Likewise, on a
+        solver constructed with free-body angular rows, an eager shape notification reads ``steel:condim`` on the
+        host and raises :class:`ValueError` for a value other than 3, 4 or 6. A captured notification skips these
+        checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3102,8 +3104,11 @@ class SolverSteel(SolverBase, CouplingInterface):
             | ModelFlags.SHAPE_PROPERTIES
         ):
             self._clear_warmstart_history(world_mask)
-        if self._enable_joint_friction and flags & dof_force and not wp.get_stream(self.model.device).is_capturing:
+        capturing = wp.get_stream(self.model.device).is_capturing
+        if self._enable_joint_friction and flags & dof_force and not capturing:
             self._validate_joint_friction()
+        if flags & ModelFlags.SHAPE_PROPERTIES and not capturing:
+            validate_free_rigid_angular_friction(self)
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""

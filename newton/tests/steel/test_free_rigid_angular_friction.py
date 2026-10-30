@@ -570,7 +570,7 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         self.assertAlmostEqual(reported_tangent, seen["sliding"], delta=1.0e-4 + 1.0e-4 * seen["sliding"])
 
     def test_invalid_options_raise(self):
-        """Reject a condim other than 3, 4 or 6, unsupported options by name, and a condim raise without rebuilding."""
+        """Reject invalid condim values and unsupported options; a solver without the rows ignores condim edits."""
         model, _ = _scene("sphere")
         model.steel.condim.fill_(6)
         for options, option in (
@@ -588,13 +588,20 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
         model.steel.condim.fill_(6)
         solver = SolverSteel(model, solve_mode="matrix_free")
         model.steel.condim.fill_(5)
+        spatial_inertia = solver._body_I_m.numpy()
+        model.body_mass.assign(2.0 * model.body_mass.numpy())
+        flags = newton.ModelFlags.SHAPE_PROPERTIES | newton.ModelFlags.BODY_INERTIAL_PROPERTIES
         with self.assertRaisesRegex(ValueError, "3, 4 or 6"):
-            solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+            solver.notify_model_changed(flags)
+        # The check raises after the notification's other updates are applied.
+        self.assertFalse(np.array_equal(solver._body_I_m.numpy(), spatial_inertia))
+        # A solver built without the rows ignores later condim edits.
         model.steel.condim.fill_(3)
         solver = SolverSteel(model, solve_mode="matrix_free")
-        model.steel.condim.fill_(6)
-        with self.assertRaisesRegex(ValueError, "construct a new solver"):
+        for condim in (5, 6):
+            model.steel.condim.fill_(condim)
             solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+        self.assertFalse(solver._free_rigid_angular_rows)
 
 
 def test_linear_row_builder_leaves_the_angular_rows(test, device):

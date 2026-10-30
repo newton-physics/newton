@@ -55,27 +55,27 @@ def configure_free_rigid_angular_friction(solver, model) -> None:
 
 
 def refresh_free_rigid_angular_friction(solver) -> None:
-    """Write each shape's gated torsional and rolling coefficients [m] on the device.
-
-    Capturable. Outside capture it also reads ``steel:condim`` on the host and raises :class:`ValueError` for
-    a value other than 3, 4 or 6, or for a value above 3 on a solver constructed without angular rows.
-    """
-    model = solver.model
-    condim = solver._namespaced_attribute("condim")
-    if solver._free_rigid_angular_rows:
-        wp.launch(
-            gate_free_rigid_angular_coefficients,
-            dim=model.shape_count,
-            inputs=[condim, model.shape_material_mu_torsional, model.shape_material_mu_rolling],
-            outputs=[solver._free_rigid_mu_torsional, solver._free_rigid_mu_rolling],
-            device=model.device,
-        )
-    if condim is None or not model.shape_count or model.device.is_capturing:
+    """Write each shape's gated torsional and rolling coefficients [m] on the device; capturable."""
+    if not solver._free_rigid_angular_rows:
         return
-    values = condim.numpy()
-    _check_condim_values(values)
-    if not solver._free_rigid_angular_rows and np.any(values >= 4):
-        raise ValueError("steel:condim above 3 needs a solver constructed with it; construct a new solver")
+    model = solver.model
+    wp.launch(
+        gate_free_rigid_angular_coefficients,
+        dim=model.shape_count,
+        inputs=[
+            solver._namespaced_attribute("condim"),
+            model.shape_material_mu_torsional,
+            model.shape_material_mu_rolling,
+        ],
+        outputs=[solver._free_rigid_mu_torsional, solver._free_rigid_mu_rolling],
+        device=model.device,
+    )
+
+
+def validate_free_rigid_angular_friction(solver) -> None:
+    """Read ``steel:condim`` on the host and raise :class:`ValueError` for a value other than 3, 4 or 6."""
+    if solver._free_rigid_angular_rows:
+        _check_condim_values(solver._namespaced_attribute("condim").numpy())
 
 
 def free_rigid_route_bodies(solver) -> wp.array | None:
