@@ -296,7 +296,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |yes|
      - |yes|
      - |no|
-   * - ROD
+   * - ROD (experimental)
      - |no|
      - |no|
      - |no|
