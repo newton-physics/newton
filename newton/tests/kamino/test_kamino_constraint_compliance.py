@@ -341,6 +341,52 @@ class TestKaminoConstraintCompliance(unittest.TestCase):
                 self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), -0.1, delta=2.0e-5)
                 np.testing.assert_array_equal(solver._solver_kamino.problem_fd.data.compliance.numpy(), 0.0)
 
+    def test_sparse_pgs_compliance_refresh(self):
+        """Refresh contact-only sparse PGS compliance eagerly and on CUDA graph replay."""
+        dt, gap, velocity, gravity = 0.01, -0.02, -0.3, -10.0
+        for captured in (False, True) if self.device.is_cuda else (False,):
+            with self.subTest(captured=captured):
+                model = self._sphere(gap=gap, velocity=velocity, gravity=gravity)
+                # Diagnostics must not refresh the operator on behalf of the solve.
+                solver = self._solver(
+                    model,
+                    ConstraintStabilizationConfig(contact_compliance=True, delta=0.0),
+                    sparse=True,
+                    collect_solver_info=False,
+                    compute_solution_metrics=False,
+                )
+                state_in, state_out, control = model.state(), model.state(), model.control()
+                pipeline = newton.CollisionPipeline(model)
+                contacts = pipeline.contacts()
+                pipeline.collide(state_in, contacts)
+                solver.step(state_in, state_out, control, contacts, dt)
+                graph = None
+                if captured:
+                    with wp.ScopedCapture(device=self.device) as capture:
+                        solver.step(state_in, state_out, control, contacts, dt)
+                    graph = capture.graph
+
+                for stiffness, damping in ((500.0, 20.0), (5000.0, 5.0), (500.0, 20.0)):
+                    with self.subTest(stiffness=stiffness, damping=damping):
+                        model.shape_material_ke.fill_(stiffness)
+                        model.shape_material_kd.fill_(damping)
+                        solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                        if graph is None:
+                            solver.step(state_in, state_out, control, contacts, dt)
+                        else:
+                            wp.capture_launch(graph)
+                        expected = (velocity + dt * gravity - dt * stiffness * gap) / (
+                            1.0 + dt * (stiffness * dt + damping)
+                        )
+                        actual = float(state_out.body_qd.numpy()[0, 2])
+                        final_gap = float(state_out.body_q.numpy()[0, 2]) - 0.1
+                        self.assertAlmostEqual(actual, expected, delta=2.0e-5)
+                        self.assertAlmostEqual(
+                            actual - velocity - dt * gravity,
+                            -dt * (stiffness * final_gap + damping * actual),
+                            delta=2.0e-5,
+                        )
+
     def test_apgd_and_captured_replay(self):
         """Retain compliance through APGD operator products and repeated CUDA graph replay."""
         if not self.device.is_cuda:

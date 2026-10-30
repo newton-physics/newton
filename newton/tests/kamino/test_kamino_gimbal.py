@@ -451,23 +451,29 @@ class TestGimbal(unittest.TestCase):
         upper = np.array([0.2, 0.3, 0.4], dtype=np.float32)
         target = np.array([0.6, -0.6, 0.6], dtype=np.float32)
         expected = np.where(target > 0.0, upper, lower)
-        for axes, fixed_base, limit_compliance in product((_RH_AXES, _LH_AXES), (True, False), (False, True)):
-            with self.subTest(axes=axes, fixed_base=fixed_base, limit_compliance=limit_compliance):
-                probe = _run(
-                    "kamino",
-                    fixed_base,
-                    axes,
-                    self.default_device,
-                    position_target=target,
-                    stiffness=100.0,
-                    drive_damping=15.0,
-                    lower=lower,
-                    upper=upper,
-                    limit_compliance=limit_compliance,
-                    steps=50,
-                    record_trajectory=False,
-                )
-                np.testing.assert_allclose(probe.q[-1], expected, atol=1.0e-2, rtol=0.0)
+        for axes, fixed_base in product((_RH_AXES, _LH_AXES), (True, False)):
+            with self.subTest(axes=axes, fixed_base=fixed_base):
+                trajectories = []
+                for limit_compliance in (False, True):
+                    with self.subTest(limit_compliance=limit_compliance):
+                        probe = _run(
+                            "kamino",
+                            fixed_base,
+                            axes,
+                            self.default_device,
+                            position_target=target,
+                            stiffness=100.0,
+                            drive_damping=15.0,
+                            lower=lower,
+                            upper=upper,
+                            limit_compliance=limit_compliance,
+                            steps=50,
+                        )
+                        trajectories.append(probe.q)
+                        np.testing.assert_allclose(probe.q[-1], expected, atol=1.0e-2, rtol=0.0)
+                # Both laws reach the stops, but must differ above solver noise on every axis.
+                peak_difference = np.max(np.abs(trajectories[1][1:-1] - trajectories[0][1:-1]), axis=0)
+                self.assertGreater(float(np.min(peak_difference)), 5.0e-4)
 
 
 @unittest.skipUnless(wp.get_cuda_device_count(), "requires CUDA device")
