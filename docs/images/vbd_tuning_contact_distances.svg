@@ -2,7 +2,7 @@
   <rect x="0" y="0" width="960" height="440" fill="#ffffff"/>
 
   <!-- Left panel: self-contact -->
-  <text x="40" y="34" font-size="18" font-weight="bold" fill="#222">Self-contact (vertex against a triangle)</text>
+  <text x="40" y="34" font-size="18" font-weight="bold" fill="#222">Self-contact (vertex-triangle and edge-edge pairs)</text>
 
   <!-- other surface (triangle, edge-on) -->
   <line x1="60" y1="330" x2="440" y2="330" stroke="#8c6d31" stroke-width="5" stroke-linecap="round"/>

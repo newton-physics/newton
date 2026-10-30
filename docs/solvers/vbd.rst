@@ -49,6 +49,44 @@ cited by :class:`~newton.solvers.SolverVBD`:
   Descent. *ACM Trans. Graph.* 44, 4. https://doi.org/10.1145/3731195
   (the deprecated legacy rigid constraint path)
 
+.. _vbd-step-objective:
+
+Step Objective
+--------------
+
+Every time step is one minimization, solved one block at a time. A particle
+:math:`i` has 3 degrees of freedom, its position :math:`\mathbf{x}_i`, and a
+mass :math:`m_i`. A rigid body :math:`b` has 6 degrees of freedom, its pose
+made of a centre of mass :math:`\mathbf{c}_b` and a rotation
+:math:`\mathbf{R}_b`, with a mass :math:`m_b` and an inertia tensor
+:math:`\mathbf{I}_b`. With :math:`h` the time step, the step finds the
+positions and poses that minimize
+
+.. math::
+
+   G = \sum_i \frac{m_i}{2h^2}\,\lVert \mathbf{x}_i - \mathbf{y}_i \rVert^2
+     + \sum_b \left[ \frac{m_b}{2h^2}\,\lVert \mathbf{c}_b - \mathbf{c}_b^* \rVert^2
+     + \frac{1}{2h^2}\,\boldsymbol{\theta}_b^{\mathsf T} \mathbf{I}_b\, \boldsymbol{\theta}_b \right]
+     + \sum_e E_e .
+
+The first sum is the particle inertia. Its target is the inertial prediction
+
+.. math::
+
+   \mathbf{y}_i = \mathbf{x}_i + h\left(\mathbf{v}_i + h\left(\mathbf{g} + \mathbf{f}^{\text{ext}}_i / m_i\right)\right),
+
+computed by the ``forward_step`` kernel from the current velocity, gravity and
+external forces. The second sum is the rigid inertia. Its target pose
+:math:`(\mathbf{c}_b^*, \mathbf{R}_b^*)` comes from forward integration
+(``forward_step_rigid_bodies``), and :math:`\boldsymbol{\theta}_b` is the
+rotation vector from the current rotation to the target rotation
+(``solve_rigid_body``). The last sum is every energy term in the scene:
+membrane, bending and volumetric elasticity, self-contact and rigid-soft
+contact with friction and damping, attachments and springs, and the compliant
+augmented-Lagrangian rows of joints and body-body contacts. The notation
+follows the VBD paper cited above. :ref:`Tuning VBD` explains how the blocks
+are solved and what each energy term does to tuning.
+
 API Explanations
 ----------------
 

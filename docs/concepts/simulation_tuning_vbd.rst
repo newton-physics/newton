@@ -32,80 +32,23 @@ VBD (Vertex Block Descent) treats every time step as one minimization and
 solves it one small block at a time. Two kinds of blocks exist. A **particle**
 :math:`i` has 3 degrees of freedom, its position :math:`\mathbf{x}_i`, and a
 mass :math:`m_i`. A **rigid body** :math:`b` has 6 degrees of freedom, its pose
-:math:`\mathbf{q}_b` made of a centre of mass :math:`\mathbf{c}_b` and a
-rotation :math:`\mathbf{R}_b`, with a mass :math:`m_b` and an inertia tensor
+made of a centre of mass :math:`\mathbf{c}_b` and a rotation
+:math:`\mathbf{R}_b`, with a mass :math:`m_b` and an inertia tensor
 :math:`\mathbf{I}_b`. The notation follows the VBD paper cited in
 :class:`~newton.solvers.SolverVBD`: :math:`h` is the time step and
 :math:`\mathbf{y}` the inertial prediction.
 
-One step is one minimization
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Formulation
+~~~~~~~~~~~
 
-The step finds the positions and poses that minimize
-
-.. math::
-
-   G = \sum_i \frac{m_i}{2h^2}\,\lVert \mathbf{x}_i - \mathbf{y}_i \rVert^2
-     + \sum_b \left[ \frac{m_b}{2h^2}\,\lVert \mathbf{c}_b - \mathbf{c}_b^* \rVert^2
-     + \frac{1}{2h^2}\,\boldsymbol{\theta}_b^{\mathsf T} \mathbf{I}_b\, \boldsymbol{\theta}_b \right]
-     + \sum_e E_e .
-
-The first sum is the particle inertia. Its target is the inertial prediction
-
-.. math::
-
-   \mathbf{y}_i = \mathbf{x}_i + h\left(\mathbf{v}_i + h\left(\mathbf{g} + \mathbf{f}^{\text{ext}}_i / m_i\right)\right),
-
-computed by the ``forward_step`` kernel from the current velocity, gravity and
-external forces. The second sum is the rigid inertia. Its target pose
-:math:`(\mathbf{c}_b^*, \mathbf{R}_b^*)` comes from forward integration
-(``forward_step_rigid_bodies``), and :math:`\boldsymbol{\theta}_b` is the
-rotation vector from the current rotation to the target rotation
-(``solve_rigid_body``). The last sum is every energy term in the scene. Each
-term depends on a few blocks and on model parameters:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 22 22 30 26
-
-   * - Energy term
-     - Acts on
-     - Model parameters
-     - Kernel
-   * - Membrane (stable Neo-Hookean per unit area)
-     - the 3 particles of a triangle
-     - ``tri_ke`` (:math:`\mu`), ``tri_ka`` (:math:`\lambda`), ``tri_kd``
-     - ``evaluate_neo_hookean_membrane_force_hessian``
-   * - Bending (dihedral angle hinge)
-     - the 4 particles of an interior edge
-     - ``edge_ke``, ``edge_kd``
-     - ``evaluate_dihedral_angle_based_bending_force_hessian``
-   * - Volumetric (stable Neo-Hookean)
-     - the 4 particles of a tetrahedron
-     - ``k_mu``, ``k_lambda``, ``k_damp``
-     - ``evaluate_volumetric_neo_hookean_force_and_hessian``
-   * - Self-contact, with friction and damping
-     - a vertex and a triangle, or two edges
-     - ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``
-     - ``evaluate_self_contact_force_norm``, ``compute_friction``, ``damp_collision``
-   * - Rigid-soft contact, with friction and damping
-     - a particle, edge or face and one body or static shape
-     - the mean of ``soft_contact_ke`` and the shape ``ke``; the geometric
-       mean of the two ``mu`` values; ``particle_radius`` and the shape
-       ``margin`` set the distance
-     - ``init_body_particle_contacts``, ``_compute_body_particle_contact_force``
-   * - Attachments and springs
-     - a particle and a body, or two particles
-     - attachment and spring stiffness and damping
-     - ``accumulate_body_particle_attachment_force_and_hessian``,
-       ``accumulate_spring_force_and_hessian``
-   * - Joints and body-body contacts
-     - one or two bodies
-     - joint stiffness and damping, shape materials
-     - compliant augmented-Lagrangian rows; see :doc:`VBD </solvers/vbd>`
-
-Joints and body-body contacts use a compliant augmented-Lagrangian formulation.
-Their tuning is not covered here; the backend guide explains it.
+The step minimizes one objective: the inertia of every particle and every body,
+which pulls each block toward its inertial prediction, plus the sum of all
+energy terms :math:`E_e` in the scene. The full objective, with the particle
+and rigid inertia terms written out, is in :ref:`vbd-step-objective` on the
+backend page. For tuning, three facts about it matter: every parameter on this
+page enters through one of the energy terms; the inertia term weighs a block
+with :math:`m_i / h^2`, so lighter particles and larger steps leave the energy
+terms more freedom; and contacts are energy terms too, not hard constraints.
 
 How it is solved
 ~~~~~~~~~~~~~~~~
@@ -158,6 +101,112 @@ unfinished solve is not discarded: whatever position the last iteration leaves
 becomes the new velocity through :math:`\mathbf{v} = (\mathbf{x}_{\text{new}} -
 \mathbf{x}_{\text{old}})/h`.
 
+.. _vbd-energy-terms:
+
+The energy terms
+~~~~~~~~~~~~~~~~
+
+Each energy term depends on a few blocks and on model parameters:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 32 28
+
+   * - Energy term
+     - Acts on
+     - Model parameters
+     - Kernel
+   * - Membrane
+     - the 3 particles of a triangle
+     - ``tri_ke`` (:math:`\mu`), ``tri_ka`` (:math:`\lambda`), ``tri_kd``
+     - ``evaluate_neo_hookean_membrane_force_hessian``
+   * - Bending
+     - the 4 particles of an interior edge
+     - ``edge_ke``, ``edge_kd``
+     - ``evaluate_dihedral_angle_based_bending_force_hessian``
+   * - Volumetric
+     - the 4 particles of a tetrahedron
+     - ``k_mu``, ``k_lambda``, ``k_damp``
+     - ``evaluate_volumetric_neo_hookean_force_and_hessian``
+   * - Self-contact, with friction and damping
+     - a vertex and a triangle, or two edges
+     - ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``
+     - ``evaluate_self_contact_force_norm``, ``compute_friction``, ``damp_collision``
+   * - Rigid-soft contact, with friction and damping
+     - a particle, edge or face and one body or static shape
+     - ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``, averaged
+       with the shape ``ke``, ``kd``, ``mu``; ``particle_radius`` and the shape
+       ``margin``
+     - ``init_body_particle_contacts``, ``_compute_body_particle_contact_force``
+   * - Attachments and springs
+     - a particle and a body, or two particles
+     - attachment and spring stiffness and damping
+     - ``accumulate_body_particle_attachment_force_and_hessian``,
+       ``accumulate_spring_force_and_hessian``
+   * - Joints and body-body contacts
+     - one or two bodies
+     - joint stiffness and damping, shape materials
+     - compliant augmented-Lagrangian rows; see :doc:`VBD </solvers/vbd>`
+
+**Elasticity** is three terms. The membrane term resists stretch and shear of a
+triangle. With :math:`\mathbf{F}` the in-plane deformation gradient,
+:math:`I_C = \lVert \mathbf{F} \rVert^2` and :math:`J_s` the area ratio, the
+energy per unit rest area is the stable Neo-Hookean membrane energy
+
+.. math::
+
+   \psi_{\text{m}} = \frac{\mu}{2}\,(I_C - 2) + \frac{\lambda_{\text{NH}}}{2}\,(J_s - \alpha)^2,
+   \qquad \alpha = 1 + \frac{\mu}{\lambda_{\text{NH}}},
+
+with :math:`\mu = \texttt{tri\_ke}` and :math:`\lambda_{\text{NH}} =
+\texttt{tri\_ka} + \texttt{tri\_ke}`; the triangle energy is :math:`A_0\,\psi_{\text{m}}`.
+``tri_kd`` damps the rate of the metric :math:`\mathbf{F}^{\mathsf T}\mathbf{F}`,
+so rigid rotations are not damped. The bending term resists a change of the
+dihedral angle :math:`\theta` across an interior edge of rest length
+:math:`L_0`:
+
+.. math::
+
+   E_{\text{b}} = \tfrac{1}{2}\,\texttt{edge\_ke}\;L_0\,(\theta - \theta_0)^2,
+
+and ``edge_kd`` damps :math:`\dot\theta`. The volumetric term is the stable
+Neo-Hookean energy of a tetrahedron of rest volume :math:`V_0`,
+
+.. math::
+
+   \psi_{\text{v}} = \frac{\mu}{2}\,(I_C - 3) + \frac{\lambda_{\text{NH}}}{2}\,(J - \alpha)^2,
+   \qquad J = \det \mathbf{F},
+
+with :math:`\mu = \texttt{k\_mu}`, :math:`\lambda_{\text{NH}} = \texttt{k\_lambda} +
+\texttt{k\_mu}`, the same :math:`\alpha`, energy :math:`V_0\,\psi_{\text{v}}`,
+and ``k_damp`` as viscous damping. In both Neo-Hookean terms the user values are
+Lamé parameters; the kernels convert them to the Neo-Hookean parameters, which
+is why :math:`\lambda_{\text{NH}}` carries the extra :math:`\mu`.
+
+**Contact** is a penalty on the distance :math:`d` between the two primitives of
+a pair, acting inside the interaction distance :math:`r`:
+
+.. math::
+
+   E_{\text{c}} = \frac{k}{2}\,(r - d)^2 \quad \text{for } \tfrac{r}{2} \le d < r,
+
+with :math:`k = \texttt{soft\_contact\_ke}`. For self-contact the law switches
+to a logarithmic barrier below :math:`d = r/2`, with gradient
+:math:`-k\,(r/2)^2 / d`, and to a quadratic extension below 10 micrometres, so
+two surfaces never cross. For rigid-soft contact :math:`r` is ``particle_radius``
+plus the shape ``margin``, :math:`k` is the mean of ``soft_contact_ke`` and the
+shape ``ke``, and the law stays quadratic unless
+``rigid_soft_contact_use_log_barrier`` is set. **Friction** follows the IPC
+form, :math:`\mathbf{f} = -\mu_f\, f_n\, \mathbf{T}\, f_1(\lVert\mathbf{u}\rVert)\,
+\hat{\mathbf{u}}`, where :math:`f_n` is the normal force, :math:`\mathbf{u}` the
+tangential displacement over the step, and :math:`f_1` ramps linearly to one
+over the smoothing length ``friction_epsilon`` x :math:`h`; the contact normal is
+held fixed inside the block solve. **Contact damping** acts on the gap rate
+:math:`\dot d`, only while the gap closes: :math:`\mathbf{f}_d = -\texttt{soft\_contact\_kd}\;
+\dot d\,\mathbf{n}`. For rigid-soft contact the friction coefficient is the
+geometric mean of ``soft_contact_mu`` and the shape ``mu``, and the damping the
+mean of the two ``kd`` values.
+
 Penetration-free truncation (DAT)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -170,11 +219,12 @@ detected distance among its own elements, capped at the detection query radius
 displacement accumulated since the last detection may not exceed that budget;
 the solver scales it down in every direction when it would
 (``apply_conservative_bound_truncation``, isotropic truncation). For each
-detected pair a division plane is placed between the two primitives, and each
-side keeps its own side of the plane (``apply_planar_truncation_parallel_by_collision``).
-The solver-level budget between detections is one half of the relaxation factor
-times the query radius, one half per side. The same scheme can be enabled for
-rigid-soft contacts with ``rigid_soft_enable_dat``.
+detected vertex-triangle or edge-edge pair a division plane is placed between
+the two primitives, and each side keeps its own side of the plane
+(``apply_planar_truncation_parallel_by_collision``). The solver-level budget
+between detections is one half of the relaxation factor times the query radius,
+one half per side. The same scheme can be enabled for rigid-soft contacts with
+``rigid_soft_enable_dat``. :ref:`vbd-contact-handling` illustrates the planes.
 
 The guarantee has a price: a vertex cannot move faster than about one motion
 budget per detection cycle. This page calls the motion that the truncation
@@ -206,7 +256,7 @@ writing; the class docstring is the source of truth.
 
 .. list-table::
    :header-rows: 1
-   :widths: 26 30 24 20
+   :widths: 17 33 25 25
 
    * - Parameter
      - What it controls
@@ -215,8 +265,8 @@ writing; the class docstring is the source of truth.
    * - ``iterations`` (10)
      - Block-descent sweeps per substep; how far information travels and how
        far the solve converges.
-     - The object looks too soft or lags; a finer mesh; as a last resort for
-       jitter.
+     - The object looks too soft or lags; a finer mesh. For jitter only as the
+       last resort, see :ref:`vbd-jitter-pipeline`.
      - Runtime grows linearly. Does not fix a stiffness-ratio problem.
    * - ``friction_epsilon`` (1e-2)
      - Relative velocity below which friction is smoothed; the smoothing
@@ -262,12 +312,12 @@ writing; the class docstring is the source of truth.
      - Tile-based elasticity kernel specialized at construction.
      - Keep on. Rebuild the solver after changing stiffness values.
      - None in normal use.
-   * - ``collision_frequency``, ``collision_frequency_type``
+   * - ``collision_frequency_type``, ``collision_frequency``
        (``SOFT_SELF_CONTACT`` slot)
      - When self-contact detection runs. ``AUTO`` resolves to before and
        after the inertial step. ``ITERATIONS`` with frequency :math:`k` also
        detects before iterations :math:`k, 2k, \ldots`
-     - Fast motion with a small gap; as a last resort for jitter.
+     - Fast motion with a small gap; for jitter only as the last resort.
      - One detection pass per refresh.
    * - ``rigid_soft_contact_use_log_barrier`` (False)
      - Rigid-soft normal law: quadratic penalty, or the self-contact barrier.
@@ -299,11 +349,12 @@ Model parameters are set when the geometry is added, through
 :meth:`~newton.ModelBuilder.add_cloth_grid`,
 :meth:`~newton.ModelBuilder.add_soft_mesh` and
 :meth:`~newton.ModelBuilder.add_soft_grid`, or on the
-:class:`~newton.Model` after :meth:`~newton.ModelBuilder.finalize`.
+:class:`~newton.Model` after :meth:`~newton.ModelBuilder.finalize`. The
+formulas they enter are in :ref:`vbd-energy-terms`.
 
 .. list-table::
    :header-rows: 1
-   :widths: 24 30 24 22
+   :widths: 15 33 22 30
 
    * - Parameter
      - What it controls
@@ -321,8 +372,7 @@ Model parameters are set when the geometry is added, through
      - In-plane ringing after impacts.
      - Overdamped, slow drape.
    * - ``edge_ke`` [N]
-     - Bending stiffness of the dihedral hinge. The hinge energy is
-       :math:`\tfrac{1}{2}\,\texttt{edge\_ke}\; L_{\text{rest}}\,(\theta - \theta_0)^2`.
+     - Bending stiffness of the dihedral hinge.
      - Cloth folds too sharply or looks too limp.
      - Stiff hinges need more iterations; raise membrane and bending together
        for a stiffer object.
@@ -385,22 +435,6 @@ Model parameters are set when the geometry is added, through
      - Never as a fix; a large initial velocity is an explosion cause.
      - See :ref:`vbd-explosion-checklist`.
 
-How the energies use these values: the membrane energy is the stable
-Neo-Hookean energy per unit area with :math:`\mu = \texttt{tri\_ke}` and
-:math:`\lambda_{\text{NH}} = \texttt{tri\_ka} + \texttt{tri\_ke}`, so a Poisson
-ratio of :math:`\nu` corresponds to :math:`\texttt{tri\_ka} =
-2\nu\,\texttt{tri\_ke}/(1-\nu)` (see ``example_cloth_stiff_material_stretch``).
-The bending energy is the hinge formula above, integrated along the rest edge
-length. The volumetric energy is the stable
-Neo-Hookean energy with ``k_mu`` and ``k_lambda`` in pascal, damped by
-``k_damp``. Every contact energy is quadratic in the penetration beyond the
-interaction distance; the self-contact law switches to a logarithmic barrier
-inside half the interaction distance and to a quadratic extension below
-10 micrometres, so that the surfaces never cross. Friction follows the IPC
-form with a smoothing length of ``friction_epsilon`` x ``dt`` and a contact
-normal held fixed inside the block solve. Contact damping acts on the gap rate,
-only while the gap closes.
-
 Time step, substeps and iterations
 ``````````````````````````````````
 
@@ -412,7 +446,9 @@ same factor in runtime. Do not go much below 1/3000 s: positions are stored in
 float32, and when the per-step update becomes small compared to the position
 value, part of each update is rounded away (one float32 unit at 1 m is about
 1.2e-7 m). Before that floor, reducing ``dt`` does more for stiffness than
-adding iterations. See :ref:`vbd-stiffer-object` for the order of operations.
+adding iterations. See :ref:`vbd-rules-of-thumb` for the order of operations.
+
+.. _vbd-contact-handling:
 
 Contact Handling
 ~~~~~~~~~~~~~~~~
@@ -421,14 +457,17 @@ Four distances govern a contact. The **interaction distance** is where the
 contact energy starts to act. The **detection slack** is the extra reach of
 detection, so pairs are known before they interact. The **query radius** is
 their sum. The **motion budget** is the DAT limit between two detections, and it
-scales with the query radius.
+scales with the query radius. Self-contact pairs are vertex-triangle and
+edge-edge pairs of the same particle system; rigid-soft pairs are particles,
+edges or faces against a body or static shape.
 
 .. figure:: ../images/vbd_tuning_contact_distances.svg
    :alt: Interaction distance, detection slack, query radius and motion budget for self-contact and rigid-soft contact
    :width: 95%
    :align: center
 
-   Left: self-contact. ``particle_self_contact_margin`` is the interaction
+   Left: self-contact, shown for a vertex-triangle pair; edge-edge pairs use
+   the same distances. ``particle_self_contact_margin`` is the interaction
    distance, ``particle_self_contact_gap`` the detection slack. Right:
    rigid-soft contact. The interaction distance is ``particle_radius`` plus the
    shape ``margin``; the pipeline's ``soft_contact_gap`` adds detection slack.
@@ -442,14 +481,30 @@ before and after the inertial step of every substep, so the motion budget is
 refreshed twice per substep.
 
 **What DAT does to motion.** DAT keeps the simulation penetration-free between
-detections by never letting a vertex use more than its budget. A vertex that
-wants to move further is slowed down to the budget in every direction, not only
-along the contact normal. A cloth that falls fast onto a shape, or a sheet
-pressed between fingers, can therefore move slower than physics would predict,
-hover at a fixed offset, or stop. This is DAT damping. The budget grows with the
-query radius, so the cure is more room: a larger gap first, then a larger margin.
-The pouch example in :ref:`vbd-fail-dat-damping` shows the extreme case where
-the cycle amplitude of a jittering vertex follows the budget exactly.
+detections by never letting a vertex use more than its budget. For each
+detected pair it places a division plane between the two primitives and keeps
+each side on its own side of the plane. The plane position follows the
+displacements: when the two primitives approach, each gets a share of the gap;
+when they separate or slide tangentially, the plane moves out of the way and the
+motion passes untouched. A vertex that wants to move further than its budget is
+slowed down to the budget in every direction, not only along the contact
+normal. A cloth that falls fast onto a shape, or a sheet pressed between
+fingers, can therefore move slower than physics would predict, hover at a fixed
+offset, or stop. This is DAT damping. The budget grows with the query radius,
+so the cure is more room: a larger gap first, then a larger margin.
+
+.. figure:: ../images/vbd_tuning_dat_planar_division.png
+   :alt: Planar division for a vertex-triangle pair in four displacement scenarios
+   :width: 85%
+   :align: center
+
+   Planar division for a vertex-triangle pair, from the DAT paper. Top left:
+   vertex :math:`v`, triangle :math:`(v_a, v_b, v_c)` and the normal from the
+   closest point on the triangle to :math:`v`. The dashed line is the division
+   plane. Top right: :math:`v` moves toward the triangle, so the plane shifts
+   toward :math:`v` and the displacements toward the plane are truncated.
+   Bottom left: the primitives separate, and the plane shifts away. Bottom
+   right: tangential motion, which passes untouched.
 
 .. _vbd-margin-gap-guide:
 
@@ -462,15 +517,15 @@ cost and DAT damping.
 **Fidelity first.** The interaction distance is the resting separation you will
 see. Two cloth layers rest one margin apart; a particle rests at its radius plus
 the shape margin from a shape. Pick the interaction distance from the thickness
-you want to show. Pairs more than two rings apart are contact candidates, so an interaction
-distance larger than their rest distance creates contact forces at rest. Where
-a mesh is close to itself by design, such as seams or layered
+you want to show. Pairs more than two rings apart are contact candidates, so an
+interaction distance larger than their rest distance creates contact forces at
+rest. Where a mesh is close to itself by design, such as seams or layered
 panels, use ``particle_rest_shape_contact_exclusion_radius`` instead of a
 smaller margin.
 
 .. list-table::
    :header-rows: 1
-   :widths: 18 20 22 22 18
+   :widths: 14 20 18 16 32
 
    * - Change
      - Cost
@@ -521,11 +576,11 @@ What Can Go Wrong and How to Fix It
    * - Symptom
      - Likely cause
      - Entry
-   * - Cloth or a soft body jitters, more iterations do not help
+   * - Cloth or a soft body jitters at a few vertices
      - Contact stiffness far above the elastic stiffness
      - :ref:`vbd-fail-contact-stiffness`
-   * - Raising ``tri_ke`` does not make the object stiffer
-     - Deformation moves into bending
+   * - Raising one stiffness does not make the object stiffer
+     - Deformation moves into the terms that stayed soft
      - :ref:`vbd-fail-membrane-only`
    * - A fine mesh is soft, laggy or slow to settle
      - One ring of information per iteration
@@ -550,18 +605,32 @@ Jitter: where to look first
 
 Work through these steps in order and stop at the first one that fixes it.
 
-1. If the scene has self-contacts, compare the contact stiffness with the
-   elastic stiffness. Keep ``soft_contact_ke`` within about 10x of
-   ``tri_ke`` for cloth or ``k_mu`` for soft bodies. This is the stiffness
-   ratio entry below.
-2. If the jitter stays, tune the self-contact damping, ``soft_contact_kd``.
-3. If it still stays, or the scene has no contacts, raise the elastic damping:
-   ``edge_kd`` first for cloth, ``k_damp`` for soft bodies. If the scene has
-   articulations, also raise ``joint_target_kd``; see
-   :ref:`Tuning Solver Reference`.
-4. Last resort, because both cost compute: more ``iterations``, or more
-   frequent collision detection through the ``ITERATIONS`` schedule of the
-   self-contact slot.
+1. If the scene has self-contacts, check whether the self-contact stiffness is
+   disproportionately high. Keep the collision stiffness within 10x of the
+   elasticity stiffness: ``soft_contact_ke`` against ``tri_ke`` for cloth or
+   ``k_mu`` for soft bodies. This is the stiffness ratio entry below.
+2. If not fixed, tune the self-contact damping, ``soft_contact_kd``.
+3. If it is still not fixed, or there is no contact, increase the elasticity
+   damping: bending damping ``edge_kd`` for cloth, tet damping ``k_damp`` for
+   soft bodies, and ``joint_target_kd`` if the scene has articulations (see
+   :ref:`Tuning Solver Reference`).
+4. Increasing the iterations or the collision detection frequency also helps,
+   but both increase the computational cost. Only use them as the last resort.
+   Iterations: ``iterations``. Detection frequency: set the self-contact slot
+   to the ``ITERATIONS`` schedule and give it a frequency,
+
+   .. code-block:: python
+
+      solver = newton.solvers.SolverVBD(
+          model,
+          collision_frequency_type={
+              newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT:
+                  newton.solvers.SolverBase.CollisionFrequencyType.ITERATIONS
+          },
+          collision_frequency={newton.solvers.SolverBase.CollisionSlot.SOFT_SELF_CONTACT: 2},
+      )
+
+   which detects before every second iteration.
 
 .. _vbd-explosion-checklist:
 
@@ -575,8 +644,9 @@ Explosion: what to check, in this order
    real object; do not lower them to speed things up.
 3. **Stiffness too high?** Compare the elastic and contact stiffness with the
    examples in :ref:`vbd-empirical-table`. Above about 1e6 expect trouble.
-4. **Initially penetrating?** Inspect the start pose with the
-   :ref:`viewer debugging tools <debugging-with-viewers>`. Layers that start
+4. **Initially penetrating?** The validator does not detect intersections; it
+   checks element quality and manifoldness only. Inspect the start pose with
+   the :ref:`viewer debugging tools <debugging-with-viewers>`. Layers that start
    inside the interaction distance receive a large separating push in the
    first steps.
 5. **Initial stretch or velocity too high?** Compare the start positions with
@@ -601,16 +671,16 @@ a grasp can slip; in the pouch scene below, lowering the contact stiffness to
 2x the membrane stiffness lost the grasp. The rule is a starting point, not a
 universal one.
 
-.. figure:: ../images/vbd_tuning_stack_contact_stiffness.png
-   :alt: Five stacked cloth layers at the same time with contact stiffness 30,000 N/m (wavy) and 4,000 N/m (flat)
+.. figure:: ../images/vbd_tuning_stack_contact_stiffness.gif
+   :alt: Animation of five stacked cloth layers with contact stiffness 30,000 N/m (jittering) and 4,000 N/m (still)
    :width: 95%
    :align: center
 
-   Five stacked cloth layers after 6.5 s of rest, same time in both runs.
-   Membrane stiffness 2,000 N/m, self-contact margin 8 mm, gap 8 mm,
-   ``dt`` = 1/300 s, 20 iterations. Left: contact stiffness 30,000 N/m.
-   Right: 4,000 N/m. The scene is a test scene, not a shipped example. Newton
-   commit 353e0ea1.
+   Five stacked cloth layers, the last two seconds of a seven-second rest,
+   same time in both runs. Membrane stiffness 2,000 N/m, self-contact margin
+   8 mm, gap 8 mm, ``dt`` = 1/300 s, 20 iterations. Left: contact stiffness
+   30,000 N/m. Right: 4,000 N/m. The scene is a test scene, not a shipped
+   example. Newton commit 353e0ea1.
 
 .. list-table::
    :header-rows: 1
@@ -655,15 +725,15 @@ which stayed soft.
 **Fix.** Scale ``edge_ke`` together with ``tri_ke`` and ``tri_ka``. Stiffening
 both gives a monotonic stiffening with diminishing returns past the baseline.
 
-.. figure:: ../images/vbd_tuning_bag_stretch_sweep.png
-   :alt: Final frames of a pinned bag at five membrane stiffness values from 1e3 to 1e7
+.. figure:: ../images/vbd_tuning_bag_stretch_sweep.gif
+   :alt: Animation of a pinned bag at five membrane stiffness values from 1e3 to 1e7
    :width: 100%
    :align: center
 
    A bag with rigid contents, pinned at the rim, rim driven sideways at
-   0.85 Hz, after 6 s. Only the membrane stiffness changes, ``edge_ke`` stays
-   at 200 N. ``dt`` = 1/600 s, 10 iterations. The x100 bag buckles at the
-   bottom. The scene is a test scene, not a shipped example.
+   0.85 Hz, seconds 3 to 6 of the run. Only the membrane stiffness changes,
+   ``edge_ke`` stays at 200 N. ``dt`` = 1/600 s, 10 iterations. The x100 bag
+   buckles at the bottom. The scene is a test scene, not a shipped example.
 
 .. list-table::
    :header-rows: 1
@@ -721,6 +791,15 @@ contacts, or needs many more frames to settle, with unchanged material values.
 :math:`N` rings in no fewer than :math:`N` iterations, so at fixed iterations a
 finer mesh is less converged at the end of every step.
 
+.. figure:: ../images/vbd_tuning_one_ring.svg
+   :alt: A triangle mesh patch with rings around one vertex coloured by the iteration in which they are reached
+   :width: 85%
+   :align: center
+
+   A change at one vertex reaches ring :math:`k` after :math:`k` iterations.
+   Refining the mesh by a factor of two doubles the number of rings across the
+   object and so the iterations needed for the same convergence.
+
 **Fix.** Use the lowest resolution that expresses the deformation you need.
 When you refine, raise ``iterations`` in proportion to the number of rings
 across the object.
@@ -731,8 +810,7 @@ DAT damping: slow, hovering or locked motion
 ````````````````````````````````````````````
 
 **Symptom.** Near contacts, cloth falls slower than gravity, hovers at a fixed
-offset, or a pinched region stops moving. In the worst case a vertex oscillates
-with a fixed amplitude.
+offset, or a pinched region stops moving.
 
 **Cause.** The motion budget between detections is too small for the motion the
 scene asks for. The budget is the relaxation factor times the detected
@@ -742,23 +820,6 @@ clearance, capped at the query radius, so a small margin and gap cap the speed.
 ``particle_self_contact_margin``, following :ref:`vbd-margin-gap-guide`. For
 rigid-soft contact raise the pipeline's ``soft_contact_gap``. More frequent
 detection also refreshes the budget more often, at a cost.
-
-.. figure:: ../images/vbd_tuning_pouch_fast_cycles.png
-   :alt: Position and velocity traces of three pouch vertices showing two- and four-substep cycles
-   :width: 100%
-   :align: center
-
-   Three vertices of a pouch held by a gripper, position (left) and velocity
-   (right) at every substep, ``dt`` = 1/300 s. Margin 2 mm, gap 1.5 mm,
-   relaxation 0.85, so the budget is 1.49 mm. Vertex 589 alternates every
-   substep: peak to peak 0.74 mm, half the budget, at 150 Hz. Vertices 560 and
-   559 alternate every two substeps: peak to peak 1.49 mm, one budget, at
-   75 Hz. The scene is a test scene, not a shipped example. Newton commit
-   353e0ea1.
-
-The amplitudes follow the budget exactly, which identifies the truncation as
-the limiter. Giving the vertices more room, a larger query radius, changes the
-amplitude; adding iterations does not.
 
 .. _vbd-fail-asset:
 
@@ -788,11 +849,13 @@ jitter at rest in one region, or warnings when the mesh is added.
 
 It never raises; it warns and adds the mesh anyway. The same checks are
 available directly as :func:`newton.utils.validate_triangle_mesh` and
-``newton.utils.validate_tet_mesh``. Thresholds at the time of writing:
+``newton.utils.validate_tet_mesh``. The checker inspects element quality and
+manifoldness; it does not detect intersections between or inside meshes.
+Thresholds at the time of writing:
 
 .. list-table::
    :header-rows: 1
-   :widths: 25 45 30
+   :widths: 18 50 32
 
    * - Mesh
      - Check
@@ -898,7 +961,7 @@ material measurement.
 
 .. list-table::
    :header-rows: 1
-   :widths: 14 30 22 14 20
+   :widths: 14 30 24 12 20
 
    * - Scenario
      - Material values
@@ -985,13 +1048,15 @@ material measurement.
      - 1/1200, 5
      - a foam pad pinched and lifted
 
+.. _vbd-rules-of-thumb:
+
 Rules of Thumb
 ~~~~~~~~~~~~~~
 
 - Use the lowest resolution that expresses the deformation you need. Raise it
   only when the degrees of freedom are not enough.
 - Use a uniform triangulation with good element quality. Check it with
-  ``validate_mesh=True``.
+  ``validate_mesh=True``, and remesh isotropically when it warns.
 - Start at ``dt`` = 1/600 s and 10 iterations, and adjust from there. If you
   start from a shipped example, keep its values.
 - Keep a copy of the last working configuration and change one parameter at a
@@ -1001,24 +1066,26 @@ Rules of Thumb
   cloth simulation, ``cloth_franka`` for cloth manipulation,
   ``softbody_hanging`` and ``softbody_franka`` for soft bodies,
   ``vbd_gripper_soft_grid`` for grippers.
-
-.. _vbd-stiffer-object:
-
-Getting a stiffer object
-````````````````````````
-
-Do not blindly crank up stiffness. Above about 1e6, expect slow convergence and
-jitter under contact and fast motion; a static drape can still work at higher
-values, as ``cloth_stiff_material_hanging`` shows at 1e8. If your stiffness is
-already very high, raising it further is unlikely to help, and it creates more
-stiffness-ratio artifacts. Look at these instead, in order:
-
-1. **Resolution.** Is such a high resolution necessary? Reducing the resolution
-   immediately improves convergence and so increases the effective stiffness.
-2. **Stiffness ratio.** One stiffness far above the others impedes the overall
-   convergence and makes some of the elasticity look less stiff. The bag sweep
-   in :ref:`vbd-fail-membrane-only` shows membrane stiffening that only makes
-   the bag wrinkle more.
-3. **Time step and iterations.** Reducing ``dt`` always helps, but not below
-   about 1/3000 s. More iterations also help. Before ``dt`` gets too small,
-   reducing ``dt`` improves stiffness more than adding iterations.
+- Keep the collision stiffness within 10x of the elasticity stiffness. A
+  contact that is far stiffer than the material it presses on jitters.
+- Always pass the self-contact margin and gap together, and keep the gap at
+  about half to one margin. Raise the gap before the margin when motion looks
+  damped near contacts.
+- Scale membrane and bending stiffness together. Stiffening only the membrane
+  moves the deformation into bending.
+- Do not blindly crank up stiffness. It can be challenging for VBD to simulate
+  a stiffness higher than about 1e6; a static drape can still work at higher
+  values, as ``cloth_stiff_material_hanging`` shows at 1e8. If your stiffness
+  is already very high, cranking it up further is unlikely to help and only
+  creates more artifacts from the stiffness ratio. Look into, in this order:
+  the resolution (is such a high resolution necessary? reducing it immediately
+  improves convergence and so increases stiffness); the stiffness ratio (one
+  stiffness far above the others impedes the overall convergence and makes
+  some of the elasticity look less stiff, see :ref:`vbd-fail-membrane-only`);
+  then the time step (reducing it always helps, but not below about 1/3000 s;
+  more iterations also help, and before ``dt`` gets too small, reducing ``dt``
+  improves stiffness more than adding iterations).
+- Start from an example's values, not from measured material data. Derived
+  stiffness values are usually too high for VBD to simulate.
+- Increasing the iterations or the collision detection frequency helps, but
+  both increase the computational cost. Use them as the last resort.
