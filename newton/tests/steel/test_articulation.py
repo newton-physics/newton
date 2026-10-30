@@ -3562,7 +3562,7 @@ def test_revolute_loop_overflow_drops_all_five_rows(test, device):
 
 
 def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
-    """Warn at construction about limits, drive gains or a zero axis on a loop-closing REVOLUTE joint."""
+    """Warn at construction about limits, drive gains, damping, armature or a zero axis on a loop-closing REVOLUTE joint."""
     builder, joint = _build_world_hinged_swing(test, "revolute")
     dof = builder.joint_qd_start[joint]
     builder.joint_limit_lower[dof], builder.joint_limit_upper[dof] = -0.5, 0.5
@@ -3572,6 +3572,11 @@ def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
     builder.joint_target_ke[builder.joint_qd_start[joint]] = 10.0
     with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* drive gains"):
         SolverSteel(builder.finalize(device=device))
+    for name, attribute, value in (("damping", "joint_damping", 100.0), ("armature", "joint_armature", 0.1)):
+        builder, joint = _build_world_hinged_swing(test, "revolute")
+        getattr(builder, attribute)[builder.joint_qd_start[joint]] = value
+        with test.assertWarnsRegex(newton.exceptions.NewtonWarning, f"loop-closing REVOLUTE joint .* {name}"):
+            SolverSteel(builder.finalize(device=device))
     builder, joint = _build_world_hinged_swing(test, "revolute")
     builder.joint_axis[builder.joint_qd_start[joint]] = (0.0, 0.0, 0.0)
     with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* zero axis"):
@@ -3579,6 +3584,26 @@ def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
     with warnings.catch_warnings():
         warnings.simplefilter("error", newton.exceptions.NewtonWarning)
         SolverSteel(_build_world_hinged_swing(test, "revolute")[0].finalize(device=device))
+
+
+def test_revolute_loop_warns_about_edits_it_ignores(test, device):
+    """Warn on an eager notification after an edit to a zero axis or to damping of a loop-closing REVOLUTE joint."""
+    model = _build_world_hinged_swing(test, "revolute")[0].finalize(device=device)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", newton.exceptions.NewtonWarning)
+        solver = SolverSteel(model)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.JOINT_DOF_PROPERTIES)
+    dof = int(model.joint_qd_start.numpy()[1])
+    axis = model.joint_axis.numpy()
+    axis[dof] = (0.0, 0.0, 0.0)
+    model.joint_axis.assign(axis)
+    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint 1 has a zero axis"):
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    damping = model.joint_damping.numpy()
+    damping[dof] = 100.0
+    model.joint_damping.assign(damping)
+    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint 1 has damping"):
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
 
 
 def test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows(test, device):
@@ -3621,6 +3646,7 @@ for _name in (
     "test_revolute_loop_axis_edit_applies_between_replays",
     "test_revolute_loop_overflow_drops_all_five_rows",
     "test_revolute_loop_warns_about_ignored_limits_and_drives",
+    "test_revolute_loop_warns_about_edits_it_ignores",
     "test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows",
 ):
     add_function_test(TestSteelRevoluteLoop, _name, globals()[_name], devices=get_cuda_test_devices())

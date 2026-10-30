@@ -1289,10 +1289,12 @@ class SolverSteel(SolverBase):
     - Loop-closing BALL and REVOLUTE joints (joints outside the articulation tree whose
       child belongs to an articulation): three bilateral rows pin the joint's parent and
       child anchors together, and a REVOLUTE closure adds two rows that keep the child's
-      hinge axis aligned with the parent's. A closure has no joint coordinate, so limits
-      and drive gains on a loop-closing REVOLUTE joint are ignored; the solver warns at
-      construction if any are set, or if the hinge axis is zero. The
-      parent is in the child's articulation, a kinematic body, or the world. The closure
+      hinge axis on the parent's hinge line. A closure has no joint coordinate, so the
+      limits, drive gains, damping, armature, velocity limit and
+      :attr:`~newton.Control.joint_f` of a loop-closing REVOLUTE joint's DOF are ignored.
+      The solver warns at construction, and on an eager joint or joint DOF notification,
+      if limits, drive gains, damping or armature are set, or if the hinge axis is zero.
+      The parent is in the child's articulation, a kinematic body, or the world. The closure
       rows read :attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_X_p` /
       :attr:`~newton.Model.joint_X_c` and, for a REVOLUTE closure,
       :attr:`~newton.Model.joint_axis` every step, so a closure is released, engaged,
@@ -2934,6 +2936,9 @@ class SolverSteel(SolverBase):
             self._clear_warmstart_history(world_mask)
         if self._enable_joint_friction and flags & dof_force and not wp.get_stream(self.model.device).is_capturing:
             self._validate_joint_friction()
+        joint_inputs = ModelFlags.JOINT_PROPERTIES | dof_force | dof_inertial
+        if flags & joint_inputs and not (self.model.device.is_cuda and wp.get_stream(self.model.device).is_capturing):
+            self._warn_ignored_revolute_loop_inputs(stacklevel=3)
 
     def _validate_joint_friction(self) -> None:
         """Reject joint friction the per-DOF friction rows cannot represent."""
@@ -3401,21 +3406,19 @@ class SolverSteel(SolverBase):
         self._connect_slot = None
         loop_joint_articulation = self._model_plan.loop_joint_articulation
         loop_joints = np.flatnonzero(loop_joint_articulation >= 0)
+        self._revolute_loop_joints = np.zeros(0, dtype=np.int32)
         if loop_joints.size == 0:
             return
 
         joint_type = model.joint_type.numpy()
+        self._revolute_loop_joints = loop_joints[joint_type[loop_joints] == int(JointType.REVOLUTE)]
+        self._warn_ignored_revolute_loop_inputs(stacklevel=4)
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
         body_articulation = self._body_to_articulation.numpy()
         kinematic_bodies = (model.body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
         response_dof_count = self._model_plan.response_dof_count
         articulation_world = self._model_plan.articulation_world
-
-        joint_qd_start = model.joint_qd_start.numpy()
-        limit_lower, limit_upper = model.joint_limit_lower.numpy(), model.joint_limit_upper.numpy()
-        target_ke, target_kd = model.joint_target_ke.numpy(), model.joint_target_kd.numpy()
-        joint_axis = model.joint_axis.numpy()
 
         art_l, body_p, body_c, prescribed_l = [], [], [], []
         joint_l, foreign_l, rows_l = [], [], []
@@ -3425,22 +3428,6 @@ class SolverSteel(SolverBase):
                 rows = 3
             elif int(joint_type[j]) == int(JointType.REVOLUTE):
                 rows = 5
-                dof = int(joint_qd_start[j])
-                limited = abs(float(limit_lower[dof])) < MAXVAL or abs(float(limit_upper[dof])) < MAXVAL
-                driven = float(target_ke[dof]) != 0.0 or float(target_kd[dof]) != 0.0
-                if limited or driven:
-                    ignored = " and ".join(name for name, on in (("limits", limited), ("drive gains", driven)) if on)
-                    warnings.warn(
-                        f"SolverSteel: loop-closing REVOLUTE joint {j} has {ignored}, which a loop closure ignores.",
-                        NewtonWarning,
-                        stacklevel=3,
-                    )
-                if not np.any(joint_axis[dof]):
-                    warnings.warn(
-                        f"SolverSteel: loop-closing REVOLUTE joint {j} has a zero axis, so it closes the loop like a BALL joint.",
-                        NewtonWarning,
-                        stacklevel=3,
-                    )
             else:
                 raise NotImplementedError(
                     f"SolverSteel: loop-closing joint {j} is a {JointType(joint_type[j]).name} joint; "
@@ -3493,6 +3480,35 @@ class SolverSteel(SolverBase):
         self._connect_rows_np = np.asarray(rows_l, dtype=np.int32)
         self._connect_rows = wp.array(self._connect_rows_np, dtype=wp.int32, device=device)
         self._connect_count = n
+
+    def _warn_ignored_revolute_loop_inputs(self, stacklevel: int) -> None:
+        """Warn about the DOF inputs of loop-closing REVOLUTE joints that a closure ignores, and about a zero axis."""
+        if self._revolute_loop_joints.size == 0:
+            return
+        model = self.model
+        dofs = model.joint_qd_start.numpy()[self._revolute_loop_joints]
+        lower, upper = model.joint_limit_lower.numpy()[dofs], model.joint_limit_upper.numpy()[dofs]
+        inputs = {
+            "limits": (np.abs(lower) < MAXVAL) | (np.abs(upper) < MAXVAL),
+            "drive gains": (model.joint_target_ke.numpy()[dofs] != 0.0) | (model.joint_target_kd.numpy()[dofs] != 0.0),
+            "damping": model.joint_damping.numpy()[dofs] != 0.0,
+            "armature": model.joint_armature.numpy()[dofs] != 0.0,
+        }
+        zero_axis = ~np.any(model.joint_axis.numpy()[dofs], axis=1)
+        for i, j in enumerate(self._revolute_loop_joints.tolist()):
+            ignored = [name for name, flagged in inputs.items() if flagged[i]]
+            if ignored:
+                warnings.warn(
+                    f"SolverSteel: loop-closing REVOLUTE joint {j} has {', '.join(ignored)}, which a loop closure ignores.",
+                    NewtonWarning,
+                    stacklevel=stacklevel,
+                )
+            if zero_axis[i]:
+                warnings.warn(
+                    f"SolverSteel: loop-closing REVOLUTE joint {j} has a zero axis, so it closes the loop like a BALL joint.",
+                    NewtonWarning,
+                    stacklevel=stacklevel,
+                )
 
     def _validate_connect_parent_membership(self) -> None:
         """Reject a body-flag change that would invalidate the prescribed-parent closures.
