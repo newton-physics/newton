@@ -2710,6 +2710,8 @@ def accumulate_connect_wrenches_from_impulses(
     connect_joint: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
+    connect_parent_prescribed: wp.array[int],
+    body_has_response_dofs: wp.array[int],
     connect_row_inv_norm: wp.array2d[float],
     art_to_world: wp.array[int],
     body_q: wp.array[wp.transform],
@@ -2725,8 +2727,9 @@ def accumulate_connect_wrenches_from_impulses(
     """Add each loop closure's solved force along its world axes at the parent and child anchors.
 
     The row builder normalizes each axis row and stores the factor it applied, so a row impulse
-    maps back to the force ``e * lambda * inv_norm / dt``: ``+`` on the parent at its anchor and
-    ``-`` on the child at its anchor, as in the row's Jacobian.
+    maps back to the force ``e * lambda * inv_norm / dt``: ``+`` on the parent and ``-`` on the
+    child, at the points the row's Jacobian uses (the anchors' midpoint when both bodies have
+    response DOFs, otherwise each body's own anchor).
     """
     k = wp.tid()
     base_slot = connect_slot[k]
@@ -2740,6 +2743,10 @@ def accumulate_connect_wrenches_from_impulses(
     if body_p >= 0:
         p_a = wp.transform_point(body_q[body_p], p_a)
     p_b = wp.transform_point(body_q[body_c], wp.transform_get_translation(joint_X_c[joint]))
+    shared_anchor = connect_parent_prescribed[k] == 0 and body_has_response_dofs[body_p] != 0
+    if shared_anchor and body_has_response_dofs[body_c] != 0:
+        p_a = 0.5 * (p_a + p_b)
+        p_b = p_a
     for axis in range(3):
         slot = base_slot + axis
         if slot >= world_constraint_count[world] or world_row_type[world, slot] != PGS_CONSTRAINT_TYPE_CONNECT:
