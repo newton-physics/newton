@@ -8,7 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _variant(kind: str, mu: float = 1.0, tag: int = 0) -> newton.ModelBuilder:
@@ -341,9 +341,44 @@ def test_mujoco_rest_height_follows_selection(test, device):
         newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=True)
 
 
+def test_selection_replays_from_cuda_graph(test, device):
+    """A selection and the solver notifications it needs record into a CUDA graph and replay."""
+    scene = _scene(2, height=0.5)
+    scene.add_particle(pos=wp.vec3(0.0, 0.0, 2.0), vel=wp.vec3(0.0), mass=0.1, radius=0.01)
+    scene.color()
+    model = scene.finalize(device=device)
+    mujoco = newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=False)
+    vbd = newton.solvers.SolverVBD(
+        model, rigid_compliant_alm=True, rigid_soft_enable_dat=True, collision_pipeline=newton.CollisionPipeline(model)
+    )
+    cube_radius = vbd._rigid_dat_body_bounding_radius.numpy()[0]
+
+    variants = wp.zeros(2, dtype=wp.int32, device=device)
+    with wp.ScopedCapture(device=device) as capture:
+        flags = model.select_body_variants(variants)
+        mujoco.notify_model_changed(flags)
+        vbd.notify_model_changed(flags)
+    for choice in ([1, 0], [0, 1]):
+        variants.assign(choice)
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(model.body_variant.numpy(), choice)
+        expected = [newton.GeoType.SPHERE if c else newton.GeoType.BOX for c in choice]
+        np.testing.assert_array_equal(model.shape_type.numpy()[[0, 2]], expected)
+        np.testing.assert_allclose(mujoco.mjw_model.body_mass.numpy()[:, 1], model.body_mass.numpy(), rtol=1e-6)
+        # The spheres reach less far from the center of mass than the cube's corners.
+        radius = vbd._rigid_dat_body_bounding_radius.numpy()
+        test.assertEqual([r < cube_radius for r in radius], [bool(c) for c in choice])
+
+
 devices = get_test_devices()
 add_function_test(TestBodyVariants, "test_contacts_follow_selection", test_contacts_follow_selection, devices=devices)
 add_function_test(TestBodyVariants, "test_rows_keep_their_role", test_rows_keep_their_role, devices=devices)
+add_function_test(
+    TestBodyVariants,
+    "test_selection_replays_from_cuda_graph",
+    test_selection_replays_from_cuda_graph,
+    devices=get_cuda_test_devices(),
+)
 add_function_test(
     TestBodyVariants,
     "test_mujoco_rest_height_follows_selection",
