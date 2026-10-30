@@ -874,6 +874,7 @@ class TestPreeliminationKernels(unittest.TestCase):
         J = wp.zeros((1, 3, 1), dtype=float, device=device)
         phi = wp.zeros((1, 3), dtype=float, device=device)
         target = wp.zeros((1, 3), dtype=float, device=device)
+        inv_norm = wp.zeros((1, 3), dtype=float, device=device)
         # A world anchor and one rotational child DOF with a 2 mm lever arm.
         wp.launch(
             steel_kernels.populate_connect_J_for_size,
@@ -907,12 +908,14 @@ class TestPreeliminationKernels(unittest.TestCase):
                 wp.zeros((1, 3), dtype=float, device=device),
                 phi,
                 target,
+                inv_norm,
             ],
             device=device,
         )
         # Unnormalized, the row would be J = -0.002 with phi = 0.001.
         self.assertAlmostEqual(float(J.numpy()[0, 1, 0]), -1.0, places=5)
         self.assertAlmostEqual(float(phi.numpy()[0, 1]), 0.5, places=5)
+        self.assertAlmostEqual(float(inv_norm.numpy()[0, 1]), 500.0, delta=1.0e-2)
 
     def test_regularized_projection_leaves_documented_residual(self):
         """Leave the residual ``R (S + R)^-1 (J_B v + b_B)`` of the regularized block factor.

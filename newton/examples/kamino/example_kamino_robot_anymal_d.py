@@ -1,14 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot Anymal D
-#
-# Shows how to simulate Anymal D with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_robot_anymal_d --world-count 16
-#
-###########################################################################
+"""Example Robot Anymal D
+
+Shows how to simulate Anymal D with multiple worlds using SolverKamino.
+
+Success criteria:
+- ANYmal D robots stand on the ground.
+- Right-drag the robot and release it; its articulation stays connected and collides with the
+  ground.
+
+Runs:
+- `python -m newton.examples kamino_robot_anymal_d --use-kamino-contacts`
+- `python -m newton.examples kamino_robot_anymal_d --world-count 16`
+"""
 
 import warp as wp
 
