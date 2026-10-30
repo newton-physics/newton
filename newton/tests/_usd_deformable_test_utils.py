@@ -165,6 +165,37 @@ def _add_cloth_mesh(stage, path, *, collision=True):
     return mesh
 
 
+def _author_unit_tet(stage, path, *, sim_api=False, collision=None):
+    """Author a single-tetrahedron TetMesh (volume 1/6), optionally marked as a simulation mesh.
+
+    ``collision`` authors an enabled ``PhysicsCollisionAPI``; defaults to ``sim_api`` so
+    deformable-marked fixtures represent the common colliding case, while bare TetMeshes
+    keep the legacy import untouched.
+    """
+    from pxr import UsdGeom
+
+    tet = UsdGeom.TetMesh.Define(stage, path)
+    tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
+    tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+    if sim_api:
+        tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+    if sim_api if collision is None else collision:
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+    return tet
+
+
+def _add_rigid_cube(stage, path, pos, *, size=0.1):
+    """Author a colliding rigid-body cube at ``pos``."""
+    from pxr import Gf, UsdGeom, UsdPhysics
+
+    cube = UsdGeom.Cube.Define(stage, path)
+    cube.CreateSizeAttr(size)
+    cube.AddTranslateOp().Set(Gf.Vec3d(*pos))
+    UsdPhysics.RigidBodyAPI.Apply(cube.GetPrim())
+    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    return cube
+
+
 def _apply_deformable_body_api(prim, *, mass=None, density=None):
     """Apply PhysicsDeformableBodyAPI with optional mass / density overrides."""
     from pxr import Sdf

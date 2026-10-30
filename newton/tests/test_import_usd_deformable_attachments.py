@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for USD deformable attachments and element collision filters on cable bodies."""
+"""Tests for USD deformable attachments and element collision filters."""
 
 import math
 import unittest
@@ -15,8 +15,10 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cloth_mesh,
     _add_element_collision_filter,
     _add_physics_attachment,
+    _add_rigid_cube,
     _author_cable_rest_shape,
     _author_deformable_element_array,
+    _author_unit_tet,
     _bind_deformable_material,
     _deformable_stage,
     group_range,
@@ -26,7 +28,7 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableAttachments(unittest.TestCase):
-    """Proposal PhysicsAttachment + element-collision-filter import onto cable bodies."""
+    """Verify proposal attachment and element-collision-filter import."""
 
     def test_result_maps_stay_valid_after_collapse(self):
         """With collapse_fixed_joints=True, the returned cable and attachment indices
@@ -1102,8 +1104,8 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         newton.solvers.SolverVBD(model, iterations=1, rigid_compliant_alm=True)
 
     def test_physics_attachment_disabled_or_unsupported_is_recorded_not_imported(self):
-        """Disabled and cloth/volume-source attachments create no joints; both preserve their
-        authored attrs (enabled flag / unsupported_reason), and unsupported sources warn."""
+        """Disabled cable and world-target cloth attachments create nothing; both preserve their
+        authored attrs (enabled flag / unsupported_reason), and the cloth attachment warns."""
         stage = _deformable_stage()
         pts = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
         _add_cable_curve(stage, "/World/Cable", pts)
@@ -1119,7 +1121,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             coords1=[(0.05, 0.0, 1.0)],
             enabled=False,
         )
-        # Cloth/volume sources are surfaced but not lowered to fake constraints.
+        # Cloth attachments to the world have no body to attach to.
         _add_physics_attachment(
             stage,
             "/World/AttachCloth",
@@ -1127,20 +1129,300 @@ class TestUSDDeformableAttachments(unittest.TestCase):
             type0="point",
             indices0=[0],
             coords1=[(0.0, 0.0, 1.0)],
+            stiffness=100.0,
         )
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "cloth/volume"):
+        with self.assertWarnsRegex(UserWarning, "not an imported rigid body"):
             result = builder.add_usd(stage, return_deformable_results=True)
 
         # Neither policy case lowers to a joint.
         self.assertNotIn("/World/AttachDisabled", result["path_attachment_map"])
         self.assertNotIn("/World/AttachCloth", result["path_attachment_map"])
         self.assertEqual(len(result["path_attachment_map"]), 0)
+        self.assertEqual(builder.attachment_particle_body_count, 0)
         self.assertFalse(result["path_attachment_attrs"]["/World/AttachDisabled"]["enabled"])
         attrs = result["path_attachment_attrs"]["/World/AttachCloth"]
         self.assertEqual(attrs["src0"], "/World/Cloth")
         self.assertIn("unsupported_reason", attrs)
+
+    def test_cloth_and_solid_point_attachments_match_builder_api(self):
+        """Preserve finite cloth/volume attachment gains, indices, anchors, and enabled state."""
+
+        def author(stage, with_attachments):
+            _add_rigid_cube(stage, "/World/Body", (0.5, 0.5, 2.0))
+            mesh = _add_cloth_mesh(stage, "/World/Cloth")
+            _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+            _author_unit_tet(stage, "/World/Solid", sim_api=True)
+            if not with_attachments:
+                return
+            _add_physics_attachment(
+                stage,
+                "/World/AttachCloth",
+                src0="/World/Cloth",
+                src1="/World/Body",
+                type0="point",
+                indices0=[2, 3],
+                coords1=[(0.1, 0.0, 0.0), (0.0, 0.2, 0.0)],
+                stiffness=500.0,
+                damping=2.0,
+            )
+            _add_physics_attachment(
+                stage,
+                "/World/AttachSolid",
+                src0="/World/Solid",
+                src1="/World/Body",
+                type0="point",
+                indices0=[3],
+                stiffness=800.0,
+                enabled=False,
+            )
+            _add_physics_attachment(
+                stage,
+                "/World/AttachZero",
+                src0="/World/Cloth",
+                src1="/World/Body",
+                type0="point",
+                indices0=[0],
+                stiffness=0.0,
+                damping=3.0,
+            )
+
+        stage = _deformable_stage()
+        author(stage, True)
+        imported = newton.ModelBuilder()
+        imported.add_particle(pos=(9.0, 9.0, 9.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        result = imported.add_usd(stage, return_deformable_results=True)
+
+        ref_stage = _deformable_stage()
+        author(ref_stage, False)
+        expected = newton.ModelBuilder()
+        expected.add_particle(pos=(9.0, 9.0, 9.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+        ref = expected.add_usd(ref_stage, return_deformable_results=True)
+        body = ref["path_body_map"]["/World/Body"]
+        cloth_p0 = ref["path_cloth_map"]["/World/Cloth"]["particle"][0]
+        solid_p0 = ref["path_soft_map"]["/World/Solid"]["particle"][0]
+        for particle, point in ((2, (0.1, 0.0, 0.0)), (3, (0.0, 0.2, 0.0))):
+            expected.add_attachment_particle_body(
+                cloth_p0 + particle, body, body_point=point, stiffness=500.0, damping=2.0
+            )
+        expected.add_attachment_particle_body(solid_p0 + 3, body, stiffness=800.0, enabled=False)
+        expected.add_attachment_particle_body(cloth_p0, body, stiffness=0.0, damping=3.0)
+
+        self.assertEqual(
+            result["path_attachment_attrs"]["/World/AttachCloth"]["attachment_particle_body_indices"], [0, 1]
+        )
+        self.assertEqual(result["path_attachment_attrs"]["/World/AttachSolid"]["attachment_particle_body_indices"], [2])
+        self.assertEqual(result["path_attachment_attrs"]["/World/AttachZero"]["attachment_particle_body_indices"], [3])
+        self.assertNotIn("/World/AttachCloth", result["path_attachment_map"])
+        for name in ("body", "particle", "stiffness", "damping", "enabled", "world"):
+            attr = f"attachment_particle_body_{name}"
+            self.assertEqual(getattr(imported, attr), getattr(expected, attr), attr)
+        np.testing.assert_allclose(
+            np.array(imported.attachment_particle_body_body_point),
+            np.array(expected.attachment_particle_body_body_point),
+            atol=1e-6,
+        )
+
+    def test_hard_cloth_and_solid_attachments_match_builder_api(self):
+        """Import hard USD defaults and explicit infinity with the builder's hard-constraint behavior."""
+        from pxr import UsdPhysics
+
+        def geometry(source):
+            stage = _deformable_stage()
+            UsdPhysics.Scene.Get(stage, "/PhysicsScene").CreateGravityMagnitudeAttr(10.0)
+            body = _add_rigid_cube(stage, "/World/Body", (0.0, 0.0, 1.0))
+            UsdPhysics.RigidBodyAPI(body.GetPrim()).CreateKinematicEnabledAttr(True)
+            if source == "Cloth":
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+            else:
+                _author_unit_tet(stage, "/World/Solid", sim_api=True)
+            return stage
+
+        for source in ("Cloth", "Solid"):
+            expected = newton.ModelBuilder()
+            reference = expected.add_usd(geometry(source), return_deformable_results=True)
+            body = reference["path_body_map"]["/World/Body"]
+            ranges = reference["path_cloth_map"] if source == "Cloth" else reference["path_soft_map"]
+            particle = ranges[f"/World/{source}"]["particle"][0]
+            for stiffness in (None, math.inf):
+                for enabled in (True, False):
+                    with self.subTest(source=source, stiffness=stiffness, enabled=enabled):
+                        stage = geometry(source)
+                        _add_physics_attachment(
+                            stage,
+                            "/World/Attach",
+                            src0=f"/World/{source}",
+                            src1="/World/Body",
+                            type0="point",
+                            indices0=[0],
+                            stiffness=stiffness,
+                            damping=2.0,
+                            enabled=enabled,
+                        )
+                        builder = newton.ModelBuilder()
+                        result = builder.add_usd(stage, return_deformable_results=True)
+                        row = expected.add_attachment_particle_body(
+                            particle, body, stiffness=math.inf, damping=2.0, enabled=enabled
+                        )
+                        self.assertEqual(builder.attachment_particle_body_count, 1)
+                        self.assertNotIn("/World/Attach", result["path_attachment_map"])
+                        attrs = result["path_attachment_attrs"]["/World/Attach"]
+                        self.assertEqual(attrs["attachment_particle_body_indices"], [0])
+                        self.assertEqual(attrs["stiffness"], math.inf)
+                        self.assertEqual(attrs["damping"], 2.0)
+                        self.assertEqual(attrs["enabled"], enabled)
+                        self.assertNotIn("unsupported_reason", attrs)
+                        self.assertNotIn("approximated_stiffness", attrs)
+                        for name in ("particle", "body", "body_point", "stiffness", "damping", "enabled", "world"):
+                            attr = f"attachment_particle_body_{name}"
+                            np.testing.assert_array_equal(getattr(builder, attr)[0], getattr(expected, attr)[row])
+                        if stiffness is None and enabled:
+                            builder.color()
+                            model = builder.finalize()
+                            initial = model.particle_q.numpy().copy()
+                            state_in, state_out = model.state(), model.state()
+                            newton.solvers.SolverVBD(model, iterations=30).step(state_in, state_out, None, None, 2.0e-3)
+                            positions = state_out.particle_q.numpy()
+                            np.testing.assert_allclose(positions[particle], initial[particle], atol=2.0e-6)
+                            self.assertLess(float(positions[particle + 1, 2]), float(initial[particle + 1, 2]))
+
+    def test_attachment_anchors_survive_root_override(self):
+        """Preserve body-local particle and cable attachment anchors when rebasing an articulation root."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        for override in (False, True):
+            with self.subTest(override_root_xform=override):
+                stage = _deformable_stage()
+                env = UsdGeom.Xform.Define(stage, "/World/Env")
+                env.AddTranslateOp().Set(Gf.Vec3d(100.0, 200.0, 0.0))
+                robot = UsdGeom.Xform.Define(stage, "/World/Env/Robot")
+                UsdPhysics.ArticulationRootAPI.Apply(robot.GetPrim())
+                _add_rigid_cube(stage, "/World/Env/Robot/Base", (0.0, 0.0, 0.0))
+                _add_rigid_cube(stage, "/World/Env/Robot/Body", (0.0, 0.0, 1.0))
+                joint = UsdPhysics.RevoluteJoint.Define(stage, "/World/Env/Robot/Joint")
+                joint.CreateBody0Rel().SetTargets(["/World/Env/Robot/Base"])
+                joint.CreateBody1Rel().SetTargets(["/World/Env/Robot/Body"])
+                joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 1.0))
+                joint.CreateAxisAttr().Set("Z")
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+                _add_physics_attachment(
+                    stage,
+                    "/World/Attach",
+                    src0="/World/Cloth",
+                    src1="/World/Env/Robot/Body",
+                    type0="point",
+                    indices0=[0],
+                    coords1=[(0.2, 0.3, 0.4)],
+                    stiffness=500.0,
+                )
+                _add_cable_curve(stage, "/World/Cable", [(0.0, 0.0, 3.0), (0.1, 0.0, 3.0), (0.2, 0.0, 3.0)])
+                _add_physics_attachment(
+                    stage,
+                    "/World/AttachCable",
+                    src0="/World/Cable",
+                    src1="/World/Env/Robot/Body",
+                    type0="point",
+                    indices0=[0],
+                    coords1=[(0.2, 0.3, 0.4)],
+                )
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(
+                    stage,
+                    xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+                    floating=False,
+                    override_root_xform=override,
+                    return_deformable_results=True,
+                )
+                np.testing.assert_allclose(
+                    np.array(builder.attachment_particle_body_body_point[0]), (0.2, 0.3, 0.4), atol=1e-5
+                )
+                (cable_joint,) = result["path_attachment_map"]["/World/AttachCable"]
+                np.testing.assert_allclose(np.array(builder.joint_X_p[cable_joint].p), (0.2, 0.3, 0.4), atol=1e-5)
+
+    def test_particle_attachment_resolves_transformed_child_anchor(self):
+        """Resolve a rotated and scaled child xform anchor in the rigid body's local frame."""
+        from pxr import Gf, UsdGeom
+
+        stage = _deformable_stage()
+        body = _add_rigid_cube(stage, "/World/Body", (1.0, 2.0, 3.0))
+        body.AddRotateZOp().Set(90.0)
+        socket = UsdGeom.Xform.Define(stage, "/World/Body/Socket")
+        socket.AddTranslateOp().Set(Gf.Vec3d(0.1, 0.2, 0.3))
+        socket.AddRotateZOp().Set(90.0)
+        socket.AddScaleOp().Set(Gf.Vec3f(2.0, 3.0, 4.0))
+        mesh = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
+        _add_physics_attachment(
+            stage,
+            "/World/Attach",
+            src0="/World/Cloth",
+            src1="/World/Body/Socket",
+            type0="point",
+            indices0=[0],
+            coords1=[(0.2, 0.3, 0.4)],
+            stiffness=500.0,
+        )
+        builder = newton.ModelBuilder()
+        builder.add_usd(
+            stage, xform=wp.transform((5.0, -3.0, 2.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.4))
+        )
+        np.testing.assert_allclose(
+            np.array(builder.attachment_particle_body_body_point[0]), (-0.8, 0.6, 1.9), atol=1e-5
+        )
+
+    def test_nonfinite_particle_attachment_anchor_creates_no_rows(self):
+        """Reject a malformed anchor before adding any site of its attachment prim."""
+        stage = _deformable_stage()
+        _add_rigid_cube(stage, "/World/Body", (0.0, 0.0, 2.0))
+        _add_cloth_mesh(stage, "/World/Cloth")
+        _add_physics_attachment(
+            stage,
+            "/World/Attach",
+            src0="/World/Cloth",
+            src1="/World/Body",
+            type0="point",
+            indices0=[0, 1],
+            coords1=[(0.0, 0.0, 0.0), (math.nan, 0.0, 0.0)],
+            stiffness=500.0,
+        )
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "finite"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+        self.assertEqual(builder.attachment_particle_body_count, 0)
+        attrs = result["path_attachment_attrs"]["/World/Attach"]
+        self.assertIn("unsupported_reason", attrs)
+        self.assertNotIn("attachment_particle_body_indices", attrs)
+
+    def test_unsupported_cloth_attachments_warn_and_create_nothing(self):
+        """Non-point sites and targets without a rigid body are preserved, not imported."""
+        cases = {
+            "segment_site": ({"type0": "segment", "src1": "/World/Body", "coords0": [(0.5, 0.0, 0.0)]}, "type0"),
+            "world_target": ({"type0": "point"}, "not an imported rigid body"),
+            "target_site": ({"src1": "/World/Body", "type1": "point"}, "type1"),
+            "target_indices": ({"src1": "/World/Body", "indices1": [0]}, "indices1"),
+            "empty_sites": ({"src1": "/World/Body", "indices0": []}, "no indices0"),
+            "negative_index": ({"src1": "/World/Body", "indices0": [-1]}, "out of range"),
+            "past_last_index": ({"src1": "/World/Body", "indices0": [4]}, "out of range"),
+            "anchor_count": (
+                {"src1": "/World/Body", "indices0": [0, 1], "coords1": [(0.0, 0.0, 0.0)]},
+                "coords1 length",
+            ),
+        }
+        for case, (kwargs, reason) in cases.items():
+            with self.subTest(case=case):
+                stage = _deformable_stage()
+                _add_rigid_cube(stage, "/World/Body", (0.0, 0.0, 2.0))
+                _add_cloth_mesh(stage, "/World/Cloth")
+                params = {"type0": "point", "indices0": [0], **kwargs}
+                _add_physics_attachment(stage, "/World/Attach", src0="/World/Cloth", stiffness=100.0, **params)
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, reason):
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                self.assertEqual(builder.attachment_particle_body_count, 0)
+                self.assertIn("unsupported_reason", result["path_attachment_attrs"]["/World/Attach"])
 
     def _two_cable_filter_stage(self, **filter_kwargs):
         """Two 3-segment cables plus a PhysicsElementCollisionFilter; returns (builder, result, pairs)."""

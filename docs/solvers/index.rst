@@ -486,9 +486,18 @@ rigid body's local frame. Author attachments with
 :class:`~newton.Model` and do not require a coupled solver.
 
 :class:`~newton.solvers.SolverVBD` applies an attachment whenever it integrates
-both endpoints. The attachment is compliant rather than rigid: it contributes a
-quadratic penalty with ``stiffness`` [N/m] and ``damping`` [N·s/m], so a heavily
-loaded attachment keeps a small offset instead of holding the particle exactly.
+both endpoints. It solves every attachment as a compliant augmented-Lagrangian
+(ALM) row, like the structural joint rows of VBD: a reaction
+multiplier carries the attachment force, and a numerical penalty chosen from the
+endpoint masses and the particle's surrounding material helps the iterations
+converge. The penalty affects convergence only, not physical compliance.
+A finite ``stiffness`` [N/m] converges to a spring with ``damping`` [N·s/m], so a
+loaded attachment keeps a physical offset. Set ``stiffness=math.inf`` to request
+a hard point constraint; damping is ignored for hard attachments. Multipliers are
+retained across steps, scaled by ``rigid_avbd_gamma``. A finite iteration budget
+can leave constraint error, especially for heavy free bodies at large time steps;
+more iterations or smaller steps reduce it. Incompatible hard attachments cannot
+all be satisfied. Separated initial anchors can cause large correction impulses.
 The constraint is translational, similar to the positional part of a ball joint;
 a single particle has no orientation, so there is no angular counterpart. Forces
 are equal and opposite, including the torque about the body's center of mass, and
@@ -498,13 +507,14 @@ Both endpoints must be integrated by the same solver, so
 :class:`~newton.solvers.SolverVBD` rejects attachments when it is constructed
 with ``integrate_with_external_rigid_solver=True``.
 
-When the endpoints belong to two different solvers in a coupled simulation,
+When the endpoints of a finite-stiffness attachment belong to two different solvers in a coupled simulation,
 :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` turns the same
 model rows into cross-solver interface constraints; see :ref:`ADMM coupling`.
 The two cases are mutually exclusive, so no attachment is applied twice, and a
 row whose body or particle is owned by no solver applies no force at all. The
 coupler also warns when both endpoints belong to one entry whose solver does not
-support attachments.
+support attachments. Hard attachments require both endpoints in one VBD entry;
+the coupler raises an error for other ownership arrangements.
 
 .. _Differentiability:
 

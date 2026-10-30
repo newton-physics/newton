@@ -1079,9 +1079,9 @@ class Model:
         self.attachment_particle_body_body_point: wp.array[wp.vec3] | None = None
         """Attachment points in body-local coordinates [m], shape [attachment_particle_body_count, 3]."""
         self.attachment_particle_body_stiffness: wp.array[wp.float32] | None = None
-        """Attachment stiffness [N/m], shape [attachment_particle_body_count]."""
+        """Attachment stiffness [N/m], or positive infinity for a hard VBD constraint, shape [attachment_particle_body_count]."""
         self.attachment_particle_body_damping: wp.array[wp.float32] | None = None
-        """Attachment damping [N·s/m], shape [attachment_particle_body_count]."""
+        """Attachment damping [N·s/m], ignored for hard constraints, shape [attachment_particle_body_count]."""
         self.attachment_particle_body_enabled: wp.array[wp.bool] | None = None
         """Whether each attachment is active, shape [attachment_particle_body_count]."""
         self.attachment_particle_body_world: wp.array[wp.int32] | None = None

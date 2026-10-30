@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -2871,6 +2872,11 @@ class SolverCoupledADMM(SolverCoupled):
                 stiffness = float(stiffness_np[row])
                 if stiffness < 0.0:
                     raise ValueError(f"ADMM particle-body attachment {name} has negative stiffness")
+                if math.isinf(stiffness) and not is_model_source:
+                    raise ValueError(
+                        f"ADMM particle-body attachment {name} is hard; use "
+                        "ModelBuilder.add_attachment_particle_body() for hard attachments"
+                    )
                 damping = float(damping_np[row])
                 if damping < 0.0:
                     raise ValueError(f"ADMM particle-body attachment {name} has negative damping")
@@ -2905,6 +2911,15 @@ class SolverCoupledADMM(SolverCoupled):
         for name, body, particle, point, stiffness, damping in rows:
             body_entry = self._entry_name_for_body(body)
             particle_entry = self._entry_name_for_particle(particle)
+            if math.isinf(stiffness) and (
+                body_entry is None
+                or particle_entry != body_entry
+                or not isinstance(self._entries[body_entry].solver, SolverVBD)
+            ):
+                raise ValueError(
+                    "Hard particle-body attachments require both endpoints in the same SolverVBD entry; "
+                    f"attachment {name} has body entry {body_entry!r} and particle entry {particle_entry!r}"
+                )
             if body_entry is None or particle_entry is None:
                 unowned.append(name)
                 continue
