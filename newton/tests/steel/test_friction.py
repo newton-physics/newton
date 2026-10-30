@@ -1553,16 +1553,17 @@ class TestFrictionPatchHistory(unittest.TestCase):
         slots = wp.zeros(1, dtype=int, device=_DEVICE)
         lengths = wp.array([3], dtype=int, device=_DEVICE)
         mu = wp.array([[0.5, 0.25, 0.25] + [0.0] * 5], dtype=float, device=_DEVICE)
-        # Cone radius is 0.25 times the region load: 1.0 on the anchor alone, or 0.5 on a linked row 3.
+        # Cone radius is 0.25 times the region load: 1.0 or 0.0 on the anchor alone, or 0.5 on a linked row 3.
         unlinked = [-1] * 8
         linked = [3, -1, -1, 0] + [-1] * 4
         cases = (
             (unlinked, 1.0, 0.0, (0.15, -0.1), (0.15, -0.1)),
             (unlinked, 1.0, 0.0, (0.3, -0.2), (0.2080, -0.1387)),
             (linked, 0.0, 0.5, (0.3, -0.2), (0.1040, -0.0693)),
+            (unlinked, 0.0, 0.0, (0.3, -0.2), (0.0, 0.0)),
         )
         for row_parents, anchor_normal, linked_normal, seeded_tangent, expected_tangent in cases:
-            with self.subTest(anchor_normal=anchor_normal, seed=seeded_tangent):
+            with self.subTest(anchor_normal=anchor_normal, linked_normal=linked_normal, seed=seeded_tangent):
                 parents = wp.array([row_parents], dtype=int, device=_DEVICE)
                 seeded = [anchor_normal, *seeded_tangent, linked_normal] + [0.0] * 4
                 impulses = wp.array([seeded], dtype=float, device=_DEVICE)
