@@ -1,13 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
 import inspect
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.viewer.gl.mesh_lod import SdfMeshLOD
 from newton.tests.unittest_utils import assert_np_equal
 from newton.viewer import ViewerNull
 
@@ -57,7 +67,7 @@ class _ViewerGeometryBatchingProbe(ViewerNull):
             ]
             batch.scales = wp.array(scales, dtype=wp.vec3, device=self.device)
 
-    def log_instances(self, *_args, **_kwargs):
+    def log_instances(self, *_args: Any, **_kwargs: Any):
         self.log_instances_calls += 1
 
     def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False, opacities=None):
@@ -74,7 +84,7 @@ class _ViewerMeshProbe(ViewerNull):
         super().__init__(num_frames=1)
         self.points = None
 
-    def log_mesh(self, _name, points, _indices, *args, **kwargs):
+    def log_mesh(self, _name, points, _indices, *args: Any, **kwargs: Any):
         """Capture generated mesh points."""
         self.points = points.numpy()
 
@@ -103,6 +113,64 @@ class _ViewerLegacyMeshSignatureProbe(ViewerNull):
 
 
 class TestViewerGeometryBatching(unittest.TestCase):
+    def test_sdf_display_culling_preserves_intersections_and_shadow_casters(self) -> None:
+        """Cull offscreen SDF instances without dropping boundary geometry or shadows."""
+        lod = SdfMeshLOD.__new__(SdfMeshLOD)
+        lod.half = np.array((0.2, 0.3, 0.4))
+        lod.cell = 0.001
+        lod.strides = np.array((1, 2, 4))
+        lod.meshes = {0: object(), 1: object(), 2: object()}
+        centers = np.array(((0, 0, 0), (1.1, 0, 0), (1.21, 0, 0), (0, 0, 1.41), (3, 0, 0)))
+        axes = np.broadcast_to(np.eye(3), (5, 3, 3)).copy()
+        axes[4] = np.diag((-2.0, 1.0, 0.5))
+        visible = lod._visible(np.eye(4), centers, axes)
+        np.testing.assert_array_equal(visible, (True, True, False, False, False))
+        levels = np.zeros(5, dtype=np.int32)
+        self.assertEqual(lod._draws(levels, visible), ((lod.meshes[0], 0, 2),))
+        self.assertEqual(lod._draws(levels, np.zeros(5, dtype=bool)), ())
+        # A caster outside the camera can still shadow a visible receiver.
+        light_matrix = np.eye(4)
+        light_matrix[0, 3] = -3.0
+        obj = SimpleNamespace(_lod_bounds=(centers, axes), _lod_levels=levels)
+        renderer = SimpleNamespace(
+            _light_space_matrix=light_matrix.T.reshape(-1), _shadow_width=1024, _shadow_height=1024
+        )
+        self.assertEqual(lod.shadow_draws(renderer, obj), ((lod.meshes[0], 4, 1),))
+        # A camera close-up must not force full tessellation into shadow texels
+        # too coarse to resolve it. Preserve the same offscreen caster range.
+        renderer._shadow_width = renderer._shadow_height = 128
+        self.assertEqual(lod.shadow_draws(renderer, obj), ((lod.meshes[1], 4, 1),))
+        renderer._shadow_width = renderer._shadow_height = 1024
+        self.assertEqual(lod.shadow_draws(renderer, obj), ((lod.meshes[0], 4, 1),))
+
+        mesh = SimpleNamespace(_physics_metrics=(np.zeros(3), lod.half))
+        lod.meshes[0] = mesh
+        transforms = np.broadcast_to(np.eye(4), (3, 4, 4)).copy()
+        transforms[:, 3, :3] = ((0, 0, -0.6), (0, 0, -2), (100, 0, -0.6))
+        transforms[0, :3, :3] = np.diag((-2.0, 1.0, 0.5))
+        obj = SimpleNamespace(mesh=mesh, _lod_bounds=(transforms[:, 3, :3], transforms[:, :3, :3]))
+        renderer.camera = SimpleNamespace(pos=np.zeros(3))
+        renderer._projection_matrix = np.eye(4).reshape(-1)
+        renderer._get_scene_viewport = lambda: (0, 0, 512, 512)
+        renderer._xray_inspection_radius = 0.0
+        renderer._xray_proximity_range = 0.2
+        renderer._xray_adaptive = True
+        visible = np.array((True, True, False))
+        levels = np.zeros(3, dtype=np.int32)
+        lod._prepare_xray(renderer, obj, transforms, levels, visible, np.eye(4))
+        self.assertEqual(obj._lod_opaque_draws, ((mesh, 1, 1),))
+        self.assertEqual(obj._lod_transparent_draws, ((mesh, 0, 1),))
+        self.assertEqual(obj._lod_wire_draws, ())
+        # User settings must bypass the corresponding filtering immediately.
+        renderer._xray_adaptive = False
+        lod._prepare_xray(renderer, obj, transforms, levels, visible, np.eye(4))
+        self.assertEqual(obj._lod_wire_draws, ((mesh, 0, 1),))
+        renderer._xray_proximity_range = 0.0
+        lod._prepare_xray(renderer, obj, transforms, levels, visible, np.eye(4))
+        self.assertEqual(obj._lod_opaque_draws, ((mesh, 0, 2),))
+        self.assertEqual(obj._lod_transparent_draws, ())
+        self.assertEqual(obj._lod_wire_draws, ())
+
     def test_mesh_visual_attributes_have_distinct_prototypes(self):
         """Cache normals and UVs separately without changing physical mesh identity."""
         mesh = newton.Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [0, 1, 2], compute_inertia=False)

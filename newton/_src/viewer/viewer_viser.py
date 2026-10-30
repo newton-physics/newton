@@ -23,9 +23,6 @@ import warp as wp
 
 import newton
 
-if TYPE_CHECKING:
-    import viser
-
 from ..core.host_transform import (
     transform_assign_position_wxyz,
     transform_inverse,
@@ -46,6 +43,10 @@ from .image_logger import (
 from .picking import Picking
 from .utils import gaussian_display_colors, prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
+
+if TYPE_CHECKING:
+    import viser
+
 
 # ViewerGL uses 0.07 clip-space units; 56 px matches that at an 800 px viewport.
 _GIZMO_SCALE_PX = 56.0
@@ -220,7 +221,7 @@ class ViewerViser(ViewerBase):
         def separator(self) -> None:
             self._next_handle("separator", lambda _key: self._add(self._viewer._server.gui.add_divider))
 
-        def _input(self, kind: str, label: str, value: Any, factory: Callable, **properties) -> tuple[bool, Any]:
+        def _input(self, kind: str, label: str, value: Any, factory: Callable, **properties: Any) -> tuple[bool, Any]:
             """Create or reconcile a persistent input and consume its queued edit."""
 
             def create(key):
@@ -248,7 +249,7 @@ class ViewerViser(ViewerBase):
             minimum: float,
             maximum: float,
             format: str = "%.3f",
-            **_kwargs,
+            **_kwargs: Any,
         ) -> tuple[bool, float]:
             return self._input(
                 "slider_float",
@@ -267,7 +268,7 @@ class ViewerViser(ViewerBase):
             minimum: int,
             maximum: int,
             _format: str = "%d",
-            **_kwargs,
+            **_kwargs: Any,
         ) -> tuple[bool, int]:
             return self._input(
                 "slider_int",
@@ -286,7 +287,7 @@ class ViewerViser(ViewerBase):
             _step: float = 0.0,
             _step_fast: float = 0.0,
             format: str = "%.3f",
-            **_kwargs,
+            **_kwargs: Any,
         ) -> tuple[bool, float]:
             return self._input(
                 "input_float",
@@ -695,14 +696,15 @@ class ViewerViser(ViewerBase):
             self._reset_camera_to_default(up_axis)
 
     @override
-    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+    def set_visible_worlds(self, worlds: Sequence[int] | None, *, reflow: bool = True) -> None:
         """Set visible worlds and keep picking visibility in sync.
 
         Args:
             worlds: World indices to show, or ``None`` to show all worlds.
+            reflow: Recompute a compact layout. If False, preserve world positions.
         """
         previous_batches = tuple(self._shape_instances.values())
-        super().set_visible_worlds(worlds)
+        super().set_visible_worlds(worlds, reflow=reflow)
         # Batches absent from the new selection will no longer be logged.
         for shapes in previous_batches:
             self.log_instances(shapes.name, shapes.mesh, None, None, None, None, hidden=True)
@@ -1158,7 +1160,7 @@ class ViewerViser(ViewerBase):
         position, wxyz = transform_to_position_wxyz(transform)
         handles: dict[str, Any] = {}
 
-        def add_handle(kind: str, axes: tuple[Axis, ...], **kwargs):
+        def add_handle(kind: str, axes: tuple[Axis, ...], **kwargs: Any):
             active_axes = tuple(axis in axes for axis in (Axis.X, Axis.Y, Axis.Z))
             handle = self._server.scene.add_transform_controls(
                 name=self._gizmo_scene_path(name, kind),
@@ -3370,7 +3372,7 @@ class ViewerViser(ViewerBase):
                     "": "application/octet-stream",
                 }
 
-                def __init__(self, *args, **kwargs):
+                def __init__(self, *args: Any, **kwargs: Any):
                     self.recording_data = recording_data
                     super().__init__(*args, directory=client_dir, **kwargs)
 
@@ -3390,7 +3392,7 @@ class ViewerViser(ViewerBase):
                         # Serve viser client files
                         super().do_GET()
 
-                def log_message(self, format, *args):
+                def log_message(self, format, *args: Any):
                     pass  # Suppress log messages
 
             return RecordingHandler

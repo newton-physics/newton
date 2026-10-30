@@ -44,13 +44,13 @@ if TYPE_CHECKING:
 from .camera import Camera
 from .gl.frame_cache import FrameCache
 from .gl.icon import set_window_icon
+from .gui.viewer_gui import ViewerGui
 from .image_logger import ImageLogger, _validate
 from .kernels import detect_shape_color_changes, flag_changed_floats
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID
-from .viewer_gui import ViewerGui
 from .viewer_usd import ViewerUSD
 from .wind import Wind
 
@@ -1317,6 +1317,8 @@ void main() {
         Args:
             model: The Newton model instance.
         """
+        if model is not None and self.gui is not None:
+            self.gui.preload_kernels(model.device)
         super().set_model(model)
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the model's device.
         self._image_logger.set_device(self.device)
