@@ -259,8 +259,12 @@ def build_edge_n_ring_edge_collision_filter(
         neighbor_vertices = set(v0_neighbors)
         neighbor_vertices.update(v1_neighbors)
 
-        incident_to_v0 = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v0)[::2])
-        incident_to_v1 = set(_csr_row(v_adj_edges, v_adj_edges_offsets, v1)[::2])
+        # Opposite-vertex slots are bending adjacency, not edge incidence.
+        # Exempting them would make the edge-pair exclusions asymmetric.
+        v0_edge_rows_np = _csr_row(v_adj_edges, v_adj_edges_offsets, v0)
+        v1_edge_rows_np = _csr_row(v_adj_edges, v_adj_edges_offsets, v1)
+        incident_to_v0 = set(v0_edge_rows_np[::2][v0_edge_rows_np[1::2] >= 2])
+        incident_to_v1 = set(v1_edge_rows_np[::2][v1_edge_rows_np[1::2] >= 2])
 
         filter_set = edge_sets[edge_id]
         for neighbor in neighbor_vertices:
