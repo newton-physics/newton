@@ -1033,6 +1033,9 @@ def normalize_gradient(
 ):
     i = wp.tid()
     previous_normal = normal[i]
+    # Fully clamped distance stencils, far from colliders, leave no usable gradient
+    if wp.length_sq(gradient[i]) < 1.0e-6:
+        return
     corrected_normal = wp.normalize(gradient[i])
     stop = stop_distance
     if node_radii:
