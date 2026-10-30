@@ -12,7 +12,13 @@ import newton
 from newton._src.geometry.contact_data import CONTACT_SORT_CONVEX_SUB_KEY_BITS, CONTACT_SORT_SUB_KEY_BITS
 from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MATCH_NOT_FOUND
 from newton._src.geometry.contact_sort import ContactSorter
-from newton._src.geometry.tri_mesh_collision import edge_edge_anchor, edge_edge_anchor_slip
+from newton._src.geometry.tri_mesh_collision import (
+    NO_ANCHOR,
+    edge_edge_anchor,
+    edge_edge_anchor_slip,
+    vertex_triangle_anchor,
+    vertex_triangle_anchor_slip,
+)
 from newton._src.solvers.vbd.particle_vbd_kernels import relax_self_contact_anchors
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -1405,6 +1411,38 @@ def test_edge_edge_anchor_slip_bounded_by_twist(test, device):
     test.assertLessEqual(slip.numpy()[0], 0.01 * twist)
 
 
+@wp.kernel
+def _vertex_triangle_rest_slip_kernel(
+    p: wp.array[wp.vec3], a: wp.array[wp.vec3], b: wp.array[wp.vec3], c: wp.array[wp.vec3], slip: wp.array[float]
+):
+    i = wp.tid()
+    anchor = vertex_triangle_anchor(p[i], a[i], b[i], c[i])
+    if anchor[0] != NO_ANCHOR:
+        slip[i] = wp.length(vertex_triangle_anchor_slip(anchor, p[i], a[i], b[i], c[i]))
+
+
+def test_vertex_triangle_anchor_slip_bounded_on_thin_triangle(test, device):
+    """A vertex at rest over an ever thinner 10 cm triangle reads at most 10 um of slip from its anchor.
+
+    The plane coordinates divide by the squared sine of the triangle's angle, so on the thinnest of these
+    float rounding reads as centimeters to meters of slip; such triangles get no anchor.
+    """
+    sines = np.geomspace(1.0e-1, 1.0e-6, 16)
+    a = np.tile([0.3, -0.2, 0.1], (sines.size, 1))
+    b = a + np.array([0.1, 0.0, 0.0])
+    c = a + np.stack([np.full_like(sines, 0.05), 0.1 * sines, np.zeros_like(sines)], axis=1)
+    p = a + np.array([0.03, 0.0, 0.004])
+    slip = wp.zeros(sines.size, dtype=float, device=device)
+    wp.launch(
+        _vertex_triangle_rest_slip_kernel,
+        dim=sines.size,
+        inputs=[wp.array(x, dtype=wp.vec3, device=device) for x in (p, a, b, c)],
+        outputs=[slip],
+        device=device,
+    )
+    test.assertLessEqual(slip.numpy().max(), 1.0e-5)
+
+
 # ---------------------------------------------------------------------------
 # Register tests
 # ---------------------------------------------------------------------------
@@ -1595,6 +1633,12 @@ add_function_test(
     TestContactMatchingSticky,
     "test_edge_edge_anchor_slip_bounded_by_twist",
     test_edge_edge_anchor_slip_bounded_by_twist,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_vertex_triangle_anchor_slip_bounded_on_thin_triangle",
+    test_vertex_triangle_anchor_slip_bounded_on_thin_triangle,
     devices=devices,
 )
 

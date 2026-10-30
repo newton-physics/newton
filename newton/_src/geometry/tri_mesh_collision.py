@@ -141,7 +141,11 @@ def get_edge_colliding_edges(collision_info: TriMeshCollisionInfo, edge: int, co
 
 NO_ANCHOR = wp.constant(math.inf)
 """Anchor component marking a vertex-triangle pair without a friction anchor: a degenerate
-triangle, which has no frame."""
+triangle, which has no stable frame."""
+
+DEGENERATE_TRIANGLE_SIN_SQ = wp.constant(1.0e-3)
+"""Squared sine of the angle at a triangle's first vertex below which it has no anchor, about 1.8
+degrees: the plane coordinates divide by it, so a flatter angle reads float rounding as slip."""
 
 
 @wp.func
@@ -153,7 +157,7 @@ def vertex_triangle_anchor(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3):
     e2 = c - a
     n = wp.cross(e1, e2)
     det = wp.length_sq(n)
-    if det == 0.0:
+    if det <= DEGENERATE_TRIANGLE_SIN_SQ * wp.length_sq(e1) * wp.length_sq(e2):
         return wp.vec3(NO_ANCHOR)
     w = p - a
     height = wp.dot(w, n) / wp.sqrt(det)

@@ -15,7 +15,13 @@ import warp as wp
 
 import newton
 from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
-from newton._src.geometry.tri_mesh_collision import build_tri_mesh_collision_info
+from newton._src.geometry.tri_mesh_collision import (
+    TriMeshCollisionInfo,
+    build_tri_mesh_collision_info,
+    edge_edge_anchor,
+    edge_edge_anchor_slip,
+    get_edge_colliding_edges_count,
+)
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
@@ -3426,6 +3432,86 @@ def _sticky_self_contacts_stop_without_springback(test, device):
     test.assertLess(xs.max() - xs[-1], 1.0e-4)
 
 
+@wp.kernel
+def _edge_edge_anchor_tangential_slip_kernel(
+    parallel_epsilon: float,
+    particle_q: wp.array[wp.vec3],
+    edge_indices: wp.array2d[wp.int32],
+    collision_info: TriMeshCollisionInfo,
+    max_slip: wp.array[float],
+    pair_count: wp.array[wp.int32],
+):
+    e1 = wp.tid()
+    p0 = particle_q[edge_indices[e1, 2]]
+    p1 = particle_q[edge_indices[e1, 3]]
+    for i in range(get_edge_colliding_edges_count(collision_info, e1)):
+        slot = collision_info.edge_colliding_edges_offsets[e1] + i
+        e2 = collision_info.edge_colliding_edges[2 * slot + 1]
+        if e2 >= 0:
+            q0 = particle_q[edge_indices[e2, 2]]
+            q1 = particle_q[edge_indices[e2, 3]]
+            closest = edge_edge_anchor(p0, p1, q0, q1, parallel_epsilon)
+            normal = wp.normalize(edge_edge_anchor_slip(closest, p0, p1, q0, q1))
+            offset = edge_edge_anchor_slip(collision_info.edge_colliding_edges_anchor[slot], p0, p1, q0, q1)
+            wp.atomic_max(max_slip, 0, wp.length(offset - wp.dot(offset, normal) * normal))
+            wp.atomic_add(pair_count, 0, 1)
+
+
+def _sticky_edge_only_self_contacts_relax_anchors(test, device):
+    """With no vertex-triangle capacity, a cloth sliding on cloth ends each step near its edge-edge anchors.
+
+    The solver drags the anchors to within the friction regularization length after each step; skipping
+    that leaves them trailing the sliding cloth by millimeters.
+    """
+    radius = 0.004
+    dt = 1.0 / 300.0
+    builder = newton.ModelBuilder()
+    for pos, dim, cell, mass in (((-0.2, -0.2, 0.0), 8, 0.05, 0.0), ((-0.06, -0.06, radius + 0.0015), 4, 0.03, 0.01)):
+        builder.add_cloth_grid(
+            pos=wp.vec3(pos),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=dim,
+            dim_y=dim,
+            cell_x=cell,
+            cell_y=cell,
+            mass=mass,
+            tri_ke=1.0e2,
+            tri_ka=1.0e2,
+            tri_kd=0.0,
+            particle_radius=radius,
+        )
+    builder.color()
+    with wp.ScopedDevice(device):
+        model = builder.finalize()
+        model.soft_contact_mu = 0.5
+        tilt = math.atan(1.5 * model.soft_contact_mu)
+        model.set_gravity((9.81 * math.sin(tilt), 0.0, -9.81 * math.cos(tilt)))
+        solver = newton.solvers.SolverVBD(
+            model,
+            iterations=10,
+            collision_pipeline=newton.CollisionPipeline(model, contact_matching="sticky"),
+            particle_enable_self_contact=True,
+            particle_self_contact_margin=radius,
+            particle_self_contact_gap=radius,
+            particle_vertex_contact_buffer_size=0,
+        )
+        state_0, state_1 = model.state(), model.state()
+        for _ in range(60):
+            solver.step(state_0, state_1, None, None, dt)
+            state_0, state_1 = state_1, state_0
+        max_slip = wp.zeros(1, dtype=float)
+        pair_count = wp.zeros(1, dtype=wp.int32)
+        wp.launch(
+            _edge_edge_anchor_tangential_slip_kernel,
+            dim=model.edge_count,
+            inputs=[1.0e-5, state_0.particle_q, model.edge_indices, solver._pipeline_contacts.soft_self_contact_data],
+            outputs=[max_slip, pair_count],
+        )
+    test.assertGreater(pair_count.numpy()[0], 0)
+    test.assertLessEqual(max_slip.numpy()[0], 1.01 * solver.friction_epsilon * dt)
+
+
 def _d6_fully_free_structural_slots_are_inactive(test, device):
     """D6 structural slots should be inactive when all axes are free."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -6404,6 +6490,12 @@ add_function_test(
     TestSolverVBD,
     "test_sticky_self_contacts_stop_without_springback",
     _sticky_self_contacts_stop_without_springback,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_sticky_edge_only_self_contacts_relax_anchors",
+    _sticky_edge_only_self_contacts_relax_anchors,
     devices=devices,
 )
 add_function_test(

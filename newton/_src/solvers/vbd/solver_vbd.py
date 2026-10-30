@@ -2864,7 +2864,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if not self.particle_enable_self_contact or self.collision_pipeline is None:
             return
         collision_info = self._pipeline_contacts.soft_self_contact_data
-        if collision_info.vertex_colliding_triangles_anchor.shape[0] == 0:
+        if (
+            collision_info.vertex_colliding_triangles_anchor.shape[0] == 0
+            and collision_info.edge_colliding_edges_anchor.shape[0] == 0
+        ):
             return
         wp.launch(
             relax_self_contact_anchors,
