@@ -15,7 +15,7 @@ import warp as wp
 import newton
 from newton._src.solvers.steel._testing import kernel_overrides
 from newton.solvers import SolverSteel
-from newton.tests.steel._fixtures import PROFILE, _advance, _articulations
+from newton.tests.steel._fixtures import PROFILE, _advance, _articulations, _parent_wrench_scene
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 DT = 0.005
@@ -195,36 +195,39 @@ def test_cuda_graph_sleep_and_wake(test, device):
     np.testing.assert_array_equal(observables.body_awake.numpy(), [True, False])
 
 
-def _parent_wrench_scene(device):
-    builder = newton.ModelBuilder()
-    builder.add_ground_plane()
-    for x in (0.0, 0.5):
-        body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.1), wp.quat_identity()))
-        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
-    return model, pipeline
+def _assert_resting_wrench(test, model, wrench):
+    """Free roots transmit nothing; each weld carries its top box's weight."""
+    weight = model.body_mass.numpy() * 9.81
+    np.testing.assert_allclose(wrench[0::2], 0.0, atol=1.0e-3)
+    np.testing.assert_allclose(wrench[1::2, 2], weight[1::2], rtol=1.0e-4)
+    np.testing.assert_allclose(wrench[1::2, [0, 1, 3, 4, 5]], 0.0, atol=1.0e-3)
 
 
 def test_sleeping_body_keeps_its_parent_wrench(test, device):
     """Publish the last awake joint wrench of a sleeping body instead of a skipped dynamics result."""
     model, pipeline = _parent_wrench_scene(device)
     solver = SolverSteel(
-        model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=0.05,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
     )
-    reference = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
+    reference = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0, articulation_constraint_max=128)
     kinds = {newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F}
     observables, reference_observables = solver.observables(kinds), reference.observables(kinds)
     states, reference_states = [model.state(), model.state()], [model.state(), model.state()]
     control = model.control()
     _advance_boxes(pipeline, solver, states, control, 120, observables=observables)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     asleep = observables.body_parent_f.numpy().copy()
     _advance_boxes(pipeline, solver, states, control, 10, observables=observables)
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), asleep)
     # The frozen value is the resting value an always-awake solver publishes.
     _advance_boxes(pipeline, reference, reference_states, control, 130, observables=reference_observables)
     np.testing.assert_allclose(asleep, reference_observables.body_parent_f.numpy(), rtol=0.0, atol=1.0e-3)
+    _assert_resting_wrench(test, model, asleep)
 
 
 def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
@@ -233,13 +236,18 @@ def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
     with test.assertWarns(DeprecationWarning):
         model.request_state_attributes("body_parent_f")
     solver = SolverSteel(
-        model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=0.05,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
     )
     states = [model.state(), model.state()]
     test.assertIsNotNone(states[0].body_parent_f)
     control = model.control()
     _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     asleep = states[0].body_parent_f.numpy().copy()
     _advance_boxes(pipeline, solver, states, control, 10)
     np.testing.assert_array_equal(states[0].body_parent_f.numpy(), asleep)
@@ -248,9 +256,14 @@ def test_sleeping_body_keeps_its_legacy_parent_wrench(test, device):
 
 def _sleeping_wrench_solvers(model):
     solver = SolverSteel(
-        model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=0.05,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
     )
-    reference = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
+    reference = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.0, articulation_constraint_max=128)
     return solver, reference
 
 
@@ -269,10 +282,10 @@ def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
     first = solver.observables(kinds)
     states, control = [model.state(), model.state()], model.control()
     _advance_boxes(pipeline, solver, states, control, 120, observables=first)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     asleep = first.body_parent_f.numpy().copy()
     np.testing.assert_allclose(asleep, _resting_wrench(model, pipeline, reference, control), rtol=0.0, atol=1.0e-3)
-    test.assertGreater(np.abs(asleep[:, 2]).min(), 1.0)
+    _assert_resting_wrench(test, model, asleep)
 
     second = solver.observables(kinds)
     _advance_boxes(pipeline, solver, states, control, 1, observables=second)
@@ -296,7 +309,7 @@ def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
         step(third)
     for _ in range(3):
         wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     np.testing.assert_array_equal(third.body_parent_f.numpy(), asleep)
 
 
@@ -306,16 +319,87 @@ def test_parent_wrench_first_requested_after_sleep(test, device):
     solver, reference = _sleeping_wrench_solvers(model)
     states, control = [model.state(), model.state()], model.control()
     _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     resting = _resting_wrench(model, pipeline, reference, control)
     np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
     # A reset wakes the bodies, which then publish freshly computed wrenches.
     solver.reset(states[0])
     _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
     np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
+
+
+def test_unrequested_parent_wrench_history_skips_moving_articulations(test, device):
+    """Keep the unrequested wrench history only for articulations that can fall asleep by the next step."""
+    model, pipeline = _parent_wrench_scene(device)
+    solver, reference = _sleeping_wrench_solvers(model)
+    states, control = [model.state(), model.state()], model.control()
+    # Slide the second pair along the ground so it never turns quiet.
+    push = np.zeros((model.body_count, 6), dtype=np.float32)
+    push[2, 0] = 500.0
+    for state in states:
+        state.body_f.assign(push)
+    _advance_boxes(pipeline, solver, states, control, 20, clear=False)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 1, 1])
+    history = solver._sleeping.parent_wrenches.numpy()
+    np.testing.assert_array_equal(history[2:], 0.0)
+    np.testing.assert_allclose(history[0], 0.0, atol=1.0e-3)
+    np.testing.assert_allclose(history[1], [0.0, 0.0, model.body_mass.numpy()[1] * 9.81, 0.0, 0.0, 0.0], atol=1.0e-3)
+
+    # With a quiet time of one step an island can sleep two steps after it turns quiet.
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=DT,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
+    )
+    states = [model.state(), model.state()]
+    _advance_boxes(pipeline, solver, states, control, 120)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
+    _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
+    resting = _resting_wrench(model, pipeline, reference, control)
+    np.testing.assert_allclose(observables.body_parent_f.numpy(), resting, rtol=0.0, atol=1.0e-3)
+
+    # A gravity change wakes the pairs. Short steps run until both turn quiet, which skips their wrenches, and one
+    # long step puts them back to sleep.
+    solver = SolverSteel(
+        model,
+        solve_mode="matrix_free",
+        enable_sleeping=True,
+        sleep_quiet_time=0.01,
+        friction_anchor_beta=0.0,
+        articulation_constraint_max=128,
+    )
+    states = [model.state(), model.state()]
+    contacts = pipeline.contacts()
+
+    def step(dt, observables=None):
+        states[0].clear_forces()
+        pipeline.collide(states[0], contacts)
+        solver.step(states[0], states[1], control, contacts, dt, observables=observables)
+        states.reverse()
+
+    for _ in range(120):
+        step(0.004)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    model.set_gravity((0.0, 0.0, -4.905))
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+    for _ in range(200):
+        step(0.004)
+        np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 1, 1, 1])
+        if (solver._sleeping.quiet_age.numpy() > 0.0).all():
+            break
+    test.assertTrue(np.isclose(solver._sleeping.quiet_age.numpy(), 0.004).any())
+    step(0.007)
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
+    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
+    step(0.004, observables)
+    np.testing.assert_allclose(observables.body_parent_f.numpy(), 0.5 * resting, rtol=0.0, atol=1.0e-3)
 
 
 def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
@@ -326,7 +410,7 @@ def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
     solver, _reference = _sleeping_wrench_solvers(model)
     states, control = [model.state(), model.state()], model.control()
     _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0, 0, 0])
     legacy = states[0].body_parent_f.numpy().copy()
     observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
@@ -355,6 +439,7 @@ for _name in (
     "test_sleeping_body_keeps_its_legacy_parent_wrench",
     "test_sleeping_parent_wrench_is_independent_of_the_output",
     "test_parent_wrench_first_requested_after_sleep",
+    "test_unrequested_parent_wrench_history_skips_moving_articulations",
     "test_sleeping_parent_wrench_from_legacy_to_observable",
 ):
     add_function_test(TestSteelSleeping, _name, globals()[_name], devices=devices)

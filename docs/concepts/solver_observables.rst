@@ -151,6 +151,15 @@ contact positions. Body observables require Euler, RK4, implicit, or implicitfas
 integration. ``CONTACT_F`` requires ``use_mujoco_contacts=True`` and, like
 the ``SolverMuJoCo.ObservableKind.QFRC_*`` kinds, supports any integrator; overflow observable requests are rejected.
 
+:class:`~newton.solvers.SolverSteel` accounts ``BODY_PARENT_F`` from the step's solved
+motion, including its contact, friction, spin and loop-closure impulses, so loads carried by a
+subtree reach the joints that support it; see the solver's documentation for the cases it leaves
+out. Like :class:`~newton.solvers.SolverMuJoCo`, it reconstructs the wrench from the bodies' rigid
+inertia, without joint armature, so a dynamic joint's projected wrench is its generalized load
+(``joint_f``, explicit passive spring and damping forces, and joint-space rows) less
+``armature * qdd``. :class:`~newton.solvers.SolverFeatherstone` reports the start-of-step inverse
+dynamics at zero joint acceleration instead.
+
 :class:`~newton.solvers.SolverSteel` reports only the linear part of each rigid
 contact force; the torque part is zero. Contacts without solved rows, such as rows
 dropped for capacity or skipped for sleeping islands, report zero. A sleeping body's
