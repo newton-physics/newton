@@ -65,7 +65,6 @@ def _merge_meshes(
     points: list[np.array] = (),
     indices: list[np.array] = (),
     shape_ids: np.array = (),
-    material_ids: np.array = (),
 ) -> tuple[wp.array, wp.array, wp.array, np.array]:
     """Merges the points and indices of several meshes into a single one"""
 
@@ -82,7 +81,7 @@ def _merge_meshes(
         wp.array(merged_points, dtype=wp.vec3),
         wp.array(merged_indices, dtype=int),
         wp.array(shape_ids[vertex_shape_ids], dtype=int),
-        np.array(material_ids, dtype=int)[face_shape_ids],
+        face_shape_ids,
     )
 
 
@@ -233,7 +232,6 @@ def _get_shape_collision_materials(model: newton.Model, shape_ids: list[int]):
 def _create_body_collider_mesh(
     model: newton.Model,
     shape_ids: list[int],
-    material_ids: list[int],
 ):
     """Create a collider mesh from a body."""
 
@@ -242,11 +240,10 @@ def _create_body_collider_mesh(
 
     shape_meshes = [_get_shape_mesh(model, sid, newton.GeoType(shape_type[sid]), shape_scale[sid]) for sid in shape_ids]
 
-    collider_points, collider_indices, vertex_shape_ids, face_material_ids = _merge_meshes(
+    collider_points, collider_indices, vertex_shape_ids, face_shape_ids = _merge_meshes(
         points=[mesh.vertices for mesh in shape_meshes],
         indices=[mesh.indices for mesh in shape_meshes],
         shape_ids=shape_ids,
-        material_ids=material_ids,
     )
 
     wp.launch(
@@ -259,7 +256,7 @@ def _create_body_collider_mesh(
         ],
     )
 
-    return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points)), face_material_ids
+    return wp.Mesh(collider_points, collider_indices, wp.zeros_like(collider_points)), face_shape_ids
 
 
 @wp.struct
@@ -896,10 +893,9 @@ class ImplicitMPMModel:
                     face_count = collider_meshes[collider_id].indices.shape[0] // 3
                     mesh_face_material_ids = np.zeros(face_count, dtype=int)
                 else:
+                    # faces start on their shape's material, the first ones of the collider
                     collider_meshes[collider_id], mesh_face_material_ids = _create_body_collider_mesh(
-                        model,
-                        collider_shapes[collider_id],
-                        list(range(len(collider_shapes[collider_id]))),
+                        model, collider_shapes[collider_id]
                     )
                     packed_body_ids.append(body_index)
                     face_count = collider_meshes[collider_id].indices.shape[0] // 3
