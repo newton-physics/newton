@@ -3046,11 +3046,10 @@ class SolverSteel(SolverBase):
         Args:
             state: Simulation state; left unchanged. With ``enable_sleeping``, a masked reset
                 restarts the selected worlds' sleep state-change history from it. The pose history of a
-                kinematic or prescribed body that unselected entries can also touch is kept, so a move of that
-                body made before the reset still wakes the islands resting on it. Contact visibility follows
-                each attached shape's world: such a body is kept if it or any of its shapes is global, if a
-                shape belongs to an unselected world, or while global islands exist and the global entry is
-                unselected.
+                kinematic or prescribed body is kept while a shape of an unselected island can collide with one
+                of its shapes, so a move of that body made before the reset still wakes the islands resting on
+                it. Collision follows shape worlds, which can differ from body worlds: a global shape collides
+                with every shape, a world shape with the shapes of its world and the global shapes.
             world_mask: Optional boolean mask of shape ``(world_count + 1,)``. The first
                 ``world_count`` entries select worlds; the final entry selects global
                 articulations (world ``-1``) and the final entry of

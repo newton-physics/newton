@@ -973,6 +973,20 @@ def test_world_reset_keeps_support_history_read_through_a_global_shape(test, dev
     _expect_support_move_wakes(builder, support, [1], [True, False, False], device)
 
 
+def test_world_reset_keeps_support_history_read_by_a_global_shape(test, device):
+    """Wake a world-1 sleeper whose box shape is global on a jointless world-0 support, after a world-0 reset."""
+    builder = newton.ModelBuilder()
+    builder.begin_world()
+    support = builder.add_link(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
+    builder.add_shape_box(support, hx=1.0, hy=1.0, hz=0.05)
+    builder.end_world()
+    builder.begin_world()
+    box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()))
+    builder.end_world()
+    builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1)
+    _expect_support_move_wakes(builder, support, [box], [True, False, False], device)
+
+
 def test_property_notification_wakes_only_changed_islands(test, device):
     """Wake the island whose mass changed, and nothing for a notification without a change."""
     model, pipeline, solver, states = _two_world_boxes(device)
@@ -1282,6 +1296,7 @@ for _name in (
     "test_world_reset_keeps_shared_support_history",
     "test_world_reset_keeps_support_history_read_through_another_world_shape",
     "test_world_reset_keeps_support_history_read_through_a_global_shape",
+    "test_world_reset_keeps_support_history_read_by_a_global_shape",
     "test_property_notification_wakes_only_changed_islands",
     "test_frozen_patch_carry_matches_rebuild",
     "test_frozen_patch_carry_matches_rebuild_for_flooded_pairs",
