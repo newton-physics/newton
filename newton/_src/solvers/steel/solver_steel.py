@@ -5843,7 +5843,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 has_drive_rows=self._has_drive_rows,
                 fuse_vel_limits=self._velocity_limits_fused,
             )
-            self._pgs_solve_mf_gs_kernel = _get_pgs_solve_mf_gs_kernel(
+            row_phases = self._propagation_active or self._row_schedule != "interleaved"
+            self._pgs_solve_mf_gs_kernel_for_phase = functools.partial(
+                _get_pgs_solve_mf_gs_kernel,
                 self._articulation_constraint_max,
                 mf_rows,
                 self._max_world_dofs,
@@ -5853,12 +5855,27 @@ class SolverSteel(SolverBase, CouplingInterface):
                 has_drive_rows=self._has_drive_rows,
                 fuse_vel_limits=self._velocity_limits_fused,
                 contact_torsion=self._contact_torsion_enabled,
-                row_phases=self._propagation_active or self._row_schedule != "interleaved",
+                row_phases=row_phases,
                 friction_mode=self._friction_mode,
                 factor_coordinates=self._paired_factor_coordinates,
                 skip_local_internal_worlds=self._local_internal_fast_path,
                 joint_friction=bool(self._joint_friction_warp_kernels),
             )
+            if row_phases:
+                # One kernel per row phase the schedule launches, each with its phase compiled in.
+                has_internal_rows, has_velocity_limits = self._internal_row_phases()
+                if self._row_schedule == "contact_then_internal" and not self._propagation_active:
+                    phases = (1, 2)
+                elif self._row_schedule == "contact_then_internal":
+                    phases = (4, 2) if has_internal_rows or has_velocity_limits else (4,)
+                else:
+                    phases = (3,) * has_internal_rows + (4,) + (5,) * has_velocity_limits
+                self._pgs_solve_mf_gs_kernels = {
+                    phase: self._pgs_solve_mf_gs_kernel_for_phase(row_phase=phase) for phase in phases
+                }
+            else:
+                self._pgs_solve_mf_gs_kernels = {0: self._pgs_solve_mf_gs_kernel_for_phase()}
+            self._pgs_solve_mf_gs_kernel = next(iter(self._pgs_solve_mf_gs_kernels.values()))
             self._init_local_solve_kernels(device_arch, mf_rows)
 
     def _init_local_solve_kernels(self, device_arch: str, mf_rows: int) -> None:
@@ -11263,8 +11280,16 @@ class SolverSteel(SolverBase, CouplingInterface):
             # The general sweep walks the compacted queue of worlds the local solves leave to it.
             blocks = self._local_general_solver_blocks
             queue = [self._local_general_world_count, self._local_general_worlds, blocks, 1, self._local_solve_owner]
+        if 0 in self._pgs_solve_mf_gs_kernels:
+            # Without row phases the kernel ignores the phase argument.
+            kernel = self._pgs_solve_mf_gs_kernels[0]
+        else:
+            kernel = self._pgs_solve_mf_gs_kernels.get(row_phase)
+            if kernel is None:
+                kernel = self._pgs_solve_mf_gs_kernel_for_phase(row_phase=row_phase)
+                self._pgs_solve_mf_gs_kernels[row_phase] = kernel
         wp.launch_tiled(
-            self._pgs_solve_mf_gs_kernel,
+            kernel,
             dim=[blocks],
             inputs=[
                 *queue,
@@ -14393,6 +14418,7 @@ def _get_pgs_solve_mf_gs_kernel(
     factor_coordinates: bool = False,
     skip_local_internal_worlds: bool = False,
     joint_friction: bool = False,
+    row_phase: int | None = None,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -14444,6 +14470,7 @@ def _get_pgs_solve_mf_gs_kernel(
             (``fuse_joint_velocity_limits``); requires ``has_drive_rows``.
         contact_torsion: Emit the contact torsion pass.
         row_phases: Honor the ``row_phase`` launch argument.
+        row_phase: With ``row_phases``, compile this row phase in and ignore the launch argument.
         factor_coordinates: Skip the worlds without free-body rows, which the paired
             factor-coordinate solve owns (:func:`_get_pgs_solve_paired_factor_kernel`).
         skip_local_internal_worlds: Solve only the worlds that the articulation-local solves
@@ -14460,6 +14487,8 @@ def _get_pgs_solve_mf_gs_kernel(
     """
     if fuse_vel_limits and not has_drive_rows:
         raise ValueError("fuse_vel_limits requires has_drive_rows")
+    if row_phase is not None and not row_phases:
+        raise ValueError("row_phase requires row_phases")
     if factor_coordinates and (
         friction_mode != "fixed_normal"
         or has_drive_rows
@@ -14608,6 +14637,9 @@ def _get_pgs_solve_mf_gs_kernel(
         mf_main_end = 0;
         contact_rows = 0;
     }"""
+        if row_phase is not None:
+            # A constant phase lets the compiler drop the per-row phase filters from the sweeps.
+            phase_bounds = phase_bounds.replace("row_phase", str(int(row_phase)))
         contact_type = int(PGS_CONSTRAINT_TYPE_CONTACT)
         friction_type = int(PGS_CONSTRAINT_TYPE_FRICTION)
         dense_phase_filter = (
@@ -15018,9 +15050,11 @@ def _get_pgs_solve_mf_gs_kernel(
     helpers = (
         FRICTION_PAIR_CUDA
         + """
+    // Each butterfly level adds the same pair as lane 0's down sweep, in either order, so every
+    // lane ends with that sum and no broadcast is needed.
     auto warp_sum = [&](float value) {
-        for (int offset = 16; offset > 0; offset >>= 1) value += __shfl_down_sync(0xFFFFFFFF, value, offset);
-        return __shfl_sync(0xFFFFFFFF, value, 0);
+        for (int offset = 16; offset > 0; offset >>= 1) value += __shfl_xor_sync(0xFFFFFFFF, value, offset);
+        return value;
     };
 """
     )
@@ -15042,6 +15076,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 friction_mode,
                 factor_coordinates,
                 joint_friction,
+                row_phase,
             )
             + "_local",
         )
@@ -15179,6 +15214,7 @@ def _get_pgs_solve_mf_gs_kernel(
         friction_mode,
         factor_coordinates,
         joint_friction,
+        row_phase,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -15198,6 +15234,7 @@ def _mf_gs_kernel_name(
     friction_mode: str,
     factor_coordinates: bool,
     joint_friction: bool,
+    row_phase: int | None = None,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
@@ -15205,7 +15242,7 @@ def _mf_gs_kernel_name(
         f"_vlim{int(has_dense_velocity_limit_rows)}_drive{int(has_drive_rows)}_fvl{int(fuse_vel_limits)}"
         f"{'' if shared_metadata else '_gmeta'}"
         f"{'_torsion' if contact_torsion else ''}"
-        f"{'_phased' if row_phases else ''}"
+        f"{('_phased' if row_phase is None else f'_phase{row_phase}') if row_phases else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
         f"{'_factor' if factor_coordinates else ''}"
         f"{'_jfric' if joint_friction else ''}"
