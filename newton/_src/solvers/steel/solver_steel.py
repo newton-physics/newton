@@ -1293,7 +1293,8 @@ class SolverSteel(SolverBase):
       limits, drive gains, damping, armature, velocity limit and
       :attr:`~newton.Control.joint_f` of a loop-closing REVOLUTE joint's DOF are ignored.
       The solver warns at construction, and on an eager joint or joint DOF notification,
-      if limits, drive gains, damping or armature are set, or if the hinge axis is zero.
+      if limits, drive gains, damping or armature are set, or if the hinge axis is zero or
+      non-finite.
       The parent is in the child's articulation, a kinematic body, or the world. The closure
       rows read :attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_X_p` /
       :attr:`~newton.Model.joint_X_c` and, for a REVOLUTE closure,
@@ -2866,7 +2867,10 @@ class SolverSteel(SolverBase):
 
         With ``enable_joint_friction``, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_friction` on the host and raises :class:`ValueError` for invalid
-        values, after applying every other update. A captured notification skips this check.
+        values, after applying every other update. With loop-closing REVOLUTE joints, an eager
+        joint, joint DOF, DOF force or DOF inertial notification also reads their DOF inputs and
+        axes on the host to warn about the ones a closure ignores. A captured notification skips
+        both checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -3482,7 +3486,7 @@ class SolverSteel(SolverBase):
         self._connect_count = n
 
     def _warn_ignored_revolute_loop_inputs(self, stacklevel: int) -> None:
-        """Warn about the DOF inputs of loop-closing REVOLUTE joints that a closure ignores, and about a zero axis."""
+        """Warn about the DOF inputs of loop-closing REVOLUTE joints that a closure ignores, and about a degenerate axis."""
         if self._revolute_loop_joints.size == 0:
             return
         model = self.model
@@ -3494,7 +3498,8 @@ class SolverSteel(SolverBase):
             "damping": model.joint_damping.numpy()[dofs] != 0.0,
             "armature": model.joint_armature.numpy()[dofs] != 0.0,
         }
-        zero_axis = ~np.any(model.joint_axis.numpy()[dofs], axis=1)
+        axis = model.joint_axis.numpy()[dofs]
+        degenerate_axis = ~np.any(axis, axis=1) | ~np.all(np.isfinite(axis), axis=1)
         for i, j in enumerate(self._revolute_loop_joints.tolist()):
             ignored = [name for name, flagged in inputs.items() if flagged[i]]
             if ignored:
@@ -3503,9 +3508,10 @@ class SolverSteel(SolverBase):
                     NewtonWarning,
                     stacklevel=stacklevel,
                 )
-            if zero_axis[i]:
+            if degenerate_axis[i]:
                 warnings.warn(
-                    f"SolverSteel: loop-closing REVOLUTE joint {j} has a zero axis, so it closes the loop like a BALL joint.",
+                    f"SolverSteel: loop-closing REVOLUTE joint {j} has a zero or non-finite axis, so it closes the loop "
+                    "like a BALL joint.",
                     NewtonWarning,
                     stacklevel=stacklevel,
                 )

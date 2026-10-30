@@ -3621,7 +3621,9 @@ def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
             SolverSteel(builder.finalize(device=device))
     builder, joint = _build_world_hinged_swing(test, "revolute")
     builder.joint_axis[builder.joint_qd_start[joint]] = (0.0, 0.0, 0.0)
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* zero axis"):
+    with test.assertWarnsRegex(
+        newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint .* zero or non-finite axis"
+    ):
         SolverSteel(builder.finalize(device=device))
     with warnings.catch_warnings():
         warnings.simplefilter("error", newton.exceptions.NewtonWarning)
@@ -3629,7 +3631,7 @@ def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
 
 
 def test_revolute_loop_warns_about_edits_it_ignores(test, device):
-    """Warn on an eager notification after an edit to a zero axis or to damping of a loop-closing REVOLUTE joint."""
+    """Warn on an eager notification after an edit to a zero or NaN axis or to damping of a loop-closing REVOLUTE joint."""
     model = _build_world_hinged_swing(test, "revolute")[0].finalize(device=device)
     with warnings.catch_warnings():
         warnings.simplefilter("error", newton.exceptions.NewtonWarning)
@@ -3637,10 +3639,13 @@ def test_revolute_loop_warns_about_edits_it_ignores(test, device):
         solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.JOINT_DOF_PROPERTIES)
     dof = int(model.joint_qd_start.numpy()[1])
     axis = model.joint_axis.numpy()
-    axis[dof] = (0.0, 0.0, 0.0)
-    model.joint_axis.assign(axis)
-    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint 1 has a zero axis"):
-        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    for bad_axis in ((0.0, 0.0, 0.0), (np.nan, 0.0, 0.0)):
+        axis[dof] = bad_axis
+        model.joint_axis.assign(axis)
+        with test.assertWarnsRegex(
+            newton.exceptions.NewtonWarning, "loop-closing REVOLUTE joint 1 has a zero or non-finite axis"
+        ):
+            solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
     damping = model.joint_damping.numpy()
     damping[dof] = 100.0
     model.joint_damping.assign(damping)
