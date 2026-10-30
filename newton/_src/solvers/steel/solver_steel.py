@@ -1276,8 +1276,10 @@ class SolverSteel(SolverBase, CouplingInterface):
       can exceed the limit. ``drive_mode="rows"`` (``solve_mode="matrix_free"`` only)
       instead solves one PGS row per driven DOF with the PhysX articulation force-drive
       update and clamps its impulse, which bounds the complete reaction.
-      :attr:`~newton.Model.joint_armature` and :attr:`~newton.Model.joint_damping` are
-      applied.
+      :attr:`~newton.Model.joint_armature` is applied. Positive passive
+      :attr:`~newton.Model.joint_damping` on PRISMATIC, REVOLUTE, BALL and D6 DOFs is
+      integrated implicitly by adding ``dt * damping`` to the mass diagonal in either
+      drive mode. Passive damping is independent of drive targets and effort limits.
     - Joint limits: with ``enable_joint_limits=True``, every finite
       :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper` of a
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
@@ -8026,7 +8028,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         ]
         if self._tree_plan is not None:
             self._launch_tree_tau(tau_inputs, state_aug)
-            if self._drive_mode == "augmented" and self._articulation_max_dofs > 0:
+            if self._articulation_max_dofs > 0:
                 wp.launch(
                     eval_augmented_drives,
                     dim=model.articulation_count,
@@ -8039,6 +8041,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                         model.joint_dof_dim,
                         state_in.joint_q,
                         state_in.joint_qd,
+                        self._passive_joint_damping,
+                        self._drive_mode == "augmented",
                         model.joint_target_ke,
                         model.joint_target_kd,
                         control.joint_target_q,
@@ -8053,7 +8057,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     block_dim=self._serial_kernel_block_dim,
                     device=model.device,
                 )
-        elif self._drive_mode == "augmented" and self._articulation_max_dofs > 0:
+        elif self._articulation_max_dofs > 0:
             wp.launch(
                 eval_rigid_tau_and_augmented_drives,
                 dim=model.articulation_count,
@@ -8061,6 +8065,7 @@ class SolverSteel(SolverBase, CouplingInterface):
                     *common_inputs,
                     self._articulation_H_rows,
                     *tau_inputs,
+                    self._drive_mode == "augmented",
                     model.joint_target_ke,
                     model.joint_target_kd,
                     control.joint_target_q,
@@ -8261,8 +8266,6 @@ class SolverSteel(SolverBase, CouplingInterface):
                 device=model.device,
                 block_dim=128,
             )
-            if self._drive_mode != "augmented":
-                continue
             wp.launch(
                 apply_augmented_mass_diagonal_grouped,
                 dim=n_arts,

@@ -2522,6 +2522,8 @@ def prepare_articulation_augmented_drives(
     joint_dof_dim: wp.array2d[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
+    joint_damping: wp.array[float],
+    augment_drives: bool,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_pos: wp.array[float],
@@ -2553,7 +2555,12 @@ def prepare_articulation_augmented_drives(
     slot = int(0)
     for joint_index in range(joint_start, joint_end):
         type = joint_type[joint_index]
-        if type != JointType.PRISMATIC and type != JointType.REVOLUTE and type != JointType.D6:
+        if (
+            type != JointType.PRISMATIC
+            and type != JointType.REVOLUTE
+            and type != JointType.D6
+            and type != JointType.BALL
+        ):
             continue
 
         axis_count = joint_dof_dim[joint_index, 0] + joint_dof_dim[joint_index, 1]
@@ -2563,22 +2570,26 @@ def prepare_articulation_augmented_drives(
             if slot >= max_dofs:
                 break
             dof_index = qd_start + axis
-            ke = joint_target_ke[dof_index]
-            kd = joint_target_kd[dof_index]
-            if ke <= 0.0 and kd <= 0.0:
-                continue
-
-            K = ke * dt * dt + kd * dt
+            ke = float(0.0)
+            kd = float(0.0)
+            if augment_drives and type != JointType.BALL:
+                ke = joint_target_ke[dof_index]
+                kd = joint_target_kd[dof_index]
+            # The explicit -damping * qd remains in tau. This diagonal makes
+            # its velocity dependence implicit without applying drive limits.
+            K = ke * dt * dt + (kd + wp.max(joint_damping[dof_index], 0.0)) * dt
             if K <= 0.0:
                 continue
 
-            q = joint_q[coord_start + axis]
-            qd = joint_qd[dof_index]
-            target_pos = joint_target_pos[joint_target_q_start[joint_index] + axis]
-            u0 = -(ke * (q - target_pos + dt * qd) + kd * (qd - joint_target_vel[dof_index]))
-            effort_limit = joint_effort_limit[dof_index]
-            if effort_limit > 0.0:
-                u0 = wp.clamp(u0, -effort_limit, effort_limit)
+            u0 = float(0.0)
+            if augment_drives and type != JointType.BALL:
+                q = joint_q[coord_start + axis]
+                qd = joint_qd[dof_index]
+                target_pos = joint_target_pos[joint_target_q_start[joint_index] + axis]
+                u0 = -(ke * (q - target_pos + dt * qd) + kd * (qd - joint_target_vel[dof_index]))
+                effort_limit = joint_effort_limit[dof_index]
+                if effort_limit > 0.0:
+                    u0 = wp.clamp(u0, -effort_limit, effort_limit)
 
             row_index = articulation * max_dofs + slot
             row_dof_index[row_index] = dof_index
@@ -2604,6 +2615,8 @@ def eval_augmented_drives(
     joint_dof_dim: wp.array2d[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
+    joint_damping: wp.array[float],
+    augment_drives: bool,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_pos: wp.array[float],
@@ -2631,6 +2644,8 @@ def eval_augmented_drives(
         joint_dof_dim,
         joint_q,
         joint_qd,
+        joint_damping,
+        augment_drives,
         joint_target_ke,
         joint_target_kd,
         joint_target_pos,
@@ -2672,6 +2687,7 @@ def eval_rigid_tau_and_augmented_drives(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     articulation_origin: wp.array[wp.vec3],
+    augment_drives: bool,
     joint_target_ke: wp.array[float],
     joint_target_kd: wp.array[float],
     joint_target_pos: wp.array[float],
@@ -2730,6 +2746,8 @@ def eval_rigid_tau_and_augmented_drives(
         joint_dof_dim,
         joint_q,
         joint_qd,
+        joint_damping,
+        augment_drives,
         joint_target_ke,
         joint_target_kd,
         joint_target_pos,
