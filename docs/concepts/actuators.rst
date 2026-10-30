@@ -777,8 +777,8 @@ Customization
 Any actuator can be assembled from the existing building blocks — mix and
 match drives, clamping stages, input processors and motors to fit a specific use case.
 When the built-in components are not sufficient, implement new ones by
-subclassing :class:`DriveBase`, :class:`ClampingBase` or
-:class:`InputProcessorBase`.
+subclassing :class:`DriveBase`, :class:`ClampingBase`,
+:class:`CommandClampingBase` or :class:`InputProcessorBase`.
 
 For example, a custom drive needs to implement
 :meth:`~DriveBase.compute`, :meth:`~DriveBase.resolve_arguments`,
@@ -808,8 +808,8 @@ For example, a custom drive needs to implement
        def compute(self, positions, velocities, target_pos, target_vel,
                    feedforward, pos_indices, vel_indices,
                    target_pos_indices, target_vel_indices,
-                   forces, state, dt, device=None, *, custom_inputs=None):
-           # Launch a Warp kernel that writes effort into `forces`
+                   output, state, dt, device=None, *, custom_inputs=None):
+           # Launch a Warp kernel that writes effort into `output`
            ...
 
 ``resolve_arguments`` maps user-provided keyword arguments (from

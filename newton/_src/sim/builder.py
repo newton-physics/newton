@@ -3340,6 +3340,8 @@ class ModelBuilder:
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
+                A :class:`~newton.actuators.CommandClampingBase` subclass
+                bounds the motor command before the motor.
             delay_steps: Deprecated in Newton 1.8; use
                 ``input_processors=[(InputProcessorDelay, {"delay_steps": ...})]`` instead.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
@@ -3352,8 +3354,8 @@ class ModelBuilder:
                 class's :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`
                 take a joint index or a joint label; ``None`` selects the
                 actuated joint.
-            motor: Optional ``(MotorClass, kwargs)`` tuple applied after the
-                clamping. E.g. ``(MotorDC, {"kt": 1.0, "resistance": 2.0, "vin": 12.0})``.
+            motor: Optional ``(MotorClass, kwargs)`` tuple applied between the
+                command clamping and the effort clamping. E.g. ``(MotorDC, {"kt": 1.0, "resistance": 2.0, "vin": 12.0})``.
             controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
 
