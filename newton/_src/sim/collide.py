@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
-from ..core.reset import normalize_reset_world_mask
+from ..core.reset import WorldResetEpochs, normalize_reset_world_mask
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
@@ -2296,11 +2296,13 @@ class CollisionPipeline:
             )
         else:
             self._contact_matcher = None
+        # Contact history kept per Contacts buffer catches up on resets through these.
+        self._world_resets = WorldResetEpochs(model.world_count, device=device) if matching_sticky else None
         if matching_sticky and not requires_grad and model.particle_count > 0 and soft_contact_max > 0:
             self._soft_contact_matcher = SoftContactMatcher(
                 soft_contact_max,
                 model.particle_count,
-                model.world_count,
+                self._world_resets,
                 pos_threshold=contact_matching_pos_threshold,
                 mesh_features=self._soft_mesh_contact_data is not None,
                 device=device,
@@ -2424,6 +2426,9 @@ class CollisionPipeline:
         )
         contacts._contact_matching_mode = self.contact_matching
         contacts._soft_contact_points_persist = self._soft_contact_matcher is not None
+        if self._soft_contact_matcher is not None:
+            # Created here rather than on first replay, which may run inside a graph capture.
+            self._soft_contact_matcher.reset_cursor(contacts)
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -2619,7 +2624,8 @@ class CollisionPipeline:
         """Clear all or reset-selected previous-frame contact history.
 
         Masked selections accumulate until the next :meth:`collide` call
-        consumes them.
+        consumes them. Sticky rigid-soft contact points restart in every
+        :class:`~newton.Contacts` buffer, on that buffer's next pass.
 
         .. experimental::
 
@@ -2636,8 +2642,8 @@ class CollisionPipeline:
         )
         if self._contact_matcher is not None:
             self._contact_matcher.reset(world_mask)
-        if self._soft_contact_matcher is not None:
-            self._soft_contact_matcher.reset(world_mask)
+        if self._world_resets is not None:
+            self._world_resets.advance(world_mask)
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:

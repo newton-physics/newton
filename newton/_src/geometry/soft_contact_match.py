@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..core.reset import reset_world_selected
+from ..core.reset import WorldResetEpochs, world_reset_since
 
 if TYPE_CHECKING:
     from ..sim.contacts import Contacts
@@ -103,6 +103,7 @@ def _replay_soft_contacts_kernel(
     particle_world: wp.array[wp.int32],
     body_q: wp.array[wp.transform],
     shape_body: wp.array[wp.int32],
+    shape_world: wp.array[wp.int32],
     shape_margin: wp.array[float],
     contact_count: wp.array[int],
     contact_max: int,
@@ -111,7 +112,8 @@ def _replay_soft_contacts_kernel(
     contact_features: wp.array[wp.vec3i],
     contact_normal: wp.array[wp.vec3],
     contact_body_vel: wp.array[wp.vec3],
-    reset_world_mask: wp.array[wp.bool],
+    reset_epochs: wp.array[wp.int32],
+    reset_cursor: wp.array[wp.int32],
     prev_head: wp.array[wp.int32],
     prev_next: wp.array[wp.int32],
     prev_indices: wp.array[wp.vec3i],
@@ -125,12 +127,14 @@ def _replay_soft_contacts_kernel(
 ):
     for i in range(wp.tid(), wp.min(contact_count[0], contact_max), thread_count):
         corners = contact_indices[i]
-        if reset_world_selected(particle_world[corners[0]], reset_world_mask, world_count):
+        shape = contact_shape[i]
+        if world_reset_since(particle_world[corners[0]], reset_epochs, reset_cursor, world_count) or world_reset_since(
+            shape_world[shape], reset_epochs, reset_cursor, world_count
+        ):
             continue
         # A moving surface (conveyor) carries its material away from any point fixed in the body frame.
         if wp.length_sq(contact_body_vel[i]) > 0.0:
             continue
-        shape = contact_shape[i]
         feature = _record_feature(contact_features, i)
 
         X_wb = wp.transform_identity()
@@ -198,13 +202,6 @@ def _save_soft_contacts_kernel(
         prev_next[i] = wp.atomic_exch(prev_head, slot, wp.int32(i))
 
 
-@wp.kernel(enable_backward=False)
-def _accumulate_reset_world_mask_kernel(world_mask: wp.array[wp.bool], accumulated: wp.array[wp.bool]):
-    world = wp.tid()
-    if world_mask[world]:
-        accumulated[world] = True
-
-
 class SoftContactMatcher:
     """Sticky replay of rigid-soft contact points across collision passes.
 
@@ -215,7 +212,7 @@ class SoftContactMatcher:
     Args:
         capacity: Maximum number of soft contacts (``soft_contact_max``).
         particle_count: Number of particles in the model.
-        world_count: Number of local worlds.
+        resets: The pipeline's world reset epochs; each buffer keeps its own cursor on them.
         pos_threshold: Largest tangential slip [m] between a record's previous soft and body points
             for the record to keep them.
         mesh_features: Whether records carry full-surface mesh feature ids, which then join the key.
@@ -226,7 +223,7 @@ class SoftContactMatcher:
         self,
         capacity: int,
         particle_count: int,
-        world_count: int,
+        resets: WorldResetEpochs,
         pos_threshold: float,
         mesh_features: bool,
         device=None,
@@ -236,7 +233,7 @@ class SoftContactMatcher:
             # A fixed grid that strides over the live records, so a pass does not pay for empty capacity.
             cuda = wp.get_device().is_cuda
             self._thread_count = min(capacity, wp.get_device().sm_count * 2048) if cuda else capacity
-            self._world_count = int(world_count)
+            self._resets = resets
             self._pos_threshold_sq = pos_threshold * pos_threshold
             self._prev_head = wp.full(particle_count * SLOTS_PER_PARTICLE, -1, dtype=wp.int32)
             self._prev_next = wp.full(capacity, -1, dtype=wp.int32)
@@ -245,21 +242,14 @@ class SoftContactMatcher:
             self._prev_features = wp.full(capacity if mesh_features else 0, wp.vec3i(-1, -1, -1), dtype=wp.vec3i)
             self._prev_barycentric = wp.zeros(capacity, dtype=wp.vec3)
             self._prev_body_pos = wp.zeros(capacity, dtype=wp.vec3)
-            self._reset_world_mask = wp.zeros(self._world_count + 1, dtype=wp.bool)
             self._empty_features = wp.empty(0, dtype=wp.vec3i)
             self._empty_body_q = wp.empty(0, dtype=wp.transform)
 
-    def reset(self, world_mask: wp.array[wp.bool] | None = None) -> None:
-        """Forget all or reset-selected saved records; selections accumulate until the next replay."""
-        if world_mask is None:
-            self._reset_world_mask.fill_(True)
-            return
-        wp.launch(
-            _accumulate_reset_world_mask_kernel,
-            dim=world_mask.shape[0],
-            inputs=[world_mask, self._reset_world_mask],
-            device=self._reset_world_mask.device,
-        )
+    def reset_cursor(self, contacts: Contacts) -> wp.array[wp.int32]:
+        """Return the buffer's cursor on the world reset epochs, giving a buffer seen first one."""
+        if contacts._soft_contact_reset_cursor is None:
+            contacts._soft_contact_reset_cursor = self._resets.cursor()
+        return contacts._soft_contact_reset_cursor
 
     def _features(self, contacts: Contacts) -> wp.array[wp.vec3i]:
         features = contacts._soft_contact_mesh_features
@@ -297,18 +287,20 @@ class SoftContactMatcher:
 
     def replay(self, model: Model, state: State, contacts: Contacts) -> None:
         """Replay the saved contact points onto this pass's matched records."""
+        reset_cursor = self.reset_cursor(contacts)
         wp.launch(
             _replay_soft_contacts_kernel,
             dim=self._thread_count,
             inputs=[
                 self._thread_count,
-                self._world_count,
+                self._resets.world_count,
                 self._pos_threshold_sq,
                 state.particle_q,
                 model.particle_radius,
                 model.particle_world,
                 state.body_q if state.body_q is not None else self._empty_body_q,
                 model.shape_body,
+                model.shape_world,
                 model.shape_margin,
                 contacts.soft_contact_count,
                 self._capacity,
@@ -317,7 +309,8 @@ class SoftContactMatcher:
                 self._features(contacts),
                 contacts.soft_contact_normal,
                 contacts.soft_contact_body_vel,
-                self._reset_world_mask,
+                self._resets.epochs,
+                reset_cursor,
                 self._prev_head,
                 self._prev_next,
                 self._prev_indices,
@@ -329,4 +322,4 @@ class SoftContactMatcher:
             outputs=[contacts.soft_contact_barycentric, contacts.soft_contact_body_pos],
             device=contacts.soft_contact_count.device,
         )
-        self._reset_world_mask.fill_(False)
+        self._resets.catch_up(reset_cursor)
