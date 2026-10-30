@@ -209,6 +209,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     .. experimental::
         SolverVBD's public API and behavior may change without prior notice.
 
+    Tuning guide: :ref:`Tuning VBD`
+    (https://newton-physics.github.io/newton/latest/concepts/simulation_tuning_vbd.html)
+    explains what each parameter does to the solve, the contact distances, the
+    jitter and explosion pipelines, and the values the shipped examples use.
+
     This unified solver supports:
         - Particle simulation (cloth, soft bodies) using the VBD algorithm
         - Rigid body simulation (joints, contacts) using the AVBD algorithm

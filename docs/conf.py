@@ -291,7 +291,7 @@ html_theme_options = {
     # "navbar_end": ["search-button"],
     # Navigation configuration
     # "font_size": "14px",  # or smaller
-    "navigation_depth": 2,
+    "navigation_depth": 1,
     "show_nav_level": 1,
     "show_toc_level": 2,
     "collapse_navigation": False,
