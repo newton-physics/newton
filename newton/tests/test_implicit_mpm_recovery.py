@@ -52,7 +52,7 @@ def _make_contact_solver(device, height, velocity, fraction, gap):
         tolerance=0.0,
         warmstart_mode="none",
         air_drag=1.0e-6,
-        collider_stabilization_fraction=fraction,
+        collider_recovery_fraction=fraction,
         collider_contact_gap=gap,
     )
     return model, SolverImplicitMPM(model, config=config)
@@ -444,9 +444,9 @@ def test_recovery_config_validation(test, device):
             {"volume_recovery_fraction": float("nan")},
             {"volume_recovery_fraction": -0.1},
             {"critical_fraction_measurement": "box"},
-            {"collider_stabilization_fraction": float("inf")},
+            {"collider_recovery_fraction": float("inf")},
             {"collider_contact_gap": -0.01},
-            {"collider_stabilization_fraction": 0.1, "collider_basis": "S2"},
+            {"collider_recovery_fraction": 0.1, "collider_basis": "S2"},
         ):
             with test.subTest(options=options), test.assertRaises(ValueError):
                 SolverImplicitMPM(model, config=SolverImplicitMPM.Config(**options))
