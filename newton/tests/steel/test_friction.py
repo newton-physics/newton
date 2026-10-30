@@ -254,21 +254,33 @@ class TestSteelFrictionAnchors(unittest.TestCase):
         self.assertAlmostEqual(accel, expected, delta=0.01 * expected)
 
     def test_anchors_hold_near_the_cone_on_a_mesh_incline(self):
-        """Hold boxes that need 95 to 99% of their Coulomb budget on a mesh incline, carrying their anchors."""
-        dt = 1.0 / 240.0
+        """Hold boxes that need 95 to 99% of their Coulomb budget on a mesh incline, within bounded creep.
+
+        At 8 and 12 iterations and 240 Hz the boxes hold and carry their anchors. Fewer iterations or a coarser
+        step can release a near-cone anchor during the landing; the accepted creep there is bounded.
+        """
         demands = (0.95, 0.97, 0.99)
         model, down_slope = _mesh_incline_model([np.tan(np.radians(15.0)) / demand for demand in demands])
-        for iterations in (8, 12):
-            poses, _, solver = _run_mesh_incline(model, 1.0, dt, iterations)
+        # (iterations, rate [Hz], measured window after 0.5 s [s], creep bound [m])
+        for iterations, rate, window, bound in (
+            (8, 240, 0.5, 1.0e-5),
+            (12, 240, 0.5, 1.0e-5),
+            (4, 240, 3.5, 6.0e-3),
+            (8, 120, 1.0, 6.0e-4),
+        ):
+            dt = 1.0 / rate
+            poses, _, solver = _run_mesh_incline(model, 0.5 + window, dt, iterations)
             creep = (poses[-1, :, :3] - poses[round(0.5 / dt) - 1, :, :3]) @ down_slope
             for demand, distance in zip(demands, creep, strict=True):
-                with self.subTest(iterations=iterations, demand=demand):
-                    self.assertLess(abs(distance), 1.0e-5)
+                with self.subTest(iterations=iterations, rate=rate, demand=demand):
+                    self.assertLess(abs(distance), bound)
+            if bound > 1.0e-5:
+                continue
             anchors = solver._friction_patches.view.weight.numpy() > 0.0
             boxes = solver._friction_patches.current.body_a.numpy()
             sources = solver._friction_patches.current.source.numpy()
             for box, demand in enumerate(demands):
-                with self.subTest(iterations=iterations, demand=demand):
+                with self.subTest(iterations=iterations, rate=rate, demand=demand):
                     held = anchors & (boxes == box)
                     self.assertTrue(held.any())
                     self.assertTrue((sources[held] >= 0).all())
