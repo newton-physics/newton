@@ -23,7 +23,9 @@ import newton
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
+    _add_mesh_prim,
     _author_deformable_element_array,
+    _author_unit_tet,
     _bind_deformable_material,
     _deformable_stage,
     group_labels,
@@ -34,18 +36,6 @@ from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_se
 _ASSET = os.path.join(os.path.dirname(__file__), "assets", "deformables_mixed.usda")
 
 _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
-
-
-def _author_unit_tet(stage, path, *, sim_api=True, y=0.0):
-    """Author a single-tetrahedron TetMesh, optionally marked as a proposal simulation mesh."""
-    from pxr import UsdGeom
-
-    tet = UsdGeom.TetMesh.Define(stage, path)
-    tet.CreatePointsAttr([(0.0, y, 1.0), (1.0, y, 1.0), (0.0, y + 1.0, 1.0), (0.0, y, 2.0)])
-    tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
-    if sim_api:
-        tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-    return tet
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -66,7 +56,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
 
         with self.subTest(family="soft"):
             stage = _deformable_stage()
-            tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+            tet = _author_unit_tet(stage, "/World/Soft", sim_api=True, collision=False)
             bind_density_material(stage, tet.GetPrim(), 600.0)
             builder = newton.ModelBuilder()
             builder.default_tet_density = 1.0
@@ -127,7 +117,6 @@ class TestUSDDeformableMixed(unittest.TestCase):
         _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.01], "constant")
         _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat")
         volume = _author_unit_tet(stage, "/World/Volume", sim_api=True)
-        volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
         _bind_deformable_material(stage, volume.GetPrim(), "/World/VolumeMat")
         _author_unit_tet(stage, "/World/BareTet", sim_api=False)
 
@@ -152,7 +141,6 @@ class TestUSDDeformableMixed(unittest.TestCase):
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
         _bind_deformable_material(stage, cloth.GetPrim(), "/World/ClothMat")
         volume = _author_unit_tet(stage, "/World/Volume", sim_api=True)
-        volume.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
         _bind_deformable_material(stage, volume.GetPrim(), "/World/VolumeMat")
 
         builder = newton.ModelBuilder()
@@ -224,7 +212,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         stage = _deformable_stage()
         _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
         _add_cloth_mesh(stage, "/World/Cloth")
-        _author_unit_tet(stage, "/World/Soft")
+        _author_unit_tet(stage, "/World/Soft", sim_api=True, collision=False)
         disabled_cable = _add_cable_curve(stage, "/World/CableOff", [(x, 1.0, z) for x, _, z in _CABLE_PTS])
         disabled_cable.GetPrim().CreateAttribute("physics:bodyEnabled", Sdf.ValueTypeNames.Bool).Set(False)
         kinematic_cloth = _add_cloth_mesh(stage, "/World/ClothKin")
@@ -233,7 +221,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         body = UsdGeom.Xform.Define(stage, "/World/SoftOff")
         body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
         body.GetPrim().CreateAttribute("physics:bodyEnabled", Sdf.ValueTypeNames.Bool).Set(False)
-        _author_unit_tet(stage, "/World/SoftOff/sim", y=2.0)
+        _author_unit_tet(stage, "/World/SoftOff/sim", sim_api=True, collision=False, y=2.0)
 
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
@@ -386,12 +374,8 @@ class TestUSDDeformableMixed(unittest.TestCase):
         body = UsdGeom.Xform.Define(stage, "/World/SoftOff")
         body.GetPrim().AddAppliedSchema("PhysicsDeformableBodyAPI")
         body.GetPrim().CreateAttribute("physics:bodyEnabled", Sdf.ValueTypeNames.Bool).Set(False)
-        _author_unit_tet(stage, "/World/SoftOff/sim")
-        collider = UsdGeom.Mesh.Define(stage, "/World/SoftOff/Col")
-        collider.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0)])
-        collider.CreateFaceVertexCountsAttr([3])
-        collider.CreateFaceVertexIndicesAttr([0, 1, 2])
-        collider.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _author_unit_tet(stage, "/World/SoftOff/sim", sim_api=True, collision=False)
+        _add_mesh_prim(stage, "/World/SoftOff/Col", collision=True)
 
         builder = newton.ModelBuilder()
         with warnings.catch_warnings(record=True) as caught:
@@ -425,7 +409,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
             [0, 1, 2, 0, 2, 3]
         )
         UsdGeom.PointBased(cloth.GetPrim()).CreateVelocitiesAttr([(1.0, 0.0, 0.0)] * 4)
-        tet = _author_unit_tet(stage, "/World/Soft")
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True, collision=False)
         tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
             [(0.0, 0.0, 0.0)] * 4
         )
@@ -452,8 +436,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         stage = _deformable_stage()
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
         _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
-        tet = _author_unit_tet(stage, "/World/Soft")
-        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
         reference = newton.ModelBuilder()
         reference.add_usd(stage)
         cases = (
@@ -517,8 +500,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
                 cloth.GetPrim().CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set(
                     "restShape"
                 )
-                tet = _author_unit_tet(stage, "/World/Soft")
-                tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
                 for mesh in (cloth, tet):
                     rest_points = np.asarray(mesh.GetPointsAttr().Get(), dtype=np.float64) * 0.01
                     if mesh == cloth:
@@ -556,8 +538,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         stage = _deformable_stage()
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
         _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
-        tet = _author_unit_tet(stage, "/World/Soft")
-        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
         reference = newton.ModelBuilder()
         reference.add_usd(stage)
         meshes = (

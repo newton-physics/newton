@@ -16,6 +16,7 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
     _add_element_collision_filter,
+    _author_unit_tet,
     _deformable_stage,
     group_range,
 )
@@ -165,19 +166,9 @@ class TestUSDDeformableFilteredPairs(unittest.TestCase):
 
     def test_unsupported_particle_deformable_pairs_warn(self):
         """Cloth and volume targets warn with both paths and import everything else."""
-        from pxr import UsdGeom
-
-        def _author_tet(stage):
-            tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
-            tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
-            tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
-            tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-            tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
-            return tet
-
         for family, author in (
             ("cloth", lambda stage: _add_cloth_mesh(stage, "/World/Soft")),
-            ("volume", _author_tet),
+            ("volume", lambda stage: _author_unit_tet(stage, "/World/Soft", sim_api=True)),
         ):
             with self.subTest(family=family):
                 stage = _deformable_stage()

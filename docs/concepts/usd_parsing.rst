@@ -128,15 +128,11 @@ vertices; the indices preserve that relationship.
    )
    vertex_data = authored_point_data[point_indices]
 
-The ``return_source_point_indices`` option always returns
-``(mesh, uv_indices, source_point_indices)``.
-The second item is ``None`` unless UV indices are requested and available.
-The source-point mapping is always third, including when both mappings are
-requested. Without this option, existing return values are unchanged.
-
-The ``return_source_point_indices`` option requires a single mesh prim. It is
-not available when merging a stage or file. See the function's return table
-for all combinations.
+With this option, :func:`newton.usd.get_mesh` always returns
+``(mesh, uv_indices, source_point_indices)``, where ``uv_indices`` is ``None``
+unless UV indices were requested and are available. The option requires a
+single mesh prim and is not available when merging a stage or file; see the
+function's return table for all combinations.
 
 Deformable Bodies
 -----------------
@@ -341,30 +337,6 @@ deformables are skipped, malformed topology or curves are skipped, and compliant
 imported. Dynamic and static friction belong to collision geometry and are not mapped onto
 the deformable collision approximation yet.
 
-Reading a deformable bind pose
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. experimental::
-   :func:`newton.usd.get_deformable_bind_pose` follows the AOUSD proposal.
-
-Read the reference points used to bind visual geometry:
-
-.. code-block:: python
-
-   import newton.usd
-
-   visual = stage.GetPrimAtPath("/World/SoftBody/Visual")
-   points = newton.usd.get_deformable_bind_pose(visual)
-
-The reader uses a ``PhysicsDeformablePoseAPI`` instance with purpose
-``bindPose``, or the geometry's default-time points when none is authored.
-It does not substitute rest-shape points or an animated sample. Multiple
-bind poses and malformed data raise an error.
-
-The returned array owns its storage. Points remain in authored order, local
-coordinates, and stage length units. Apply transforms and unit conversion
-separately. These are not render vertices split at UV or normal seams.
-
 Limitations
 ~~~~~~~~~~~
 
@@ -419,9 +391,8 @@ Known gaps of the experimental importer, tracked as follow-ups:
   collision in Newton yet: they warn and import colliding. A welded cable graph shares one
   shape configuration, so any collision-enabled member curve makes the whole graph collide
   (mixed authoring warns).
-* **Graphics geometry** -- graphics Mesh prims can follow their owning simulation
-  geometry; see :ref:`usd-deformable-visual-import`. Other PointBased graphics
-  are skipped with a diagnostic instead of becoming frozen rigid shapes.
+* **Graphics geometry** -- graphics Mesh prims can import as visual meshes; see
+  :ref:`usd-deformable-visual-import` for what is imported and skipped.
 * **Gaussian graphics (experimental)** -- a volume-owned
   ``ParticleField3DGaussianSplat`` can use automatic tet embedding or paired
   ``newton:deformableSkin:tetIndices`` and
@@ -582,6 +553,30 @@ see :ref:`deformable-objects-welded-usd-graphs` for per-curve lookup.
    Solver tuning that is not part of the supported AOUSD schemas or a documented Newton schema
    extension is not imported; supply it on the builder or model after import.
 
+Reading a deformable bind pose
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. experimental::
+   :func:`newton.usd.get_deformable_bind_pose` follows the AOUSD proposal.
+
+Read the reference points used to bind visual geometry:
+
+.. code-block:: python
+
+   import newton.usd
+
+   visual = stage.GetPrimAtPath("/World/SoftBody/Visual")
+   points = newton.usd.get_deformable_bind_pose(visual)
+
+The reader uses a ``PhysicsDeformablePoseAPI`` instance with purpose
+``bindPose``, or the geometry's default-time points when none is authored.
+It does not substitute rest-shape points or an animated sample. Multiple
+bind poses and malformed data raise an error.
+
+The returned array owns its storage. Points remain in authored order, local
+coordinates, and stage length units. Apply transforms and unit conversion
+separately. These are not render vertices split at UV or normal seams.
+
 Finding deformable visual geometry
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -660,10 +655,12 @@ recording. To rebase labels and that metadata into cloned USD namespaces, pass
 ``source_path_prefix`` and ``destination_path_prefixes`` to
 :meth:`ModelBuilder.replicate`. The import result map still describes the original import.
 
-Embeddings are computed at import time. Authored per-vertex mesh embedding weights and other PointBased graphics are
-not imported by this path. The Gaussian extension described above is separate.
+Mesh embeddings are computed at import time; authored per-vertex mesh embedding
+weights are not imported. The Gaussian extension described above is separate.
+Other PointBased graphics are skipped with a diagnostic and never become rigid
+shapes.
 Triangle bindings discard normal offsets; vertices outside a volume are
-clamped as described in the :doc:`visualization guide </guide/visualization>`.
+clamped as described in the :ref:`visualization guide <deformable-visual-meshes>`.
 
 .. _usd-material-color-spaces:
 

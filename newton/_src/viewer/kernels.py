@@ -1160,7 +1160,7 @@ def apply_world_offset_and_layer_transform_normals(
     """Transform visual points and normals into a viewer layer."""
     i = wp.tid()
     p = points[i]
-    if world_index >= 0:
+    if world_offsets and world_index >= 0 and world_index < world_offsets.shape[0]:
         p = p + world_offsets[world_index]
     out_points[i] = wp.transform_point(layer_xform, p)
     out_normals[i] = wp.quat_rotate(wp.transform_get_rotation(layer_xform), normals[i])
