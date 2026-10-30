@@ -1039,6 +1039,7 @@ class TestPreeliminationKernels(unittest.TestCase):
                 arr([[0.002, 0.001, 0.0, 0.0, 0.0, 0.0, 1.0]], wp.transform),
                 arr([[0.002, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], wp.transform),
                 arr([1]),
+                arr([1]),
                 arr([[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]], wp.transform),
                 wp.zeros(1, dtype=wp.spatial_vector, device=device),
                 wp.zeros(1, dtype=wp.vec3, device=device),
