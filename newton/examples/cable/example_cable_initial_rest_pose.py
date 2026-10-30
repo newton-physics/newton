@@ -1,24 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Initial and Rest Poses
-#
-# Demonstrates two cables whose initial and structural-rest poses differ:
-#
-# - a helical initial pose with zero intrinsic bend and twist;
-# - a straight initial pose with a helical structural-rest pose.
-#
-# The initial and rest segment lengths match in both cases, isolating the
-# angular material response from initial stretch.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose --test --viewer null
-#
-###########################################################################
+"""Cable Initial and Rest Poses
+
+Demonstrates two cables whose initial and structural-rest poses differ:
+
+- a helical initial pose with zero intrinsic bend and twist;
+- a straight initial pose with a helical structural-rest pose.
+
+The initial and rest segment lengths match in both cases, isolating the
+angular material response from initial stretch.
+
+Success criteria:
+- Two cables start side by side: an orange helix with a straight rest pose and a blue straight cable
+  with a helical rest pose.
+- The orange cable relaxes toward a straighter shape while the blue cable bends toward its helical
+  rest shape.
+- Both cables remain connected and bounded as they respond to their different structural-rest poses.
+
+Runs:
+- `python -m newton.examples cable_initial_rest_pose`
+"""
 
 import math
 

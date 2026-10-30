@@ -9,6 +9,8 @@ Viewers and Debugging
 Newton provides multiple viewer backends for live visualization, debugging,
 historical inspection, persistent recording, and external integrations.
 
+.. _deformable-visual-meshes:
+
 Deformable visual meshes
 ------------------------
 
@@ -17,8 +19,11 @@ Deformable visual meshes
 A deformable visual mesh is a triangle mesh that follows simulation elements
 without adding mass or collision geometry
 (:class:`~newton.geometry.DeformableVisualMesh`). It is separate from the
-deformable object records in :doc:`/concepts/deformable_objects`. Attach one
-to simulation particles with explicit particle indices:
+deformable object records in :doc:`/concepts/deformable_objects`. This guide
+shortens the name to *visual mesh*. Evaluating a mesh's current shape is
+*skinning*, so the viewer GUI calls these *skinned meshes*, and USD import
+calls the authored source a *graphics mesh*. Attach one to simulation
+particles with explicit particle indices:
 
 .. code-block:: python
 

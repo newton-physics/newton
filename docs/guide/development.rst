@@ -672,6 +672,34 @@ Every example must implement ``test_final()``; it may additionally implement
 after the example completes. An example without a callable ``test_final()``
 raises ``NotImplementedError`` in CI.
 
+Embedded success criteria
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Keep each example's teaching description, success criteria, and run commands
+in its module docstring. Common criteria apply to every listed run; indent
+additional observations below the command they apply to:
+
+.. code-block:: python
+
+    """Demonstrate an example behavior.
+
+    Success criteria:
+    - The mechanism remains upright.
+
+    Runs:
+    - `python -m newton.examples my_example`
+    - `python -m newton.examples my_example --solver xpbd`
+      - The XPBD solver completes the same motion.
+    """
+
+``python -m newton.examples --describe <example_name>`` prints the docstring
+without importing or executing the example. Validate descriptions, commands,
+and declared option names with
+``uv run --extra dev -m newton.tests -k test_example_spec``.
+
+Shared visual QA procedures live in ``.agents/skills/example-testing/``;
+these human criteria do not imply equivalent automated assertions.
+
 Discovery and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 

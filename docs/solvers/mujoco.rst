@@ -863,8 +863,9 @@ same three-phase cycle:
    and ``Control`` inputs to MuJoCo's working data. When
    ``use_mujoco_contacts=False``, Newton-side contacts are also
    converted before the integrator runs. The joint-state re-sync
-   frequency can be controlled via the ``update_data_interval``
-   kwarg for substepping schemes.
+   frequency can be controlled via the deprecated
+   ``update_data_interval`` kwarg; it will be removed and the joint state
+   will then be synchronized on every step.
 2. **Integrate.** ``mujoco_warp`` steps the MuJoCo model forward by ``dt``.
 3. **Pull MuJoCo → Newton.** ``SolverMuJoCo._update_newton_state``
    populates the output ``State`` from the integrated MuJoCo data.
