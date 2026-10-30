@@ -180,6 +180,7 @@ jobs:
           nvidia-smi --query-gpu=name,compute_cap --format=csv | tee -a "$GITHUB_STEP_SUMMARY"
           sm="sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')"
           echo "sm=$sm" >> "$GITHUB_OUTPUT"
+          echo "count=$(nvidia-smi --query-gpu=uuid --format=csv,noheader | wc -l)" >> "$GITHUB_OUTPUT"
           echo "warp-cache-key-prefix=warp-kernels-gpu-$sm-" >> "$GITHUB_OUTPUT"
           echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)" >> "$GITHUB_OUTPUT"
 
@@ -224,12 +225,37 @@ jobs:
           restore-keys: |
             ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-
 
+      # Concurrent CUDA graph workloads can hit driver Xid 31 / GPCCLIENT_GCC
+      # faults on Ada (see NVIDIA/TensorRT#3633 and newton-physics/newton#2831).
+      # MPS shares GPU scheduling across the workers, avoiding context switches
+      # while retaining parallel tests and CUDA graph coverage.
+      # A fatal CUDA fault can fail every worker sharing the GPU under MPS.
+      # Limit this workaround to the validated single-GPU configuration.
+      - name: Start CUDA MPS on single-GPU Ada runners
+        id: cuda-mps
+        if: steps.gpu-arch.outputs.sm == 'sm89' && steps.gpu-arch.outputs.count == '1'
+        run: |
+          CUDA_MPS_PIPE_DIRECTORY="$(mktemp -d /tmp/newton-mps.XXXXXX)"
+          export CUDA_MPS_PIPE_DIRECTORY
+          export CUDA_MPS_LOG_DIRECTORY="$RUNNER_TEMP/cuda-mps-logs"
+          mkdir -p "$CUDA_MPS_LOG_DIRECTORY"
+          echo "CUDA_MPS_PIPE_DIRECTORY=$CUDA_MPS_PIPE_DIRECTORY" >> "$GITHUB_ENV"
+          echo "CUDA_MPS_LOG_DIRECTORY=$CUDA_MPS_LOG_DIRECTORY" >> "$GITHUB_ENV"
+          echo "pipe-directory=$CUDA_MPS_PIPE_DIRECTORY" >> "$GITHUB_OUTPUT"
+          nvidia-cuda-mps-control -d
+
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
         run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --parallel-timeout 4500 --no-cache-clear --junit-report-xml rspec.xml ${{ env.UPLOAD_TO_CODECOV == 'true' && '--coverage --coverage-xml coverage.xml' || '' }}
+
+      - name: Stop CUDA MPS
+        if: always() && steps.cuda-mps.outputs.pipe-directory != ''
+        # Orphaned clients can block quit; EC2 teardown provides final cleanup.
+        continue-on-error: true
+        run: echo quit | timeout --kill-after=5s 30s nvidia-cuda-mps-control
 
       - name: Save OVRTX shader cache
         if: github.event_name != 'merge_group' && steps.restore-ovrtx-shader-cache.outputs.cache-hit != 'true'
@@ -368,7 +394,7 @@ jobs:
           env_vars: AWS_INSTANCE_TYPE
           fail_ci_if_error: true
           files: ./coverage.xml
-          flags: unittests
+          flags: gpu
           plugins: noop
           override_commit: ${{ inputs.ref || github.sha }}
           token: ${{ secrets.CODECOV_TOKEN }}

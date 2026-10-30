@@ -21,6 +21,7 @@ from newton.exceptions import NewtonWarning
 from newton.tests._usd_deformable_test_utils import (
     _apply_deformable_body_api,
     _author_deformable_element_array,
+    _author_unit_tet,
     _bind_deformable_material,
     _deformable_stage,
     group_labels,
@@ -50,25 +51,6 @@ def _author_tet_cube(stage, path, z0=0.0):
     tet.CreateTetVertexIndicesAttr(tets)
     tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
     tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
-    return tet
-
-
-def _author_unit_tet(stage, path, *, sim_api=False, collision=None):
-    """Author a single-tetrahedron TetMesh (volume 1/6), optionally marked as a simulation mesh.
-
-    ``collision`` authors an enabled ``PhysicsCollisionAPI``; defaults to ``sim_api`` so
-    deformable-marked fixtures represent the common colliding case, while bare TetMeshes
-    keep the legacy import untouched.
-    """
-    from pxr import UsdGeom
-
-    tet = UsdGeom.TetMesh.Define(stage, path)
-    tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
-    tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
-    if sim_api:
-        tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-    if sim_api if collision is None else collision:
-        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
     return tet
 
 
@@ -1105,9 +1087,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
         from pxr import Gf, UsdGeom
 
         stage = _deformable_stage()
-        tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
-        tet.CreatePointsAttr([(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)])
-        tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
+        tet = _author_unit_tet(stage, "/World/Soft")
         UsdGeom.Xformable(tet).AddScaleOp().Set(Gf.Vec3d(-1.0, 1.0, 1.0))
 
         builder = newton.ModelBuilder()

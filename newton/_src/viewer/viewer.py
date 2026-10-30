@@ -8,6 +8,7 @@ import enum
 import hashlib
 import math
 import os
+import re
 import sys
 import warnings
 from abc import ABC, abstractmethod
@@ -48,6 +49,14 @@ _DEFAULT_LAYER_ID = "__default__"
 
 #: Fields that configure a layer itself rather than model/runtime state.
 _LAYER_CONFIG_FIELDS = frozenset(("layer_id", "visible", "xform"))
+
+_VIEWER_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9_]")
+
+
+def _viewer_path_component(value: object) -> str:
+    """Return a stable viewer path component that is also valid in USD."""
+    component = _VIEWER_PATH_COMPONENT_RE.sub("_", str(value)).strip("_")
+    return component or "unnamed"
 
 
 def _mesh_texture_uvs(mesh: newton.Mesh) -> np.ndarray | None:
@@ -125,6 +134,8 @@ class ViewerBase(ABC):
 
         MARGIN_GAP = 2
         """Wireframe at ``shape_margin`` + ``shape_gap`` (outer contact threshold), not gap alone."""
+
+    _supports_deformable_visual_meshes = False
 
     def __init__(self):
         """Initialize shared viewer state and rendering caches."""
@@ -467,7 +478,7 @@ class ViewerBase(ABC):
 
         The transform is applied to every drawn position/orientation in the
         layer (shapes, contacts, joints, COM markers, inertia boxes,
-        hydroelastic contact surfaces, gaussians, SDF margin wireframes).
+        hydroelastic contact surfaces, visual meshes, gaussians, SDF margin wireframes).
         It is independent of the per-world spacing controlled by
         :meth:`set_world_offsets`: layer transforms reposition a whole
         layer (e.g. an entire solver's view in a multi-solver comparison)
@@ -725,6 +736,12 @@ class ViewerBase(ABC):
 
         # World offset support
         layer.world_offsets = None
+        # Deformable visual data and transformed viewer buffers.
+        layer._deformable_visuals: newton.geometry.DeformableVisuals | None = None
+        layer._deformable_visuals_explicit = False
+        layer._deformable_visual_mesh_names: dict[int, str] = {}
+        layer._deformable_visual_textures: dict[str, np.ndarray | None] = {}
+        layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array]] = {}
         layer._user_spacing: tuple[float, float, float] | None = None
         layer._visible_worlds: set[int] | None = None
         layer._visible_worlds_mask: wp.array | None = None
@@ -745,6 +762,7 @@ class ViewerBase(ABC):
         layer.show_contact_forces = True  # Force arrows require CONTACT_F solver observable.
         layer.show_springs = False
         layer.show_triangles = True
+        layer.show_deformable_visual_meshes = self._supports_deformable_visual_meshes
         layer.show_gaussians = False
         layer.show_collision = False
         layer.show_visual = True
@@ -838,6 +856,40 @@ class ViewerBase(ABC):
 
             # Adapt contact-visualization scales to the model.
             self._auto_compute_contact_scales()
+
+    def set_deformable_visuals(self, visuals: newton.geometry.DeformableVisuals | None) -> None:
+        """Use precomputed deformable visuals when logging model states.
+
+        Passing shared visual data lets the viewer reuse the same evaluated
+        points and normals as other viewers or external renderers. Pass
+        ``None`` to restore automatic evaluation during :meth:`log_state`.
+        Update or replay before logging the corresponding state. The viewer waits
+        for the output but does not check which State produced it or its freshness.
+        Backends that do not draw skinned meshes keep the reference and never
+        read it.
+
+        Args:
+            visuals: Updated visual data for the current model, or ``None``.
+
+        Raises:
+            RuntimeError: If no model has been set.
+            TypeError: If ``visuals`` is not :class:`newton.geometry.DeformableVisuals`.
+            ValueError: If ``visuals`` belongs to another model.
+
+        .. experimental::
+        """
+        if visuals is None:
+            self._deformable_visuals = None
+            self._deformable_visuals_explicit = False
+            return
+        if self.model is None:
+            raise RuntimeError("Model must be set before calling set_deformable_visuals()")
+        if not isinstance(visuals, newton.geometry.DeformableVisuals):
+            raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
+        if visuals.model is not self.model:
+            raise ValueError("DeformableVisuals was created for another model.")
+        self._deformable_visuals = visuals
+        self._deformable_visuals_explicit = True
 
     def _should_render_world(self, world_idx: int) -> bool:
         """Check if a world should be rendered based on visible worlds."""
@@ -1397,6 +1449,7 @@ class ViewerBase(ABC):
         self._log_inertia_boxes(state)
         self._log_sdf_margin_wireframes(state)
 
+        self._log_deformable_visual_meshes(state)
         self._log_triangles(state)
         self._log_particles(state)
         self._log_joints(state)
@@ -3515,6 +3568,115 @@ class ViewerBase(ABC):
                         color=color,
                         opacity=opacity,
                     )
+
+    def _deformable_visual_texture(self, texture):
+        """Decode an immutable path texture once per model layer; image arrays pass through."""
+        if not isinstance(texture, str):
+            return texture
+        if texture not in self._deformable_visual_textures:
+            from .utils import prepare_viewer_texture  # noqa: PLC0415
+
+            self._deformable_visual_textures[texture] = prepare_viewer_texture(texture)
+        return self._deformable_visual_textures[texture]
+
+    def _log_deformable_visual_mesh(self, name, points, indices, **kwargs):
+        """Send evaluated geometry to the selected backend."""
+        self.log_mesh(name, points, indices, **kwargs)
+
+    def _log_deformable_visual_meshes(self, state: newton.State):
+        """Skin and draw the visual meshes embedded in deformables.
+
+        Skinning and normal recomputation run on-device through
+        :meth:`newton.geometry.DeformableVisuals.update`; backends receive the
+        deformed geometry through the visual-mesh hook.
+        Skinned meshes draw in
+        addition to the raw simulation triangles; toggle ``show_triangles`` and
+        ``show_deformable_visual_meshes`` independently from regular visual
+        shapes.
+        """
+        meshes = self.model.deformable_visual_meshes
+        if not meshes:
+            return
+        show = self.show_deformable_visual_meshes and not self._layer_force_hidden()
+        visible = show and any(self._should_render_world(mesh.world) for mesh in meshes)
+        if not self._supports_deformable_visual_meshes:
+            # Rendering backends without skin support reject the option instead of
+            # silently showing nothing; non-rendering backends override this hook.
+            if visible:
+                raise NotImplementedError(
+                    f"{type(self).__name__} does not draw deformable visual meshes yet; set "
+                    "show_deformable_visual_meshes to False to display the simulation geometry."
+                )
+            return
+
+        from .kernels import apply_world_offset_and_layer_transform_normals  # noqa: PLC0415
+
+        visuals = self._deformable_visuals
+        if visible:
+            if visuals is None:
+                visuals = newton.geometry.DeformableVisuals(self.model)
+                self._deformable_visuals = visuals
+            if not self._deformable_visuals_explicit:
+                visuals.update(state)
+            visuals.wait()
+
+        for rm in meshes:
+            name = self._deformable_visual_mesh_names.get(rm.index)
+            if name is None:
+                # The invariant index keeps replicated worlds' duplicate labels distinct, and the
+                # name is fixed at first use so a later label edit does not strand a stale object.
+                # Prefix the component with "mesh" so USD-backed viewers do not receive prim
+                # names that start with a digit.
+                suffix = f"_{_viewer_path_component(rm.label)}" if rm.label else ""
+                name = self._qualify(f"/model/deformable_visual_meshes/mesh_{rm.index}{suffix}")
+                self._deformable_visual_mesh_names[rm.index] = name
+            if not (show and self._should_render_world(rm.world)):
+                # Keep valid geometry registered so visibility can toggle back on.
+                self._log_deformable_visual_mesh(
+                    name,
+                    rm.rest_vertices,
+                    rm.indices,
+                    uvs=rm.uvs,
+                    texture=rm.texture,
+                    hidden=True,
+                    backface_culling=False,
+                )
+                continue
+
+            n = rm.vertex_count
+            scratch = self._deformable_visual_mesh_scratch.get(rm.index)
+            if scratch is None or len(scratch[0]) != n:
+                scratch = (
+                    wp.empty(n, dtype=wp.vec3, device=self.device),
+                    wp.zeros(n, dtype=wp.vec3, device=self.device),
+                )
+                self._deformable_visual_mesh_scratch[rm.index] = scratch
+            points, normals = scratch
+
+            # Without world offsets the kernel receives a null array and skips the add.
+            wp.launch(
+                apply_world_offset_and_layer_transform_normals,
+                dim=n,
+                inputs=[
+                    visuals.get_points(rm),
+                    visuals.get_normals(rm),
+                    self.world_offsets,
+                    rm.world,
+                    self.layer.xform,
+                ],
+                outputs=[points, normals],
+                device=self.device,
+            )
+            self._log_deformable_visual_mesh(
+                name,
+                points,
+                rm.indices,
+                normals=normals,
+                uvs=rm.uvs,
+                texture=rm.texture,
+                hidden=False,
+                backface_culling=False,
+            )
 
     def _log_particles(self, state: newton.State):
         if self.model.particle_count:
