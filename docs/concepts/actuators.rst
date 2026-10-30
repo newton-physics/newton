@@ -169,6 +169,102 @@ reusable from a custom simulator or test harness:
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
 
 
+Actuator views
+--------------
+
+:class:`newton.selection.ActuatorView` selects global velocity DOFs for parameter and simulation
+array access without a :class:`newton.Model`. Pass the current state or control
+object to each attribute operation:
+
+.. testcode:: actuator-usage
+
+   from newton.selection import ActuatorView
+
+   selected_dofs = wp.array([[0]], dtype=int)
+   view = ActuatorView([actuator], dof_indices=selected_dofs)
+   limits = view.get_actuator_parameter("max_effort", actuator.clamping[0])
+   view.set_attribute("joint_target_q", sim_control, [[0.5]])
+   q = view.get_attribute("joint_q", sim_state)
+
+``dof_indices`` defines the selection's DOFs, order, and shape. It defaults to
+the sole actuator's indices.
+
+Parameter access follows ``get_actuator_parameter(name, component)`` and
+``set_actuator_parameter(name, component, values, *, mask=None)``. Pass the component
+object, such as ``actuator.drive``, ``actuator.delay`` or ``actuator.clamping[0]``.
+The view finds the first owner by exact object identity among the current components of
+the retained actuators. Shared components must map parameter entries to the same
+DOFs across their owners. A component with no owner raises :class:`ValueError`.
+The setter's Boolean mask
+selects the first selection axis, or the first two axes of a three-axis
+selection.
+
+Parameter and simulation attribute arrays store one Warp element per entry,
+with shape ``(N,)``. Results have shape ``selected_dofs.shape`` and preserve
+the element type, including Warp vectors and matrices. The view retains the
+supplied ``dof_indices`` array, including its shape and order. The supplied
+actuators' ``indices`` define membership: ``-1`` and selected DOFs outside
+their union are padding. Padded slots read as zero and are ignored on writes.
+Parameter access also returns zero and skips writes for DOFs not driven by the
+component's actuator.
+:meth:`newton.selection.ActuatorView.get_actuator_dof_mapping` exposes the corresponding compact
+actuator-entry indices. :meth:`newton.selection.ArticulationView.get_dof_indices`
+returns the DOF indices of an articulation selection in this layout.
+
+For actuators registered on a Newton model, :class:`newton.selection.ArticulationView`
+also provides ``get_actuator_parameter(name, component)`` and
+``set_actuator_parameter(name, component, values, *, mask=None)``. These overloads
+infer the first owner from the model's actuators, with the same requirement for shared components, and retain
+``(world, articulation, DOF)`` axes. Pass ``mask`` by keyword,
+with shape ``(world_count,)`` or ``(world_count, count_per_world)``.
+
+.. deprecated:: 1.8
+
+   The explicit-owner overloads
+   ``get_actuator_parameter(actuator, component, name)`` and
+   ``set_actuator_parameter(actuator, component, name, values, mask=None)``
+   retain the legacy ``(world, articulation * DOF)`` layout and
+   per-world masks, and emit :class:`~newton.exceptions.NewtonDeprecationWarning`.
+   To migrate, omit the ``actuator`` argument, pass ``name`` before ``component``,
+   reshape flattened value buffers to retain the articulation axis, and pass
+   ``mask`` by keyword. External actuators not registered on the model can use
+   :class:`newton.selection.ActuatorView` directly.
+
+.. _actuator-view-frequencies:
+
+Simulation attributes follow ``get_attribute(name, source)`` and
+``set_attribute(name, target, values, *, mask=None)``. Frequencies come from
+``source.get_attribute_frequency(name)``, falling back to built-in
+:class:`newton.Model` declarations. Metadata lookup normalizes dotted paths to
+colons. Unsupported frequencies, including bodies, raise :class:`AttributeError`.
+
+For ``JOINT_DOF``, candidate mappings come from the included actuators'
+``indices`` and ``effort_indices``; for ``JOINT_COORD``, from ``pos_indices``
+and ``target_pos_indices``. The view projects these mappings onto the DOF
+selection during construction, considering only DOFs driven by the supplied
+actuators. When candidates agree on those DOFs, their common mapping serves
+every attribute with that frequency. When they differ, all attribute reads
+and writes for that frequency raise :class:`AttributeError`.
+
+``JOINT`` arrays require ``source.joint_qd_start`` and repeat the owning joint's
+attribute value for each selected DOF with an actuator entry. All results
+retain the DOF selection axes. Writes with repeated target indices among
+these selected DOFs are rejected.
+
+Custom attributes require ``source.get_attribute_frequency(name)`` to supply
+their frequency.
+
+Follow the read-and-update pattern in :ref:`selection-api`: clone a getter
+result before editing it, then use the setter to write the changes. Values
+retain the full view shape, even when the mask selects only part of the
+selection.
+
+Construct views and prepare joint-frequency access outside CUDA graph capture.
+DOF and actuator indices and ``joint_qd_start`` tables must remain unchanged
+and must not alias writable data.
+Subsequent calls can use replacement state and control arrays; captured graphs
+retain the arrays bound during capture.
+
 .. _stateful-actuators:
 
 Stateful Actuators

@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import types
 import unittest
+import warnings
 import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -42,6 +43,7 @@ from newton.actuators import (
     JointSpaceResponse,
     parse_actuator_prim,
 )
+from newton.exceptions import NewtonDeprecationWarning
 from newton.selection import ArticulationView
 
 try:
@@ -4870,27 +4872,71 @@ class TestActuatorSelectionAPI(unittest.TestCase):
 
         actuator = model.actuators[0]
 
-        kp_values = joint_view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy().copy()
+        kp_values = joint_view.get_actuator_parameter("kp", actuator.drive).numpy().copy()
 
         if use_multiple_artics_per_view:
-            self.assertEqual(kp_values.shape, (num_worlds, 2))
-            np.testing.assert_array_almost_equal(kp_values, [[300.0, 300.0]] * num_worlds)
+            self.assertEqual(kp_values.shape, (num_worlds, 2, 1))
+            np.testing.assert_array_almost_equal(kp_values, [[[300.0], [300.0]]] * num_worlds)
         else:
-            self.assertEqual(kp_values.shape, (num_worlds, 1))
-            np.testing.assert_array_almost_equal(kp_values, [[300.0]] * num_worlds)
+            self.assertEqual(kp_values.shape, (num_worlds, 1, 1))
+            np.testing.assert_array_almost_equal(kp_values, [[[300.0]]] * num_worlds)
+
+        if use_multiple_artics_per_view and use_mask:
+            legacy_getters = (
+                lambda: joint_view.get_actuator_parameter(actuator, actuator.drive, "kp"),
+                lambda: joint_view.get_actuator_parameter(actuator, component=actuator.drive, name="kp"),
+                lambda: joint_view.get_actuator_parameter(actuator=actuator, component=actuator.drive, name="kp"),
+            )
+            for getter in legacy_getters:
+                with self.assertWarnsRegex(NewtonDeprecationWarning, "deprecated") as warning:
+                    legacy = getter()
+                self.assertEqual(warning.filename, __file__)
+                self.assertEqual(legacy.shape, (num_worlds, 2))
+                np.testing.assert_array_equal(legacy.numpy(), kp_values.reshape(num_worlds, 2))
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", NewtonDeprecationWarning)
+                np.testing.assert_array_equal(
+                    joint_view.get_actuator_parameter(component=actuator.drive, name="kp").numpy(), kp_values
+                )
 
         val = 1000.0
-        for world_idx in range(kp_values.shape[0]):
-            for dof_idx in range(kp_values.shape[1]):
-                kp_values[world_idx, dof_idx] = val
-                val += 100.0
+        for index in np.ndindex(kp_values.shape):
+            kp_values[index] = val
+            val += 100.0
 
         mask = None
         if use_mask:
             mask = wp.array([False, True, False], dtype=bool, device=model.device)
 
-        wp_kp = wp.array(kp_values, dtype=float, device=model.device)
-        joint_view.set_actuator_parameter(actuator, actuator.drive, "kp", wp_kp, mask=mask)
+        wp_kp = wp.array(np.repeat(kp_values, 2, axis=2), dtype=float, device=model.device)[:, :, ::2]
+        joint_view.set_actuator_parameter("kp", actuator.drive, wp_kp, mask=mask)
+        if use_multiple_artics_per_view and use_mask:
+            legacy_values = wp_kp[:, :, 0]
+            legacy_setters = (
+                lambda: joint_view.set_actuator_parameter(actuator, actuator.drive, "kp", legacy_values, mask),
+                lambda: joint_view.set_actuator_parameter(
+                    actuator, actuator.drive, "kp", values=legacy_values, mask=mask
+                ),
+                lambda: joint_view.set_actuator_parameter(
+                    actuator=actuator,
+                    component=actuator.drive,
+                    name="kp",
+                    values=kp_values.reshape(-1).tolist(),
+                    mask=mask,
+                ),
+            )
+            for setter in legacy_setters:
+                with self.assertWarnsRegex(NewtonDeprecationWarning, "deprecated"):
+                    setter()
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", NewtonDeprecationWarning)
+                joint_view.set_actuator_parameter(component=actuator.drive, name="kp", values=wp_kp, mask=mask)
+            articulation_mask = wp.array(
+                [[False, False], [False, False], [False, True]], dtype=bool, device=model.device
+            )
+            with self.assertWarns(NewtonDeprecationWarning), self.assertRaisesRegex(ValueError, "mask shape"):
+                joint_view.set_actuator_parameter(actuator, actuator.drive, "kp", legacy_values, articulation_mask)
+            joint_view.set_actuator_parameter("kp", actuator.drive, wp_kp, mask=articulation_mask)
 
         expected_kp = []
         if use_mask:
@@ -4913,7 +4959,7 @@ class TestActuatorSelectionAPI(unittest.TestCase):
                     300.0,
                     100.0,
                     200.0,
-                    300.0,
+                    1500.0,
                 ]
             else:
                 expected_kp = [
@@ -5002,11 +5048,32 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         self.run_test_actuator_selection(use_mask=True, use_multiple_artics_per_view=True)
 
     def test_set_actuator_parameter_rejects_invalid_masks_before_launch(self):
+        """Reject invalid ownership, values and masks before modifying selected parameters."""
         actuator, view = self.build_actuator_view()
-        values = wp.ones((view.world_count, 1), dtype=wp.float32, device=view.device)
+        values = wp.ones((view.world_count, 1, 1), dtype=wp.float32, device=view.device)
+
+        with self.assertRaises(ValueError):
+            view.get_actuator_parameter("kp", object())
+        with self.assertRaises(ValueError):
+            view.set_actuator_parameter("kp", object(), values)
+        with self.assertRaises(TypeError):
+            view.set_actuator_parameter("kp", actuator.drive, values, [True, True])
+        with self.assertWarns(NewtonDeprecationWarning), self.assertRaisesRegex(ValueError, "values"):
+            view.set_actuator_parameter(actuator, actuator.drive, "kp", None)
+        np.testing.assert_array_equal(actuator.drive.kp.numpy(), [100.0, 100.0])
+        other = Actuator(indices=actuator.indices, drive=actuator.drive)
+        view.model.actuators.append(other)
+        try:
+            np.testing.assert_array_equal(view.get_actuator_parameter("kp", actuator.drive).numpy(), [[[100]], [[100]]])
+            view.set_actuator_parameter("kp", actuator.drive, values)
+            np.testing.assert_array_equal(actuator.drive.kp.numpy(), [1, 1])
+            view.set_actuator_parameter("kp", actuator.drive, np.full(values.shape, 100.0))
+        finally:
+            view.model.actuators.pop()
+        np.testing.assert_array_equal(actuator.drive.kp.numpy(), [100.0, 100.0])
 
         invalid_masks = (
-            (wp.ones((view.world_count, 1), dtype=wp.bool, device=view.device), "mask shape"),
+            (wp.ones((view.world_count, 2), dtype=wp.bool, device=view.device), "mask with shape"),
             (wp.ones(view.world_count, dtype=wp.int32, device=view.device), "Boolean mask"),
         )
         if wp.is_cuda_available():
@@ -5017,8 +5084,21 @@ class TestActuatorSelectionAPI(unittest.TestCase):
             with self.subTest(shape=mask.shape, dtype=mask.dtype, device=mask.device):
                 with patch.object(wp, "launch") as launch:
                     with self.assertRaisesRegex(ValueError, message):
-                        view.set_actuator_parameter(actuator, actuator.drive, "kp", values, mask=mask)
+                        view.set_actuator_parameter("kp", actuator.drive, values, mask=mask)
                     launch.assert_not_called()
+
+        malformed_calls = {
+            "values as name": lambda: view.set_actuator_parameter("kp", actuator.drive, name=values),
+            "keyword legacy names": lambda: view.set_actuator_parameter(
+                actuator=actuator.drive, component="kp", name=values
+            ),
+            "duplicate values": lambda: view.set_actuator_parameter("kp", actuator.drive, values, values=values),
+        }
+        for label, call in malformed_calls.items():
+            with self.subTest(malformed_call=label):
+                with self.assertRaises(TypeError):
+                    call()
+                np.testing.assert_array_equal(actuator.drive.kp.numpy(), [100.0, 100.0])
 
     def test_selection_api_updates_implicit_solve(self):
         """Gain writes reach the installed implicit solve, through either write path.
@@ -5048,8 +5128,10 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         )
 
         view = ArticulationView(model, "*", verbose=False)
-        np.testing.assert_allclose(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), [[kp1]])
-        view.set_actuator_parameter(actuator, actuator.drive, "kp", wp.array([[kp2]], dtype=float, device=device))
+        with self.assertWarns(NewtonDeprecationWarning):
+            np.testing.assert_allclose(view.get_actuator_parameter(actuator, actuator.drive, "kp").numpy(), [[kp1]])
+        with self.assertWarns(NewtonDeprecationWarning):
+            view.set_actuator_parameter(actuator, actuator.drive, "kp", wp.array([[kp2]], dtype=float, device=device))
         np.testing.assert_allclose(actuator.drive.kp.numpy(), [kp2])
 
         control.joint_f.zero_()
@@ -5066,6 +5148,19 @@ class TestActuatorSelectionAPI(unittest.TestCase):
         _refresh_and_step(actuator, response, state, control, h)
         expected = _expected_implicit_pd(model, state, kp1, kd_val, target, h)
         self.assertAlmostEqual(control.joint_f.numpy()[0], expected, delta=abs(expected) * 1e-4)
+
+    def test_get_actuator_parameter_rejects_malformed_calls(self):
+        """Reject reads matching neither overload instead of reinterpreting their operands."""
+        actuator, view = self.build_actuator_view()
+
+        malformed_calls = {
+            "extra operand": lambda: view.get_actuator_parameter("kp", actuator.drive, "kd"),
+            "keyword legacy names": lambda: view.get_actuator_parameter(actuator=actuator.drive, component="kp"),
+        }
+        for label, call in malformed_calls.items():
+            with self.subTest(malformed_call=label):
+                with self.assertRaises(TypeError):
+                    call()
 
 
 # ---------------------------------------------------------------------------
