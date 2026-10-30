@@ -142,7 +142,7 @@ The real call tree, with the control flow written out:
              for colour in particle colours:
                  accumulate attachment, body-particle contact, spring and self-contact terms
                  solve_elasticity            (3x3 per particle: inertia + membrane + bending + volumetric)
-                 DAT truncation of the accumulated displacement
+                 DAT: planar truncation per pair, then the radius cap
      _finalize_rigid_bodies     -> update_body_velocity
      _finalize_particles        -> update_velocity             v = (x_new - x_old) / dt
 
@@ -386,20 +386,34 @@ Penetration-free truncation (DAT)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Self-contact and rigid-soft contact are penalty energies, so a large step
-could jump through a surface between two detections. The Divide and Truncate scheme (DAT) prevents that.
-After each detection, every vertex receives a **motion budget**: the relaxation
-factor ``dat_conservative_bound_relaxation`` (default 0.85) times the nearest
-detected distance among its own elements, capped at the detection query radius
-(``compute_particle_conservative_bound``). Between two detections, the
-displacement accumulated since the last detection may not exceed that budget;
-the solver scales it down in every direction when it would
-(``apply_conservative_bound_truncation``, isotropic truncation). For each
-detected vertex-triangle or edge-edge pair a division plane is placed between
-the two primitives, and each side keeps its own side of the plane
-(``apply_planar_truncation_parallel_by_collision``). The solver-level budget
-between detections is one half of the relaxation factor times the query radius,
-one half per side. The same scheme can be enabled for rigid-soft contacts with
-``rigid_soft_enable_dat``. :ref:`vbd-contact-handling` illustrates the planes.
+could jump through a surface between two detections. The Divide and Truncate
+scheme (DAT) prevents that. It works on the displacement each vertex has
+accumulated since the last detection and has two distinct parts
+(``_penetration_free_truncation``).
+
+**Planar truncation** acts per detected vertex-triangle or edge-edge pair
+(``apply_planar_truncation_parallel_by_collision``). At the detection-time
+positions a certified separating plane is found and placed between the two
+primitives; it splits the gap in proportion to how far each side wants to move
+toward the other, and each side keeps at least 5 percent of the gap
+(``place_dat_division_plane``). Each vertex of the pair receives a factor
+:math:`t \le 1` so that its straight trajectory stays on its own side of the
+plane, scaled by ``dat_conservative_bound_relaxation``; motion away from the
+plane or along it passes untouched (``planar_truncation_t``). A vertex in
+several pairs keeps the smallest factor. A pair whose primitives already
+intersect at detection time has no strict separator and is left unconstrained
+in that pass.
+
+**Radius truncation** acts on every particle (``apply_truncation_ts``). After
+the planar factor is applied, the length of the accumulated displacement is
+capped at one half of ``dat_conservative_bound_relaxation`` times the query
+radius, isotropically. Two primitives farther apart than the query radius at
+detection therefore cannot meet before the next detection.
+
+The same scheme can be enabled for rigid-soft contacts with
+``rigid_soft_enable_dat``; rigid poses are then truncated against the same
+planes and the budget is the smaller of the two. :ref:`vbd-contact-handling`
+describes both parts for tuning and illustrates the planes.
 
 The guarantee has a price: a vertex cannot move faster than about one motion
 budget per detection cycle. The motion that the truncation removes is called
