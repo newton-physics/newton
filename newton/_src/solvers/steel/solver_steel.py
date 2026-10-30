@@ -6155,8 +6155,8 @@ class SolverSteel(SolverBase):
         finally:
             self._profile_stage(None)
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
-            # Rows are built only for articulated models; without joints every contact reports zero.
-            inv_dt = 1.0 / dt if self.model.joint_count else 0.0
+            # Rows are built only for articulated models; without articulations every contact reports zero.
+            inv_dt = 1.0 / dt if self.model.articulation_count else 0.0
             wp.launch(
                 compute_contact_spatial_force_from_impulses,
                 dim=observables.contact_f.shape[0],
@@ -6200,7 +6200,7 @@ class SolverSteel(SolverBase):
                 outputs=[state_out.body_q, state_out.body_qd],
                 device=model.device,
             )
-        if not model.joint_count:
+        if not model.articulation_count:
             self._step += 1
             return state_out
         wp.launch(

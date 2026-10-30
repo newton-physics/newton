@@ -3668,6 +3668,32 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         np.testing.assert_array_equal(state_out.body_q.numpy()[body], body_q[body])
         np.testing.assert_array_equal(state_out.body_qd.numpy()[body], body_qd[body])
 
+    def test_model_without_articulations_publishes_its_prescribed_state(self):
+        """Pass bodies through a step of a model whose only joint is a standalone world-root joint."""
+        builder = newton.ModelBuilder()
+        root = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.5)))
+        builder.add_shape_box(root, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_joint_fixed(parent=-1, child=root)
+        body = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.69)), is_kinematic=True)
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        model = builder.finalize(device="cpu")
+        self.assertEqual((model.joint_count, model.articulation_count), (1, 0))
+        solver = SolverSteel(model, solve_mode="split")
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
+        state_in, state_out = model.state(), model.state()
+        body_q, body_qd = state_in.body_q.numpy(), state_in.body_qd.numpy()
+        body_qd[root] = self.PRESCRIBED_QD
+        body_qd[body] = -np.array(self.PRESCRIBED_QD)
+        state_in.body_qd.assign(body_qd)
+        pipeline.collide(state_in, contacts)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+        solver.step(state_in, state_out, None, contacts, DEFAULT_DT, observables=observables)
+        np.testing.assert_array_equal(state_out.body_q.numpy(), body_q)
+        np.testing.assert_array_equal(state_out.body_qd.numpy(), body_qd)
+        np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
+
 
 class TestSteelPairedResponse(unittest.TestCase):
     @unittest.skipUnless(wp.is_cuda_available(), "paired response ownership requires CUDA")
