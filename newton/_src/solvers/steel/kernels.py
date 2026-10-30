@@ -4240,11 +4240,27 @@ def prescribed_contact_velocity(
     """Return one prescribed articulation's signed contact-point velocity."""
     value = float(0.0)
     if body >= 0 and art >= 0 and prescribed_articulation[art] != 0:
+        value = sign * contact_point_velocity(body, art, point_world, direction, articulation_origin, body_v_s)
+    return value
+
+
+@wp.func
+def contact_point_velocity(
+    body: int,
+    art: int,
+    point_world: wp.vec3,
+    direction: wp.vec3,
+    articulation_origin: wp.array[wp.vec3],
+    body_v_s: wp.array[wp.spatial_vector],
+):
+    """Return the step-start velocity of a body's contact point along ``direction``; zero for the world."""
+    value = float(0.0)
+    if body >= 0 and art >= 0:
         twist = body_v_s[body]
-        linear = wp.spatial_top(twist)
-        angular = wp.spatial_bottom(twist)
-        point_velocity = linear + wp.cross(angular, point_world - articulation_origin[art])
-        value = sign * wp.dot(direction, point_velocity)
+        point_velocity = wp.spatial_top(twist) + wp.cross(
+            wp.spatial_bottom(twist), point_world - articulation_origin[art]
+        )
+        value = wp.dot(direction, point_velocity)
     return value
 
 
@@ -4329,20 +4345,44 @@ def mixed_contact_restitution(
 
 
 @wp.func
+def contact_rebound_velocity(
+    restitution: float,
+    body_a: int,
+    art_a: int,
+    body_b: int,
+    art_b: int,
+    point_a_world: wp.vec3,
+    point_b_world: wp.vec3,
+    normal: wp.vec3,
+    articulation_origin: wp.array[wp.vec3],
+    body_v_s: wp.array[wp.spatial_vector],
+    restitution_velocity_threshold: float,
+):
+    """Return the separating speed ``-e * u_start`` a contact closing at ``u_start`` must leave with, else zero.
+
+    ``u_start`` is the step-start relative normal velocity at the normal row's points, so this step's forces
+    neither qualify an impact nor enlarge its rebound.
+    """
+    if restitution <= 0.0:
+        return 0.0
+    start_velocity = contact_point_velocity(
+        body_a, art_a, point_a_world, normal, articulation_origin, body_v_s
+    ) - contact_point_velocity(body_b, art_b, point_b_world, normal, articulation_origin, body_v_s)
+    if start_velocity >= -restitution_velocity_threshold:
+        return 0.0
+    return -restitution * start_velocity
+
+
+@wp.func
 def contact_restitution_fires(
     phi: float,
     relative_incident: float,
     dt: float,
-    restitution_velocity_threshold: float,
 ):
-    """Return whether an incident impact qualifies for a rebound target.
+    """Return whether a contact with a rebound target touches the surface or is predicted to reach it this step.
 
-    Fires only for a closing contact faster than the threshold that is already at the
-    surface or is predicted to reach it during the step; the end-gap slop absorbs
-    float32 residuals of rows that land exactly at contact.
+    The end-gap slop absorbs float32 residuals on rows that land exactly at contact.
     """
-    if relative_incident >= -restitution_velocity_threshold:
-        return False
     if phi <= _CONTACT_END_GAP_SLOP:
         return True
     return phi + dt * relative_incident <= _CONTACT_END_GAP_SLOP
@@ -4419,13 +4459,14 @@ def prepare_world_contact_rows(
     friction_patches: FrictionPatches,
     contact_shared_anchor: int,
     contact_friction_shared_anchor: int,
+    restitution_velocity_threshold: float,
     # outputs
     world_row_type: wp.array2d[int],
     world_row_parent: wp.array2d[int],
     world_row_mu: wp.array2d[float],
     world_phi: wp.array2d[float],
     world_target_velocity: wp.array2d[float],
-    world_row_restitution: wp.array2d[float],
+    world_row_rebound_velocity: wp.array2d[float],
 ):
     """Write the metadata of every dense contact's normal row and, when allocated, its friction rows.
 
@@ -4465,9 +4506,21 @@ def prepare_world_contact_rows(
         world_row_parent[world, slot] = -1
         world_row_mu[world, slot] = mu
         world_phi[world, slot] = phi
-        world_row_restitution[world, slot] = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
         point_a_normal, point_b_normal = contact_row_points(
             c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+        )
+        world_row_rebound_velocity[world, slot] = contact_rebound_velocity(
+            mixed_contact_restitution(shape_a, shape_b, shape_material_restitution),
+            body_a,
+            art_a,
+            body_b,
+            art_b,
+            point_a_normal,
+            point_b_normal,
+            normal,
+            articulation_origin,
+            body_v_s,
+            restitution_velocity_threshold,
         )
         world_target_velocity[world, slot] = prescribed_relative_contact_target(
             body_a,
@@ -4497,7 +4550,7 @@ def prepare_world_contact_rows(
             world_row_parent[world, row] = slot
             world_row_mu[world, row] = mu
             world_phi[world, row] = friction_patches.phi[c][k]
-            world_row_restitution[world, row] = 0.0
+            world_row_rebound_velocity[world, row] = 0.0
             world_target_velocity[world, row] = prescribed_relative_contact_target(
                 body_a,
                 art_a,
@@ -5024,12 +5077,11 @@ def apply_world_contact_restitution(
     world_phi: wp.array2d[float],
     world_row_type: wp.array2d[int],
     world_target_velocity: wp.array2d[float],
-    world_row_restitution: wp.array2d[float],
+    world_row_rebound_velocity: wp.array2d[float],
     world_incident_velocity: wp.array[float],
     world_dof_indices: wp.array2d[int],
     world_J: wp.array3d[float],
     dt: float,
-    restitution_velocity_threshold: float,
     write_row_w: int,
     # in/out
     world_rhs: wp.array2d[float],
@@ -5037,9 +5089,9 @@ def apply_world_contact_restitution(
 ):
     """Replace the bias of an impacting dense contact by its rebound target.
 
-    The incident velocity is the unconstrained velocity of the step. A contact whose
-    rebound fires (see :func:`contact_restitution_fires`) gets ``rhs = -target +
-    e * u_incident``, solved rigidly (weight 1); the solve adds the live ``J v``.
+    The incident velocity is the unconstrained velocity of the step. A contact with a
+    rebound velocity that fires (see :func:`contact_restitution_fires`) gets ``rhs =
+    -target - rebound``, solved rigidly (weight 1); the solve adds the live ``J v``.
     """
     tid = wp.tid()
     world = tid // max_constraints
@@ -5048,8 +5100,8 @@ def apply_world_contact_restitution(
         return
     if world_row_type[world, i] != PGS_CONSTRAINT_TYPE_CONTACT:
         return
-    restitution = world_row_restitution[world, i]
-    if restitution <= 0.0:
+    rebound_velocity = world_row_rebound_velocity[world, i]
+    if rebound_velocity <= 0.0:
         return
 
     phi = world_phi[world, i]
@@ -5058,8 +5110,8 @@ def apply_world_contact_restitution(
         world_contact_row_dot(world_dof_count, world_dof_indices, world_J, world_incident_velocity, world, i)
         - target_vel
     )
-    if contact_restitution_fires(phi, relative_incident, dt, restitution_velocity_threshold):
-        world_rhs[world, i] = -target_vel + restitution * relative_incident
+    if contact_restitution_fires(phi, relative_incident, dt):
+        world_rhs[world, i] = -target_vel - rebound_velocity
         if write_row_w != 0:
             world_row_w[world, i] = 1.0
 
@@ -5072,13 +5124,12 @@ def compute_world_contact_velocity_bias(
     world_phi: wp.array2d[float],
     world_row_type: wp.array2d[int],
     world_target_velocity: wp.array2d[float],
-    world_row_restitution: wp.array2d[float],
+    world_row_rebound_velocity: wp.array2d[float],
     world_position_velocity: wp.array[float],
     world_incident_velocity: wp.array[float],
     world_dof_indices: wp.array2d[int],
     world_J: wp.array3d[float],
     dt: float,
-    restitution_velocity_threshold: float,
     # outputs
     world_rhs: wp.array2d[float],
 ):
@@ -5102,17 +5153,17 @@ def compute_world_contact_velocity_bias(
     rhs = -target_vel
 
     if row_type == PGS_CONSTRAINT_TYPE_CONTACT:
-        restitution = world_row_restitution[world, i]
+        rebound_velocity = world_row_rebound_velocity[world, i]
         relative_incident = float(0.0)
         bounce = False
-        if restitution > 0.0:
+        if rebound_velocity > 0.0:
             relative_incident = (
                 world_contact_row_dot(world_dof_count, world_dof_indices, world_J, world_incident_velocity, world, i)
                 - target_vel
             )
-            bounce = contact_restitution_fires(phi, relative_incident, dt, restitution_velocity_threshold)
+            bounce = contact_restitution_fires(phi, relative_incident, dt)
         if bounce:
-            rhs += restitution * relative_incident
+            rhs -= rebound_velocity
         elif phi > 0.0:
             jv_position = world_contact_row_dot(
                 world_dof_count, world_dof_indices, world_J, world_position_velocity, world, i
@@ -5696,6 +5747,7 @@ def _build_mf_contact_row(
     friction_anchor_beta: float,
     contact_shared_anchor: int,
     contact_friction_shared_anchor: int,
+    restitution_velocity_threshold: float,
     # outputs
     mf_body_a: wp.array2d[int],
     mf_body_b: wp.array2d[int],
@@ -5706,7 +5758,7 @@ def _build_mf_contact_row(
     mf_row_mu: wp.array2d[float],
     mf_phi: wp.array2d[float],
     mf_target_velocity: wp.array2d[float],
-    mf_row_restitution: wp.array2d[float],
+    mf_row_rebound_velocity: wp.array2d[float],
 ):
     """Build the normal row and, when allocated, the two friction rows of a free-body contact.
 
@@ -5746,7 +5798,22 @@ def _build_mf_contact_row(
     )
     phi = wp.dot(normal, point_a_world - point_b_world)
     mu = _contact_mu(shape_a, shape_b, shape_material_mu)
-    restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
+    point_a_normal, point_b_normal = contact_row_points(
+        c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+    )
+    rebound_velocity = contact_rebound_velocity(
+        mixed_contact_restitution(shape_a, shape_b, shape_material_restitution),
+        body_a,
+        contact_art_a[c],
+        body_b,
+        contact_art_b[c],
+        point_a_normal,
+        point_b_normal,
+        normal,
+        articulation_origin,
+        body_v_s,
+        restitution_velocity_threshold,
+    )
     t0, t1 = contact_tangent_basis(normal)
 
     for row_offset in range(contact_slots_needed[c]):
@@ -5790,12 +5857,12 @@ def _build_mf_contact_row(
             mf_row_type[world, row_idx] = PGS_CONSTRAINT_TYPE_CONTACT
             mf_row_parent[world, row_idx] = -1
             mf_phi[world, row_idx] = phi
-            mf_row_restitution[world, row_idx] = restitution
+            mf_row_rebound_velocity[world, row_idx] = rebound_velocity
         else:
             mf_row_type[world, row_idx] = PGS_CONSTRAINT_TYPE_FRICTION
             mf_row_parent[world, row_idx] = slot
             mf_phi[world, row_idx] = friction_anchor_beta * friction_patches.phi[c][row_offset - 1]
-            mf_row_restitution[world, row_idx] = 0.0
+            mf_row_rebound_velocity[world, row_idx] = 0.0
         if has_target_velocity != 0:
             mf_target_velocity[world, row_idx] = prescribed_relative_contact_target(
                 body_a,
@@ -5841,6 +5908,7 @@ def build_mf_contact_rows(
     friction_anchor_beta: float,
     contact_shared_anchor: int,
     contact_friction_shared_anchor: int,
+    restitution_velocity_threshold: float,
     # outputs
     mf_body_a: wp.array2d[int],
     mf_body_b: wp.array2d[int],
@@ -5851,7 +5919,7 @@ def build_mf_contact_rows(
     mf_row_mu: wp.array2d[float],
     mf_phi: wp.array2d[float],
     mf_target_velocity: wp.array2d[float],
-    mf_row_restitution: wp.array2d[float],
+    mf_row_rebound_velocity: wp.array2d[float],
 ):
     """Build the free-body contact rows with a grid-stride loop."""
     total_contacts = wp.min(contact_count[0], contact_point0.shape[0])
@@ -5884,6 +5952,7 @@ def build_mf_contact_rows(
             friction_anchor_beta,
             contact_shared_anchor,
             contact_friction_shared_anchor,
+            restitution_velocity_threshold,
             mf_body_a,
             mf_body_b,
             mf_J_a,
@@ -5893,7 +5962,7 @@ def build_mf_contact_rows(
             mf_row_mu,
             mf_phi,
             mf_target_velocity,
-            mf_row_restitution,
+            mf_row_rebound_velocity,
         )
 
 
@@ -6273,7 +6342,7 @@ def compute_mf_effective_mass_and_rhs(
     mf_phi: wp.array2d[float],
     mf_row_type: wp.array2d[int],
     mf_target_velocity: wp.array2d[float],
-    mf_row_restitution: wp.array2d[float],
+    mf_row_rebound_velocity: wp.array2d[float],
     has_target_velocity: int,
     body_to_articulation: wp.array[int],
     articulation_dof_start: wp.array[int],
@@ -6284,7 +6353,6 @@ def compute_mf_effective_mass_and_rhs(
     contact_w: float,
     dt: float,
     contact_speculative_scale: float,
-    restitution_velocity_threshold: float,
     mf_max_constraints: int,
     # outputs
     mf_eff_mass_inv: wp.array2d[float],
@@ -6371,8 +6439,8 @@ def compute_mf_effective_mass_and_rhs(
                 bias = wp.max(bias, -max_depen)
         else:
             bias = contact_speculative_scale * phi_val / dt
-        restitution = mf_row_restitution[world, i]
-        if restitution > 0.0:
+        rebound_velocity = mf_row_rebound_velocity[world, i]
+        if rebound_velocity > 0.0:
             relative_incident = float(0.0)
             if ba >= 0:
                 dof_start = articulation_dof_start[body_to_articulation[ba]]
@@ -6384,8 +6452,8 @@ def compute_mf_effective_mass_and_rhs(
                     relative_incident += mf_J_b[world, i, k] * incident_velocity[dof_start + k]
             if has_target_velocity != 0:
                 relative_incident -= mf_target_velocity[world, i]
-            if contact_restitution_fires(phi_val, relative_incident, dt, restitution_velocity_threshold):
-                bias = restitution * relative_incident
+            if contact_restitution_fires(phi_val, relative_incident, dt):
+                bias = -rebound_velocity
                 # An impact is impulsive, not a spring: keep the rebound exact.
                 row_w = 1.0
     elif rtype == PGS_CONSTRAINT_TYPE_FRICTION:
@@ -6411,12 +6479,11 @@ def compute_mf_velocity_rhs(
     mf_phi: wp.array2d[float],
     mf_row_type: wp.array2d[int],
     mf_target_velocity: wp.array2d[float],
-    mf_row_restitution: wp.array2d[float],
+    mf_row_rebound_velocity: wp.array2d[float],
     has_target_velocity: int,
     dt: float,
     position_velocity: wp.array[float],
     incident_velocity: wp.array[float],
-    restitution_velocity_threshold: float,
     mf_max_constraints: int,
     # outputs
     mf_rhs: wp.array2d[float],
@@ -6443,17 +6510,17 @@ def compute_mf_velocity_rhs(
         phi_val = mf_phi[world, i]
         dof_a = mf_dof_a[world, i]
         dof_b = mf_dof_b[world, i]
-        restitution = mf_row_restitution[world, i]
+        rebound_velocity = mf_row_rebound_velocity[world, i]
         relative_incident = float(0.0)
         bounce = False
-        if restitution > 0.0:
+        if rebound_velocity > 0.0:
             relative_incident = (
                 mf_contact_row_dot(mf_J_a, mf_J_b, dof_a, dof_b, world_dof_indices, incident_velocity, world, i)
                 - target_velocity
             )
-            bounce = contact_restitution_fires(phi_val, relative_incident, dt, restitution_velocity_threshold)
+            bounce = contact_restitution_fires(phi_val, relative_incident, dt)
         if bounce:
-            bias = restitution * relative_incident
+            bias = -rebound_velocity
         elif phi_val > 0.0:
             jv_position = mf_contact_row_dot(
                 mf_J_a, mf_J_b, dof_a, dof_b, world_dof_indices, position_velocity, world, i
@@ -7483,6 +7550,7 @@ def build_propagation_contact_rows(
     contact_friction_shared_anchor: int,
     friction_patches: FrictionPatches,
     friction_anchor_beta: float,
+    restitution_velocity_threshold: float,
     # outputs
     propagation_body_a: wp.array2d[int],
     propagation_body_b: wp.array2d[int],
@@ -7493,7 +7561,7 @@ def build_propagation_contact_rows(
     propagation_row_mu: wp.array2d[float],
     propagation_phi: wp.array2d[float],
     propagation_target_velocity: wp.array2d[float],
-    propagation_row_restitution: wp.array2d[float],
+    propagation_row_rebound_velocity: wp.array2d[float],
 ):
     """Build the body-space normal row and, when allocated, the two friction rows of every propagation contact.
 
@@ -7546,7 +7614,22 @@ def build_propagation_contact_rows(
         if response_body_b >= 0:
             com_b = wp.transform_point(body_q[response_body_b], body_com[response_body_b])
 
-        restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
+        point_a_normal, point_b_normal = contact_row_points(
+            c, 0, point_a_world, point_b_world, contact_shared_anchor, contact_friction_shared_anchor, friction_patches
+        )
+        rebound_velocity = contact_rebound_velocity(
+            mixed_contact_restitution(shape_a, shape_b, shape_material_restitution),
+            body_a,
+            art_a,
+            body_b,
+            art_b,
+            point_a_normal,
+            point_b_normal,
+            normal,
+            articulation_origin,
+            body_v_s,
+            restitution_velocity_threshold,
+        )
         base_rows = contact_base_rows(contact_slots_needed[c])
         if contact_slots_needed[c] > base_rows:
             # The step cleared its Jacobians.
@@ -7558,7 +7641,7 @@ def build_propagation_contact_rows(
             propagation_row_mu[world, spare] = 0.0
             propagation_phi[world, spare] = 0.0
             propagation_target_velocity[world, spare] = 0.0
-            propagation_row_restitution[world, spare] = 0.0
+            propagation_row_rebound_velocity[world, spare] = 0.0
         for row_offset in range(base_rows):
             row = slot + row_offset
             d = normal
@@ -7592,12 +7675,12 @@ def build_propagation_contact_rows(
                 propagation_row_type[world, row] = PGS_CONSTRAINT_TYPE_CONTACT
                 propagation_row_parent[world, row] = -1
                 propagation_phi[world, row] = phi
-                propagation_row_restitution[world, row] = restitution
+                propagation_row_rebound_velocity[world, row] = rebound_velocity
             else:
                 propagation_row_type[world, row] = PGS_CONSTRAINT_TYPE_FRICTION
                 propagation_row_parent[world, row] = slot
                 propagation_phi[world, row] = friction_anchor_beta * friction_patches.phi[c][row_offset - 1]
-                propagation_row_restitution[world, row] = 0.0
+                propagation_row_rebound_velocity[world, row] = 0.0
             propagation_target_velocity[world, row] = prescribed_relative_contact_target(
                 body_a,
                 art_a,
@@ -7732,7 +7815,7 @@ def compute_propagation_effective_mass_and_rhs(
     propagation_phi: wp.array2d[float],
     propagation_row_type: wp.array2d[int],
     propagation_target_velocity: wp.array2d[float],
-    propagation_row_restitution: wp.array2d[float],
+    propagation_row_rebound_velocity: wp.array2d[float],
     propagation_body_qd: wp.array2d[float],
     rigid_body_max_depenetration_velocity: wp.array[float],
     pgs_cfm: float,
@@ -7740,7 +7823,6 @@ def compute_propagation_effective_mass_and_rhs(
     contact_w: float,
     dt: float,
     contact_speculative_scale: float,
-    restitution_velocity_threshold: float,
     propagation_max_constraints: int,
     # outputs
     propagation_eff_mass_inv: wp.array2d[float],
@@ -7758,11 +7840,11 @@ def compute_propagation_effective_mass_and_rhs(
     response (mass splitting), the regularization fixed point the exact one. The bias follows the free-body
     rows: penetrating contacts get the Baumgarte term, bounded by the bodies' maximum
     depenetration velocity, and separated contacts may close ``contact_speculative_scale``
-    times their gap during the step. An impacting contact whose rebound fires gets its
-    restitution target, from the twists in ``propagation_body_qd`` (the unconstrained
-    velocity), which ``propagation_restitution_bias`` keeps for the velocity-only
-    iterations. Patch friction rows get their anchor bias. ``propagation_row_w`` receives
-    the regularization weight when regularization is on.
+    times their gap during the step. An impacting contact whose rebound fires, judged from
+    the twists in ``propagation_body_qd`` (the unconstrained velocity), gets its rebound
+    target, which ``propagation_restitution_bias`` keeps for the velocity-only iterations.
+    Patch friction rows get their anchor bias. ``propagation_row_w`` receives the
+    regularization weight when regularization is on.
     """
     tid = wp.tid()
     world = tid // propagation_max_constraints
@@ -7825,14 +7907,14 @@ def compute_propagation_effective_mass_and_rhs(
                 bias = wp.max(bias, -max_depen)
         else:
             bias = contact_speculative_scale * phi / dt
-        restitution = propagation_row_restitution[world, i]
-        if restitution > 0.0:
+        rebound_velocity = propagation_row_rebound_velocity[world, i]
+        if rebound_velocity > 0.0:
             relative_incident = (
                 propagation_contact_row_dot(propagation_J_a, propagation_J_b, propagation_body_qd, world, i, ba, bb)
                 - target_velocity
             )
-            if contact_restitution_fires(phi, relative_incident, dt, restitution_velocity_threshold):
-                bias = restitution * relative_incident
+            if contact_restitution_fires(phi, relative_incident, dt):
+                bias = -rebound_velocity
                 restitution_bias = bias
                 # An impact is impulsive, not a spring: keep the rebound exact.
                 row_w = 1.0
@@ -9534,7 +9616,7 @@ def apply_sparse_diagonal_contact_restitution(
     world_phi: wp.array2d[float],
     world_row_type: wp.array2d[int],
     world_target_velocity: wp.array2d[float],
-    world_row_restitution: wp.array2d[float],
+    world_row_rebound_velocity: wp.array2d[float],
     world_incident_velocity: wp.array[float],
     world_dof_indices: wp.array2d[int],
     dense_offsets: wp.array[int],
@@ -9544,7 +9626,6 @@ def apply_sparse_diagonal_contact_restitution(
     sparse_row_dof: wp.array3d[int],
     sparse_row_jy: wp.array3d[float],
     dt: float,
-    restitution_velocity_threshold: float,
     # in/out
     world_rhs: wp.array2d[float],
 ):
@@ -9557,8 +9638,8 @@ def apply_sparse_diagonal_contact_restitution(
     row = tid - world * max_constraints
     if row >= world_constraint_count[world] or world_row_type[world, row] != PGS_CONSTRAINT_TYPE_CONTACT:
         return
-    restitution = world_row_restitution[world, row]
-    if restitution <= 0.0:
+    rebound_velocity = world_row_rebound_velocity[world, row]
+    if rebound_velocity <= 0.0:
         return
     relative_incident = float(0.0)
     dense_offset = dense_offsets[world]
@@ -9575,8 +9656,8 @@ def apply_sparse_diagonal_contact_restitution(
                 relative_incident += sparse_row_jy[world, row, sparse_slot * 2] * world_incident_velocity[global_dof]
     target_vel = world_target_velocity[world, row]
     relative_incident -= target_vel
-    if contact_restitution_fires(world_phi[world, row], relative_incident, dt, restitution_velocity_threshold):
-        world_rhs[world, row] = -target_vel + restitution * relative_incident
+    if contact_restitution_fires(world_phi[world, row], relative_incident, dt):
+        world_rhs[world, row] = -target_vel - rebound_velocity
 
 
 @wp.kernel
@@ -9588,7 +9669,7 @@ def hinv_jt_par_row_contact_fallback(
     articulation_world_dof_offset: wp.array[int],
     world_constraint_count: wp.array[int],
     local_solve_owner: wp.array[int],
-    world_row_restitution: wp.array2d[float],
+    world_row_rebound_velocity: wp.array2d[float],
     n_dofs: int,
     n_arts: int,
     write_world: int,
@@ -9613,7 +9694,7 @@ def hinv_jt_par_row_contact_fallback(
             dof_offset = articulation_world_dof_offset[art]
             constraint = lane
             while constraint < constraint_count:
-                if world_row_restitution[world, constraint] > 0.0:
+                if world_row_rebound_velocity[world, constraint] > 0.0:
                     for i in range(n_dofs):
                         J_world[world, constraint, dof_offset + i] = J_group[group_index, constraint, i]
                 constraint += 32
