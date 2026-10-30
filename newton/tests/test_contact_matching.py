@@ -1369,6 +1369,109 @@ def test_sticky_self_contact_history_follows_world_and_buffer(test, device):
                 pipeline.collide(state, fresh.contacts(), soft_self_contact=True)
 
 
+def _add_pinned_square(builder, pos, rot=None):
+    builder.add_cloth_grid(
+        pos=wp.vec3(pos),
+        rot=rot or wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=1,
+        dim_y=1,
+        cell_x=0.1,
+        cell_y=0.1,
+        mass=0.0,
+        tri_ke=1.0e2,
+        tri_ka=1.0e2,
+        tri_kd=0.0,
+    )
+
+
+def _edge_anchor_slips(model, contacts, q):
+    """In-plane offset between the anchored points of each edge-edge pair, for pairs in a horizontal plane."""
+    info = contacts.soft_self_contact_data
+    edges = model.edge_indices.numpy()[:, 2:]
+    offsets = info.edge_colliding_edges_offsets.numpy()
+    counts = info.edge_colliding_edges_count.numpy()
+    pairs = info.edge_colliding_edges.numpy()
+    anchors = info.edge_colliding_edges_anchor.numpy()
+    slips = []
+    for e1 in range(model.edge_count):
+        for slot in range(offsets[e1], offsets[e1] + counts[e1]):
+            (p0, p1), (q0, q1) = q[edges[e1]], q[edges[pairs[2 * slot + 1]]]
+            s, t = anchors[slot]
+            slips.append(np.linalg.norm((p0 + s * (p1 - p0) - q0 - t * (q1 - q0))[:2]))
+    return np.array(slips)
+
+
+def test_sticky_self_contact_reset_reaches_both_worlds_of_a_pair(test, device):
+    """A masked reset restarts a pair between a world and the global entities when it selects either side.
+
+    One particle of world 0 hovers over a global cloth square and one global particle over a cloth
+    square of world 0, so each pair's vertex row belongs to one world and its triangle to the other.
+    """
+    world = newton.ModelBuilder()
+    world.add_particle(pos=wp.vec3(0.02, 0.07, 0.003), vel=wp.vec3(0.0), mass=1.0)
+    _add_pinned_square(world, (0.0, 1.0, 0.0))
+    builder = newton.ModelBuilder()
+    _add_pinned_square(builder, (0.0, 0.0, 0.0))
+    global_particle = builder.add_particle(pos=wp.vec3(0.02, 1.07, 0.003), vel=wp.vec3(0.0), mass=1.0)
+    world_particle = builder.particle_count
+    builder.add_world(world)
+    with wp.ScopedDevice(device):
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = _self_contact_pipeline(model)
+        contacts = pipeline.contacts()
+        particles = [world_particle, global_particle]
+
+        def anchor_x_at(x):
+            q = state.particle_q.numpy()
+            q[particles, 0] = x
+            state.particle_q.assign(q)
+            pipeline.collide(state, contacts, soft_self_contact=True)
+            return [_vertex_anchor_x(model, contacts, [p]).max() for p in particles]
+
+        np.testing.assert_allclose(anchor_x_at(0.02), [0.02, 0.02], atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0201), [0.02, 0.02], atol=1.0e-7)
+        for world_mask, x in (((False, True), 0.0202), ((True, False), 0.0203)):
+            pipeline.reset_contact_matching(wp.array(world_mask, dtype=wp.bool, device=device))
+            np.testing.assert_allclose(anchor_x_at(x), [x, x], atol=1.0e-7)
+
+
+def test_sticky_self_contact_edge_reset_reaches_both_worlds_of_a_pair(test, device):
+    """A masked reset restarts an edge-edge pair between a world and the global entities from either side.
+
+    A cloth square of world 0 hovers 3 mm over a global one, turned 45 degrees so their edges cross.
+    Every edge-edge pair joins the two worlds, and each is stored in both edges' rows.
+    """
+    world = newton.ModelBuilder()
+    _add_pinned_square(
+        world, (0.05, 0.05 - 0.05 * np.sqrt(2.0), 0.003), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 4.0)
+    )
+    builder = newton.ModelBuilder()
+    _add_pinned_square(builder, (0.0, 0.0, 0.0))
+    world_particles = slice(builder.particle_count, None)
+    builder.add_world(world)
+    with wp.ScopedDevice(device):
+        model = builder.finalize(device=device)
+        state = model.state()
+        pipeline = _self_contact_pipeline(model)
+        contacts = pipeline.contacts()
+
+        def slips_after_shift(dx):
+            q = state.particle_q.numpy()
+            q[world_particles, 0] += dx
+            state.particle_q.assign(q)
+            pipeline.collide(state, contacts, soft_self_contact=True)
+            return _edge_anchor_slips(model, contacts, q)
+
+        test.assertGreater(slips_after_shift(0.0).size, 0)
+        np.testing.assert_allclose(slips_after_shift(1.0e-4), 1.0e-4, atol=1.0e-7)
+        for world_mask in ((False, True), (True, False)):
+            pipeline.reset_contact_matching(wp.array(world_mask, dtype=wp.bool, device=device))
+            np.testing.assert_allclose(slips_after_shift(1.0e-4), 0.0, atol=1.0e-7)
+            np.testing.assert_allclose(slips_after_shift(1.0e-4), 1.0e-4, atol=1.0e-7)
+
+
 @wp.kernel
 def _edge_edge_twist_slip_kernel(
     p: wp.array[wp.vec3], q: wp.array[wp.vec3], q_twisted: wp.array[wp.vec3], slip: wp.array[float]
@@ -1627,6 +1730,18 @@ add_function_test(
     TestContactMatchingSticky,
     "test_sticky_self_contact_history_follows_world_and_buffer",
     test_sticky_self_contact_history_follows_world_and_buffer,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_reset_reaches_both_worlds_of_a_pair",
+    test_sticky_self_contact_reset_reaches_both_worlds_of_a_pair,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_sticky_self_contact_edge_reset_reaches_both_worlds_of_a_pair",
+    test_sticky_self_contact_edge_reset_reaches_both_worlds_of_a_pair,
     devices=devices,
 )
 add_function_test(

@@ -116,7 +116,9 @@ def _replay_vertex_triangle_anchors_kernel(
     c = step_start_q[tri_indices[tri, 2]]
     anchor = vertex_triangle_anchor(p, a, b, c)
     prev_n = prev_count[v]
-    if reset_world_selected(particle_world[v], reset_world_mask, world_count):
+    if reset_world_selected(particle_world[v], reset_world_mask, world_count) or reset_world_selected(
+        particle_world[tri_indices[tri, 0]], reset_world_mask, world_count
+    ):
         prev_n = 0
     for j in range(offset, offset + prev_n):
         if prev_triangle[j] == tri:
@@ -155,7 +157,9 @@ def _replay_edge_edge_anchors_kernel(
     q1 = step_start_q[edge_indices[e2, 3]]
     anchor = edge_edge_anchor(p0, p1, q0, q1, parallel_epsilon)
     prev_n = prev_count[e1]
-    if reset_world_selected(particle_world[edge_indices[e1, 2]], reset_world_mask, world_count):
+    if reset_world_selected(particle_world[edge_indices[e1, 2]], reset_world_mask, world_count) or reset_world_selected(
+        particle_world[edge_indices[e2, 2]], reset_world_mask, world_count
+    ):
         prev_n = 0
     for j in range(offset, offset + prev_n):
         if prev_edge[j] == e2:
