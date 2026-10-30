@@ -14238,6 +14238,12 @@ class TestMuJoCoPerWorldMeshLayout(unittest.TestCase):
         template, scaled = _build_hull_world(5, offset=0.13), _build_hull_world(2, offset=-0.21)
         for shape in range(2):
             scaled.shape_scale[shape] = wp.vec3(1.2, 0.8, 1.1)
+        for world, s in ((template, 1.0), (scaled, 2.0)):
+            world.add_shape_sphere(0, radius=0.1 * s)
+            world.add_shape_capsule(0, radius=0.1 * s, half_height=0.2 * s)
+            world.add_shape_cylinder(0, radius=0.1 * s, half_height=0.2 * s)
+            world.add_shape_ellipsoid(0, rx=0.1 * s, ry=0.2 * s, rz=0.3 * s)
+            world.add_shape_box(0, hx=0.1 * s, hy=0.2 * s, hz=0.3 * s)
         worlds = [template, scaled, template]
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
@@ -14265,6 +14271,9 @@ class TestMuJoCoPerWorldMeshLayout(unittest.TestCase):
                 ref_shape = shape - first_shape + 1
                 ref_geom = np.flatnonzero(ref.mjc_geom_to_newton_shape.numpy()[0] == ref_shape)[0]
                 for field in ("geom_size", "geom_aabb", "geom_rbound", "geom_pos", "geom_quat"):
+                    # MuJoCo pads unused primitive size components; Newton leaves them zero.
+                    if field == "geom_size" and model.shape_type.numpy()[shape] != newton.GeoType.CONVEX_MESH:
+                        continue
                     np.testing.assert_allclose(
                         getattr(solver.mjw_model, field).numpy()[
                             world_index % getattr(solver.mjw_model, field).shape[0], geom
@@ -14296,6 +14305,20 @@ class TestMuJoCoPerWorldMeshLayout(unittest.TestCase):
                     rotation = np.asarray(wp.quat_to_matrix(wp.quat(*quat[1:], quat[0]))).reshape(3, 3)
                     tensors.append(rotation @ np.diag(diagonal) @ rotation.T)
                 np.testing.assert_allclose(tensors[0], tensors[1], atol=1.0e-6)
+
+    def test_primitive_bounds_with_equal_mesh_bounds(self):
+        """Keep per-world primitive bounds when distinct mesh assets compile to equal bounds."""
+        builder = newton.ModelBuilder()
+        # Exact offsets keep the recentered mesh bounds bitwise equal across worlds.
+        for offset, hx in ((0.0, 0.1), (0.5, 0.2)):
+            world = _build_hull_world(2, offset=offset)
+            world.add_shape_box(0, hx=hx, hy=hx, hz=hx)
+            builder.add_world(world)
+        solver = SolverMuJoCo(builder.finalize(), separate_worlds=True, use_mujoco_contacts=False)
+        self.assertEqual(solver.mjw_model.nmesh, 2)
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        box = list(solver.mj_model.geom_type).index(mujoco.mjtGeom.mjGEOM_BOX)
+        np.testing.assert_allclose(solver.mjw_model.geom_aabb.numpy()[:, box, 1], [[0.1] * 3, [0.2] * 3])
 
     def test_shared_collision_filters(self):
         """Preserve body exclusions and global contacts with unequal hull counts."""

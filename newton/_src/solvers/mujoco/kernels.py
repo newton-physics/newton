@@ -2283,6 +2283,11 @@ def update_geom_properties_kernel(
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
     GEOM_TYPE_HFIELD: int,
+    GEOM_TYPE_SPHERE: int,
+    GEOM_TYPE_CAPSULE: int,
+    GEOM_TYPE_ELLIPSOID: int,
+    GEOM_TYPE_CYLINDER: int,
+    GEOM_TYPE_BOX: int,
     geom_dataid: wp.array2d[int],
     mesh_pos: wp.array[wp.vec3],
     mesh_quat: wp.array[wp.quat],
@@ -2306,15 +2311,16 @@ def update_geom_properties_kernel(
     geom_solmix: wp.array2d[float],
     geom_gap: wp.array2d[float],
     geom_margin: wp.array2d[float],
+    geom_aabb: wp.array3d[wp.vec3f],
+    geom_rbound: wp.array2d[float],
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
     Iterates over MuJoCo geoms [world, geom], looks up Newton shape index,
     and copies shape properties to geom properties.
 
-    Note: geom_rbound (collision radius) is not updated here. MuJoCo computes
-    this internally based on the geometry, and Newton's shape_collision_radius
-    is not compatible with MuJoCo's bounding sphere calculation.
+    Note: geom_aabb and geom_rbound are recomputed for primitive geoms only;
+    other geoms keep the bounds compiled by MuJoCo.
 
     Note: geom_gap is forwarded from shape_gap (MuJoCo 3.9 semantics:
     gap widens the detection envelope without affecting force generation).
@@ -2364,9 +2370,31 @@ def update_geom_properties_kernel(
     else:
         geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
+    size = shape_size[shape_idx]
+    gtype = geom_type[geom_idx]
     # Per-world mesh bounds are compiled from the scaled vertices.
-    if geom_type[geom_idx] != GEOM_TYPE_MESH or geom_dataid.shape[0] == 1:
-        geom_size[world, geom_idx] = shape_size[shape_idx]
+    if gtype != GEOM_TYPE_MESH or geom_dataid.shape[0] == 1:
+        geom_size[world, geom_idx] = size
+    # Mirrors mj_setConst; TODO: use mujoco_warp.set_const(FIXED) once it computes bounds.
+    half = size
+    rbound = -1.0
+    if gtype == GEOM_TYPE_SPHERE:
+        half = wp.vec3f(size[0])
+        rbound = size[0]
+    elif gtype == GEOM_TYPE_CAPSULE:
+        half = wp.vec3f(size[0], size[0], size[0] + size[1])
+        rbound = size[0] + size[1]
+    elif gtype == GEOM_TYPE_CYLINDER:
+        half = wp.vec3f(size[0], size[0], size[1])
+        rbound = wp.sqrt(size[0] * size[0] + size[1] * size[1])
+    elif gtype == GEOM_TYPE_ELLIPSOID:
+        rbound = wp.max(wp.max(size[0], size[1]), size[2])
+    elif gtype == GEOM_TYPE_BOX:
+        rbound = wp.length(size)
+    if rbound >= 0.0:
+        geom_aabb[world, geom_idx, 0] = wp.vec3f(0.0)
+        geom_aabb[world, geom_idx, 1] = half
+        geom_rbound[world, geom_idx] = rbound
 
     # update position and orientation
 
