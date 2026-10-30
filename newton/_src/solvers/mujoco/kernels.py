@@ -2343,10 +2343,18 @@ def mass_matrix_diagonal_kernel(
     M: wp.array2d[float],
     # outputs
     diagonal: wp.array2d[float],
+    meaninertia: wp.array[float],
 ):
-    """Extract the diagonal of MuJoCo Warp's CSR mass matrix, the last entry of each row."""
-    world, dof = wp.tid()
-    diagonal[world, dof] = M[world, M_rowadr[dof] + M_rownnz[dof] - 1]
+    """Extract the diagonal of MuJoCo Warp's CSR mass matrix, the last entry of each row, and its mean."""
+    world = wp.tid()
+    nv = diagonal.shape[1]
+    total = float(0.0)
+    for dof in range(nv):
+        value = M[world, M_rowadr[dof] + M_rownnz[dof] - 1]
+        diagonal[world, dof] = value
+        total += value
+    if world < meaninertia.shape[0]:
+        meaninertia[world] = total / float(wp.max(nv, 1))
 
 
 @wp.kernel

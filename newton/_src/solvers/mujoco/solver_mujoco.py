@@ -4469,6 +4469,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Physical qpos0 inertia scratch for computing constants with kinematic roots locked.
         self._physical_dof_M0: wp.array2d[float] | None = None
         self._physical_meaninertia: wp.array[float] | None = None
+        self._notify_qpos_saved: wp.array2d[float] | None = None
         self._mocap_root_moved: wp.array[wp.bool] | None = None
         self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
         """Control source for each MuJoCo actuator.
@@ -9435,6 +9436,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._physical_dof_M0 = wp.zeros(shape, dtype=float, device=self.model.device)
             if not self.use_mujoco_cpu:
                 self._physical_meaninertia = wp.empty_like(self.mjw_model.stat.meaninertia)
+                self._notify_qpos_saved = wp.empty_like(self.mjw_data.qpos)
         solref = getattr(getattr(self.model, "mujoco", None), "solreflimit", None)
         self._joint_limit_solref_snapshot = wp.clone(solref) if solref is not None else None
         if not self.use_mujoco_cpu:
@@ -9587,39 +9589,65 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _set_const_0(self, lock_kinematic: bool = True) -> None:
         """Recompute MuJoCo's qpos0-dependent model constants.
 
-        With ``lock_kinematic``, a second pass locks kinematic root DOFs with armature of
+        With ``lock_kinematic``, kinematic root DOFs are locked with armature of
         ``KINEMATIC_LOCK_INERTIA_RATIO`` times their physical ``dof_M0`` in each world, so weld, contact,
         and limit regularization treat the roots as immovable. Stepping armature and mean inertia stay physical.
         """
         lock = lock_kinematic and self._kinematic_weld_eq is not None
+        if lock:
+            meaninertia = self._compute_physical_qpos0_inertia()
+            self._update_dof_armature(lock=True)
         if self.use_mujoco_cpu:
             self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
             self._mujoco.mj_setConst(self.mj_model, self.mj_data)
         else:
-            # Without restore, mjw_data.M keeps the qpos0 mass matrix for the lock.
-            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data, restore=not lock)
+            self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
         if not lock:
             return
-        if self.use_mujoco_cpu:
-            meaninertia = self.mj_model.stat.meaninertia
-            self._physical_dof_M0.assign(np.broadcast_to(self.mj_model.dof_M0, self._physical_dof_M0.shape))
-        else:
-            wp.copy(self._physical_meaninertia, self.mjw_model.stat.meaninertia)
-            wp.launch(
-                mass_matrix_diagonal_kernel,
-                dim=self._physical_dof_M0.shape,
-                inputs=[self.mjw_model.M_rowadr, self.mjw_model.M_rownnz, self.mjw_data.M],
-                outputs=[self._physical_dof_M0],
-                device=self.model.device,
-            )
-        self._update_dof_armature(lock=True)
-        self._set_const_0(lock_kinematic=False)
         self._update_dof_armature()
         if self.use_mujoco_cpu:
             self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
             self.mj_model.stat.meaninertia = meaninertia
         else:
             wp.copy(self.mjw_model.stat.meaninertia, self._physical_meaninertia)
+
+    def _compute_physical_qpos0_inertia(self) -> float | None:
+        """Store each world's physical qpos0 mass-matrix diagonal; returns the native CPU mean inertia.
+
+        On MuJoCo Warp this assembles only the mass matrix, since a second ``set_const_0`` would double every
+        constant refresh.
+        """
+        if self.use_mujoco_cpu:
+            # Native MuJoCo's constants are cheap. Restore dampratio placeholders so they resolve against the
+            # locked inertia, as on MuJoCo Warp.
+            biasprm = self.mj_model.actuator_biasprm.copy()
+            self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
+            self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+            self._physical_dof_M0.assign(np.broadcast_to(self.mj_model.dof_M0, self._physical_dof_M0.shape))
+            self.mj_model.actuator_biasprm[:] = biasprm
+            return float(self.mj_model.stat.meaninertia)
+
+        m, d = self.mjw_model, self.mjw_data
+        wp.copy(self._notify_qpos_saved, d.qpos)
+        wp.copy(d.qpos, m.qpos0)
+        self._mujoco_warp.kinematics(m, d)
+        self._mujoco_warp.com_pos(m, d)
+        if m.ntendon:
+            from mujoco_warp._src.smooth import tendon_armature
+
+            self._mujoco_warp.tendon(m, d)
+        self._mujoco_warp.crb(m, d)
+        if m.ntendon:
+            tendon_armature(m, d)
+        wp.launch(
+            mass_matrix_diagonal_kernel,
+            dim=d.nworld,
+            inputs=[m.M_rowadr, m.M_rownnz, d.M],
+            outputs=[self._physical_dof_M0, self._physical_meaninertia],
+            device=self.model.device,
+        )
+        wp.copy(d.qpos, self._notify_qpos_saved)
+        return None
 
     def _update_dof_armature(self, lock: bool = False):
         """Publish Newton ``joint_armature`` to MuJoCo ``dof_armature``, optionally locking kinematic roots."""
