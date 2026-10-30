@@ -1,19 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Visual Mesh
-#
-# A cable simulated as a chain of capsule rigid bodies (add_rod) drives a
-# smooth, textured visual tube. Each visual vertex is rigidly bound to its
-# nearest cable segment and follows that body's pose. The diagnostic texture
-# makes the tube's bending and swinging easy to see. Demonstrates the rigid-body
-# (cable/rod) path of the deformable visual-mesh workflow
-# (https://github.com/newton-physics/newton/issues/3223).
-#
-# Command: uv run -m newton.examples cable_visual_mesh
-#
-###########################################################################
+"""Render a textured tube driven by a cable's rigid segments.
+
+Each visual vertex follows the pose of its nearest segment. The texture makes
+the cable's bending and swinging visible.
+
+Success criteria:
+- The left end stays pinned while the cable swings down under gravity.
+- The tube follows the segments without leaving a copy at its starting pose.
+- The texture moves with the tube rather than sliding over it.
+
+Runs:
+- `python -m newton.examples cable_visual_mesh --viewer gl`
+- `python -m newton.examples cable_visual_mesh --viewer rtx`
+"""
 
 import numpy as np
 import warp as wp

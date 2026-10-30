@@ -1,19 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Softbody Visual Mesh
-#
-# A coarse tetrahedral soft body (a low-resolution cube) drives a
-# high-resolution visual mesh embedded inside it. The visual mesh is a
-# detailed UV sphere with texture coordinates; it is bound to the cube's
-# tetrahedra at build time and skinned from the simulation state each frame
-# for visualization only, demonstrating the deformable visual-mesh workflow
-# from https://github.com/newton-physics/newton/issues/3223.
-#
-# Command: uv run -m newton.examples softbody_visual_mesh
-#
-###########################################################################
+"""Render a detailed textured sphere driven by a coarse tetrahedral cube.
+
+The sphere's vertices are bound to the cube's tetrahedra. This visual mesh adds
+no mass or collision geometry; the cube controls its deformation.
+
+Success criteria:
+- The cube's fixed side stays in place while the free side sags.
+- The sphere deforms with the cube instead of moving as a rigid object.
+- The texture stays attached to the sphere as it changes shape.
+
+Runs:
+- `python -m newton.examples softbody_visual_mesh --viewer gl`
+- `python -m newton.examples softbody_visual_mesh --viewer rtx`
+"""
 
 import numpy as np
 import warp as wp

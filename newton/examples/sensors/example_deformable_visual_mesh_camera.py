@@ -1,17 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Deformable Visual Mesh Camera
-#
-# Shows one scene with a cable, cloth, and soft volume. Each object drives a
-# textured deformable visual mesh, and three camera views focus on the three
-# skinned meshes. Use this example to check that viewer images, camera RGB,
-# depth, and optional recordings see the same skinned visual geometry.
-#
-# Command: python -m newton.examples deformable_visual_mesh_camera
-#
-###########################################################################
+"""Compare viewer and camera images of a cable, cloth, and soft volume.
+
+Each object drives a textured visual mesh. Three SensorCamera views show the
+same meshes in RGB and depth. Build the scene procedurally or load it from USD.
+
+Success criteria:
+- The cable bends, the cloth folds, and the volume deforms under gravity.
+- All three camera views show the moving visual meshes, not static copies.
+- RGB and depth silhouettes agree for each camera view.
+- Textures stay attached to the deforming meshes in the viewer and RGB images.
+
+Runs:
+- `python -m newton.examples deformable_visual_mesh_camera --viewer gl`
+- `python -m newton.examples deformable_visual_mesh_camera --viewer gl --load-from-usd`
+  - The USD scene shows the same three objects and visual bindings.
+- `python -m newton.examples deformable_visual_mesh_camera --viewer rtx --load-from-usd`
+"""
 
 import argparse
 import atexit

@@ -1,19 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cloth Visual Mesh
-#
-# A simulated cloth grid drives a textured visual mesh that shares its
-# topology. The visual mesh is bound per-particle to the cloth and skinned
-# from the simulation state each frame, so the diagnostic texture and UVs
-# follow the cloth as it folds and swings. Demonstrates the shared-topology
-# (cloth) path of the deformable visual-mesh workflow
-# (https://github.com/newton-physics/newton/issues/3223).
-#
-# Command: uv run -m newton.examples cloth_visual_mesh
-#
-###########################################################################
+"""Render a textured cloth mesh bound to the simulation particles.
+
+The visual mesh shares the cloth's topology. Its texture follows the cloth as
+it falls onto a sphere and folds around it.
+
+Success criteria:
+- The cloth drops from its flat starting pose and drapes over the sphere.
+- The texture follows the folds without leaving a flat copy behind.
+- The visual surface does not flicker against a duplicate simulation surface.
+
+Runs:
+- `python -m newton.examples cloth_visual_mesh --viewer gl`
+- `python -m newton.examples cloth_visual_mesh --viewer rtx`
+"""
 
 import numpy as np
 import warp as wp

@@ -1,16 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Deformable Visual Gaussian
-#
-# Loads a soft Gaussian bear from USD, drops its tetrahedral simulation
-# proxy onto a ground plane, and displays the evaluated Gaussian field
-# through SensorCamera.
-#
-# Command: python -m newton.examples deformable_visual_gaussian
-#
-###########################################################################
+"""Drop a soft Gaussian bear and display it through SensorCamera.
+
+Load the bear from USD. Its tetrahedral simulation mesh drives the Gaussian
+centers, orientations, and scales. The viewer displays the camera's image;
+this example does not use native viewer Gaussian drawing.
+
+Success criteria:
+- The bear falls onto the ground and visibly deforms on impact.
+- The rendered bear follows the simulation instead of staying in its rest pose.
+- The bear stays above the ground without inverted simulation tetrahedra.
+- RGB and depth views show the same moving bear from a fixed camera.
+
+Runs:
+- `python -m newton.examples deformable_visual_gaussian --viewer gl --camera-view both`
+- `python -m newton.examples deformable_visual_gaussian --viewer rtx --camera-view both`
+"""
 
 import atexit
 import math
