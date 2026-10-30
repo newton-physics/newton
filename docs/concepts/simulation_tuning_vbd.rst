@@ -656,7 +656,8 @@ jitter at rest in one region, or warnings when the mesh is added.
 
 **Cause.** Degenerate or sliver elements make the local solve ill-conditioned.
 
-**Fix.** Run the built-in checker, then remesh. The checker is opt-in:
+**Fix.** Run the built-in checker, then apply isotropic explicit remeshing.
+The checker is opt-in:
 
 .. code-block:: python
 
@@ -719,7 +720,7 @@ A warning looks like this (from a real asset):
      - 1 triangle(s) with minimum angle < 5° (smallest: 4.0°)
    Consider remeshing the input geometry.
 
-Remesh with an isotropic explicit remesher, for example MeshLab's
+Apply isotropic explicit remeshing, for example MeshLab's filter
 *Remeshing: Isotropic Explicit Remeshing*, with a target edge length that is
 uniform over the asset and larger than the interaction distance. Then add the
 mesh with ``validate_mesh=True`` again. Remeshing at a coarse target can still
@@ -881,7 +882,8 @@ Rules of Thumb
 - Use the lowest resolution that expresses the deformation you need. Raise it
   only when the degrees of freedom are not enough.
 - Use a uniform triangulation with good element quality. Check it with
-  ``validate_mesh=True``, and remesh isotropically when it warns.
+  ``validate_mesh=True``, and apply isotropic explicit remeshing when it
+  warns.
 - Start at ``dt`` = 1/600 s and 10 iterations, and adjust from there. If you
   start from a shipped example, keep its values.
 - Keep a copy of the last working configuration and change one parameter at a
