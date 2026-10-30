@@ -1159,312 +1159,128 @@ def build_ref_q_kernel(
             ref_q[q_start + k] = 0.0
 
 
-@wp.kernel
-def update_connect_constraint_rel_body_poses_at_qref_kernel(
-    eq_constraint_type: wp.array[wp.int32],
-    eq_constraint_body1: wp.array[wp.int32],
-    eq_constraint_body2: wp.array[wp.int32],
-    ref_body_q: wp.array[wp.transform],
-    # outputs
-    q_rel_out: wp.array[wp.quat],
-    t_rel_out: wp.array[wp.vec3],
-):
-    """Compute relative body transforms for CONNECT constraints at the reference pose.
-
-    Iterates over equality constraints ``[i]``. For each CONNECT constraint,
-    computes ``q_rel`` and ``t_rel`` from the reference body poses such that::
-
-        anchor2 = quat_rotate(q_rel, anchor1) + t_rel
-
-    where ``q_rel = inv(q2) * q1`` and
-    ``t_rel = quat_rotate(inv(q2), pos1 - pos2)``.
-
-    These values are constant for a given reference configuration, so when
-    ``anchor1`` changes at runtime ``anchor2`` can be recomputed without
-    re-running forward kinematics. Non-CONNECT constraints are skipped.
-
-    Args:
-        eq_constraint_type: Constraint type enum per constraint,
-            shape ``[equality_constraint_count]``.
-        eq_constraint_body1: First body index per constraint (-1 for world),
-            shape ``[equality_constraint_count]``.
-        eq_constraint_body2: Second body index per constraint (-1 for world),
-            shape ``[equality_constraint_count]``.
-        ref_body_q: Body transforms at the reference pose [m],
-            shape ``[body_count]``, dtype ``wp.transform``.
-        q_rel_out: *(output)* Relative rotation ``inv(q2) * q1`` per
-            constraint, shape ``[equality_constraint_count]``,
-            dtype ``wp.quat``.
-        t_rel_out: *(output)* Relative translation [m] per constraint,
-            shape ``[equality_constraint_count]``, dtype ``wp.vec3``.
-    """
-    i = wp.tid()
-
-    if eq_constraint_type[i] != EqType.CONNECT:
-        return
-
-    body1 = eq_constraint_body1[i]
-    body2 = eq_constraint_body2[i]
-
-    # Extract world-space pose for body1
-    if body1 == -1:
-        pos1 = wp.vec3(0.0, 0.0, 0.0)
-        q1 = wp.quat_identity()
-    else:
-        tf1 = ref_body_q[body1]
-        pos1 = wp.transform_get_translation(tf1)
-        q1 = wp.transform_get_rotation(tf1)
-
-    # Extract world-space pose for body2
-    if body2 == -1:
-        pos2 = wp.vec3(0.0, 0.0, 0.0)
-        q2 = wp.quat_identity()
-    else:
-        tf2 = ref_body_q[body2]
-        pos2 = wp.transform_get_translation(tf2)
-        q2 = wp.transform_get_rotation(tf2)
-
-    # q_rel = inv(q2) * q1
-    # t = quat_rotate(inv(q2), pos1 - pos2)
-    q2_inv = wp.quat_inverse(q2)
-    q_rel_out[i] = q2_inv * q1
-    t_rel_out[i] = wp.quat_rotate(q2_inv, pos1 - pos2)
-
-
-@wp.kernel
-def update_connect_constraint_anchors_kernel(
-    mjc_eq_to_newton_eq: wp.array2d[wp.int32],
-    eq_constraint_type: wp.array[wp.int32],
-    eq_constraint_anchor: wp.array[wp.vec3],
-    connect_anchor2_q: wp.array[wp.quat],
-    connect_anchor2_t: wp.array[wp.vec3],
-    # output
-    eq_data_out: wp.array2d[vec11],
-):
-    """Write CONNECT constraint anchors into MuJoCo ``eq_data``.
-
-    Iterates over MuJoCo equality constraints ``[world, eq]``. For each
-    CONNECT constraint, copies ``anchor1`` [m] from Newton into
-    ``eq_data[0:3]`` and computes::
-
-        anchor2 = quat_rotate(q_rel, anchor1) + t_rel
-
-    into ``eq_data[3:6]``. Non-CONNECT constraints and unmapped entries
-    (``newton_eq < 0``) are skipped.
-
-    Args:
-        mjc_eq_to_newton_eq: Mapping from MuJoCo ``[world, eq]`` to Newton
-            equality constraint index, shape ``[world_count, neq]``.
-            Negative values indicate unmapped entries.
-        eq_constraint_type: Constraint type enum per Newton constraint,
-            shape ``[equality_constraint_count]``.
-        eq_constraint_anchor: Anchor position on body 1 [m] per Newton
-            constraint, shape ``[equality_constraint_count]``,
-            dtype ``wp.vec3``.
-        connect_anchor2_q: Precomputed relative rotation per constraint,
-            shape ``[equality_constraint_count]``, dtype ``wp.quat``.
-        connect_anchor2_t: Precomputed relative translation [m] per
-            constraint, shape ``[equality_constraint_count]``,
-            dtype ``wp.vec3``.
-        eq_data_out: *(output)* MuJoCo equality constraint data,
-            shape ``[world_count, neq]``, dtype ``vec11``.
-            Slots ``[0:3]`` receive ``anchor1`` and ``[3:6]`` receive
-            ``anchor2``.
-    """
-    world, mjc_eq = wp.tid()
-    newton_eq = mjc_eq_to_newton_eq[world, mjc_eq]
-    if newton_eq < 0:
-        return
-
-    if eq_constraint_type[newton_eq] != EqType.CONNECT:
-        return
-
-    anchor = eq_constraint_anchor[newton_eq]
-    q = connect_anchor2_q[newton_eq]
-    t = connect_anchor2_t[newton_eq]
-    anchor2 = wp.quat_rotate(q, anchor) + t
-
-    data = eq_data_out[world, mjc_eq]
-    data[0] = anchor[0]
-    data[1] = anchor[1]
-    data[2] = anchor[2]
-    data[3] = anchor2[0]
-    data[4] = anchor2[1]
-    data[5] = anchor2[2]
-    eq_data_out[world, mjc_eq] = data
-
-
-@wp.kernel
-def update_jnt_connect_constraint_rel_body_poses_at_qref_kernel(
-    mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
-    joint_parent: wp.array[wp.int32],
-    joint_child: wp.array[wp.int32],
-    ref_body_q: wp.array[wp.transform],
-    # outputs
-    q_rel_out: wp.array2d[wp.quat],
-    t_rel_out: wp.array2d[wp.vec3],
-):
-    """Compute relative body transforms for joint-synthesized CONNECT constraints.
-
-    For each MuJoCo equality constraint that maps to a Newton joint (via
-    ``mjc_eq_to_newton_jnt``), computes ``q_rel`` and ``t_rel`` from the
-    reference body poses of the joint's parent and child bodies such that::
-
-        anchor2 = quat_rotate(q_rel, anchor1) + t_rel
-
-    where ``q_rel = inv(q_child) * q_parent`` and
-    ``t_rel = quat_rotate(inv(q_child), pos_parent - pos_child)``.
-
-    Unmapped entries (``newton_jnt < 0``) are skipped.
-
-    Args:
-        mjc_eq_to_newton_jnt: Mapping from MuJoCo ``[world, eq]`` to Newton
-            joint index, shape ``[world_count, neq]``.
-            Negative values indicate unmapped entries.
-        joint_parent: Parent body index per joint,
-            shape ``[joint_count]``, dtype ``wp.int32``.
-        joint_child: Child body index per joint,
-            shape ``[joint_count]``, dtype ``wp.int32``.
-        ref_body_q: Body transforms at the reference pose [m],
-            shape ``[body_count]``, dtype ``wp.transform``.
-        q_rel_out: *(output)* Relative rotation per ``[world, eq]``,
-            shape ``[world_count, neq]``, dtype ``wp.quat``.
-        t_rel_out: *(output)* Relative translation [m] per ``[world, eq]``,
-            shape ``[world_count, neq]``, dtype ``wp.vec3``.
-    """
-    world, mjc_eq = wp.tid()
-    newton_jnt = mjc_eq_to_newton_jnt[world, mjc_eq]
-    if newton_jnt < 0:
-        return
-
-    body1 = joint_parent[newton_jnt]
-    body2 = joint_child[newton_jnt]
-
-    # Extract world-space pose for body1 (parent)
-    if body1 == -1:
-        pos1 = wp.vec3(0.0, 0.0, 0.0)
-        q1 = wp.quat_identity()
-    else:
-        tf1 = ref_body_q[body1]
-        pos1 = wp.transform_get_translation(tf1)
-        q1 = wp.transform_get_rotation(tf1)
-
-    # Extract world-space pose for body2 (child)
-    if body2 == -1:
-        pos2 = wp.vec3(0.0, 0.0, 0.0)
-        q2 = wp.quat_identity()
-    else:
-        tf2 = ref_body_q[body2]
-        pos2 = wp.transform_get_translation(tf2)
-        q2 = wp.transform_get_rotation(tf2)
-
-    # q_rel = inv(q_child) * q_parent
-    # t_rel = quat_rotate(inv(q_child), pos_parent - pos_child)
-    q2_inv = wp.quat_inverse(q2)
-    q_rel_out[world, mjc_eq] = q2_inv * q1
-    t_rel_out[world, mjc_eq] = wp.quat_rotate(q2_inv, pos1 - pos2)
-
-
 @wp.func
 def hinge_connect_anchor(anchor: wp.vec3, side: int, hinge_axis: wp.vec3) -> wp.vec3:
     """Return a revolute loop joint's CONNECT point on ``side`` (``-1`` or ``+1``) of ``anchor``."""
     return anchor + (HINGE_CONNECT_HALF_SPAN * float(side)) * hinge_axis
 
 
-@wp.kernel
-def recompute_jnt_eq_anchor1_kernel(
+@wp.func
+def connect_row_source(
+    world: int,
+    mjc_eq: int,
+    mjc_eq_to_newton_eq: wp.array2d[wp.int32],
     mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
-    has_axis_offset: wp.array2d[wp.int32],
+    eq_constraint_type: wp.array[wp.int32],
+) -> wp.vec2i:
+    """Return ``(newton_eq, newton_jnt)`` of a MuJoCo CONNECT row; both are ``-1`` for other rows."""
+    newton_eq = mjc_eq_to_newton_eq[world, mjc_eq]
+    if newton_eq >= 0:
+        if eq_constraint_type[newton_eq] != EqType.CONNECT:
+            newton_eq = -1
+    return wp.vec2i(newton_eq, mjc_eq_to_newton_jnt[world, mjc_eq])
+
+
+@wp.func
+def body_pose_or_identity(body_q: wp.array[wp.transform], body: int) -> wp.transform:
+    if body < 0:
+        return wp.transform_identity()
+    return body_q[body]
+
+
+@wp.kernel
+def update_connect_constraint_rel_xform_at_qref_kernel(
+    mjc_eq_to_newton_eq: wp.array2d[wp.int32],
+    mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
+    eq_constraint_type: wp.array[wp.int32],
+    eq_constraint_body1: wp.array[wp.int32],
+    eq_constraint_body2: wp.array[wp.int32],
+    joint_parent: wp.array[wp.int32],
+    joint_child: wp.array[wp.int32],
+    ref_body_q: wp.array[wp.transform],
+    # output
+    X_rel_out: wp.array2d[wp.transform],
+):
+    """Compute ``inv(X_body2) * X_body1`` at the reference pose for each MuJoCo CONNECT row.
+
+    Rows stem from either a Newton CONNECT equality constraint or a loop joint
+    (parent as body 1, child as body 2). Caching the relative pose lets anchor
+    updates skip forward kinematics.
+
+    Args:
+        X_rel_out: *(output)* Relative body pose per ``[world, eq]``,
+            shape ``[world_count, neq]``.
+    """
+    world, mjc_eq = wp.tid()
+    src = connect_row_source(world, mjc_eq, mjc_eq_to_newton_eq, mjc_eq_to_newton_jnt, eq_constraint_type)
+    newton_eq = src[0]
+    newton_jnt = src[1]
+
+    body1 = int(-1)
+    body2 = int(-1)
+    if newton_jnt >= 0:
+        body1 = joint_parent[newton_jnt]
+        body2 = joint_child[newton_jnt]
+    elif newton_eq >= 0:
+        body1 = eq_constraint_body1[newton_eq]
+        body2 = eq_constraint_body2[newton_eq]
+    else:
+        return
+
+    X1 = body_pose_or_identity(ref_body_q, body1)
+    X2 = body_pose_or_identity(ref_body_q, body2)
+    # Rotate the position difference rather than each position, to keep precision far from the origin.
+    q2_inv = wp.quat_inverse(wp.transform_get_rotation(X2))
+    p_rel = wp.quat_rotate(q2_inv, wp.transform_get_translation(X1) - wp.transform_get_translation(X2))
+    X_rel_out[world, mjc_eq] = wp.transform(p_rel, q2_inv * wp.transform_get_rotation(X1))
+
+
+@wp.kernel
+def update_connect_constraint_anchors_kernel(
+    mjc_eq_to_newton_eq: wp.array2d[wp.int32],
+    mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
+    eq_constraint_type: wp.array[wp.int32],
+    eq_constraint_anchor: wp.array[wp.vec3],
+    jnt_connect_hinge_side: wp.array2d[wp.int32],
     joint_X_p: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_qd_start: wp.array[wp.int32],
-    # outputs
-    jnt_eq_anchor1: wp.array2d[wp.vec3],
-):
-    """Recompute body1-local anchor positions for joint-synthesized CONNECT constraints.
-
-    For each mapped ``[world, eq]`` entry, reads the translation from the
-    joint's parent transform (``joint_X_p``).  When ``has_axis_offset`` is
-    nonzero, offsets the anchor to that side along the hinge axis rotated
-    into the parent body frame (see :func:`hinge_connect_anchor`).
-
-    Args:
-        mjc_eq_to_newton_jnt: Mapping from MuJoCo ``[world, eq]`` to Newton
-            joint index, shape ``[world_count, neq]``.
-            Negative values indicate unmapped entries.
-        has_axis_offset: Side (``-1`` or ``+1``) along the joint axis for
-            hinge CONNECT rows, ``0`` otherwise,
-            shape ``[world_count, neq]``.
-        joint_X_p: Parent-body-local joint transform [m],
-            shape ``[joint_count]``, dtype ``wp.transform``.
-        joint_axis: Joint axis in joint-local frame,
-            shape ``[joint_dof_count]``, dtype ``wp.vec3``.
-        joint_qd_start: Start index into ``joint_axis`` for each joint,
-            shape ``[joint_count]``, dtype ``wp.int32``.
-        jnt_eq_anchor1: *(output)* Body1-local anchor [m] per
-            ``[world, eq]``, shape ``[world_count, neq]``,
-            dtype ``wp.vec3``.
-    """
-    world, mjc_eq = wp.tid()
-    newton_jnt = mjc_eq_to_newton_jnt[world, mjc_eq]
-    if newton_jnt < 0:
-        return
-
-    xform = joint_X_p[newton_jnt]
-    anchor = wp.transform_get_translation(xform)
-
-    side = has_axis_offset[world, mjc_eq]
-    if side != 0:
-        qd_start = joint_qd_start[newton_jnt]
-        axis_local = joint_axis[qd_start]
-        axis_parent = wp.quat_rotate(wp.transform_get_rotation(xform), axis_local)
-        anchor = hinge_connect_anchor(anchor, side, axis_parent)
-
-    jnt_eq_anchor1[world, mjc_eq] = anchor
-
-
-@wp.kernel
-def update_jnt_connect_constraint_anchors_kernel(
-    mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
-    jnt_eq_anchor1: wp.array2d[wp.vec3],
-    jnt_eq_q_rel: wp.array2d[wp.quat],
-    jnt_eq_t_rel: wp.array2d[wp.vec3],
+    connect_X_rel: wp.array2d[wp.transform],
     # output
     eq_data_out: wp.array2d[vec11],
 ):
-    """Write joint-synthesized CONNECT constraint anchors into MuJoCo ``eq_data``.
+    """Write ``anchor1`` and ``anchor2 = transform_point(X_rel, anchor1)`` into ``eq_data[0:6]`` of CONNECT rows.
 
-    For each MuJoCo equality constraint that maps to a Newton joint,
-    copies ``anchor1`` [m] into ``eq_data[0:3]`` and computes::
-
-        anchor2 = quat_rotate(q_rel, anchor1) + t_rel
-
-    into ``eq_data[3:6]``. Unmapped entries (``newton_jnt < 0``) are skipped.
+    ``anchor1`` [m] is the Newton constraint's anchor, or for loop joints the
+    translation of ``joint_X_p``, offset along the hinge axis for revolute
+    joints (see :func:`hinge_connect_anchor`).
 
     Args:
-        mjc_eq_to_newton_jnt: Mapping from MuJoCo ``[world, eq]`` to Newton
-            joint index, shape ``[world_count, neq]``.
-            Negative values indicate unmapped entries.
-        jnt_eq_anchor1: Pre-computed anchor on body1 [m] per ``[world, eq]``,
-            shape ``[world_count, neq]``, dtype ``wp.vec3``.
-        jnt_eq_q_rel: Relative rotation per ``[world, eq]``,
-            shape ``[world_count, neq]``, dtype ``wp.quat``.
-        jnt_eq_t_rel: Relative translation [m] per ``[world, eq]``,
-            shape ``[world_count, neq]``, dtype ``wp.vec3``.
-        eq_data_out: *(output)* MuJoCo equality constraint data,
-            shape ``[world_count, neq]``, dtype ``vec11``.
-            Slots ``[0:3]`` receive ``anchor1`` and ``[3:6]`` receive
-            ``anchor2``.
+        jnt_connect_hinge_side: Side (``-1`` or ``+1``) along the hinge axis
+            of revolute loop-joint rows, ``0`` otherwise,
+            shape ``[world_count, neq]``.
+        connect_X_rel: Relative body pose per ``[world, eq]`` from
+            :func:`update_connect_constraint_rel_xform_at_qref_kernel`.
     """
     world, mjc_eq = wp.tid()
-    newton_jnt = mjc_eq_to_newton_jnt[world, mjc_eq]
-    if newton_jnt < 0:
+    src = connect_row_source(world, mjc_eq, mjc_eq_to_newton_eq, mjc_eq_to_newton_jnt, eq_constraint_type)
+    newton_eq = src[0]
+    newton_jnt = src[1]
+
+    anchor = wp.vec3(0.0)
+    if newton_jnt >= 0:
+        X_p = joint_X_p[newton_jnt]
+        anchor = wp.transform_get_translation(X_p)
+        side = jnt_connect_hinge_side[world, mjc_eq]
+        if side != 0:
+            axis = wp.quat_rotate(wp.transform_get_rotation(X_p), joint_axis[joint_qd_start[newton_jnt]])
+            anchor = hinge_connect_anchor(anchor, side, axis)
+    elif newton_eq >= 0:
+        anchor = eq_constraint_anchor[newton_eq]
+    else:
         return
 
-    anchor = jnt_eq_anchor1[world, mjc_eq]
-    q = jnt_eq_q_rel[world, mjc_eq]
-    t = jnt_eq_t_rel[world, mjc_eq]
-    anchor2 = wp.quat_rotate(q, anchor) + t
+    anchor2 = wp.transform_point(connect_X_rel[world, mjc_eq], anchor)
 
     data = eq_data_out[world, mjc_eq]
     data[0] = anchor[0]
@@ -2467,6 +2283,11 @@ def update_geom_properties_kernel(
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
     GEOM_TYPE_HFIELD: int,
+    GEOM_TYPE_SPHERE: int,
+    GEOM_TYPE_CAPSULE: int,
+    GEOM_TYPE_ELLIPSOID: int,
+    GEOM_TYPE_CYLINDER: int,
+    GEOM_TYPE_BOX: int,
     geom_dataid: wp.array2d[int],
     mesh_pos: wp.array[wp.vec3],
     mesh_quat: wp.array[wp.quat],
@@ -2490,15 +2311,16 @@ def update_geom_properties_kernel(
     geom_solmix: wp.array2d[float],
     geom_gap: wp.array2d[float],
     geom_margin: wp.array2d[float],
+    geom_aabb: wp.array3d[wp.vec3f],
+    geom_rbound: wp.array2d[float],
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
     Iterates over MuJoCo geoms [world, geom], looks up Newton shape index,
     and copies shape properties to geom properties.
 
-    Note: geom_rbound (collision radius) is not updated here. MuJoCo computes
-    this internally based on the geometry, and Newton's shape_collision_radius
-    is not compatible with MuJoCo's bounding sphere calculation.
+    Note: geom_aabb and geom_rbound are recomputed for primitive geoms only;
+    other geoms keep the bounds compiled by MuJoCo.
 
     Note: geom_gap is forwarded from shape_gap (MuJoCo 3.9 semantics:
     gap widens the detection envelope without affecting force generation).
@@ -2548,9 +2370,31 @@ def update_geom_properties_kernel(
     else:
         geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
+    size = shape_size[shape_idx]
+    gtype = geom_type[geom_idx]
     # Per-world mesh bounds are compiled from the scaled vertices.
-    if geom_type[geom_idx] != GEOM_TYPE_MESH or geom_dataid.shape[0] == 1:
-        geom_size[world, geom_idx] = shape_size[shape_idx]
+    if gtype != GEOM_TYPE_MESH or geom_dataid.shape[0] == 1:
+        geom_size[world, geom_idx] = size
+    # Mirrors mj_setConst; TODO: use mujoco_warp.set_const(FIXED) once it computes bounds.
+    half = size
+    rbound = -1.0
+    if gtype == GEOM_TYPE_SPHERE:
+        half = wp.vec3f(size[0])
+        rbound = size[0]
+    elif gtype == GEOM_TYPE_CAPSULE:
+        half = wp.vec3f(size[0], size[0], size[0] + size[1])
+        rbound = size[0] + size[1]
+    elif gtype == GEOM_TYPE_CYLINDER:
+        half = wp.vec3f(size[0], size[0], size[1])
+        rbound = wp.sqrt(size[0] * size[0] + size[1] * size[1])
+    elif gtype == GEOM_TYPE_ELLIPSOID:
+        rbound = wp.max(wp.max(size[0], size[1]), size[2])
+    elif gtype == GEOM_TYPE_BOX:
+        rbound = wp.length(size)
+    if rbound >= 0.0:
+        geom_aabb[world, geom_idx, 0] = wp.vec3f(0.0)
+        geom_aabb[world, geom_idx, 1] = half
+        geom_rbound[world, geom_idx] = rbound
 
     # update position and orientation
 

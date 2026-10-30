@@ -13,10 +13,12 @@ import newton.geometry
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
+    _add_mesh_prim,
     _add_physics_attachment,
     _apply_deformable_body_api,
     _author_deformable_element_array,
     _author_pose,
+    _author_unit_tet,
     _deformable_stage,
 )
 from newton.tests.unittest_utils import USD_AVAILABLE
@@ -24,16 +26,6 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableVisual(unittest.TestCase):
-    @staticmethod
-    def _mesh(stage, path, points):
-        from pxr import UsdGeom
-
-        mesh = UsdGeom.Mesh.Define(stage, path)
-        mesh.CreatePointsAttr(np.asarray(points, dtype=float).tolist())
-        mesh.CreateFaceVertexCountsAttr([len(points)])
-        mesh.CreateFaceVertexIndicesAttr(list(range(len(points))))
-        return mesh
-
     @staticmethod
     def _bind(prim, points):
         _author_pose(prim, "bind", np.asarray(points, dtype=float).tolist())
@@ -49,13 +41,9 @@ class TestUSDDeformableVisual(unittest.TestCase):
             sim = _add_cloth_mesh(stage, f"{path}/Sim")
             _author_deformable_element_array(sim.GetPrim(), "thicknesses", [0.001], "constant")
         else:
-            sim = UsdGeom.TetMesh.Define(stage, f"{path}/Sim")
-            sim.CreatePointsAttr([(0, 0, 1), (1, 0, 1), (0, 1, 1), (0, 0, 2)])
-            sim.CreateTetVertexIndicesAttr([(0, 1, 2, 3)])
-            sim.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
-            sim.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+            sim = _author_unit_tet(stage, f"{path}/Sim", sim_api=True)
         points = np.array([(0.1, 0.1, 1.0), (0.3, 0.1, 1.0), (0.1, 0.3, 1.0)], dtype=np.float32)
-        mesh = cls._mesh(stage, f"{path}/Skin", points)
+        mesh = _add_mesh_prim(stage, f"{path}/Skin", points)
         return sim, mesh, points
 
     def test_mixed_import_replication_and_motion(self):
@@ -70,7 +58,8 @@ class TestUSDDeformableVisual(unittest.TestCase):
             visual_indices, {f"/World/{family}/Skin": i for i, family in enumerate(("curve", "surface", "volume"))}
         )
         physics = newton.ModelBuilder()
-        self.assertNotIn("path_deformable_visual_map", physics.add_usd(stage, load_visual_shapes=False))
+        physics_result = physics.add_usd(stage, load_visual_shapes=False, return_deformable_results=True)
+        self.assertEqual(physics_result["path_deformable_visual_map"], {})
         for field in ("particle_q", "particle_mass", "body_q", "body_mass", "joint_q"):
             np.testing.assert_array_equal(getattr(prototype, field), getattr(physics, field))
         self.assertEqual(physics.finalize(device="cpu").deformable_visual_mesh_count, 0)
@@ -285,12 +274,13 @@ class TestUSDDeformableVisual(unittest.TestCase):
         self._object(stage, "/World/Outer", "volume")
         self._object(stage, "/World/Outer/Nested", "volume")
         points = [(0.1, 0.1, 1), (0.3, 0.1, 1), (0.1, 0.3, 1)]
-        self._mesh(stage, "/World/Outer/Hidden", points).CreateVisibilityAttr(UsdGeom.Tokens.invisible)
-        self._mesh(stage, "/World/Outer/Guide", points).CreatePurposeAttr(UsdGeom.Tokens.guide)
-        self._mesh(stage, "/World/Outer/Proxy", points).CreatePurposeAttr(UsdGeom.Tokens.proxy)
-        self._mesh(stage, "/World/Outer/Skip", points)
+        _add_mesh_prim(stage, "/World/Outer/Hidden", points).CreateVisibilityAttr(UsdGeom.Tokens.invisible)
+        _add_mesh_prim(stage, "/World/Outer/Guide", points).CreatePurposeAttr(UsdGeom.Tokens.guide)
+        _add_mesh_prim(stage, "/World/Outer/Proxy", points).CreatePurposeAttr(UsdGeom.Tokens.proxy)
+        _add_mesh_prim(stage, "/World/Outer/Skip", points)
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage, ignore_paths=[r".*/Skip$"])
+        self.assertNotIn("path_deformable_visual_map", result)  # The visual map is opt-in.
         model = builder.finalize(device="cpu")
         self.assertEqual(
             [mesh.label for mesh in model.deformable_visual_meshes],
@@ -314,7 +304,7 @@ class TestUSDDeformableVisual(unittest.TestCase):
         UsdGeom.Points.Define(stage, "/World/Rigid/Soft/Points").CreatePointsAttr([(0, 0, 1)])
         sites = [f"/World/Rigid/Soft/{api}" for api in ("NewtonSiteAPI", "MjcSiteAPI")]
         for path in sites:
-            site = self._mesh(stage, path, [(0, 0, 1), (1, 0, 1), (0, 1, 1)])
+            site = _add_mesh_prim(stage, path, [(0, 0, 1), (1, 0, 1), (0, 1, 1)])
             site.GetPrim().AddAppliedSchema(path.rsplit("/", 1)[1])
         for load_visuals, load_sites in ((True, True), (False, True), (True, False)):
             with self.subTest(load_visuals=load_visuals, load_sites=load_sites):
@@ -325,6 +315,8 @@ class TestUSDDeformableVisual(unittest.TestCase):
                 self.assertNotIn("/World/Rigid/Soft/Skin", result["path_shape_map"])
                 for path in sites:
                     self.assertEqual(path in result["path_shape_map"], load_sites)
+                # The cloth skin never becomes a rigid shape; only the sites do.
+                self.assertEqual(builder.shape_count, len(sites) if load_sites else 0)
                 model = builder.finalize(device="cpu")
                 self.assertGreater(model.particle_count, 0)
                 self.assertEqual(model.deformable_visual_mesh_count, int(load_visuals))
