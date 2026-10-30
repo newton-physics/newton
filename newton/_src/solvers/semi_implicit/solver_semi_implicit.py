@@ -56,9 +56,12 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         - :attr:`~newton.Model.joint_enabled`, :attr:`~newton.Model.joint_limit_ke`/:attr:`~newton.Model.joint_limit_kd`,
           :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd`, and :attr:`~newton.Control.joint_f`
           are supported.
-        - REVOLUTE coordinates in :attr:`~newton.State.joint_q` retain their winding across steps.
+        - REVOLUTE coordinates in :attr:`~newton.State.joint_q` are inputs to ``step`` and retain
+          their winding across steps. Only REVOLUTE entries of the output ``joint_q`` and
+          ``joint_qd`` are updated; other generalized coordinates are not refreshed.
           Initialize or reset these coordinates consistently with body poses (for example, using
-          :func:`newton.eval_fk`). Relative rotation must stay below half a turn per step.
+          :func:`newton.eval_fk`). Resetting or copying ``body_q`` alone retains the old winding
+          and can produce unintended multi-turn drive and limit errors. Relative rotation must stay below half a turn per step.
           Calling :func:`newton.eval_ik` replaces these coordinates with wrapped angles.
           REVOLUTE velocities use the parent-axis projection, as in ``eval_ik`` and
           joint force evaluation; under transient swing they can differ from the twist-angle derivative.

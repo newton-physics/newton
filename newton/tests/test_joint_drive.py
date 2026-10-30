@@ -431,6 +431,23 @@ def test_semi_implicit_revolute_winding(test, device):
     tape.backward(grads={output.joint_q: wp.ones_like(output.joint_q)})
     test.assertAlmostEqual(float(state.joint_q.grad.numpy()[0]), 1.0 - 2.0e-6, delta=1.0e-5)
 
+    # Reset an already-used state from maximal coordinates, explicitly discarding winding.
+    model.joint_limit_upper.fill_(1.0e6)
+    model.joint_target_ke.fill_(2.0)
+    state, output = model.state(), model.state()
+    state.joint_q.fill_(20.0)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    control.joint_target_q.fill_(20.0)
+    solver.step(state, output, control, None, 0.001)
+    output.body_q.assign(model.body_q)
+    output.body_qd.zero_()
+    newton.eval_ik(model, output, output.joint_q, output.joint_qd)
+    control.joint_target_q.zero_()
+    output.clear_forces()
+    solver.step(output, state, control, None, 0.001)
+    test.assertAlmostEqual(float(state.joint_q.numpy()[0]), 0.0, delta=1.0e-5)
+    test.assertAlmostEqual(float(state.joint_qd.numpy()[0]), 0.0, delta=1.0e-5)
+
 
 add_function_test(
     TestJointDrive,

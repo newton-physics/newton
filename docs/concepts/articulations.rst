@@ -43,6 +43,24 @@ For example, :class:`~newton.solvers.SolverMuJoCo` and :class:`~newton.solvers.S
 use generalized coordinates, while :class:`~newton.solvers.SolverXPBD`,
 :class:`~newton.solvers.SolverSemiImplicit`, and :class:`~newton.solvers.SolverVBD`
 use maximal coordinates.
+For :class:`~newton.solvers.SolverSemiImplicit`, REVOLUTE joints additionally use
+:attr:`~newton.State.joint_q` as persistent winding state. ``step`` reads those
+entries to select the continuous angle and updates only the REVOLUTE entries
+of ``state_out.joint_q`` and ``state_out.joint_qd``. Entries for other joint types
+are not refreshed; these arrays are not a complete generalized-state output.
+
+When migrating code that initializes, resets, or copies only ``body_q``, also
+initialize, reset, or copy the corresponding REVOLUTE ``joint_q`` entries.
+Otherwise the old winding remains and can introduce whole turns into drive
+and limit errors. For a reset from generalized coordinates, assign the intended
+``joint_q`` and ``joint_qd`` to the state, then call
+``newton.eval_fk(model, state.joint_q, state.joint_qd, state)``.
+For a reset from body poses that intentionally discards winding, call
+``newton.eval_ik(model, state, state.joint_q, state.joint_qd)`` afterward.
+Do not call ``eval_ik`` during normal multi-turn stepping: it replaces the
+continuous REVOLUTE angle with a wrapped angle. Relative rotation must remain
+below half a turn per step for winding reconstruction to be unambiguous.
+
 Note that collision detection via :meth:`newton.CollisionPipeline.collide` requires the maximal coordinates to be current in the state.
 
 .. _Rod joints:

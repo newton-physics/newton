@@ -11,7 +11,7 @@ from ...sim import (
     Model,
     State,
 )
-from ...sim.articulation import eval_angular_coordinates
+from ...sim.articulation import eval_angular_coordinates, reconstruct_angular_q_qd
 from ...sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_mimic_velocity
 
 
@@ -204,10 +204,10 @@ def update_revolute_coordinates(
     rotation = wp.quat_inverse(wp.transform_get_rotation(X_wp)) * wp.transform_get_rotation(X_wc)
     q_index = joint_q_start[joint]
     qd_index = joint_qd_start[joint]
-    axis = joint_axis[qd_index]
-    angle = wp.quat_twist_angle_signed(axis, rotation)
+    w_err = wp.spatial_bottom(body_qd[child]) - w_parent
+    angle, velocity = reconstruct_angular_q_qd(rotation, w_err, X_wp, joint_axis[qd_index])
     joint_q[q_index] = unwrap_revolute_angle(angle, reference_q[q_index])
-    joint_qd[qd_index] = wp.dot(wp.spatial_bottom(body_qd[child]) - w_parent, wp.transform_vector(X_wp, axis))
+    joint_qd[qd_index] = velocity
 
 
 @wp.kernel
