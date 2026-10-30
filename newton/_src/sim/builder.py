@@ -79,6 +79,14 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
+from .body_variants import (
+    _BodyVariants,
+    _plan_variant_rows,
+    _snapshot_variants,
+    _validate_variant_builder,
+    _VariantShape,
+    _VariantShapeRows,
+)
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -92,7 +100,7 @@ from .graph_coloring import (
     construct_particle_graph,
 )
 from .joint_mimic import _SUPPORTED_JOINT_TYPES
-from .model import _SHAPE_VARIANT_ATTRIBUTES, Model, _pack_shape_pair_codes
+from .model import Model, _pack_shape_pair_codes
 from .rod import Rod
 from .shape_contact_pairs import _ShapeContactPairs
 from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
@@ -566,129 +574,6 @@ def _build_fk_level_topology(
     )
 
     return articulation_level_start, level_joint_start, level_joints, level_parent_pos
-
-
-def _custom_shape_value(attribute: Any, shape: int) -> Any:
-    """Value of a SHAPE custom attribute for ``shape``, falling back to its default."""
-    value = attribute.values.get(shape) if attribute.values else None
-    return attribute.default if value is None else value
-
-
-def _combine_inertial_properties(
-    a: tuple[float, np.ndarray, np.ndarray], b: tuple[float, np.ndarray, np.ndarray]
-) -> tuple[float, np.ndarray, np.ndarray]:
-    """Combine two ``(mass, com, inertia about com)`` triples expressed in the same frame."""
-    mass = a[0] + b[0]
-    if mass <= 0.0:
-        return mass, a[1], a[2] + b[2]
-    com = (a[0] * a[1] + b[0] * b[1]) / mass
-    inertia = np.zeros((3, 3))
-    for part_mass, part_com, part_inertia in (a, b):
-        offset = part_com - com
-        inertia += part_inertia + part_mass * (np.dot(offset, offset) * np.eye(3) - np.outer(offset, offset))
-    return mass, com, inertia
-
-
-_VARIANT_ROW_ROLES = ("collider", "visual", "site")
-"""Roles of body variant shape rows, in row order. Static structures such as contact pairs, joint
-filters, collision groups, and the MuJoCo geom/site layout depend on a shape's role, so each row
-holds shapes of a single role."""
-
-
-def _variant_shape_role(shape: _VariantShape) -> int:
-    """Index in :data:`_VARIANT_ROW_ROLES` of a variant shape's role."""
-    flags = int(shape.values["shape_flags"])
-    if flags & ShapeFlags.SITE:
-        return 2
-    return 0 if flags & ShapeFlags.COLLIDE_SHAPES else 1
-
-
-@dataclass(frozen=True, eq=False)
-class _VariantShape:
-    """One shape of a body variant: its builder attributes, finalized once for every body that selects it."""
-
-    label: str
-    """Shape label in the variant builder."""
-    values: dict[str, Any]
-    """Generic SHAPE builder attribute values: geometry, flags, materials, and appearance."""
-    custom: tuple[tuple[str, Any, Any], ...]
-    """Custom SHAPE attributes as ``(key, declaration, value)``."""
-
-
-@dataclass(frozen=True)
-class _Variant:
-    """A body variant: the shapes and mass properties of a single-body builder."""
-
-    label: str
-    """Variant label."""
-    shapes: tuple[_VariantShape, ...]
-    """Shapes of the variant, in row order."""
-    mass: float
-    """Mass [kg] of the variant body."""
-    com: tuple[float, float, float]
-    """Center of mass [m] of the variant body, in its frame."""
-    inertia: tuple[float, ...]
-    """Flattened inertia [kg·m²] of the variant body about its center of mass."""
-
-
-@dataclass(frozen=True, eq=False)
-class _VariantSet:
-    """Variants declared together by :meth:`ModelBuilder.add_body_variants`.
-
-    Bodies copied by :meth:`ModelBuilder.add_builder` or :meth:`ModelBuilder.replicate` share the
-    set by identity, so its shapes are finalized and stored once.
-    """
-
-    variants: tuple[_Variant, ...]
-    """The variants, indexed by variant id."""
-
-    @functools.cached_property
-    def role_counts(self) -> tuple[int, ...]:
-        """Rows per role in :data:`_VARIANT_ROW_ROLES`: the most shapes of that role in any variant."""
-        counts = [0] * len(_VARIANT_ROW_ROLES)
-        for variant in self.variants:
-            roles = [_variant_shape_role(shape) for shape in variant.shapes]
-            counts = [max(count, roles.count(role)) for role, count in enumerate(counts)]
-        return tuple(counts)
-
-    @property
-    def row_count(self) -> int:
-        """Shape rows a body needs to hold any of the variants."""
-        return sum(self.role_counts)
-
-    @functools.cached_property
-    def row_shapes(self) -> tuple[tuple[int, ...], ...]:
-        """Per variant, the index of the shape each row holds, or ``-1`` for an empty row.
-
-        Rows form one block per role, so a row's role is the same for every variant. Within a
-        block, a variant's shapes of that role keep their order.
-        """
-        block_starts = np.concatenate(([0], np.cumsum(self.role_counts)[:-1])).tolist()
-        tables = []
-        for variant in self.variants:
-            table = [-1] * self.row_count
-            next_row = list(block_starts)
-            for index, shape in enumerate(variant.shapes):
-                role = _variant_shape_role(shape)
-                table[next_row[role]] = index
-                next_row[role] += 1
-            tables.append(tuple(table))
-        return tuple(tables)
-
-
-@dataclass(frozen=True)
-class _BodyVariants:
-    """Variants declared on one body by :meth:`ModelBuilder.add_body_variants`."""
-
-    variant_set: _VariantSet
-    """The variants the body can select."""
-    row_start: int
-    """First of the body's contiguous variant shape rows."""
-    initial: int
-    """Variant selected in the finalized model."""
-
-    def shifted(self, shape_offset: int) -> _BodyVariants:
-        return replace(self, row_start=self.row_start + shape_offset)
 
 
 @dataclass(frozen=True)
@@ -6083,85 +5968,23 @@ class ModelBuilder:
         if not 0 <= initial < len(variants):
             raise IndexError(f"Initial variant {initial} out of range [0, {len(variants)}).")
         for variant in variants:
-            if variant is self or variant._body_variants:
-                raise ValueError("Variant builders must not be this builder or declare variants themselves.")
-            if variant.up_axis != self.up_axis:
-                raise ValueError("Variant builders must use the same up axis as this builder.")
-            if variant.body_count != 1:
-                raise ValueError(f"Each variant builder must contain exactly one body, got {variant.body_count}.")
-            if variant.body_shapes.get(-1):
-                raise ValueError("Variant builders must not contain shapes that are not attached to their body.")
-            for shape in variant.body_shapes.get(0, ()):
-                if variant.shape_type[shape] in (GeoType.PLANE, GeoType.HFIELD, GeoType.GAUSSIAN):
-                    raise ValueError("Variant shapes must not be planes, heightfields, or Gaussians.")
-                if variant.shape_flags[shape] & ShapeFlags.HYDROELASTIC:
-                    # The hydroelastic pipeline caches per-shape SDF descriptors at construction.
-                    raise ValueError("Variant shapes must not be hydroelastic.")
+            _validate_variant_builder(self, variant)
+        variant_set = _snapshot_variants(variants, labels, self._shape_row_attributes())
+        rows = _plan_variant_rows(variant_set, initial, self.body_label[body])
 
-        shape_attributes = self._shape_row_attributes()
-        variant_set = _VariantSet(
-            tuple(
-                _Variant(
-                    label,
-                    tuple(
-                        _VariantShape(
-                            variant.shape_label[shape],
-                            {name: getattr(variant, name)[shape] for name in shape_attributes},
-                            tuple(
-                                (key, replace(attribute, values=None), value)
-                                for key, attribute in variant.custom_attributes.items()
-                                if attribute.frequency == Model.AttributeFrequency.SHAPE
-                                and attribute.references is None
-                                and (value := _custom_shape_value(attribute, shape)) is not None
-                            ),
-                        )
-                        for shape in variant.body_shapes.get(0, ())
-                    ),
-                    float(variant.body_mass[0]),
-                    tuple(float(x) for x in variant.body_com[0]),
-                    tuple(float(x) for x in np.asarray(variant.body_inertia[0]).flatten()),
-                )
-                for variant, label in zip(variants, labels, strict=True)
-            )
-        )
-
-        # A row is built from the shape the initial variant places there, or from the first variant
-        # that places one, until the first selection. Its builder flags are the union over the
-        # shapes it can hold, which all have the row's role, so contact pairs and joint filters
-        # include every one of them. A collider row keeps its collision group, so its shapes must
-        # agree on one.
-        rows = []
-        role_rows = [0] * len(_VARIANT_ROW_ROLES)
-        for r in range(variant_set.row_count):
-            candidates = [
-                variant.shapes[table[r]]
-                for variant, table in zip(variant_set.variants, variant_set.row_shapes, strict=True)
-                if table[r] >= 0
-            ]
-            role = _variant_shape_role(candidates[0])
-            label = f"{self.body_label[body]}/variant_{_VARIANT_ROW_ROLES[role]}_{role_rows[role]}"
-            role_rows[role] += 1
-            groups = {int(candidate.values["shape_collision_group"]) for candidate in candidates}
-            if role == 0 and len(groups) > 1:
-                raise ValueError(
-                    f"Variant shapes held by row '{label}' have different collision groups {sorted(groups)}; "
-                    "the i-th colliders of all variants must share a collision group."
-                )
-            initial_shape = variant_set.row_shapes[initial][r]
-            seed = variant_set.variants[initial].shapes[initial_shape] if initial_shape >= 0 else candidates[0]
-            rows.append((seed, candidates, label))
-
+        # A row's builder flags are the union over the shapes it can hold, which all have the row's
+        # role, so contact pairs and joint filters include every one of them.
         row_start = self.shape_count
         world = self.body_world[body]
-        for seed, candidates, label in rows:
-            row = self._append_shape_row(seed, body, world, label)
+        for row in rows:
+            shape = self._append_shape_row(row.seed, body, world, row.label)
             flags = 0
-            for candidate in candidates:
+            for candidate in row.candidates:
                 flags |= int(candidate.values["shape_flags"])
-            self.shape_flags[row] = flags
-            self.body_shapes[body].append(row)
+            self.shape_flags[shape] = flags
+            self.body_shapes[body].append(shape)
             if flags & ShapeFlags.COLLIDE_SHAPES:
-                self._add_joint_collision_filter_pairs(row, body)
+                self._add_joint_collision_filter_pairs(shape, body)
         self._body_variants[body] = _BodyVariants(variant_set, row_start, initial)
 
     def _shape_row_attributes(self) -> list[str]:
@@ -14755,12 +14578,13 @@ class ModelBuilder:
             if not skip_all_validations and not skip_validation_joint_ordering:
                 self.validate_joint_ordering()
 
-            variant_start = self._append_variant_shape_rows()
+            self._variant_shape_rows = _VariantShapeRows(self)
             try:
                 with self._raw_array_access():
                     return self._finalize_impl(device=device, requires_grad=requires_grad)
             finally:
-                self._remove_variant_shape_rows(variant_start)
+                self._variant_shape_rows.remove(self)
+                del self._variant_shape_rows
         finally:
             if gc_was_enabled:
                 gc.enable()
@@ -15765,7 +15589,7 @@ class ModelBuilder:
 
             # Variant shape rows got their collision data above like shapes; move them to the variant
             # table so that the shape arrays, counts, and labels hold real shapes only.
-            shape_count = self._split_variant_shape_rows(m)
+            shape_count = self._variant_shape_rows.split(self, m)
 
             # ---------------------
             # springs
@@ -16312,7 +16136,7 @@ class ModelBuilder:
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
-            self._finalize_body_variants(m)
+            self._variant_shape_rows.finalize(self, m)
 
             m.bvh_build_shapes(
                 m,
@@ -16321,185 +16145,6 @@ class ModelBuilder:
             )
             m.bvh_build_particles(m)
             return m
-
-    def _append_variant_shape_rows(self) -> int | None:
-        """Append the shapes of every distinct variant set as detached shape rows, so that
-        :meth:`_finalize_impl` derives their collision data (SDFs, convex support, edges, bounds)
-        like a shape's.
-
-        Returns:
-            Index of the first variant shape row, or ``None`` without variants.
-        """
-        self._variant_row_start = self.shape_count
-        self._variant_sets: dict[int, _VariantSet] = {}
-        for body in sorted(self._body_variants):
-            variant_set = self._body_variants[body].variant_set
-            self._variant_sets.setdefault(id(variant_set), variant_set)
-        if not self._variant_sets:
-            return None
-        for variant_set in self._variant_sets.values():
-            for variant in variant_set.variants:
-                for shape in variant.shapes:
-                    self._append_shape_row(shape, -1, -1, f"{variant.label}/{shape.label}")
-        return self._variant_row_start
-
-    def _remove_variant_shape_rows(self, start: int | None) -> None:
-        """Remove the rows appended by :meth:`_append_variant_shape_rows`."""
-        del self._variant_row_start, self._variant_sets
-        if start is None:
-            return
-        for name in self._shape_row_attributes():
-            del getattr(self, name)[start:]
-        for attribute in self.custom_attributes.values():
-            if attribute.frequency == Model.AttributeFrequency.SHAPE and isinstance(attribute.values, dict):
-                for key in [k for k in attribute.values if k >= start]:
-                    del attribute.values[key]
-
-    def _split_variant_shape_rows(self, m: Model) -> int:
-        """Move the variant shape rows out of the per-shape arrays of ``m``.
-
-        Returns:
-            The number of shapes.
-        """
-        start = self._variant_row_start
-        total = len(self.shape_type)
-        rows: dict[str, Any] = {}
-        if start < total:
-            for name, spec in Model._CORE_ATTRIBUTE_SPECS.items():
-                if spec.frequency != Model.AttributeFrequency.SHAPE or spec.alias_of is not None:
-                    continue
-                value = m.__dict__.get(name)
-                if isinstance(value, wp.array) and value.shape[0] == total:
-                    rows[name] = value[start:]
-                    setattr(m, name, value[: max(start, 1) if spec.requires_empty_sentinel else start])
-            rows["shape_source"] = list(self.shape_source[start:])
-            m.shape_label = list(self.shape_label[:start])
-            m.shape_source = list(self.shape_source[:start])
-        m._variant_shape_rows = rows
-        return start
-
-    def _finalize_body_variants(self, m: Model) -> None:
-        """Build the variant tables of ``m`` and select the initial variants."""
-        device = m.device
-        shape_count = m.shape_count
-        rows = m.__dict__.pop("_variant_shape_rows")
-        variant_sets = list(self._variant_sets.values())
-        set_index = {id(variant_set): k for k, variant_set in enumerate(variant_sets)}
-
-        # Variant shapes of all sets, finalized once: geometry, materials, and custom attributes.
-        variants = [variant for variant_set in variant_sets for variant in variant_set.variants]
-        variant_shape_start = np.concatenate(([0], np.cumsum([len(v.shapes) for v in variants]))).astype(np.int32)
-        set_variant_start = np.concatenate(([0], np.cumsum([len(s.variants) for s in variant_sets]))).astype(np.int32)
-        m._variant_shape_count = int(variant_shape_start[-1])
-        m._variant_shape_geometry = {name: rows[name] for name in _SHAPE_VARIANT_ATTRIBUTES if name in rows}
-        m._variant_shape_source = rows.get("shape_source", [])
-        # Per variant, the variant shape each row of its set holds, or -1 for an empty row.
-        tables = [table for variant_set in variant_sets for table in variant_set.row_shapes]
-        variant_row_shape_start = np.concatenate(([0], np.cumsum([len(table) for table in tables]))).astype(np.int32)
-        variant_row_shape = np.array(
-            [
-                first + index if index >= 0 else -1
-                for first, table in zip(variant_shape_start[:-1], tables, strict=True)
-                for index in table
-            ],
-            dtype=np.int32,
-        )
-        m._variant_row_shape_start = wp.array(variant_row_shape_start, dtype=wp.int32, device=device)
-        m._variant_row_shape = wp.array(variant_row_shape, dtype=wp.int32, device=device)
-        m._variant_set_labels = [[variant.label for variant in variant_set.variants] for variant_set in variant_sets]
-        m._variant_shape_custom = {}
-        for key, attribute in self.custom_attributes.items():
-            if (
-                attribute.frequency != Model.AttributeFrequency.SHAPE
-                or attribute.assignment != Model.AttributeAssignment.MODEL
-                or attribute.references is not None
-                or m._variant_shape_count == 0
-            ):
-                continue
-            owner = getattr(m, attribute.namespace, None) if attribute.namespace else m
-            values = getattr(owner, attribute.name, None)
-            if not isinstance(values, wp.array) or values.ndim != 1:
-                continue
-            start = self._variant_row_start
-            variant_values = {
-                q: attribute.values[start + q]
-                for q in range(m._variant_shape_count)
-                if attribute.values and start + q in attribute.values
-            }
-            m._variant_shape_custom[key] = (
-                replace(attribute, values=variant_values).build_array(m._variant_shape_count, device=device),
-                values,
-            )
-
-        # Per body: its variant set, rows, and validated mass properties of the body as built plus
-        # each variant. Bodies with the same set and the same base share the validated values.
-        body_set = np.full(self.body_count, -1, dtype=np.int32)
-        body_count = np.zeros(self.body_count, dtype=np.int32)
-        body_first = np.zeros(self.body_count, dtype=np.int32)
-        body_rows = np.zeros((self.body_count, 2), dtype=np.int32)
-        body_inertia_start = np.zeros(self.body_count, dtype=np.int32)
-        initial = np.full(self.body_count, -1, dtype=np.int32)
-        shape_variant_row = np.zeros(shape_count, dtype=bool)
-        masses, coms, inertias = [], [], []
-        inertia_start = {}
-        for body in sorted(self._body_variants):
-            body_variants = self._body_variants[body]
-            k = set_index[id(body_variants.variant_set)]
-            body_set[body] = k
-            body_count[body] = len(body_variants.variant_set.variants)
-            body_first[body] = set_variant_start[k]
-            body_rows[body] = (body_variants.row_start, body_variants.variant_set.row_count)
-            shape_variant_row[
-                body_variants.row_start : body_variants.row_start + body_variants.variant_set.row_count
-            ] = True
-            initial[body] = body_variants.initial
-            base = (
-                float(self.body_mass[body]),
-                np.asarray(self.body_com[body], dtype=np.float64),
-                np.asarray(self.body_inertia[body], dtype=np.float64).reshape(3, 3),
-            )
-            key = (k, base[0], base[1].tobytes(), base[2].tobytes())
-            if key not in inertia_start:
-                inertia_start[key] = len(masses)
-                for variant in body_variants.variant_set.variants:
-                    mass, com, inertia = _combine_inertial_properties(
-                        base,
-                        (
-                            variant.mass,
-                            np.asarray(variant.com, dtype=np.float64),
-                            np.asarray(variant.inertia, dtype=np.float64).reshape(3, 3),
-                        ),
-                    )
-                    mass, inertia, _ = verify_and_correct_inertia(
-                        mass,
-                        wp.mat33(*inertia.flatten()),
-                        self.balance_inertia,
-                        self.bound_mass,
-                        self.bound_inertia,
-                        f"{self.body_label[body]}/{variant.label}",
-                    )
-                    masses.append(mass)
-                    coms.append(com)
-                    inertias.append(np.asarray(inertia, dtype=np.float32).reshape(3, 3))
-            body_inertia_start[body] = inertia_start[key]
-
-        m._body_variant_set = body_set
-        m._body_variant_count = wp.array(body_count, dtype=wp.int32, device=device)
-        m._body_variant_first = wp.array(body_first, dtype=wp.int32, device=device)
-        m._body_variant_rows = wp.array(body_rows, dtype=wp.vec2i, device=device)
-        m._body_variant_inertia_start = wp.array(body_inertia_start, dtype=wp.int32, device=device)
-        m._variant_mass = wp.array(masses, dtype=wp.float32, device=device)
-        m._variant_com = wp.array(np.asarray(coms, dtype=np.float32).reshape(-1, 3), dtype=wp.vec3, device=device)
-        m._variant_inertia = wp.array(
-            np.asarray(inertias, dtype=np.float32).reshape(-1, 3, 3), dtype=wp.mat33, device=device
-        )
-        m._variant_row_max = max((variant_set.row_count for variant_set in variant_sets), default=0)
-        m._variant_row_shapes = wp.array(np.flatnonzero(shape_variant_row), dtype=wp.int32, device=device)
-        m._shape_variant_row = wp.array(shape_variant_row, dtype=wp.bool, device=device)
-        m._shape_variant_shape = wp.full(shape_count, -1, dtype=wp.int32, device=device)
-        m.body_variant = wp.full(self.body_count, -1, dtype=wp.int32, device=device)
-        if self._body_variants:
-            m.select_body_variants(wp.array(initial, dtype=wp.int32, device=device))
 
     def _iter_validated_shape_collision_filter_pairs(self, pairs):
         shape_count = len(self.shape_type)
