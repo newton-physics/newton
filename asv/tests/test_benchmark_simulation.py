@@ -206,23 +206,28 @@ class TestSimulationBenchmarks(unittest.TestCase):
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
 
     def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
-        """Keep large cases nightly with longer timeouts than PR-gated coarse cloth."""
+        """Bound nightly collision sampling without changing PR-gated coarse cloth."""
         benchmark_names = (
             "simulation.bench_cloth.DeformableRigidCollision.time_collide",
             "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
         )
         inventory = {entry["name"]: entry for entry in self._discover_benchmarks(pr_gate=False)}
+        default_timeout = json.loads((ROOT / "asv.conf.json").read_text(encoding="utf-8"))["default_benchmark_timeout"]
         patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
         for benchmark_name in benchmark_names:
             with self.subTest(benchmark_name=benchmark_name):
                 self.assertIn(benchmark_name, inventory)
                 self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
-                self.assertEqual(inventory[benchmark_name]["timeout"], 1800)
+                self.assertEqual(inventory[benchmark_name]["timeout"], default_timeout)
+                self.assertEqual(inventory[benchmark_name]["rounds"], 1)
         self.assertEqual(bench_cloth.DeformableRigidCollision.repeat, 3)
         self.assertEqual(bench_cloth.DeformableRigidCollisionScale.repeat, 1)
+        fallback = next(case for case in bench_cloth.DEFORMABLE_RIGID_CASES if case[0] == "mesh_high_poly_fallback")
+        self.assertEqual(fallback, ("mesh_high_poly_fallback", "mesh_high_poly", 64, 32, 1, False))
         coarse_name = "simulation.bench_cloth.FastDeformableRigidCoarseCloth.time_collide"
         self.assertIn(coarse_name, inventory)
-        self.assertEqual(inventory[coarse_name]["timeout"], 600)
+        self.assertEqual(inventory[coarse_name]["timeout"], default_timeout)
+        self.assertEqual(inventory[coarse_name]["rounds"], 2)
         self.assertTrue(any(pattern.search(coarse_name) for pattern in patterns))
         self.assertEqual(
             {case[1] for case in bench_cloth.FastDeformableRigidCoarseCloth.params[0]},
@@ -230,12 +235,48 @@ class TestSimulationBenchmarks(unittest.TestCase):
         )
         vbd_name = "simulation.bench_cloth.FastDeformableRigidCoarseClothVBD.time_simulate"
         self.assertIn(vbd_name, inventory)
-        self.assertEqual(inventory[vbd_name]["timeout"], 600)
+        self.assertEqual(inventory[vbd_name]["timeout"], default_timeout)
+        self.assertEqual(inventory[vbd_name]["rounds"], 2)
         self.assertTrue(any(pattern.search(vbd_name) for pattern in patterns))
         self.assertIn(
             ("box_coarse_cloth_256", "box", 8, 256, 1, False),
             bench_cloth.FastDeformableRigidCoarseClothVBD.params[0],
         )
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
+    def test_deformable_rigid_collision_reuses_setup_between_samples(self):
+        """Reuse a real collision graph across ASV samples without moving particles."""
+        workload = bench_cloth.DeformableRigidCollision()
+        workload.params = (
+            (
+                ("small_box", "box", 4, 1, 1, False),
+                ("larger_box", "box", 8, 1, 1, False),
+            ),
+        )
+        with wp.ScopedDevice("cuda:0"):
+            benchmark = TimeBenchmark("time_collide", workload.time_collide, [workload])
+            benchmark.set_param_idx(0)
+            benchmark.do_setup()
+            model, graph = workload.model, workload.graph
+            positions = workload.state.particle_q.numpy()
+            contact_count = int(workload.contacts.soft_contact_count.numpy()[0])
+            self.assertGreater(contact_count, 0)
+
+            result = benchmark.do_run()
+            benchmark.do_teardown()
+
+            self.assertEqual(len(result["samples"]), workload.repeat)
+            self.assertIs(workload.model, model)
+            self.assertIs(workload.graph, graph)
+            np.testing.assert_array_equal(workload.state.particle_q.numpy(), positions)
+            self.assertEqual(int(workload.contacts.soft_contact_count.numpy()[0]), contact_count)
+
+            benchmark.set_param_idx(1)
+            benchmark.do_setup()
+            self.assertIsNot(workload.model, model)
+            self.assertIsNot(workload.graph, graph)
+            self.assertGreater(workload.model.particle_count, model.particle_count)
+            benchmark.do_teardown()
 
     def test_deformable_rigid_benchmark_rejects_overflow(self):
         """Reject each truncated contact stream but allow exactly full buffers."""
