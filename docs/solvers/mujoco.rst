@@ -1143,13 +1143,24 @@ synchronize the updated fixed-root poses into MuJoCo.
 Kinematic welds
 ~~~~~~~~~~~~~~~
 
-MuJoCo has no prescribed degrees of freedom, so each kinematic root is held by
-a weld constraint to the world without stiffness or damping. The weld locks the root's
-acceleration, so through each step the root keeps the pose and velocity pushed
-from :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd`.
-Constraints and contacts treat the root as immovable, while the mass matrix
-stays physical and the root keeps its authored
+MuJoCo has no prescribed degrees of freedom. Its documented way to drive a
+body that interacts physically is to weld it to a moving target (see
+`MoCap bodies <https://mujoco.readthedocs.io/en/stable/modeling.html#mocap-bodies>`__).
+:class:`~newton.solvers.SolverMuJoCo` uses a variant of this: each kinematic
+root keeps its joint and is held by a weld constraint to the world without
+stiffness or damping, re-centered on the prescribed pose whenever the state is
+pushed. The weld locks the root's acceleration, so through each step the root
+keeps the pose and velocity pushed from :attr:`~newton.State.joint_q` and
+:attr:`~newton.State.joint_qd`. Constraints and contacts treat the root as
+immovable, while the mass matrix stays physical and the root keeps its authored
 :attr:`~newton.Model.joint_armature`.
+
+The weld is resolved by MuJoCo's constraint solver, so dynamic bodies attached
+to a kinematic root by joints follow fixed-base dynamics only as closely as
+the solver converges. The default Newton solver reproduces them closely. The
+CG solver can stop before it resolves the weld, so dynamic descendants of a
+kinematic root can drift noticeably from fixed-base motion; use
+``solver="newton"`` for kinematic roots that carry articulated dynamic bodies.
 
 MuJoCo's ``equality`` and ``constraint`` disable flags, set through MJCF
 ``<flag equality="disable"/>`` or ``model.mujoco.flag_equality`` and

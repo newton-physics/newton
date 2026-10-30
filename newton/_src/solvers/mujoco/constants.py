@@ -21,8 +21,8 @@ KINEMATIC_LOCK_INERTIA_RATIO = 1.0e4
 """Armature, relative to a DOF's own inertia (``dof_M0``), that locks kinematic root DOFs while MuJoCo computes its
 constants.
 
-Large enough for constraint regularization to treat the root as immovable, small enough
-to keep its weld and contact rows conditioned for MuJoCo Warp's float32 CG solver."""
+Larger ratios make kinematic roots more rigid but slow the convergence of iterative solvers on their weld and
+contact rows."""
 
 MJ_MINMU = 1.0e-5
 """MuJoCo's minimum friction coefficient clamp."""
