@@ -479,7 +479,10 @@ class ViewerUSD(ViewerBase):
             scale = [1.0]
 
         is_scaled = geo_type in (newton.GeoType.BOX, newton.GeoType.ELLIPSOID)
-        self._remove_retyped_prototype(name, UsdGeom.Xform if is_scaled else schema)
+        if is_scaled:
+            self._remove_retyped_prototype(name, UsdGeom.Xform, child_type=schema)
+        else:
+            self._remove_retyped_prototype(name, schema)
         path = self._get_path(name)
         self._ensure_scopes_for_path(self.stage, path)
         # Time-sample the size so re-logging a prototype animates it, like mesh points.
@@ -502,19 +505,28 @@ class ViewerUSD(ViewerBase):
         self._meshes[name] = root
         return True
 
-    def _remove_retyped_prototype(self, name: str, prim_type: type) -> None:
+    def _remove_retyped_prototype(self, name: str, prim_type: type, child_type: type | None = None) -> None:
         # A prim's type cannot vary over time, and redefining it in place would
         # keep a stale /geom child or hand log_mesh a non-mesh prim.
         existing = self._meshes.get(name)
-        if existing is not None and not existing.GetPrim().IsA(prim_type):
-            warnings.warn(
-                f"ViewerUSD: prototype '{name}' changed from {existing.GetPrim().GetTypeName()} to "
-                f"{prim_type.__name__}; replacing it discards its earlier time samples.",
-                NewtonWarning,
-                stacklevel=3,
-            )
-            self.stage.RemovePrim(existing.GetPath())
-            del self._meshes[name]
+        if existing is None:
+            return
+        prim = existing.GetPrim()
+        child = prim.GetChild("geom")
+        if prim.IsA(prim_type) and (child_type is None or child.IsA(child_type)):
+            return
+        old_type = f"{prim.GetTypeName()}/{child.GetTypeName()}" if child else prim.GetTypeName()
+        new_type = f"{prim_type.__name__}/{child_type.__name__}" if child_type else prim_type.__name__
+        warnings.warn(
+            f"ViewerUSD: prototype '{name}' changed from {old_type} to {new_type}; "
+            "replacing it discards its earlier time samples.",
+            NewtonWarning,
+            stacklevel=3,
+        )
+        self.stage.RemovePrim(existing.GetPath())
+        del self._meshes[name]
+        # A Gprim replacement bypasses log_mesh, which would otherwise reset this.
+        self._mesh_appearance.pop(name, None)
 
     def _resolve_texture_path(self, mesh_name: str, texture) -> str | None:
         """Resolve a texture path or export an image array next to the USD file."""

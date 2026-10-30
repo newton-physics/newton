@@ -708,6 +708,41 @@ class TestViewerUSD(unittest.TestCase):
             viewer.log_mesh("/gprim", points, indices)
         self.assertTrue(stage.GetPrimAtPath("/root/gprim").IsA(UsdGeom.Mesh))
 
+    def test_log_geo_replaces_scaled_prototype_of_another_type(self):
+        """Swapping box and ellipsoid replaces the prototype instead of keeping the old scale samples."""
+        viewer = self._make_viewer()
+        stage = viewer.stage
+        viewer.begin_frame(0.0)
+        viewer.log_geo("/shape", newton.GeoType.BOX, (0.1, 0.2, 0.3), 0.0, True)
+
+        for frame, (geo_type, schema) in enumerate(
+            ((newton.GeoType.ELLIPSOID, UsdGeom.Sphere), (newton.GeoType.BOX, UsdGeom.Cube)), start=1
+        ):
+            viewer.begin_frame(frame / viewer.fps)
+            with self.assertWarns(NewtonWarning):
+                viewer.log_geo("/shape", geo_type, (0.4, 0.5, 0.6), 0.0, True)
+            gprim = stage.GetPrimAtPath("/root/shape/geom")
+            self.assertTrue(gprim.IsA(schema))
+            # The replacement's first sample also holds for earlier frames.
+            bound = schema(gprim).ComputeLocalBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
+            np.testing.assert_allclose(bound.GetMax(), [0.4, 0.5, 0.6], rtol=1e-6)
+
+    def test_log_geo_drops_appearance_of_replaced_mesh(self):
+        """A Gprim replacing a colored mesh prototype does not inherit the mesh's appearance."""
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+        points = wp.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        viewer.log_mesh("/shape", points, indices, color=(0.9, 0.1, 0.1), opacity=0.5)
+        with self.assertWarns(NewtonWarning):
+            viewer.log_geo("/shape", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+
+        xforms = wp.array([wp.transform_identity()], dtype=wp.transform)
+        viewer.log_instances("/instances", "/shape", xforms, None, None, None)
+        instance = viewer.stage.GetPrimAtPath("/root/instances/instance_0")
+        material, _binding = UsdShade.MaterialBindingAPI(instance).ComputeBoundMaterial()
+        self.assertFalse(material)
+
     def test_log_geo_animates_gprim_size(self):
         """Re-logging a Gprim prototype keeps earlier sizes as time samples."""
         viewer = self._make_viewer()
