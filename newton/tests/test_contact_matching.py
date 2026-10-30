@@ -14,9 +14,11 @@ from newton._src.geometry.contact_match import _CLAIM_SENTINEL, MATCH_BROKEN, MA
 from newton._src.geometry.contact_sort import ContactSorter
 from newton._src.geometry.tri_mesh_collision import (
     NO_ANCHOR,
+    drag_vertex_triangle_anchor,
     edge_edge_anchor,
     edge_edge_anchor_slip,
     vertex_triangle_anchor,
+    vertex_triangle_anchor_holds,
     vertex_triangle_anchor_slip,
 )
 from newton._src.solvers.vbd.particle_vbd_kernels import relax_self_contact_anchors
@@ -1359,6 +1361,8 @@ def test_sticky_self_contact_history_follows_world_and_buffer(test, device):
         pipeline.reset_contact_matching(wp.array((False, True, False), dtype=wp.bool, device=device))
         np.testing.assert_allclose(anchor_x_at(0.0205), [0.0202, 0.0205], atol=1.0e-7)
         np.testing.assert_allclose(anchor_x_at(0.0205, other), [0.0204, 0.0205], atol=1.0e-7)
+        pipeline.reset_contact_matching(wp.array((False, False, True), dtype=wp.bool, device=device))
+        np.testing.assert_allclose(anchor_x_at(0.0205), [0.0202, 0.0205], atol=1.0e-7)
 
         # Without persistent anchors, VBD measures self-contact slip as each step's motion.
         for fresh in (
@@ -1523,6 +1527,7 @@ def _vertex_triangle_rest_slip_kernel(
 ):
     i = wp.tid()
     anchor = vertex_triangle_anchor(p[i], a[i], b[i], c[i])
+    slip[i] = -1.0
     if anchor[0] != NO_ANCHOR:
         slip[i] = wp.length(vertex_triangle_anchor_slip(anchor, p[i], a[i], b[i], c[i]))
 
@@ -1546,7 +1551,54 @@ def test_vertex_triangle_anchor_slip_bounded_on_thin_triangle(test, device):
         outputs=[slip],
         device=device,
     )
+    test.assertGreaterEqual(slip.numpy()[0], 0.0, "a well-shaped triangle gets an anchor")
     test.assertLessEqual(slip.numpy().max(), 1.0e-5)
+
+
+@wp.kernel
+def _drag_onto_collapsed_triangle_kernel(
+    p: wp.vec3,
+    a: wp.vec3,
+    b: wp.vec3,
+    c_rest: wp.vec3,
+    c: wp.array[wp.vec3],
+    dragged: wp.array[wp.vec3],
+    holds: wp.array[wp.int32],
+):
+    i = wp.tid()
+    anchor = vertex_triangle_anchor(p, a, b, c_rest)
+    dragged[i] = drag_vertex_triangle_anchor(anchor, p, a, b, c[i], 5.0e-4)
+    holds[i] = wp.where(vertex_triangle_anchor_holds(anchor, a, b, c[i]), 1, 0)
+
+
+def test_vertex_triangle_anchor_waits_while_triangle_collapses(test, device):
+    """A kept anchor neither moves nor places a point while its triangle is flattened past the cutoff.
+
+    The anchor's height is placed along the triangle normal, which float rounding turns as the triangle
+    flattens: a vertex 4 mm over a 10 cm triangle whose angle sine falls to 6e-6 reads 0.1 mm of slip
+    without moving. Once the triangle opens again the anchor still names the same material point.
+    """
+    rotation = wp.quat_rpy(0.7, -0.4, 1.1)
+    origin = wp.vec3(0.3, -0.2, 0.1)
+
+    def point(x, y, z):
+        return origin + wp.quat_rotate(rotation, wp.vec3(x, y, z))
+
+    sines = np.geomspace(1.0e-1, 1.0e-7, 13)
+    c = wp.array([point(0.05, 0.1 * s, 0.0) for s in sines], dtype=wp.vec3, device=device)
+    dragged = wp.zeros(sines.size, dtype=wp.vec3, device=device)
+    holds = wp.zeros(sines.size, dtype=wp.int32, device=device)
+    wp.launch(
+        _drag_onto_collapsed_triangle_kernel,
+        dim=sines.size,
+        inputs=[point(0.05, 0.0, 0.004), point(0.0, 0.0, 0.0), point(0.1, 0.0, 0.0), point(0.05, 0.1, 0.0), c],
+        outputs=[dragged, holds],
+        device=device,
+    )
+    sin_sq = (2.0 * sines) ** 2 / (1.0 + (2.0 * sines) ** 2)
+    np.testing.assert_array_equal(holds.numpy(), sin_sq > 1.0e-3)
+    dragged = dragged.numpy()
+    np.testing.assert_array_equal(dragged, np.broadcast_to(dragged[0], dragged.shape))
 
 
 # ---------------------------------------------------------------------------
@@ -1751,6 +1803,12 @@ add_function_test(
     TestContactMatchingSticky,
     "test_edge_edge_anchor_slip_bounded_by_twist",
     test_edge_edge_anchor_slip_bounded_by_twist,
+    devices=devices,
+)
+add_function_test(
+    TestContactMatchingSticky,
+    "test_vertex_triangle_anchor_waits_while_triangle_collapses",
+    test_vertex_triangle_anchor_waits_while_triangle_collapses,
     devices=devices,
 )
 add_function_test(

@@ -149,16 +149,22 @@ degrees: the plane coordinates divide by it, so a flatter angle reads float roun
 
 
 @wp.func
+def triangle_is_degenerate(e1: wp.vec3, e2: wp.vec3):
+    """Return whether the triangle spanned by edges ``e1`` and ``e2`` is too flat to give a stable frame."""
+    return wp.length_sq(wp.cross(e1, e2)) <= DEGENERATE_TRIANGLE_SIN_SQ * wp.length_sq(e1) * wp.length_sq(e2)
+
+
+@wp.func
 def vertex_triangle_anchor(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3):
     """Return vertex ``p`` in the frame of triangle ``abc``: plane coordinates along ``b - a`` and
     ``c - a``, unclamped, and the height along the triangle normal; ``NO_ANCHOR`` for a degenerate
     triangle."""
     e1 = b - a
     e2 = c - a
+    if triangle_is_degenerate(e1, e2):
+        return wp.vec3(NO_ANCHOR)
     n = wp.cross(e1, e2)
     det = wp.length_sq(n)
-    if det <= DEGENERATE_TRIANGLE_SIN_SQ * wp.length_sq(e1) * wp.length_sq(e2):
-        return wp.vec3(NO_ANCHOR)
     w = p - a
     height = wp.dot(w, n) / wp.sqrt(det)
     d12 = wp.dot(e1, e2)
@@ -189,8 +195,17 @@ def edge_edge_anchor_slip(anchor: wp.vec2, p0: wp.vec3, p1: wp.vec3, q0: wp.vec3
 
 
 @wp.func
+def vertex_triangle_anchor_holds(anchor: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3):
+    """Return whether ``anchor`` places a point on triangle ``abc``; a degenerate triangle's normal
+    does not, so its anchor waits until the triangle opens again."""
+    return anchor[0] != NO_ANCHOR and not triangle_is_degenerate(b - a, c - a)
+
+
+@wp.func
 def drag_vertex_triangle_anchor(anchor: wp.vec3, p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3, max_slip: float):
     """Return ``anchor`` moved along so vertex ``p`` has slipped at most ``max_slip`` from it."""
+    if not vertex_triangle_anchor_holds(anchor, a, b, c):
+        return anchor
     slip = vertex_triangle_anchor_slip(anchor, p, a, b, c)
     slip_length = wp.length(slip)
     if slip_length <= max_slip:

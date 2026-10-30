@@ -239,6 +239,7 @@ class SelfContactMatcher:
         if (
             collision_info.vertex_colliding_triangles_anchor.shape != self._prev_triangle.shape
             or collision_info.edge_colliding_edges_anchor.shape != self._prev_edge.shape
+            or contacts._self_contact_reset_cursor is None
         ):
             raise ValueError(
                 "This Contacts buffer has no sticky self-contact anchors; allocate it with "

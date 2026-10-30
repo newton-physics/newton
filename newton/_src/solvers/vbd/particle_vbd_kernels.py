@@ -34,13 +34,13 @@ from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
 from ...geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from ...geometry.tri_mesh_collision import (
-    NO_ANCHOR,
     TriMeshCollisionInfo,
     drag_edge_edge_anchor,
     drag_vertex_triangle_anchor,
     edge_edge_anchor_slip,
     get_edge_colliding_edges_count,
     get_vertex_colliding_triangles_count,
+    vertex_triangle_anchor_holds,
     vertex_triangle_anchor_slip,
 )
 from ...utils.mesh import (
@@ -1283,7 +1283,7 @@ def evaluate_vertex_triangle_collision_force_hessian_4_vertices(
         slip = dx
         if friction_anchors.shape[0] > 0:
             anchor = friction_anchors[slot]
-            if anchor[0] != NO_ANCHOR:
+            if vertex_triangle_anchor_holds(anchor, a, b, c):
                 slip = vertex_triangle_anchor_slip(anchor, p, a, b, c)
 
         e0, e1 = orthonormal_basis(collision_normal)
@@ -1596,7 +1596,7 @@ def relax_self_contact_anchors(
             slot = offset + i
             tri = collision_info.vertex_colliding_triangles[2 * slot + 1]
             anchor = collision_info.vertex_colliding_triangles_anchor[slot]
-            if tri >= 0 and anchor[0] != NO_ANCHOR:
+            if tri >= 0:
                 collision_info.vertex_colliding_triangles_anchor[slot] = drag_vertex_triangle_anchor(
                     anchor,
                     p,

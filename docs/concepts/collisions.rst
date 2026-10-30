@@ -2630,7 +2630,9 @@ and edge-edge pair a friction anchor
 anchor names material points: the vertex position in the triangle's frame, or the
 points of the two edges that touched.  A new pair anchors where it was at the
 start of the step.  A pair found again in the next pass keeps its anchor, dragged
-along so the pair is at most ``contact_matching_pos_threshold`` from it.  Each
+along so the pair is at most ``contact_matching_pos_threshold`` from it.  The
+anchor on a triangle flattened below about 1.8 degrees is neither dragged nor
+used until the triangle opens again.  Each
 :class:`~newton.Contacts` buffer keeps its own anchors, and a reset that selects
 the world of either side of a pair restarts the pair in every buffer.  The pairs
 of a pipeline with ``requires_grad`` get no anchor.
