@@ -3,7 +3,7 @@
 
 from .articulation import eval_fk, eval_ik, eval_inverse_dynamics_force, eval_jacobian, eval_mass_matrix
 from .builder import ModelBuilder
-from .camera import CameraLens
+from .camera import CameraLensType
 from .collide import CollisionPipeline
 from .collision_schedule import CollisionSubstepScheduler
 from .contact_kinematics import eval_rigid_contact_kinematics
@@ -25,7 +25,7 @@ from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
 
 __all__ = [
     "BodyFlags",
-    "CameraLens",
+    "CameraLensType",
     "CollisionPipeline",
     "CollisionSubstepScheduler",
     "Contacts",

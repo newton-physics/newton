@@ -53,7 +53,7 @@ __all__ += [
 # ==================================================================================
 from ._src.sim import (  # noqa: E402
     BodyFlags,
-    CameraLens,
+    CameraLensType,
     CollisionPipeline,
     CollisionSubstepScheduler,
     Contacts,
@@ -81,7 +81,7 @@ from ._src.sim import (  # noqa: E402
 
 __all__ += [
     "BodyFlags",
-    "CameraLens",
+    "CameraLensType",
     "CollisionPipeline",
     "CollisionSubstepScheduler",
     "Contacts",

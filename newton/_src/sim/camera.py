@@ -14,8 +14,8 @@ from __future__ import annotations
 from enum import IntEnum
 
 
-class CameraLens(IntEnum):
-    """Lens model of a model camera."""
+class CameraLensType(IntEnum):
+    """Lens type of a model camera."""
 
     PINHOLE = 0
     """Ideal pinhole projection defined by the camera's focal length, aperture

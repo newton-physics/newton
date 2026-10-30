@@ -1116,8 +1116,8 @@ class TestSensorCamera(unittest.TestCase):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         fov = math.radians(60.0)
         builder.add_camera(-1, fov=fov, label="pinhole")
-        custom_a = builder.add_camera(-1, lens=newton.CameraLens.CUSTOM, label="custom_a")
-        builder.add_camera(-1, lens=newton.CameraLens.CUSTOM, label="custom_b")
+        custom_a = builder.add_camera(-1, lens_type=newton.CameraLensType.CUSTOM, label="custom_a")
+        builder.add_camera(-1, lens_type=newton.CameraLensType.CUSTOM, label="custom_b")
         builder.replicate(world, 1)
         width, height = 8, 8
         center = (height // 2, width // 2)

@@ -16,7 +16,7 @@ import warp as wp
 from ..core.types import Devicelike
 from ..geometry.deformable_visual import DeformableVisuals
 from ..geometry.flags import ShapeFlags
-from ..sim.camera import CameraLens
+from ..sim.camera import CameraLensType
 from ..utils.selection import match_labels
 from .sensor_camera_render import Utils
 from .sensor_camera_render.camera_utils import _pinhole_pixel_ray
@@ -317,14 +317,14 @@ class SensorCamera:
                 raise ValueError(f"Shapes {not_sites} are not sites")
             frame_world = model.shape_world.numpy()
             self._frame_labels = model.shape_label
-            frame_lens = {f: int(CameraLens.CUSTOM) for f in frames}
+            frame_lens = {f: int(CameraLensType.CUSTOM) for f in frames}
         else:
             frames = list(match_labels(model.camera_label, cameras))
             if not frames:
                 raise ValueError(f"No cameras match {cameras!r}")
             frame_world = model.camera_world.numpy()
             self._frame_labels = model.camera_label
-            lens = model.camera_lens.numpy()
+            lens = model.camera_lens_type.numpy()
             frame_lens = {f: int(lens[f]) for f in frames}
 
         view_frame, view_world = [], []
@@ -378,7 +378,7 @@ class SensorCamera:
             self._view_clip.fill_(wp.vec2f(near, far))
         self._view_pinhole = wp.zeros(self.view_count, dtype=wp.vec4f, device=device)
 
-        if ray_mode == SensorCamera.RayMode.ANALYTIC and np.any(self._view_lens_np != int(CameraLens.PINHOLE)):
+        if ray_mode == SensorCamera.RayMode.ANALYTIC and np.any(self._view_lens_np != int(CameraLensType.PINHOLE)):
             raise ValueError("RayMode.ANALYTIC needs PINHOLE cameras; use RayMode.PRECOMPUTED with set_camera_rays")
 
         # Precomputed bundles: pinhole lens groups first, custom bundles appended by set_camera_rays().
@@ -433,7 +433,7 @@ class SensorCamera:
         identical intrinsics share one bundle. Custom bundles set with
         :meth:`set_camera_rays` are kept."""
         self._require_bound()
-        pinhole_views = np.flatnonzero(self._view_lens_np == int(CameraLens.PINHOLE))
+        pinhole_views = np.flatnonzero(self._view_lens_np == int(CameraLensType.PINHOLE))
         bundle_params = np.zeros((0, 4), dtype=np.float32)
         self._view_bundle_np[pinhole_views] = -1
         if len(pinhole_views) and not self._from_sites:
@@ -520,7 +520,7 @@ class SensorCamera:
         if cameras is None:
             views = np.arange(self.view_count)
             if not self._from_sites:
-                views = np.flatnonzero(self._view_lens_np == int(CameraLens.CUSTOM))
+                views = np.flatnonzero(self._view_lens_np == int(CameraLensType.CUSTOM))
         else:
             views = self._views_matching(cameras)
         if len(views) == 0:
