@@ -48,6 +48,14 @@ cited by :class:`~newton.solvers.SolverVBD`:
 - Chris Giles, Elie Diaz, and Cem Yuksel. 2025. Augmented Vertex Block
   Descent. *ACM Trans. Graph.* 44, 4. https://doi.org/10.1145/3731195
   (the deprecated legacy rigid constraint path)
+- Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
+  and Truncate: A Penetration and Inversion Free Framework for Coupled
+  Multi-physics System. In *ACM SIGGRAPH 2026 Conference Papers*.
+  https://doi.org/10.1145/3799902.3811143 (penetration-free truncation, DAT)
+- Anka He Chen, Jerry Hsu, Ziheng Liu, Miles Macklin, Yin Yang, and Cem
+  Yuksel. 2025. Offset Geometric Contact. *ACM Trans. Graph.* 44, 4.
+  https://doi.org/10.1145/3731205 (feature regions of full-surface mesh
+  contact, OGC)
 
 .. _vbd-how-it-works:
 
