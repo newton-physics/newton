@@ -1017,28 +1017,31 @@ def test_propagation_constraint_max_keeps_contact_rows_with_a_small_free_body_bu
     state_in, state_out = model.state(), model.state()
     pipeline.collide(state_in, contacts)
 
-    def step_and_read_watermarks(response, **options):
+    def step(response, free_body_constraint_max=1, **options):
         # A summed capacity of 1 + 1 rows is far below the rows of one resting box.
         solver = SolverSteel(
             model,
             solve_mode="matrix_free",
             articulated_contact_response=response,
-            free_body_constraint_max=1,
+            free_body_constraint_max=free_body_constraint_max,
             articulation_constraint_max=1,
             row_watermark=True,
             warn_constraint_overflow=False,
             **options,
         )
         solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
-        return solver.constraint_row_watermarks()
+        return solver.constraint_row_watermarks(), state_out.body_qd.numpy()
 
     for response in ("propagation", "propagation_colored"):
         with test.subTest(response=response):
-            summed = step_and_read_watermarks(response)
+            summed, _ = step(response)
             test.assertGreater(summed["propagation_dropped_contact_rows_high_water"], 0)
-            sized = step_and_read_watermarks(response, propagation_constraint_max=16)
+            sized, sized_qd = step(response, propagation_constraint_max=16)
             test.assertEqual(sized["propagation_dropped_contact_rows_high_water"], 0)
             test.assertEqual(sized["propagation_high_water"], summed["propagation_raw_high_water"])
+            # The retained rows reach the solve: it matches a summed budget large enough for them.
+            _, ample_qd = step(response, free_body_constraint_max=15)
+            np.testing.assert_allclose(sized_qd, ample_qd, atol=1e-6)
 
 
 add_function_test(
