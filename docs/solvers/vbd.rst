@@ -34,11 +34,7 @@ diagnosis and parameter tuning, see :ref:`Tuning VBD` and the
 When to Choose VBD
 ------------------
 
-*In development.* This section will position VBD against the other Newton
-solvers for cloth, soft-body, rigid, and mixed scenes, and state its current
-limitations.
-
-Until then, start from the :ref:`Supported Features` matrix and the
+Start from the :ref:`Supported Features` matrix and the
 :ref:`Joint feature support` tables in the :doc:`solver overview
 </solvers/index>`. The underlying methods are described in the references
 cited by :class:`~newton.solvers.SolverVBD`:
@@ -159,6 +155,50 @@ iteration, because a block only sees its neighbours' current values. And an
 unfinished solve is not discarded: whatever position the last iteration leaves
 becomes the new velocity through :math:`\mathbf{v} = (\mathbf{x}_{\text{new}} -
 \mathbf{x}_{\text{old}})/h`.
+
+.. _vbd-rigid-joints:
+
+Rigid bodies and joints
+~~~~~~~~~~~~~~~~~~~~~~~
+
+A rigid body is one block with 6 degrees of freedom: the translation of its
+centre of mass and a rotation vector about it. Its inertia term is the second
+sum of the step objective, with the target pose from forward integration.
+Every term that touches the body (joints, body-body contacts, rigid-soft
+contacts, attachments, tendons) adds a force, a torque and the three 3x3
+blocks of the 6x6 Hessian. The block is solved by one :math:`LDL^{\mathsf T}`
+factorisation (``ldlt6_solve``); the translation increment moves the centre of
+mass and the rotation increment becomes a quaternion applied to the current
+orientation (``solve_rigid_body``).
+
+Joints are constraint rows between a parent and a child body, handled as
+compliant augmented-Lagrangian rows (``evaluate_joint_force_hessian``). A
+structural row measures a residual :math:`C`: the linear row is the world
+offset between the two joint anchors, the angular row the rotation away from
+the rest relative orientation (``compute_kappa_and_jacobian``). A projector
+removes the free axes of the joint type (``build_joint_projectors``): BALL
+keeps the three linear rows; REVOLUTE the three linear rows and two angular
+rows; PRISMATIC two linear rows and the three angular rows; FIXED all six; D6
+whatever its free axes leave; FREE adds no row. Each row has a material
+stiffness :math:`k` (``rigid_joint_linear_ke``, ``rigid_joint_angular_ke``),
+an internal metric :math:`\rho = \max(\text{support}, 9k)` chosen per step so
+that :math:`k_{\text{eff}} \ge 0.9\,k` (``_bilateral_auto_rho``), and a
+multiplier :math:`\lambda`. The row force is :math:`k_{\text{eff}}\,C +
+s\,\lambda` with the same :math:`k_{\text{eff}}` and :math:`s` as body-body
+contact; after every iteration :math:`\lambda \leftarrow s\,(\lambda + \rho
+C)` (``update_duals_joint``), and :math:`\lambda` is retained between steps by
+``rigid_avbd_gamma``. ``rigid_joint_linear_kd`` and ``rigid_joint_angular_kd``
+add absolute damping to the structural rows. Drives are bilateral rows on the
+free axes of REVOLUTE, PRISMATIC and D6 joints: a spring-damper toward the
+target with ``joint_target_ke`` and ``joint_target_kd``, each axis with its own
+scalar multiplier (``_evaluate_drive_axis``). Limits are unilateral rows at
+the nearer bound with ``joint_limit_ke`` and ``joint_limit_kd``; their
+multiplier is projected onto the admissible half-line
+(``_evaluate_limit_axis``, ``_update_limit_lambda``). ROD joints use four rows,
+stretch, shear, bend and twist, with ``joint_target_ke`` and
+``joint_target_kd`` as their stiffness and damping. DISTANCE joints are not
+supported. The deprecated legacy path (``rigid_compliant_alm=False``) replaces
+the finite-material rows with ramped penalties and hard or soft slots.
 
 .. _vbd-energy-terms:
 
