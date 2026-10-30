@@ -78,7 +78,8 @@ writing; the class docstring is the source of truth.
      - Friction chatters at rest.
      - Slow creep under tangential load when large.
    * - ``dat_conservative_bound_relaxation`` (0.85)
-     - Fraction of the detected clearance a vertex may use between detections.
+     - Scale of both truncations: how close to its division plane a vertex may
+       go, and the radius cap of 0.5 x this x query radius.
      - Rarely; DAT damping with a query radius you cannot raise.
      - Values near 1 leave no safety for detection error.
    * - ``particle_enable_self_contact`` (False)
@@ -273,9 +274,11 @@ edges or faces against a body or static shape.
 
    Left: self-contact, shown for a vertex-triangle pair; edge-edge pairs use
    the same distances. ``particle_self_contact_margin`` is the interaction
-   distance, ``particle_self_contact_gap`` the detection slack. Right:
-   rigid-soft contact. The interaction distance is ``particle_radius`` plus the
-   shape ``margin``; the pipeline's ``soft_contact_gap`` adds detection slack.
+   distance and ``particle_self_contact_gap`` is added on top of it: the two
+   stacked arrows sum to the query radius, drawn once more as the horizontal
+   arrow. Right: rigid-soft contact, with the particle resting at the
+   interaction distance ``particle_radius`` plus the shape ``margin``; the
+   pipeline's ``soft_contact_gap`` is a detection band beyond that.
 
 For self-contact the solver reads the two values from its constructor and
 queries at ``particle_self_contact_margin + particle_self_contact_gap``. For
@@ -285,25 +288,38 @@ shape as the interaction distance, and the collision pipeline detects out to
 before and after the inertial step of every substep, so the motion budget is
 refreshed twice per substep.
 
-**What DAT does to motion.** DAT keeps the simulation penetration-free between
-detections by never letting a vertex use more than its budget. For each
-detected pair it places a division plane between the two primitives and keeps
-each side on its own side of the plane. The plane position follows the
-displacements: when the two primitives approach, each gets a share of the gap;
-when they separate or slide tangentially, the plane moves out of the way and the
-motion passes untouched. A vertex that wants to move further than its budget is
-slowed down to the budget in every direction, not only along the contact
-normal. A cloth that falls fast onto a shape, or a sheet pressed between
-fingers, can therefore move slower than physics would predict, hover at a fixed
-offset, or stop. This is DAT damping. The budget grows with the query radius,
-so the cure is more room: a larger gap first, then a larger margin.
+**What DAT does to motion.** DAT works on the displacement each vertex has
+accumulated since the last detection, and it has two distinct parts.
+
+*Planar truncation* acts per detected pair. At the detection-time positions
+DAT places a division plane between the two primitives. The plane splits the
+gap in proportion to how far each side wants to move toward the other, and each
+side keeps at least 5 percent of the gap. Each vertex of the pair may then move
+only up to its own side of the plane, scaled by the relaxation factor: motion
+toward the plane is cut at the plane, motion away from it or along it passes
+untouched. A pair whose primitives already intersect at detection time has no
+plane and is left unconstrained in that pass.
+
+*Radius truncation* acts on every particle, pair or no pair. The length of the
+accumulated displacement is capped at half of the relaxation factor times the
+query radius. It is isotropic: a vertex that wants to move further is slowed
+down in every direction, not only along a contact normal. This cap is what
+makes the scheme safe between detections: two primitives farther apart than the
+query radius at detection cannot meet before the next detection, because each
+side moves at most half of the relaxation factor times that radius.
+
+Both parts remove motion. A cloth that falls fast onto a shape, or a sheet
+pressed between fingers, can therefore move slower than physics would predict,
+hover at a fixed offset, or stop. This is DAT damping. The radius cap grows with
+the query radius, so the cure is more room: a larger gap first, then a larger
+margin.
 
 .. figure:: ../images/vbd_tuning_dat_planar_division.png
    :alt: Planar division for a vertex-triangle pair in four displacement scenarios
    :width: 85%
    :align: center
 
-   Planar division for a vertex-triangle pair, from the DAT paper. Top left:
+   Planar truncation for a vertex-triangle pair, from the DAT paper. Top left:
    vertex :math:`v`, triangle :math:`(v_a, v_b, v_c)` and the normal from the
    closest point on the triangle to :math:`v`. The dashed line is the division
    plane. Top right: :math:`v` moves toward the triangle, so the plane shifts
@@ -341,9 +357,10 @@ smaller margin.
      - More active pairs
      - Larger visible gaps
      - Less (larger budget)
-     - Rest neighbours beyond the topological filter can push each other
+     - Rest neighbours beyond the topological filter can push each other (not
+       with OGC, coming)
    * - Raise the gap
-     - More candidate pairs, larger buffers
+     - More candidate pairs, larger buffers, more expensive collision detection
      - None
      - Less (larger budget)
      - Dropped pairs when the buffers overflow
@@ -351,7 +368,9 @@ smaller margin.
      - Less
      - Tighter contact
      - More
-     - Tunneling risk when the budget is below the per-step motion
+     - Without DAT (rigid-soft default) a step that moves further than the
+       interaction distance can pass through. With DAT on, tunneling stays
+       possible in theory; see :ref:`vbd-fail-tunneling`
 
 **Starting point and adjustments.** Take the values of the nearest example in
 :ref:`vbd-empirical-table`; they span 1 mm to 40 mm depending on the scene
@@ -618,8 +637,9 @@ DAT damping: slow, hovering or locked motion
 offset, or a pinched region stops moving.
 
 **Cause.** The motion budget between detections is too small for the motion the
-scene asks for. The budget is the relaxation factor times the detected
-clearance, capped at the query radius, so a small margin and gap cap the speed.
+scene asks for. The radius truncation caps the displacement since the last
+detection at 0.5 x relaxation x query radius, and the planar truncation stops a
+vertex at its division plane, so a small margin and gap cap the speed.
 
 **Fix.** Raise ``particle_self_contact_gap`` first, then
 ``particle_self_contact_margin``, following :ref:`vbd-margin-gap-guide`. For
