@@ -1,1 +1,1 @@
-Fix displaced surface witnesses in SDF-based mesh–mesh collision detection by using the midpoint between the sampled mesh point and its SDF surface projection as the contact center.
+Fix contact points in SDF-based mesh–mesh and mesh–heightfield collision detection being offset from both surfaces by half the contact distance.
