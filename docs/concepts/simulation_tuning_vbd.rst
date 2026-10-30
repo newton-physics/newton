@@ -58,8 +58,9 @@ particle systems. Defaults are those of the constructor at the time of
 writing; the class docstring is the source of truth.
 
 .. list-table::
+   :class: wrap-literals
    :header-rows: 1
-   :widths: 17 33 25 25
+   :widths: 27 31 21 21
 
    * - Parameter
      - What it controls
@@ -156,8 +157,9 @@ Model parameters are set when the geometry is added, through
 formulas they enter are in :ref:`vbd-energy-terms`.
 
 .. list-table::
+   :class: wrap-literals
    :header-rows: 1
-   :widths: 15 33 22 30
+   :widths: 24 32 20 24
 
    * - Parameter
      - What it controls
