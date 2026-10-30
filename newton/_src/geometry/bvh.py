@@ -175,6 +175,27 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
     return False
 
 
+BVH_SHAPE_INACTIVE = wp.constant(wp.uint32(0xFFFFFFFF))
+"""BVH leaf entry of an empty variant row in ``Model._bvh_shape_active_leaves``; ray queries skip it."""
+
+
+@wp.kernel(enable_backward=False)
+def mark_inactive_bvh_shapes(
+    bvh_shape_leaves: wp.array[wp.uint32],
+    shape_variant_row: wp.array[wp.bool],
+    shape_flags: wp.array[wp.int32],
+    shape_flags_mask: wp.int32,
+    out_shape_enabled: wp.array[wp.uint32],
+):
+    """Copy the BVH leaf shapes, replacing variant rows whose flags the mask excludes, such as empty
+    rows, by :data:`BVH_SHAPE_INACTIVE`."""
+    tid = wp.tid()
+    shape = bvh_shape_leaves[tid]
+    s = wp.int32(shape)
+    active = not shape_variant_row[s] or (shape_flags[s] & shape_flags_mask) != 0
+    out_shape_enabled[tid] = wp.where(active, shape, BVH_SHAPE_INACTIVE)
+
+
 @wp.kernel(enable_backward=False)
 def compute_enabled_shapes(
     shape_type: wp.array[wp.int32],

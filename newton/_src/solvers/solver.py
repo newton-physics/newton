@@ -1167,6 +1167,9 @@ class SolverBase:
           tensors have changed.
         * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms or geometry have
           changed.
+        * ``ModelFlags.SHAPE_GEOMETRY``: Variant rows took other variant shapes
+          or were emptied by :meth:`~newton.Model.select_body_variants`.
+          Solvers that read shapes through Newton contacts need no refresh.
         * ``ModelFlags.MODEL_PROPERTIES``: Model global properties (e.g.,
           gravity) have changed.
         * ``ModelFlags.CONSTRAINT_PROPERTIES``: Constraint definitions,

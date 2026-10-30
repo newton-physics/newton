@@ -416,6 +416,84 @@ updates for world ``0`` therefore continue to affect their global entities.
    Gravity shape: (3,)
 
 
+.. _Body shape variants:
+
+Per-World Body Shape Variants
+-----------------------------
+
+.. experimental::
+
+   Body variants may change without a deprecation period.
+
+A body can carry several alternative shape sets, such as the objects of an asset catalog, and
+each world can select a different one at reset. Declare the variants with
+:meth:`~newton.ModelBuilder.add_body_variants`, passing one single-body builder per variant, such
+as an asset loaded with :meth:`~newton.ModelBuilder.add_usd`. The body gets one block of shape rows
+per role: colliders, then other shapes such as visuals, then sites. Each block has as many rows as
+the variant with the most shapes of that role, so a row is a collider, a visual, or a site for
+every variant. At runtime, :meth:`~newton.Model.select_body_variants` copies each of the selected
+variant's shapes into the next row of its role, in the variant's order, on the device and without
+host synchronization. It empties the rows the variant does not use and sets the body's mass
+properties to those of the body as built plus the variant. It returns the :class:`~newton.ModelFlags` to pass to solvers and viewers:
+
+.. testcode::
+
+   import warp as wp
+   import newton
+
+   cube = newton.ModelBuilder()
+   cube.add_shape_box(cube.add_body(label="cube"), hx=0.1, hy=0.1, hz=0.1)
+   ball = newton.ModelBuilder()
+   ball.add_shape_sphere(ball.add_body(label="ball"), radius=0.1)
+
+   env = newton.ModelBuilder()
+   body = env.add_body(label="object")
+   env.add_body_variants(body, [cube, ball])
+
+   scene = newton.ModelBuilder()
+   scene.replicate(env, copy_count=2)
+   model = scene.finalize()
+
+   # World 1 switches to the ball; world 0 keeps the cube.
+   flags = model.select_body_variants(wp.array([0, 1], dtype=wp.int32, device=model.device))
+   # solver.notify_model_changed(flags)
+   # viewer.notify_model_changed(flags)
+   print(model.body_variant_labels(0), model.body_variant.numpy())
+
+.. testoutput::
+
+   ['cube', 'ball'] [0 1]
+
+Variant ids are positions in the list passed to :meth:`~newton.ModelBuilder.add_body_variants`;
+they are the same in every world. Bodies copied with :meth:`~newton.ModelBuilder.add_builder` or
+:meth:`~newton.ModelBuilder.replicate` share their variants, which :meth:`~newton.ModelBuilder.finalize`
+stores once, so model memory grows with the number of rows, not with the catalog size.
+
+A row takes everything authored on the variant shape it holds: geometry, the collision data derived
+from it, flags, color, materials, and shape custom attributes. Apply domain randomization after
+selecting. A row keeps its label, world, collision group, filter pairs, and opacity, so the i-th
+colliders of all variants must share a collision group. Empty rows have
+their collision and visibility flags cleared. Shapes added to the body directly stay in place for
+every variant.
+
+Collision detection, sensors, and viewers are sized at construction for every variant a body can
+select. Current limitations:
+
+- Contacts must come from :class:`~newton.CollisionPipeline` for models with variants:
+  ``SolverMuJoCo`` requires ``use_mujoco_contacts=False``, ``SolverKamino`` requires
+  ``use_collision_detector=False``, and ``SolverImplicitMPM`` is unsupported. ``SolverMuJoCo``
+  compiles one geom layout for all worlds, so construct it before selecting different variants per
+  world. It follows per-world ``solref``, ``solimp``, ``solmix``, and friction after a selection, but
+  ``condim`` and ``priority`` stay as compiled.
+- Variant shapes cannot be planes, heightfields, Gaussians, or hydroelastic shapes.
+- :class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` follow selections after
+  the next :meth:`~newton.Model.bvh_refit_shapes`. The deprecated ``SensorTiledCamera`` raises for
+  models with variants.
+- ``ViewerGL``, ``ViewerViser``, and ``ViewerNull`` follow selections through
+  :meth:`~newton.viewer.ViewerBase.notify_model_changed`; ``ViewerUSD``, ``ViewerRerun``,
+  ``ViewerFile``, and ``ViewerRTX`` raise :class:`NotImplementedError` when notified of one.
+
+
 .. _World-entity partitioning:
 
 World-Entity GPU Thread Partitioning

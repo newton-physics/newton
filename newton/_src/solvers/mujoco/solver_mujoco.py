@@ -4711,6 +4711,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._viewer = None
         """Instance of the MuJoCo viewer for debugging."""
 
+        if (use_mujoco_contacts or use_mujoco_cpu) and getattr(model, "_has_body_variants", False):
+            # MuJoCo compiles one geom per shape; it cannot follow a variant row's shape.
+            raise NotImplementedError(
+                "SolverMuJoCo supports body variants only with Newton contacts; "
+                "set use_mujoco_contacts=False and use_mujoco_cpu=False."
+            )
         self._use_mujoco_contacts = use_mujoco_contacts
         """Whether MuJoCo handles collision detection.
 
@@ -7155,7 +7161,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # fills unused zero components. Keep those edits isolated from the model's
         # CPU-backed Warp array, for which ``numpy()`` may return a writable view.
         shape_size = model.shape_scale.numpy().copy()
-        shape_flags = model.shape_flags.numpy()
+        # A variant row is a geom or site by its role, even when it is empty at construction.
+        shape_flags = model._shape_option_flags() if model._variant_row_max else model.shape_flags.numpy()
         shape_collision_group = model.shape_collision_group.numpy()
         shape_world = model.shape_world.numpy()
         shape_mu = model.shape_material_mu.numpy()
@@ -9088,6 +9095,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 if heterogeneous_geoms and self._use_mujoco_contacts and not disable_contacts
                 else (GeoType.CONE,)
             )
+            if getattr(model, "_variant_row_max", 0) > 0:
+                # Variant rows take the scale of their variant shape; with Newton contacts their geoms are unused.
+                converted_shapes = converted_shapes[~model._shape_variant_row.numpy()[converted_shapes]]
             self._compiled_mesh_shape_indices = converted_shapes[np.isin(shape_type[converted_shapes], compiled_types)]
             self._compiled_mesh_shape_scales = shape_scale_np[self._compiled_mesh_shape_indices].copy()
 

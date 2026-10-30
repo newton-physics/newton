@@ -31,6 +31,36 @@ DEFAULT_AMBIENT_SKY_COLOR = (0.2, 0.2, 0.225)
 DEFAULT_AMBIENT_GROUND_COLOR = (0.05, 0.05, 0.06)
 
 
+@wp.kernel(enable_backward=False)
+def _gather_variant_render_data(
+    row_shapes: wp.array[wp.int32],
+    shape_variant_shape: wp.array[wp.int32],
+    variant_render_type: wp.array[wp.int32],
+    variant_texture_ids: wp.array[wp.int32],
+    variant_mesh_data_ids: wp.array[wp.int32],
+    shape_texture_override: wp.array[wp.int32],
+    # outputs
+    shape_render_type: wp.array[wp.int32],
+    shape_texture_ids: wp.array[wp.int32],
+    shape_mesh_data_ids: wp.array[wp.int32],
+):
+    shape = row_shapes[wp.tid()]
+    variant_shape = shape_variant_shape[shape]
+    if variant_shape >= 0:
+        shape_render_type[shape] = variant_render_type[variant_shape]
+        shape_mesh_data_ids[shape] = variant_mesh_data_ids[variant_shape]
+        if shape_texture_override.shape[0] > 0:
+            shape_texture_ids[shape] = shape_texture_override[shape]
+        else:
+            shape_texture_ids[shape] = variant_texture_ids[variant_shape]
+
+
+def _render_types(shape_types: np.ndarray) -> np.ndarray:
+    """Shape types as rendered: heightfields and convex hulls are triangle meshes."""
+    as_mesh = np.isin(shape_types, (int(GeoType.HFIELD), int(GeoType.CONVEX_MESH)))
+    return np.where(as_mesh, int(GeoType.MESH), shape_types).astype(np.int32)
+
+
 class RenderContext:
     @dataclass(unsafe_hash=True)
     class RenderState:
@@ -129,13 +159,15 @@ class RenderContext:
         # kernels entirely (no extra shape-type branch, so no register/occupancy
         # cost). The remapped type array is what the render kernel dispatches on;
         # model.shape_type is left untouched for collision and BVH bounds.
+        # Variant rows render the variant shape they hold; their per-shape data is gathered before each render.
+        self._variant_rows = model._variant_row_shapes if getattr(model, "_variant_row_max", 0) > 0 else None
+        self._shape_texture_override: wp.array[wp.int32] | None = None
         if model.shape_type is not None:
             shape_type_np = model.shape_type.numpy()
-            as_mesh = np.isin(shape_type_np, (int(GeoType.HFIELD), int(GeoType.CONVEX_MESH)))
-            if np.any(as_mesh):
-                shape_type_np = shape_type_np.copy()
-                shape_type_np[as_mesh] = int(GeoType.MESH)
-                self._shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
+            if self._variant_rows is not None or np.any(_render_types(shape_type_np) != shape_type_np):
+                self._shape_render_type = wp.array(
+                    _render_types(shape_type_np), dtype=wp.int32, device=model.shape_type.device
+                )
 
         # The batches name the meshes this camera uploads and skins; they are the one source for
         # the skin topology, texture ids and per-frame skinning.
@@ -209,6 +241,26 @@ class RenderContext:
         if self._empty_triangle_colors is None:
             self._empty_triangle_colors = wp.zeros(0, dtype=wp.vec3f, device=self.device)
         return self._empty_triangle_colors
+
+    def _gather_variant_render_data(self) -> None:
+        """Copy the render type, texture, and mesh data of the variant shape each variant row holds."""
+        if self._variant_rows is None:
+            return
+        override = self._shape_texture_override
+        wp.launch(
+            _gather_variant_render_data,
+            dim=self._variant_rows.shape[0],
+            inputs=[
+                self._variant_rows,
+                self.model._shape_variant_shape,
+                self._variant_render_type,
+                self._variant_texture_ids,
+                self._variant_mesh_data_ids,
+                wp.empty(0, dtype=wp.int32, device=self.device) if override is None else override,
+            ],
+            outputs=[self._shape_render_type, self._shape_texture_ids, self._shape_mesh_data_ids],
+            device=self.device,
+        )
 
     def _get_shape_render_type(self) -> wp.array[wp.int32] | None:
         if self._shape_render_type is not None:
@@ -391,6 +443,10 @@ class RenderContext:
             self._texture_data_source[self._checkerboard_texture_id] = checkerboard_data
         self._texture_data = wp.array(self._texture_data_source, dtype=TextureData, device=self.device)
         self._shape_texture_ids = wp.array(texture_ids, dtype=wp.int32, device=self.device)
+        if self._variant_rows is not None:
+            # The variant shapes' texture ids index the replaced texture table; variant rows keep
+            # the checkerboard assignment whichever variant they hold.
+            self._shape_texture_override = wp.array(texture_ids, dtype=wp.int32, device=self.device)
 
     def render(
         self,
@@ -573,6 +629,7 @@ class RenderContext:
                 tiles_y = (height + config.tile_height - 1) // config.tile_height
                 pixels_per_view = tiles_x * tiles_y * config.tile_width * config.tile_height
 
+            self._gather_variant_render_data()
             wp.launch(
                 kernel=render_kernel,
                 dim=(view_count * pixels_per_view),
@@ -592,7 +649,7 @@ class RenderContext:
                     model.bvh_shapes.id if model.bvh_shapes is not None else 0,
                     model.bvh_shapes_group_roots,
                     # Shapes
-                    model.bvh_shape_enabled,
+                    model._bvh_shape_active_leaves,
                     self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,
@@ -717,12 +774,8 @@ class RenderContext:
         """
         self._mesh_data_source = []
         self._texture_data_source = []
-
         texture_hashes = {}
         mesh_hashes = {}
-
-        mesh_data_ids = []
-        texture_data_ids = []
 
         def texture_id(texture, texture_hash):
             if texture is None or not load_textures:
@@ -751,11 +804,16 @@ class RenderContext:
                 self._texture_data_source.append(data)
             return texture_hashes[texture_hash]
 
-        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
-        for shape, shape_type in zip(model.shape_source, shape_types, strict=True):
-            if isinstance(shape, Mesh):
+        def ids(sources: Sequence, shape_types: Sequence) -> tuple[list[int], list[int]]:
+            """Texture and mesh-data ids of each source, loading data that is not loaded yet."""
+            texture_data_ids = []
+            mesh_data_ids = []
+            for shape, shape_type in zip(sources, shape_types, strict=True):
+                if not isinstance(shape, Mesh):
+                    texture_data_ids.append(-1)
+                    mesh_data_ids.append(-1)
+                    continue
                 texture_data_ids.append(texture_id(shape.texture, shape.texture_hash))
-
                 # A convex hull renders its collision mesh, whose vertices may be deduplicated, so
                 # the per-vertex UVs and normals of its source mesh do not match the hit faces.
                 if shape_type != GeoType.CONVEX_MESH and (shape.uvs is not None or shape.normals is not None):
@@ -775,9 +833,16 @@ class RenderContext:
                     mesh_data_ids.append(mesh_hashes[shape])
                 else:
                     mesh_data_ids.append(-1)
-            else:
-                texture_data_ids.append(-1)
-                mesh_data_ids.append(-1)
+            return texture_data_ids, mesh_data_ids
+
+        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
+        texture_data_ids, mesh_data_ids = ids(model.shape_source, shape_types)
+        if self._variant_rows is not None:
+            variant_types = model._variant_shape_geometry["shape_type"].numpy()
+            variant_texture_ids, variant_mesh_data_ids = ids(model._variant_shape_source, variant_types)
+            self._variant_render_type = wp.array(_render_types(variant_types), dtype=wp.int32, device=self.device)
+            self._variant_texture_ids = wp.array(variant_texture_ids, dtype=wp.int32, device=self.device)
+            self._variant_mesh_data_ids = wp.array(variant_mesh_data_ids, dtype=wp.int32, device=self.device)
 
         # Sampled image hashes can miss changed channels. Keep skin keys separate
         # from rigid-mesh hashes and share uploads only for the same source.

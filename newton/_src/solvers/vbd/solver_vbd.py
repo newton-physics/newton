@@ -1540,6 +1540,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
+        if flags & ModelFlags.SHAPE_GEOMETRY and getattr(self, "_rigid_dat_body_bounding_radius", None) is not None:
+            # Prototype assignments change the shapes and center of mass the radius bounds.
+            self._init_rigid_dat_body_bounding_radius(self.model)
         if (
             flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
             and self._integrates_rigid_bodies
@@ -3176,6 +3179,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         shape_collision_radius = model.shape_collision_radius.numpy()
         body_com = model.body_com.numpy()
         bounding_radius = np.zeros(model.body_count, dtype=np.float32)
+        # Variant rows hold the geometry of their current variant shape; empty rows have no surface.
+        shape_source = model.shape_source
+        shape_empty = np.zeros(model.shape_count, dtype=bool)
+        if model._variant_row_max:
+            shape_source = model._shape_current_sources()
+            shape_empty = model._shape_variant_row.numpy() & (model._shape_variant_shape.numpy() < 0)
 
         def shape_local_reach(shape_index: int, com_shape: wp.vec3) -> float:
             """Return a conservative upper bound on the shape's distance about the body COM."""
@@ -3205,7 +3214,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 # A sphere about the shape origin avoids underestimating the continuous rim.
                 return wp.length(com_shape) + wp.length(wp.vec2(radius, h))
             if geo in (GeoType.MESH, GeoType.CONVEX_MESH):
-                src_mesh = model.shape_source[shape_index]
+                src_mesh = shape_source[shape_index]
                 verts = getattr(src_mesh, "vertices", None)
                 if verts is not None and len(verts) > 0:
                     points_shape = np.asarray(verts, dtype=np.float64) * np.asarray(scale, dtype=np.float64)
@@ -3219,7 +3228,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             body_index = shape_body[shape_index]
             # Collision flags are mutable, so cache every attached shape that could
             # later be enabled for rigid-soft queries.
-            if body_index < 0:
+            if body_index < 0 or shape_empty[shape_index]:
                 continue
             X_bs = wp.transform(*shape_transform[shape_index])
             # com_shape is the body's Center of Mass in shape frame
@@ -3227,7 +3236,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             reach = shape_local_reach(shape_index, com_shape)
             bounding_radius[body_index] = max(bounding_radius[body_index], reach)
 
-        self._rigid_dat_body_bounding_radius = wp.array(bounding_radius, dtype=float, device=self.device)
+        existing = getattr(self, "_rigid_dat_body_bounding_radius", None)
+        if existing is not None and existing.shape[0] == model.body_count:
+            existing.assign(bounding_radius)
+        else:
+            self._rigid_dat_body_bounding_radius = wp.array(bounding_radius, dtype=float, device=self.device)
 
     def _reset_dat_references(self, state: State, *, reset_rigid_soft: bool, reset_particles: bool):
         """Reset selected DAT trajectory references at a collision checkpoint."""

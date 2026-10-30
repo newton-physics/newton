@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import Gaussian, GeoType, raycast
+from ...geometry.bvh import BVH_SHAPE_INACTIVE
 from . import gaussians
 from .types import MeshData, RenderConfig
 
@@ -113,6 +114,8 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
 
                 while wp.bvh_query_next(query, shape_index, closest_hit.distance):
                     si = shape_enabled[shape_index]
+                    if si == BVH_SHAPE_INACTIVE:
+                        continue
 
                     hit_distance = wp.float32(-1.0)
                     hit_normal = wp.vec3f(0.0)
@@ -386,6 +389,8 @@ def create_closest_hit_depth_only_function(config: RenderConfig, state: RenderCo
 
                 while wp.bvh_query_next(query, shape_index, closest_hit.distance):
                     si = shape_enabled[shape_index]
+                    if si == BVH_SHAPE_INACTIVE:
+                        continue
 
                     hit_dist = -1.0
 
@@ -616,6 +621,8 @@ def create_first_hit_function(config: RenderConfig, state: RenderContext.RenderS
 
                 while wp.bvh_query_next(query, shape_index, max_dist):
                     si = shape_enabled[shape_index]
+                    if si == BVH_SHAPE_INACTIVE:
+                        continue
 
                     hit_dist = wp.float32(-1)
 
