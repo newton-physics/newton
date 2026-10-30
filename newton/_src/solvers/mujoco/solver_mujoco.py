@@ -135,6 +135,7 @@ if TYPE_CHECKING:
     from mujoco import MjData, MjModel
     from mujoco_warp import Data as MjWarpData
     from mujoco_warp import Model as MjWarpModel
+    from pxr import Usd, UsdPhysics
 else:
     MjModel = object
     MjData = object
@@ -1461,6 +1462,110 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     owner = slider_owners.pop() if len(slider_owners) == 1 else -1
             owners.append(owner)
         return owners
+
+    @classmethod
+    def create_from_usd(cls, model: Model, scene_prim: Usd.Prim | UsdPhysics.Scene, **overrides: Any) -> SolverMuJoCo:
+        """Create a solver from a ``UsdPhysics.Scene`` that applies ``NewtonMuJoCoSceneAPI``.
+
+        The ``newton:mujoco:*`` and ``newton:mjwarp:*`` attributes of ``NewtonMuJoCoSceneAPI``,
+        the ``newton:deterministic`` attribute of ``NewtonSceneAPI``, and the
+        ``mjc:flag:contact``, ``mjc:flag:sensor``, and ``mjc:flag:multiccd`` flags authored on the
+        scene are passed to the constructor. Only authored values override the constructor
+        defaults; integer attributes authored as ``-1`` request the solver's automatic default.
+
+        Args:
+            model: The model to simulate, typically built from the same stage. ``mjc:option:*``
+                values reach the solver only if the model was built after calling
+                :meth:`register_custom_attributes` on its builder.
+            scene_prim: A ``UsdPhysics.Scene`` prim with ``NewtonMuJoCoSceneAPI`` applied, or its
+                typed schema object. Pass the scene that :meth:`ModelBuilder.add_usd` imports model
+                options from, so that the solver arguments and the model's ``mjc:option:*`` values
+                come from the same scene.
+            **overrides: Keyword arguments for the :class:`SolverMuJoCo` constructor, such as
+                ``iterations=20``. They are passed to the constructor unchanged and take
+                precedence over the values authored in USD, because a solver cannot be
+                reconfigured after it is created.
+
+        Returns:
+            A solver for ``model``.
+
+        Raises:
+            ImportError: If ``usd-core`` is not installed.
+            TypeError: If ``scene_prim`` is not a valid ``UsdPhysics.Scene`` prim.
+            ValueError: If ``NewtonMuJoCoSceneAPI`` is not applied or an authored value is invalid.
+        """
+        try:
+            from pxr import UsdPhysics
+        except ImportError as error:
+            raise ImportError("Creating a MuJoCo solver from USD requires usd-core.") from error
+
+        from ...usd import utils as usd  # noqa: PLC0415
+
+        prim = scene_prim.GetPrim() if hasattr(scene_prim, "GetPrim") else scene_prim
+        if not prim or not prim.IsValid() or not prim.IsA(UsdPhysics.Scene):
+            raise TypeError("scene_prim must be a valid UsdPhysics.Scene prim.")
+        scene_path = str(prim.GetPath())
+        if not usd.has_applied_api_schema(prim, "NewtonMuJoCoSceneAPI"):
+            raise ValueError(f"{scene_path}: NewtonMuJoCoSceneAPI is not applied.")
+
+        def authored(name: str):
+            attr = prim.GetAttribute(name)
+            if not attr or not attr.HasAuthoredValue():
+                return None
+            return attr.Get()
+
+        def authored_bool(name: str) -> bool | None:
+            value = authored(name)
+            if value is None:
+                return None
+            if not isinstance(value, bool):
+                raise ValueError(f"{scene_path}: {name} must be a boolean, got {value!r}.")
+            return value
+
+        def authored_count(name: str, *, minimum: int = -1) -> int | None:
+            value = authored(name)
+            if value is None:
+                return None
+            if isinstance(value, bool) or not isinstance(value, int | np.integer) or value < minimum:
+                raise ValueError(f"{scene_path}: {name} must be an integer >= {minimum}, got {value!r}.")
+            # -1 requests the solver's automatic default
+            return None if value == -1 else int(value)
+
+        deterministic_modes = {
+            "inherit": None,
+            "notGuaranteed": wp.DeterministicMode.NOT_GUARANTEED,
+            "runToRun": wp.DeterministicMode.RUN_TO_RUN,
+            "gpuToGpu": wp.DeterministicMode.GPU_TO_GPU,
+        }
+        deterministic = authored("newton:deterministic")
+        if deterministic is not None and str(deterministic) not in deterministic_modes:
+            raise ValueError(
+                f"{scene_path}: newton:deterministic must be one of {sorted(deterministic_modes)}, "
+                f"got {deterministic!r}."
+            )
+
+        kwargs: dict[str, Any] = {
+            "njmax": authored_count("newton:mjwarp:njmax"),
+            "njmax_nnz": authored_count("newton:mjwarp:njmax_nnz"),
+            "nconmax": authored_count("newton:mjwarp:nconmax"),
+            "nvmax": authored_count("newton:mjwarp:nvmax"),
+            "deterministic": None if deterministic is None else deterministic_modes[str(deterministic)],
+            "update_data_interval": authored_count("newton:mujoco:updateDataInterval", minimum=0),
+            "use_mujoco_cpu": authored_bool("newton:mujoco:useMujocoCpu"),
+            "use_mujoco_contacts": authored_bool("newton:mujoco:useMujocoContacts"),
+            "include_sites": authored_bool("newton:mujoco:includeSites"),
+            "skip_visual_only_geoms": authored_bool("newton:mujoco:skipVisualOnlyGeoms"),
+        }
+        # MjcSceneAPI authors these as enable flags; the constructor takes the disable form
+        contact_flag = authored_bool("mjc:flag:contact")
+        sensor_flag = authored_bool("mjc:flag:sensor")
+        kwargs["enable_multiccd"] = authored_bool("mjc:flag:multiccd")
+        kwargs["disable_contacts"] = None if contact_flag is None else not contact_flag
+        kwargs["disable_sensors"] = None if sensor_flag is None else not sensor_flag
+        kwargs = {key: value for key, value in kwargs.items() if value is not None}
+        kwargs.update(overrides)
+
+        return cls(model, **kwargs)
 
     @override
     @classmethod
