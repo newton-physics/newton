@@ -1117,8 +1117,8 @@ During Newton-to-MuJoCo conversion (at
 by joint type:
 
 - **Kinematic roots with non-fixed joints** become ordinary MuJoCo
-  joints with the same Newton joint type and DOFs, held by a weld; see
-  `Kinematic welds`_.
+  joints with the same Newton joint type and DOFs, held by a weld
+  constraint; see `Kinematic welds`_.
 - **Roots attached to world with a fixed joint** become MuJoCo mocap
   bodies (whether kinematic or not). MuJoCo has no joint coordinates
   for a fixed root, so Newton drives the pose through
@@ -1144,12 +1144,18 @@ Kinematic welds
 ~~~~~~~~~~~~~~~
 
 MuJoCo has no prescribed degrees of freedom, so each kinematic root is held by
-a weld to the world without stiffness or damping. The weld locks the root's
+a weld constraint to the world without stiffness or damping. The weld locks the root's
 acceleration, so through each step the root keeps the pose and velocity pushed
 from :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd`.
 Constraints and contacts treat the root as immovable, while the mass matrix
 stays physical and the root keeps its authored
 :attr:`~newton.Model.joint_armature`.
+
+MuJoCo's ``equality`` and ``constraint`` disable flags, set through MJCF
+``<flag equality="disable"/>`` or ``model.mujoco.flag_equality`` and
+``model.mujoco.flag_constraint``, also turn these welds off. The solver
+therefore raises ``ValueError`` for a kinematic root held by a weld while
+either flag is disabled.
 
 .. _mujoco-kinematic-switching:
 

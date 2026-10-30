@@ -4602,6 +4602,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if disable_sensors is None:
             disable_sensors = not flags["sensor"]
         flags.update(multiccd=enable_multiccd, contact=not disable_contacts, sensor=not disable_sensors)
+        # MuJoCo flag that disables the welds holding kinematic roots, if any.
+        self._kinematic_weld_disabled_by = next((f for f in ("constraint", "equality") if not flags[f]), None)
         disableflags = sum(
             int(getattr(mujoco.mjtDisableBit, f"mjDSBL_{name.upper()}"))
             for name in self._DISABLE_FLAGS
@@ -9668,6 +9670,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     "kinematic_switchable_roots=False, only roots kinematic when SolverMuJoCo is created can. Mark "
                     "the body kinematic before creating the solver; it can then be switched to dynamic and back."
                 )
+            if self._kinematic_weld_disabled_by is not None and self._kinematic_weld_body is not None:
+                welded = self._kinematic_weld_body.ravel()
+                welded = welded[kinematic[welded]]
+                if welded.size:
+                    flag = self._kinematic_weld_disabled_by
+                    raise ValueError(
+                        f"Body {self.model.body_label[int(welded[0])]!r} cannot be kinematic: SolverMuJoCo holds "
+                        f"kinematic roots with a weld constraint, which MuJoCo's '{flag}' disable flag turns off."
+                        f" Enable the '{flag}' flag or make the body dynamic."
+                    )
             late = (
                 np.flatnonzero(switched & self._kinematic_late_roots) if self._kinematic_late_roots is not None else []
             )

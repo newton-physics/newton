@@ -2332,6 +2332,34 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 self.assertEqual(int(solver.mj_model.eq_obj2id[eq]), 0)
                 self._assert_kinematic_state_matches_flags(model, solver)
 
+    def test_kinematic_root_rejected_when_welds_are_disabled(self):
+        """Reject kinematic roots when MuJoCo's equality or constraint flag disables their weld."""
+        mjcf = """
+        <mujoco>
+          <option><flag {flag}="disable"/></option>
+          <worldbody>
+            <body name="arm">
+              <joint type="hinge" axis="0 1 0"/>
+              <inertial pos="1 0 0" mass="1" diaginertia="1 1 1"/>
+            </body>
+          </worldbody>
+        </mujoco>
+        """
+        for flag in ("equality", "constraint"):
+            for use_mujoco_cpu in (False, True):
+                with self.subTest(flag=flag, use_mujoco_cpu=use_mujoco_cpu):
+                    builder = newton.ModelBuilder()
+                    SolverMuJoCo.register_custom_attributes(builder)
+                    builder.add_mjcf(mjcf.format(flag=flag))
+                    model = builder.finalize(requires_grad=False)
+                    solver = SolverMuJoCo(model, iterations=1, use_mujoco_cpu=use_mujoco_cpu)
+
+                    model.body_flags.fill_(int(BodyFlags.KINEMATIC))
+                    with self.assertRaisesRegex(ValueError, f"'{flag}' disable flag"):
+                        solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+                    with self.assertRaisesRegex(ValueError, f"'{flag}' disable flag"):
+                        SolverMuJoCo(model, iterations=1, use_mujoco_cpu=use_mujoco_cpu)
+
     def test_kinematic_root_does_not_change_mass_matrix_trace(self):
         """Keep the solver's inertia scale physical: a kinematic root leaves trace(M) and the mean inertia unchanged."""
         for use_mujoco_cpu in (False, True):
