@@ -62,7 +62,9 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
           Initialize or reset these coordinates consistently with body poses (for example, using
           :func:`newton.eval_fk`). Resetting or copying ``body_q`` alone retains the old winding
           and can produce unintended multi-turn drive and limit errors. Relative rotation must stay below half a turn per step.
-          Calling :func:`newton.eval_ik` replaces these coordinates with wrapped angles.
+          Writing :func:`newton.eval_ik` output into these coordinates replaces winding with
+          wrapped angles. It only updates articulation joints; standalone and loop-closing
+          REVOLUTE coordinates must be reset directly alongside their body poses.
           REVOLUTE velocities use the parent-axis projection, as in ``eval_ik`` and
           joint force evaluation; under transient swing they can differ from the twist-angle derivative.
         - Joint limits and targets are not enforced for BALL joints.
