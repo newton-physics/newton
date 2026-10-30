@@ -2,29 +2,62 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
+from .batteries import BatteryBase, BatteryConstantResistance
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .delay import Delay
-from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
+from .command_clamping import ClampingCurrentPWM, CommandClampingBase
+from .drives import (
+    DriveBase,
+    DriveNeuralGRU,
+    DriveNeuralLSTM,
+    DriveNeuralMLP,
+    DrivePD,
+    DrivePID,
+    DriveVoltageControlled,
+)
+from .input_processors import (
+    InputProcessorBase,
+    InputProcessorDelay,
+    InputProcessorEncoder,
+)
 from .joint_space_response import JointSpaceResponse
-from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
+from .motor_dc import MotorDC
+from .usd_parser import (
+    ActuatorParsed,
+    BatteryParsed,
+    ComponentKind,
+    SchemaNames,
+    parse_actuator_prim,
+    parse_battery_prim,
+    register_actuator_component,
+)
 
 __all__ = [
     "Actuator",
     "ActuatorParsed",
+    "BatteryBase",
+    "BatteryConstantResistance",
+    "BatteryParsed",
     "ClampingBase",
+    "ClampingCurrentPWM",
     "ClampingDCMotor",
     "ClampingMaxEffort",
     "ClampingPositionBased",
+    "CommandClampingBase",
     "ComponentKind",
-    "Delay",
     "DriveBase",
     "DriveNeuralGRU",
     "DriveNeuralLSTM",
     "DriveNeuralMLP",
     "DrivePD",
     "DrivePID",
+    "DriveVoltageControlled",
+    "InputProcessorBase",
+    "InputProcessorDelay",
+    "InputProcessorEncoder",
     "JointSpaceResponse",
+    "MotorDC",
     "SchemaNames",
     "parse_actuator_prim",
+    "parse_battery_prim",
     "register_actuator_component",
 ]

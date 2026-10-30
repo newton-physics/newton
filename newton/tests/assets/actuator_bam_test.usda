@@ -1,0 +1,166 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+)
+
+def Xform "World"
+{
+    def Xform "Robot" (
+        prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+    )
+    {
+        def Xform "Base" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float physics:mass = 1.0
+        }
+
+        def Xform "Thigh" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float physics:mass = 1.0
+        }
+
+        def Xform "Shin" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float physics:mass = 1.0
+        }
+
+        def Xform "Foot" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float physics:mass = 1.0
+        }
+
+        def Xform "Toe" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {
+            float physics:mass = 1.0
+        }
+
+        def PhysicsFixedJoint "root"
+        {
+            rel physics:body1 = </World/Robot/Base>
+        }
+
+        def PhysicsRevoluteJoint "knee"
+        {
+            rel physics:body0 = </World/Robot/Base>
+            rel physics:body1 = </World/Robot/Thigh>
+            uniform token physics:axis = "Z"
+        }
+
+        # Passive hinge in series with the knee servo, read by its encoder
+        def PhysicsRevoluteJoint "knee_backlash"
+        {
+            rel physics:body0 = </World/Robot/Thigh>
+            rel physics:body1 = </World/Robot/Shin>
+            uniform token physics:axis = "Z"
+            float physics:lowerLimit = -1.0
+            float physics:upperLimit = 1.0
+        }
+
+        def PhysicsRevoluteJoint "ankle"
+        {
+            rel physics:body0 = </World/Robot/Shin>
+            rel physics:body1 = </World/Robot/Foot>
+            uniform token physics:axis = "Z"
+        }
+
+        def PhysicsRevoluteJoint "toe"
+        {
+            rel physics:body0 = </World/Robot/Foot>
+            rel physics:body1 = </World/Robot/Toe>
+            uniform token physics:axis = "Z"
+        }
+
+        # Knee servo: voltage control + current/PWM limits + DC motor + delay + encoder, on the battery
+        def NewtonActuator "knee_actuator" (
+            prepend apiSchemas = [
+                "NewtonVoltageControlAPI",
+                "NewtonCurrentPWMClampingAPI",
+                "NewtonDCMotorAPI",
+                "NewtonActuatorDelayAPI",
+                "NewtonActuatorEncoderAPI",
+            ]
+        )
+        {
+            rel newton:targets = </World/Robot/knee>
+            rel newton:outputJoint = </World/Robot/knee_backlash>
+            rel newton:battery = </World/Robot/Battery>
+            float newton:kp = 32.0
+            float newton:errorGain = 0.015625
+            float newton:kt = 0.6
+            float newton:resistance = 2.0
+            float newton:vin = 6.0
+            float newton:maxPwm = 0.9
+            float newton:maxCurrent = 1.0
+            int newton:delaySteps = 2
+        }
+
+        # Ankle servo: voltage control + current/PWM limits + DC motor + delay, on the battery
+        def NewtonActuator "ankle_actuator" (
+            prepend apiSchemas = [
+                "NewtonVoltageControlAPI",
+                "NewtonCurrentPWMClampingAPI",
+                "NewtonDCMotorAPI",
+                "NewtonActuatorDelayAPI",
+            ]
+        )
+        {
+            rel newton:targets = </World/Robot/ankle>
+            rel newton:battery = </World/Robot/Battery>
+            float newton:kp = 32.0
+            float newton:errorGain = 0.015625
+            float newton:kt = 0.6
+            float newton:resistance = 2.0
+            float newton:vin = 6.0
+            float newton:maxPwm = 0.9
+            float newton:maxCurrent = 1.0
+            int newton:delaySteps = 2
+        }
+
+        # Toe servo: voltage control + current/PWM limits + DC motor + delay, fixed supply vin
+        def NewtonActuator "toe_actuator" (
+            prepend apiSchemas = [
+                "NewtonVoltageControlAPI",
+                "NewtonCurrentPWMClampingAPI",
+                "NewtonDCMotorAPI",
+                "NewtonActuatorDelayAPI",
+            ]
+        )
+        {
+            rel newton:targets = </World/Robot/toe>
+            float newton:kp = 32.0
+            float newton:errorGain = 0.015625
+            float newton:kt = 0.6
+            float newton:resistance = 2.0
+            float newton:vin = 5.0
+            float newton:maxPwm = 0.9
+            float newton:maxCurrent = 1.0
+            int newton:delaySteps = 2
+        }
+
+        # Battery without newton:minVoltage, which falls back to 0
+        def NewtonConstantResistanceBattery "Battery"
+        {
+            float newton:nominalVoltage = 6.0
+            float newton:resistance = 0.5
+        }
+
+        # Battery no actuator draws from, which is not imported
+        def NewtonConstantResistanceBattery "SpareBattery"
+        {
+            float newton:nominalVoltage = 12.0
+            float newton:resistance = 0.1
+        }
+    }
+}
