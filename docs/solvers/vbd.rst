@@ -160,8 +160,9 @@ The energy terms
 Each energy term depends on a few blocks and on model parameters:
 
 .. list-table::
+   :class: wrap-literals
    :header-rows: 1
-   :widths: 20 20 32 28
+   :widths: 22 22 28 28
 
    * - Energy term
      - Acts on
