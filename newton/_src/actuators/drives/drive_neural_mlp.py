@@ -504,7 +504,7 @@ class DriveNeuralMLP(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveNeuralMLP.State,
         dt: float,
         device: wp.Device | None = None,
@@ -523,7 +523,7 @@ class DriveNeuralMLP(DriveBase):
                 pos_indices,
                 vel_indices,
                 target_pos_indices,
-                forces,
+                output,
                 state,
             )
             return
@@ -571,8 +571,8 @@ class DriveNeuralMLP(DriveBase):
 
         wp.launch(
             _scale_and_copy_kernel,
-            dim=len(forces),
-            inputs=[effort, forces, self.effort_scale, 1],
+            dim=len(output),
+            inputs=[effort, output, self.effort_scale, 1],
             device=device,
         )
 

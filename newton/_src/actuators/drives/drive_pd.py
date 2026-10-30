@@ -144,7 +144,7 @@ class DrivePD(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
@@ -154,7 +154,7 @@ class DrivePD(DriveBase):
     ) -> None:
         wp.launch(
             kernel=_pd_effort_kernel,
-            dim=len(forces),
+            dim=len(output),
             inputs=[
                 positions,
                 velocities,
@@ -169,6 +169,6 @@ class DrivePD(DriveBase):
                 self.kd,
                 self.const_effort,
             ],
-            outputs=[forces],
+            outputs=[output],
             device=device,
         )

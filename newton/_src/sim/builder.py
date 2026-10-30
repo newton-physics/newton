@@ -3366,8 +3366,9 @@ class ModelBuilder:
                 processor does not identify a single-DOF joint of the current
                 world or a global joint, of the same type as the actuated joint,
                 a clamping takes parameters from a motor that does not have them (see
-                :attr:`~newton.actuators.ClampingBase.MOTOR_PARAMS`), or a
-                :class:`~newton.actuators.DriveVoltageControlled` has no motor.
+                :attr:`~newton.actuators.ClampingBase.MOTOR_PARAMS`), a
+                :class:`~newton.actuators.DriveVoltageControlled` has no motor,
+                or another drive, which outputs an effort, has a motor.
         """
         if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
             if drive_class is not None:
@@ -3482,6 +3483,10 @@ class ModelBuilder:
 
         if issubclass(drive_class, DriveVoltageControlled) and motor is None:
             raise ValueError(f"add_actuator: {drive_class.__name__} requires a motor, such as MotorDC")
+        if not issubclass(drive_class, DriveVoltageControlled) and motor is not None:
+            raise ValueError(
+                f"add_actuator: {drive_class.__name__} outputs an effort and cannot be combined with a motor"
+            )
 
         # --- Build entry key: identifies a group of compatible actuators ---
         # Groups differ when drive class, input processor types/shared-params,

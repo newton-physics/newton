@@ -635,7 +635,7 @@ class TestDrivePD(unittest.TestCase):
             vel_indices=indices,
             target_pos_indices=indices,
             target_vel_indices=indices,
-            forces=forces,
+            output=forces,
             state=None,
             dt=0.01,
         )
@@ -691,7 +691,7 @@ class TestDrivePID(unittest.TestCase):
                 vel_indices=indices,
                 target_pos_indices=indices,
                 target_vel_indices=indices,
-                forces=forces,
+                output=forces,
                 state=state_0,
                 dt=dt,
                 device=device,
@@ -5197,7 +5197,7 @@ class TestActuatorBuilder(unittest.TestCase):
         link = template.add_link()
         joint = template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
         template.add_actuator(
-            DrivePD,
+            DriveVoltageControlled,
             index=template.joint_qd_start[joint],
             kp=1.0,
             motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "vin": 12.0, "supply_from_battery": True}),
@@ -5247,7 +5247,7 @@ class TestActuatorBuilder(unittest.TestCase):
             clamping=[(ClampingMaxEffort, {"max_effort": 1.0})],
         )
         servo = template.add_actuator(
-            DrivePD,
+            DriveVoltageControlled,
             index=template.joint_qd_start[joints[1]],
             kp=1.0,
             motor=(MotorDC, {"kt": 1.0, "resistance": 1.0, "vin": 12.0, "supply_from_battery": True}),
@@ -5764,7 +5764,7 @@ class TestStateReset(unittest.TestCase):
                 vel_indices=indices,
                 target_pos_indices=indices,
                 target_vel_indices=indices,
-                forces=forces,
+                output=forces,
                 state=state_0,
                 dt=0.01,
                 device=device,

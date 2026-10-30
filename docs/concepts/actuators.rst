@@ -60,10 +60,11 @@ An actuator is composed of four building blocks, applied in this order:
    PID and neural-network-based control.  See the individual drive class
    documentation for the control-law equations.
 
-   In an actuator with a motor, the drive computes the motor command
+   In an actuator with a motor, the drive must compute the motor command
    instead, e.g. the voltage of the firmware of a voltage-controlled servo
    (:class:`DriveVoltageControlled`), and receives the supply voltage of the
-   motor.
+   motor.  Drives that compute an effort, such as :class:`DrivePD`, cannot be
+   combined with a motor.
 
 **Clamping**
    Clamps raw effort to model actuator limits.  Examples include saturation,

@@ -428,8 +428,9 @@ class Actuator:
                 :class:`InputProcessorDelay`).
             motor: Optional motor, applied after the clamping (e.g.
                 :class:`~newton.actuators.MotorDC`). With a motor, the drive
-                computes the motor command (e.g. a voltage) and receives the
-                supply voltage of each slot.
+                must compute the motor command (e.g.
+                :class:`~newton.actuators.DriveVoltageControlled`) and
+                receives the supply voltage of each slot.
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
                 than per DOF. Required when the motor draws from a battery.
@@ -497,6 +498,8 @@ class Actuator:
             raise ValueError(f"{type(motor).__name__} draws from a battery, which requires actuator_indices")
         if isinstance(drive, DriveVoltageControlled) and motor is None:
             raise ValueError(f"{type(drive).__name__} requires a motor, such as MotorDC")
+        if not isinstance(drive, DriveVoltageControlled) and motor is not None:
+            raise ValueError(f"{type(drive).__name__} outputs an effort and cannot be combined with a motor")
 
         self.device = indices.device
         self.requires_grad = requires_grad

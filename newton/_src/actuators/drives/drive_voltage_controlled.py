@@ -83,7 +83,7 @@ class DriveVoltageControlled(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveBase.State | None,
         dt: float,
         device: wp.Device | None = None,
@@ -91,7 +91,7 @@ class DriveVoltageControlled(DriveBase):
         custom_inputs: dict[str, Any] | None = None,
         supply_voltage: wp.array[float] | None = None,
     ) -> None:
-        """Compute the voltage command and write it to ``forces[i]``.
+        """Compute the voltage command and write it to ``output[i]``.
 
         Raises:
             ValueError: *supply_voltage* is ``None``, i.e. the actuator has
@@ -105,8 +105,8 @@ class DriveVoltageControlled(DriveBase):
             )
         wp.launch(
             kernel=_voltage_controlled_kernel,
-            dim=len(forces),
+            dim=len(output),
             inputs=[positions, target_pos, pos_indices, target_pos_indices, supply_voltage, self.kp, self.error_gain],
-            outputs=[forces],
+            outputs=[output],
             device=device,
         )

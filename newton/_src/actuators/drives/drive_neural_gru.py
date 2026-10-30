@@ -767,7 +767,7 @@ class DriveNeuralGRU(DriveBase):
         vel_indices: wp.array[wp.uint32],
         target_pos_indices: wp.array[wp.uint32],
         target_vel_indices: wp.array[wp.uint32],
-        forces: wp.array[float],
+        output: wp.array[float],
         state: DriveNeuralGRU.State,
         dt: float,
         device: wp.Device | None = None,
@@ -835,26 +835,26 @@ class DriveNeuralGRU(DriveBase):
             device=runtime_device,
         )
 
-        output = self._net_input
+        net_output = self._net_input
         next_hidden = []
         for layer_index, layer in enumerate(self._gru_layers):
-            output = layer(output, state.hidden[layer_index])
-            next_hidden.append(output)
+            net_output = layer(net_output, state.hidden[layer_index])
+            next_hidden.append(net_output)
         self._next_hidden = next_hidden
 
-        output = self._head(output)
+        net_output = self._head(net_output)
         if self._activation is not None:
-            output = self._activation(output)
+            net_output = self._activation(net_output)
         wp.launch(
             _write_effort_kernel,
             dim=self._num_actuators,
             inputs=[
-                output,
+                net_output,
                 self._description.output_scale,
                 self._effort_mean,
                 self._effort_std,
             ],
-            outputs=[forces],
+            outputs=[output],
             device=runtime_device,
         )
 
