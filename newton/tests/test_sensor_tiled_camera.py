@@ -13,6 +13,12 @@ import warp as wp
 import newton
 from newton._src.sensors.warp_raytrace.raytrace import PARTICLES_SHAPE_ID, TRIANGLE_MESH_SHAPE_ID
 from newton.sensors import SensorTiledCamera
+from newton.tests.unittest_utils import ignore_sensor_tiled_camera_deprecation
+
+
+def setUpModule():
+    # SensorTiledCamera is deprecated; these tests exercise it intentionally.
+    ignore_sensor_tiled_camera_deprecation()
 
 
 class TestSensorTiledCamera(unittest.TestCase):
@@ -163,6 +169,12 @@ class TestSensorTiledCamera(unittest.TestCase):
 
         linear = newton.utils.color_srgb_to_linear((0.5, 0.25, 0.1))
         np.testing.assert_allclose(newton.utils.color_linear_to_srgb(linear), (0.5, 0.25, 0.1), atol=1e-6)
+
+    def test_sensor_tiled_camera_construction_is_deprecated(self) -> None:
+        """Verify constructing SensorTiledCamera warns to switch to SensorCamera."""
+        model = self._build_single_sphere_scene((0.25, 0.5, 0.75))
+        with self.assertWarnsRegex(DeprecationWarning, r"SensorTiledCamera is deprecated.*SensorCamera"):
+            SensorTiledCamera(model=model)
 
     def test_render_config_alias_deprecated(self) -> None:
         model = self._build_single_sphere_scene((0.25, 0.5, 0.75))

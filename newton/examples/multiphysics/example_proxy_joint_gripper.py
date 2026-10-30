@@ -1,17 +1,23 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Proxy Joint Gripper
-#
-# A MuJoCo-driven palm and two prismatic cube fingers grip a VBD soft grid.
-# The VBD entry receives the gripper bodies as body proxies and keeps the
-# fixed/prismatic joints enabled as proxy joints whose targets track the
-# MuJoCo source joint configuration.
-#
-# Command: python -m newton.examples proxy_joint_gripper
-#
-###########################################################################
+"""Example Proxy Joint Gripper
+
+A MuJoCo-driven palm and two prismatic cube fingers grip a VBD soft grid.
+The VBD entry receives the gripper bodies as body proxies and keeps the
+fixed/prismatic joints enabled as proxy joints whose targets track the
+MuJoCo source joint configuration.
+
+Success criteria:
+- A MuJoCo-driven palm with two prismatic cube fingers appears around a VBD soft grid.
+- The gripper fingers close around the soft object.
+- The soft object deforms under the grip.
+- Proxy bodies and proxy joints make the VBD gripper view track the MuJoCo gripper configuration.
+- The soft object should stay bounded and should not drift unexpectedly from the gripper.
+
+Runs:
+- `python -m newton.examples proxy_joint_gripper`
+"""
 
 from __future__ import annotations
 
@@ -59,8 +65,7 @@ class Example:
             float(args.close_time) if args.close_time is not None else (0.3 if self.scenario == "harsh" else 0.8)
         )
 
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.32, -0.42, 0.34), pitch=-24.0, yaw=136.0)
+        self.viewer.set_camera(pos=wp.vec3(0.32, -0.42, 0.34), pitch=-24.0, yaw=136.0)
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
@@ -99,7 +104,6 @@ class Example:
 
         vbd_kwargs = {
             "iterations": int(args.vbd_iterations),
-            "rigid_compliant_alm": True,
             "particle_enable_self_contact": False,
             "particle_enable_tile_solve": False,
             "rigid_body_particle_contact_buffer_size": 1024 if self.scenario == "harsh" else 512,

@@ -1,16 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Panda Hydro
-#
-# Shows how to set up a pick-and-place manipulation simulation using a
-# Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
-# Supports different scene configurations: pen or cube.
-#
-# Command: python -m newton.examples panda_hydro --scene pen --world-count 1
-#
-###########################################################################
+"""Example Panda Hydro
+
+Shows how to set up a pick-and-place manipulation simulation using a
+Franka Panda arm with SDF hydroelastic contacts and inverse kinematics.
+Supports different scene configurations: pen or cube.
+
+Success criteria:
+- Each world shows a Franka arm, a support box, a cup, and the selected grasp object.
+- The arm lifts and transports the object while the cup remains upright.
+
+Runs:
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene cube`
+  - The arm grasps the cube and releases it on top of the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --world-count 2 --scene pen`
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
+  - Two worlds appear.
+- `python -m newton.examples robot_panda_hydro --scene pen --world-count 1`
+  - One world appears.
+  - The arm grasps the pen, brings it above the cup, loosens its grip to let the pen rotate
+    downward, then drops it inside the cup.
+"""
 
 import argparse
 import copy
@@ -71,6 +84,7 @@ class Example:
         self.sim_dt = self.frame_dt / self.sim_substeps
         self.world_count = args.world_count
         self.viewer = viewer
+        self.viewer.picking_enabled = False
 
         sdf_max_resolution = 64
         sdf_narrow_band_range = (-0.01, 0.01)
@@ -100,6 +114,7 @@ class Example:
             xform=wp.transform((-0.5, -0.5, 0.05), wp.quat_identity()),
             enable_self_collisions=False,
             parse_visuals_as_colliders=True,
+            joint_damping_mode="passive",
         )
 
         def find_body(name):
@@ -326,11 +341,11 @@ class Example:
         )
 
         self.viewer.set_model(self.model)
-        self.viewer.picking_enabled = False  # Disable interactive picking for this example
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_camera(wp.vec3(0.5, 0.0, 0.5), -15, -140)
             self.viewer.set_world_offsets(wp.vec3(1.0, 1.0, 0.0))
             self.viewer.show_hydro_contact_surface = self.show_isosurface
+        if hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(self.render_ui, position="side")
 
         # Initialize state for IK setup

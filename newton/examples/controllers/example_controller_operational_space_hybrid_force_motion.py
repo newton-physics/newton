@@ -1,36 +1,44 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Controllers — Operational Space Hybrid Force/Motion
-#
-# Demonstrates ControllerOperationalSpace on two real, heterogeneous robots
-# at once -- a 7-DOF Franka Panda arm (redundant against the 6D task) and a
-# 6-DOF UR10 arm (not redundant) -- each independently pressing a tool into
-# its own table, with its position along the table steered interactively.
-# The Franka's table is tilted 45 degrees toward it; the UR10's is flat.
-# One controller call handles both, each robot resolved through its own
-# tool site, Jacobian, and operational frame.
-#
-# Each operational frame is placed on its table's top surface, oriented so
-# its Z axis is normal to the table -- so the same operational-frame-relative
-# command works regardless of the table's tilt, and the axis triad drawn
-# each frame lets you see exactly where the controller thinks "the table"
-# and "into the table" are.
-#
-# Each operational frame's local Z (into its table) is wrench-controlled
-# with a feedforward press force plus feedback from the measured contact
-# force, plus a light superimposed motion-control term damping out
-# bounce; the other five task axes are purely motion-controlled, tracking
-# a desired (x, y) on the table's surface.
-#
-# Two sets of three sliders (x, y, press force) let you steer each robot's
-# commanded task directly; a SensorContact reads back the actual contact
-# force each tool exerts on its table, fed into the controller as wrench
-# feedback and shown in the GUI alongside the commanded force.
-#
-# Command: python -m newton.examples controller_operational_space_hybrid_force_motion
-###########################################################################
+"""Example Controllers — Operational Space Hybrid Force/Motion
+
+Demonstrates ControllerOperationalSpace on two real, heterogeneous robots
+at once -- a 7-DOF Franka Panda arm (redundant against the 6D task) and a
+6-DOF UR10 arm (not redundant) -- each independently pressing a tool into
+its own table, with its position along the table steered interactively.
+The Franka's table is tilted 45 degrees toward it; the UR10's is flat.
+One controller call handles both, each robot resolved through its own
+tool site, Jacobian, and operational frame.
+
+Each operational frame is placed on its table's top surface, oriented so
+its Z axis is normal to the table -- so the same operational-frame-relative
+command works regardless of the table's tilt, and the axis triad drawn
+each frame lets you see exactly where the controller thinks "the table"
+and "into the table" are.
+
+Each operational frame's local Z (into its table) is wrench-controlled
+with a feedforward press force plus feedback from the measured contact
+force, plus a light superimposed motion-control term damping out
+bounce; the other five task axes are purely motion-controlled, tracking
+a desired (x, y) on the table's surface.
+
+Two sets of three sliders (x, y, press force) let you steer each robot's
+commanded task directly; a SensorContact reads back the actual contact
+force each tool exerts on its table, fed into the controller as wrench
+feedback and shown in the GUI alongside the commanded force.
+
+Success criteria:
+- Two arms press against their respective tables: the Franka table is tilted and the UR10 table is
+  flat.
+- Changing desired X/Y sliders moves each tool along its own table while maintaining contact.
+- Changing desired press force changes the measured normal force; displayed actual position and
+  force respond to the commands.
+- At fixed targets, both arms remain bounded without growing oscillations.
+
+Runs:
+- `python -m newton.examples controller_operational_space_hybrid_force_motion`
+"""
 
 from dataclasses import dataclass
 
@@ -41,7 +49,7 @@ import newton
 import newton.examples
 import newton.solvers
 import newton.utils
-from newton import Contacts, JointTargetMode
+from newton import JointTargetMode
 from newton.controllers import ControllerOperationalSpace
 from newton.sensors import SensorContact
 
@@ -50,6 +58,8 @@ from newton.sensors import SensorContact
 # ---------------------------------------------------------------------------
 
 # Franka's standard "ready" pose.
+
+
 FRANKA_READY_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
 FRANKA_ARM_DOFS = len(FRANKA_READY_POSE)  # 7; all controlled by the OSC controller
 FRANKA_BASE_POSITION = wp.vec3(0.0, 0.0, 0.0)
@@ -232,17 +242,21 @@ class Example:
         # contacts/constraints need more headroom than one.
         self.solver = newton.solvers.SolverMuJoCo(self.model, nconmax=400, njmax=400)
 
-        # SensorContact + Contacts is Newton's contact-force readback API (see
+        # SensorContact consumes solver contact observables (see
         # example_sensor_contact.py) -- reads back the actual contact force
         # each tool's ball exerts on its table, fed into the controller as
         # wrench feedback and shown in the GUI alongside the commanded
         # force. One sensor covers both robots; total_force's rows are
         # ordered to match sensing_bodies below (Franka's ball, then UR10's).
-        self.force_sensor = SensorContact(self.model, sensing_bodies=[franka_tool_body, ur10_tool_body])
-        self.contacts = Contacts(
-            self.solver.get_max_contact_count(),
-            0,
-            requested_attributes=self.model.get_requested_contact_attributes(),
+        self.force_sensor = SensorContact(
+            self.model, request_contact_attributes=False, sensing_bodies=[franka_tool_body, ur10_tool_body]
+        )
+        self.collision_pipeline = newton.CollisionPipeline(
+            self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+        )
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds=self.force_sensor.solver_observable_kinds
         )
 
         # The tool site's world pose, not the raw body's -- the two only
@@ -358,10 +372,9 @@ class Example:
 
         # Pulled back and to the side so both robots and tables (Franka at
         # y=0, UR10 at y=1.8) are in view together.
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(-2.1, 0.9, 3.4), pitch=-15.0, yaw=15.0)
-            if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.4, 0.9, 0.4))
+        self.viewer.set_camera(pos=wp.vec3(-2.1, 0.9, 3.4), pitch=-50.1944, yaw=0.0000)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.look_at(wp.vec3(0.4, 0.9, 0.4))
 
         self.viewer.set_model(self.model)
 
@@ -436,7 +449,12 @@ class Example:
         coord_count_before = builder.joint_coord_count
         dof_count_before = builder.joint_dof_count
         body_count_before = builder.body_count
-        builder.add_urdf(urdf_path, xform=wp.transform(base_position, wp.quat_identity()), floating=False)
+        builder.add_urdf(
+            urdf_path,
+            xform=wp.transform(base_position, wp.quat_identity()),
+            floating=False,
+            joint_damping_mode="passive",
+        )
 
         # fr3_joint1..7 are the first 7 non-fixed joints after the (fixed,
         # 0-coordinate) base/mount joints this URDF starts with; the finger
@@ -538,17 +556,23 @@ class Example:
         """Pure GPU work: controller step + physics substeps. Safe to graph-capture."""
         self.controller.step(inputs=self._input, outputs=self._output, dt=self.sim_dt)
 
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
-        self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         # Force feedback needs last frame's measured contact force before
         # this frame's controller.step() runs; SensorContact.update() isn't
         # graph-capturable, so it has to happen here in Python, first.
-        self.force_sensor.update(self.state_0, self.contacts)
+        self.force_sensor.update(self.state_1, self.contacts, observables=self.solver_observables)
         # One sensing body per robot (Franka's ball, then UR10's), matching
         # sensing_bodies' order above.
         per_robot_force_world = self.force_sensor.total_force.numpy()

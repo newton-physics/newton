@@ -1,22 +1,22 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Twist
-#
-# Demonstrates twist propagation along cables with dynamic spinning.
-# Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
-# The first segment of each cable continuously spins, propagating twist along the cable.
-# The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
-# is transported through rod joints and across bends.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_twist
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_twist --test --viewer null
-#
-###########################################################################
+"""Example Cable Twist
+
+Demonstrates twist propagation along cables with dynamic spinning.
+Shows 3 cables side-by-side with zigzag paths and increasing isotropic angular stiffness.
+The first segment of each cable continuously spins, propagating twist along the cable.
+The zigzag routing introduces multiple 90-degree turns, demonstrating how twist
+is transported through rod joints and across bends.
+
+Success criteria:
+- Three cables of different angular stiffness twist continuously along their zigzag paths.
+- In the initial camera view, motion is larger toward the right-hand cable.
+- The segments remain connected without explosive motion or excessive ground penetration.
+
+Runs:
+- `python -m newton.examples cable_twist`
+"""
 
 import numpy as np
 import warp as wp
@@ -185,7 +185,6 @@ class Example:
                 bend_damping=1.0e-2 * angular_stiffness,
                 twist_damping=1.0e-2 * angular_stiffness,
                 label=f"cable_{i}",
-                body_frame_origin="com",
             )
 
             # Fix the first body to make it kinematic
@@ -216,7 +215,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
         )
 
         self.state_0 = self.model.state()

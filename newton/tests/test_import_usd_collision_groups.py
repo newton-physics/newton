@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from unittest import mock
 
 import newton
 from newton.tests.unittest_utils import USD_AVAILABLE
@@ -47,20 +48,15 @@ class TestImportUsdCollisionGroups(unittest.TestCase):
         expected_filtered = {
             tuple(sorted((shape_ids[name_a], shape_ids[name_b]))) for name_a, name_b in expected_filtered
         }
-        filtered_pairs = set(builder.shape_collision_filter_pairs)
+        model = builder.finalize(device="cpu")
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
         for name_a, shape_a in shape_ids.items():
             for name_b, shape_b in shape_ids.items():
                 if shape_a >= shape_b:
                     continue
                 pair = (shape_a, shape_b)
-                collision_enabled = (
-                    builder._test_group_pair(
-                        builder.shape_collision_group[shape_a], builder.shape_collision_group[shape_b]
-                    )
-                    and pair not in filtered_pairs
-                )
                 self.assertEqual(
-                    collision_enabled,
+                    pair in contact_pairs,
                     pair not in expected_filtered,
                     f"collision mismatch for {name_a}-{name_b}",
                 )
@@ -74,6 +70,33 @@ class TestImportUsdCollisionGroups(unittest.TestCase):
 
         self._assert_filtered_pairs(stage, shapes, ())
 
+    def test_ungrouped_import_skips_stage_group_table(self):
+        """Skip stage-wide group work when imported colliding shapes have no memberships."""
+        from pxr import UsdPhysics
+
+        stage, shapes = self._make_stage(("Imported/A", "Imported/B", "Imported/Disabled", "Outside"))
+        UsdPhysics.CollisionAPI(shapes["Imported/Disabled"].GetPrim()).GetCollisionEnabledAttr().Set(False)
+        self._add_group(stage, "InvertedGroup", (shapes["Imported/Disabled"], shapes["Outside"]), inverted=True)
+        shapes["Imported/A"].GetPrim().CreateRelationship("physics:filteredPairs").AddTarget(
+            shapes["Imported/B"].GetPath()
+        )
+
+        builder = newton.ModelBuilder()
+        with mock.patch.object(
+            UsdPhysics.CollisionGroup,
+            "ComputeCollisionGroupTable",
+            wraps=UsdPhysics.CollisionGroup.ComputeCollisionGroupTable,
+        ) as compute_table:
+            builder.add_usd(stage, root_path="/Imported", load_visual_shapes=False)
+        compute_table.assert_not_called()
+        self.assertEqual(builder.shape_count, 3)
+        shape_ids = {name: builder.shape_label.index(f"/Imported/{name}") for name in ("A", "B", "Disabled")}
+        self.assertFalse(builder.shape_flags[shape_ids["Disabled"]] & newton.ShapeFlags.COLLIDE_SHAPES)
+        self.assertEqual(
+            set(builder.shape_collision_filter_pairs),
+            {tuple(sorted((shape_ids["A"], shape_ids["B"])))},
+        )
+
     def test_nonpositive_builder_collision_groups(self):
         """Preserve non-positive builder collision defaults on imported shapes."""
         stage, shapes = self._make_stage(("A", "B", "C", "D", "E"))
@@ -85,13 +108,9 @@ class TestImportUsdCollisionGroups(unittest.TestCase):
                 builder.add_usd(stage)
 
                 self.assertEqual(builder.shape_collision_group, [default_collision_group] * len(shapes))
-                for shape_a in range(builder.shape_count):
-                    for shape_b in range(shape_a + 1, builder.shape_count):
-                        self.assertFalse(
-                            builder._test_group_pair(
-                                builder.shape_collision_group[shape_a], builder.shape_collision_group[shape_b]
-                            )
-                        )
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.shape_contact_pair_count, 0)
+                self.assertEqual(len(model.shape_contact_pairs), 0)
 
     def test_normal_and_inverted_filtering(self):
         """Preserve self, cross-group, and inverted collision filtering."""
@@ -142,6 +161,69 @@ class TestImportUsdCollisionGroups(unittest.TestCase):
         filtered_pairs = set(builder.shape_collision_filter_pairs)
         self.assertIn(tuple(sorted((shape_ids["PairA"], shape_ids["PairB"]))), filtered_pairs)
         self.assertIn(tuple(sorted((shape_ids["GroupA"], shape_ids["GroupB"]))), filtered_pairs)
+
+    def test_collision_groups_exclude_disabled_shapes(self):
+        """Keep group filters between enabled colliders only."""
+        from pxr import UsdPhysics
+
+        stage, shapes = self._make_stage(("EnabledA", "DisabledA", "EnabledB", "DisabledB"))
+        for name in ("DisabledA", "DisabledB"):
+            UsdPhysics.CollisionAPI(shapes[name].GetPrim()).GetCollisionEnabledAttr().Set(False)
+        group_a = self._add_group(stage, "GroupA", (shapes["EnabledA"], shapes["DisabledA"]))
+        group_b = self._add_group(stage, "GroupB", (shapes["EnabledB"], shapes["DisabledB"]))
+        group_a.CreateFilteredGroupsRel().AddTarget(group_b.GetPath())
+
+        for load_visual_shapes in (False, True):
+            with self.subTest(load_visual_shapes=load_visual_shapes):
+                builder = newton.ModelBuilder()
+                builder.add_usd(stage, load_visual_shapes=load_visual_shapes)
+                shape_ids = {
+                    name: builder.shape_label.index(f"/{name}")
+                    for name in ("EnabledA", "DisabledA", "EnabledB", "DisabledB")
+                }
+                enabled = {shape_ids[name] for name in ("EnabledA", "EnabledB")}
+                self.assertEqual(
+                    {i for i, flags in enumerate(builder.shape_flags) if flags & newton.ShapeFlags.COLLIDE_SHAPES},
+                    enabled,
+                )
+                self.assertEqual(set(builder.shape_collision_filter_pairs), {tuple(sorted(enabled))})
+
+    def test_filtered_pairs_exclude_disabled_shapes(self):
+        """Keep authored collider and body filters between enabled shapes only."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        for endpoint_kind in ("collider", "body"):
+            for load_visual_shapes in (False, True):
+                with self.subTest(endpoint_kind=endpoint_kind, load_visual_shapes=load_visual_shapes):
+                    stage = Usd.Stage.CreateInMemory()
+                    for body_name in ("A", "B"):
+                        body = UsdGeom.Xform.Define(stage, f"/{body_name}")
+                        UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                        for name, enabled in (("Enabled", True), ("Disabled", False)):
+                            shape = UsdGeom.Cube.Define(stage, f"/{body_name}/{name}")
+                            collision = UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
+                            collision.GetCollisionEnabledAttr().Set(enabled)
+                    if endpoint_kind == "body":
+                        stage.GetPrimAtPath("/A").CreateRelationship("physics:filteredPairs").AddTarget("/B")
+                    else:
+                        for name in ("Enabled", "Disabled"):
+                            stage.GetPrimAtPath(f"/A/{name}").CreateRelationship("physics:filteredPairs").SetTargets(
+                                ["/B/Enabled", "/B/Disabled"]
+                            )
+
+                    builder = newton.ModelBuilder()
+                    builder.add_usd(stage, load_visual_shapes=load_visual_shapes)
+                    shape_ids = {
+                        f"/{body_name}/{shape_name}": builder.shape_label.index(f"/{body_name}/{shape_name}")
+                        for body_name in ("A", "B")
+                        for shape_name in ("Enabled", "Disabled")
+                    }
+                    enabled = {shape_ids[f"/{body_name}/Enabled"] for body_name in ("A", "B")}
+                    self.assertEqual(
+                        {i for i, flags in enumerate(builder.shape_flags) if flags & newton.ShapeFlags.COLLIDE_SHAPES},
+                        enabled,
+                    )
+                    self.assertEqual(set(builder.shape_collision_filter_pairs), {tuple(sorted(enabled))})
 
     def test_mjcf_import_after_usd(self):
         """Preserve compact collision filters for a subsequent MJCF import."""

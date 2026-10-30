@@ -1,24 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD Gripper — Soft 1x1 Grid (water-tight EDGE contact)
-#
-# A parallel-jaw gripper with CUBE finger pads clamps a horizontal soft 1x1
-# grid (a single quad split by one diagonal edge -> two triangles) at its
-# centre, then lifts and holds it in the air.
-#
-# The grid's four corner vertices sit far out in x (outside the jaws), so the
-# only mesh feature crossing the pinch centre is the interior DIAGONAL edge.
-# The legacy per-particle path finds no vertex between the jaws, so the grid is
-# gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
-# via the water-tight soft-EDGE pass. With the flag off the grid slips out and
-# falls.
-#
-# Command: python -m newton.examples vbd_gripper_soft_grid
-###########################################################################
+"""Example VBD Gripper — Soft 1x1 Grid (water-tight EDGE contact)
+
+A parallel-jaw gripper with CUBE finger pads clamps a horizontal soft 1x1
+grid (a single quad split by one diagonal edge -> two triangles) at its
+centre, then lifts and holds it in the air.
+
+The grid's four corner vertices sit far out in x (outside the jaws), so the
+only mesh feature crossing the pinch centre is the interior DIAGONAL edge.
+The legacy per-particle path finds no vertex between the jaws, so the grid is
+gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
+via the water-tight soft-EDGE pass. With the flag off the grid slips out and
+falls.
+
+Success criteria:
+- Cube finger pads close across the interior diagonal edge of a two-triangle grid whose corner
+  vertices lie outside the jaws.
+- The grid lifts with the gripper and remains held in the air during the hold phase, without
+  slipping through the fingers.
+
+Runs:
+- `python -m newton.examples vbd_gripper_soft_grid`
+"""
 
 from __future__ import annotations
+
+import argparse
 
 import numpy as np
 import warp as wp
@@ -111,14 +119,13 @@ PARAMS = {
     "camera_pitch": -10.0,
     "camera_yaw": 128.0,
     "draw_wireframe": False,
-    "initial_paused": False,
 }
 
 
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
-        self.params = PARAMS
+        self.params = {**PARAMS, "finger_mesh": getattr(args, "finger_mesh", PARAMS["finger_mesh"])}
         self.sim_time = 0.0
         self.fps = self.params["fps"]
         self.frame_dt = 1.0 / self.fps
@@ -145,7 +152,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.params["solver_iterations"],
-            rigid_compliant_alm=True,
             integrate_with_external_rigid_solver=False,
             rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
         )
@@ -170,16 +176,15 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = self.params["draw_wireframe"]
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(
-                wp.vec3(*self.params["camera_pos"]),
-                self.params["camera_pitch"],
-                self.params["camera_yaw"],
-            )
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        self.viewer.set_camera(
+            wp.vec3(*self.params["camera_pos"]),
+            self.params["camera_pitch"],
+            self.params["camera_yaw"],
+        )
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = self.params["camera_fov"]
+
+        self.capture()
 
     # ── model construction ──────────────────────────────────────────────
 
@@ -327,6 +332,13 @@ class Example:
 
     # ── simulation loop ─────────────────────────────────────────────────
 
+    def capture(self):
+        self.graph = None
+        if self.model.device.is_cpu or not wp.config.verify_cuda:
+            with wp.ScopedCapture(device=self.model.device) as capture:
+                self.simulate()
+            self.graph = capture.graph
+
     def simulate(self):
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
@@ -338,7 +350,10 @@ class Example:
     def step(self):
         self.frame += 1
         self._advance_waypoint()
-        self.simulate()
+        if self.graph is not None:
+            wp.capture_launch(self.graph)
+        else:
+            self.simulate()
         self.sim_time += self.frame_dt
 
     def render(self):
@@ -358,6 +373,12 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.set_defaults(num_frames=PARAMS["num_frames"])
+        parser.add_argument(
+            "--finger-mesh",
+            action=argparse.BooleanOptionalAction,
+            default=PARAMS["finger_mesh"],
+            help="Use triangulated cube finger pads instead of analytic boxes.",
+        )
         return parser
 
 

@@ -5,8 +5,8 @@
 
 from __future__ import annotations
 
-import math
 import unittest
+from itertools import product
 from types import SimpleNamespace
 from unittest import mock
 
@@ -18,6 +18,7 @@ import newton._src.solvers.kamino.config as kamino_config
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
+from newton._src.solvers.kamino._src.geometry.keying import KeySorter
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.constraints import unpack_constraint_solutions, update_constraints_info
 from newton._src.solvers.kamino._src.kinematics.jacobians import DenseSystemJacobians
@@ -25,33 +26,89 @@ from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlock
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
+    BILATERAL_FAILED_PIVOT_SHIFT,
+    _find_bilateral_factor_row_start,
     _initialize_dvi_status,
+    _solve_bilateral_unilateral_response,
+    _solve_bilateral_unilateral_response_cooperative,
     _solve_dvi_inequalities_colored_pgs,
+)
+from newton._src.solvers.kamino._src.solvers.dvi.projections import (
+    contact_friction_normal_load as _contact_friction_normal_load,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.projections import (
     project_contact_tangent_update as _project_contact_tangent_update,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
-    _SPARSE_DELASSUS_ROWS_JOINTS,
-    _SPARSE_DELASSUS_ROWS_UNILATERAL,
     _can_use_cooperative_articulation,
-    _sparse_delassus_matvec_rows,
+    _sparse_bilateral_matvec,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+    _assemble_compact_unilateral_schur_blocked,
+    _assemble_compact_unilateral_schur_tiled,
+    _color_compact_contact_groups,
     _color_mapped_dvi_inequalities,
+    _compact_contact_group_starts,
+    _compact_unilateral_correction,
+    _compare_compact_contact_topology,
+    _expand_colored_contact_groups,
+    _group_mapped_dvi_inequalities,
+    _map_active_contacts,
     _map_bounded_constraints,
     _map_ordered_active_contacts,
+    _mark_contact_group_boundaries,
+    _prefix_active_contacts_by_world,
+    _prepare_colored_contact_group_sizes,
+    _prepare_contact_pair_sort,
+    _prepare_contact_world_sort,
+    _reconstruct_fused_bilateral_solution,
     _solve_dvi_sparse_contacts_pgs,
     _solve_dvi_sparse_inequalities_pgs,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIState, convert_config_to_struct
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 from newton.tests.utils import basics, testing
+
+
+@wp.kernel
+def _compact_unilateral_correction_for_test(
+    compact_q: wp.array[wp.float32],
+    result: wp.array[wp.vec2f],
+):
+    result[0] = _compact_unilateral_correction(
+        compact_q, wp.int32(0), wp.int32(0), wp.int32(0), wp.int32(1), wp.int32(0)
+    )
+    result[1] = _compact_unilateral_correction(
+        compact_q, wp.int32(0), wp.int32(0), wp.int32(1), wp.int32(1), wp.int32(0)
+    )
+    result[2] = _compact_unilateral_correction(
+        compact_q, wp.int32(0), wp.int32(0), wp.int32(1), wp.int32(1), wp.int32(1)
+    )
+
+
+@wp.kernel
+def _contact_friction_normal_load_for_test(
+    lambda_n: wp.float32,
+    bias_n: wp.float32,
+    preconditioner_n: wp.float32,
+    diagonal_n: wp.float32,
+    result: wp.array[wp.float32],
+):
+    """Evaluate the unbiased DVI friction load in a test kernel."""
+    result[0] = _contact_friction_normal_load(
+        lambda_n,
+        bias_n,
+        preconditioner_n,
+        diagonal_n,
+        wp.float32(0.0),
+        wp.float32(1.0),
+    )
 
 
 @wp.kernel
@@ -270,7 +327,13 @@ def _solve_dvi(
 
 
 def _status_iteration_budget(solver: DVISolver, wid: int) -> int:
+    """Bound the backend's reported projected steps across unilateral phases."""
     config = solver.config[wid]
+    if config.unilateral_solver == "apgd":
+        phases = (
+            1 if solver._use_schur_complement or solver._bilateral_solver is None else config.max_alternating_iterations
+        )
+        return phases * config.apgd.max_nonlinear_corrections * config.apgd.max_iterations
     return config.max_alternating_iterations * config.inequality_sweeps_per_iteration
 
 
@@ -322,11 +385,12 @@ def _evaluate_solution_metrics(test: TestSetup, solver: DVISolver) -> dict[str, 
     }
 
 
-class TestDVISolver(unittest.TestCase):
+class TestDVISolver(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
     def test_00_sparse_projection_is_allocated_only_for_schur(self):
         """Allocate the large sparse response workspace only for Schur solves."""
@@ -358,7 +422,7 @@ class TestDVISolver(unittest.TestCase):
             bilateral_solver=object(),
             use_schur_complement=True,
             size=SimpleNamespace(
-                max_of_num_bilateral_joint_cts=64,
+                max_of_num_bilateral_joint_cts=32,
                 max_of_num_bounded_joint_cts=43,
             ),
         )
@@ -377,7 +441,7 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(default_config.dvi.omega, 1.0)
         self.assertEqual(default_config.dvi.max_alternating_iterations, 24)
         self.assertEqual(default_config.dvi.inequality_sweeps_per_iteration, 2)
-        self.assertFalse(default_config.dvi.use_schur_complement)
+        self.assertIsNone(default_config.dvi.use_schur_complement)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
         self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
         self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
@@ -459,6 +523,20 @@ class TestDVISolver(unittest.TestCase):
         )
         self.assertEqual(kamino_config.DVISolverConfig.from_model(model_with_attrs).max_alternating_iterations, 37)
 
+    def test_00_schur_ignores_bilateral_solve_interval(self):
+        """Do not fall back to bilateral alternation after Schur elimination."""
+        configs = [
+            kamino_config.DVISolverConfig(max_alternating_iterations=4, bilateral_solve_interval=interval)
+            for interval in (1, 2)
+        ]
+        solver = SimpleNamespace(_use_schur_complement=True, _max_alternating_iterations=4)
+
+        schedule = DVISolver._make_bilateral_solve_schedule(solver, configs)
+
+        self.assertEqual(schedule, (False, False, False))
+        solver._use_schur_complement = False
+        self.assertEqual(DVISolver._make_bilateral_solve_schedule(solver, configs), (True, True, True))
+
     def test_00a_dvi_contact_capacity_uses_geometry_heuristic(self):
         """Limit DVI contact allocation while honoring explicit overrides."""
         builder = newton.ModelBuilder()
@@ -490,6 +568,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_00a2_dvi_contact_capacity_reports_per_world_overflow(self):
         """Report contacts dropped when one world exhausts its capacity."""
+        expect_contact_capacity_warning(self)
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         for world_index in range(50):
@@ -527,7 +606,7 @@ class TestDVISolver(unittest.TestCase):
 
         def make_model(dimensions):
             return SimpleNamespace(
-                size=SimpleNamespace(sum_of_num_bilateral_joint_cts=sum(dimensions)),
+                size=SimpleNamespace(num_worlds=len(dimensions), sum_of_num_bilateral_joint_cts=sum(dimensions)),
                 info=SimpleNamespace(
                     num_joint_bilateral_cts=wp.array(dimensions, dtype=wp.int32, device=self.device),
                     joint_bilateral_cts_offset=wp.array(
@@ -549,6 +628,17 @@ class TestDVISolver(unittest.TestCase):
         self.assertIsInstance(solver._bilateral_solver, LLTBlockedRCMSolver)
         self.assertEqual(solver._bilateral_solver._block_size, 16)
         self.assertTrue(solver._bilateral_solver._reuse_permutation)
+        self.assertEqual(solver._bilateral_solver._failed_pivot_shift, BILATERAL_FAILED_PIVOT_SHIFT)
+
+        # Both bilateral solvers retry failed pivots by default, and an explicit shift still wins.
+        for kwargs, expected_shift in (({}, BILATERAL_FAILED_PIVOT_SHIFT), ({"failed_pivot_shift": 0.0}, 0.0)):
+            with self.subTest(kwargs=kwargs):
+                solver._config = [
+                    kamino_config.DVISolverConfig(bilateral_solver_type="LLTB", bilateral_solver_kwargs=kwargs)
+                ]
+                solver._allocate_bilateral_solver(make_model([3]))
+                self.assertIsInstance(solver._bilateral_solver, LLTBlockedSolver)
+                self.assertEqual(solver._bilateral_solver._failed_pivot_shift, expected_shift)
 
         solver._config = [
             kamino_config.DVISolverConfig(bilateral_solver_type="LLTB"),
@@ -789,11 +879,13 @@ class TestDVISolver(unittest.TestCase):
         negative index.
         """
 
-        def solve_single_inequality(limit_index: int, bounded: bool = False) -> tuple[float, np.ndarray]:
+        def solve_single_inequality(
+            limit_index: int, bounded: bool = False, initial_lambda: float = 0.0, column_major: bool = False
+        ) -> tuple[float, np.ndarray]:
             int32_array = lambda values: wp.array(values, dtype=wp.int32, device=self.device)  # noqa: E731
             float_array = lambda values: wp.array(values, dtype=wp.float32, device=self.device)  # noqa: E731
             jacobian_block = wp.array([vec6f(1.0, 0.0, 0.0, 0.0, 0.0, 0.0)], dtype=vec6f, device=self.device)
-            lambdas = float_array([0.0])
+            lambdas = float_array([initial_lambda, *([0.0] * 5 if column_major else [])])
             config = wp.array(
                 [
                     convert_config_to_struct(
@@ -810,7 +902,7 @@ class TestDVISolver(unittest.TestCase):
                 device=self.device,
             )
             threads_per_world = 64 if self.device.is_cuda else 1
-            body_space = wp.zeros(6, dtype=wp.float32, device=self.device)
+            body_space = wp.full(6, float("nan"), dtype=wp.float32, device=self.device)
             wp.launch(
                 kernel=_solve_dvi_sparse_inequalities_pgs,
                 dim=threads_per_world,
@@ -868,6 +960,15 @@ class TestDVISolver(unittest.TestCase):
                     config,
                     body_space,
                     lambdas,
+                    int32_array([1]),  # transpose_num_nzb
+                    int32_array([0]),  # transpose_nzb_start
+                    wp.array([[0, 0]], dtype=wp.int32, device=self.device),
+                    jacobian_block,
+                    int32_array([0]),  # transpose_row_start
+                    int32_array([0]),  # transpose_col_start
+                    int32_array([6]),  # transpose_max_cols
+                    column_major,  # transpose_column_major
+                    0,  # world_start
                 ],
                 device=self.device,
                 block_dim=threads_per_world,
@@ -882,6 +983,12 @@ class TestDVISolver(unittest.TestCase):
         lambda_bounded, body_space = solve_single_inequality(-1, bounded=True)
         self.assertAlmostEqual(lambda_bounded, 0.25, places=4)
         self.assertAlmostEqual(body_space[0], 0.25, places=4)
+        # Both layouts reconstruct the initial product, then propagate the
+        # projected impulse delta. Stale NaNs must not enter either product.
+        for column_major in (False, True):
+            impulse, body = solve_single_inequality(0, initial_lambda=0.2, column_major=column_major)
+            self.assertAlmostEqual(impulse, 1.0, places=4)
+            np.testing.assert_allclose(body, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0], atol=1.0e-5)
 
     def _make_box_on_plane_setup(self, max_world_contacts: int = 4, sparse: bool = False):
         """Build an inequality-only box-on-plane problem and its containers."""
@@ -951,10 +1058,11 @@ class TestDVISolver(unittest.TestCase):
         body_force = np.zeros((model.body_count, 6), dtype=np.float32)
         body_force[body, 0] = applied_force
 
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
+            with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
                     dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -967,6 +1075,8 @@ class TestDVISolver(unittest.TestCase):
                 config.dvi.max_alternating_iterations = 200
                 config.dvi.tolerance = 1.0e-4
                 config.dvi.warmstart_mode = "none"
+                # Resolve sticking below the 1e-6 m/s rest-speed assertion.
+                config.dvi.apgd.tolerance = 1.0e-7
                 solver = SolverKamino(model, config=config)
                 state_0 = model.state()
                 state_1 = model.state()
@@ -1171,7 +1281,7 @@ class TestDVISolver(unittest.TestCase):
     def test_03d_dvi_direct_block_honors_per_world_iteration_counts(self):
         """Honor each world's projected and bilateral iteration schedule."""
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_hinged(), world_count=3)
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -1273,7 +1383,7 @@ class TestDVISolver(unittest.TestCase):
     def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_hinged(), world_count=2)
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -1318,7 +1428,20 @@ class TestDVISolver(unittest.TestCase):
 
         solver._sparse_path.set_bilateral_active_dim = record_bilateral_active_dim
         solver.coldstart()
-        solver.solve(problem)
+        with (
+            mock.patch.object(
+                problem.delassus, "apply_jacobian_transpose", wraps=problem.delassus.apply_jacobian_transpose
+            ) as body_products,
+            mock.patch.object(
+                solver._bilateral_solver, "solve", wraps=solver._bilateral_solver.solve
+            ) as separate_bilateral_solves,
+        ):
+            solver.solve(problem)
+        # Sweeps stay fused; only the final solution matvec applies J^T separately.
+        self.assertEqual(body_products.call_count, 1)
+        self.assertIs(body_products.call_args.args[1], problem.delassus._vec_temp_body_space)
+        # CUDA prepares the RHS and scatters the result in the same solve CTA.
+        self.assertEqual(separate_bilateral_solves.call_count, 0 if self.device.is_cuda else 4)
 
         joint_dims = problem.data.njc.numpy()
         self.assertEqual([block_iteration for block_iteration, _ in active_dim_updates], [0, 1, -1])
@@ -1328,6 +1451,45 @@ class TestDVISolver(unittest.TestCase):
         )
         np.testing.assert_array_equal(active_dim_updates[1][1], active_dim_updates[0][1])
         np.testing.assert_array_equal(active_dim_updates[2][1], joint_dims)
+
+        # Force the budget fallback on the same problem and heterogeneous
+        # intervals, without allocating a contact-capacity-sized buffer.
+        expected = solver.data.solution.lambdas.numpy().copy()
+        with mock.patch("newton._src.solvers.kamino._src.solvers.dvi.solver._MAX_CACHED_BILATERAL_COUPLING_ENTRIES", 0):
+            fallback = DVISolver(
+                model=model,
+                data=data,
+                limits=limits,
+                contacts=detector.contacts,
+                jacobians=jacobians,
+                problem=problem,
+                config=configs,
+                warmstart=WarmStartMode.NONE,
+            )
+            fallback.coldstart()
+            launch = wp.launch
+
+            def launch_one_warp(kernel, *args, **kwargs):
+                # Exercise the large-batch schedule on this heterogeneous reference problem.
+                if self.device.is_cuda and kernel is _solve_dvi_sparse_inequalities_pgs:
+                    worlds = kwargs["dim"] // kwargs["block_dim"]
+                    kwargs["dim"] = worlds * 32
+                    kwargs["block_dim"] = 32
+                return launch(kernel, *args, **kwargs)
+
+            with (
+                mock.patch.object(
+                    problem.delassus, "apply_jacobian_transpose", wraps=problem.delassus.apply_jacobian_transpose
+                ) as body_products,
+                mock.patch.object(wp, "launch", side_effect=launch_one_warp),
+            ):
+                fallback.solve(problem)
+        self.assertEqual(fallback.data.state.bilateral_coupling.size, 1)
+        # CUDA fuses RHS construction; CPU adds four products to the final matvec.
+        self.assertEqual(body_products.call_count, 1 if self.device.is_cuda else 5)
+        self.assertIs(body_products.call_args.args[1], problem.delassus._vec_temp_body_space)
+        np.testing.assert_array_equal(fallback.data.state.bilateral_active_dim.numpy(), joint_dims)
+        np.testing.assert_allclose(fallback.data.solution.lambdas.numpy(), expected, atol=2e-5, rtol=2e-5)
 
     def test_03d2_dvi_direct_block_finishes_with_bilateral_solve(self):
         """Recover a consistent bilateral solution after fused inequality iterations."""
@@ -1757,35 +1919,41 @@ class TestDVISolver(unittest.TestCase):
         np.testing.assert_array_equal(np.sort(inequality_ids_by_color.numpy()), np.arange(3))
 
     def test_03g5_dvi_map_bounded_constraints_writes_joint_body_pairs(self):
-        """Map each joint's bounded rows to its body pair and entity slot."""
-        joint_wid = wp.array([0, 0], dtype=wp.int32, device=self.device)
-        joint_bid_f = wp.array([0, 1], dtype=wp.int32, device=self.device)
-        joint_bid_b = wp.array([-1, 2], dtype=wp.int32, device=self.device)
-        joint_bounded_cts_offset = wp.array([0, 1, 2], dtype=wp.int32, device=self.device)
-        problem_bcio = wp.array([0], dtype=wp.int32, device=self.device)
-        problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
-        inequality_bodies = wp.full(shape=2, value=wp.vec2i(-5, -5), dtype=wp.vec2i, device=self.device)
+        """Map mixed friction and effort rows in constraint order across worlds."""
+
+        def ints(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        inequality_bodies = wp.full(shape=14, value=wp.vec2i(-5, -5), dtype=wp.vec2i, device=self.device)
 
         wp.launch(
             kernel=_map_bounded_constraints,
-            dim=2,
+            dim=4,
             inputs=[
-                joint_wid,
-                joint_bid_b,
-                joint_bid_f,
-                joint_bounded_cts_offset,
-                problem_bcio,
-                problem_uio,
+                ints([0, 0, 1, 1]),
+                ints([-1, 0, -1, 2]),
+                ints([0, 1, 2, 3]),
+                ints([1, 1, 2, 0]),
+                ints([1, 1, 0, 1]),
+                ints([15, 16, 107, 109]),
+                ints([17, 18, 109, 109]),
+                ints([10, 100]),
+                ints([5, 7]),
+                ints([2, 9]),
                 inequality_bodies,
             ],
             device=self.device,
         )
 
-        np.testing.assert_array_equal(inequality_bodies.numpy(), [[-1, 0], [2, 1]])
+        expected = np.full((14, 2), -5, dtype=np.int32)
+        expected[2:6] = [[-1, 0], [0, 1], [-1, 0], [0, 1]]
+        expected[9:12] = [[-1, 2], [-1, 2], [2, 3]]
+        np.testing.assert_array_equal(inequality_bodies.numpy(), expected)
 
     def test_03i_dvi_coldstart_is_repeatable(self):
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        """Repeat cold starts without clearing overwritten Schur workspace."""
+        for sparse, schur in ((False, False), (True, False), (True, True)):
+            with self.subTest(sparse=sparse, schur=schur):
                 test = TestSetup(
                     builder_fn=basics.build_boxes_hinged,
                     max_world_contacts=8,
@@ -1800,14 +1968,33 @@ class TestDVISolver(unittest.TestCase):
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
                 ).dvi
+                config.use_schur_complement = schur
                 solver = _solve_dvi(test.model, test.problem, config=config, setup=test)
                 first_lambdas = solver.data.solution.lambdas.numpy().copy()
                 first_v_plus = solver.data.solution.v_plus.numpy().copy()
                 first_status = solver.data.status.numpy().copy()
 
                 test.build()
+                response_arrays = ()
+                before_reset = ()
+                if schur:
+                    state = solver.data.state
+                    response_arrays = (
+                        state.bilateral_coupling,
+                        state.bilateral_response_factor,
+                        state.bilateral_response,
+                    )
+                    before_reset = tuple(array.numpy().copy() for array in response_arrays)
                 solver.reset()
+                # `reset()` only clears the persistent solution cache, and some workspace
+                # arrays will not be reset by `coldstart()`. Poison these arrays to prove
+                # that nothing downstream reads it before overwriting it.
+                for array, before in zip(response_arrays, before_reset, strict=True):
+                    np.testing.assert_array_equal(array.numpy(), before)
+                    array.fill_(float("nan"))
                 solver.coldstart()
+                for array in response_arrays:
+                    self.assertTrue(np.isnan(array.numpy()).all())
                 solver.solve(test.problem)
 
                 np.testing.assert_allclose(solver.data.solution.lambdas.numpy(), first_lambdas, rtol=0.0, atol=1e-6)
@@ -1991,12 +2178,13 @@ class TestDVISolver(unittest.TestCase):
                 self.assertEqual(config.sparse_dynamics, sparse)
                 self.assertTrue(config.sparse_jacobian)
 
-    def test_03a_sparse_dvi_filtered_matvec_matches_full_rows(self):
-        builder = basics.build_box_on_plane()
+    def test_03a_sparse_dvi_bilateral_matvec_matches_full_rows(self):
+        """Match nonempty bilateral rows and leave contact rows zero."""
+        builder = basics.build_boxes_hinged()
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
-            max_world_contacts=4,
+            max_world_contacts=8,
             sparse=True,
         )
         update_containers(
@@ -2033,19 +2221,19 @@ class TestDVISolver(unittest.TestCase):
         problem.delassus.matvec(solver.data.solution.lambdas, full, solver.all_worlds_mask)
         full_np = full.numpy()
 
-        _sparse_delassus_matvec_rows(solver, problem, _SPARSE_DELASSUS_ROWS_JOINTS)
+        _sparse_bilateral_matvec(solver._sparse_path, problem)
         joint_np = solver.data.state.v_aug.numpy()
-        _sparse_delassus_matvec_rows(solver, problem, _SPARSE_DELASSUS_ROWS_UNILATERAL)
-        unilateral_np = solver.data.state.v_aug.numpy()
 
         dim = int(problem.data.dim.numpy()[0])
         njc = int(problem.data.njc.numpy()[0])
+        self.assertGreater(njc, 0)
+        self.assertGreater(dim, njc)
         np.testing.assert_allclose(joint_np[:njc], full_np[:njc], rtol=1e-5, atol=1e-5)
-        np.testing.assert_allclose(unilateral_np[njc:dim], full_np[njc:dim], rtol=1e-5, atol=1e-5)
+        np.testing.assert_array_equal(joint_np[njc:dim], 0.0)
 
     def test_05_dvi_solve_multi_world_contacts(self):
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=4)
+        builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=4)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -2076,7 +2264,7 @@ class TestDVISolver(unittest.TestCase):
         """Verify dense and sparse DVI map packed contacts to raw topology."""
         for sparse in (False, True):
             builder = newton.ModelBuilder()
-            builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=8)
+            builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=8)
             model = ModelKamino.from_newton(builder.finalize(device=self.device))
             model, data, state, limits, detector, jacobians = make_containers(
                 model=model,
@@ -2131,7 +2319,7 @@ class TestDVISolver(unittest.TestCase):
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 builder = newton.ModelBuilder()
-                builder.replicate(builder=_build_five_box_stack(), world_count=4)
+                builder.replicate(builder=_build_five_box_stack(), copy_count=4)
                 model = ModelKamino.from_newton(builder.finalize(device=self.device))
                 model, data, state, limits, detector, jacobians = make_containers(
                     model=model,
@@ -2481,7 +2669,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_06a_dvi_masked_reset_preserves_unselected_worlds(self):
         builder = newton.ModelBuilder()
-        builder.replicate(basics.build_box_on_plane(ground=True), world_count=3)
+        builder.replicate(basics.build_box_on_plane(ground=True), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -2657,10 +2845,11 @@ class TestDVISolver(unittest.TestCase):
         model = builder.finalize(device=self.device)
 
         initial_speed = 3.0
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
+            with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
                     dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -2702,7 +2891,8 @@ class TestDVISolver(unittest.TestCase):
                         )
 
                 self.assertTrue(contact_seen)
-                self.assertGreater(int(solver_dvi.data.state.inequality_num_colors.numpy()[0]), 0)
+                if unilateral_solver == "pgs":
+                    self.assertGreater(int(solver_dvi.data.state.inequality_num_colors.numpy()[0]), 0)
                 np.testing.assert_allclose(velocities, initial_speed, rtol=0.0, atol=1.0e-6)
                 self.assertLessEqual(max_tangent_impulse, 1.0e-8)
 
@@ -2727,10 +2917,11 @@ class TestDVISolver(unittest.TestCase):
         model = builder.finalize(device=self.device)
 
         expected_speeds = initial_speed - friction * 9.81 * dt * np.arange(1, steps + 1)
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
+            with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
                     dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -2740,6 +2931,8 @@ class TestDVISolver(unittest.TestCase):
                         max_contacts_per_pair=8,
                     ),
                 )
+                # Resolve the correction for the analytical velocity/distance checks.
+                config.dvi.apgd.max_nonlinear_corrections = 8
                 solver = SolverKamino(model, config=config)
                 state_0 = model.state()
                 state_1 = model.state()
@@ -2779,10 +2972,11 @@ class TestDVISolver(unittest.TestCase):
 
             expected_speed = initial_speed - friction * 9.81 * dt * steps
             expected_distance = initial_speed * dt * steps - friction * 9.81 * dt * dt * steps * (steps + 1) / 2.0
-            for sparse in (False, True):
-                with self.subTest(friction=friction, sparse=sparse):
+            for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
+                with self.subTest(friction=friction, sparse=sparse, unilateral_solver=unilateral_solver):
                     config = SolverKamino.Config(
                         dynamics_solver="dvi",
+                        dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
                         use_collision_detector=True,
                         sparse_dynamics=sparse,
                         sparse_jacobian=sparse,
@@ -2792,6 +2986,8 @@ class TestDVISolver(unittest.TestCase):
                             max_contacts_per_pair=8,
                         ),
                     )
+                    # Resolve the correction for the analytical velocity/distance checks.
+                    config.dvi.apgd.max_nonlinear_corrections = 8
                     solver = SolverKamino(model, config=config)
                     state_0 = model.state()
                     state_1 = model.state()
@@ -2849,10 +3045,11 @@ class TestDVISolver(unittest.TestCase):
 
         expected_speed = initial_speed - friction * 9.81 * dt * steps
         expected_distance = initial_speed * dt * steps - friction * 9.81 * dt * dt * steps * (steps + 1) / 2.0
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
+            with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
                     dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -2931,10 +3128,13 @@ class TestDVISolver(unittest.TestCase):
             builder.add_ground_plane(cfg=shape_cfg)
             model = builder.finalize(device=self.device)
 
-            for sparse in (False, True):
-                with self.subTest(angle=angle_degrees, friction=friction, sparse=sparse):
+            for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
+                with self.subTest(
+                    angle=angle_degrees, friction=friction, sparse=sparse, unilateral_solver=unilateral_solver
+                ):
                     config = SolverKamino.Config(
                         dynamics_solver="dvi",
+                        dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
                         use_collision_detector=True,
                         sparse_dynamics=sparse,
                         sparse_jacobian=sparse,
@@ -2996,10 +3196,11 @@ class TestDVISolver(unittest.TestCase):
         inertia_yy = float(model.body_inertia.numpy()[body][1, 1])
         expected_rolling_speed = initial_speed / (1.0 + inertia_yy / (mass * radius * radius))
 
-        for sparse in (False, True):
-            with self.subTest(sparse=sparse):
+        for sparse, unilateral_solver in product((False, True), ("pgs", "apgd")):
+            with self.subTest(sparse=sparse, unilateral_solver=unilateral_solver):
                 config = SolverKamino.Config(
                     dynamics_solver="dvi",
+                    dvi=kamino_config.DVISolverConfig(unilateral_solver=unilateral_solver),
                     use_collision_detector=True,
                     sparse_dynamics=sparse,
                     sparse_jacobian=sparse,
@@ -3120,11 +3321,6 @@ class TestDVISolver(unittest.TestCase):
             world_count=1,
             use_kamino_contacts=True,
             dynamics_solver="dvi",
-            # Turning off effort limits isolates DVI contact creep; effort-limit rows have
-            # dedicated coverage in test_kamino_solver_joint_effort_limit.
-            # TODO: Re-enable effort limits once DVI solves their constraints
-            # accurately enough for this contact regression.
-            joint_effort_limit=math.inf,
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3176,11 +3372,6 @@ class TestDVISolver(unittest.TestCase):
             world_count=1,
             use_kamino_contacts=True,
             dynamics_solver="dvi",
-            # Turning off effort limits isolates DVI contact support; effort-limit rows have
-            # dedicated coverage in test_kamino_solver_joint_effort_limit.
-            # TODO: Re-enable effort limits once DVI solves their constraints
-            # accurately enough for this contact regression.
-            joint_effort_limit=math.inf,
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3206,6 +3397,1098 @@ class TestDVISolver(unittest.TestCase):
         x = np.arange(z.size, dtype=np.float64)
         residual = z - np.polyval(np.polyfit(x, z, 1), x)
         self.assertLess(float(np.max(residual) - np.min(residual)), 0.001)
+
+    def test_00c_sparse_projection_uses_padded_bilateral_vector_size(self):
+        """Allocate sparse response state for padded zero-constraint worlds."""
+        size = SimpleNamespace(
+            num_worlds=2,
+            max_of_num_joint_cts=3,
+            max_of_max_limits=0,
+            max_of_max_contacts=1,
+            sum_of_max_unilaterals=6,
+            sum_of_max_inequalities=6,
+            sum_of_max_total_cts=10,
+        )
+        solver = DVISolver()
+        solver._device = self.device
+        solver._size = size
+        solver._use_schur_complement = True
+        solver._data = SimpleNamespace(
+            state=DVIState(),
+            bilateral_operator=SimpleNamespace(info=SimpleNamespace(total_vec_size=4)),
+        )
+        solver._joint_rows_host = [1, 3]
+        solver._unilateral_strides_host = [3, 3]
+
+        problem = SimpleNamespace(
+            sparse=True,
+            data=SimpleNamespace(
+                njc=wp.array([1, 3], dtype=wp.int32, device=self.device),
+                maxdim=wp.array([4, 6], dtype=wp.int32, device=self.device),
+            ),
+        )
+        solver._allocate_projection_workspace(problem)
+
+        self.assertEqual(solver.data.state.bilateral_delta.shape[0], 4)
+        self.assertEqual(solver.data.state.bilateral_response_mio.numpy().tolist(), [0, 3])
+        self.assertEqual(solver.data.state.bilateral_response_stride.numpy().tolist(), [3, 3])
+        self.assertEqual(solver.data.state.bilateral_coupling.shape[0], 12)
+        self.assertEqual(solver.data.state.bilateral_response_factor.shape[0], 12)
+        self.assertEqual(solver.data.state.bilateral_response.shape[0], 12)
+
+    def test_03ic_dvi_excludes_penetration_recovery_from_friction_load(self):
+        """Exclude penetration-recovery impulses from the Coulomb friction load."""
+        result = wp.empty(1, dtype=wp.float32, device=self.device)
+
+        def evaluate(bias: float) -> float:
+            wp.launch(
+                kernel=_contact_friction_normal_load_for_test,
+                dim=1,
+                inputs=[
+                    wp.float32(3.0),
+                    wp.float32(bias),
+                    wp.float32(0.5),
+                    wp.float32(2.0),
+                    result,
+                ],
+                device=self.device,
+            )
+            return float(result.numpy()[0])
+
+        self.assertAlmostEqual(evaluate(-2.0), 2.5)
+        self.assertAlmostEqual(evaluate(2.0), 3.0)
+        self.assertAlmostEqual(evaluate(-20.0), 0.0)
+
+    def test_sparse_contacts_with_mixed_static_and_kinematic_supports(self):
+        """Keep grouped contact impulses independent of unused Jacobian storage."""
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        def f32(values):
+            return wp.array(values, dtype=wp.float32, device=self.device)
+
+        # Both supports map to the same immovable body for coloring. The
+        # kinematic support still has three extra (zero inverse-mass) blocks.
+        rows = np.eye(3, 6, dtype=np.float32)
+        for kinematic_first in (True, False):
+            with self.subTest(kinematic_first=kinematic_first):
+                supports = [0, -1] if kinematic_first else [-1, 0]
+                offsets = []
+                jacobian = []
+                weighted = []
+                for support in supports:
+                    offsets.append(len(jacobian))
+                    jacobian.extend(rows)
+                    weighted.extend(rows)
+                    if support >= 0:
+                        jacobian.extend(-rows)
+                        weighted.extend(np.zeros_like(rows))
+                # Unused capacity must never affect a contact's three rows.
+                jacobian.extend(np.full((3, 6), np.nan, dtype=np.float32))
+                weighted.extend(np.full((3, 6), np.nan, dtype=np.float32))
+                body_space = wp.zeros(12, dtype=wp.float32, device=self.device)
+                impulses = wp.zeros(6, dtype=wp.float32, device=self.device)
+                config = convert_config_to_struct(kamino_config.DVISolverConfig(max_alternating_iterations=1))
+                wp.launch(
+                    _solve_dvi_sparse_contacts_pgs,
+                    dim=1,
+                    inputs=[
+                        wp.array(weighted, dtype=vec6f, device=self.device),
+                        wp.array(jacobian, dtype=vec6f, device=self.device),
+                        i32([0]),
+                        i32([0]),
+                        i32(offsets),
+                        i32([0, 1]),
+                        wp.array([(support, 1) for support in supports], dtype=wp.vec2i, device=self.device),
+                        i32([0]),
+                        i32([2]),
+                        i32([0]),
+                        i32([0]),
+                        i32([0]),
+                        i32([0]),
+                        f32([0, 0]),
+                        f32([1] * 6),
+                        f32([0, 0, -1] * 2),
+                        f32([0] * 6),
+                        f32([1] * 6),
+                        f32([0] * 6),
+                        i32([1]),
+                        i32([0, 1]),
+                        i32([0, 1]),
+                        i32([0, 2]),
+                        f32([0, 0]),
+                        i32([0]),
+                        False,
+                        -1,
+                        -1,
+                        1,
+                        1,
+                        -1,
+                        wp.array([config], dtype=DVIConfigStruct, device=self.device),
+                        body_space,
+                        impulses,
+                    ],
+                    device=self.device,
+                    block_dim=1,
+                )
+                result = impulses.numpy().reshape(2, 3)
+                self.assertTrue(np.all(np.isfinite(result)), result)
+                self.assertAlmostEqual(float(result[:, 2].sum()), 1.0, places=5)
+                np.testing.assert_allclose(body_space.numpy()[6:], [0, 0, 1, 0, 0, 0], atol=1.0e-5)
+
+    def test_03j2_sparse_dvi_refreshes_tangent_cross_cache(self):
+        """Refresh tangent coupling before the fused friction phase."""
+        model, problem, setup = self._make_box_on_plane_setup(sparse=True)
+        solver = DVISolver(
+            model=model,
+            data=setup.data,
+            limits=setup.limits,
+            contacts=setup.contacts,
+            jacobians=setup.jacobians,
+            config=kamino_config.DVISolverConfig(
+                max_alternating_iterations=4,
+                inequality_sweeps_per_iteration=1,
+                tolerance=0.0,
+                regularization=1.0e-6,
+                use_schur_complement=True,
+            ),
+            problem=problem,
+        )
+        solver.reset()
+        solver.coldstart()
+        solver.data.state.inequality_tangent_cross.fill_(float("nan"))
+        solver.solve(problem)
+
+        uio = int(problem.data.iio.numpy()[0])
+        limit_count = int(problem.data.nl.numpy()[0])
+        contact_count = int(problem.data.nc.numpy()[0])
+        contact_cross = solver.data.state.inequality_tangent_cross.numpy()[
+            uio + limit_count : uio + limit_count + contact_count
+        ]
+        self.assertGreater(contact_count, 0)
+        self.assertTrue(np.all(np.isfinite(contact_cross)))
+
+    def test_03g3_dvi_inequality_coloring_groups_contact_pairs(self):
+        """Group consecutive contacts while preserving independent parallel groups."""
+        problem_nl = wp.array([1], dtype=wp.int32, device=self.device)
+        problem_nc = wp.array([5], dtype=wp.int32, device=self.device)
+        problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
+        inequality_bodies = wp.array(
+            [
+                wp.vec2i(0, -1),
+                wp.vec2i(1, -1),
+                wp.vec2i(1, -1),
+                wp.vec2i(2, -1),
+                wp.vec2i(3, -1),
+                wp.vec2i(3, -1),
+            ],
+            dtype=wp.vec2i,
+            device=self.device,
+        )
+        body_color_masks = wp.zeros(shape=4, dtype=wp.uint64, device=self.device)
+        inequality_colors = wp.full(shape=6, value=-1, dtype=wp.int32, device=self.device)
+        inequality_num_colors = wp.zeros(shape=1, dtype=wp.int32, device=self.device)
+        inequality_ids_by_color = wp.full(shape=6, value=-1, dtype=wp.int32, device=self.device)
+        inequality_color_starts = wp.zeros(shape=7, dtype=wp.int32, device=self.device)
+        inequality_group_starts = wp.zeros(shape=7, dtype=wp.int32, device=self.device)
+
+        wp.launch(
+            kernel=_group_mapped_dvi_inequalities,
+            dim=1,
+            inputs=[
+                wp.zeros(1, dtype=wp.int32, device=self.device),
+                problem_nl,
+                problem_nc,
+                problem_uio,
+                inequality_bodies,
+                body_color_masks,
+                inequality_colors,
+                inequality_num_colors,
+                inequality_ids_by_color,
+                inequality_color_starts,
+                inequality_group_starts,
+                inequality_group_starts,
+                wp.bool(False),
+            ],
+            device=self.device,
+        )
+
+        np.testing.assert_array_equal(inequality_colors.numpy(), np.zeros(6, dtype=np.int32))
+        self.assertEqual(int(inequality_num_colors.numpy()[0]), 1)
+        np.testing.assert_array_equal(inequality_ids_by_color.numpy(), np.arange(6))
+        np.testing.assert_array_equal(inequality_color_starts.numpy()[:2], [0, 4])
+        np.testing.assert_array_equal(inequality_group_starts.numpy()[:5], [0, 1, 3, 4, 6])
+
+    def test_03g3a_dvi_compact_correction_selects_component(self):
+        """Select bounded, normal, and paired tangent corrections from compact rows."""
+        component_q = wp.array([11.0, 22.0, 33.0], dtype=wp.float32, device=self.device)
+        component_corrections = wp.empty(3, dtype=wp.vec2f, device=self.device)
+        wp.launch(
+            kernel=_compact_unilateral_correction_for_test,
+            dim=1,
+            inputs=[component_q, component_corrections],
+            device=self.device,
+        )
+        np.testing.assert_array_equal(
+            component_corrections.numpy(),
+            [[11.0, 0.0], [33.0, 0.0], [11.0, 22.0]],
+        )
+
+    def test_03g3ac_dvi_reconstructs_fused_bilateral_solution(self):
+        """Match a fresh direct solve with warm starts, scaling, and permutation."""
+        bilateral = np.array([[4.0, 1.0], [1.0, 3.0]], dtype=np.float32)
+        coupling = np.array([[0.75, -0.2], [0.35, 0.6]], dtype=np.float32)
+        free = np.array([0.7, -0.4], dtype=np.float32)
+        initial_u = np.array([0.3, -0.2], dtype=np.float32)
+        final_u = np.array([-0.1, 0.5], dtype=np.float32)
+        initial_b = np.linalg.solve(bilateral, -free - coupling @ initial_u)
+        expected_b = np.linalg.solve(bilateral, -free - coupling @ final_u)
+        scaling = np.array([0.5, 1.25], dtype=np.float32)
+        permutation = np.array([1, 0], dtype=np.int32)
+        scaled = scaling[:, None] * bilateral * scaling[None, :]
+        factor = np.linalg.cholesky(scaled[np.ix_(permutation, permutation)]).astype(np.float32)
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        response = wp.zeros(4, dtype=wp.float32, device=self.device)
+        wp.launch(
+            _solve_bilateral_unilateral_response,
+            dim=1,
+            inputs=[
+                i32([4]),
+                i32([2]),
+                i32([0]),
+                i32([2]),
+                i32([0]),
+                wp.array(scaling, dtype=wp.float32, device=self.device),
+                wp.array(factor.ravel(), dtype=wp.float32, device=self.device),
+                i32(permutation),
+                True,
+                i32([0]),
+                i32([2]),
+                wp.array(coupling.ravel(), dtype=wp.float32, device=self.device),
+                wp.zeros(4, dtype=wp.float32, device=self.device),
+                response,
+            ],
+            device=self.device,
+            block_dim=1,
+        )
+        response_np = response.numpy().reshape(2, 2)
+        np.testing.assert_allclose(response_np, np.linalg.solve(bilateral, coupling), rtol=2.0e-6, atol=2.0e-6)
+
+        def reconstruct(compact):
+            lambdas = wp.array(np.r_[initial_b, final_u], dtype=wp.float32, device=self.device)
+            initial = wp.array(np.r_[np.zeros(2), initial_u], dtype=wp.float32, device=self.device)
+            delta = -(response_np @ (final_u - initial_u))
+            wp.launch(
+                _reconstruct_fused_bilateral_solution,
+                dim=(1, 2),
+                inputs=[
+                    i32([4]),
+                    i32([2]),
+                    i32([0]),
+                    i32([0]),
+                    i32([0]),
+                    i32([2]),
+                    response,
+                    initial,
+                    wp.array(delta, dtype=wp.float32, device=self.device),
+                    wp.bool(compact),
+                    lambdas,
+                ],
+                device=self.device,
+            )
+            return lambdas.numpy()[:2]
+
+        np.testing.assert_allclose(reconstruct(True), expected_b, rtol=3.0e-6, atol=3.0e-6)
+        np.testing.assert_allclose(reconstruct(False), expected_b, rtol=3.0e-6, atol=3.0e-6)
+
+    def test_03g3b_dvi_groups_contacts_in_private_pair_order(self):
+        """Group geometry-pair contacts without changing their constraint indices."""
+        problem_nl = wp.array([1], dtype=wp.int32, device=self.device)
+        problem_nc = wp.array([4], dtype=wp.int32, device=self.device)
+        problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
+        inequality_bodies = wp.array(
+            [wp.vec2i(0, -1), wp.vec2i(1, -1), wp.vec2i(2, -1), wp.vec2i(1, -1), wp.vec2i(2, -1)],
+            dtype=wp.vec2i,
+            device=self.device,
+        )
+        body_color_masks = wp.zeros(shape=3, dtype=wp.uint64, device=self.device)
+        inequality_colors = wp.full(shape=5, value=-1, dtype=wp.int32, device=self.device)
+        inequality_num_colors = wp.zeros(shape=1, dtype=wp.int32, device=self.device)
+        inequality_ids_by_color = wp.full(shape=5, value=-1, dtype=wp.int32, device=self.device)
+        inequality_color_starts = wp.zeros(shape=6, dtype=wp.int32, device=self.device)
+        inequality_group_starts = wp.array([0, 1, 3, 2, 4, -1], dtype=wp.int32, device=self.device)
+
+        wp.launch(
+            kernel=_group_mapped_dvi_inequalities,
+            dim=1,
+            inputs=[
+                wp.zeros(1, dtype=wp.int32, device=self.device),
+                problem_nl,
+                problem_nc,
+                problem_uio,
+                inequality_bodies,
+                body_color_masks,
+                inequality_colors,
+                inequality_num_colors,
+                inequality_ids_by_color,
+                inequality_color_starts,
+                inequality_group_starts,
+                inequality_group_starts,
+                wp.bool(True),
+            ],
+            device=self.device,
+        )
+
+        np.testing.assert_array_equal(inequality_ids_by_color.numpy(), [0, 1, 3, 2, 4])
+        np.testing.assert_array_equal(inequality_group_starts.numpy()[:4], [0, 1, 3, 5])
+        np.testing.assert_array_equal(inequality_bodies.numpy(), [[0, -1], [1, -1], [2, -1], [1, -1], [2, -1]])
+
+    def test_03g3c_dvi_contact_pair_order_is_world_major(self):
+        """Sort interleaved contacts by world and geometry pair without moving contact data."""
+        contact_count = 6
+        contacts_model_active = wp.array([contact_count], dtype=wp.int32, device=self.device)
+        contacts_wid = wp.array([1, 0, 1, 0, 0, 1], dtype=wp.int32, device=self.device)
+        contacts_cid = wp.array([0, 1, 2, 0, 2, 1], dtype=wp.int32, device=self.device)
+        contacts_bid_ab = wp.array(
+            [wp.vec2i(-1, 3), wp.vec2i(-1, 2), wp.vec2i(-1, 4), wp.vec2i(-1, 1), wp.vec2i(-1, 2), wp.vec2i(-1, 3)],
+            dtype=wp.vec2i,
+            device=self.device,
+        )
+        contacts_gid_ab = wp.array(
+            [wp.vec2i(0, 1), wp.vec2i(0, 2), wp.vec2i(0, 2), wp.vec2i(0, 1), wp.vec2i(0, 2), wp.vec2i(0, 1)],
+            dtype=wp.vec2i,
+            device=self.device,
+        )
+        sorter = KeySorter(max_num_keys=contact_count, device=self.device)
+        wp.launch(
+            kernel=_prepare_contact_pair_sort,
+            dim=contact_count,
+            inputs=[contacts_model_active, contacts_gid_ab, sorter.sorted_keys, sorter.sorted_to_unsorted_map],
+            device=self.device,
+        )
+        wp.utils.radix_sort_pairs(sorter.sorted_keys_int64, sorter.sorted_to_unsorted_map, contact_count)
+        wp.launch(
+            kernel=_prepare_contact_world_sort,
+            dim=contact_count,
+            inputs=[contacts_model_active, contacts_wid, sorter.sorted_to_unsorted_map, sorter.sorted_keys],
+            device=self.device,
+        )
+        wp.utils.radix_sort_pairs(sorter.sorted_keys_int64, sorter.sorted_to_unsorted_map, contact_count)
+
+        problem_nc = wp.array([3, 3], dtype=wp.int32, device=self.device)
+        world_starts = wp.zeros(3, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=_prefix_active_contacts_by_world,
+            dim=1,
+            inputs=[2, problem_nc, world_starts],
+            device=self.device,
+        )
+        contact_indices = wp.full(contact_count, -1, dtype=wp.int32, device=self.device)
+        inequality_bodies = wp.full(contact_count, wp.vec2i(-1, -1), dtype=wp.vec2i, device=self.device)
+        inequality_order = wp.full(contact_count + 2, -1, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=_map_ordered_active_contacts,
+            dim=contact_count,
+            inputs=[
+                contacts_model_active,
+                contacts_wid,
+                contacts_cid,
+                contacts_bid_ab,
+                sorter.sorted_to_unsorted_map,
+                world_starts,
+                wp.ones(5, dtype=wp.float32, device=self.device),
+                wp.zeros(2, dtype=wp.int32, device=self.device),
+                wp.zeros(2, dtype=wp.int32, device=self.device),
+                wp.array([0, 3], dtype=wp.int32, device=self.device),
+                wp.array([0, 3], dtype=wp.int32, device=self.device),
+                contact_indices,
+                inequality_bodies,
+                inequality_order,
+            ],
+            device=self.device,
+        )
+
+        np.testing.assert_array_equal(sorter.sorted_to_unsorted_map.numpy()[:contact_count], [3, 1, 4, 0, 5, 2])
+        np.testing.assert_array_equal(contact_indices.numpy(), [3, 1, 4, 0, 5, 2])
+        np.testing.assert_array_equal(inequality_order.numpy(), [0, 1, 2, -1, 0, 1, 2, -1])
+        np.testing.assert_array_equal(contacts_wid.numpy(), [1, 0, 1, 0, 0, 1])
+
+    def test_03g3d_dvi_compact_contact_scheduler_matches_pair_order(self):
+        """Expand compact colored manifolds in stable geometry-pair order."""
+        contact_count = 6
+        active = wp.array([contact_count], dtype=wp.int32, device=self.device)
+        gids = wp.array(
+            [wp.vec2i(0, 1), wp.vec2i(0, 2), wp.vec2i(0, 1), wp.vec2i(0, 3), wp.vec2i(0, 2), wp.vec2i(0, 3)],
+            dtype=wp.vec2i,
+            device=self.device,
+        )
+        cids = wp.array([0, 1, 2, 3, 4, 5], dtype=wp.int32, device=self.device)
+        sorter = KeySorter(max_num_keys=contact_count, device=self.device)
+        wp.launch(
+            kernel=_prepare_contact_pair_sort,
+            dim=contact_count,
+            inputs=[active, gids, sorter.sorted_keys, sorter.sorted_to_unsorted_map],
+            device=self.device,
+        )
+        wp.utils.radix_sort_pairs(sorter.sorted_keys_int64, sorter.sorted_to_unsorted_map, contact_count)
+
+        uio = wp.array([0], dtype=wp.int32, device=self.device)
+        bodies = wp.array(
+            [wp.vec2i(1, -1), wp.vec2i(2, -1), wp.vec2i(1, -1), wp.vec2i(1, -1), wp.vec2i(2, -1), wp.vec2i(1, -1)],
+            dtype=wp.vec2i,
+            device=self.device,
+        )
+        flags = wp.zeros(contact_count, dtype=wp.int32, device=self.device)
+        scratch = wp.zeros(contact_count, dtype=wp.int32, device=self.device)
+        group_starts = wp.zeros(contact_count, dtype=wp.int32, device=self.device)
+        groups_by_color = wp.zeros(contact_count, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=_mark_contact_group_boundaries,
+            dim=contact_count,
+            inputs=[active, sorter.sorted_to_unsorted_map, cids, uio, bodies, flags],
+            device=self.device,
+        )
+        wp.utils.array_scan(flags, scratch, inclusive=True)
+        wp.launch(
+            kernel=_compact_contact_group_starts,
+            dim=contact_count,
+            inputs=[active, flags, scratch, group_starts],
+            device=self.device,
+        )
+
+        num_colors = wp.zeros(1, dtype=wp.int32, device=self.device)
+        group_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        color_starts = wp.zeros(contact_count + 1, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=_color_compact_contact_groups,
+            dim=1,
+            inputs=[
+                active,
+                scratch,
+                uio,
+                sorter.sorted_to_unsorted_map,
+                cids,
+                bodies,
+                wp.zeros(3, dtype=wp.uint64, device=self.device),
+                group_starts,
+                scratch,
+                num_colors,
+                group_count,
+                color_starts,
+                groups_by_color,
+                wp.empty(contact_count, dtype=wp.vec2i, device=self.device),
+                wp.zeros(1, dtype=wp.int32, device=self.device),
+                wp.zeros(1, dtype=wp.int32, device=self.device),
+                wp.empty(contact_count + 1, dtype=wp.int32, device=self.device),
+                wp.zeros(1, dtype=wp.int32, device=self.device),
+                wp.zeros(1, dtype=wp.int32, device=self.device),
+            ],
+            device=self.device,
+        )
+        scratch.zero_()
+        wp.launch(
+            kernel=_prepare_colored_contact_group_sizes,
+            dim=contact_count + 1,
+            inputs=[active, group_count, group_starts, groups_by_color, scratch],
+            device=self.device,
+        )
+        wp.utils.array_scan(scratch, scratch, inclusive=True)
+        ids_by_color = wp.full(contact_count, -1, dtype=wp.int32, device=self.device)
+        final_group_starts = wp.zeros(contact_count + 1, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=_expand_colored_contact_groups,
+            dim=contact_count + 1,
+            inputs=[
+                active,
+                group_count,
+                uio,
+                sorter.sorted_to_unsorted_map,
+                cids,
+                group_starts,
+                groups_by_color,
+                scratch,
+                ids_by_color,
+                final_group_starts,
+            ],
+            device=self.device,
+        )
+
+        self.assertEqual(int(group_count.numpy()[0]), 3)
+        self.assertEqual(int(num_colors.numpy()[0]), 2)
+        np.testing.assert_array_equal(color_starts.numpy()[:3], [0, 2, 3])
+        np.testing.assert_array_equal(ids_by_color.numpy(), [0, 2, 1, 4, 3, 5])
+        np.testing.assert_array_equal(final_group_starts.numpy()[:4], [0, 2, 4, 6])
+
+    def test_03g3e_dvi_compact_contact_topology_cache(self):
+        """Reuse only exact effective-body topology while rebuilding manifold expansion."""
+        capacity = 6
+        active = wp.array([4], dtype=wp.int32, device=self.device)
+        group_prefix = wp.array([1, 1, 2, 3, 0, 0], dtype=wp.int32, device=self.device)
+        group_starts = wp.array([0, 2, 3, 0, 0, 0], dtype=wp.int32, device=self.device)
+        sorter = KeySorter(max_num_keys=capacity, device=self.device)
+        sorter.sorted_to_unsorted_map.assign([0, 1, 2, 3, 4, 5])
+        cids = wp.array([0, 1, 2, 3, 4, 5], dtype=wp.int32, device=self.device)
+        bodies = wp.array(
+            [wp.vec2i(0, 1), wp.vec2i(0, 1), wp.vec2i(1, 2), wp.vec2i(3, -1), wp.vec2i(3, -1), wp.vec2i(0, 1)],
+            dtype=wp.vec2i,
+            device=self.device,
+        )
+        uio = wp.zeros(1, dtype=wp.int32, device=self.device)
+        body_masks = wp.zeros(5, dtype=wp.uint64, device=self.device)
+        group_colors = wp.zeros(capacity, dtype=wp.int32, device=self.device)
+        num_colors = wp.zeros(1, dtype=wp.int32, device=self.device)
+        group_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        color_starts = wp.zeros(capacity + 1, dtype=wp.int32, device=self.device)
+        groups_by_color = wp.empty(capacity, dtype=wp.int32, device=self.device)
+        cached_pairs = wp.empty(capacity, dtype=wp.vec2i, device=self.device)
+        cached_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        cached_num_colors = wp.zeros(1, dtype=wp.int32, device=self.device)
+        cached_color_starts = wp.empty(capacity + 1, dtype=wp.int32, device=self.device)
+        valid = wp.zeros(1, dtype=wp.int32, device=self.device)
+        changed = wp.zeros(1, dtype=wp.int32, device=self.device)
+
+        def compare():
+            changed.zero_()
+            wp.launch(
+                _compare_compact_contact_topology,
+                dim=capacity,
+                inputs=[
+                    active,
+                    group_prefix,
+                    uio,
+                    sorter.sorted_to_unsorted_map,
+                    cids,
+                    bodies,
+                    group_starts,
+                    cached_pairs,
+                    cached_count,
+                    valid,
+                    changed,
+                ],
+                device=self.device,
+            )
+
+        def color():
+            body_masks.zero_()
+            wp.launch(
+                _color_compact_contact_groups,
+                dim=1,
+                inputs=[
+                    active,
+                    group_prefix,
+                    uio,
+                    sorter.sorted_to_unsorted_map,
+                    cids,
+                    bodies,
+                    body_masks,
+                    group_starts,
+                    group_colors,
+                    num_colors,
+                    group_count,
+                    color_starts,
+                    groups_by_color,
+                    cached_pairs,
+                    cached_count,
+                    cached_num_colors,
+                    cached_color_starts,
+                    valid,
+                    changed,
+                ],
+                device=self.device,
+            )
+
+        compare()
+        self.assertEqual(int(changed.numpy()[0]), 1)
+        color()
+        self.assertEqual(int(valid.numpy()[0]), 1)
+        self.assertEqual(int(cached_count.numpy()[0]), 3)
+        np.testing.assert_array_equal(groups_by_color.numpy()[:3], [0, 2, 1])
+
+        # The first manifold grows, but its ordered effective-body groups do not change.
+        active.assign([5])
+        group_prefix.assign([1, 1, 1, 2, 3, 0])
+        group_starts.assign([0, 3, 4, 0, 0, 0])
+        sorter.sorted_keys.fill_(12345)
+        cids.assign([5, 0, 1, 2, 4, 3])
+        compare()
+        self.assertEqual(int(changed.numpy()[0]), 0)
+        groups_before = groups_by_color.numpy().copy()
+        color()
+        np.testing.assert_array_equal(groups_by_color.numpy(), groups_before)
+        sizes = wp.zeros(capacity + 1, dtype=wp.int32, device=self.device)
+        wp.launch(
+            _prepare_colored_contact_group_sizes,
+            dim=capacity + 1,
+            inputs=[active, group_count, group_starts, groups_by_color, sizes],
+            device=self.device,
+        )
+        wp.utils.array_scan(sizes, sizes, inclusive=True)
+        ids = wp.full(capacity, -1, dtype=wp.int32, device=self.device)
+        expanded_starts = wp.zeros(capacity + 1, dtype=wp.int32, device=self.device)
+        wp.launch(
+            _expand_colored_contact_groups,
+            dim=capacity + 1,
+            inputs=[
+                active,
+                group_count,
+                uio,
+                sorter.sorted_to_unsorted_map,
+                cids,
+                group_starts,
+                groups_by_color,
+                sizes,
+                ids,
+                expanded_starts,
+            ],
+            device=self.device,
+        )
+        np.testing.assert_array_equal(ids.numpy()[:5], [5, 0, 1, 4, 2])
+        np.testing.assert_array_equal(expanded_starts.numpy()[:4], [0, 3, 4, 5])
+
+        # A changed effective pair must rebuild the exact greedy schedule.
+        bodies.assign(
+            [wp.vec2i(0, 1), wp.vec2i(0, 1), wp.vec2i(4, 2), wp.vec2i(3, -1), wp.vec2i(3, -1), wp.vec2i(0, 1)]
+        )
+        compare()
+        self.assertEqual(int(changed.numpy()[0]), 1)
+        color()
+        self.assertEqual(int(cached_count.numpy()[0]), 3)
+        np.testing.assert_array_equal(groups_by_color.numpy()[:3], [0, 1, 2])
+
+        active.assign([0])
+        compare()
+        self.assertEqual(int(changed.numpy()[0]), 1)
+        color()
+        self.assertEqual(int(cached_count.numpy()[0]), 0)
+        active.assign([5])
+        compare()
+        self.assertEqual(int(changed.numpy()[0]), 1)
+
+        self.assertNotEqual(
+            groups_by_color.ptr, sorter.sorted_keys.ptr + capacity * wp.types.type_size_in_bytes(wp.int32)
+        )
+
+    def test_03g4_dvi_inequality_coloring_ignores_immovable_bodies(self):
+        """Color contacts sharing an immovable body in parallel."""
+        contact_count = 3
+        contacts_model_active = wp.array([contact_count], dtype=wp.int32, device=self.device)
+        contacts_wid = wp.zeros(contact_count, dtype=wp.int32, device=self.device)
+        contacts_cid = wp.array([0, 1, 2], dtype=wp.int32, device=self.device)
+        contacts_bid_ab = wp.array(
+            [wp.vec2i(0, 1), wp.vec2i(0, 2), wp.vec2i(0, 3)],
+            dtype=wp.vec2i,
+            device=self.device,
+        )
+        body_inv_mass = wp.array([0.0, 1.0, 1.0, 1.0], dtype=wp.float32, device=self.device)
+        problem_nl = wp.array([0], dtype=wp.int32, device=self.device)
+        problem_nc = wp.array([contact_count], dtype=wp.int32, device=self.device)
+        problem_cio = wp.array([0], dtype=wp.int32, device=self.device)
+        problem_uio = wp.array([0], dtype=wp.int32, device=self.device)
+        contact_indices = wp.full(contact_count, value=-1, dtype=wp.int32, device=self.device)
+        inequality_bodies = wp.full(contact_count, value=wp.vec2i(-1, -1), dtype=wp.vec2i, device=self.device)
+
+        wp.launch(
+            kernel=_map_active_contacts,
+            dim=contact_count,
+            inputs=[
+                contacts_model_active,
+                contacts_wid,
+                contacts_cid,
+                contacts_bid_ab,
+                body_inv_mass,
+                wp.zeros(1, dtype=wp.int32, device=self.device),
+                problem_nl,
+                problem_cio,
+                problem_uio,
+                contact_indices,
+                inequality_bodies,
+            ],
+            device=self.device,
+        )
+
+        body_color_masks = wp.zeros(shape=4, dtype=wp.uint64, device=self.device)
+        inequality_colors = wp.full(contact_count, value=-1, dtype=wp.int32, device=self.device)
+        inequality_num_colors = wp.zeros(shape=1, dtype=wp.int32, device=self.device)
+        inequality_ids_by_color = wp.full(contact_count, value=-1, dtype=wp.int32, device=self.device)
+        inequality_color_starts = wp.zeros(shape=contact_count + 1, dtype=wp.int32, device=self.device)
+        inequality_group_starts = wp.zeros(shape=contact_count + 1, dtype=wp.int32, device=self.device)
+
+        wp.launch(
+            kernel=_group_mapped_dvi_inequalities,
+            dim=1,
+            inputs=[
+                wp.zeros(1, dtype=wp.int32, device=self.device),
+                problem_nl,
+                problem_nc,
+                problem_uio,
+                inequality_bodies,
+                body_color_masks,
+                inequality_colors,
+                inequality_num_colors,
+                inequality_ids_by_color,
+                inequality_color_starts,
+                inequality_group_starts,
+                inequality_group_starts,
+                wp.bool(False),
+            ],
+            device=self.device,
+        )
+
+        np.testing.assert_array_equal(
+            inequality_bodies.numpy(),
+            [wp.vec2i(-1, 1), wp.vec2i(-1, 2), wp.vec2i(-1, 3)],
+        )
+        np.testing.assert_array_equal(inequality_colors.numpy(), [0, 0, 0])
+        self.assertEqual(int(inequality_num_colors.numpy()[0]), 1)
+
+    def test_11_dvi_detects_contacts_at_moreau_midpoint(self):
+        """Detect fast impacts at the pose used to assemble the DVI problem."""
+        sphere_radius = 1.0
+        box_half = 0.5
+        time_step = 0.01
+
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.gravity = (0.0, 0.0, 0.0)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(mu=0.0, gap=0.0, margin=0.0)
+        sphere_body = builder.add_body(
+            xform=wp.transform(p=wp.vec3(-3.05, 0.0, 0.0), q=wp.quat_identity()),
+        )
+        sphere_cfg = newton.ModelBuilder.ShapeConfig(
+            density=10000.0,
+            mu=0.0,
+            gap=0.0,
+            margin=0.0,
+        )
+        builder.add_shape_sphere(sphere_body, radius=sphere_radius, cfg=sphere_cfg)
+        builder.add_shape_box(
+            body=-1,
+            hx=box_half,
+            hy=box_half,
+            hz=box_half,
+            cfg=shape_cfg,
+        )
+        model = builder.finalize(device=self.device)
+
+        config = SolverKamino.Config(
+            dynamics_solver="dvi",
+            sparse_dynamics=True,
+            sparse_jacobian=True,
+            use_collision_detector=True,
+            integrator="moreau",
+            constraints=kamino_config.ConstraintStabilizationConfig(gamma=0.01, delta=0.0),
+            dvi=kamino_config.DVISolverConfig(
+                max_alternating_iterations=8,
+                bilateral_solve_interval=1,
+            ),
+        )
+        solver = SolverKamino(model, config=config)
+        state_0 = model.state()
+        state_1 = model.state()
+        body_qd = state_0.body_qd.numpy()
+        body_qd[sphere_body, 0] = 11.0
+        state_0.body_qd.assign(body_qd)
+
+        max_overlap = 0.0
+        for _ in range(30):
+            solver.step(state_0, state_1, control=None, contacts=None, dt=time_step)
+            state_0, state_1 = state_1, state_0
+            position = state_0.body_q.numpy()[sphere_body, :3]
+            outside = np.maximum(np.abs(position) - box_half, 0.0)
+            overlap = sphere_radius - float(np.linalg.norm(outside))
+            max_overlap = max(max_overlap, overlap)
+
+        self.assertLess(max_overlap, 0.08)
+
+    def test_08ca_dvi_penetration_recovery_does_not_lock_tangent_motion(self):
+        """Keep penetration recovery from creating artificial static friction."""
+        friction = 0.5
+        dt = 1.0e-3
+        applied_force = 300.0
+
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        SolverKamino.register_custom_attributes(builder)
+        shape_cfg = newton.ModelBuilder.ShapeConfig(mu=friction, gap=0.0, margin=0.0)
+        body = builder.add_link(
+            xform=wp.transformf((0.0, 0.0, 0.05), wp.quat_identity()),
+            mass=1.0,
+        )
+        builder.add_shape_sphere(body=body, radius=0.1, cfg=shape_cfg)
+        joint = builder.add_joint_free(parent=-1, child=body)
+        builder.add_articulation([joint])
+        builder.add_ground_plane(cfg=shape_cfg)
+        model = builder.finalize(device=self.device)
+        body_force = np.zeros((model.body_count, 6), dtype=np.float32)
+        body_force[body, 0] = applied_force
+
+        slips = []
+        for sparse in (False, True):
+            with self.subTest(sparse=sparse):
+                config = SolverKamino.Config(
+                    dynamics_solver="dvi",
+                    use_collision_detector=True,
+                    sparse_dynamics=sparse,
+                    sparse_jacobian=sparse,
+                    collision_detector=kamino_config.CollisionDetectorConfig(
+                        max_contacts=16,
+                        max_contacts_per_world=16,
+                        max_contacts_per_pair=8,
+                    ),
+                )
+                solver = SolverKamino(model, config=config)
+                state_0 = model.state()
+                state_1 = model.state()
+                state_0.body_f.assign(body_force)
+                solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+
+                self.assertEqual(int(solver._contacts_kamino.world_active_contacts.numpy()[0]), 1)
+                body_qd = state_1.body_qd.numpy()[body]
+                slip = float(body_qd[0] - 0.1 * body_qd[4])
+                slips.append(slip)
+                self.assertGreater(slip, 0.02)
+
+        self.assertAlmostEqual(slips[0], slips[1], delta=1.0e-6)
+
+    def test_compact_schur_preserves_padded_capacity(self):
+        """Pack both Gram implementations densely without overwriting padded capacity."""
+        if not self.device.is_cuda:
+            self.skipTest("Tiled Schur construction requires CUDA")
+        njc, nu, stride, offset = 3, 2, 4, 3
+        coupling = np.arange(1, njc * nu + 1, dtype=np.float32).reshape(njc, nu)
+        lower = np.diag(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+        white = np.linalg.solve(lower, coupling)
+        full = np.linalg.solve(lower.T, white)
+        capacity = offset + njc * stride + 2
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        response = np.full(capacity, np.nan, dtype=np.float32)
+        response[offset : offset + njc * nu] = white.ravel()
+        for blocked in (False, True):
+            with self.subTest(blocked=blocked):
+                schur = wp.full(capacity, -123.0, dtype=wp.float32, device=self.device)
+                correction = wp.full(njc + nu, 99.0, dtype=wp.float32, device=self.device)
+                inputs = [
+                    i32([njc + nu]),
+                    i32([njc]),
+                    i32([0]),
+                    i32([offset]),
+                    i32([stride]),
+                    wp.array(response, dtype=wp.float32, device=self.device),
+                    schur,
+                    correction,
+                ]
+                wp.launch(
+                    _assemble_compact_unilateral_schur_blocked if blocked else _assemble_compact_unilateral_schur_tiled,
+                    dim=(1, 256) if blocked else (1, 16, 128),
+                    inputs=inputs if blocked else [*inputs, 16, 0],
+                    block_dim=256 if blocked else 128,
+                    device=self.device,
+                )
+                expected = np.full(capacity, -123.0, dtype=np.float32)
+                expected[offset : offset + nu * nu] = (coupling.T @ full).T.ravel()
+                np.testing.assert_allclose(schur.numpy(), expected, atol=1.0e-6, rtol=1.0e-6)
+                np.testing.assert_array_equal(correction.numpy(), [99.0] * njc + [0.0] * nu)
+
+    def test_compact_schur_uses_response_capacity(self):
+        """Pack Schur matrices into spare response capacity without crossing world bounds."""
+        if not self.device.is_cuda:
+            self.skipTest("Tiled Schur construction requires CUDA")
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        white = np.arange(6, dtype=np.float32).reshape(3, 2) * 0.1
+        response = wp.array(np.pad(white.T.copy().ravel(), (0, 14)), dtype=wp.float32, device=self.device)
+        schur = wp.full(20, -123.0, dtype=wp.float32, device=self.device)
+        correction = wp.full(11, 99.0, dtype=wp.float32, device=self.device)
+        wp.launch(
+            _assemble_compact_unilateral_schur_tiled,
+            dim=(3, 16, 128),
+            inputs=[
+                i32([5, 6, 0]),
+                i32([2, 2, 0]),
+                i32([0, 5, 11]),
+                i32([0, 10, 20]),
+                i32([5, 5, 0]),
+                response,
+                schur,
+                correction,
+                16,
+                0,
+            ],
+            block_dim=128,
+            device=self.device,
+        )
+        expected = np.full(20, -123.0, dtype=np.float32)
+        expected[:9] = (white @ white.T).ravel()
+        np.testing.assert_allclose(schur.numpy(), expected, atol=1.0e-7, rtol=1.0e-6)
+        expected_correction = np.full(11, 99.0, dtype=np.float32)
+        expected_correction[2:5] = 0.0
+        np.testing.assert_array_equal(correction.numpy(), expected_correction)
+
+    def test_forward_schur_matches_direct_elimination(self):
+        """Match direct elimination with ragged worlds, scaling, and permutation."""
+        if not self.device.is_cuda:
+            self.skipTest("Cooperative response construction requires CUDA")
+        rng = np.random.default_rng(42)
+        joint_counts = [33, 0, 97, 2, 5]
+        unilateral_counts = [5, 0, 35, 3, 7]
+        response_strides = [5, 0, 35, 3, 10]
+        totals = np.array(joint_counts) + unilateral_counts
+        problem_offsets = np.cumsum(np.concatenate(([0], totals[:-1])))
+        matrix_offsets, vector_offsets, response_offsets = [], [], []
+        factors, scaling, permutations, couplings = [], [], [], []
+        expected = []
+        for n, nu, stride in zip(joint_counts, unilateral_counts, response_strides, strict=True):
+            matrix_offsets.append(len(factors))
+            vector_offsets.append(len(scaling))
+            response_offsets.append(len(couplings))
+            lower = np.tril(rng.normal(0.0, 0.05, (n, n))) + np.eye(n)
+            lower[np.tril_indices(n, -12)] = 0.0
+            scale = rng.uniform(0.5, 1.5, n)
+            permutation = rng.permutation(n)
+            coupling = rng.normal(size=(n, nu))
+            coupling[permutation[: n // 2]] = 0.0
+            if nu:
+                coupling[:, -1] = 0.0
+            # Compare the exact float32 inputs against float64 reference solves.
+            lower, scale, coupling = [a.astype(np.float32) for a in (lower, scale, coupling)]
+            white = np.linalg.solve(lower.astype(np.float64), (scale[:, None] * coupling)[permutation])
+            response = np.empty_like(white)
+            response[permutation] = np.linalg.solve(lower.T.astype(np.float64), white)
+            response *= scale[:, None]
+            expected.append((white, coupling.T @ response, response))
+            factors.extend(lower.ravel())
+            scaling.extend(scale)
+            permutations.extend(permutation)
+            if nu * nu <= n * stride:
+                # Compact worlds store the coupling densely with row stride nu.
+                couplings.extend(np.pad(coupling.ravel(), (0, n * (stride - nu))))
+            else:
+                couplings.extend(np.pad(coupling, ((0, 0), (0, stride - nu))).ravel())
+
+        def i32(values):
+            return wp.array(values, dtype=wp.int32, device=self.device)
+
+        def f32(values):
+            return wp.array(values, dtype=wp.float32, device=self.device)
+
+        dims = i32(np.array(joint_counts) + unilateral_counts)
+        joints = i32(joint_counts)
+        offsets = i32(response_offsets)
+        strides = i32(response_strides)
+        coupling = f32(couplings)
+        workspace = wp.zeros(len(couplings), dtype=wp.float32, device=self.device)
+        response = wp.zeros_like(workspace)
+        row_start = wp.zeros(len(scaling), dtype=wp.int32, device=self.device)
+        wp.launch(
+            _find_bilateral_factor_row_start,
+            dim=(5, max(joint_counts)),
+            inputs=[joints, i32(matrix_offsets), joints, i32(vector_offsets), f32(factors), row_start],
+            device=self.device,
+        )
+        expected_starts = []
+        for n, offset in zip(joint_counts, matrix_offsets, strict=True):
+            lower = np.array(factors[offset : offset + n * n]).reshape(n, n)
+            expected_starts.extend(int(np.flatnonzero(lower[row])[0]) // 16 * 16 for row in range(n))
+        np.testing.assert_array_equal(row_start.numpy(), expected_starts)
+        solve_response = wp.launch(
+            _solve_bilateral_unilateral_response_cooperative,
+            dim=5 * 18 * 32,
+            inputs=[
+                dims,
+                joints,
+                i32(matrix_offsets),
+                joints,
+                i32(vector_offsets),
+                f32(scaling),
+                f32(factors),
+                i32(permutations),
+                True,
+                offsets,
+                strides,
+                coupling,
+                workspace,
+                response,
+                0,
+                18,
+                True,
+                row_start,
+                False,
+            ],
+            block_dim=128,
+            device=self.device,
+            record_cmd=True,
+        )
+        solve_response.launch()
+        actual_response = response.numpy()
+        row_start.zero_()
+        solve_response.launch()
+        np.testing.assert_array_equal(response.numpy(), actual_response)
+        wp.launch(
+            _assemble_compact_unilateral_schur_blocked,
+            dim=(5, 256),
+            inputs=[
+                dims,
+                joints,
+                i32(problem_offsets),
+                offsets,
+                strides,
+                response,
+                workspace,
+                wp.zeros(int(totals.sum()), dtype=wp.float32, device=self.device),
+            ],
+            block_dim=256,
+            device=self.device,
+        )
+        actual_schur = workspace.numpy()
+        workspace.fill_(float("nan"))
+        wp.launch(
+            _assemble_compact_unilateral_schur_tiled,
+            dim=(5, 16, 128),
+            inputs=[
+                dims,
+                joints,
+                i32(problem_offsets),
+                offsets,
+                strides,
+                response,
+                workspace,
+                wp.zeros(int(totals.sum()), dtype=wp.float32, device=self.device),
+                16,
+                0,
+            ],
+            block_dim=128,
+            device=self.device,
+        )
+        tiled_schur = workspace.numpy()
+        for n, nu, stride, offset, reference in zip(
+            joint_counts, unilateral_counts, response_strides, response_offsets, expected, strict=True
+        ):
+            white, schur, full = reference
+            if nu * nu <= n * stride:
+                np.testing.assert_allclose(
+                    actual_response[offset : offset + n * nu].reshape(n, nu), white, atol=2.0e-6, rtol=2.0e-6
+                )
+                np.testing.assert_allclose(
+                    actual_schur[offset : offset + nu * nu].reshape(nu, nu), schur.T, atol=5.0e-6, rtol=5.0e-6
+                )
+                np.testing.assert_allclose(
+                    tiled_schur[offset : offset + nu * nu].reshape(nu, nu), schur.T, atol=5.0e-6, rtol=5.0e-6
+                )
+            else:
+                np.testing.assert_allclose(
+                    actual_response[offset : offset + n * stride].reshape(n, stride)[:, :nu],
+                    full,
+                    atol=2.0e-6,
+                    rtol=2.0e-6,
+                )
 
 
 if __name__ == "__main__":

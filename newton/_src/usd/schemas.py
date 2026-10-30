@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
 from ..core.types import override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..usd.schema_resolver import PrimType, SchemaResolver
 from . import utils as usd
 
@@ -38,6 +39,16 @@ def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
     return float(contact_offset) - float(rest_offset)
 
 
+def _physx_max_hull_vertices(prim: Usd.Prim) -> int | None:
+    """Prefer decomposition limits for meshes using the applied decomposition API."""
+    approximation = str(usd.get_attribute(prim, "physics:approximation", "")).lower()
+    if approximation == "convexdecomposition" and usd.has_applied_api_schema(
+        prim, "PhysxConvexDecompositionCollisionAPI"
+    ):
+        return usd.get_attribute(prim, "physxConvexDecompositionCollision:hullVertexLimit")
+    return usd.get_attribute(prim, "physxConvexHullCollision:hullVertexLimit")
+
+
 def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
     """Return a getter that reads a legacy contact custom attr with a deprecation warning."""
 
@@ -47,7 +58,7 @@ def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
             warnings.warn(
                 f"'{legacy_name}' on shape prim is deprecated; "
                 f"author '{material_attr}' on the bound NewtonMaterialAPI material instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -66,7 +77,7 @@ def _newton_non_schema_joint_state_attr(attr_name: str):
                 f"'{attr_name}' on joint prim is a non-schema attribute. "
                 f"Please file an issue at https://github.com/newton-physics/newton/issues "
                 f"describing your use case so we can provide a supported alternative.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -83,7 +94,7 @@ def _newton_legacy_joint_limit_attr(legacy_name: str, schema_attr: str):
         if value is not None:
             warnings.warn(
                 f"'{legacy_name}' on joint prim is deprecated; use '{schema_attr}' instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -102,7 +113,7 @@ def _mjc_legacy_material_solref(converter, material_attr: str):
                 f"'mjc:solref' on material prim is deprecated; author '{material_attr}' on the "
                 f"bound NewtonMaterialAPI material, or use per-shape 'mjc:solref' (MjcGeomAPI) "
                 f"instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return converter(value)
@@ -374,7 +385,16 @@ class SchemaResolverPhysx(SchemaResolver):
         },
         PrimType.SHAPE: {
             # Mesh
-            "max_hull_vertices": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
+            "max_hull_vertices": SchemaAttribute(
+                "physxConvexHullCollision:hullVertexLimit",
+                64,
+                usd_value_getter=_physx_max_hull_vertices,
+                attribute_names=(
+                    "physxConvexHullCollision:hullVertexLimit",
+                    "physxConvexDecompositionCollision:hullVertexLimit",
+                ),
+            ),
+            "convex_decomposition_max_hulls": SchemaAttribute("physxConvexDecompositionCollision:maxConvexHulls", 32),
             # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset.
             # PhysX uses -inf to mean "engine default"; treat as unset (None).
             "margin": SchemaAttribute(
@@ -458,6 +478,24 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
+def _mjc_joint_effort_limit(prim: Usd.Prim) -> float | None:
+    """Read a joint effort limit [N or N·m] from MuJoCo ``mjc:actuatorfrcrange``.
+
+    ``mjc:actuatorfrclimited = "auto"`` follows MuJoCo's default ``autolimits`` and
+    limits only a non-empty range. Newton's effort limit is symmetric, so an
+    asymmetric range keeps its larger magnitude, as MJCF import does.
+    """
+    lower = usd.get_attribute(prim, "mjc:actuatorfrcrange:min")
+    upper = usd.get_attribute(prim, "mjc:actuatorfrcrange:max")
+    if lower is None and upper is None:
+        return None
+    lower, upper = float(lower or 0.0), float(upper or 0.0)
+    limited = usd.get_attribute(prim, "mjc:actuatorfrclimited", "auto")
+    if limited == "true" or (limited == "auto" and lower < upper):
+        return max(abs(lower), abs(upper))
+    return None
+
+
 class SchemaResolverMjc(SchemaResolver):
     """Schema resolver for MuJoCo USD attributes."""
 
@@ -478,6 +516,12 @@ class SchemaResolverMjc(SchemaResolver):
             # "damping" key, so it resolves through the _per_rad variant.
             "damping_per_rad": SchemaAttribute("mjc:damping", None),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
+            "effort_limit": SchemaAttribute(
+                "mjc:actuatorfrcrange:min",
+                None,
+                usd_value_getter=_mjc_joint_effort_limit,
+                attribute_names=("mjc:actuatorfrcrange:min", "mjc:actuatorfrcrange:max", "mjc:actuatorfrclimited"),
+            ),
         },
         PrimType.SHAPE: {
             # Mesh

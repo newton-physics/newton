@@ -31,6 +31,17 @@ def _add_cable_curve(stage, path, points, *, periodic=False, thickness=0.02, den
     return curves
 
 
+def _author_cable_rest_shape(curves, *, points=None, normals=None):
+    """Author rest points and normals at default time when supplied."""
+    from pxr import Sdf
+
+    prim = curves.GetPrim()
+    if points is not None:
+        prim.CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(points)
+    if normals is not None:
+        prim.CreateAttribute("physics:restNormals", Sdf.ValueTypeNames.Normal3fArray).Set(normals)
+
+
 def _author_deformable_element_array(prim, name, values, element_type):
     """Author a deformable simulation array with its required element-type token."""
     from pxr import Sdf
@@ -165,6 +176,17 @@ def _apply_deformable_body_api(prim, *, mass=None, density=None):
         prim.CreateAttribute("physics:density", Sdf.ValueTypeNames.Float).Set(density)
 
 
+def _author_pose(prim, name, points, *, purposes=("bindPose",)):
+    """Author proposal pose attributes without requiring the proposal schema plugin."""
+    from pxr import Sdf
+
+    prim.AddAppliedSchema(f"PhysicsDeformablePoseAPI:{name}")
+    prefix = f"physics:deformablePose:{name}"
+    prim.CreateAttribute(f"{prefix}:purposes", Sdf.ValueTypeNames.TokenArray).Set(purposes)
+    if points is not None:
+        prim.CreateAttribute(f"{prefix}:points", Sdf.ValueTypeNames.Point3fArray).Set(points)
+
+
 def _deformable_stage(up_axis="z"):
     """Create an in-memory stage with the up axis and a physics scene already authored.
 
@@ -183,10 +205,11 @@ def group_labels(builder, family):
     """Prim-path labels of a deformable family's imported groups (``cable``/``cloth``/``soft``).
 
     The single seam through which tests locate deformable groups: it reads the builder
-    registries, so a change to how group metadata is stored or exposed only touches this
-    helper, not the tests.
+    registry, so a change to its private range storage only touches this helper,
+    not the importer behavior tests.
     """
-    return list(getattr(builder, f"_{family}_label"))
+    family = {"cable": "curve", "cloth": "surface", "soft": "volume"}[family]
+    return list(getattr(builder, f"{family}_label"))
 
 
 def group_range(builder, family, label, kind, world=None):
@@ -196,12 +219,16 @@ def group_range(builder, family, label, kind, world=None):
     ``particle``/``tet`` for soft volumes. See :func:`group_labels` for why tests must resolve
     ranges through this seam.
     """
-    labels = getattr(builder, f"_{family}_label")
-    worlds = getattr(builder, f"_{family}_world")
+    registry_family = {"cable": "curve", "cloth": "surface", "soft": "volume"}[family]
+    labels = getattr(builder, f"{registry_family}_label")
+    worlds = getattr(builder, f"{registry_family}_world")
     matches = [i for i, group_label in enumerate(labels) if group_label == label]
     if world is not None:
         matches = [i for i in matches if worlds[i] == world]
     if len(matches) != 1:
         raise LookupError(f"{len(matches)} {family} groups labelled '{label}' (world={world})")
     (i,) = matches
-    return getattr(builder, f"_{family}_{kind}_start")[i], getattr(builder, f"_{family}_{kind}_end")[i]
+    return (
+        getattr(builder, f"_{registry_family}_{kind}_start")[i],
+        getattr(builder, f"_{registry_family}_{kind}_end")[i],
+    )

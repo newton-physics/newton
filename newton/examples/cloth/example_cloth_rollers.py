@@ -1,13 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cloth Rollers
-#
-# A rolled cloth mesh that unrolls as the inner seam rotates.
-# Command: uv run -m newton.examples cloth_rollers
-#
-###########################################################################
+"""Cloth Rollers
+
+A rolled cloth mesh that unrolls as the inner seam rotates.
+
+Success criteria:
+- One roller initially carries the cloth while the other is empty.
+- Rotation transfers cloth from the full roller to the empty one without visible tearing, explosive
+  stretching, or persistent interpenetration.
+
+Runs:
+- `python -m newton.examples cloth_rollers`
+"""
 
 import math
 
@@ -415,7 +420,7 @@ class Example:
         self.viewer.set_model(self.model)
 
         # Set up camera
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.set_camera(pos=wp.vec3(-0.02, -2.33, 0.69), pitch=-15.9, yaw=-264.8)
             self.viewer.camera.fov = 67.0
 

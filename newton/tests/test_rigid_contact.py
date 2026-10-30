@@ -8,6 +8,7 @@ import warp as wp
 
 import newton
 from newton._src.core import quat_between_axes
+from newton._src.solvers.semi_implicit.kernels_contact import eval_body_contact_forces
 from newton.tests.unittest_utils import (
     add_function_test,
     assert_np_equal,
@@ -156,14 +157,12 @@ def test_shapes_on_plane(test, device, solver_fn):
         solver = newton.solvers.SolverFeatherstone(
             model,
             angular_damping=0.15,  # Increased for more rotational stability
-            friction_smoothing=2.0,  # Increased from default 1.0 for smoother friction
         )
     elif isinstance(temp_solver, newton.solvers.SolverSemiImplicit):
         # Recreate with stability parameters for SemiImplicit
         solver = newton.solvers.SolverSemiImplicit(
             model,
             angular_damping=0.15,  # Increased from default 0.05 for more rotational stability
-            friction_smoothing=2.0,  # Increased from default 1.0 for smoother friction
         )
     else:
         solver = temp_solver
@@ -769,6 +768,117 @@ def test_mujoco_convex_on_convex(test, device, solver_fn):
     test.assertLess(abs(final_vel_z), 0.5)
 
 
+def _make_penalty_friction_model(device, *, requires_grad=False):
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.default_shape_cfg.ke = 1.0e5
+    builder.default_shape_cfg.kd = 1.0e3
+    builder.default_shape_cfg.kf = 1.0e3
+    builder.default_shape_cfg.mu = 0.5
+    builder.add_ground_plane()
+    body = builder.add_body(xform=wp.transform((2.0, 3.0, 0.099), wp.quat_identity()))
+    builder.add_shape_sphere(body, radius=0.1)
+    return builder.finalize(device=device, requires_grad=requires_grad)
+
+
+def test_penalty_friction_force_and_gradient(test, device):
+    """Bound rigid friction by Coulomb and differentiate the viscous response at rest."""
+    model = _make_penalty_friction_model(device, requires_grad=True)
+    state = model.state()
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+    seed = wp.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=wp.spatial_vector, device=device)
+    direction = np.array([0.6, 0.8])
+
+    # Reuse one contact for both branches, damping, and disabled friction.
+    cases = [(speed, 0.5, 1000.0, 0.0) for speed in (0.0, 1.0e-8, 0.01, 0.049, 0.051, 0.5, 5.0)]
+    cases += [(0.5, 0.5, 1000.0, -0.1), (0.5, 0.0, 1000.0, 0.0), (0.0, 0.0, 1000.0, 0.0)]
+    cases += [(0.5, 0.5, 0.0, 0.0), (0.0, 0.5, 0.0, 0.0)]
+    for speed, mu, kf, normal_speed in cases:
+        with test.subTest(speed=speed, mu=mu, kf=kf, normal_speed=normal_speed):
+            model.shape_material_mu.fill_(mu)
+            model.shape_material_kf.fill_(kf)
+            velocity = np.zeros((1, 6), dtype=np.float32)
+            velocity[0, :2] = speed * direction
+            velocity[0, 2] = normal_speed
+            state.body_qd.assign(velocity)
+            state.clear_forces()
+            with wp.Tape() as tape:
+                eval_body_contact_forces(model, state, contacts)
+            force = state.body_f.numpy()[0].copy()
+            limit = mu * force[2]
+            test.assertGreater(force[2], 0.0)
+            np.testing.assert_allclose(force[:2], -direction * min(kf * speed, limit), atol=2.0e-5, rtol=2.0e-5)
+            test.assertLessEqual(np.linalg.norm(force[:2]), limit + 2.0e-5)
+
+            tape.backward(grads={state.body_f: seed})
+            gradient = state.body_qd.grad.numpy()[0, :2].copy()
+            if mu == 0.0 or kf == 0.0:
+                expected_gradient = np.zeros(2)
+            elif kf * speed < limit:
+                expected_gradient = np.array([-kf, 0.0])
+            else:
+                expected_gradient = -limit / speed * (np.array([1.0, 0.0]) - direction[0] * direction)
+            np.testing.assert_allclose(gradient, expected_gradient, atol=2.0e-3, rtol=2.0e-5)
+            tape.zero()
+
+            # Numerical checks at rest and in each friction regime complement the
+            # analytical checks above without repeating them for every edge case.
+            if (mu, kf, normal_speed) != (0.5, 1000.0, 0.0) or speed not in (0.0, 0.01, 0.5):
+                continue
+
+            # Compare the full contact kernel's derivative to perturbed velocities.
+            finite_difference = np.zeros(2)
+            epsilon = 1.0e-4
+            for axis in range(2):
+                forces = []
+                for sign in (-1.0, 1.0):
+                    perturbed = velocity.copy()
+                    perturbed[0, axis] += sign * epsilon
+                    state.body_qd.assign(perturbed)
+                    state.clear_forces()
+                    eval_body_contact_forces(model, state, contacts)
+                    forces.append(float(state.body_f.numpy()[0, 0]))
+                finite_difference[axis] = (forces[1] - forces[0]) / (2.0 * epsilon)
+            np.testing.assert_allclose(gradient, finite_difference, atol=0.1, rtol=3.0e-3)
+
+
+def test_penalty_friction_solver_step(test, device):
+    """Apply Coulomb-limited friction through both penalty solvers and legacy options."""
+    model = _make_penalty_friction_model(device)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_in, state_out = model.state(), model.state()
+    velocity = np.array([0.3, 0.4, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    state_in.joint_qd.assign(velocity)
+    newton.eval_fk(model, state_in.joint_q, state_in.joint_qd, state_in)
+    pipeline.collide(state_in, contacts)
+    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+    dt = 1.0e-4
+    for solver_type in (newton.solvers.SolverSemiImplicit, newton.solvers.SolverFeatherstone):
+        for smoothing in (None, 0.1):
+            with test.subTest(solver=solver_type.__name__, friction_smoothing=smoothing):
+                if smoothing is None:
+                    solver = solver_type(model)
+                else:
+                    with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "friction_smoothing"):
+                        solver = solver_type(model, friction_smoothing=smoothing)
+                with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "friction_smoothing") as warning:
+                    test.assertEqual(solver.friction_smoothing, 1.0 if smoothing is None else smoothing)
+                test.assertEqual(warning.filename, __file__)
+                with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "friction_smoothing") as warning:
+                    solver.friction_smoothing = 2.0
+                test.assertEqual(warning.filename, __file__)
+                with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, "friction_smoothing"):
+                    test.assertEqual(solver.friction_smoothing, 2.0)
+                state_in.clear_forces()
+                solver.step(state_in, state_out, None, contacts, dt)
+                delta_v = state_out.body_qd.numpy()[0, :3] - velocity[:3]
+                test.assertGreater(delta_v[2], 0.0)
+                np.testing.assert_allclose(delta_v[:2], -0.5 * delta_v[2] * np.array([0.6, 0.8]), atol=2.0e-6)
+
+
 def test_box_drop(test, device, solver_fn):
     """Test that dropping boxes are properly constrained by contacts.
     Verifies velocity never exceeds what's possible from the system's potential energy.
@@ -848,11 +958,26 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
     "kamino": newton.solvers.SolverKamino,
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    "steel": lambda model: newton.solvers.SolverSteel(
+        model, solve_mode="matrix_free" if model.device.is_cuda else "split"
+    ),
 }
 
 
 class TestRigidContact(unittest.TestCase):
     pass
+
+
+add_function_test(
+    TestRigidContact,
+    "test_penalty_friction_force_and_gradient",
+    test_penalty_friction_force_and_gradient,
+    devices=devices,
+)
+add_function_test(
+    TestRigidContact, "test_penalty_friction_solver_step", test_penalty_friction_solver_step, devices=devices
+)
 
 
 for device in devices:
@@ -897,7 +1022,7 @@ add_function_test(
 # Register box drop tests for MuJoCo and XPBD solvers
 for device in devices:
     for solver_name, solver_fn in solvers.items():
-        if solver_name not in ("mujoco_cpu", "mujoco_warp", "xpbd"):
+        if solver_name not in ("mujoco_cpu", "mujoco_warp", "xpbd", "steel"):
             continue
         if device.is_cpu and solver_name == "mujoco_warp":
             continue
