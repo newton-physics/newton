@@ -1091,14 +1091,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Predictive contact gaps may change without prior notice.
         """
-        density_strain_fraction: float = 0.0
+        volume_recovery_fraction: float = 0.0
         """Fraction of particle overpacking corrected per step.
 
         Values in ``[0, 1]`` add the nonpositive offset
         ``fraction * min(available / measured - 1, 0)`` to the divergence
         constraint, the volumetric strain that would bring the measured
         particle volume fraction back to the space left free by colliders,
-        with fractions from :attr:`density_strain_measurement`. The strain
+        with fractions from :attr:`volume_recovery_measurement`. The strain
         quadrature samples the offsets like the elastic strain, so they vary
         continuously as particles move. The target filling fraction is one.
         Overfilled regions produce negative offsets, requesting expansion.
@@ -1109,8 +1109,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Density-based divergence feedback may change without prior notice.
         """
-        density_strain_measurement: Literal["grid", "particle"] = "grid"
-        """Measurement of the packing fractions for :attr:`density_strain_fraction`.
+        volume_recovery_measurement: Literal["grid", "particle"] = "grid"
+        """Measurement of the packing fractions for :attr:`volume_recovery_fraction`.
 
         Each particle contributes its deformed volume, the reference volume
         times ``det(F_e)`` of its elastic deformation gradient. The measured
@@ -1130,7 +1130,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         critical_fraction_measurement: Literal["grid", "particle"] = "particle"
         """Measurement of the packing fractions for :attr:`critical_fraction`.
 
-        Accepts the measurements of :attr:`density_strain_measurement`. The
+        Accepts the measurements of :attr:`volume_recovery_measurement`. The
         default ``"particle"`` keeps free surfaces from reading as loose over
         a thick band, which would let them recompress without friction.
 
@@ -1739,13 +1739,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
         self.enable_timers = enable_timers
 
-        self.density_strain_fraction = float(config.density_strain_fraction)
-        if not math.isfinite(self.density_strain_fraction) or not 0.0 <= self.density_strain_fraction <= 1.0:
-            raise ValueError("density_strain_fraction must be finite and in [0, 1]")
-        for name in ("density_strain_measurement", "critical_fraction_measurement"):
+        self.volume_recovery_fraction = float(config.volume_recovery_fraction)
+        if not math.isfinite(self.volume_recovery_fraction) or not 0.0 <= self.volume_recovery_fraction <= 1.0:
+            raise ValueError("volume_recovery_fraction must be finite and in [0, 1]")
+        for name in ("volume_recovery_measurement", "critical_fraction_measurement"):
             if getattr(config, name) not in ("grid", "particle"):
                 raise ValueError(f"{name} must be 'grid' or 'particle', got {getattr(config, name)!r}")
-        self.density_strain_measurement = config.density_strain_measurement
+        self.volume_recovery_measurement = config.volume_recovery_measurement
         self.critical_fraction_measurement = config.critical_fraction_measurement
 
         self.velocity_basis = "Q1"
@@ -3957,15 +3957,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def _measures_density(self) -> bool:
         """Whether critical packing or density feedback needs a density measurement."""
-        return self._mpm_model.critical_fraction > 0.0 or self.density_strain_fraction > 0.0
+        return self._mpm_model.critical_fraction > 0.0 or self.volume_recovery_fraction > 0.0
 
     def _density_measurements(self) -> set[str]:
         """Measurements needed this step, among ``"grid"`` and ``"particle"``."""
         measurements = set()
         if self._mpm_model.critical_fraction > 0.0:
             measurements.add(self.critical_fraction_measurement)
-        if self.density_strain_fraction > 0.0:
-            measurements.add(self.density_strain_measurement)
+        if self.volume_recovery_fraction > 0.0:
+            measurements.add(self.volume_recovery_measurement)
         return measurements
 
     def _build_density_strain_offset(
@@ -4107,12 +4107,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     scratch.critical_strain_offset,
                 )
             )
-        if self.density_strain_fraction > 0.0:
+        if self.volume_recovery_fraction > 0.0:
             laws.append(
                 (
                     feedback_offset_values,
-                    self.density_strain_measurement,
-                    self.density_strain_fraction,
+                    self.volume_recovery_measurement,
+                    self.volume_recovery_fraction,
                     scratch.unilateral_strain_offset,
                 )
             )
