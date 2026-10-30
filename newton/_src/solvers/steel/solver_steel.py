@@ -2039,8 +2039,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 positive-radius contact on an articulated body that is routed to propagation
                 reserves one more propagation row for torsion (same-articulation contacts stay
                 dense unless ``propagation_same_articulation_rows`` is set), so size
-                ``articulation_constraint_max`` and ``free_body_constraint_max`` for it; each
-                sweep solves the torsion rows after the other rows with the same budget. That
+                ``propagation_constraint_max``, or ``articulation_constraint_max`` and
+                ``free_body_constraint_max`` when it is unset, for it; each sweep solves the torsion rows after the other rows with the same budget. That
                 response requires ``contact_torsion_device=True`` and ``velocity_iterations=0``.
                 When propagation rows overflow, a group keeps the contacts that received rows
                 and the step does not raise: it sets :attr:`constraint_overflow`, warns when
