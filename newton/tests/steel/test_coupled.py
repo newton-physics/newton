@@ -505,14 +505,14 @@ def test_unsupported_options_raise(test, device):
         ("contact torsion", {}, 0.01),
         ("deterministic=RUN_TO_RUN", {"deterministic": wp.DeterministicMode.RUN_TO_RUN}, 0.0),
     ):
-        model, box, rod_bodies = _build_box_rod(device)
+        model, box, rod_bodies = _build_box_rod(test, device)
         if torsion_radius:
             set_torsion_radius(model, torsion_radius)
         # ADMM treats a NotImplementedError from its effective-mass query as an unsupported hook.
         with test.assertRaisesRegex(NotImplementedError, name):
             _admm(model, box, rod_bodies, lambda v, kwargs=kwargs: _steel(v, **kwargs))
         # Without a coupler a view is ordinary standalone use.
-        model, _, _ = _build_box_rod(device, rod=False)
+        model, _, _ = _build_box_rod(test, device, rod=False)
         if torsion_radius:
             set_torsion_radius(model, torsion_radius)
         _steel(ModelView(model, "standalone"), **kwargs)
@@ -747,7 +747,7 @@ def test_offset_contact_turns_hinge(test, device):
     test.assertGreater(rotation[0.32], 1.5 * rotation[0.08])
 
 
-def _build_box_rod(device, *, box_z=0.15, box_xy=(0.0, 0.0), box_joint_qd=None, rod=True):
+def _build_box_rod(test, device, *, box_z=0.15, box_xy=(0.0, 0.0), box_joint_qd=None, rod=True):
     """Build a free Steel box above two VBD cables lying on the ground; returns model, box and rod bodies."""
     builder = newton.ModelBuilder()
     SolverVBD.register_custom_attributes(builder)
@@ -768,15 +768,18 @@ def _build_box_rod(device, *, box_z=0.15, box_xy=(0.0, 0.0), box_joint_qd=None, 
             twist_total=0.0,
             radius=0.012,
         )
-        bodies, _ = builder.add_rod(
-            rod=cable,
-            body_frame_origin="start",
-            cfg=newton.ModelBuilder.ShapeConfig(density=1400.0, ke=5.0e4, kd=1.0e1, mu=0.9, margin=0.001, gap=0.002),
-            stretch_stiffness=2.0e5,
-            stretch_damping=2.0e-2,
-            bend_stiffness=0.08,
-            bend_damping=1.6e-3,
-        )
+        with test.assertWarnsRegex(newton.exceptions.NewtonDeprecationWarning, 'body_frame_origin="start"'):
+            bodies, _ = builder.add_rod(
+                rod=cable,
+                body_frame_origin="start",
+                cfg=newton.ModelBuilder.ShapeConfig(
+                    density=1400.0, ke=5.0e4, kd=1.0e1, mu=0.9, margin=0.001, gap=0.002
+                ),
+                stretch_stiffness=2.0e5,
+                stretch_damping=2.0e-2,
+                bend_stiffness=0.08,
+                bend_damping=1.6e-3,
+            )
         rod_bodies += list(bodies)
     builder.color()
     return builder.finalize(device=device), box, rod_bodies
@@ -811,9 +814,9 @@ def _admm(model, box, rod_bodies, rigid_factory=_steel, *, iterations=3, gamma=0
 def test_admm_no_contact_matches_standalone(test, device):
     """Match standalone Steel under ADMM restarts for a box that never touches the cable."""
     kwargs = {"box_z": 0.08, "box_xy": (3.0, 0.0), "box_joint_qd": (1.0, 0.3, -0.5, 0.0, 0.0, 3.0)}
-    reference_model, _, _ = _build_box_rod(device, rod=False, **kwargs)
+    reference_model, _, _ = _build_box_rod(test, device, rod=False, **kwargs)
     reference_q = _Rollout(reference_model, _steel(reference_model)).run(120)
-    model, box, rod_bodies = _build_box_rod(device, **kwargs)
+    model, box, rod_bodies = _build_box_rod(test, device, **kwargs)
     coupled_q = _Rollout(model, _admm(model, box, rod_bodies, iterations=3, gamma=0.0)).run(120)
     np.testing.assert_allclose(coupled_q[:, box], reference_q[:, 0], atol=1.0e-5)
 
