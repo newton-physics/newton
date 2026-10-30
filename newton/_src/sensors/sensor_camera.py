@@ -910,8 +910,9 @@ class SensorCamera:
 
         :meth:`update` calls this by default (pass ``sync_deformables=False`` to
         skip it when you already synced). Call it explicitly only when you opt
-        out of the automatic sync. Scenes without simulation triangles or visual
-        meshes are a no-op. Shape and particle BVHs are refit separately via
+        out of the automatic sync. Scenes without simulation triangles or deformable
+        visuals are a no-op. Skinned Gaussian fields also update their bounds and
+        refit the shape BVH. Other shape and particle BVHs are refit separately via
         :meth:`~newton.Model.bvh_refit_shapes` and :meth:`~newton.Model.bvh_refit_particles`.
         Deformable visual meshes are skinned from *state* in a few launches, however
         many worlds were replicated. Supplied visual buffers are consumed as-is;
@@ -1021,7 +1022,7 @@ class SensorCamera:
                 :attr:`default_clear_data`.
             render_config: Render settings for this call. Defaults to
                 :attr:`default_render_config`.
-            sync_deformables: Sync simulation surfaces and visual mesh points
+            sync_deformables: Sync simulation surfaces, visual meshes, and Gaussians
                 from *state* before rendering. Set ``False`` if you already
                 called :meth:`sync_deformable_meshes` this frame.
             deformable_visuals: Experimental precomputed visual buffers for this

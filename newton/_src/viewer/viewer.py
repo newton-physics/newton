@@ -862,7 +862,7 @@ class ViewerBase(ABC):
         """Use precomputed deformable visuals when logging model states.
 
         Passing shared visual data lets the viewer reuse the same evaluated
-        points and normals as other viewers or external renderers. Pass
+        points and normals as other consumers, such as camera sensors. Pass
         ``None`` to restore automatic evaluation during :meth:`log_state`.
         Update or replay before logging the corresponding state. The viewer waits
         for the output but does not check which State produced it or its freshness.
@@ -2687,6 +2687,7 @@ class ViewerBase(ABC):
         shape_display_opacity = self.model.shape_opacity.numpy() if self.model.shape_opacity is not None else None
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
+        deformable_gaussian_shapes = {visual.shape for visual in getattr(self.model, "deformable_visual_gaussians", ())}
         shape_transparent_mask = np.zeros(shape_count, dtype=bool)
 
         # loop over shapes
@@ -2716,6 +2717,10 @@ class ViewerBase(ABC):
 
             # Gaussians bypass the mesh instancing pipeline; render as point clouds.
             if geo_type == newton.GeoType.GAUSSIAN:
+                # The ordinary shape path only knows the rest asset. Rendering it would
+                # leave a frozen copy behind the camera sensor's deformed Gaussian field.
+                if s in deformable_gaussian_shapes:
+                    continue
                 if isinstance(geo_src, newton.Gaussian):
                     parent = shape_body[s]
                     xform = transform_from_array(shape_transform[s])

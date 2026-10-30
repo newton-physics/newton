@@ -1866,6 +1866,15 @@ def _get_texture_source_color_space(shader: UsdShade.Shader | None, file_attr: U
 _SRGB_COLOR_SPACES = frozenset({"srgb", "srgb_texture", "srgb_rec709_scene", "srgb_rec709_display"})
 _LINEAR_COLOR_SPACES = frozenset({"lin_rec709_scene", "lin_rec709", "lin_srgb", "raw", "data", "identity", "linear"})
 
+GAUSSIAN_SORTING_MODE_TOKENS = {
+    Gaussian.SortingMode.RAY_HIT_DISTANCE: "rayHitDistance",
+    Gaussian.SortingMode.CAMERA_DISTANCE: "cameraDistance",
+    Gaussian.SortingMode.Z_DEPTH: "zDepth",
+}
+"""The ``sortingModeHint`` token of each :class:`~newton.Gaussian.SortingMode`, shared by the USD reader and writer."""
+# The reader's reverse lookup, built once.
+_GAUSSIAN_SORTING_MODE_FROM_TOKEN = {token: mode for mode, token in GAUSSIAN_SORTING_MODE_TOKENS.items()}
+
 
 def _classify_color_space(name: str, default: ColorSpace) -> tuple[ColorSpace, bool]:
     """Classify a USD color-space name as sRGB or linear.
@@ -2656,14 +2665,9 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
 
     sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
     if usd_sorting_mode := get_attribute(prim, "sortingModeHint"):
-        if usd_sorting_mode == "zDepth":
-            sorting_mode = Gaussian.SortingMode.Z_DEPTH
-        elif usd_sorting_mode == "cameraDistance":
-            sorting_mode = Gaussian.SortingMode.CAMERA_DISTANCE
-        elif usd_sorting_mode == "rayHitDistance":
-            sorting_mode = Gaussian.SortingMode.RAY_HIT_DISTANCE
-        else:
+        if usd_sorting_mode not in _GAUSSIAN_SORTING_MODE_FROM_TOKEN:
             raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
+        sorting_mode = _GAUSSIAN_SORTING_MODE_FROM_TOKEN[usd_sorting_mode]
 
     # The color space follows the coefficient attribute that supplies the radiance (single or half precision).
     # Untagged radiance is display-referred (sRGB).
@@ -2675,12 +2679,17 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         prim.GetPath(),
     )
 
+    sh_coeffs = _get_float_array_from(sh_attr)
+    if sh_coeffs is not None:
+        # USD stores one RGB triple per basis function; Newton keeps the PLY order.
+        sh_coeffs = Gaussian._sh_from_basis_major(sh_coeffs.reshape(len(positions), -1, 3))
+
     return Gaussian(
         positions=positions,
         rotations=_get_float_array_attr("orientations"),
         scales=_get_float_array_attr("scales"),
         opacities=_get_float_array_attr("opacities"),
-        sh_coeffs=_get_float_array_from(sh_attr),
+        sh_coeffs=sh_coeffs,
         sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
         sh_color_space=sh_color_space,
         min_response=min_response,

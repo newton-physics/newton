@@ -1,0 +1,182 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    doc = "AOUSD deformable scene used by the deformable_visual_mesh_camera example. The topology intentionally mirrors the procedural path where USD can express it; the example applies small builder-side parity overrides for importer/API gaps such as cable damping and cloth area damping."
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def PhysicsScene "PhysicsScene"
+{
+}
+
+def Xform "World"
+{
+    def Sphere "ClothObstacle" (
+        prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+    )
+    {
+        rel material:binding:physics = </World/Materials/ClothObstaclePhysics>
+        color3f[] primvars:displayColor = [(0.35, 0.55, 0.8)] (
+            interpolation = "constant"
+        )
+        double radius = 0.35
+        double3 xformOp:translate = (0, 0, 0.5)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Xform "Cable" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def BasisCurves "Sim" (
+            prepend apiSchemas = ["PhysicsCurvesDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+            prepend references = @deformable_visual_mesh_camera_geometry.usdc@</CableSim>
+        )
+        {
+            int[] curveVertexCounts = [37]
+            rel material:binding:physics = </World/Materials/CablePhysics>
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+            uniform token physics:masses:elementType = "segment"
+            float[] physics:thicknesses = [0.07]
+            uniform token physics:thicknesses:elementType = "constant"
+            uniform token type = "linear"
+            uniform token wrap = "nonperiodic"
+        }
+
+        def Mesh "Graphics" (
+            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+            prepend references = @deformable_visual_mesh_camera_geometry.usdc@</CableGraphics>
+        )
+        {
+            rel material:binding = </World/Materials/DiagnosticVisual>
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+        }
+    }
+
+    def Xform "Cloth" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def Mesh "Sim" (
+            prepend apiSchemas = ["PhysicsSurfaceDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+            prepend references = @deformable_visual_mesh_camera_geometry.usdc@</ClothSim>
+        )
+        {
+            rel material:binding:physics = </World/Materials/ClothPhysics>
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+            uniform token physics:masses:elementType = "point"
+            float[] physics:thicknesses = [0.02]
+            uniform token physics:thicknesses:elementType = "constant"
+        }
+
+        def Mesh "Graphics" (
+            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+            prepend references = @deformable_visual_mesh_camera_geometry.usdc@</ClothGraphics>
+        )
+        {
+            rel material:binding = </World/Materials/DiagnosticVisual>
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+        }
+    }
+
+    def Xform "Volume" (
+        prepend apiSchemas = ["PhysicsDeformableBodyAPI"]
+    )
+    {
+        def TetMesh "Sim" (
+            prepend apiSchemas = ["PhysicsVolumeDeformableSimAPI", "PhysicsCollisionAPI", "MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+            prepend references = @deformable_visual_mesh_camera_geometry.usdc@</VolumeSim>
+        )
+        {
+            rel material:binding:physics = </World/Materials/VolumePhysics>
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+            uniform token physics:masses:elementType = "point"
+        }
+
+        def Mesh "Graphics" (
+            prepend apiSchemas = ["MaterialBindingAPI", "PhysicsDeformablePoseAPI:bind"]
+            prepend references = @deformable_visual_mesh_camera_geometry.usdc@</VolumeGraphics>
+        )
+        {
+            rel material:binding = </World/Materials/DiagnosticVisual>
+            token[] physics:deformablePose:bind:purposes = ["bindPose"]
+        }
+    }
+
+    def Scope "Materials"
+    {
+        def Material "DiagnosticVisual"
+        {
+            token outputs:surface.connect = </World/Materials/DiagnosticVisual/PreviewSurface.outputs:surface>
+
+            def Shader "PreviewSurface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </World/Materials/DiagnosticVisual/DiagnosticTexture.outputs:rgb>
+                float inputs:roughness = 0.65
+                token outputs:surface
+            }
+
+            def Shader "PrimvarReader"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "st"
+                float2 outputs:result
+            }
+
+            def Shader "DiagnosticTexture"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @deformable_visual_uv_grid.png@
+                token inputs:sourceColorSpace = "sRGB"
+                float2 inputs:st.connect = </World/Materials/DiagnosticVisual/PrimvarReader.outputs:result>
+                token inputs:wrapS = "repeat"
+                token inputs:wrapT = "repeat"
+                float3 outputs:rgb
+            }
+        }
+
+        def Material "ClothObstaclePhysics" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "NewtonMaterialAPI"]
+        )
+        {
+            float newton:contactDamping = 10
+            float newton:contactStiffness = 100000
+            float physics:dynamicFriction = 0.5
+            float physics:staticFriction = 0.5
+        }
+
+        def Material "CablePhysics" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "PhysicsCurvesDeformableMaterialAPI"]
+        )
+        {
+            float physics:curvesBendStiffness = 2.5
+            float physics:curvesShearStiffness = 5000
+            float physics:curvesStretchStiffness = 5000
+            float physics:curvesTwistStiffness = 2.5
+            float physics:density = 1000
+            float physics:dynamicFriction = 1
+            float physics:staticFriction = 1
+        }
+
+        def Material "ClothPhysics" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "PhysicsSurfaceDeformableMaterialAPI"]
+        )
+        {
+            float physics:density = 1000
+            float physics:surfaceBendStiffness = 100
+            float physics:surfaceStretchStiffness = 1000
+        }
+
+        def Material "VolumePhysics" (
+            prepend apiSchemas = ["PhysicsMaterialAPI", "PhysicsVolumeDeformableMaterialAPI"]
+        )
+        {
+            float physics:density = 1000
+            float physics:poissonsRatio = 0.25
+            float physics:youngsModulus = 50000
+        }
+    }
+}
+

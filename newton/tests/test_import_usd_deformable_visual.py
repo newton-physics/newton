@@ -321,7 +321,9 @@ class TestUSDDeformableVisual(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 with self.assertLogs("newton", level="WARNING") as logs:
                     result = builder.add_usd(stage, load_visual_shapes=load_visuals, load_sites=load_sites)
-                self.assertTrue(any("unsupported graphics" in message for message in logs.output))
+                self.assertTrue(
+                    any("/World/Rigid/Soft/Points" in message and "skipping" in message for message in logs.output)
+                )
                 self.assertNotIn("/World/Rigid/Soft/Skin", result["path_shape_map"])
                 for path in sites:
                     self.assertEqual(path in result["path_shape_map"], load_sites)

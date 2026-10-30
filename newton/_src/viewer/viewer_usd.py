@@ -18,6 +18,8 @@ import newton
 
 from ..core.types import override
 from ..exceptions import NewtonWarning
+from ..usd.utils import GAUSSIAN_SORTING_MODE_TOKENS
+from ..utils.color import ColorSpace
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -72,6 +74,11 @@ def _usd_set_xform(
         xform_ops[1].Set(Gf.Quatf(float(rot[3]), float(rot[0]), float(rot[1]), float(rot[2])), time)
     if scale is not None:
         xform_ops[2].Set(Gf.Vec3d(float(scale[0]), float(scale[1]), float(scale[2])), time)
+
+
+def _gaussian_prototype_key(gaussian: newton.Gaussian) -> tuple:
+    """Identify the appearance a prototype prim holds: the asset's content plus the written settings."""
+    return (hash(gaussian), gaussian.sh_degree, gaussian.min_response, gaussian.sorting_mode, gaussian.sh_color_space)
 
 
 class ViewerUSD(ViewerBase):
@@ -168,10 +175,13 @@ class ViewerUSD(ViewerBase):
         layer._instance_groups = {}  # instance_name -> group prim for individually referenced meshes
         layer._instancers = {}  # instancer_name -> UsdGeom.PointInstancer
         layer._points = {}  # point_name -> UsdGeom.Points
+        layer._gaussian_assets = {}  # name -> last immutable Gaussian asset
+        layer._gaussian_prototypes = {}  # _gaussian_prototype_key(asset) -> (asset, prim name holding its appearance)
+        layer._gaussian_prototype_count = 0  # prototypes written so far, for unique names
         layer._preview_materials: dict[tuple, Any] = {}  # material key -> UsdShade.Material
-        layer._texture_paths: dict[str, str] = {}
+        layer._texture_paths: dict[str, tuple[Any, str, str]] = {}  # mesh -> (texture object, digest, file)
         layer._mesh_appearance: dict[str, dict[str, Any]] = {}
-        layer._instance_appearance: dict[str, dict[str, np.ndarray]] = {}
+        layer._instance_appearance: dict[str, dict[str, Any]] = {}
 
     def _reset_stage(self):
         self.stage.GetRootLayer().Clear()
@@ -215,8 +225,17 @@ class ViewerUSD(ViewerBase):
                     pass
 
     def _remove_active_layer_prims(self):
-        names = set(self._meshes) | set(self._instance_groups) | set(self._instancers) | set(self._points)
-        for name in sorted(names, key=lambda item: self._get_path(item).count("/"), reverse=True):
+        names = (
+            set(self._meshes)
+            | set(self._instance_groups)
+            | set(self._instancers)
+            | set(self._points)
+            | set(self._gaussian_assets)
+        )
+        prototypes = {name for _, name in self._gaussian_prototypes.values()}
+        # Deepest first, and the Gaussian prototypes after the fields that reference them.
+        order = sorted(names, key=lambda item: -self._get_path(item).count("/")) + sorted(prototypes)
+        for name in order:
             if self._is_layer_owned_path(name):
                 self.stage.RemovePrim(self._get_path(name))
 
@@ -287,6 +306,110 @@ class ViewerUSD(ViewerBase):
         if self.output_path:
             logger.info("USD output saved in: %s", os.path.abspath(self.output_path))
 
+    @override
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: newton.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """Write a Gaussian field as a USD particle field, without a mesh proxy.
+
+        The field prim references a prototype class prim that holds the asset's
+        appearance and extent, written once per asset as default values, so the
+        latest asset applies to the whole timeline and fields that share an asset
+        share its arrays; appearance is not animated, and a prototype no field
+        references any more is removed. Placement and visibility are time
+        sampled. A field hidden before it exists is not written, and it is
+        invisible before the frame it first appears. Higher-order spherical
+        harmonics are stored one RGB triple per basis function, the order
+        :meth:`newton.Gaussian.create_from_usd` reads back. A renderer must
+        support ``ParticleField3DGaussianSplat``; plain usd-core saves the
+        attributes without the renderer's plugin.
+
+        Args:
+            name: Unique path for the Gaussian field.
+            gaussian: Rest Gaussian appearance in local coordinates [m].
+            xform: World-space placement; identity when omitted on a shown call,
+                and the last placement is kept when omitted on a hidden call.
+            hidden: Whether the field is hidden.
+        """
+        name = self._qualify(name)
+        path = self._get_path(name)
+        prim = self.stage.GetPrimAtPath(path)
+        first = not prim
+        if first and hidden:
+            return
+        if first:
+            self._ensure_scopes_for_path(self.stage, path)
+            prim = self.stage.DefinePrim(path, "ParticleField3DGaussianSplat")
+            _usd_add_xform(prim)
+            if self._frame_index > 0:
+                # A held first sample would show the field in the frames before it appeared.
+                prim.CreateAttribute("visibility", Sdf.ValueTypeNames.Token, custom=False).Set("invisible", 0)
+        previous = self._gaussian_assets.get(name)
+        if first or previous is not gaussian:
+            prim.GetReferences().ClearReferences()
+            prim.GetReferences().AddInternalReference(self._gaussian_prototype_path(gaussian))
+            self._gaussian_assets[name] = gaussian
+            key = _gaussian_prototype_key(previous) if previous is not None else None
+            if key is not None and all(
+                _gaussian_prototype_key(asset) != key for asset in self._gaussian_assets.values()
+            ):
+                # No field shows an asset equal to the old one any more; its prototype would only grow the stage.
+                self.stage.RemovePrim(self._get_path(self._gaussian_prototypes.pop(key)[1]))
+        prim.CreateAttribute("visibility", Sdf.ValueTypeNames.Token, custom=False).Set(
+            "invisible" if hidden else "inherited", self._frame_index
+        )
+        if xform is not None or not hidden:
+            transform = wp.transform_identity() if xform is None else xform
+            _usd_set_xform(prim, pos=transform[:3], rot=transform[3:], scale=(1, 1, 1), time=self._frame_index)
+
+    def _gaussian_prototype_path(self, gaussian: newton.Gaussian) -> str:
+        """Return the prim that holds ``gaussian``'s appearance, writing it on the asset's first use."""
+        # Equal assets share one prototype, whichever object logged them.
+        key = _gaussian_prototype_key(gaussian)
+        entry = self._gaussian_prototypes.get(key)
+        if entry is not None:
+            return self._get_path(entry[1])
+        name = self._qualify(f"gaussian_assets/asset_{self._gaussian_prototype_count}")
+        self._gaussian_prototype_count += 1
+        self._gaussian_prototypes[key] = (gaussian, name)
+        path = self._get_path(name)
+        self._ensure_scopes_for_path(self.stage, path)
+        # A class prim: only the fields that reference it are traversed, drawn or imported.
+        prim = self.stage.CreateClassPrim(path)
+        prim.SetTypeName("ParticleField3DGaussianSplat")
+        # One RGB triple per basis function, for the asset's degree or the one its coefficients allow.
+        sh = newton.Gaussian._sh_to_basis_major(gaussian.sh_coeffs)
+        degree = min(gaussian.sh_degree, math.isqrt(sh.shape[1]) - 1)
+        sh = sh[:, : (degree + 1) ** 2].reshape(-1, 3)
+        # The same bound the camera uses per sample, with the largest axis as the radius.
+        response = np.clip(gaussian.min_response / np.maximum(gaussian.opacities, 1e-6), 1e-6, 0.97)
+        radius = (np.sqrt(-2.0 * np.log(response)) * np.max(gaussian.scales, axis=1))[:, None]
+        extent = np.zeros((2, 3), dtype=np.float32)
+        if gaussian.count:
+            extent = np.stack([(gaussian.positions - radius).min(axis=0), (gaussian.positions + radius).max(axis=0)])
+        arrays = (
+            ("positions", Sdf.ValueTypeNames.Point3fArray, Vt.Vec3fArray.FromNumpy(gaussian.positions)),
+            ("orientations", Sdf.ValueTypeNames.QuatfArray, Vt.QuatfArray.FromNumpy(gaussian.rotations)),
+            ("scales", Sdf.ValueTypeNames.Float3Array, Vt.Vec3fArray.FromNumpy(gaussian.scales)),
+            ("opacities", Sdf.ValueTypeNames.FloatArray, Vt.FloatArray.FromNumpy(gaussian.opacities)),
+            ("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array, Vt.Vec3fArray.FromNumpy(sh)),
+            ("extent", Sdf.ValueTypeNames.Float3Array, Vt.Vec3fArray.FromNumpy(extent.astype(np.float32))),
+        )
+        for attribute, dtype, values in arrays:
+            prim.CreateAttribute(attribute, dtype, custom=False).Set(values)
+        prim.CreateAttribute("radiance:sphericalHarmonicsDegree", Sdf.ValueTypeNames.Int, custom=False).Set(degree)
+        prim.GetAttribute("radiance:sphericalHarmonicsCoefficients").SetColorSpace(
+            "lin_rec709_scene" if gaussian.sh_color_space == ColorSpace.LINEAR else "srgb_rec709_scene"
+        )
+        prim.CreateAttribute("sortingModeHint", Sdf.ValueTypeNames.Token, custom=False).Set(
+            GAUSSIAN_SORTING_MODE_TOKENS[gaussian.sorting_mode]
+        )
+        return path
+
     def _get_path(self, name):
         # Handle both absolute and relative paths correctly
         if name.startswith("/"):
@@ -327,6 +450,14 @@ class ViewerUSD(ViewerBase):
         Missing normals are generated by averaging adjacent triangle normals,
         matching the smooth default of the OpenGL viewer. Source subdivision
         control surfaces are not reconstructed from the triangles.
+
+        Texture arrays are cached by object identity; a new array with the same
+        pixels reuses the exported file after decoding and hashing it. Reuse the
+        same array for unchanged frames to avoid that work. Pass a new array or
+        path to replace an image; in-place edits are not detected. A call that omits ``texture`` or
+        ``uvs`` removes a texture bound by an earlier call, as in ViewerGL, while
+        omitted colors and material values persist. Material bindings are not
+        time-sampled, so a replacement applies to the whole export.
 
         Args:
             name: Mesh name or Sdf.Path string.
@@ -374,13 +505,15 @@ class ViewerUSD(ViewerBase):
         mesh_prim.GetExtentAttr().Set(UsdGeom.Mesh.ComputeExtent(points_np), self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
-        self._mesh_appearance[name] = {
-            "texture": texture if valid_texture else None,
-            "color": color,
-            "roughness": roughness,
-            "metallic": metallic,
-            "opacity": opacity,
-        }
+        previous_texture = self._mesh_appearance.get(name, {}).get("texture")
+        appearance = self._mesh_appearance.setdefault(name, {})
+        for key, value in (("color", color), ("roughness", roughness), ("metallic", metallic), ("opacity", opacity)):
+            if value is not None:
+                appearance[key] = value
+        appearance["texture"] = texture if valid_texture else None
+        color, roughness, metallic, opacity = (
+            appearance.get(key) for key in ("color", "roughness", "metallic", "opacity")
+        )
 
         normals_np = (
             normals.numpy().astype(np.float32) if normals is not None else compute_vertex_normals(points_np, indices_np)
@@ -404,7 +537,13 @@ class ViewerUSD(ViewerBase):
                 roughness=roughness,
                 metallic=metallic,
             )
-        elif color is not None or roughness is not None or metallic is not None or opacity is not None:
+        elif (
+            color is not None
+            or roughness is not None
+            or metallic is not None
+            or opacity is not None
+            or previous_texture is not None
+        ):
             material = self._get_preview_surface_material(
                 name,
                 color=color,
@@ -417,6 +556,10 @@ class ViewerUSD(ViewerBase):
 
         if material is not None:
             self._bind_material(mesh_prim.GetPrim(), material)
+            material_path = str(material.GetPath())
+            if material_path != appearance.get("material_path"):
+                appearance["material_path"] = material_path
+                self._refresh_mesh_instance_materials(name)
 
         # how to hide the prototype mesh but not the instances in USD?
         mesh_prim.GetVisibilityAttr().Set("inherited" if not hidden else "invisible", self._frame_index)
@@ -435,8 +578,9 @@ class ViewerUSD(ViewerBase):
         if isinstance(texture, str):
             return os.path.abspath(texture)
 
-        if mesh_name in self._texture_paths:
-            return self._texture_paths[mesh_name]
+        cached = self._texture_paths.get(mesh_name)
+        if cached is not None and cached[0] is texture:
+            return cached[2]
 
         from ..utils.texture import load_texture  # noqa: PLC0415
 
@@ -446,18 +590,24 @@ class ViewerUSD(ViewerBase):
 
         tex_dir = os.path.dirname(self.output_path)
         safe_name = mesh_name.replace("/", "_").replace("\\", "_")
-        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}.png")
-        try:
-            self._save_texture_atomic(tex_array, tex_path)
-        except Exception as exc:
-            warnings.warn(
-                f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. Mesh will render without texture.",
-                NewtonWarning,
-                stacklevel=2,
-            )
-            return None
+        # Renderers cache images by path. Do not overwrite an earlier texture
+        # when its replacement needs to be loaded by an already-open scene.
+        digest = hashlib.blake2s(str(tex_array.shape).encode() + tex_array.tobytes(), digest_size=8).hexdigest()
+        tex_path = os.path.join(tex_dir, f"_tex_{safe_name}_{digest}.png")
+        if (cached is None or cached[1] != digest) and not os.path.exists(tex_path):
+            try:
+                self._save_texture_atomic(tex_array, tex_path)
+            except Exception as exc:
+                warnings.warn(
+                    f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. "
+                    "Mesh will render without texture.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                return None
 
-        self._texture_paths[mesh_name] = tex_path
+        # A new array object with the same pixels keeps its export.
+        self._texture_paths[mesh_name] = (texture, digest, tex_path)
         return tex_path
 
     @staticmethod
@@ -635,6 +785,8 @@ class ViewerUSD(ViewerBase):
 
         appearance_changed = colors is not None or materials is not None or opacities is not None
         appearance = self._instance_appearance.setdefault(name, {})
+        appearance["mesh"] = mesh
+        appearance["count"] = len(xforms)
         if colors is not None:
             appearance["colors"] = np.asarray(colors, dtype=np.float32)
         if materials is not None:
@@ -724,6 +876,40 @@ class ViewerUSD(ViewerBase):
                     metallic=metallic,
                 )
                 self._bind_material(instance, material)
+
+    def _refresh_mesh_instance_materials(self, mesh: str) -> list[tuple[str, int, str]]:
+        """Refresh local instance overrides after the prototype material changes."""
+        updated = []
+        base = self._mesh_appearance[mesh]
+        mesh_path = Sdf.Path(self._get_path(mesh))
+        for name, appearance in self._instance_appearance.items():
+            if appearance.get("mesh") != mesh:
+                continue
+            for i in range(appearance["count"]):
+                instance = self.stage.GetPrimAtPath(self._get_path(name) + f"/instance_{i}")
+                if not instance or not instance.GetRelationship("material:binding").HasAuthoredTargets():
+                    continue
+                # Reusing a USD group name can leave instances on its previous prototype.
+                references = instance.GetMetadata("references")
+                if not references or not any(ref.primPath == mesh_path for ref in references.GetAppliedItems()):
+                    continue
+                colors = appearance.get("colors")
+                params = appearance.get("materials")
+                opacities = appearance.get("opacities")
+                color = colors[i] if colors is not None else base.get("color")
+                material_params = params[i] if params is not None else None
+                use_texture = base.get("texture") is not None and (material_params is None or material_params[3] > 0.5)
+                material = self._get_preview_surface_material(
+                    mesh,
+                    texture=base.get("texture") if use_texture else None,
+                    color=None if use_texture else color,
+                    roughness=float(material_params[0]) if material_params is not None else None,
+                    metallic=float(material_params[1]) if material_params is not None else None,
+                    opacity=float(opacities[i]) if opacities is not None else base.get("opacity"),
+                )
+                self._bind_material(instance, material)
+                updated.append((name, i, str(material.GetPath())))
+        return updated
 
     # log a set of instances as a point instancer, faster but less flexible
     def log_instances_point_instancer(

@@ -341,9 +341,9 @@ class ViewerRTX(ViewerUSD):
         # ``(name, fullscreen)``.
         self._pending_images: dict[tuple[str, bool], Any] = {}
 
-        # Generate a temporary USD path to share with OVRTX renderer
-        fd, output_path = tempfile.mkstemp(suffix=".usd")
-        os.close(fd)
+        # Keep content-addressed textures private to this viewer's lifetime.
+        self._stage_directory = tempfile.TemporaryDirectory(prefix="newton-rtx-")
+        output_path = os.path.join(self._stage_directory.name, "scene.usd")
 
         # Initializing the base class calls clear_model(), which
         # is used to initialize/reset model-specific state.
@@ -963,6 +963,7 @@ void main() {
                 for path in (
                     *self._mesh_prim_paths.values(),
                     *self._point_batch_paths.values(),
+                    *self._gaussian_paths.values(),
                     *(self._get_path(name) for name in self._instance_prim_paths),
                 )
             }
@@ -1303,12 +1304,52 @@ void main() {
             for name, instances in self._instance_prim_paths.items():
                 if self._get_path(name) == path:
                     self._instance_prim_paths[name] = [f"{runtime_path}/instance_{i}" for i in range(len(instances))]
-            for batches in (self._mesh_prim_paths, self._point_batch_paths):
+            for batches in (self._mesh_prim_paths, self._point_batch_paths, self._gaussian_paths):
                 for name in batches:
                     if self._get_path(name) == path:
                         batches[name] = runtime_path
 
     # ------------------------------------------------ ViewerUSD overrides
+
+    @override
+    def log_gaussian(
+        self,
+        name: str,
+        gaussian: newton.Gaussian,
+        xform: wp.transformf | None = None,
+        hidden: bool = False,
+    ):
+        """Render a Gaussian field through OVRTX's native particle-field support.
+
+        The field prim is authored when it first appears and again whenever the
+        asset object changes; after the build phase that replaces its runtime
+        prim, and a field authored during the build phase keeps its first splats
+        in the scene, hidden, next to the replacement. A field hidden before it
+        exists is not authored. Ordinary frames only queue the placement and
+        visibility, which :meth:`end_frame` writes to the runtime scene in one
+        batch without resending the splats.
+
+        Args:
+            name: Unique field path.
+            gaussian: Immutable Gaussian appearance in local coordinates [m].
+            xform: World-space placement [m]; identity when omitted on a shown call,
+                and the last placement is kept when omitted on a hidden call.
+            hidden: Whether the field is hidden.
+        """
+        name = self._qualify(name)
+        path = self._get_path(name)
+        if name not in self._gaussian_paths or self._gaussian_assets.get(name) is not gaussian:
+            super().log_gaussian(name, gaussian, xform, hidden)
+            if not self.stage.GetPrimAtPath(path).IsValid():
+                return  # hidden before it exists: nothing to render yet
+            if self._phase == self._PHASE_BUILD:
+                self._gaussian_paths[name] = path
+            else:
+                self._gaussian_paths[name] = self._replace_runtime_prim(path)
+        if xform is not None or not hidden or name not in self._gaussian_last_placement:
+            placement = wp.transform_identity() if xform is None else xform
+            self._gaussian_last_placement[name] = np.asarray(placement, dtype=np.float64)
+        self._pending_gaussian_placements[name] = (self._gaussian_last_placement[name], bool(hidden))
 
     @override
     def set_model(self, model: newton.Model | None) -> None:
@@ -1805,7 +1846,9 @@ void main() {
         self._update_ovrtx_shape_opacities()
         self._update_ovrtx_instance_visibility()
         self._update_ovrtx_point_batches()
+        self._update_ovrtx_mesh_materials()
         self._update_ovrtx_mesh_points()
+        self._update_ovrtx_gaussians()
         self._apply_ovstage_population_changes()
         self._ovstage.advance_write_floor(self._ovstage_ordinal, ovstage.Scope.ALL).wait()
         if self._runtime_scene_changed:
@@ -1817,7 +1860,31 @@ void main() {
         self._pending_mesh_normals.clear()
         self._pending_mesh_topology.clear()
         self._pending_mesh_visibility.clear()
+        self._pending_mesh_materials.clear()
+        self._pending_instance_materials.clear()
         self._pending_point_batches.clear()
+        self._pending_gaussian_placements.clear()
+
+    def _update_ovrtx_gaussians(self):
+        if self._rtx is None or not self._pending_gaussian_placements:
+            return
+        paths = []
+        placements = []
+        visibility = []
+        for name, (placement, hidden) in self._pending_gaussian_placements.items():
+            path = self._gaussian_paths.get(name)
+            if path is None:
+                continue
+            paths.append(path)
+            placements.append(placement)
+            visibility.append("invisible" if hidden else "inherited")
+        if not paths:
+            return
+        # The matrices are local to the field prims' parent, so the root scaling still applies.
+        self._write_runtime_attribute(
+            paths, "omni:xform", _transforms_to_usd_matrices(np.stack(placements)), is_matrix=True
+        )
+        self._write_runtime_attribute(paths, "visibility", visibility)
 
     # ViewerUSD authors PreviewSurface materials while ViewerRTX is in the
     # build phase. RTX fractional opacity is evaluated per ray hit, so the
@@ -1868,6 +1935,12 @@ void main() {
     ) -> None:
         """Log a mesh for rendering.
 
+        Pass a new texture array or path to replace an image. In-place image
+        edits are not detected. A call that omits ``texture`` or ``uvs`` removes
+        a texture bound by an earlier call, as in ViewerGL. Texture changes
+        update the material at the next render; paused rendering keeps them
+        until rendering resumes.
+
         Args:
             name: Unique name for the mesh.
             points: Vertex positions [m].
@@ -1909,6 +1982,45 @@ void main() {
             if self._phase == self._PHASE_RENDER:
                 self._mesh_prim_paths[name] = self._replace_runtime_prim(self._get_path(name))
         elif name in self._mesh_prim_paths:
+            previous_texture = self._mesh_appearance.get(name, {}).get("texture")
+            next_texture = texture if uvs is not None else None
+            same_texture = next_texture is previous_texture or (
+                isinstance(next_texture, str) and isinstance(previous_texture, str) and next_texture == previous_texture
+            )
+            if next_texture is not None and not isinstance(next_texture, str):
+                # Failed exports return an untextured material; retry the image next time.
+                exported = self._texture_paths.get(name)
+                same_texture = same_texture and exported is not None and exported[0] is next_texture
+            if not same_texture:
+                appearance = self._mesh_appearance.setdefault(name, {})
+                for key, value in (
+                    ("color", color),
+                    ("roughness", roughness),
+                    ("metallic", metallic),
+                    ("opacity", opacity),
+                ):
+                    if value is not None:
+                        appearance[key] = value
+                material = self._get_preview_surface_material(
+                    name,
+                    texture=next_texture,
+                    color=appearance.get("color"),
+                    roughness=appearance.get("roughness"),
+                    metallic=appearance.get("metallic"),
+                    opacity=appearance.get("opacity"),
+                )
+                appearance["texture"] = next_texture
+                material_path = str(material.GetPath())
+                # Equal pixels reuse the material, but supplied UVs may still differ.
+                if material_path != appearance.get("material_path"):
+                    self._bind_material(self._meshes[name].GetPrim(), material)
+                    appearance["material_path"] = material_path
+                    self._refresh_mesh_instance_materials(name)
+                uv_values = uvs.numpy() if isinstance(uvs, wp.array) else uvs
+                self._pending_mesh_materials[name] = (material_path, uv_values)
+            if hidden:
+                self._pending_mesh_visibility[name] = False
+                return
             pts = (
                 points.numpy().astype(np.float32)
                 if isinstance(points, wp.array)
@@ -1932,7 +2044,7 @@ void main() {
             if dynamic:
                 face_vertex_counts = np.full(len(indices_np) // 3, 3, dtype=np.int32)
                 self._pending_mesh_topology[name] = (face_vertex_counts, indices_np)
-            self._pending_mesh_visibility[name] = not hidden and len(pts) > 0
+            self._pending_mesh_visibility[name] = len(pts) > 0
 
     @override
     def log_instances(
@@ -1972,6 +2084,11 @@ void main() {
             changed |= any(not np.array_equal(old, new) for old, new in zip(previous[2], appearance, strict=True))
 
         if self._phase == self._PHASE_BUILD or (xforms is not None and changed):
+            # Rebuilt instances get their current materials from the stage below.
+            # Queued bindings refer to the old indices or the old prototype.
+            self._pending_instance_materials = {
+                key: value for key, value in self._pending_instance_materials.items() if key[0] != name
+            }
             if previous is not None and (previous[0] != mesh or previous[1] != count):
                 self.stage.RemovePrim(self._get_path(name))
             super().log_instances(
@@ -2524,6 +2641,45 @@ void main() {
         """
         return self._make_laned_array_dltensor(np.asarray(points_np, dtype=np.float32), lanes=3)
 
+    def _refresh_mesh_instance_materials(self, mesh: str) -> list[tuple[str, int, str]]:
+        updated = super()._refresh_mesh_instance_materials(mesh)
+        if self._phase == self._PHASE_RENDER:
+            for name, index, material_path in updated:
+                self._pending_instance_materials[(name, index)] = material_path
+        return updated
+
+    def _update_ovrtx_mesh_materials(self):
+        """Publish changed materials without replacing their mesh geometry."""
+        if not self._pending_mesh_materials and not self._pending_instance_materials:
+            return
+        import ovstage
+
+        updates = [
+            (self._mesh_prim_paths[name], material_path, uvs)
+            for name, (material_path, uvs) in self._pending_mesh_materials.items()
+        ]
+        updates.extend(
+            (self._instance_prim_paths[name][index], material_path, None)
+            for (name, index), material_path in self._pending_instance_materials.items()
+        )
+        for _, material_path, _ in updates:
+            if material_path not in self._runtime_prim_paths:
+                self._replace_runtime_prim(material_path)
+        self._apply_ovstage_population_changes()
+        for mesh_path, material_path, uvs in updates:
+            target = self._runtime_prim_paths[material_path]
+            self._ovstage.write_attribute(
+                self._get_ovstage_query([mesh_path]),
+                "material:binding",
+                ordinal=self._ovstage_ordinal,
+                tensors=np.array([self._ovstage_paths.intern_path(target)], dtype=np.uint64),
+                is_array=True,
+                semantic=ovstage.AttributeSemantic.RELATIONSHIP_PATH_ID,
+            ).wait()
+            if uvs is not None:
+                self._write_runtime_array_attribute(mesh_path, "primvars:st", np.asarray(uvs, dtype=np.float32))
+        self._runtime_scene_changed = True
+
     def _update_ovrtx_mesh_points(self):
         if self._rtx is None or (
             not self._pending_mesh_points
@@ -3002,6 +3158,9 @@ void main() {
         self._emissive_instance_groups = set()
         self._mesh_prim_paths = {}
         self._point_batch_paths = {}
+        self._gaussian_paths = {}
+        self._gaussian_last_placement = {}
+        self._pending_gaussian_placements = {}
         self._point_batch_colors = {}
         self._point_batch_synced_counts = {}
 
@@ -3012,6 +3171,8 @@ void main() {
         self._pending_mesh_normals = {}
         self._pending_mesh_topology = {}
         self._pending_mesh_visibility = {}
+        self._pending_mesh_materials = {}
+        self._pending_instance_materials = {}
         self._pending_point_batches = {}
         self._point_batch_frame_defaults = {}
         self._deferred_prims = set()
@@ -3218,3 +3379,5 @@ void main() {
                 os.unlink(self.output_path)
             except OSError:
                 pass
+        if hasattr(self, "_stage_directory"):
+            self._stage_directory.cleanup()

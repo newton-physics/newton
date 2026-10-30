@@ -17,6 +17,8 @@ the body's simulation geometry via
 - surface bodies embed into the owning triangle range;
 - cable bodies bind to the curve's imported segment bodies.
 
+Experimental ``ParticleField3DGaussianSplat`` graphics become Gaussian visuals
+when they belong to a volume deformable.
 """
 
 from __future__ import annotations
@@ -121,9 +123,58 @@ def _record_cable_visual_bind_poses(ctx, rod, bodies, point_sources):
             ctx.cable_visual_bind_errors[body] = str(exc)
 
 
+def _read_gaussian_embedding(prim, tet_range: tuple[int, int], count: int):
+    """Read experimental tet-index and barycentric-weight attributes."""
+    parent_attr = prim.GetAttribute("newton:deformableSkin:tetIndices")
+    weights_attr = prim.GetAttribute("newton:deformableSkin:influenceWeights")
+    has_parent = bool(parent_attr and parent_attr.HasValue())
+    has_weights = bool(weights_attr and weights_attr.HasValue())
+    if has_parent != has_weights:
+        raise ValueError("tetIndices and influenceWeights must be authored together")
+    if not has_parent:
+        return None, None
+
+    parent = np.asarray(parent_attr.Get(), dtype=np.int32).reshape(-1)
+    weights = np.asarray(weights_attr.Get(), dtype=np.float32).reshape(-1, 4)
+    if len(parent) != count or len(weights) != count:
+        raise ValueError("tetIndices and influenceWeights must have one row per Gaussian")
+    # USD indices address the simulation TetMesh locally; Newton's builder uses
+    # absolute indices so independently imported bodies can share one builder.
+    parent = parent + int(tet_range[0])
+    return parent, weights
+
+
+def _gaussian_in_world(ctx: _DeformableImportContext, prim, gaussian):
+    """Bake the prim placement into Gaussian centers, orientations, and scales."""
+    world_mat = ctx.get_prim_world_mat(prim, None, ctx.incoming_world_xform)
+    positions = _world_points(gaussian.positions, world_mat, translate=True).astype(np.float32)
+    linear = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)[:3, :3]
+    rotations = np.empty_like(gaussian.rotations)
+    scales = np.empty_like(gaussian.scales)
+    for i, (rotation, scale) in enumerate(zip(gaussian.rotations, gaussian.scales, strict=True)):
+        rest_rotation = np.asarray(wp.quat_to_matrix(wp.quat(*rotation)), dtype=np.float64).reshape(3, 3)
+        axes = linear @ rest_rotation @ np.diag(scale)
+        world_rotation, world_scale, _ = np.linalg.svd(axes)
+        if np.linalg.det(world_rotation) < 0.0:
+            world_rotation[:, -1] *= -1.0
+        rotations[i] = np.asarray(wp.quat_from_matrix(wp.mat33f(world_rotation.astype(np.float32))), dtype=np.float32)
+        scales[i] = world_scale.astype(np.float32)
+    return type(gaussian)(
+        positions=positions,
+        rotations=rotations,
+        scales=scales,
+        opacities=gaussian.opacities,
+        sh_coeffs=gaussian.sh_coeffs,
+        sh_degree=gaussian.sh_degree,
+        sh_color_space=gaussian.sh_color_space,
+        min_response=gaussian.min_response,
+        sorting_mode=gaussian.sorting_mode,
+    )
+
+
 def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
     """Import graphics payloads for every imported deformable body and embed them."""
-    from pxr import UsdShade
+    from pxr import UsdGeom, UsdShade
 
     from ..geometry.flags import ShapeFlags  # noqa: PLC0415
     from ..usd import utils as usd  # noqa: PLC0415
@@ -260,8 +311,67 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
                 continue
 
             ctx.path_deformable_visual_map[path] = index
+            builder._set_deformable_visual_source_paths(
+                index, body_path=body_path, sim_path=sim_path, graphics_path=path
+            )
             if ctx.verbose:
                 logger.info("  Embedded visual mesh %s (%d verts) in %s %s.", path, len(world_verts), family, sim_path)
+
+        for prim in ctx.prims.visual_gaussians.get(body_path, ()):
+            path = str(prim.GetPath())
+            if family != "soft":
+                logger.warning("%s: Gaussian graphics currently require a volume deformable; skipping.", path)
+                continue
+            imageable = UsdGeom.Imageable(prim)
+            if imageable and imageable.ComputeVisibility() == UsdGeom.Tokens.invisible:
+                continue
+            try:
+                gaussian = _gaussian_in_world(ctx, prim, usd.get_gaussian(prim))
+                ranges = ctx.path_soft_map[sim_path]
+                tet_range = ranges["tet"]
+                if sim_path not in sim_positions:
+                    sim_positions[sim_path] = _sim_bind_positions(ctx, sim_path, ranges["particle"])
+                positions = sim_positions[sim_path]
+                parent, weights = _read_gaussian_embedding(prim, tet_range, gaussian.count)
+                if parent is None:
+                    parent, weights = builder._embed_visual_vertices_in_tets(
+                        gaussian.positions,
+                        tet_range,
+                        positions=positions,
+                        operation="add_deformable_visual_gaussian",
+                        particle_start=ranges["particle"][0],
+                    )
+                if np.any(parent < tet_range[0]) or np.any(parent >= tet_range[1]):
+                    raise ValueError("tetIndices references a tetrahedron outside the owning volume")
+                parent_vertices = np.asarray([builder.tet_indices[i] for i in parent])
+                corners = positions[parent_vertices - ranges["particle"][0]]
+                basis = np.transpose(corners[:, 1:] - corners[:, :1], (0, 2, 1))
+                if np.any(np.abs(np.linalg.det(basis)) <= 1.0e-20):
+                    raise ValueError("degenerate_parent: Gaussian bind tetrahedron is degenerate")
+                bind_poses = np.linalg.inv(basis).astype(np.float32)
+                index = builder.add_deformable_visual_gaussian(
+                    gaussian,
+                    kind="tetrahedron",
+                    tet_range=tet_range,
+                    parent=parent,
+                    weights=weights,
+                    label=path,
+                )
+            except ValueError as exc:
+                logger.warning("%s: could not embed Gaussian graphics; skipping (%s)", path, exc)
+                continue
+
+            spec = builder._deformable_visual_gaussians[index]
+            spec["_bind_poses"] = bind_poses
+            spec["_bind_offsets"] = (gaussian.positions - np.einsum("ni,nij->nj", spec["weights"], corners)).astype(
+                np.float32
+            )
+            spec["body_path"] = body_path
+            spec["sim_path"] = sim_path
+            spec["graphics_path"] = path
+            ctx.path_shape_map[path] = spec["shape"]
+            if ctx.verbose:
+                logger.info("  Embedded Gaussian graphics %s (%d splats) in volume %s.", path, gaussian.count, sim_path)
 
     if ctx.hide_collision_shapes:
         for shape, body in enumerate(builder.shape_body):

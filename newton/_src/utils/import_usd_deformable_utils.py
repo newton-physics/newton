@@ -454,8 +454,8 @@ def _prim_has_collision_api(prim) -> bool:
     return prim.HasAPI(UsdPhysics.CollisionAPI) or usd.has_applied_api_schema(prim, "PhysicsCollisionAPI")
 
 
-def _iter_deformable_pointbased_prims(body_root, ignore_paths: Sequence[str] = ()):
-    """Yield a deformable body's ``UsdGeomPointBased`` prims (colliders and graphics geometry).
+def _iter_deformable_pointbased_prims(body_root, ignore_paths: Sequence[str] = (), *, include_gaussians: bool = False):
+    """Yield a deformable body's point-based geometry and optionally Gaussian fields.
 
     Nested body subtrees are pruned: a nested deformable body's geometry is its own, and a
     nested rigid body or articulation is native content the deformable must not claim.
@@ -474,7 +474,9 @@ def _iter_deformable_pointbased_prims(body_root, ignore_paths: Sequence[str] = (
         ):
             it.PruneChildren()
             continue
-        if not prim.IsA(UsdGeom.PointBased):
+        if not prim.IsA(UsdGeom.PointBased) and not (
+            include_gaussians and str(prim.GetTypeName()) == "ParticleField3DGaussianSplat"
+        ):
             continue
         if ignore_paths and _is_ignored_path(str(prim.GetPath()), ignore_paths):
             continue
@@ -1273,8 +1275,11 @@ class _DeformablePrimBuckets:
     # first candidate of any family in traversal order); a body's mass must not be applied
     # once per family, so the passes skip every other candidate under the same body.
     body_owner: dict[str, str] = field(default_factory=dict)
-    # Graphics meshes in traversal order, grouped by their owning deformable body.
+    # Supported visual Mesh prims keyed by their owning deformable body path.
+    # Each list preserves stage traversal order within that body's hierarchy.
     visual_meshes: dict[str, list[Usd.Prim]] = field(default_factory=dict)
+    # Gaussian graphics prims keyed by their owning volume deformable body path.
+    visual_gaussians: dict[str, list[Usd.Prim]] = field(default_factory=dict)
     # Prim paths the native rigid-physics loader must not parse: deformable simulation
     # geometry (any family) and collider prims governed by an imported deformable body.
     # Excluding them avoids duplicate rigid shapes for dedicated deformable colliders and
@@ -1450,15 +1455,26 @@ def _scout_deformable_prims(
                 buckets.native_physics_exclude_paths.append(path)
                 if prim.IsA(UsdGeom.Mesh):
                     buckets.visual_meshes.setdefault(body_path, []).append(prim)
-                elif not prim.IsA(UsdGeom.TetMesh):
+                elif not prim.IsA(UsdGeom.TetMesh) and str(prim.GetTypeName()) != "ParticleField3DGaussianSplat":
                     # The volume pass already reports untagged TetMeshes.
                     logger.warning(
-                        "%s: unsupported graphics geometry under deformable body %s; skipping.", path, body_path
+                        "%s: PointBased geometry under deformable body %s cannot deform with the simulation "
+                        "geometry (embedding is not implemented); skipping it.",
+                        path,
+                        body_path,
                     )
-            for prim in _iter_deformable_pointbased_prims(body_prim, ignore_paths):
+
+            # The public reader returns PointBased geometry. Gaussian fields are
+            # a separate preview extension; dedicated colliders are never visuals.
+            for prim in _iter_deformable_pointbased_prims(body_prim, ignore_paths, include_gaussians=True):
                 path = str(prim.GetPath())
+                if not prim.GetPath().HasPrefix(root_prim.GetPath()):
+                    continue
                 if _prim_has_collision_api(prim):
                     buckets.native_physics_exclude_paths.append(path)
+                elif str(prim.GetTypeName()) == "ParticleField3DGaussianSplat":
+                    buckets.native_physics_exclude_paths.append(path)
+                    buckets.visual_gaussians.setdefault(body_path, []).append(prim)
     return buckets
 
 

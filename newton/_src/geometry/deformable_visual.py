@@ -1,10 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fixed visual geometry attached to deformable simulation elements."""
+"""Visual payloads embedded in deformable bodies.
+
+Visual samples can be embedded in a coarse simulation deformable and evaluated
+from simulation state each frame. The simulation continues to run on the coarse
+representation; these payloads are visualization and sensor geometry only and
+never participate in the solve or in collision. Triangle meshes and Gaussian
+fields are currently supported.
+
+See :meth:`newton.ModelBuilder.add_deformable_visual_mesh`.
+"""
 
 from __future__ import annotations
 
+import itertools
 import operator
 from collections.abc import Sequence
 from enum import IntEnum
@@ -16,6 +26,7 @@ import warp as wp
 if TYPE_CHECKING:
     from ..sim.model import Model
     from ..sim.state import State
+    from .types import Gaussian
 
 
 class DeformableVisualMesh:
@@ -29,8 +40,10 @@ class DeformableVisualMesh:
     Properties are read-only; do not edit their arrays in place. Meshes with
     equal rest vertices and triangle indices share device storage, while
     bindings stay per mesh. The label can be changed for display, and the
-    texture can be replaced. For USD graphics prim paths, use the
-    ``path_deformable_visual_map`` result from :meth:`newton.ModelBuilder.add_usd`.
+    texture can be reassigned. Consumers may cache textures; see the supported
+    update behavior in :doc:`/guide/visualization`. For USD graphics prim paths,
+    use the ``path_deformable_visual_map`` result from
+    :meth:`newton.ModelBuilder.add_usd`.
 
     .. experimental::
     """
@@ -89,11 +102,17 @@ class DeformableVisualMesh:
         self._uvs = uvs
         self.texture = texture
         """Albedo image or path. Replace this value rather than editing image pixels
-        in place; viewers may cache the immutable asset."""
+        in place; viewers may cache the immutable asset. USD-based viewers and
+        :class:`~newton.sensors.SensorCamera` read it only when creating a mesh."""
         self._world = world
         self._index = index
         self.label = label
-        """Display label. Not unique; use :attr:`index` for a stable identity."""
+        """Display label. Imported path labels follow requested namespace rebasing.
+        Not unique; use :attr:`index` for a stable identity."""
+        # Retained for preview recording and explicit namespace rebasing, not public lookup.
+        self._body_path: str | None = None
+        self._sim_path: str | None = None
+        self._graphics_path: str | None = None
 
     @property
     def kind(self) -> Kind:
@@ -158,15 +177,324 @@ class DeformableVisualMesh:
         return len(self._rest_vertices)
 
 
+class DeformableVisualBinding:
+    """Payload-neutral binding from visual points to simulation drivers.
+
+    Gaussian fields currently support tetrahedral bindings only. Visual meshes
+    store their binding arrays directly on :class:`DeformableVisualMesh`.
+
+    .. experimental::
+
+        Deformable visual APIs may change without a formal deprecation cycle.
+    """
+
+    def __init__(
+        self,
+        kind: DeformableVisualMesh.Kind,
+        parent: wp.array[wp.int32],
+        weights: wp.array[wp.vec4] | wp.array[wp.vec3] | None = None,
+        local_offsets: wp.array[wp.vec3] | None = None,
+    ) -> None:
+        """Store a visual-to-simulation binding.
+
+        Args:
+            kind: Simulation element kind driving the visual points.
+            parent: Driver index for each visual point.
+            weights: Barycentric weights for triangle or tetrahedron bindings.
+            local_offsets: Body-local binding offsets [m].
+        """
+        self.kind = kind
+        """Embedding kind."""
+        self.parent = parent
+        """Per-visual-point driver index, shape [point_count]."""
+        self.weights = weights
+        """Barycentric weights for triangle or tet bindings, or ``None``."""
+        self.local_offsets = local_offsets
+        """Body-local offsets [m] for rigid body bindings, or ``None``."""
+
+
+class DeformableVisualGaussian:
+    """A Gaussian field whose samples are bound to a deformable body.
+
+    Instances are immutable model output created by
+    :meth:`newton.ModelBuilder.add_deformable_visual_gaussian`. Current sample
+    transforms and scales are stored separately in :class:`DeformableVisuals`.
+
+    .. experimental::
+
+        This API may change without a formal deprecation cycle while deformable
+        visual support is experimental.
+    """
+
+    def __init__(
+        self,
+        gaussian: Gaussian,
+        binding: DeformableVisualBinding,
+        rest_rotations: wp.array[wp.quat],
+        rest_scales: wp.array[wp.vec3],
+        shape: int,
+        world: int = -1,
+        label: str = "",
+        index: int = -1,
+        body_path: str | None = None,
+        sim_path: str | None = None,
+        graphics_path: str | None = None,
+    ) -> None:
+        """Store a Gaussian visual and its simulation binding.
+
+        Args:
+            gaussian: Immutable rest Gaussian appearance.
+            binding: Binding from Gaussian centers to simulation drivers.
+            rest_rotations: Rest Gaussian orientations, shape [count].
+            rest_scales: Rest Gaussian axis scales [m], shape [count, 3].
+            shape: Render-only Gaussian shape index.
+            world: Owning model world, or ``-1`` for global visuals.
+            label: Display label.
+            index: Stable index in :attr:`newton.Model.deformable_visual_gaussians`.
+            body_path: Owning deformable body USD path, when imported.
+            sim_path: Driving simulation geometry USD path, when imported.
+            graphics_path: Gaussian graphics USD path, when imported.
+        """
+        self.gaussian = gaussian
+        """Immutable rest Gaussian appearance."""
+        self.binding = binding
+        """Binding from Gaussian centers to simulation drivers."""
+        self.kind = binding.kind
+        """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
+        self.parent = binding.parent
+        """Per-Gaussian simulation driver indices, shape [count]."""
+        self.weights = binding.weights
+        """Barycentric weights, or ``None`` for non-barycentric bindings."""
+        self.local_offsets = binding.local_offsets
+        """Body-local offsets [m], or ``None`` for non-body bindings."""
+        self.rest_rotations = rest_rotations
+        """Rest Gaussian orientations, shape [count]."""
+        self.rest_scales = rest_scales
+        """Rest Gaussian axis scales [m], shape [count, 3]."""
+        # An imported visual reference can differ from the solver's rest shape.
+        self._bind_poses: wp.array[wp.mat33] | None = None
+        self._bind_offsets: wp.array[wp.vec3] | None = None
+        self.shape = shape
+        """Render-only Gaussian shape index."""
+        self.world = world
+        """Owning model world, or ``-1`` for a global visual."""
+        self.label = label
+        """Display label."""
+        self.index = index
+        """Stable index in :attr:`newton.Model.deformable_visual_gaussians`."""
+        self.body_path = body_path
+        """Owning deformable body USD path, or ``None``."""
+        self.sim_path = sim_path
+        """Driving simulation geometry USD path, or ``None``."""
+        self.graphics_path = graphics_path
+        """Gaussian graphics USD path, or ``None``."""
+
+    @property
+    def count(self) -> int:
+        """Number of Gaussian samples."""
+        return self.gaussian.count
+
+
+@wp.struct
+class _GaussianBindings:
+    """Device arrays of a :class:`_DeformableGaussianBatch`, so kernels take them as one argument."""
+
+    parent: wp.array[wp.int32]
+    source: wp.array[wp.int32]
+    bind_poses: wp.array[wp.mat33]
+    weights: wp.array[wp.vec4]
+    rest_offsets: wp.array[wp.vec3]
+    rest_rotations: wp.array[wp.quat]
+    rest_scales: wp.array[wp.vec3]
+
+
+@wp.func
+def _skin_gaussian_sample(
+    particle_q: wp.array[wp.vec3], tet_indices: wp.array2d[wp.int32], bindings: _GaussianBindings, i: int
+):
+    """Return the current transform [m, unit quaternion] and axis scales [m] of sample ``i``."""
+    tet = bindings.parent[i]
+    s = bindings.source[i]
+    q0 = particle_q[tet_indices[tet, 0]]
+    q1 = particle_q[tet_indices[tet, 1]]
+    q2 = particle_q[tet_indices[tet, 2]]
+    q3 = particle_q[tet_indices[tet, 3]]
+    # The deformation gradient since binding carries the rest ellipsoid's axes and the center's offset
+    # from the barycentric point; the SVD of the deformed axes gives a proper rotation and the scales.
+    deformation_gradient = wp.matrix_from_cols(q1 - q0, q2 - q0, q3 - q0) * bindings.bind_poses[s]
+    w = bindings.weights[s]
+    center = w[0] * q0 + w[1] * q1 + w[2] * q2 + w[3] * q3 + deformation_gradient * bindings.rest_offsets[s]
+    rest_scale = bindings.rest_scales[s]
+    axes = deformation_gradient * wp.quat_to_matrix(bindings.rest_rotations[s]) * wp.diag(rest_scale)
+    rotation, singular_values, _ = wp.svd3(axes)
+    # A flattened tetrahedron must not produce a zero scale; keep a sliver of the rest size.
+    floor = 1.0e-4 * wp.min(wp.min(rest_scale[0], rest_scale[1]), rest_scale[2])
+    scales = wp.vec3(
+        wp.max(wp.abs(singular_values[0]), floor),
+        wp.max(wp.abs(singular_values[1]), floor),
+        wp.max(wp.abs(singular_values[2]), floor),
+    )
+    return wp.transform(center, wp.quat_from_matrix(rotation)), scales
+
+
+@wp.kernel(enable_backward=False)
+def _skin_deformable_visual_gaussians(
+    particle_q: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    bindings: _GaussianBindings,
+    out_transforms: wp.array[wp.transform],
+    out_scales: wp.array[wp.vec3],
+    start: int,
+    out_offset: int,
+):
+    i = wp.tid()
+    transform, scales = _skin_gaussian_sample(particle_q, tet_indices, bindings, start + i)
+    out_transforms[out_offset + i] = transform
+    out_scales[out_offset + i] = scales
+
+
+class _DeformableGaussianBatch:
+    """Bindings and rest appearance of every Gaussian field of a model, concatenated: a tetrahedron
+    index per sample, and weights, bind-time frame, rest offset, orientation and scales stored once
+    per prototype (``source`` maps samples to them) however many copies exist; one launch."""
+
+    def __init__(
+        self,
+        parents: Sequence[np.ndarray],
+        weights: Sequence[np.ndarray],
+        prototypes: Sequence[int],
+        bind_poses: Sequence[np.ndarray],
+        rest_offsets: Sequence[np.ndarray],
+        rest_rotations: Sequence[np.ndarray],
+        rest_scales: Sequence[np.ndarray],
+        device: wp.Device,
+    ) -> None:
+        """Upload the per-field host arrays to ``device`` once, sharing the data of fields with the same ``prototypes`` entry."""
+        self.device = device
+        starts = np.cumsum([0, *(len(p) for p in parents)])
+        self.ranges = tuple((int(a), int(b)) for a, b in itertools.pairwise(starts))  # per field, model order
+        self.count = int(starts[-1])
+        self.visuals: tuple[DeformableVisualGaussian, ...] = ()
+
+        ranges: dict[int, tuple[int, int]] = {}
+        shared: list[tuple[np.ndarray, ...]] = []
+        sources: list[np.ndarray] = []
+        self.prototype_ranges: list[tuple[int, int]] = []
+        shared_count = 0
+        for prototype, field_weights, poses, offsets, rotations, scales in zip(
+            prototypes, weights, bind_poses, rest_offsets, rest_rotations, rest_scales, strict=True
+        ):
+            if prototype not in ranges:
+                ranges[prototype] = (shared_count, shared_count + len(field_weights))
+                shared_count = ranges[prototype][1]
+                shared.append(
+                    (
+                        np.asarray(field_weights, dtype=np.float32).reshape(-1, 4),
+                        np.asarray(poses, dtype=np.float32).reshape(-1, 3, 3),
+                        np.asarray(offsets, dtype=np.float32).reshape(-1, 3),
+                        np.asarray(rotations, dtype=np.float32).reshape(-1, 4),
+                        np.asarray(scales, dtype=np.float32).reshape(-1, 3),
+                    )
+                )
+            self.prototype_ranges.append(ranges[prototype])
+            sources.append(np.arange(*ranges[prototype], dtype=np.int32))
+
+        def upload(arrays, dtype, shape):
+            host = np.concatenate(arrays) if arrays else np.empty(shape, dtype=np.float32)
+            return wp.array(host, dtype=dtype, device=device)
+
+        self.bindings = _GaussianBindings()
+        """The device arrays, as one kernel argument."""
+        self.bindings.parent = upload([np.asarray(p, dtype=np.int32).reshape(-1) for p in parents], wp.int32, (0,))
+        self.bindings.source = upload(sources, wp.int32, (0,))
+        self.bindings.weights = upload([a[0] for a in shared], wp.vec4, (0, 4))
+        self.bindings.bind_poses = upload([a[1] for a in shared], wp.mat33, (0, 3, 3))
+        self.bindings.rest_offsets = upload([a[2] for a in shared], wp.vec3, (0, 3))
+        self.bindings.rest_rotations = upload([a[3] for a in shared], wp.quat, (0, 4))
+        self.bindings.rest_scales = upload([a[4] for a in shared], wp.vec3, (0, 3))
+
+    @classmethod
+    def from_visuals(cls, model: Model) -> _DeformableGaussianBatch:
+        """Rebuild a loaded recording's batch; older records use the solver's rest frames."""
+        fields = model.deformable_visual_gaussians
+        groups = {}
+        prototypes = [
+            groups.setdefault(
+                (
+                    field.weights.ptr,
+                    field.rest_rotations.ptr,
+                    field._bind_poses.ptr if field._bind_poses is not None else 0,
+                ),
+                len(groups),
+            )
+            for field in fields
+        ]
+        parents = [field.parent.numpy() for field in fields]
+        rest_poses = model.tet_poses.numpy() if any(field._bind_poses is None for field in fields) else None
+        batch = cls(
+            parents,
+            [field.weights.numpy() for field in fields],
+            prototypes,
+            [
+                field._bind_poses.numpy() if field._bind_poses is not None else rest_poses[parent]
+                for field, parent in zip(fields, parents, strict=True)
+            ],
+            [
+                field._bind_offsets.numpy()
+                if field._bind_offsets is not None
+                else np.zeros((field.count, 3), dtype=np.float32)
+                for field in fields
+            ],
+            [field.rest_rotations.numpy() for field in fields],
+            [field.rest_scales.numpy() for field in fields],
+            model.device,
+        )
+        batch.visuals = tuple(fields)
+        return batch
+
+    def visual_arrays(self, index: int) -> tuple[wp.array[wp.int32], wp.array[wp.vec4]]:
+        """Return field ``index``'s views of ``parent`` and of its prototype's ``weights``."""
+        start, end = self.ranges[index]
+        proto_start, proto_end = self.prototype_ranges[index]
+        return self.bindings.parent[start:end], self.bindings.weights[proto_start:proto_end]
+
+    def skin(
+        self, state: State, model: Model, out_transforms: wp.array[wp.transform], out_scales: wp.array[wp.vec3]
+    ) -> None:
+        """Write every sample's transform [m, unit quaternion] in the particles' world frame and positive
+        axis scales [m] into the destinations in one launch; ``ValueError`` if they are too small or
+        the state lacks the model's particles."""
+        if min(out_transforms.shape[0], out_scales.shape[0]) < self.count:
+            raise ValueError(f"the destinations hold fewer than the {self.count} samples of the Gaussian fields")
+        if self.count == 0:
+            return
+        q = state.particle_q
+        if q is None or len(q) < model.particle_count or q.device != model.device:
+            raise ValueError(
+                "State.particle_q with the model's particles on its device is required by its Gaussian fields"
+            )
+        wp.launch(
+            _skin_deformable_visual_gaussians,
+            dim=self.count,
+            inputs=[state.particle_q, model.tet_indices, self.bindings],
+            outputs=[out_transforms, out_scales, 0, 0],
+            device=self.device,
+        )
+
+
 class DeformableVisuals:
     """Current evaluated geometry for a model's deformable visual meshes.
 
-    Allocate one per model with ``DeformableVisuals(model)`` and fill it with
-    :meth:`update`. One result can be reused across states and ordered graph
-    replays. Update or replay before consumption; the output does not track
-    its source State or freshness. Finish consumption before overwriting the
-    buffers, and allocate separate results for simultaneous snapshots or
-    concurrent updates. Skinning is not differentiable.
+    Allocate this result with ``DeformableVisuals(model)`` and
+    populate it with :meth:`update`. One result
+    can be reused across states and ordered graph replays. Update or replay
+    before consumption; this output does not track its source State or freshness.
+    Finish consumption before overwriting the buffers. Allocate separate results
+    for simultaneous snapshots or concurrent updates.
+
+    Mesh output contains positions and normals. Gaussian output contains center
+    transforms and axis scales; the rest opacity and appearance remain unchanged.
+    These output buffers do not support differentiation through skinning.
 
     .. experimental::
     """
@@ -192,6 +520,16 @@ class DeformableVisuals:
         self.normals = wp.zeros(self.vertex_count, dtype=wp.vec3, device=self.device)
         """Current unit normals, shape [vertex_count, 3]. Zero for a vertex that no
         non-degenerate triangle references."""
+
+        self._gaussian_batch = model._get_deformable_visual_gaussian_batch()
+        self.gaussian_ranges = self._gaussian_batch.ranges
+        """Stable ``[start, end)`` sample range for each Gaussian visual."""
+        self.gaussian_count = self._gaussian_batch.count
+        """Total number of current Gaussian samples."""
+        self.gaussian_transforms = wp.empty(self.gaussian_count, dtype=wp.transform, device=self.device)
+        """Current Gaussian centers [m] and orientations, shape [gaussian_count]."""
+        self.gaussian_scales = wp.empty(self.gaussian_count, dtype=wp.vec3, device=self.device)
+        """Current positive Gaussian axis scales [m], shape [gaussian_count, 3]."""
 
         self._updated = False
         self._completion_event = wp.Event(self.device) if self.device.is_cuda else None
@@ -229,6 +567,7 @@ class DeformableVisuals:
         if self.vertex_count:
             batches.skin(state, self._model, self.points)
             batches.compute_normals(self.points, self.normals)
+        self._gaussian_batch.skin(state, self._model, self.gaussian_transforms, self.gaussian_scales)
         self._mark_updated()
         return self
 
@@ -251,6 +590,24 @@ class DeformableVisuals:
     def _require_updated(self) -> None:
         if not self._updated:
             raise RuntimeError("DeformableVisuals has not been updated; call update(state) first.")
+
+    def _gaussian_index(self, gaussian: DeformableVisualGaussian | SupportsIndex) -> int:
+        if isinstance(gaussian, DeformableVisualGaussian):
+            index = gaussian.index
+            if (
+                index < 0
+                or index >= len(self.gaussian_ranges)
+                or self._model.deformable_visual_gaussians[index] is not gaussian
+            ):
+                raise ValueError("The deformable Gaussian visual does not belong to this DeformableVisuals model.")
+            return index
+        try:
+            index = operator.index(gaussian)
+        except TypeError as exc:
+            raise TypeError("gaussian must be a DeformableVisualGaussian or an integer index") from exc
+        if index < 0 or index >= len(self.gaussian_ranges):
+            raise IndexError(f"Deformable Gaussian visual index {index} is out of range")
+        return index
 
     def _mark_updated(self) -> None:
         # This records a submitted update, not graph execution or buffer freshness.
@@ -318,6 +675,32 @@ class DeformableVisuals:
         self._require_updated()
         start, end = self.mesh_ranges[self._mesh_index(mesh)]
         return self.normals[start:end]
+
+    def get_gaussian_transforms(self, gaussian: DeformableVisualGaussian | SupportsIndex) -> wp.array[wp.transform]:
+        """Return the current transform view for one Gaussian visual.
+
+        Args:
+            gaussian: Gaussian visual or stable model index.
+
+        Returns:
+            Zero-copy current center/orientation transforms, shape [count].
+        """
+        self._require_updated()
+        start, end = self.gaussian_ranges[self._gaussian_index(gaussian)]
+        return self.gaussian_transforms[start:end]
+
+    def get_gaussian_scales(self, gaussian: DeformableVisualGaussian | SupportsIndex) -> wp.array[wp.vec3]:
+        """Return the current scale view for one Gaussian visual.
+
+        Args:
+            gaussian: Gaussian visual or stable model index.
+
+        Returns:
+            Zero-copy positive axis scales [m], shape [count, 3].
+        """
+        self._require_updated()
+        start, end = self.gaussian_ranges[self._gaussian_index(gaussian)]
+        return self.gaussian_scales[start:end]
 
 
 @wp.kernel
@@ -487,9 +870,9 @@ class _DeformableVisualSkinBatches:
 
     def validate_state(self, state: State, model: Model) -> None:
         """Check that ``state`` provides the particle positions and body poses the bindings read."""
-        if self.vertex_count == 0:
+        if self.vertex_count == 0 and not model.deformable_visual_gaussians:
             return
-        if self.needs_particles:
+        if self.needs_particles or model.deformable_visual_gaussians:
             if state.particle_q is None:
                 raise ValueError("State.particle_q is required by this model's deformable visual meshes")
             if state.particle_q.device != model.device:

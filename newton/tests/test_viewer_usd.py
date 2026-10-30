@@ -15,6 +15,7 @@ import warp as wp
 import newton
 import newton.usd
 from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.utils import ColorSpace
 from newton.viewer import ViewerRTX, ViewerUSD
 
 if USD_AVAILABLE:
@@ -205,8 +206,8 @@ class TestViewerUSD(unittest.TestCase):
         self.assertFalse(prim_after.IsValid())
         self.assertTrue(os.path.exists(temp_file.name))
 
-    def test_partial_texture_rewrite_keeps_published_png_intact(self):
-        """A crash mid-write must not corrupt the previously published PNG."""
+    def test_partial_texture_write_can_be_retried(self):
+        """Keep failed exports unpublished so a retry writes a complete image."""
         from PIL import Image
 
         viewer = self._make_viewer()
@@ -242,15 +243,26 @@ class TestViewerUSD(unittest.TestCase):
                 partial_file.write(partial_png[: len(partial_png) // 2])
             raise OSError("simulated crash mid-write")
 
+        # Exports are named by content, so a crash can only hit a new image's file.
+        replacement = np.ascontiguousarray(255 - texture)
         viewer.clear_model()
         viewer.begin_frame(0.0)
         with mock.patch("PIL.Image.Image.save", partial_save), self.assertWarns(UserWarning):
-            viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=texture)
+            viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=replacement)
 
         with open(tex_path, "rb") as published_file:
             self.assertEqual(published_file.read(), published)
         leaked = sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".tmp"))
         self.assertEqual(leaked, [])
+        self.assertEqual(
+            sorted(name for name in os.listdir(viewer._test_work_dir) if name.endswith(".png")),
+            [os.path.basename(tex_path)],
+        )
+        viewer.log_mesh(mesh_name, points, indices, uvs=uvs, texture=replacement)
+        replacement_path = self._logged_texture_path(viewer, mesh_name)
+        self.assertNotEqual(replacement_path, tex_path)
+        with Image.open(replacement_path) as image:
+            np.testing.assert_array_equal(np.asarray(image), replacement)
 
     def test_save_texture_atomic_cleans_up_tmp_on_failure(self):
         """A failure during the temp-file write must not leave a `.tmp` sibling behind."""
@@ -400,7 +412,7 @@ class TestViewerUSD(unittest.TestCase):
         opacities = wp.array([0.25, 0.75], dtype=wp.float32)
 
         viewer.begin_frame(0.0)
-        viewer.log_mesh("/opacity_mesh", points, indices)
+        viewer.log_mesh("/opacity_mesh", points, indices, roughness=0.1, metallic=0.7)
         viewer.log_instances(
             "/opacity_instances",
             "/opacity_mesh",
@@ -420,6 +432,43 @@ class TestViewerUSD(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(shader0.GetInput("diffuseColor").Get()), [0.2, 0.4, 0.6], atol=1e-6)
         self.assertAlmostEqual(shader0.GetInput("roughness").Get(), 0.25, places=6)
         self.assertAlmostEqual(shader0.GetInput("metallic").Get(), 0.1, places=6)
+
+        viewer.log_instances("/default_instances", "/opacity_mesh", xforms, scales, colors, None)
+        default_prim = viewer.stage.GetPrimAtPath("/root/default_instances/instance_0")
+        default_shader = self._get_bound_preview_surface(default_prim)
+        self.assertAlmostEqual(default_shader.GetInput("roughness").Get(), 0.5)
+        self.assertAlmostEqual(default_shader.GetInput("metallic").Get(), 0.0)
+        self.assertFalse(default_shader.GetInput("diffuseColor").HasConnectedSource())
+        viewer.log_mesh(
+            "/opacity_mesh",
+            points,
+            indices,
+            uvs=wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2),
+            texture=np.full((2, 2, 3), 255, dtype=np.uint8),
+        )
+        for prim, roughness, metallic in (
+            (default_prim, 0.5, 0.0),
+            (viewer.stage.GetPrimAtPath("/root/opacity_instances/instance_0"), 0.25, 0.1),
+        ):
+            shader = self._get_bound_preview_surface(prim)
+            self.assertAlmostEqual(shader.GetInput("roughness").Get(), roughness, places=6)
+            self.assertAlmostEqual(shader.GetInput("metallic").Get(), metallic, places=6)
+        default_shader = self._get_bound_preview_surface(default_prim)
+        texture_source = default_shader.GetInput("diffuseColor").GetConnectedSource()
+        self.assertIsNotNone(texture_source)
+        self.assertEqual(texture_source[0].GetPrim().GetName(), "DiffuseTexture")
+
+        other_points = wp.array(points.numpy() + np.array([2.0, 0.0, 0.0]), dtype=wp.vec3)
+        uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.zeros((2, 2, 3), dtype=np.uint8))
+        previous_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        # USD currently keeps the old prototype when a group name is reused.
+        # A texture refresh must not apply the new prototype's material to it.
+        viewer.log_instances("/default_instances", "/other_mesh", xforms, scales, None, None)
+        viewer.log_mesh("/other_mesh", other_points, indices, uvs=uvs, texture=np.full((2, 2, 3), 127, dtype=np.uint8))
+        current_material, _ = UsdShade.MaterialBindingAPI(default_prim).ComputeBoundMaterial()
+        self.assertEqual(current_material.GetPath(), previous_material.GetPath())
+        np.testing.assert_allclose(UsdGeom.Mesh(default_prim).GetPointsAttr().Get(viewer._frame_index), points.numpy())
 
     def test_log_instances_rejects_mismatched_opacity_count(self):
         """Reject opacity arrays that do not match instance count."""
@@ -554,6 +603,138 @@ class TestViewerUSD(unittest.TestCase):
 
         self.assertTrue(prim_a.IsValid())
         self.assertTrue(prim_b.IsValid())
+
+    def test_gaussian_field_round_trip_and_placement(self):
+        """Export Gaussian fields that read back, with time-sampled visibility and placement rules."""
+        viewer = self._make_viewer()
+        for color_space in ColorSpace:
+            asset = newton.Gaussian(
+                [[0.2, 0.1, 0.3]],
+                rotations=[[0, 0, 0.6, 0.8]],
+                scales=[[0.2, 0.1, 0.05]],
+                opacities=[0.7],
+                sh_coeffs=[[0.1, 0.2, 0.3]],
+                sh_color_space=color_space,
+                sorting_mode=newton.Gaussian.SortingMode.Z_DEPTH,
+            )
+            name = f"/field_{int(color_space)}"
+            viewer.begin_frame(0.0)
+            viewer.log_gaussian(name, asset, xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()))
+            prim = viewer.stage.GetPrimAtPath(f"/root{name}")
+            self.assertEqual(prim.GetTypeName(), "ParticleField3DGaussianSplat")
+            restored = newton.Gaussian.create_from_usd(prim)
+            for attribute in ("positions", "rotations", "scales", "opacities", "sh_coeffs"):
+                np.testing.assert_allclose(getattr(restored, attribute), getattr(asset, attribute))
+            self.assertEqual(restored.sh_color_space, color_space)
+            self.assertEqual(restored.sorting_mode, asset.sorting_mode)
+            # A hidden call without a placement keeps the last one; a shown call without one is at the
+            # origin, like the live viewers; the appearance is not animated.
+            viewer.begin_frame(1.0)
+            viewer.log_gaussian(name, asset, hidden=True)
+            imageable = UsdGeom.Imageable(prim)
+            self.assertEqual(imageable.GetVisibilityAttr().Get(60), "invisible")
+            self.assertEqual(imageable.GetVisibilityAttr().Get(0), "inherited")
+            xformable = UsdGeom.Xformable(prim)
+            np.testing.assert_allclose(xformable.GetLocalTransformation(60).ExtractTranslation(), [1, 0, 0])
+            viewer.begin_frame(2.0)
+            viewer.log_gaussian(name, asset)
+            np.testing.assert_allclose(xformable.GetLocalTransformation(120).ExtractTranslation(), [0, 0, 0])
+            self.assertEqual(prim.GetAttribute("positions").GetNumTimeSamples(), 0)
+        # Two assets, two prototypes: class prims the field prims reference, holding the arrays and the
+        # extent (the camera's per-sample bound with the largest axis as radius); the fields themselves
+        # hold no arrays, are not hidden at the default time, and are the only prims a traversal sees.
+        prototypes = [p for p in viewer.stage.TraverseAll() if "gaussian_assets/asset_" in str(p.GetPath())]
+        self.assertEqual(len(prototypes), 2)
+        self.assertTrue(all(p.IsAbstract() for p in prototypes))
+        self.assertEqual(sum("gaussian_assets/asset_" in str(p.GetPath()) for p in viewer.stage.Traverse()), 0)
+        self.assertIsNone(viewer.stage.GetRootLayer().GetAttributeAtPath("/root/field_0.positions"))
+        self.assertNotEqual(UsdGeom.Imageable(prim).GetVisibilityAttr().Get(), "invisible")
+        radius = np.sqrt(-2.0 * np.log(0.1 / 0.7)) * 0.2
+        np.testing.assert_allclose(
+            prim.GetAttribute("extent").Get(),
+            [np.subtract([0.2, 0.1, 0.3], radius), np.add([0.2, 0.1, 0.3], radius)],
+            rtol=1e-6,
+        )
+        # An equal asset object shares the prototype; swapping to a different asset removes the
+        # prototype that no field references any more.
+        viewer.begin_frame(3.0)
+        viewer.log_gaussian("/field_2", newton.Gaussian([[0.5, 0.5, 0.5]], scales=[[0.1, 0.1, 0.1]]))
+        viewer.log_gaussian("/field_3", newton.Gaussian([[0.5, 0.5, 0.5]], scales=[[0.1, 0.1, 0.1]]))
+        viewer.log_gaussian("/field_0", newton.Gaussian([[0.5, 0.5, 0.5]], scales=[[0.1, 0.1, 0.1]]))
+        prototypes = [p for p in viewer.stage.TraverseAll() if "gaussian_assets/asset_" in str(p.GetPath())]
+        self.assertEqual(sorted(p.GetName() for p in prototypes), ["asset_1", "asset_2"])
+
+    def test_gaussian_higher_order_coefficients_use_usd_order(self):
+        """Write one RGB triple per basis function and read Newton's channel-major order back."""
+        count, bands = 2, 4
+        sh = np.arange(count * 3 * bands, dtype=np.float32).reshape(count, 3 * bands)
+        asset = newton.Gaussian(np.zeros((count, 3)), sh_coeffs=sh)
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+        viewer.log_gaussian("/sh", asset)
+        prim = viewer.stage.GetPrimAtPath("/root/sh")
+        written = np.array(prim.GetAttribute("radiance:sphericalHarmonicsCoefficients").Get(), dtype=np.float32)
+        written = written.reshape(count, bands, 3)
+        np.testing.assert_array_equal(written[:, 0, :], sh[:, :3])
+        for basis in range(1, bands):
+            for channel in range(3):
+                np.testing.assert_array_equal(written[:, basis, channel], sh[:, 3 + channel * (bands - 1) + basis - 1])
+        self.assertEqual(prim.GetAttribute("radiance:sphericalHarmonicsDegree").Get(), 1)
+        restored = newton.Gaussian.create_from_usd(prim)
+        np.testing.assert_array_equal(restored.sh_coeffs, sh)
+        self.assertEqual(restored.sh_degree, 1)
+        # An asset that declares a lower degree than its coefficients allow is written at that degree.
+        viewer.log_gaussian("/sh0", newton.Gaussian(np.zeros((count, 3)), sh_coeffs=sh, sh_degree=0))
+        prim = viewer.stage.GetPrimAtPath("/root/sh0")
+        self.assertEqual(prim.GetAttribute("radiance:sphericalHarmonicsDegree").Get(), 0)
+        self.assertEqual(len(prim.GetAttribute("radiance:sphericalHarmonicsCoefficients").Get()), count)
+
+    def test_gaussian_shapes_follow_their_layer(self):
+        """Hidden Gaussian shapes write nothing; shown ones become particle fields that leave with their layer."""
+        viewer = self._make_viewer()
+        asset = newton.Gaussian([[0, 0, 0]], scales=[[0.1, 0.2, 0.3]])
+        builder = newton.ModelBuilder()
+        builder.add_shape_gaussian(-1, gaussian=asset)
+        builder.add_shape_gaussian(-1, gaussian=asset, xform=wp.transform(wp.vec3(1, 0, 0), wp.quat_identity()))
+        model = builder.finalize(device="cpu")
+
+        def fields():
+            return [
+                p
+                for p in viewer.stage.Traverse()
+                if p.GetTypeName() == "ParticleField3DGaussianSplat" and "gaussian_assets" not in str(p.GetPath())
+            ]
+
+        def prototypes():
+            return [p for p in viewer.stage.TraverseAll() if "gaussian_assets/asset_" in str(p.GetPath())]
+
+        viewer.activate("splats")
+        viewer.set_model(model)
+        viewer.begin_frame(0.0)
+        viewer.log_state(model.state())
+        viewer.end_frame()
+        self.assertEqual(fields(), [])
+        viewer.show_gaussians = True
+        viewer.begin_frame(1.0 / 60.0)
+        viewer.log_state(model.state())
+        viewer.end_frame()
+        # Two shapes of one asset: two fields, one prototype; they appear at frame 1 and play back
+        # invisible before that.
+        self.assertEqual(len(fields()), 2)
+        self.assertEqual(len(prototypes()), 1)
+        visibility = UsdGeom.Imageable(fields()[0]).GetVisibilityAttr()
+        self.assertEqual(visibility.Get(0), "invisible")
+        self.assertEqual(visibility.Get(1), "inherited")
+        self.assertEqual(newton.Gaussian.create_from_usd(fields()[0]).count, 1)
+        viewer.activate("boxes")
+        viewer.set_model(_build_box_model())
+        viewer.begin_frame(1.0 / 60.0)
+        viewer.log_state(viewer.model.state())
+        viewer.end_frame()
+        viewer.remove_layer("splats")
+        self.assertEqual(fields(), [])
+        self.assertEqual(prototypes(), [])
+        self.assertTrue(viewer.stage.GetPrimAtPath("/root/layers/boxes/model/shapes/shape_0/instance_0").IsValid())
 
     def test_remove_layer_preserves_sibling_usd_prims(self):
         """Remove one layer's geometry and materials without touching its sibling."""

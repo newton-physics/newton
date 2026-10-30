@@ -9,11 +9,19 @@ from dataclasses import dataclass, replace
 import numpy as np
 import warp as wp
 
-from ...core import Axis
-from ...geometry import GeoType, Mesh
-from ...geometry.deformable_visual import DeformableVisualMesh, DeformableVisuals, _DeformableVisualSkinBatches
+from ...core import MAXVAL, Axis
+from ...geometry import Gaussian, GeoType, Mesh
+from ...geometry.bvh import SHAPE_BOUNDS_BLOCK_DIM
+from ...geometry.deformable_visual import (
+    DeformableVisualMesh,
+    DeformableVisuals,
+    _DeformableVisualSkinBatches,
+    _GaussianBindings,
+    _skin_gaussian_sample,
+)
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
+from .gaussians import compute_gaussian_bounds, compute_gaussian_bvh_bounds
 from .render import create_kernel
 from .types import (
     AntiAliasing,
@@ -29,6 +37,180 @@ from .types import (
 # Default hemispheric ambient radiance (linear RGB) for surfaces facing up and down.
 DEFAULT_AMBIENT_SKY_COLOR = (0.2, 0.2, 0.225)
 DEFAULT_AMBIENT_GROUND_COLOR = (0.05, 0.05, 0.06)
+
+
+@wp.kernel(enable_backward=False)
+def _write_deformable_gaussians(
+    particle_q: wp.array[wp.vec3],
+    tet_indices: wp.array2d[wp.int32],
+    bindings: _GaussianBindings,
+    shared_transforms: wp.array[wp.transform],
+    shared_scales: wp.array[wp.vec3],
+    sample_field: wp.array[wp.int32],
+    field_start: wp.array[wp.int32],
+    field_shape: wp.array[wp.int32],
+    first_field_entry: int,
+    shape_transforms: wp.array[wp.transform],
+    gaussians: wp.array[Gaussian.Data],
+    lowers: wp.array[wp.vec3f],
+    uppers: wp.array[wp.vec3f],
+):
+    # Each sample is evaluated straight into its field's render entry, in the frame of the
+    # render-only shape that displays the field, together with its new BVH bounds.
+    i = wp.tid()
+    transform = wp.transform_identity()
+    scales = wp.vec3(0.0)
+    if shared_transforms:
+        transform = shared_transforms[i]
+        scales = shared_scales[i]
+    else:
+        transform, scales = _skin_gaussian_sample(particle_q, tet_indices, bindings, i)
+    field = sample_field[i]
+    local = i - field_start[field]
+    data = gaussians[first_field_entry + field]
+    data.transforms[local] = wp.transform_multiply(
+        wp.transform_inverse(shape_transforms[field_shape[field]]), transform
+    )
+    data.scales[local] = scales
+    lower, upper = compute_gaussian_bounds(data, local)
+    lowers[i] = lower
+    uppers[i] = upper
+
+
+@wp.kernel(enable_backward=False)
+def _reduce_deformable_gaussian_shape_bounds(
+    field_start: wp.array[wp.int32],
+    field_shape: wp.array[wp.int32],
+    lowers: wp.array[wp.vec3f],
+    uppers: wp.array[wp.vec3f],
+    out_bounds: wp.array2d[wp.vec3f],
+):
+    # The local bounds of a field's shape are the union of its samples' bounds.
+    field, lane = wp.tid()
+    min_point = wp.vec3(MAXVAL)
+    max_point = wp.vec3(-MAXVAL)
+    for i in range(field_start[field] + lane, field_start[field + 1], wp.block_dim()):
+        min_point = wp.min(min_point, lowers[i])
+        max_point = wp.max(max_point, uppers[i])
+    min_point = wp.tile_reduce(wp.min, wp.tile(min_point, preserve_type=True))[0]
+    max_point = wp.tile_reduce(wp.max, wp.tile(max_point, preserve_type=True))[0]
+    if lane == 0:
+        out_bounds[field_shape[field], 0] = min_point
+        out_bounds[field_shape[field], 1] = max_point
+
+
+class _DeformableGaussianRenderData:
+    """One camera's render entries for the deformable Gaussian fields of a model.
+
+    The model's Gaussian entries show every asset at rest. Each field gets one more entry
+    here, with its own sample transforms, scales and BVH and the asset's opacities and
+    colors, and a copy of the model's shape sources points the field's render-only shape at
+    that entry. The entries start at the rest pose; :meth:`update` evaluates the samples from
+    a state straight into them.
+    """
+
+    def __init__(self, model: Model, device: wp.Device) -> None:
+        fields = model.deformable_visual_gaussians
+        self.batch = model._get_deformable_visual_gaussian_batch()
+        count = self.batch.count
+        self.first_entry = model.gaussians_data.shape[0]
+        self.transforms = wp.empty(count, dtype=wp.transformf, device=device)
+        self.scales = wp.empty(count, dtype=wp.vec3f, device=device)
+        self.lowers = wp.empty(count, dtype=wp.vec3f, device=device)
+        self.uppers = wp.empty(count, dtype=wp.vec3f, device=device)
+        self.field_start = wp.array([*(start for start, _ in self.batch.ranges), count], dtype=wp.int32, device=device)
+        self.field_shape = wp.array([field.shape for field in fields], dtype=wp.int32, device=device)
+        self.sample_field = wp.array(
+            np.repeat(np.arange(len(fields), dtype=np.int32), [field.count for field in fields]),
+            dtype=wp.int32,
+            device=device,
+        )
+        self.bvhs: list[wp.Bvh] = []
+        self._uploaded: dict[int, tuple[wp.array, wp.array, wp.array, wp.array]] = {}
+        entries = []
+        for field, (start, end) in zip(fields, self.batch.ranges, strict=True):
+            asset = field.gaussian
+            rest_transforms, rest_scales, opacities, sh_coeffs = self._asset_rest_data(asset, device)
+            data = Gaussian.Data()
+            data.num_points = end - start
+            data.transforms = self.transforms[start:end]
+            data.scales = self.scales[start:end]
+            data.opacities = opacities
+            data.sh_coeffs = sh_coeffs
+            data.sh_color_space = int(asset.sh_color_space)
+            data.min_response = asset.min_response
+            data.sorting_mode = int(asset.sorting_mode)
+            # Start at the rest pose: the entry renders before the first sync, and the BVH is
+            # built over real bounds (one built over empty bounds refits far slower).
+            wp.copy(data.transforms, rest_transforms)
+            wp.copy(data.scales, rest_scales)
+            lowers, uppers = self.lowers[start:end], self.uppers[start:end]
+            wp.launch(compute_gaussian_bvh_bounds, dim=data.num_points, inputs=[data, lowers, uppers], device=device)
+            bvh = wp.Bvh(lowers, uppers)
+            data.bvh_id = bvh.id
+            self.bvhs.append(bvh)
+            entries.append(data)
+        self.entries = wp.empty(self.first_entry + len(entries), dtype=Gaussian.Data, device=device)
+        wp.copy(self.entries, model.gaussians_data, count=self.first_entry)
+        wp.copy(self.entries, wp.array(entries, dtype=Gaussian.Data, device=device), dest_offset=self.first_entry)
+        shape_source_ptr = model.shape_source_ptr.numpy()
+        shape_source_ptr[[field.shape for field in fields]] = self.first_entry + np.arange(len(fields))
+        self.shape_source_ptr = wp.array(shape_source_ptr, dtype=wp.uint64, device=device)
+
+    def _asset_rest_data(self, asset: Gaussian, device: wp.Device) -> tuple[wp.array, wp.array, wp.array, wp.array]:
+        """Return the asset's rest transforms, scales, opacities and colors on ``device``: the arrays
+        of the model's entry while the asset still holds them, uploaded once per asset otherwise."""
+        rest = asset._warp_data  # pyright: ignore[reportPrivateUsage]
+        if rest is not None and rest.transforms.device == device:
+            return rest.transforms, rest.scales, rest.opacities, rest.sh_coeffs
+        if id(asset) not in self._uploaded:
+            self._uploaded[id(asset)] = (
+                wp.array(np.append(asset.positions, asset.rotations, axis=1), dtype=wp.transformf, device=device),
+                wp.array(asset.scales, dtype=wp.vec3f, device=device),
+                wp.array(asset.opacities, dtype=wp.float32, device=device),
+                wp.array(asset.sh_coeffs, dtype=wp.float32, device=device),
+            )
+        return self._uploaded[id(asset)]
+
+    def update(self, state: State, model: Model, visuals: DeformableVisuals | None = None) -> None:
+        """Evaluate every sample from ``state`` into the entries, refit the field BVHs, and refresh
+        the fields' shapes in the model's shape BVH so the moved samples stay enclosed."""
+        device = self.entries.device
+        q = state.particle_q
+        if q is None or len(q) < model.particle_count or q.device != model.device:
+            raise ValueError(
+                "State.particle_q with the model's particles on its device is required by its Gaussian fields"
+            )
+        wp.launch(
+            _write_deformable_gaussians,
+            dim=self.batch.count,
+            inputs=[
+                state.particle_q,
+                model.tet_indices,
+                self.batch.bindings,
+                visuals.gaussian_transforms if visuals is not None else None,
+                visuals.gaussian_scales if visuals is not None else None,
+                self.sample_field,
+                self.field_start,
+                self.field_shape,
+                self.first_entry,
+                model.bvh_shape_world_transforms,
+                self.entries,
+                self.lowers,
+                self.uppers,
+            ],
+            device=device,
+        )
+        for bvh in self.bvhs:
+            bvh.refit()
+        wp.launch_tiled(
+            kernel=_reduce_deformable_gaussian_shape_bounds,
+            dim=len(self.bvhs),
+            block_dim=SHAPE_BOUNDS_BLOCK_DIM,
+            inputs=[self.field_start, self.field_shape, self.lowers, self.uppers, model.bvh_shape_bounds],
+            device=device,
+        )
+        model.bvh_refit_shapes(state)
 
 
 class RenderContext:
@@ -95,6 +277,7 @@ class RenderContext:
         self._triangle_particle_count = 0
         self._skinned_vertex_count = 0
         self._triangle_groups: wp.array[wp.int32] | None = None
+        self._deformable_gaussians: _DeformableGaussianRenderData | None = None
         self._triangle_mesh_uvs = wp.empty(0, dtype=wp.vec2f, device=self.device)
         self._triangle_mesh_texture_ids = wp.empty(0, dtype=wp.int32, device=self.device)
 
@@ -171,7 +354,17 @@ class RenderContext:
             )
 
         if model.gaussians_data is not None:
-            self._render_state.num_gaussians = model.gaussians_data.shape[0]
+            # The count sizes the per-ray hit list: the Gaussian shapes a ray can meet in one world,
+            # which several shapes of one asset can exceed and the camera's field entries do not add to.
+            shape_type_np = model.shape_type.numpy()
+            shape_world_np = model.shape_world.numpy()
+            gaussian_shapes = shape_type_np == int(GeoType.GAUSSIAN)
+            per_world = np.bincount(shape_world_np[gaussian_shapes & (shape_world_np >= 0)], minlength=1).max()
+            shared = int(np.count_nonzero(gaussian_shapes & (shape_world_np < 0)))
+            self._render_state.num_gaussians = max(model.gaussians_data.shape[0], int(per_world) + shared)
+
+        if model.deformable_visual_gaussians:
+            self._deformable_gaussians = _DeformableGaussianRenderData(model, self.device)
 
         skin_texture_ids = self._load_texture_and_mesh_data(model, load_textures, deformable_visual_meshes)
         if has_simulation_triangles or deformable_visual_meshes:
@@ -235,8 +428,8 @@ class RenderContext:
                 "DeformableSurfaceMode.SIMULATION_ONLY and does not render visual meshes"
             )
 
+        model = self.model
         if self._has_triangle_mesh:
-            model = self.model
             if not self._skinned_vertex_count:
                 self._set_triangle_points(state.particle_q)
             elif self._triangle_particle_count:
@@ -265,6 +458,9 @@ class RenderContext:
                         count=self._skinned_vertex_count,
                     )
             self._sync_triangle_mesh()
+
+        if self._deformable_gaussians is not None:
+            self._deformable_gaussians.update(state, model, deformable_visuals)
 
     def _up_vector(self) -> wp.vec3f:
         up = [0.0, 0.0, 0.0]
@@ -596,7 +792,9 @@ class RenderContext:
                     model.shape_scale,
                     model.shape_color,
                     model.bvh_shape_world_transforms,
-                    model.shape_source_ptr,
+                    self._deformable_gaussians.shape_source_ptr
+                    if self._deformable_gaussians is not None
+                    else model.shape_source_ptr,
                     self._shape_texture_ids,
                     self._shape_mesh_data_ids,
                     # Particle BVH
@@ -616,7 +814,9 @@ class RenderContext:
                     # Meshes
                     self._mesh_data,
                     # Gaussians
-                    model.gaussians_data,
+                    self._deformable_gaussians.entries
+                    if self._deformable_gaussians is not None
+                    else model.gaussians_data,
                     # Textures
                     self._texture_data,
                     # Lights

@@ -27,6 +27,28 @@ OVSTAGE_AVAILABLE = importlib.util.find_spec("ovstage") is not None
 
 @unittest.skipUnless(OVRTX_AVAILABLE, "Requires ovrtx")
 class TestViewerRTXConstruction(unittest.TestCase):
+    @unittest.skipUnless(USD_AVAILABLE and OVSTAGE_AVAILABLE, "Requires USD and ovstage")
+    def test_texture_files_belong_to_one_viewer(self):
+        """Close one viewer without removing another viewer's identical texture."""
+        from pxr import UsdShade
+
+        points = wp.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=wp.vec3, device="cpu")
+        indices = wp.array([0, 1, 2], dtype=wp.int32, device="cpu")
+        uvs = wp.array([[0, 0], [1, 0], [0, 1]], dtype=wp.vec2, device="cpu")
+        image = np.full((2, 2, 3), 255, dtype=np.uint8)
+        viewers = [ViewerRTX(headless=True), ViewerRTX(headless=True)]
+        for viewer in viewers:
+            self.addCleanup(viewer.close)
+        paths = []
+        for viewer in viewers:
+            viewer.log_mesh("/mesh", points, indices, uvs=uvs, texture=image)
+            material, _ = UsdShade.MaterialBindingAPI(viewer.stage.GetPrimAtPath("/root/mesh")).ComputeBoundMaterial()
+            paths.append(UsdShade.Shader(material.GetPrim().GetChild("DiffuseTexture")).GetInput("file").Get().path)
+        self.assertTrue(all(os.path.isfile(path) for path in paths))
+        viewers[0].close()
+        self.assertFalse(os.path.exists(paths[0]))
+        self.assertTrue(os.path.isfile(paths[1]))
+
     def test_requires_ovstage(self):
         """Require OVStage when constructing ViewerRTX."""
         original_import = builtins.__import__
@@ -137,6 +159,7 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         viewer._instance_prim_paths = {}
         viewer._mesh_prim_paths = {}
         viewer._point_batch_paths = {}
+        viewer._gaussian_paths = {}
         viewer._rtx = None
         viewer._tex_resource = None
         viewer._gl_texture = None
@@ -516,6 +539,99 @@ class TestViewerRTXRendering(unittest.TestCase):
     """Keep real OVRTX renders in one class so class-level parallelism runs them serially."""
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_runtime_mesh_textures(self):
+        """Replace one mesh's texture without changing another mesh sharing its material."""
+        from PIL import Image
+
+        model = newton.ModelBuilder().finalize()
+        points = wp.array([[0, -0.4, -0.4], [0, 0.4, -0.4], [0, 0.4, 0.4], [0, -0.4, 0.4]], dtype=wp.vec3)
+        indices = wp.array([0, 1, 2, 0, 2, 3], dtype=wp.int32)
+        uvs = wp.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=wp.vec2)
+        red = np.full((2, 2, 3), (255, 0, 0), dtype=np.uint8)
+        green = np.full((2, 2, 3), (0, 255, 0), dtype=np.uint8)
+        with tempfile.TemporaryDirectory() as directory:
+            blue_path = str(Path(directory) / "blue.png")
+            red_path = str(Path(directory) / "red.png")
+            Image.fromarray(np.full((2, 2, 3), (0, 0, 255), dtype=np.uint8)).save(blue_path)
+            Image.fromarray(red).save(red_path)
+            for asynchronous in (False, True):
+                with self.subTest(async_rendering=asynchronous):
+                    viewer = ViewerRTX(width=96, height=64, headless=True, async_rendering=asynchronous)
+                    try:
+                        viewer.set_model(model)
+                        viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
+                        left = wp.array(points.numpy() + np.array([0, -0.5, 0]), dtype=wp.vec3)
+                        right = wp.array(points.numpy() + np.array([0, 0.5, 0]), dtype=wp.vec3)
+                        for frame, (texture, channel) in enumerate(
+                            (
+                                (red_path, 0),
+                                (green, 1),
+                                (green, 1),
+                                (blue_path, 2),
+                                (None, None),
+                                (None, None),
+                                (red, 0),
+                            )
+                        ):
+                            with self.subTest(frame=frame):
+                                if frame == 1:
+                                    viewer.set_rendering_paused(True)
+                                    frozen = viewer.get_frame().numpy().copy()
+                                viewer.begin_frame(frame / 60.0)
+                                if frame == 1:
+                                    with (
+                                        mock.patch("PIL.Image.Image.save", side_effect=OSError("disk full")),
+                                        self.assertWarnsRegex(newton.exceptions.NewtonWarning, "failed to export"),
+                                    ):
+                                        viewer.log_mesh("/left", left, indices, uvs=uvs, texture=texture)
+                                    # Retry the same image object after the export failure.
+                                viewer.log_mesh(
+                                    "/left",
+                                    left,
+                                    indices,
+                                    uvs=uvs,
+                                    texture=texture,
+                                    hidden=asynchronous,
+                                    roughness=0.1 if frame == 0 else None,
+                                )
+                                if asynchronous:
+                                    if frame == 0:
+                                        viewer.log_mesh(
+                                            "/left_alternate", left, indices, uvs=uvs, texture=red_path, hidden=True
+                                        )
+                                    count = 3 if frame == 0 else (0 if frame == 5 else 1)
+                                    viewer.log_instances(
+                                        "/left_copy",
+                                        "/left_alternate" if frame == 6 else "/left",
+                                        wp.array([wp.transform_identity()] * count, dtype=wp.transform),
+                                        None,
+                                        wp.array([[1, 1, 1]] * count, dtype=wp.vec3),
+                                        None,
+                                    )
+                                viewer.log_mesh("/right", right, indices, uvs=uvs, texture=red_path)
+                                viewer.end_frame()
+                                if frame == 0:
+                                    # Async rendering must display a frame before it can freeze one.
+                                    viewer.begin_frame(0.0)
+                                    viewer.end_frame()
+                                if frame == 1:
+                                    np.testing.assert_array_equal(viewer.get_frame().numpy(), frozen)
+                                    viewer.set_rendering_paused(False)
+                                    viewer.begin_frame(frame / 60.0)
+                                    viewer.end_frame()
+                                rgb = viewer.get_frame().numpy().astype(np.int32)
+                                for pixels, expected in ((rgb[:, :48], channel), (rgb[:, 48:], 0)):
+                                    if expected is None:
+                                        self.assertLess(np.max(np.ptp(pixels, axis=-1)), 30)
+                                        if frame == 4:
+                                            self.assertGreater(np.count_nonzero(pixels.max(axis=-1) > 80), 30)
+                                    else:
+                                        others = np.delete(pixels, expected, axis=-1).max(axis=-1)
+                                        self.assertGreater(np.count_nonzero(pixels[:, :, expected] > others + 40), 30)
+                    finally:
+                        viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_moving_scene_capture_stays_frozen_until_resume(self):
         """Freeze both modes and resume with the latest scene rather than a stale result."""
         builder = newton.ModelBuilder()
@@ -555,6 +671,72 @@ class TestViewerRTXRendering(unittest.TestCase):
                     self.assertFalse(np.array_equal(viewer.get_frame().numpy(), frozen))
                 finally:
                     viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_field_moves_and_hides(self):
+        """Render a Gaussian field natively and update its placement and visibility after startup."""
+        gaussian = newton.Gaussian(
+            [[0, 0, 1]], scales=[[0.3, 0.15, 0.15]], opacities=[0.99], sh_coeffs=[[2.0, -1.7, -1.7]]
+        )
+        viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=False, environment="none")
+        try:
+            viewer.set_camera(wp.vec3(0, -4, 1), pitch=0.0, yaw=90.0)
+            frame = 0
+
+            green = newton.Gaussian(
+                [[0, 0, 1]], scales=[[0.15, 0.15, 0.3]], opacities=[0.99], sh_coeffs=[[-1.7, 2.0, -1.7]]
+            )
+
+            def render(asset, offset, hidden=False):
+                nonlocal frame
+                # The renderer shows new geometry after a few frames.
+                for _ in range(6):
+                    viewer.begin_frame(frame / 60.0)
+                    viewer.log_gaussian("/toy", asset, wp.transform(wp.vec3(offset, 0, 0), wp.quat_identity()), hidden)
+                    viewer.log_gaussian("/other", green, wp.transform(wp.vec3(0, 0, 0.8), wp.quat_identity()))
+                    viewer.end_frame()
+                    frame += 1
+                return viewer.get_frame().numpy().astype(np.float32)
+
+            def colored(rgb, channel):
+                others = [c for c in range(3) if c != channel]
+                return (rgb[:, :, channel] > rgb[:, :, others[0]] + 30) & (
+                    rgb[:, :, channel] > rgb[:, :, others[1]] + 30
+                )
+
+            # The move and the hide keep the asset, so they go through the batched runtime writes; the
+            # last pose swaps in an equal but distinct asset, which replaces the runtime prim.
+            first = render(gaussian, -0.6)
+            moved = render(gaussian, 0.6)
+            hidden = render(gaussian, 0.6, hidden=True)
+            replaced = render(
+                newton.Gaussian(
+                    gaussian.positions, gaussian.rotations, gaussian.scales, gaussian.opacities, gaussian.sh_coeffs
+                ),
+                -0.6,
+            )
+            red_first, red_moved, red_hidden = colored(first, 0), colored(moved, 0), colored(hidden, 0)
+            self.assertGreater(np.count_nonzero(red_first), 5)
+            self.assertGreater(np.count_nonzero(red_moved), 5)
+            self.assertGreater(np.where(red_moved)[1].mean(), np.where(red_first)[1].mean() + 5)
+            # Nothing red remains at the field's first columns: the build-phase prim did not stay behind.
+            self.assertEqual(np.count_nonzero(red_moved[:, : np.where(red_first)[1].min() + 3]), 0)
+            self.assertLess(np.count_nonzero(red_hidden), 3)
+            self.assertGreater(np.count_nonzero(colored(replaced, 0)), 5)
+            self.assertLess(abs(np.where(colored(replaced, 0))[1].mean() - np.where(red_first)[1].mean()), 2)
+            for image in (first, moved, hidden, replaced):
+                self.assertGreater(np.count_nonzero(colored(image, 1)), 5)
+            blue = newton.Gaussian(
+                [[0, 0, 1]], scales=[[0.3, 0.15, 0.15]], opacities=[0.99], sh_coeffs=[[-1.7, -1.7, 2.0]]
+            )
+            viewer.set_rendering_paused(True)
+            np.testing.assert_array_equal(render(blue, -0.6), replaced)
+            viewer.set_rendering_paused(False)
+            resumed = render(blue, -0.6)
+            self.assertGreater(np.count_nonzero(colored(resumed, 2)), 5)
+            self.assertLess(np.count_nonzero(colored(resumed, 0)), 3)
+        finally:
+            viewer.close()
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_headless_frame_capture(self):
@@ -1046,6 +1228,7 @@ class TestViewerRTXMeshUpdates(unittest.TestCase):
         viewer._phase = viewer._PHASE_RENDER
         viewer._qualify = mock.Mock(side_effect=lambda name: name)
         viewer._mesh_prim_paths = {"/mesh": "/root/mesh"}
+        viewer._mesh_appearance = {}
         viewer._pending_mesh_points = {}
         viewer._pending_mesh_normals = {}
         viewer._pending_mesh_topology = {}
