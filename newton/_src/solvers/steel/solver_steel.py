@@ -7558,6 +7558,7 @@ class SolverSteel(SolverBase):
                 dim=model.articulation_count,
                 inputs=[
                     model.articulation_start,
+                    self._articulation_joint_end,
                     model.joint_type,
                     model.joint_child,
                     model.joint_qd_start,
@@ -7698,6 +7699,7 @@ class SolverSteel(SolverBase):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_H_rows,
                         model.joint_type,
                         model.joint_qd_start,
@@ -8638,6 +8640,7 @@ class SolverSteel(SolverBase):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_dof_start,
                         self._articulation_H_rows,
                         model.joint_type,
@@ -8711,6 +8714,7 @@ class SolverSteel(SolverBase):
                     dim=self._n_arts_by_size[size],
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_dof_start,
                         model.joint_type,
                         model.joint_q_start,
@@ -8924,6 +8928,7 @@ class SolverSteel(SolverBase):
                     dim=model.articulation_count,
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_dof_start,
                         self._articulation_H_rows,
                         model.joint_type,
@@ -8955,6 +8960,7 @@ class SolverSteel(SolverBase):
                     dim=self._n_arts_by_size[size],
                     inputs=[
                         model.articulation_start,
+                        self._articulation_joint_end,
                         self._articulation_dof_start,
                         model.joint_type,
                         model.joint_qd_start,

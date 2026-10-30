@@ -384,6 +384,7 @@ def flag_invalid_joint_friction(
 @wp.kernel
 def prescale_joint_velocity_limits(
     articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
     joint_type: wp.array[int],
     joint_child: wp.array[int],
     joint_qd_start: wp.array[int],
@@ -409,7 +410,7 @@ def prescale_joint_velocity_limits(
     if articulation_active[art] == 0:
         return
     joint_start = articulation_start[art]
-    joint_end = articulation_start[art + 1]
+    joint_end = articulation_joint_end[art]
 
     ratio = float(1.0)
     for j in range(joint_start, joint_end):
@@ -2421,6 +2422,7 @@ def compute_contact_spatial_force_from_impulses(
 def prepare_articulation_augmented_drives(
     articulation: int,
     articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
     articulation_H_rows: wp.array[int],
     joint_type: wp.array[int],
     joint_qd_start: wp.array[int],
@@ -2445,7 +2447,7 @@ def prepare_articulation_augmented_drives(
 ):
     """Prepare one articulation's implicit drive rows and explicit force."""
     joint_start = articulation_start[articulation]
-    joint_end = articulation_start[articulation + 1]
+    joint_end = articulation_joint_end[articulation]
     if reset_tau != 0:
         dof_start = joint_qd_start[joint_start]
         dof_end = dof_start + articulation_H_rows[articulation]
@@ -2503,6 +2505,7 @@ def prepare_articulation_augmented_drives(
 @wp.kernel(module=_INVERSE_DYNAMICS_KERNEL_MODULE, enable_backward=False)
 def eval_augmented_drives(
     articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
     articulation_H_rows: wp.array[int],
     joint_type: wp.array[int],
     joint_qd_start: wp.array[int],
@@ -2530,6 +2533,7 @@ def eval_augmented_drives(
     prepare_articulation_augmented_drives(
         wp.tid(),
         articulation_start,
+        articulation_joint_end,
         articulation_H_rows,
         joint_type,
         joint_qd_start,
@@ -2629,6 +2633,7 @@ def eval_rigid_tau_and_augmented_drives(
     prepare_articulation_augmented_drives(
         articulation,
         articulation_start,
+        articulation_joint_end,
         articulation_H_rows,
         joint_type,
         joint_qd_start,
@@ -3433,6 +3438,7 @@ def preelim_project_velocity_for_size(
 @wp.kernel
 def allocate_joint_velocity_limit_slots(
     articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
     articulation_dof_start: wp.array[int],
     articulation_H_rows: wp.array[int],
     joint_type: wp.array[int],
@@ -3504,7 +3510,7 @@ def allocate_joint_velocity_limit_slots(
         return
 
     joint_start = articulation_start[art]
-    joint_end = articulation_start[art + 1]
+    joint_end = articulation_joint_end[art]
 
     for j in range(joint_start, joint_end):
         jtype = joint_type[j]
@@ -3556,6 +3562,7 @@ def allocate_joint_velocity_limit_slots(
 @wp.kernel
 def populate_joint_velocity_limit_J_for_size(
     articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
     articulation_dof_start: wp.array[int],
     joint_type: wp.array[int],
     joint_qd_start: wp.array[int],
@@ -3592,7 +3599,7 @@ def populate_joint_velocity_limit_J_for_size(
     world = art_to_world[art]
     dof_start = articulation_dof_start[art]
 
-    for j in range(articulation_start[art], articulation_start[art + 1]):
+    for j in range(articulation_start[art], articulation_joint_end[art]):
         jtype = joint_type[j]
         if jtype != JointType.PRISMATIC and jtype != JointType.REVOLUTE and jtype != JointType.D6:
             continue
@@ -3627,6 +3634,7 @@ def populate_joint_velocity_limit_J_for_size(
 @wp.kernel
 def allocate_physx_drive_slots(
     articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
     articulation_dof_start: wp.array[int],
     articulation_H_rows: wp.array[int],
     joint_type: wp.array[int],
@@ -3655,7 +3663,7 @@ def allocate_physx_drive_slots(
     for d in range(articulation_H_rows[art]):
         drive_slot[dof_base + d] = -1
 
-    for j in range(articulation_start[art], articulation_start[art + 1]):
+    for j in range(articulation_start[art], articulation_joint_end[art]):
         jtype = joint_type[j]
         if jtype != JointType.PRISMATIC and jtype != JointType.REVOLUTE and jtype != JointType.D6:
             continue
@@ -3674,6 +3682,7 @@ def allocate_physx_drive_slots(
 @wp.kernel
 def populate_physx_drive_J_for_size(
     articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
     articulation_dof_start: wp.array[int],
     joint_type: wp.array[int],
     joint_q_start: wp.array[int],
@@ -3717,7 +3726,7 @@ def populate_physx_drive_J_for_size(
     world = art_to_world[art]
     dof_start = articulation_dof_start[art]
 
-    for j in range(articulation_start[art], articulation_start[art + 1]):
+    for j in range(articulation_start[art], articulation_joint_end[art]):
         jtype = joint_type[j]
         if jtype != JointType.PRISMATIC and jtype != JointType.REVOLUTE and jtype != JointType.D6:
             continue

@@ -3581,6 +3581,34 @@ def test_revolute_loop_warns_about_ignored_limits_and_drives(test, device):
         SolverSteel(_build_world_hinged_swing(test, "revolute")[0].finalize(device=device))
 
 
+def test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows(test, device):
+    """Give a loop-closing REVOLUTE joint's DOF no drive or velocity-limit row; the steps match a run without them."""
+
+    def run(gain=False, **solver_options):
+        builder, joint = _build_square_loop("revolute")
+        if gain:
+            builder.joint_target_ke[builder.joint_qd_start[joint]] = 50.0
+            builder.joint_target_kd[builder.joint_qd_start[joint]] = 1.0
+            builder.joint_target_q[builder.joint_q_start[joint]] = 0.3
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
+            _, _, poses, solver = _run_closure(
+                builder, joint, device, steps=100, solve_mode="matrix_free", **solver_options
+            )
+        return poses, int(solver._constraint_count.numpy()[0])
+
+    reference, reference_rows = run(drive_mode="rows")
+    with test.subTest("drive rows"):
+        poses, rows = run(gain=True, drive_mode="rows")
+        test.assertEqual(rows, reference_rows)
+        np.testing.assert_array_equal(poses, reference)
+    with test.subTest("velocity-limit rows"):
+        poses, rows = run(enable_joint_velocity_limits=True)
+        # The four tree hinges take two rows each, the loop hinge none.
+        test.assertEqual(rows, reference_rows + 8)
+        np.testing.assert_array_equal(poses, reference)
+
+
 class TestSteelRevoluteLoop(unittest.TestCase):
     pass
 
@@ -3593,6 +3621,7 @@ for _name in (
     "test_revolute_loop_axis_edit_applies_between_replays",
     "test_revolute_loop_overflow_drops_all_five_rows",
     "test_revolute_loop_warns_about_ignored_limits_and_drives",
+    "test_revolute_loop_dof_gets_no_drive_or_velocity_limit_rows",
 ):
     add_function_test(TestSteelRevoluteLoop, _name, globals()[_name], devices=get_cuda_test_devices())
 
