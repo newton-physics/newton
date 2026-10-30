@@ -354,7 +354,7 @@ def prepare_torsion_rows(solver, state, augmented_state, contacts):
     membership = np.full(solver._contact_torsion_group.shape, -1, dtype=np.int32)
     fields = {
         key: getattr(solver, f"_{key}").numpy()
-        for key in ("row_type", "row_parent", "row_mu", "phi", "target_velocity", "row_restitution")
+        for key in ("row_type", "row_parent", "row_mu", "phi", "target_velocity", "row_rebound_velocity")
     }
     jacobians = {size: array.numpy() for size, array in solver._J_by_size.items()}
     body_joint = solver._body_to_joint.numpy()
@@ -506,12 +506,7 @@ def torque_sweep_source(dofs):
                 float dot = 0.0f;
                 for (int d = lane; d < {dofs}; d += 32)
                     dot += J_world.data[jy_world_base + spin * {dofs} + d] * s_v[d];
-                dot += __shfl_down_sync(MASK, dot, 16);
-                dot += __shfl_down_sync(MASK, dot, 8);
-                dot += __shfl_down_sync(MASK, dot, 4);
-                dot += __shfl_down_sync(MASK, dot, 2);
-                dot += __shfl_down_sync(MASK, dot, 1);
-                float residual = __shfl_sync(MASK, dot, 0) + rhs_bias.data[off_dense + spin];
+                float residual = warp_sum(dot) + rhs_bias.data[off_dense + spin];
                 float old = s_lam_dense[spin];
                 float diagonal = world_diag.data[off_dense + spin];
                 float trial = diagonal > 0.0f ? old - omega * residual / diagonal : 0.0f;

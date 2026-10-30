@@ -1022,6 +1022,7 @@ class TestPreeliminationKernels(unittest.TestCase):
         J = wp.zeros((1, 3, 1), dtype=float, device=device)
         phi = wp.zeros((1, 3), dtype=float, device=device)
         target = wp.zeros((1, 3), dtype=float, device=device)
+        inv_norm = wp.zeros((1, 3), dtype=float, device=device)
         # A world anchor and one rotational child DOF with a 2 mm lever arm.
         wp.launch(
             steel_kernels.populate_connect_J_for_size,
@@ -1058,12 +1059,14 @@ class TestPreeliminationKernels(unittest.TestCase):
                 wp.zeros((1, 3), dtype=float, device=device),
                 phi,
                 target,
+                inv_norm,
             ],
             device=device,
         )
         # Unnormalized, the row would be J = -0.002 with phi = 0.001.
         self.assertAlmostEqual(float(J.numpy()[0, 1, 0]), -1.0, places=5)
         self.assertAlmostEqual(float(phi.numpy()[0, 1]), 0.5, places=5)
+        self.assertAlmostEqual(float(inv_norm.numpy()[0, 1]), 500.0, delta=1.0e-2)
 
     def test_regularized_projection_leaves_documented_residual(self):
         """Leave the residual ``R (S + R)^-1 (J_B v + b_B)`` of the regularized block factor.
@@ -3072,9 +3075,50 @@ def _stage1_motion(solver, model, state):
 
 def test_multi_angular_d6_motion_matches_fk(test, device, **solver_kwargs):
     """Match eval_fk's body velocity and its time derivative through multi-angular D6 joints."""
-    model = _build_branched_d6(device)
     q = np.array((0.25, 0.4, -0.5, 0.6, 0.7, -0.35))
     qd = np.array((0.9, 1.1, -0.9, 1.3, 1.4, -1.2))
+    _check_motion_matches_fk(test, _build_branched_d6(device), q, qd, **solver_kwargs)
+
+
+def test_translated_d6_motion_matches_fk(test, device, **solver_kwargs):
+    """Rotate D6 angular axes about the joint origin as translated by the D6's own linear DOFs."""
+    q = np.array((0.8, -0.3, 0.4, 0.6, 0.5, 0.3, -0.4, 0.7, -0.2, 0.35, 0.5, -0.6))
+    qd = np.array((0.7, -0.5, 0.3, 1.2, -0.6, 0.9, 1.1, -0.8, 0.4, -0.7, 1.3, 0.6))
+    _check_motion_matches_fk(test, _build_translated_d6(device), q, qd, **solver_kwargs)
+
+
+def test_translated_d6_spin_holds_position(test, device, solver_cls=SolverSteel, **solver_kwargs):
+    """Spin a D6-rooted box in place one meter from its joint anchor without drifting or gaining energy."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    axis = newton.ModelBuilder.JointDofConfig
+    body = builder.add_link()
+    builder.add_shape_box(body, hx=0.05, hy=0.05, hz=0.05)
+    joint = builder.add_joint_d6(
+        -1,
+        body,
+        linear_axes=[axis(axis=a) for a in newton.Axis],
+        angular_axes=[axis(axis=newton.Axis.Y)],
+        parent_xform=wp.transform((0.0, 0.0, 0.5), wp.quat_identity()),
+    )
+    builder.add_articulation([joint])
+    builder.joint_q[0] = 1.0
+    builder.joint_qd[3] = 6.0
+    model = builder.finalize(device=device)
+    solver = solver_cls(model, **solver_kwargs)
+    state_0, state_1, control = model.state(), model.state(), model.control()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    substeps = 20 if solver_cls is SolverFeatherstone else 1
+    for _ in range(60 * substeps):
+        solver.step(state_0, state_1, control, None, 1.0 / (240.0 * substeps))
+        state_0, state_1 = state_1, state_0
+    body_q = state_0.body_q.numpy()[body]
+    np.testing.assert_allclose(body_q[:3], (1.0, 0.0, 0.5), rtol=0.0, atol=1e-3)
+    # 0.25 s at 6 rad/s turns the box 1.5 rad about y.
+    np.testing.assert_allclose(body_q[3:], (0.0, np.sin(0.75), 0.0, np.cos(0.75)), rtol=0.0, atol=1e-4)
+    np.testing.assert_allclose(state_0.body_qd.numpy()[body], (0.0, 0.0, 0.0, 0.0, 6.0, 0.0), rtol=0.0, atol=1e-2)
+
+
+def _check_motion_matches_fk(test, model, q, qd, **solver_kwargs):
     solver = SolverSteel(model, **solver_kwargs)
     test.assertEqual(solver._tree_plan is not None, solver_kwargs.get("parallel_tree", False))
     origin, v_s, a_s, _ = _stage1_motion(solver, model, _fk_state(model, q, qd))
@@ -3084,6 +3128,41 @@ def test_multi_angular_d6_motion_matches_fk(test, device, **solver_kwargs):
     forward = _spatial_velocity_at(model, _fk_state(model, q + h * qd, qd), origin)
     backward = _spatial_velocity_at(model, _fk_state(model, q - h * qd, qd), origin)
     np.testing.assert_allclose(a_s, (forward - backward) / (2.0 * h), rtol=0.0, atol=2e-3)
+
+
+def _build_translated_d6(device):
+    """Floating D6 root (XYZ + pitch) carrying D6 children that mix linear and one to three angular axes."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+    inertia = wp.mat33(0.02, 0.0, 0.0, 0.0, 0.03, 0.0, 0.0, 0.0, 0.04)
+    root = builder.add_link(mass=1.0, com=wp.vec3(*COM_LOCAL), inertia=inertia)
+    gimbal = builder.add_link(mass=0.7, com=wp.vec3(0.1, 0.04, -0.05), inertia=inertia)
+    slider = builder.add_link(mass=0.5, com=wp.vec3(-0.02, 0.08, 0.03), inertia=inertia)
+    joints = [
+        builder.add_joint_d6(
+            -1,
+            root,
+            linear_axes=[axis(axis=a) for a in newton.Axis],
+            angular_axes=[axis(axis=newton.Axis.Y)],
+            parent_xform=wp.transform((0.3, 0.1, 0.5), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3)),
+        ),
+        builder.add_joint_d6(
+            root,
+            gimbal,
+            linear_axes=[axis(axis=newton.Axis.X)],
+            angular_axes=[axis(axis=newton.Axis.X), axis(axis=newton.Axis.Y), axis(axis=newton.Axis.Z)],
+            parent_xform=wp.transform((0.2, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)),
+        ),
+        builder.add_joint_d6(
+            root,
+            slider,
+            linear_axes=[axis(axis=newton.Axis.Y), axis(axis=newton.Axis.Z)],
+            angular_axes=[axis(axis=newton.Axis.Y), axis(axis=newton.Axis.Z)],
+            parent_xform=wp.transform((-0.2, 0.1, 0.0), wp.quat_identity()),
+        ),
+    ]
+    builder.add_articulation(joints)
+    return builder.finalize(device=device)
 
 
 def test_free_and_distance_roots_use_com_twists(test, device, **solver_kwargs):
@@ -3116,10 +3195,27 @@ class TestSteelJointMotion(unittest.TestCase):
 
 for _name, _func in (
     ("test_multi_angular_d6_motion_matches_fk", test_multi_angular_d6_motion_matches_fk),
+    ("test_translated_d6_motion_matches_fk", test_translated_d6_motion_matches_fk),
+    ("test_translated_d6_spin_holds_position", test_translated_d6_spin_holds_position),
     ("test_free_and_distance_roots_use_com_twists", test_free_and_distance_roots_use_com_twists),
 ):
     add_function_test(TestSteelJointMotion, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split")
     add_function_test(TestSteelJointMotion, _name, _func, devices=get_cuda_test_devices(), solve_mode="matrix_free")
+add_function_test(
+    TestSteelJointMotion,
+    "test_translated_d6_spin_holds_position_propagation",
+    test_translated_d6_spin_holds_position,
+    devices=get_cuda_test_devices(),
+    solve_mode="matrix_free",
+    articulated_contact_response="propagation",
+)
+add_function_test(
+    TestSteelJointMotion,
+    "test_translated_d6_spin_holds_position_featherstone",
+    test_translated_d6_spin_holds_position,
+    devices=get_test_devices(),
+    solver_cls=SolverFeatherstone,
+)
 add_function_test(
     TestSteelJointMotion,
     "test_multi_angular_d6_motion_matches_fk_parallel_tree",
