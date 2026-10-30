@@ -10,6 +10,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.exceptions import NewtonDeprecationWarning
 from newton.solvers import SolverImplicitMPM
 from newton.tests.unittest_utils import USD_AVAILABLE
 
@@ -86,7 +87,8 @@ class TestImportUsdMPMFixtures(unittest.TestCase):
             atol=1.0e-7,
         )
         np.testing.assert_allclose(builder.particle_radius, [0.05, 0.1, 0.1], rtol=1.0e-6)
-        np.testing.assert_allclose(builder.particle_mass, [2.0, 16.0, 8.0], rtol=1.0e-6)
+        # Sand's authored masses differ from its density-derived [2, 16] kg.
+        np.testing.assert_allclose(builder.particle_mass, [3.0, 12.0, 8.0], rtol=1.0e-6)
         np.testing.assert_allclose(np.asarray(builder.gravity), [0.0, 0.0, -9.81], rtol=1.0e-6)
         self.assertNotIn("mpm_config", result)
         self.assertEqual(result["particle_scene_path"], "/World/PhysicsScene")
@@ -134,6 +136,7 @@ class TestImportUsdMPM(unittest.TestCase):
         widths=None,
         widths_interpolation=None,
         masses=None,
+        deprecated_masses=None,
         simulation_owner=None,
         body_prim=None,
     ):
@@ -152,8 +155,12 @@ class TestImportUsdMPM(unittest.TestCase):
                 points.SetWidthsInterpolation(widths_interpolation)
             elif len(widths) == 1:
                 points.SetWidthsInterpolation(UsdGeom.Tokens.constant)
+        # Create the mass arrays explicitly so authoring does not depend on
+        # which installed schema version defines each name.
         if masses is not None:
-            points.GetPrim().GetAttribute("physics:masses").Set(masses)
+            points.GetPrim().CreateAttribute("newton:masses", Sdf.ValueTypeNames.FloatArray).Set(masses)
+        if deprecated_masses is not None:
+            points.GetPrim().CreateAttribute("physics:masses", Sdf.ValueTypeNames.FloatArray).Set(deprecated_masses)
         if simulation_owner is not None:
             relationship = body_prim.GetRelationship("physics:simulationOwner")
             if not relationship:
@@ -919,6 +926,103 @@ class TestImportUsdMPM(unittest.TestCase):
 
         np.testing.assert_allclose(builder.particle_mass, [2.0, 3.0], rtol=1.0e-6)
 
+    @staticmethod
+    def _add_usd_recording_deprecations(builder, stage):
+        """Import a stage and return the messages of emitted Newton deprecation warnings."""
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.filterwarnings("always", category=NewtonDeprecationWarning)
+            builder.add_usd(stage, load_visual_shapes=False)
+        return [str(w.message) for w in caught if issubclass(w.category, NewtonDeprecationWarning)]
+
+    def test_reads_newton_masses_without_deprecation_warning(self):
+        """Use newton:masses as per-point masses without a deprecation warning."""
+        from pxr import Gf, UsdPhysics
+
+        stage, _scene = self._stage()
+        UsdPhysics.SetStageKilogramsPerUnit(stage, 0.001)
+        points = self._points(
+            stage,
+            "/World/Sand",
+            [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)],
+            widths=[0.1],
+            masses=[2000.0, 3000.0],
+        )
+        self._bind(points, self._material(stage, "/World/SandMaterial", **{"physics:density": 1.0e6}))
+
+        builder = newton.ModelBuilder()
+        messages = self._add_usd_recording_deprecations(builder, stage)
+
+        np.testing.assert_allclose(builder.particle_mass, [2.0, 3.0], rtol=1.0e-6)
+        self.assertEqual([m for m in messages if "masses" in m], [])
+
+    def test_falls_back_to_deprecated_physics_masses_with_warning(self):
+        """Use physics:masses when newton:masses is unauthored and warn to rename it."""
+        from pxr import Gf, UsdPhysics
+
+        stage, _scene = self._stage()
+        UsdPhysics.SetStageKilogramsPerUnit(stage, 0.001)
+        points = self._points(
+            stage,
+            "/World/Sand",
+            [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)],
+            widths=[0.1],
+            deprecated_masses=[2000.0, 3000.0],
+        )
+        self._bind(points, self._material(stage, "/World/SandMaterial", **{"physics:density": 1.0e6}))
+
+        builder = newton.ModelBuilder()
+        messages = self._add_usd_recording_deprecations(builder, stage)
+
+        np.testing.assert_allclose(builder.particle_mass, [2.0, 3.0], rtol=1.0e-6)
+        self.assertEqual(
+            messages,
+            [
+                "/World/Sand: 'physics:masses' on NewtonPointsDeformableSimAPI Points is deprecated; "
+                "rename it to 'newton:masses'."
+            ],
+        )
+
+    def test_prefers_newton_masses_over_deprecated_physics_masses(self):
+        """Use newton:masses over an ignored physics:masses and warn to remove the old name."""
+        from pxr import Gf
+
+        stage, _scene = self._stage()
+        self._points(
+            stage,
+            "/World/Sand",
+            [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)],
+            widths=[0.1],
+            masses=[2.0, 3.0],
+            # A malformed deprecated array proves it is ignored rather than validated.
+            deprecated_masses=[-1.0],
+        )
+
+        builder = newton.ModelBuilder()
+        messages = self._add_usd_recording_deprecations(builder, stage)
+
+        np.testing.assert_allclose(builder.particle_mass, [2.0, 3.0], rtol=1.0e-6)
+        self.assertEqual(
+            messages,
+            [
+                "/World/Sand: 'physics:masses' on NewtonPointsDeformableSimAPI Points is deprecated and "
+                "ignored because 'newton:masses' is authored; remove 'physics:masses'."
+            ],
+        )
+
+    def test_unauthored_particle_masses_use_density_without_warning(self):
+        """Derive masses from density without a deprecation warning when no masses are authored."""
+        from pxr import Gf
+
+        stage, _scene = self._stage()
+        points = self._points(stage, "/World/Sand", [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)], widths=[0.1, 0.2])
+        self._bind(points, self._material(stage, "/World/SandMaterial", **{"physics:density": 1000.0}))
+
+        builder = newton.ModelBuilder()
+        messages = self._add_usd_recording_deprecations(builder, stage)
+
+        np.testing.assert_allclose(builder.particle_mass, [1.0, 8.0], rtol=1.0e-6)
+        self.assertEqual([m for m in messages if "masses" in m], [])
+
     def test_resolves_deformable_body_mass_and_density(self):
         """Apply body density, then distribute an optional body-total mass."""
         from pxr import Gf, UsdGeom, UsdPhysics
@@ -969,23 +1073,26 @@ class TestImportUsdMPM(unittest.TestCase):
         """Reject malformed per-point masses before appending particles."""
         from pxr import Gf
 
-        for masses in ([1.0], [1.0, 0.0], [1.0, -1.0], [1.0, float("nan")]):
-            with self.subTest(masses=masses):
-                stage, _scene = self._stage()
-                self._points(
-                    stage,
-                    "/World/Sand",
-                    [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)],
-                    widths=[0.1],
-                    masses=masses,
-                )
-                builder = newton.ModelBuilder()
-                builder.add_particle(pos=wp.vec3(-1.0), vel=wp.vec3(), mass=1.0)
+        for attr_name, keyword in (("newton:masses", "masses"), ("physics:masses", "deprecated_masses")):
+            for masses in ([1.0], [1.0, 0.0], [1.0, -1.0], [1.0, float("nan")]):
+                with self.subTest(attr_name=attr_name, masses=masses):
+                    stage, _scene = self._stage()
+                    self._points(
+                        stage,
+                        "/World/Sand",
+                        [Gf.Vec3f(), Gf.Vec3f(1.0, 0.0, 0.0)],
+                        widths=[0.1],
+                        **{keyword: masses},
+                    )
+                    builder = newton.ModelBuilder()
+                    builder.add_particle(pos=wp.vec3(-1.0), vel=wp.vec3(), mass=1.0)
 
-                with self.assertRaisesRegex(ValueError, "physics:masses"):
-                    builder.add_usd(stage, load_visual_shapes=False)
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", NewtonDeprecationWarning)
+                        with self.assertRaisesRegex(ValueError, f"{attr_name} must contain"):
+                            builder.add_usd(stage, load_visual_shapes=False)
 
-                self.assertEqual(builder.particle_count, 1)
+                    self.assertEqual(builder.particle_count, 1)
 
     def test_accepts_standard_deformable_material_elasticity(self):
         """Read canonical elasticity from recognized standard material APIs."""

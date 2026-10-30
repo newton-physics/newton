@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import math
 import re
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -14,8 +15,12 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim.builder import ModelBuilder
 from . import utils as usd
+
+_PARTICLE_MASSES_ATTR = "newton:masses"
+_DEPRECATED_PARTICLE_MASSES_ATTR = "physics:masses"
 
 _MATERIAL_ATTRIBUTES = {
     "newton:mpm:youngsModulus": ("mpm:young_modulus", "pressure"),
@@ -303,23 +308,48 @@ def _read_material_prim(
 
 
 def _read_particle_masses(prim, count: int, path: str, mass_unit: float) -> np.ndarray | None:
-    """Read authored per-point masses and convert them to kilograms."""
-    attr = prim.GetAttribute("physics:masses")
-    if not attr or not attr.HasAuthoredValue():
+    """Read authored per-point masses and convert them to kilograms.
+
+    ``newton:masses`` is read first. The deprecated ``physics:masses`` name is
+    read only when ``newton:masses`` is unauthored, and warns whenever authored.
+    """
+    attr = prim.GetAttribute(_PARTICLE_MASSES_ATTR)
+    deprecated_attr = prim.GetAttribute(_DEPRECATED_PARTICLE_MASSES_ATTR)
+    has_deprecated = bool(deprecated_attr) and deprecated_attr.HasAuthoredValue()
+    if attr and attr.HasAuthoredValue():
+        name = _PARTICLE_MASSES_ATTR
+        if has_deprecated:
+            warnings.warn(
+                f"{path}: '{_DEPRECATED_PARTICLE_MASSES_ATTR}' on NewtonPointsDeformableSimAPI Points is "
+                f"deprecated and ignored because '{_PARTICLE_MASSES_ATTR}' is authored; "
+                f"remove '{_DEPRECATED_PARTICLE_MASSES_ATTR}'.",
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
+    elif has_deprecated:
+        attr = deprecated_attr
+        name = _DEPRECATED_PARTICLE_MASSES_ATTR
+        warnings.warn(
+            f"{path}: '{_DEPRECATED_PARTICLE_MASSES_ATTR}' on NewtonPointsDeformableSimAPI Points is "
+            f"deprecated; rename it to '{_PARTICLE_MASSES_ATTR}'.",
+            NewtonDeprecationWarning,
+            stacklevel=2,
+        )
+    else:
         return None
     value = attr.Get()
     try:
         masses = np.asarray(value, dtype=np.float64).reshape(-1)
     except (TypeError, ValueError) as error:
-        raise ValueError(f"{path}: physics:masses must contain numeric values, got {value!r}.") from error
+        raise ValueError(f"{path}: {name} must contain numeric values, got {value!r}.") from error
     if masses.size != count:
-        raise ValueError(f"{path}: physics:masses must contain {count} values, got {masses.size}.")
+        raise ValueError(f"{path}: {name} must contain {count} values, got {masses.size}.")
     if not np.isfinite(masses).all() or np.any(masses <= 0.0):
-        raise ValueError(f"{path}: physics:masses must contain only finite positive values.")
+        raise ValueError(f"{path}: {name} must contain only finite positive values.")
     with np.errstate(invalid="ignore", over="ignore", under="ignore"):
         converted = masses * np.float64(mass_unit)
     if not np.isfinite(converted).all() or np.any((masses != 0.0) & (converted == 0.0)):
-        raise ValueError(f"{path}: physics:masses do not convert to finite, representable SI values.")
+        raise ValueError(f"{path}: {name} do not convert to finite, representable SI values.")
     return converted
 
 
