@@ -104,6 +104,9 @@ class TestRenderFPSCLI(unittest.TestCase):
             def should_step(self):
                 raise AssertionError("idle branch should skip stepping")
 
+            def register_ui_callback(self, callback: object, position: str = "side") -> None:
+                """Advertise the interactive UI capability exercised by this test."""
+
             def close(self):
                 self.closed = True
 

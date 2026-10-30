@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
-import io
+import logging
 import os
 import sys
 import warnings
@@ -12,9 +12,11 @@ import warp as wp
 
 from newton import Mesh
 
+from ...exceptions import NewtonWarning
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from ..utils import OPAQUE_OPACITY_THRESHOLD
+from .icon import set_window_icon
 from .shaders import (
     FrameShader,
     OITResolveShader,
@@ -25,6 +27,8 @@ from .shaders import (
     ShaderSky,
     ShadowShader,
 )
+
+logger = logging.getLogger(__name__)
 
 ENABLE_GL_CHECKS = False
 _CUDA_INTEROP_WARNINGS: set[str] = set()
@@ -44,7 +48,7 @@ def _register_cuda_gl_buffer(buffer, device):
         if "unavailable" not in _CUDA_INTEROP_WARNINGS:
             warnings.warn(
                 "CUDA-OpenGL interoperability is unavailable; using host buffer uploads.",
-                RuntimeWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
             _CUDA_INTEROP_WARNINGS.add("unavailable")
@@ -71,8 +75,7 @@ def check_gl_error():
         import traceback  # noqa: PLC0415
 
         stack = traceback.format_stack()
-        print(f"OpenGL error: {error_name} ({error:#x})")
-        print(f"Called from: {''.join(stack[-2:-1])}")
+        logger.error("OpenGL error: %s (%#x)\nCalled from: %s", error_name, error, "".join(stack[-2:-1]))
 
 
 def _upload_texture_from_file(gl, texture_image: np.ndarray) -> int:
@@ -180,6 +183,8 @@ def fill_line_vertex_data(
 class MeshGL:
     """Encapsulates mesh data and OpenGL buffers for a shape."""
 
+    _DEFAULT_COLOR = (0.7, 0.5, 0.3)
+
     def __init__(
         self,
         num_points,
@@ -209,7 +214,9 @@ class MeshGL:
         self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
         self.texture_id = None
+        self._texture_source = None
         self.opacity = 1.0
+        self._capsule_instancing = False
 
         # Set up vertex attributes in the packed format the shaders expect
         self.vertex_byte_size = 12 + 12 + 8
@@ -268,7 +275,8 @@ class MeshGL:
         gl.glBindVertexArray(0)
 
         # Per-mesh albedo and material (applied in render()).
-        self.color = (0.7, 0.5, 0.3)
+        self.color = self._DEFAULT_COLOR
+        self._color_is_default = True
         self.material = (0.5, 0.0, 0.0, 0.0)
 
         self.vertex_cuda_buffer = None
@@ -300,7 +308,7 @@ class MeshGL:
             # Ignore any errors if the GL context has already been torn down
             pass
 
-    def update(self, points, indices, normals, uvs, texture=None, opacity=None):
+    def update(self, points, indices, normals, uvs, texture=None, opacity=None, *, reuse_texture=False):
         """Update vertex positions in the VBO.
 
         Args:
@@ -375,7 +383,7 @@ class MeshGL:
             else:
                 gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
-        self.update_texture(texture)
+        self.update_texture(texture, reuse_texture=reuse_texture)
 
     def recompute_normals(self):
         if self._points is None or self.indices is None:
@@ -389,7 +397,11 @@ class MeshGL:
             device=self.device,
         )
 
-    def update_texture(self, texture=None):
+    def update_texture(self, texture=None, *, reuse_texture=False):
+        # Only immutable model visuals opt in; ordinary log_mesh calls can
+        # mutate an image in place and must upload it again.
+        if reuse_texture and texture is self._texture_source:
+            return
         gl = RendererGL.gl
         texture_image = None
         if texture is not None:
@@ -404,6 +416,7 @@ class MeshGL:
                 except Exception:
                     pass
                 self.texture_id = None
+            self._texture_source = texture
             return
 
         if self.texture_id is not None:
@@ -413,10 +426,12 @@ class MeshGL:
                 pass
             self.texture_id = None
 
+        self._texture_source = None
         texture_id = _upload_texture_from_file(gl, texture_image)
-        if not texture_id:
-            return
-        self.texture_id = texture_id
+        if texture_id:
+            self.texture_id = texture_id
+        # Cache deterministic rejection, but leave exceptions retryable.
+        self._texture_source = texture
 
     def render(self):
         if not self.hidden:
@@ -439,6 +454,7 @@ class MeshGL:
 
             gl.glBindVertexArray(self.vao)
             gl.glVertexAttrib1f(9, self.opacity)
+            gl.glVertexAttrib1f(10, 0.0)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
             gl.glBindVertexArray(0)
 
@@ -1091,6 +1107,7 @@ class MeshInstancerGL:
             gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
         gl.glBindVertexArray(self.vao)
+        gl.glVertexAttrib1f(10, float(self.mesh._capsule_instancing))
         gl.glDrawElementsInstanced(
             gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
         )
@@ -1202,7 +1219,7 @@ class RendererGL:
             # remember sample count for later (e.g., resolving FBO)
             self.msaa_samples = 4
         except pyglet.window.NoSuchConfigException:
-            print("Warning: Could not get MSAA config, falling back to non-AA.")
+            logger.warning("Could not get MSAA config, falling back to non-AA.")
             self.window = pyglet.window.Window(
                 width=screen_width,
                 height=screen_height,
@@ -1213,7 +1230,7 @@ class RendererGL:
             )
             self.msaa_samples = 0
 
-        self._set_icon()
+        set_window_icon(self.window)
 
         # Pyglet on Windows 8+ (where _always_dwm=True) disables the GL
         # swap interval to avoid double-syncing with DWM, but then also
@@ -1231,6 +1248,8 @@ class RendererGL:
         else:
             self.headless = headless
         self.app = pyglet.app
+        # Closing the last window sets pyglet's process-wide exit flag.
+        self.app.event_loop.has_exit = False
 
         # making window current opengl rendering context
         self._make_current()
@@ -1486,6 +1505,8 @@ class RendererGL:
         texture_id: int | None,
         texture_width: int = 0,
         texture_height: int = 0,
+        *,
+        flip_y: bool = True,
     ):
         """Draw a texture to the frame buffer without rendering the 3D scene.
 
@@ -1493,6 +1514,7 @@ class RendererGL:
             texture_id: OpenGL texture id to draw, or ``None`` to only clear.
             texture_width: Source texture width in pixels.
             texture_height: Source texture height in pixels.
+            flip_y: Whether the source stores its top row first.
         """
         gl = RendererGL.gl
         self._make_current()
@@ -1525,7 +1547,7 @@ class RendererGL:
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id))
             with self._frame_shader:
-                self._frame_shader.update(0, flip_y=True)
+                self._frame_shader.update(0, flip_y=flip_y)
                 gl.glBindVertexArray(self._frame_vao)
                 gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
                 gl.glBindVertexArray(0)
@@ -1852,7 +1874,7 @@ class RendererGL:
             )
 
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-                print("Framebuffer is not complete!", flush=True)
+                logger.error("Framebuffer is not complete!")
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
                 sys.exit(1)
 
@@ -1909,7 +1931,7 @@ class RendererGL:
             )
 
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-                print("Warning: MSAA framebuffer incomplete, disabling MSAA.")
+                logger.warning("MSAA framebuffer incomplete, disabling MSAA.")
                 self.msaa_samples = 0
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
@@ -1939,6 +1961,7 @@ class RendererGL:
                 "ViewerGL: weighted order-independent transparency is unavailable on this GL context "
                 "(requires independent blending and a float OIT framebuffer). Falling back to unsorted "
                 "alpha blending, so overlapping transparent surfaces may blend in the wrong order.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return self._oit_supported
@@ -2156,7 +2179,6 @@ class RendererGL:
             diffuse_scale=self.diffuse_scale,
             specular_scale=self.specular_scale,
             spotlight_enabled=self.spotlight_enabled,
-            shadow_extents=self.shadow_extents,
             exposure=self.exposure,
             oit_depth_reference=self.camera.pivot_distance,
         )
@@ -2466,27 +2488,3 @@ class RendererGL:
             # The window could be in the process of being closed, in which case
             # its corresponding context might have been destroyed and set to `None`.
             pass
-
-    def _set_icon(self):
-        import pyglet
-
-        def load_icon(filename):
-            filename = os.path.join(os.path.dirname(__file__), filename)
-
-            if not os.path.exists(filename):
-                raise FileNotFoundError(
-                    f"Error: Icon file '{filename}' not found. Please run the 'generate_icons.py' script first."
-                )
-
-            with open(filename, "rb") as f:
-                icon_bytes = f.read()
-
-            icon_stream = io.BytesIO(icon_bytes)
-            icon = pyglet.image.load(filename=filename, file=icon_stream)
-
-            return icon
-
-        icons = [load_icon("icon_16.png"), load_icon("icon_32.png"), load_icon("icon_64.png")]
-
-        # 5. Create the window and set the icon
-        self.window.set_icon(*icons)

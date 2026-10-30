@@ -135,7 +135,7 @@ applies to the project.
   layers.
 - **Supply-chain boundary:** Source control, continuous integration,
   third-party actions, package registries, and release automation determine what
-  users actually install. Three surfaces in `.github/workflows/` carry
+  users actually install. The following surfaces in `.github/workflows/` carry
   privileges beyond an ordinary build:
   - Tag-triggered release automation publishes to a public package index using
     a short-lived OIDC token rather than a stored registry credential, gated by
@@ -146,6 +146,21 @@ applies to the project.
   - Continuous integration authenticates to a cloud provider through OIDC to
     provision ephemeral self-hosted GPU runners, which then execute repository
     code on infrastructure the project controls.
+  - Opt-in maintainer delegated approval handles PR comments with a dedicated
+    GitHub App credential. It allows an active maintainer other than the PR
+    author to attest to an exact head in place of independent review. Changes to
+    the workflow and explicitly listed tooling/policy paths are excluded; other
+    configuration changes remain eligible at maintainer discretion. It runs trusted
+    default-branch code with the runner's isolated system Python; repository
+    environments, configuration, and imports must not control its execution.
+    The App key belongs in a branch-restricted Actions environment, and every
+    workflow able to access that environment is part of its trust boundary.
+    The App must have no ruleset bypass; required reviews, CODEOWNERS, checks,
+    and the merge queue remain enforced by GitHub. Keep this feature disabled
+    until equivalent sandbox protections demonstrate that stale approvals and
+    concurrent pushes cannot admit an unreviewed head. Setup, limitations, and
+    recovery are documented in the
+    [maintainer approval guide](.github/maintainer-approval.md).
 
 ### Threat Model
 
@@ -215,14 +230,17 @@ Newton's primary threat categories are:
 
 ## Deployment and Integration Guidance
 
-- **Treat every serialized policy and checkpoint as executable code.** Newton's
-  PyTorch integration loads exported programs (`.pt2`), TorchScript modules, and
-  pickle-based checkpoints (`.pt`, `.pth`). PyTorch documents
-  `torch.export.load()` as pickle-based and warns against loading data from an
-  untrusted source, and the same holds for `torch.jit.load()` and
-  `torch.load(..., weights_only=False)`.
-  Newton's preference for newer formats is about compatibility and maintenance,
-  not security. Do not load any of these formats from an untrusted source.
+- **Treat every serialized policy and checkpoint as executable code.** Neural
+  drives load `torch.export.save()` archives with `torch.export.load()` when
+  their paths end in `.pt2`, `.pt`, or `.pth`. Other PyTorch integrations use
+  `torch.jit.load()` or `torch.load(..., weights_only=False)`. PyTorch warns that
+  these loaders can execute code from untrusted data. Newton's preference for
+  newer formats is about compatibility and maintenance, not security.
+  A USD asset can supply a neural drive's `newton:modelPath`. USD import rejects
+  Torch checkpoint references by default; `allow_unsafe_torch_checkpoints=True`
+  on `ModelBuilder.add_usd()` or `parse_usd()` allows them for trusted assets.
+  When enabled, `ModelBuilder.finalize()` loads the referenced checkpoint. Do
+  not enable this option for an untrusted USD asset or checkpoint.
 - **Do not assume the browser viewer is restricted to loopback.**
   `ViewerViser` exposes no host or bind-address setting, so the underlying Viser
   server's default applies, and Viser binds its unauthenticated HTTP and

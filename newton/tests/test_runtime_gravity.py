@@ -25,17 +25,6 @@ class TestRuntimeGravity(unittest.TestCase):
         builder.begin_world()
         np.testing.assert_allclose(builder.world_gravity[0], (1.0, 2.0, 3.0))
 
-    def test_builder_scalar_gravity_deprecated(self):
-        with self.assertWarnsRegex(DeprecationWarning, "Scalar ModelBuilder.gravity"):
-            builder = newton.ModelBuilder(up_axis=newton.Axis.Y, gravity=-4.0)
-        with self.assertWarnsRegex(DeprecationWarning, "Scalar ModelBuilder.gravity"):
-            self.assertEqual(builder.gravity, -4.0)
-
-        with self.assertWarnsRegex(DeprecationWarning, "Scalar ModelBuilder.gravity"):
-            builder.gravity = -2.0
-        builder.begin_world()
-        np.testing.assert_allclose(builder.world_gravity[0], (0.0, -2.0, 0.0))
-
     def test_builder_default_gravity_follows_up_axis(self):
         builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
         builder.up_axis = newton.Axis.X
@@ -423,7 +412,7 @@ def test_per_world_gravity_bodies_mujoco_warp(test, device):
     model.set_gravity((0.0, 0.0, -4.905), world=1)
     model.set_gravity((0.0, 0.0, -9.81), world=2)
 
-    solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0)
+    solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False)
 
     # Verify opt.gravity was expanded and values propagated to MuJoCo Warp model
     test.assertEqual(solver.mjw_model.opt.gravity.shape, (3,))  # 3 worlds, dtype=vec3
@@ -798,8 +787,8 @@ solvers_particles = {
 solvers_bodies = {
     "xpbd": SolverXPBD,
     "semi_implicit": SolverSemiImplicit,
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, update_data_interval=0),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, update_data_interval=0),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False),
     "kamino": SolverKamino,
 }
 

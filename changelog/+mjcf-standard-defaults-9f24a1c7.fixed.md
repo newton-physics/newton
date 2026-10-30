@@ -1,0 +1,1 @@
+Remove support for nonstandard MJCF body defaults, body `class` attributes, contact-pair endpoints in defaults, and mesh reference poses in defaults. Author body properties, pair `geom1`/`geom2`, and mesh `refpos`/`refquat` on concrete elements; use body `childclass` for descendant defaults.

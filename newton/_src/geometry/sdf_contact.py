@@ -3,6 +3,7 @@
 
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from ..geometry.contact_data import SHAPE_PAIR_HFIELD_BIT, SHAPE_PAIR_INDEX_MASK, ContactData
@@ -185,11 +186,192 @@ def scale_sdf_result_to_world(
 
 
 @wp.func
+def _mesh_edge_is_boundary(mesh_id: wp.uint64, a: wp.vec3, b: wp.vec3) -> bool:
+    """Identify uncovered edge intervals, including split seams and duplicate indices."""
+    padding = 1.0e-6 * wp.max(wp.max(wp.length(a), wp.length(b)), wp.length(b - a))
+    mesh = wp.mesh_get(mesh_id)
+    # Keep ordinary shared edges and isolated boundaries on the local-query
+    # path. A fully covered split seam must also have neighbors at its midpoint.
+    midpoint = 0.5 * (a + b)
+    query = wp.mesh_query_aabb(mesh_id, midpoint - wp.vec3(padding), midpoint + wp.vec3(padding))
+    candidates = int(0)
+    matching = int(0)
+    face = int(0)
+    while wp.mesh_query_aabb_next(query, face):
+        candidates += 1
+        has_a = False
+        has_b = False
+        for corner in range(3):
+            vertex = mesh.points[mesh.indices[3 * face + corner]]
+            has_a = has_a or wp.length_sq(vertex - a) == 0.0
+            has_b = has_b or wp.length_sq(vertex - b) == 0.0
+        if has_a and has_b:
+            matching += 1
+            if matching > 1:
+                return False
+    if candidates <= 1:
+        return True
+
+    lower = wp.min(a, b) - wp.vec3(padding)
+    upper = wp.max(a, b) + wp.vec3(padding)
+    origin = wp.vec3d(a)
+    direction = wp.vec3d(b) - origin
+    length_sq = wp.length_sq(direction)
+    if length_sq == wp.float64(0.0):
+        return True
+
+    # Sweep interval endpoints without allocating a variable-sized edge list.
+    # Require two incident faces everywhere, so overlapping partial edges
+    # cannot conceal an uncovered gap. Padding only broadens the BVH query.
+    position = wp.float64(0.0)
+    while position < wp.float64(1.0):
+        next_position = wp.float64(1.0)
+        count = int(0)
+        query = wp.mesh_query_aabb(mesh_id, lower, upper)
+        face = int(0)
+        while wp.mesh_query_aabb_next(query, face):
+            covers_position = False
+            for corner in range(3):
+                p = wp.vec3d(mesh.points[mesh.indices[3 * face + corner]]) - origin
+                q = wp.vec3d(mesh.points[mesh.indices[3 * face + (corner + 1) % 3]]) - origin
+                # Exact collinearity in double precision avoids float32 cross
+                # product roundoff without welding distinct nearby vertices.
+                if wp.length_sq(wp.cross(p, direction)) == wp.float64(0.0) and wp.length_sq(
+                    wp.cross(q, direction)
+                ) == wp.float64(0.0):
+                    t_p = wp.dot(p, direction) / length_sq
+                    t_q = wp.dot(q, direction) / length_sq
+                    start = wp.max(wp.float64(0.0), wp.min(t_p, t_q))
+                    end = wp.min(wp.float64(1.0), wp.max(t_p, t_q))
+                    if end > start:
+                        covers_position = covers_position or (start <= position and end > position)
+                        if start > position:
+                            next_position = wp.min(next_position, start)
+                        if end > position:
+                            next_position = wp.min(next_position, end)
+            if covers_position:
+                count += 1
+        if count < 2:
+            return True
+        position = next_position
+    return False
+
+
+@wp.kernel(enable_backward=False)
+def _mesh_edge_boundary_kernel(mesh_id: wp.uint64, edges: wp.array[wp.vec2i], boundary: wp.array[wp.int32]):
+    i = wp.tid()
+    mesh = wp.mesh_get(mesh_id)
+    edge = edges[i]
+    boundary[i] = wp.where(_mesh_edge_is_boundary(mesh_id, mesh.points[edge[0]], mesh.points[edge[1]]), 1, 0)
+
+
+def compute_mesh_boundary_flags(mesh: wp.Mesh) -> np.ndarray:
+    """Mark the open-boundary edges and vertices of each mesh face.
+
+    Bit ``i`` marks the edge opposite face vertex ``i``, and bit ``3 + i``
+    marks vertex ``i``. An edge is open unless two faces cover it everywhere,
+    including seams split at T-junctions. A vertex is open when it touches an
+    open edge. Vertices match by exact position, so seams with duplicated
+    vertex indices stay shared without welding nearby geometry.
+
+    Args:
+        mesh: Finalized Warp mesh whose BVH resolves split seams.
+
+    Returns:
+        Per-face boundary bits, shape [face_count], uint8.
+    """
+    faces = mesh.indices.numpy().reshape(-1, 3)
+    if len(faces) == 0:
+        return np.zeros(0, dtype=np.uint8)
+    # Adding zero folds -0 into +0, matching the kernels' exact position test.
+    points = np.ascontiguousarray(mesh.points.numpy() + np.float32(0.0))
+    _, position_id = np.unique(points.view(np.dtype((np.void, points.strides[0]))).ravel(), return_inverse=True)
+    position_count = int(position_id.max()) + 1
+    corners = position_id.reshape(-1)[faces].astype(np.int64)
+    opposite = np.array([[1, 2], [0, 2], [0, 1]])
+    slot_edges = np.sort(corners[:, opposite], axis=2).reshape(-1, 2)
+    _, first_slot, slot_edge = np.unique(
+        slot_edges[:, 0] * position_count + slot_edges[:, 1], return_index=True, return_inverse=True
+    )
+    edges = slot_edges[first_slot]
+    # Edges shared by two faces are closed. The rest, including degenerate
+    # edges, take the coverage sweep that also resolves split seams.
+    slot_face = np.repeat(np.arange(len(faces), dtype=np.int64), 3)
+    edge_faces = np.unique(slot_edge * len(faces) + slot_face) // len(faces)
+    face_count = np.bincount(edge_faces, minlength=len(edges))
+    candidates = np.flatnonzero((face_count < 2) | (edges[:, 0] == edges[:, 1]))
+    open_edge = np.zeros(len(edges), dtype=bool)
+    if len(candidates) > 0:
+        slot = first_slot[candidates]
+        candidate_edges = faces[(slot // 3)[:, None], opposite[slot % 3]]
+        boundary = wp.zeros(len(candidates), dtype=wp.int32, device=mesh.device)
+        wp.launch(
+            _mesh_edge_boundary_kernel,
+            dim=len(candidates),
+            inputs=[mesh.id, wp.array(candidate_edges, dtype=wp.vec2i, device=mesh.device)],
+            outputs=[boundary],
+            device=mesh.device,
+        )
+        open_edge[candidates] = boundary.numpy() != 0
+    open_vertex = np.zeros(position_count, dtype=bool)
+    open_vertex[edges[open_edge].reshape(-1)] = True
+    flags = open_edge[slot_edge].reshape(-1, 3) @ np.array([1, 2, 4]) + open_vertex[corners] @ np.array([8, 16, 32])
+    return flags.astype(np.uint8)
+
+
+@wp.func
+def _query_mesh_sdf(
+    mesh_id: wp.uint64,
+    point: wp.vec3,
+    max_dist: float,
+    sign_method: int,
+    boundary_flags: wp.array[wp.uint8],
+    boundary_start: int,
+):
+    """Keep pseudo-normal signs at shared features without extending open boundaries."""
+    query = mesh_query_point_sign(mesh_id, point, max_dist, sign_method)
+    if query.result and sign_method == MeshSignMethod.NORMAL and query.sign < 0.0 and boundary_start >= 0:
+        u = query.u
+        v = query.v
+        w = 1.0 - u - v
+        # Face-interior queries and shared concave edges or closed vertex fans
+        # keep their pseudo-normal interior sign. Feature bits follow
+        # compute_mesh_boundary_flags: edges opposite vertices, then vertices.
+        feature = int(0)
+        if u <= 1.0e-6 and v <= 1.0e-6:
+            feature = 32
+        elif u <= 1.0e-6 and w <= 1.0e-6:
+            feature = 16
+        elif v <= 1.0e-6 and w <= 1.0e-6:
+            feature = 8
+        elif u <= 1.0e-6:
+            feature = 1
+        elif v <= 1.0e-6:
+            feature = 2
+        elif w <= 1.0e-6:
+            feature = 4
+        if (int(boundary_flags[boundary_start + query.face]) & feature) != 0:
+            mesh = wp.mesh_get(mesh_id)
+            a = mesh.points[mesh.indices[query.face * 3]]
+            b = mesh.points[mesh.indices[query.face * 3 + 1]]
+            c = mesh.points[mesh.indices[query.face * 3 + 2]]
+            normal = wp.normalize(wp.cross(b - a, c - a))
+            delta = point - wp.mesh_eval_position(mesh_id, query.face, u, v)
+            # Beyond an open boundary, the query lies outside the face prism.
+            tangent = delta - wp.dot(delta, normal) * normal
+            if wp.length_sq(tangent) > 1.0e-12 * wp.length_sq(delta):
+                query.sign = 1.0
+    return query
+
+
+@wp.func
 def sample_sdf_using_mesh(
     mesh_id: wp.uint64,
     world_pos: wp.vec3,
-    max_dist: float = _MESH_QUERY_MAX_DIST,
-    sign_method: int = MeshSignMethod.NORMAL,
+    max_dist: float,
+    sign_method: int,
+    boundary_flags: wp.array[wp.uint8],
+    boundary_start: int,
 ) -> float:
     """
     Sample signed distance to mesh surface using mesh query.
@@ -203,11 +385,15 @@ def sample_sdf_using_mesh(
         world_pos: Query position in mesh local coordinates
         max_dist: Maximum distance to search for closest point
         sign_method: Method used to determine the mesh query sign.
+        boundary_flags: Packed per-face open-boundary bits from
+            :func:`compute_mesh_boundary_flags`.
+        boundary_start: Offset of this mesh's faces in ``boundary_flags``,
+            or -1 to keep pseudo-normal signs at open boundaries.
 
     Returns:
         The signed distance value (negative inside, positive outside)
     """
-    res = mesh_query_point_sign(mesh_id, world_pos, max_dist, sign_method)
+    res = _query_mesh_sdf(mesh_id, world_pos, max_dist, sign_method, boundary_flags, boundary_start)
 
     if res.result:
         closest = wp.mesh_eval_position(mesh_id, res.face, res.u, res.v)
@@ -220,8 +406,10 @@ def sample_sdf_using_mesh(
 def sample_sdf_grad_using_mesh(
     mesh_id: wp.uint64,
     world_pos: wp.vec3,
-    max_dist: float = _MESH_QUERY_MAX_DIST,
-    sign_method: int = MeshSignMethod.NORMAL,
+    max_dist: float,
+    sign_method: int,
+    boundary_flags: wp.array[wp.uint8],
+    boundary_start: int,
 ) -> tuple[float, wp.vec3]:
     """
     Sample signed distance and gradient to mesh surface using mesh query.
@@ -238,6 +426,10 @@ def sample_sdf_grad_using_mesh(
         world_pos: Query position in mesh local coordinates
         max_dist: Maximum distance to search for closest point
         sign_method: Method used to determine the mesh query sign.
+        boundary_flags: Packed per-face open-boundary bits from
+            :func:`compute_mesh_boundary_flags`.
+        boundary_start: Offset of this mesh's faces in ``boundary_flags``,
+            or -1 to keep pseudo-normal signs at open boundaries.
 
     Returns:
         Tuple of (distance, gradient) where:
@@ -246,7 +438,7 @@ def sample_sdf_grad_using_mesh(
     """
     gradient = wp.vec3(0.0, 0.0, 0.0)
 
-    res = mesh_query_point_sign(mesh_id, world_pos, max_dist, sign_method)
+    res = _query_mesh_sdf(mesh_id, world_pos, max_dist, sign_method, boundary_flags, boundary_start)
 
     if res.result:
         closest = wp.mesh_eval_position(mesh_id, res.face, res.u, res.v)
@@ -464,20 +656,21 @@ def get_mesh_edge_precomputed(
     mesh_edge_centers: wp.array[wp.vec4],
     mesh_edge_halves: wp.array[wp.vec4],
     edge_range: wp.vec2i,
+    mesh_scale: wp.vec3,
     X_mesh_ws: wp.transform,
     edge_idx: int,
 ) -> tuple[wp.vec3, wp.vec3, int]:
-    """Extract an edge and endpoint ownership from precomputed data.
+    """Extract an edge and endpoint ownership from precomputed unscaled data.
 
     A zero ownership code preserves legacy packed arrays by allowing both
     endpoints. Builder-generated codes use bits zero and one for the first and
     second endpoint, respectively, plus bit two to mark the encoding explicit.
     """
     packed_center = mesh_edge_centers[edge_range[0] + edge_idx]
-    center_local = wp.vec3(packed_center[0], packed_center[1], packed_center[2])
+    center_local = wp.cw_mul(wp.vec3(packed_center[0], packed_center[1], packed_center[2]), mesh_scale)
     center = wp.transform_point(X_mesh_ws, center_local)
     packed_half = mesh_edge_halves[edge_range[0] + edge_idx]
-    half_local = wp.vec3(packed_half[0], packed_half[1], packed_half[2])
+    half_local = wp.cw_mul(wp.vec3(packed_half[0], packed_half[1], packed_half[2]), mesh_scale)
     half = wp.transform_vector(X_mesh_ws, half_local)
     return center - half, center + half, int(packed_half[3])
 
@@ -497,7 +690,9 @@ def _create_mesh_edge_accessor_func(use_precomputed_edge_data: bool):
         edge_idx: int,
     ) -> tuple[wp.vec3, wp.vec3, int]:
         if wp.static(use_precomputed_edge_data):
-            return get_mesh_edge_precomputed(mesh_edge_centers, mesh_edge_halves, edge_range, X_mesh_ws, edge_idx)
+            return get_mesh_edge_precomputed(
+                mesh_edge_centers, mesh_edge_halves, edge_range, mesh_scale, X_mesh_ws, edge_idx
+            )
         v0, v1 = get_edge_from_mesh(mesh_id, mesh_edge_indices, edge_range, mesh_scale, X_mesh_ws, edge_idx)
         return v0, v1, 0
 
@@ -618,7 +813,7 @@ def _create_get_mesh_edge_bounding_sphere_func(use_precomputed_edge_data: bool):
     ) -> tuple[wp.vec3, float]:
         if wp.static(use_precomputed_edge_data):
             center_radius = mesh_edge_centers[edge_range[0] + edge_idx]
-            center_local = wp.vec3(center_radius[0], center_radius[1], center_radius[2])
+            center_local = wp.cw_mul(wp.vec3(center_radius[0], center_radius[1], center_radius[2]), mesh_scale)
             center_scaled = wp.transform_point(X_mesh_ws, center_local)
             center = wp.cw_mul(center_scaled, inv_sdf_scale)
             return center, center_radius[3] * radius_scale
@@ -679,6 +874,8 @@ def _create_sdf_contact_funcs(
         tt: float,
         use_bvh_for_sdf: bool,
         sdf_mesh_query_type: int,
+        mesh_boundary_flags: wp.array[wp.uint8],
+        sdf_boundary_start: int,
         sdf_is_heightfield: bool,
         hfd_sdf: HeightfieldData,
         elevation_data: wp.array[wp.float32],
@@ -691,14 +888,18 @@ def _create_sdf_contact_funcs(
             elif wp.static(use_texture_sdf_only):
                 return wp.static(sample_sdf)(texture_sdf, pp)
             elif use_bvh_for_sdf:
-                return sample_sdf_using_mesh(sdf_mesh_id, pp, _MESH_QUERY_MAX_DIST, sdf_mesh_query_type)
+                return sample_sdf_using_mesh(
+                    sdf_mesh_id, pp, _MESH_QUERY_MAX_DIST, sdf_mesh_query_type, mesh_boundary_flags, sdf_boundary_start
+                )
             else:
                 return wp.static(sample_sdf)(texture_sdf, pp)
         else:
             if wp.static(use_texture_sdf_only):
                 return wp.static(sample_sdf)(texture_sdf, pp)
             elif use_bvh_for_sdf:
-                return sample_sdf_using_mesh(sdf_mesh_id, pp, _MESH_QUERY_MAX_DIST, sdf_mesh_query_type)
+                return sample_sdf_using_mesh(
+                    sdf_mesh_id, pp, _MESH_QUERY_MAX_DIST, sdf_mesh_query_type, mesh_boundary_flags, sdf_boundary_start
+                )
             else:
                 return wp.static(sample_sdf)(texture_sdf, pp)
 
@@ -711,6 +912,8 @@ def _create_sdf_contact_funcs(
         midpoint_sdf: float,
         use_bvh_for_sdf: bool,
         sdf_mesh_query_type: int,
+        mesh_boundary_flags: wp.array[wp.uint8],
+        sdf_boundary_start: int,
         sdf_is_heightfield: bool,
         hfd_sdf: HeightfieldData,
         elevation_data: wp.array[wp.float32],
@@ -861,6 +1064,8 @@ def _create_sdf_contact_funcs(
                 u,
                 use_bvh_for_sdf,
                 sdf_mesh_query_type,
+                mesh_boundary_flags,
+                sdf_boundary_start,
                 sdf_is_heightfield,
                 hfd_sdf,
                 elevation_data,
@@ -907,6 +1112,8 @@ def _create_sdf_contact_funcs(
                 0.0,
                 use_bvh_for_sdf,
                 sdf_mesh_query_type,
+                mesh_boundary_flags,
+                sdf_boundary_start,
                 sdf_is_heightfield,
                 hfd_sdf,
                 elevation_data,
@@ -924,6 +1131,8 @@ def _create_sdf_contact_funcs(
                 1.0,
                 use_bvh_for_sdf,
                 sdf_mesh_query_type,
+                mesh_boundary_flags,
+                sdf_boundary_start,
                 sdf_is_heightfield,
                 hfd_sdf,
                 elevation_data,
@@ -1075,6 +1284,34 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     use_identity_sdf_scale: bool = False,
     deterministic_reduction: bool = False,
 ):
+    """Create a mesh-mesh (or heightfield-mesh) SDF contact kernel.
+
+    The edges of each shape in a pair are tested against the other shape's
+    SDF, in two passes with the roles swapped.
+
+    Args:
+        writer_func: Contact writer function called for each generated contact.
+        enable_heightfields: When False, heightfield code paths are compiled out.
+        reduce_contacts: If True, return the variant that feeds the global
+            contact reducer.
+        speculative: Enable speculative contact admission.
+        use_precomputed_edge_data: Read mesh edges from precomputed unscaled
+            edge data instead of the mesh vertex and index buffers.
+        use_texture_sdf_only: Compile out the BVH fallback; every mesh SDF must
+            have a texture representation.
+        use_identity_sdf_scale: Compile out SDF scale conversions; requires
+            ``use_texture_sdf_only``.
+        deterministic_reduction: Use deterministic contact reduction. Only
+            applies when ``reduce_contacts`` is True.
+
+    Returns:
+        The mesh-SDF contact kernel, or its global-reduction variant when
+        ``reduce_contacts`` is True.
+
+    Raises:
+        ValueError: If ``use_identity_sdf_scale`` is set without
+            ``use_texture_sdf_only``.
+    """
     if use_identity_sdf_scale and not use_texture_sdf_only:
         raise ValueError("identity SDF scale specialization requires texture-only SDFs")
     # The reducer mode is tested inside fully unrolled directional loops. Keep
@@ -1112,6 +1349,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         texture_sdf_table: wp.array[TextureSDFData],
         shape_sdf_index: wp.array[wp.int32],
         shape_mesh_properties: wp.array[wp.int32],
+        mesh_boundary_flags: wp.array[wp.uint8],
+        shape_mesh_boundary_start: wp.array[wp.int32],
         shape_gap: wp.array[float],
         shape_base_gap: wp.array[float],
         shape_linear_velocity: wp.array[wp.vec3],
@@ -1186,6 +1425,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     if sdf_is_hfield:
                         hfd_sdf = heightfield_data[shape_heightfield_index[sdf_shape]]
                 sdf_mesh_query_type = resolve_mesh_sign_method(shape_mesh_properties[sdf_shape])
+                sdf_boundary_start = shape_mesh_boundary_start[sdf_shape]
 
                 # SDF availability: heightfields always use on-the-fly evaluation
                 use_bvh_for_sdf = False
@@ -1238,6 +1478,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         wp.max(wp.abs(inv_sdf_scale[0]), wp.abs(inv_sdf_scale[1])), wp.abs(inv_sdf_scale[2])
                     )
 
+                # Precomputed edge radii are unscaled; max|scale| keeps their bounding spheres conservative.
+                edge_radius_scale *= wp.max(
+                    wp.max(wp.abs(mesh_scale_tri[0]), wp.abs(mesh_scale_tri[1])), wp.abs(mesh_scale_tri[2])
+                )
                 contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
                 use_texture_sdf_for_search = False
@@ -1259,6 +1503,11 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 edge_range_tri = shape_edge_range[tri_shape]
                 num_edges = get_edge_count(tri_type, edge_range_tri, hfd_tri)
 
+                # Required barrier before the reset: a warp still evaluating the
+                # previous pass's exit test would otherwise read the new value,
+                # re-enter that loop, and spin, because only thread 0 advances
+                # ``progress``.
+                wp.tile_stack_clear(edge_stack)
                 wp.tile_scatter_masked(progress, 0, 0, t == 0)
 
                 sdf_is_heightfield = sdf_is_hfield
@@ -1270,9 +1519,12 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 # ``block_dim`` accepted edges via cooperative pushes,
                 # (b) fully drains the stack, processing every accepted
                 # edge through ``do_edge_sdf_collision``, and
-                # (c) explicitly clears the stack as a defensive,
-                # uniformly-called cooperative barrier before the next
-                # outer iteration. Draining is essential: a single
+                # (c) clears the stack (already empty), a uniformly-called
+                # block barrier before the exit test. Thread 0 alone
+                # writes ``progress`` and every warp reads it, so each
+                # write must follow a barrier after the last reads: the
+                # push before each advance, and the clear before the reset
+                # at the start of each pass. Draining is essential: a single
                 # ``tile_stack_pop`` only removes ``block_dim`` items, so
                 # if the inner push loop overshot (the push gate caps
                 # pre-push count at ``block_dim - 1`` but the cooperative
@@ -1336,6 +1588,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     bsphere_center,
                                     _SDF_QUERY_RADIUS_SLACK * threshold,
                                     sdf_mesh_query_type,
+                                    mesh_boundary_flags,
+                                    sdf_boundary_start,
                                 )
                                 add_edge = midpoint_sdf <= threshold
                             else:
@@ -1362,9 +1616,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     # loop until empty — a single pop followed by
                     # ``tile_stack_clear`` would silently discard any
                     # accepted edges that overflowed the prior push. The
-                    # trailing ``tile_stack_clear`` (after this drain) is
-                    # a defensive no-op barrier; see the comment block
-                    # above the outer ``while``.
+                    # trailing ``tile_stack_clear`` (after this drain) then
+                    # acts only as a barrier; see the comment block above
+                    # the outer ``while``.
                     while wp.tile_stack_count(edge_stack) > 0:
                         popped, edge_slot = wp.tile_stack_pop(edge_stack)
                         my_edge_idx = popped.edge_idx
@@ -1414,6 +1668,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 cached_sdf_val,
                                 use_bvh_for_sdf,
                                 sdf_mesh_query_type,
+                                mesh_boundary_flags,
+                                sdf_boundary_start,
                                 sdf_is_hfield,
                                 hfd_sdf,
                                 heightfield_elevations,
@@ -1454,6 +1710,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             point_unscaled,
                                             _MESH_QUERY_MAX_DIST,
                                             sdf_mesh_query_type,
+                                            mesh_boundary_flags,
+                                            sdf_boundary_start,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1468,6 +1726,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             point_unscaled,
                                             _MESH_QUERY_MAX_DIST,
                                             sdf_mesh_query_type,
+                                            mesh_boundary_flags,
+                                            sdf_boundary_start,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1521,14 +1781,15 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
 
                                 writer_func(contact_data, writer_data, -1)
 
-                    # Defensive cooperative reset before the next outer
-                    # iteration. The drain loop above already left the
-                    # stack empty, so this is logically a no-op, but it
-                    # is a uniformly-called barrier that pairs cleanly
-                    # with the inner push loop and matches the original
-                    # ``push -> pop -> clear`` pattern that empirically
-                    # avoided a deadlock in deterministic mesh-mesh
-                    # scenes (see ``example_basic_shapes6_determinism``).
+                    # Cooperative reset before the next outer iteration.
+                    # The drain loop above already left the stack empty,
+                    # so this serves as a uniformly-called barrier that
+                    # pairs with the inner push loop and matches the
+                    # original ``push -> pop -> clear`` pattern that
+                    # empirically avoided a deadlock in deterministic
+                    # mesh-mesh scenes (see
+                    # ``example_basic_shapes6_determinism``). The reset of
+                    # ``progress`` relies on the barrier before it.
                     wp.tile_stack_clear(edge_stack)
 
     # Return early if contact reduction is disabled
@@ -1551,6 +1812,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         texture_sdf_table: wp.array[TextureSDFData],
         shape_sdf_index: wp.array[wp.int32],
         shape_mesh_properties: wp.array[wp.int32],
+        mesh_boundary_flags: wp.array[wp.uint8],
+        shape_mesh_boundary_start: wp.array[wp.int32],
         shape_gap: wp.array[float],
         shape_base_gap: wp.array[float],
         shape_linear_velocity: wp.array[wp.vec3],
@@ -1645,6 +1908,7 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     if sdf_is_hfield:
                         hfd_sdf = heightfield_data[shape_heightfield_index[sdf_shape]]
                 sdf_mesh_query_type = resolve_mesh_sign_method(shape_mesh_properties[sdf_shape])
+                sdf_boundary_start = shape_mesh_boundary_start[sdf_shape]
 
                 use_bvh_for_sdf = False
                 if not sdf_is_hfield:
@@ -1695,6 +1959,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         wp.max(wp.abs(inv_sdf_scale[0]), wp.abs(inv_sdf_scale[1])), wp.abs(inv_sdf_scale[2])
                     )
 
+                # Precomputed edge radii are unscaled; max|scale| keeps their bounding spheres conservative.
+                edge_radius_scale *= wp.max(
+                    wp.max(wp.abs(mesh_scale_tri[0]), wp.abs(mesh_scale_tri[1])), wp.abs(mesh_scale_tri[2])
+                )
                 contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
                 use_texture_sdf_for_search = False
@@ -1719,6 +1987,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 edge_start = block_in_pair * chunk_size
                 edge_end = wp.min(edge_start + chunk_size, num_edges)
 
+                # Barrier before the reset; see ``mesh_sdf_collision_kernel``.
+                wp.tile_stack_clear(edge_stack)
                 wp.tile_scatter_masked(progress, 0, edge_start, t == 0)
 
                 sdf_is_heightfield = sdf_is_hfield
@@ -1783,6 +2053,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     bsphere_center,
                                     _SDF_QUERY_RADIUS_SLACK * threshold,
                                     sdf_mesh_query_type,
+                                    mesh_boundary_flags,
+                                    sdf_boundary_start,
                                 )
                                 add_edge = midpoint_sdf <= threshold
                             else:
@@ -1807,8 +2079,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                     # Drain the stack completely — see the matching loop
                     # in ``mesh_sdf_collision_kernel`` for why a single
                     # pop would silently drop overflowed accepted edges.
-                    # The trailing ``tile_stack_clear`` is a defensive
-                    # no-op barrier (see that same comment block).
+                    # The trailing ``tile_stack_clear`` then acts only as
+                    # a barrier (see that same comment block).
                     while wp.tile_stack_count(edge_stack) > 0:
                         popped, edge_slot = wp.tile_stack_pop(edge_stack)
                         my_edge_idx = popped.edge_idx
@@ -1858,6 +2130,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                 cached_sdf_val,
                                 use_bvh_for_sdf,
                                 sdf_mesh_query_type,
+                                mesh_boundary_flags,
+                                sdf_boundary_start,
                                 sdf_is_hfield,
                                 hfd_sdf,
                                 heightfield_elevations,
@@ -1898,6 +2172,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             point_unscaled,
                                             _MESH_QUERY_MAX_DIST,
                                             sdf_mesh_query_type,
+                                            mesh_boundary_flags,
+                                            sdf_boundary_start,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1912,6 +2188,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             point_unscaled,
                                             _MESH_QUERY_MAX_DIST,
                                             sdf_mesh_query_type,
+                                            mesh_boundary_flags,
+                                            sdf_boundary_start,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -2003,10 +2281,9 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             reducer_data,
                                         )
 
-                    # Defensive cooperative reset before the next outer
-                    # iteration — see the matching ``tile_stack_clear``
-                    # call in ``mesh_sdf_collision_kernel`` for
-                    # rationale.
+                    # Cooperative reset before the next outer iteration —
+                    # see the matching ``tile_stack_clear`` call in
+                    # ``mesh_sdf_collision_kernel``.
                     wp.tile_stack_clear(edge_stack)
 
     return mesh_sdf_collision_global_reduce_kernel

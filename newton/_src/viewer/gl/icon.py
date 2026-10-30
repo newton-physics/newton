@@ -1,15 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-# generate_icons.py
+import logging
+import os
 
-from PIL import Image, ImageDraw, ImageFont  # noqa: TID253
+logger = logging.getLogger(__name__)
+
+ICON_SIZES = (16, 32, 64)
+
+
+def set_window_icon(window):
+    """Set the bundled Newton icon on a pyglet window."""
+    import pyglet
+
+    icon_dir = os.path.dirname(__file__)
+    icons = [pyglet.image.load(os.path.join(icon_dir, f"icon_{s}.png")) for s in ICON_SIZES]
+    window.set_icon(*icons)
 
 
 def create_and_save_emoji_png(character: str, size: int, filename: str):
     """
     Renders a Unicode character onto a transparent PNG and saves it.
     """
+    from PIL import Image, ImageDraw, ImageFont
+
     # Create a blank, transparent image
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -24,8 +38,7 @@ def create_and_save_emoji_png(character: str, size: int, filename: str):
     try:
         font = ImageFont.truetype(font_path, size=font_size)
     except OSError:
-        print(f"Warning: Font '{font_path}' not found. Using default font.")
-        print("The icon may not render in color.")
+        logger.warning("Font '%s' not found. Using default font.\nThe icon may not render in color.", font_path)
         font = ImageFont.load_default()
 
     # Calculate position to center the character
@@ -38,13 +51,12 @@ def create_and_save_emoji_png(character: str, size: int, filename: str):
 
     # Save the image as a PNG file
     image.save(filename, "PNG")
-    print(f"Successfully created {filename}")
+    logger.info("Successfully created %s", filename)
 
 
 if __name__ == "__main__":
     emoji_char = "🍏"
-    sizes = [16, 32, 64]
 
-    for s in sizes:
+    for s in ICON_SIZES:
         output_filename = f"icon_{s}.png"
         create_and_save_emoji_png(emoji_char, s, output_filename)

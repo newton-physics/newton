@@ -812,6 +812,39 @@ def test_intersect_ray_heightfield_uses_finalize_bvh(test: TestRaycast, device: 
     np.testing.assert_array_equal(out_shape_id.numpy(), np.array([shape_id], dtype=np.int32))
 
 
+def test_intersect_ray_heightfield_flat_at_min_z(test: TestRaycast, device: str):
+    """Rays from above hit terrain that is flat at ``min_z`` with a +Z normal (issue #4452)."""
+    # Left half flat at min_z, right half bumpy.
+    elevation = np.zeros((8, 8), dtype=np.float32)
+    elevation[:, 4:] = np.random.default_rng(0).uniform(0.2, 1.0, (8, 4))
+    builder = newton.ModelBuilder()
+    shape_id = builder.add_shape_heightfield(
+        heightfield=Heightfield(elevation, nrow=8, ncol=8, hx=0.5, hy=0.5, min_z=0.0, max_z=0.2)
+    )
+    model = builder.finalize(device=device)
+
+    # Vertical rays onto the flat cells, x in [-0.5, -1/14].
+    xs, ys = np.meshgrid(np.linspace(-0.45, -0.1, 10), np.linspace(-0.45, 0.45, 10))
+    origins = np.stack([xs.ravel(), ys.ravel(), np.ones(xs.size)], axis=1).astype(np.float32)
+    n = len(origins)
+    out_dist = wp.empty(n, dtype=float, device=device)
+    out_shape_id = wp.empty(n, dtype=wp.int32, device=device)
+    out_normal = wp.empty(n, dtype=wp.vec3, device=device)
+    newton.intersect_ray(
+        model,
+        ray_origins=wp.array(origins, dtype=wp.vec3, device=device),
+        ray_directions=wp.array(np.tile([0.0, 0.0, -1.0], (n, 1)), dtype=wp.vec3, device=device),
+        ray_worlds=wp.full(n, -1, dtype=wp.int32, device=device),
+        out_dist=out_dist,
+        out_shape_id=out_shape_id,
+        out_normal=out_normal,
+    )
+
+    np.testing.assert_array_equal(out_shape_id.numpy(), np.full(n, shape_id, dtype=np.int32))
+    np.testing.assert_allclose(out_dist.numpy(), np.ones(n, dtype=np.float32), atol=1e-5)
+    np.testing.assert_allclose(out_normal.numpy(), np.tile([0.0, 0.0, 1.0], (n, 1)), atol=1e-5)
+
+
 def test_intersect_ray_includes_collision_shapes_on_request(test: TestRaycast, device: str):
     """Include collision-only shapes in the shape BVH when requested."""
     builder = newton.ModelBuilder()
@@ -914,6 +947,91 @@ add_function_test(
     TestRaycast,
     "test_intersect_ray_heightfield_uses_finalize_bvh",
     test_intersect_ray_heightfield_uses_finalize_bvh,
+    devices=devices,
+)
+add_function_test(
+    TestRaycast,
+    "test_intersect_ray_heightfield_flat_at_min_z",
+    test_intersect_ray_heightfield_flat_at_min_z,
+    devices=devices,
+)
+
+
+def test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders(test: TestRaycast, device: str):
+    """A zero-opacity shape is dropped by the VISIBLE mask but kept when selected through a collision flag."""
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(is_visible=True, has_shape_collision=True, has_particle_collision=False)
+    solid = builder.add_shape_sphere(
+        body=-1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()), cfg=cfg, opacity=1.0
+    )
+    transparent = builder.add_shape_sphere(
+        body=-1, xform=wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()), cfg=cfg, opacity=0.0
+    )
+    model = builder.finalize(device=device)
+
+    test.assertEqual(model.bvh_shape_count_enabled, 1)
+    np.testing.assert_array_equal(model.bvh_shape_enabled.numpy()[:1], np.array([solid]))
+
+    model.bvh_build_shapes(model, shape_flags=newton.ShapeFlags.COLLIDE_SHAPES)
+
+    test.assertEqual(model.bvh_shape_count_enabled, 2)
+    np.testing.assert_array_equal(np.sort(model.bvh_shape_enabled.numpy()[:2]), np.array([solid, transparent]))
+
+    origins = wp.array(np.array([[0.0, 0.0, 2.0], [2.0, 0.0, 2.0]], dtype=np.float32), dtype=wp.vec3, device=device)
+    directions = wp.array(np.tile(np.array([0.0, 0.0, -1.0], dtype=np.float32), (2, 1)), dtype=wp.vec3, device=device)
+    worlds = wp.array(np.full(2, -1, dtype=np.int32), dtype=wp.int32, device=device)
+    out_shape_id = wp.empty(shape=2, dtype=wp.int32, device=device)
+    newton.intersect_ray(
+        model,
+        ray_origins=origins,
+        ray_directions=directions,
+        ray_worlds=worlds,
+        out_shape_id=out_shape_id,
+    )
+
+    np.testing.assert_array_equal(out_shape_id.numpy(), np.array([solid, transparent]))
+
+
+def test_intersect_ray_misses_when_no_shape_is_selected(test: TestRaycast, device: str):
+    """An empty shape selection is a valid BVH, so every ray reports the documented miss."""
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(is_visible=True, has_shape_collision=False, has_particle_collision=False)
+    builder.add_shape_sphere(body=-1, xform=wp.transform_identity(), cfg=cfg, opacity=0.0)
+    model = builder.finalize(device=device)
+
+    test.assertEqual(model.bvh_shape_count_enabled, 0)
+
+    origins = wp.array(np.array([[0.0, 0.0, 2.0]], dtype=np.float32), dtype=wp.vec3, device=device)
+    directions = wp.array(np.array([[0.0, 0.0, -1.0]], dtype=np.float32), dtype=wp.vec3, device=device)
+    worlds = wp.array(np.array([-1], dtype=np.int32), dtype=wp.int32, device=device)
+    out_dist = wp.full(shape=1, value=5.0, dtype=float, device=device)
+    out_shape_id = wp.full(shape=1, value=7, dtype=wp.int32, device=device)
+    out_normal = wp.full(shape=1, value=wp.vec3(1.0, 1.0, 1.0), dtype=wp.vec3, device=device)
+    newton.intersect_ray(
+        model,
+        ray_origins=origins,
+        ray_directions=directions,
+        ray_worlds=worlds,
+        out_dist=out_dist,
+        out_shape_id=out_shape_id,
+        out_normal=out_normal,
+    )
+
+    np.testing.assert_array_equal(out_dist.numpy(), np.array([-1.0], dtype=np.float32))
+    np.testing.assert_array_equal(out_shape_id.numpy(), np.array([-1], dtype=np.int32))
+    np.testing.assert_array_equal(out_normal.numpy(), np.zeros((1, 3), dtype=np.float32))
+
+
+add_function_test(
+    TestRaycast,
+    "test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders",
+    test_intersect_ray_skips_transparent_shapes_but_keeps_requested_colliders,
+    devices=devices,
+)
+add_function_test(
+    TestRaycast,
+    "test_intersect_ray_misses_when_no_shape_is_selected",
+    test_intersect_ray_misses_when_no_shape_is_selected,
     devices=devices,
 )
 

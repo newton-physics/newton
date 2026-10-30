@@ -666,10 +666,39 @@ class with the following interface:
             """Optional per-step validation, called after every step() in test mode."""
             ...
 
-Every example must implement ``test_final()`` or ``test_post_step()``; it may
-implement both. In test mode, ``test_post_step()`` runs after each simulation
-step and ``test_final()`` runs after the example completes. An example that
-implements neither raises ``NotImplementedError`` in CI.
+Every example must implement ``test_final()``; it may additionally implement
+``test_post_step()`` for per-step validation. In test mode,
+``test_post_step()`` runs after each simulation step and ``test_final()`` runs
+after the example completes. An example without a callable ``test_final()``
+raises ``NotImplementedError`` in CI.
+
+Embedded success criteria
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Keep each example's teaching description, success criteria, and run commands
+in its module docstring. Common criteria apply to every listed run; indent
+additional observations below the command they apply to:
+
+.. code-block:: python
+
+    """Demonstrate an example behavior.
+
+    Success criteria:
+    - The mechanism remains upright.
+
+    Runs:
+    - `python -m newton.examples my_example`
+    - `python -m newton.examples my_example --solver xpbd`
+      - The XPBD solver completes the same motion.
+    """
+
+``python -m newton.examples --describe <example_name>`` prints the docstring
+without importing or executing the example. Validate descriptions, commands,
+and declared option names with
+``uv run --extra dev -m newton.tests -k test_example_spec``.
+
+Shared visual QA procedures live in ``.agents/skills/example-testing/``;
+these human criteria do not imply equivalent automated assertions.
 
 Discovery and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -678,6 +707,10 @@ Examples are discovered automatically: any file matching
 ``newton/examples/<category>/example_*.py`` is picked up by ``newton.examples.get_examples()``.
 The short name used on the command line is the filename without the ``example_`` prefix and
 ``.py`` extension (e.g. ``basic_pendulum``).
+
+The example test suite gives every discovered example a baseline CUDA test automatically.
+Add an explicit registration in ``newton/tests/test_examples.py`` only when an example needs
+tailored arguments, devices, dependencies, or additional variants.
 
 New examples must also be registered in the examples ``README.md`` with a                                                        
 ``python -m newton.examples <example_name>`` command and a 320x320 jpg screenshot.  

@@ -14,7 +14,14 @@ import warp as wp
 
 from ..enums import JointType
 from ..model import Model
-from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
+from .ik_common import (
+    IKJacobianType,
+    _initialize_body_q,
+    _validate_articulation_tree,
+    compute_costs,
+    eval_fk_batched,
+    fk_accum,
+)
 from .ik_objectives import IKObjective
 
 
@@ -125,6 +132,17 @@ class IKOptimizerLBFGS:
         wolfe_c2: Strong-Wolfe curvature constant.
         problem_idx: Optional mapping from batch rows to base problem indices
             for per-problem objective data.
+
+    Raises:
+        ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
+            joint or a body with multiple incoming articulation joints,
+            which are not supported by this optimizer.
+
+    Note:
+        Forward kinematics follows articulation tree joints and ignores
+        loop-closing joints; loop-closure constraints are not enforced.
+        External root-parent poses are copied from :attr:`Model.body_q` at
+        construction. Rebuild the optimizer after changing those poses.
     """
 
     TILE_N_DOFS = None
@@ -141,6 +159,10 @@ class IKOptimizerLBFGS:
         *a: Any,
         **kw: Any,
     ) -> IKOptimizerLBFGS:
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("IKOptimizerLBFGS does not support JointType.ROD joints.")
+        _validate_articulation_tree(model)
+
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
         history_len = kw.get("history_len", 10)
@@ -231,11 +253,15 @@ class IKOptimizerLBFGS:
         self._init_cuda_streams()
 
     def _alloc_solver_buffers(self, grad: bool) -> None:
+        """Allocate solver storage and seed FK with the model's body poses."""
         device = self.device
         model = self.model
 
         self.qd_zero = wp.zeros((self.n_batch, self.n_dofs), dtype=wp.float32, device=device)
-        self.body_q = wp.zeros((self.n_batch, model.body_count), dtype=wp.transform, requires_grad=grad, device=device)
+        self.body_q = wp.empty((self.n_batch, model.body_count), dtype=wp.transform, requires_grad=grad, device=device)
+        wp.launch(
+            _initialize_body_q, dim=self.body_q.shape, inputs=[model.body_q], outputs=[self.body_q], device=device
+        )
         self.body_qd = (
             wp.zeros((self.n_batch, model.body_count), dtype=wp.spatial_vector, device=device) if grad else None
         )
@@ -268,14 +294,23 @@ class IKOptimizerLBFGS:
             self.joint_S_s = None
 
     def _alloc_line_search_buffers(self, grad: bool, line_search_alphas: Sequence[float]) -> None:
+        """Allocate candidate evaluation buffers with independent adjoints when needed.
+
+        Seed candidate body poses from the model, as for the solver buffers.
+
+        Args:
+            grad: Whether candidate evaluation requires autodiff gradient storage.
+            line_search_alphas: Step-length multipliers for the candidate configurations.
+        """
         device = self.device
         model = self.model
 
         self.line_search_alphas = wp.array(line_search_alphas, dtype=wp.float32, device=device)
 
         self.candidate_q = wp.zeros((self.n_batch, self.n_line_search, self.n_coords), dtype=wp.float32, device=device)
+        # Keep adjoints separate so tape.zero() cannot erase line-search residuals.
         self.candidate_residuals = wp.zeros(
-            (self.n_batch, self.n_line_search, self.n_residuals), dtype=wp.float32, device=device
+            (self.n_batch, self.n_line_search, self.n_residuals), dtype=wp.float32, requires_grad=grad, device=device
         )
         if self.n_line_search > 0:
             self.candidate_problem_idx = wp.zeros((self.n_batch, self.n_line_search), dtype=wp.int32, device=device)
@@ -297,10 +332,17 @@ class IKOptimizerLBFGS:
         self.candidate_slopes = wp.zeros((self.n_batch, self.n_line_search), dtype=wp.float32, device=device)
 
         body_count = model.body_count
-        self.cand_body_q = wp.zeros(
+        self.cand_body_q = wp.empty(
             (self.n_batch, self.n_line_search, body_count),
             dtype=wp.transform,
             requires_grad=grad,
+            device=device,
+        )
+        wp.launch(
+            _initialize_body_q,
+            dim=(self.n_batch * self.n_line_search, body_count),
+            inputs=[model.body_q],
+            outputs=[self.cand_body_q.reshape((self.n_batch * self.n_line_search, body_count))],
             device=device,
         )
         if grad:
@@ -1355,7 +1397,7 @@ class IKOptimizerLBFGS:
             jcalc_transform,
         )
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def _integrate_dq_dof(
             # model-wide
             joint_type: wp.array[wp.int32],  # (n_joints)
@@ -1482,6 +1524,7 @@ class IKOptimizerLBFGS:
         @wp.kernel(module="unique")
         def _fk_local(
             joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_articulation: wp.array[wp.int32],
             joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
             joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
@@ -1492,7 +1535,10 @@ class IKOptimizerLBFGS:
             # outputs
             X_local_out: wp.array2d[wp.transform],  # (n_batch, n_joints)
         ):
+            """Evaluate local transforms only for articulation-tree joints."""
             row, local_joint_idx = wp.tid()
+            if joint_articulation[local_joint_idx] < 0:
+                return
 
             t = joint_type[local_joint_idx]
             q_start = joint_q_start[local_joint_idx]
@@ -1528,6 +1574,7 @@ class IKOptimizerLBFGS:
                 dim=[n_batch, model.joint_count],
                 inputs=[
                     model.joint_type,
+                    model.joint_articulation,
                     joint_q,
                     model.joint_q_start,
                     model.joint_qd_start,
@@ -1547,6 +1594,9 @@ class IKOptimizerLBFGS:
                 dim=[n_batch, model.joint_count],
                 inputs=[
                     model.joint_parent,
+                    model.joint_child,
+                    model.joint_ancestor,
+                    model.joint_articulation,
                     X_local,
                 ],
                 outputs=[

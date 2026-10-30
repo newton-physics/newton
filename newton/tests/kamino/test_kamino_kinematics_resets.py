@@ -288,7 +288,7 @@ def setup_test_fourbar_model(
         builder=build_boxes_fourbar(
             limits=False, actuator_ids=[1], floatingbase=base_joint, fixedbase=False, ground=False
         ),
-        world_count=num_worlds,
+        copy_count=num_worlds,
     )
     if base_joint:
         # Set non-trivial r_B, X_B, r_F, X_F into base joint for testing (while preserving initial pose)
@@ -356,14 +356,14 @@ def set_model_to_random_pose(
     fk_solver = ForwardKinematicsSolver(model=model)
     data = model.data(device=model.device)
     fk_solver.run_fk_solve(
-        actuators_q=actuator_q,
-        actuators_u=actuator_u,
+        actuator_q=actuator_q,
+        actuator_u=actuator_u,
         base_q=base_q,
         base_u=base_u,
-        bodies_q=data.bodies.q_i,
-        bodies_u=data.bodies.u_i,
+        body_q=data.bodies.q_i,
+        body_u=data.bodies.u_i,
     )
-    test_case.assertTrue(fk_solver.newton_success.numpy().sum() == model.size.num_worlds)
+    test_case.assertTrue(fk_solver.data.gauss_newton.success.numpy().sum() == model.size.num_worlds)
 
     # Evaluate joint state and check constraint residuals
     compute_joints_data(model=model, data=data, q_j_p=model.joints.q_j_0, correction=JointCorrectionMode.CONTINUOUS)
@@ -571,7 +571,7 @@ class TestSetFloatingBase(unittest.TestCase):
             builder=build_boxes_fourbar(
                 limits=False, actuator_ids=[1], floatingbase=False, fixedbase=True, ground=False
             ),
-            world_count=num_worlds,
+            copy_count=num_worlds,
         )
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 

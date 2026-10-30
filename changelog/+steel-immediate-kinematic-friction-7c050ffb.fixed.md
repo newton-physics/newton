@@ -1,0 +1,1 @@
+Fix `SolverSteel` matrix-free immediate contacts with `friction_mode="bisection"`, `"bisection_desaxce"` or `"coulomb_newton"` ignoring the tangential velocity of a kinematic body, so friction drags a body resting on a moving kinematic support as it does with `friction_mode="fixed_normal"`.

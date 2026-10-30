@@ -270,7 +270,7 @@ the wrench to a point offset by :math:`\mathbf{r}` changes the torque as:
 This convention is used in all Newton solvers.
 
 The array of joint forces (torques) in generalized coordinates is stored in :attr:`Control.joint_f <newton.Control.joint_f>`.
-For ``FREE`` and ``DISTANCE`` joints, the corresponding 6 dimensions in this
+For ``FREE``, ``DISTANCE``, and ``ROD`` joints, the corresponding 6 dimensions in this
 array are the physical wrench in world coordinates, with the force and torque
 referenced at the child body's center of mass (COM).
 
@@ -410,7 +410,7 @@ apply the appropriate rotation transforms:
 
 The up axis controls geometry conventions but does not constrain an explicit
 gravity vector. Omitting ``gravity`` defaults to ``-9.81`` along the configured
-up axis. Passing a scalar gravity value is deprecated.
+up axis.
 
 Color Space Handling
 --------------------
@@ -441,9 +441,35 @@ with :func:`newton.utils.color_srgb_to_linear` and
 Base-color textures stored on Newton models follow the same convention and are
 kept display/sRGB-encoded.
 
-Packed color and albedo outputs from :class:`newton.sensors.SensorTiledCamera`
+Gaussian splat radiance follows the same default: :class:`newton.Gaussian`
+treats the evaluated spherical-harmonics radiance as display/sRGB-encoded.
+:class:`newton.sensors.SensorCamera` blends the splats along each ray in that
+encoding, as 3D Gaussian splatting assets are trained, and decodes the blended
+result to linear light once per ray. Pass
+``sh_color_space=newton.utils.ColorSpace.LINEAR`` for scene-linear radiance,
+which is blended in linear light and not decoded. :class:`~newton.sensors.SensorCamera`
+clamps negative radiance to zero in both cases before blending, while values
+above one are kept as HDR. The deprecated
+:class:`~newton.sensors.SensorTiledCamera` ignores ``sh_color_space``; only
+:class:`~newton.sensors.SensorCamera` honors it.
+
+.. note::
+
+   The Gaussian color space is a property of the whole :class:`newton.Gaussian`
+   asset, not of individual splats. :class:`~newton.sensors.SensorCamera` shades
+   each Gaussian asset on its own and keeps the nearest one along a ray, so
+   splats from different assets, including different ``ParticleField`` prims
+   of one USD stage, are never blended with each other or with other geometry.
+
+   A splat scene that has been partitioned into several ``ParticleField`` prims
+   or :class:`~newton.Gaussian` assets is therefore not rendered as one
+   continuous scene: where partitions overlap along a ray, only the nearest one
+   contributes, which can produce visible seams. Keep a scene in a single
+   asset, with a single color space, when overlapping splats must blend.
+
+Packed color and albedo outputs from :class:`newton.sensors.SensorCamera`
 use display/sRGB encoding by default. Set
-``SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
+``SensorCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
 when linear RGB bytes are required for downstream processing. Clear colors are
 specified as display/sRGB packed RGBA values and are converted to linear when
 linear output is requested.

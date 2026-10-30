@@ -1,15 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Domino Spiral
-#
-# Places dominoes along a spiral and tilts the first one to start a
-# contact-driven chain reaction.
-#
-# Command: python -m newton.examples domino_spiral
-#
-###########################################################################
+"""Example Domino Spiral
+
+Places dominoes along a spiral and tilts the first one to start a
+contact-driven chain reaction.
+
+Success criteria:
+- Thirty dominoes stand along a spiral, with the first tilted to initiate contact.
+- Toppling propagates along the spiral through contact between neighboring dominoes.
+- The fallen dominoes remain on the ground without explosive scattering.
+
+Runs:
+- `python -m newton.examples domino_spiral`
+"""
 
 from __future__ import annotations
 
@@ -122,7 +126,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=10,
-                rigid_compliant_alm=True,
             )
         elif self.solver_name == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=2048, nconmax=1024, cone="elliptic")

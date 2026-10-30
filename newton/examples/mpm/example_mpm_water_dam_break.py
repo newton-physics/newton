@@ -1,7 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Water-like MPM dam break rendered as an extracted surface mesh."""
+"""Water-like MPM dam break rendered as an extracted surface mesh.
+
+Success criteria:
+- The initial water column spreads horizontally through the tank after release.
+- A continuous visible water surface follows the flowing material rather than remaining at its
+  initial shape.
+- Water remains contained by the tank floor and walls without explosive particle escape.
+- With --show-particles, the extracted surface tracks the dense flowing particle volume; sparse
+  spray may remain visible outside the reconstructed surface.
+
+Runs:
+- `python -m newton.examples mpm_water_dam_break`
+- `python -m newton.examples mpm_water_dam_break --show-particles`
+"""
 
 import argparse
 import warnings
@@ -90,7 +103,7 @@ class Example:
         )
         if self.world_count > 1:
             builder = newton.ModelBuilder()
-            builder.replicate(world_builder, world_count=self.world_count, spacing=world_spacing)
+            builder.replicate(world_builder, copy_count=self.world_count, spacing=world_spacing)
             self.world_offsets_np = newton.utils.compute_world_offsets(
                 self.world_count, world_spacing, world_builder.up_axis
             )

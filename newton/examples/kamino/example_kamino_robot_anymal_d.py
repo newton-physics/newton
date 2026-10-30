@@ -1,14 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot Anymal D
-#
-# Shows how to simulate Anymal D with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_robot_anymal_d --world-count 16
-#
-###########################################################################
+"""Example Robot Anymal D
+
+Shows how to simulate Anymal D with multiple worlds using SolverKamino.
+
+Success criteria:
+- ANYmal D robots stand on the ground.
+- Right-drag the robot and release it; its articulation stays connected and collides with the
+  ground.
+
+Runs:
+- `python -m newton.examples kamino_robot_anymal_d --use-kamino-contacts`
+- `python -m newton.examples kamino_robot_anymal_d --world-count 16`
+"""
 
 import warp as wp
 
@@ -26,6 +31,7 @@ class Example:
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
+        self.dynamics_solver = args.dynamics_solver if args else "padmm"
         self.viewer = viewer
         self.device = wp.get_device()
 
@@ -34,8 +40,6 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 0.0
         robot_builder.default_shape_cfg.gap = 0.0
-        robot_builder.request_contact_attributes("force")  # For contact visualization
-
         # Load the Anymal D USD and add it to the builder
         asset_path = newton.utils.download_asset("anybotics_anymal_d")
         asset_file = str(asset_path / "usd" / "anymal_d.usda")
@@ -60,9 +64,10 @@ class Example:
         self.model = builder.finalize()
 
         # Create the Kamino solver for the given model
-        self.config = newton.solvers.SolverKamino.Config.from_model(self.model)
+        self.config = newton.solvers.SolverKamino.Config.from_model(self.model, dynamics_solver=self.dynamics_solver)
         self.config.use_collision_detector = self.use_kamino_contacts
-        self.config.padmm.warmstart_mode = "none"
+        if self.dynamics_solver == "padmm":
+            self.config.padmm.warmstart_mode = "none"
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -78,6 +83,9 @@ class Example:
         else:
             self.collision_pipeline = None
             self.contacts = newton.CollisionPipeline(self.model).contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -118,10 +126,23 @@ class Example:
             self.viewer.apply_forces(self.state_0)
             if not self.use_kamino_contacts:
                 self.collision_pipeline.collide(self.state_0, self.contacts)
-                self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+                self.solver.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                    observables=self.solver_observables,
+                )
             else:
-                self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.solver.update_contacts(self.contacts, self.state_0)
+                self.solver.step(
+                    self.state_0,
+                    self.state_1,
+                    self.control,
+                    self.contacts,
+                    self.sim_dt,
+                    observables=self.solver_observables,
+                )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -135,10 +156,13 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        # Contact points use the last substep's input body frames (before the swap).
+        self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):
+        if self.dynamics_solver == "lox":
+            assert not self.solver.status.numpy()["failed"].any(), "The LOX backend failed"
         newton.examples.test_body_state(
             self.model,
             self.state_0,
@@ -162,6 +186,12 @@ class Example:
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
         newton.examples.add_kamino_contacts_arg(parser)
+        parser.add_argument(
+            "--dynamics-solver",
+            choices=("padmm", "lox"),
+            default="padmm",
+            help="Kamino dynamics solver to use.",
+        )
         parser.set_defaults(world_count=1)
         parser.set_defaults(use_kamino_contacts=True)
         return parser

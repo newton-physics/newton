@@ -1,8 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import warnings
-from enum import EnumMeta, IntEnum
+from enum import IntEnum
 
 
 class ModelFlags(IntEnum):
@@ -11,13 +10,17 @@ class ModelFlags(IntEnum):
     These flags are used with :meth:`~newton.solvers.SolverBase.notify_model_changed`
     to specify which properties have changed, allowing the solver to efficiently
     update only the necessary components.
+
+    Categories overlap semantically, but each flag has its own bit. The broad
+    :attr:`JOINT_DOF_PROPERTIES` includes force, inertial, and reference-pose
+    updates. Testing the broad bit alone does not detect a narrower notification.
     """
 
     JOINT_PROPERTIES = 1 << 0
-    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c."""
+    """Indicates joint property updates: joint_q, joint_X_p, joint_X_c, joint_axis."""
 
     JOINT_DOF_PROPERTIES = 1 << 1
-    """Indicates joint DOF property updates: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
+    """Indicates all joint DOF updates, including force, armature, and reference-pose properties: joint_target_ke, joint_target_kd, joint_damping, joint_effort_limit, joint_armature, joint_friction, joint_limit_ke, joint_limit_kd, joint_limit_lower, joint_limit_upper."""
 
     BODY_PROPERTIES = 1 << 2
     """Indicates body property updates: body_q, body_qd, body_flags."""
@@ -26,19 +29,28 @@ class ModelFlags(IntEnum):
     """Indicates body inertial property updates: body_com, body_inertia, body_inv_inertia, body_mass, body_inv_mass."""
 
     SHAPE_PROPERTIES = 1 << 4
-    """Indicates shape property updates: shape_transform, shape_scale, shape_collision_radius, shape_material_mu, shape_material_ke, shape_material_kd, rigid_contact_mu_torsional, rigid_contact_mu_rolling."""
+    """Indicates shape property updates: shape_transform, shape_scale, shape_collision_radius, shape_material_mu, shape_material_restitution, shape_material_ke, shape_material_kd, rigid_contact_mu_torsional, rigid_contact_mu_rolling."""
 
     MODEL_PROPERTIES = 1 << 5
     """Indicates model property updates: gravity and other global parameters."""
 
     CONSTRAINT_PROPERTIES = 1 << 6
-    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp) and mimic relationships (joint_mimic_coeffs and the deprecated constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled arrays)."""
+    """Indicates constraint property updates: equality constraints (mujoco.equality_constraint_anchor, mujoco.equality_constraint_relpose, mujoco.equality_constraint_polycoef, mujoco.equality_constraint_torquescale, mujoco.equality_constraint_enabled, mujoco.eq_solref, mujoco.eq_solimp), mimic relationships (joint_mimic_coeffs and the deprecated constraint_mimic_coef0, constraint_mimic_coef1, constraint_mimic_enabled arrays), and particle-body attachments (attachment_particle_body_stiffness, attachment_particle_body_damping, attachment_particle_body_enabled)."""
 
     TENDON_PROPERTIES = 1 << 7
     """Indicates tendon properties: eg tendon_stiffness."""
 
     ACTUATOR_PROPERTIES = 1 << 8
     """Indicates actuator property updates: gains, biases, limits, etc."""
+
+    JOINT_DOF_FORCE_PROPERTIES = 1 << 9
+    """Indicates joint force updates: friction, damping, target gains/modes, effort limits, passive stiffness, and limit coefficients/bounds. Excludes armature and reference poses."""
+
+    JOINT_DOF_INERTIAL_PROPERTIES = 1 << 10
+    """Indicates joint_armature updates. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
+
+    JOINT_REFERENCE_POSE_PROPERTIES = 1 << 11
+    """Indicates joint reference-pose and spring-reference updates, including Rod rest rotations in joint_target_q. Excludes joint transforms, force parameters, and armature. MuJoCo recomputes constants; use at reset or for domain randomization rather than every step."""
 
     ALL = (
         JOINT_PROPERTIES
@@ -50,6 +62,9 @@ class ModelFlags(IntEnum):
         | CONSTRAINT_PROPERTIES
         | TENDON_PROPERTIES
         | ACTUATOR_PROPERTIES
+        | JOINT_DOF_FORCE_PROPERTIES
+        | JOINT_DOF_INERTIAL_PROPERTIES
+        | JOINT_REFERENCE_POSE_PROPERTIES
     )
     """Indicates all property updates."""
 
@@ -146,36 +161,8 @@ class BodyFlags(IntEnum):
     """Filter bitmask selecting all body types."""
 
 
-def _warn_joint_type_cable_deprecated() -> None:
-    warnings.warn(
-        "newton.JointType.CABLE is deprecated in Newton 1.6; use newton.JointType.ROD instead.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-
-
-class _DeprecatedJointTypeMeta(EnumMeta):
-    def __getattribute__(cls, name: str):
-        # Defined members resolve before EnumMeta.__getattr__, so intercept deprecated access here.
-        value = super().__getattribute__(name)
-        if name == "CABLE":
-            _warn_joint_type_cable_deprecated()
-        return value
-
-    def __getitem__(cls, name: str):
-        value = super().__getitem__(name)
-        if name == "CABLE":
-            _warn_joint_type_cable_deprecated()
-        return value
-
-    def __dir__(cls):
-        # EnumMeta.__dir__ omits aliases; keep the preferred ROD name discoverable.
-        names = super().__dir__()
-        return names if "ROD" in names else [*names, "ROD"]
-
-
 # Types of joints linking rigid bodies
-class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
+class JointType(IntEnum):
     """
     Enumeration of joint types supported in Newton.
     """
@@ -201,16 +188,9 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
     D6 = 6
     """6-DoF joint: Generic joint with up to 3 translational and 3 rotational degrees of freedom."""
 
-    # Keep CABLE as the canonical enum name throughout its 1.6 deprecation.
-    CABLE = 7
-    """Deprecated name for :attr:`ROD`.
-
-    .. deprecated:: 1.6
-        Use :attr:`ROD` instead.
-    """
-
-    ROD = CABLE
-    """Rod joint: four VBD material slots for stretch, shear, bend, and twist."""
+    ROD = 7
+    """Rod joint: 7-coordinate relative pose and 6-DoF relative
+    twist with stretch, shear, bend, and twist response."""
 
     def dof_count(self, num_axes: int) -> tuple[int, int]:
         """
@@ -228,7 +208,7 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
         Notes:
             - For PRISMATIC and REVOLUTE joints, both values are 1 (single axis).
             - For BALL joints, dof_count is 3 (angular velocity), coord_count is 4 (quaternion).
-            - For FREE and DISTANCE joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
+            - For FREE, DISTANCE, and ROD joints, dof_count is 6 (3 translation + 3 rotation), coord_count is 7 (3 position + 4 quaternion).
             - For FIXED joints, both values are 0.
         """
         dof_count = num_axes
@@ -236,7 +216,7 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
         if self == JointType.BALL:
             dof_count = 3
             coord_count = 4
-        elif self == JointType.FREE or self == JointType.DISTANCE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.ROD:
             dof_count = 6
             coord_count = 7
         elif self == JointType.FIXED:
@@ -256,51 +236,17 @@ class JointType(IntEnum, metaclass=_DeprecatedJointTypeMeta):
 
         Notes:
             - For PRISMATIC and REVOLUTE joints, this equals 5 (single DoF axis).
-            - For FREE and DISTANCE joints, `cts_count = 0` since it yields no constraints.
+            - For FREE, DISTANCE, and ROD joints, `cts_count = 0` since they yield no constraints.
             - For FIXED joints, `cts_count = 6` since it fully constrains the associated bodies.
         """
         cts_count = 6 - num_axes
         if self == JointType.BALL:
             cts_count = 3
-        elif self == JointType.FREE or self == JointType.DISTANCE:
+        elif self == JointType.FREE or self == JointType.DISTANCE or self == JointType.ROD:
             cts_count = 0
         elif self == JointType.FIXED:
             cts_count = 6
         return cts_count
-
-
-class _DeprecatedEqTypeMeta(EnumMeta):
-    def __getattribute__(cls, name: str):
-        value = super().__getattribute__(name)
-        if not name.startswith("_"):
-            member_map = super().__getattribute__("_member_map_")
-            if name in member_map:
-                _warn_eq_type_deprecated()
-        return value
-
-    def __call__(cls, *args, **kwargs):
-        _warn_eq_type_deprecated()
-        return super().__call__(*args, **kwargs)
-
-
-def _warn_eq_type_deprecated() -> None:
-    warnings.warn(
-        "newton.EqType is deprecated in Newton 1.4; use newton.solvers.SolverMuJoCo.EqType instead.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-
-
-class EqType(IntEnum, metaclass=_DeprecatedEqTypeMeta):
-    """Deprecated alias for :class:`~newton.solvers.SolverMuJoCo.EqType`.
-
-    .. deprecated:: 1.4
-        Use :class:`~newton.solvers.SolverMuJoCo.EqType` instead.
-    """
-
-    CONNECT = 0
-    WELD = 1
-    JOINT = 2
 
 
 class JointTargetMode(IntEnum):
@@ -374,7 +320,6 @@ class JointTargetMode(IntEnum):
 
 __all__ = [
     "BodyFlags",
-    "EqType",
     "JointTargetMode",
     "JointType",
     "ModelFlags",

@@ -39,6 +39,10 @@ from .types import GeoType
 # are treated as non-negative, biasing toward the +1 vertex.
 BOX_SUPPORT_DEADBAND = 1.0e-10
 _CENTERED_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
+# Hull certification is independent of the support-walk lookup-table resolution.
+_CONVEX_HULL_VALID = wp.constant(1 << 16)
+_CONVEX_SUPPORT_RESOLUTION_MASK = wp.constant((1 << 16) - 1)
+
 TRIANGLE_PRISM_EXTRUSION = 1.0
 """Depth [m] a triangle is extruded along -Z to give a heightfield cell volume."""
 
@@ -63,9 +67,10 @@ class GeoTypeEx(enum.IntEnum):
 
 @wp.struct
 class SupportMapDataProvider:
-    """Optional external data provider for support mapping."""
+    """Optional model-owned hull validation and topology data for support mapping."""
 
-    pass
+    shape_support_data: wp.array[wp.vec4i]
+    support_neighbors: wp.array[int]
 
 
 @wp.struct
@@ -123,7 +128,37 @@ class GenericShapeData:
     scale: wp.vec3
     auxiliary: wp.vec3
     center: wp.vec3  # Precomputed local AABB center for convex seed initialization.
+    bounds_half: wp.vec3  # Optional enclosing local AABB half-extents for penetration bounds.
     shape_index: int  # Index for optional model-owned support-map acceleration data.
+
+
+@wp.func
+def _has_verified_hull(geom: Any, provider: Any) -> bool:
+    """Check topology independently of whether a mesh has support acceleration."""
+    if geom.shape_type != int(GeoType.CONVEX_MESH):
+        return True
+    if geom.shape_index < 0 or geom.shape_index >= provider.shape_support_data.shape[0]:
+        return False
+    packed = provider.shape_support_data[geom.shape_index][3]
+    return packed > 0 and (packed & _CONVEX_HULL_VALID) != 0
+
+
+@wp.func
+def _hull_edge_block(geom: Any, provider: Any) -> int:
+    """Return the start of a verified hull's edge block in ``support_neighbors``, or -1.
+
+    The block holds the edge count followed by one ``(a, b, c1, c2)`` record per
+    edge, where ``cross(b - a, c1 - a)`` and ``cross(c2 - a, b - a)`` are the
+    outward normals of the edge's two faces in the unscaled mesh frame.
+    """
+    if not _has_verified_hull(geom, provider) or geom.shape_type != int(GeoType.CONVEX_MESH):
+        return -1
+    start = provider.shape_support_data[geom.shape_index][2]
+    if start < 0 or start >= provider.support_neighbors.shape[0]:
+        return -1
+    if start + 1 + 4 * provider.support_neighbors[start] > provider.support_neighbors.shape[0]:
+        return -1
+    return start
 
 
 @wp.func
@@ -155,8 +190,9 @@ def _support_map_convex_mesh(
     accelerated = geom.shape_index >= 0 and data_provider.shape_support_data.shape[0] > geom.shape_index
     if accelerated:
         support_data = data_provider.shape_support_data[geom.shape_index]
-        resolution = support_data[3]
-        accelerated = resolution > 0
+        packed = support_data[3]
+        resolution = packed & _CONVEX_SUPPORT_RESOLUTION_MASK
+        accelerated = packed > 0 and resolution > 0
         if accelerated:
             best_idx = _octahedral_support_seed(scaled_dir, resolution, support_data[0], data_provider.support_lut)
             best_dot = wp.dot(mesh.points[best_idx], scaled_dir)
@@ -217,7 +253,14 @@ def _support_map_box(geom: GenericShapeData, direction: wp.vec3) -> wp.vec3:
     return wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
 
 
-@wp.func
+# Out of line: GJK/MPR call it at ~150 sites, and inlining each copy dominated compile time.
+# Warp < 1.18 has no `inline` option and keeps inlining it.
+_support_map_func = (
+    wp.func(inline=False) if tuple(int(v) for v in wp.__version__.split(".")[:2]) >= (1, 18) else wp.func
+)
+
+
+@_support_map_func
 def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Any) -> wp.vec3:
     """
     Return the support point of a primitive in its local frame.
@@ -339,8 +382,8 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Any) 
         dir_xy_len_sq = wp.length_sq(dir_xy)
 
         if barrel_radius == 0.0:
-            # Keep the regular-cylinder path unchanged.
-            if dir_xy_len_sq > eps:
+            # Resolve lateral directions independently of the query magnitude.
+            if dir_xy_len_sq > eps * wp.length_sq(direction):
                 n_xy = dir_xy * _support_rsqrt_rn(dir_xy_len_sq)
                 lateral_point = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, 0.0)
             else:

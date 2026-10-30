@@ -10,7 +10,7 @@ from __future__ import annotations
 import warp as wp
 
 from ..core.data import DataKamino
-from ..core.joints import DofActuationPath
+from ..core.joints import DofActuationPath, clamp_joint_effort_wp
 from ..core.model import ModelKamino
 from ..core.types import mat63f, vec6f
 from ..geometry.contacts import ContactsKamino
@@ -92,7 +92,7 @@ def _compute_joint_dof_body_wrenches_dense(
         if model_joints_dof_act_paths[vio_j] != DofActuationPath.BODY_WRENCHES:
             continue
         mio_j = mio + nbd * j + dio_F
-        tau_j = wp.clamp(data_joints_tau_j[vio_j], -model_joints_tau_j_max[vio_j], model_joints_tau_j_max[vio_j])
+        tau_j = clamp_joint_effort_wp(data_joints_tau_j[vio_j], model_joints_tau_j_max[vio_j])
         for i in range(6):
             w_j_F[i] += jacobian_dofs_data[mio_j + i] * tau_j
     wp.atomic_add(data_bodies_w_a, bid_F_j, w_j_F)
@@ -106,7 +106,7 @@ def _compute_joint_dof_body_wrenches_dense(
             if model_joints_dof_act_paths[vio_j] != DofActuationPath.BODY_WRENCHES:
                 continue
             mio_j = mio + nbd * j + dio_B
-            tau_j = wp.clamp(data_joints_tau_j[vio_j], -model_joints_tau_j_max[vio_j], model_joints_tau_j_max[vio_j])
+            tau_j = clamp_joint_effort_wp(data_joints_tau_j[vio_j], model_joints_tau_j_max[vio_j])
             for i in range(6):
                 w_j_B[i] += jacobian_dofs_data[mio_j + i] * tau_j
         wp.atomic_add(data_bodies_w_a, bid_B_j, w_j_B)
@@ -149,7 +149,7 @@ def _compute_joint_dof_body_wrenches_sparse(
         if model_joints_dof_act_paths[vio_j] != DofActuationPath.BODY_WRENCHES:
             continue
         jac_block = jac_nzb_values[jac_j_nzb_start + j]
-        tau_j = wp.clamp(data_joints_tau_j[vio_j], -model_joints_tau_j_max[vio_j], model_joints_tau_j_max[vio_j])
+        tau_j = clamp_joint_effort_wp(data_joints_tau_j[vio_j], model_joints_tau_j_max[vio_j])
         w_j_F += jac_block * tau_j
     wp.atomic_add(data_bodies_w_a, bid_F_j, w_j_F)
 
@@ -161,7 +161,7 @@ def _compute_joint_dof_body_wrenches_sparse(
             if model_joints_dof_act_paths[vio_j] != DofActuationPath.BODY_WRENCHES:
                 continue
             jac_block = jac_nzb_values[jac_j_nzb_start + d_j + j]
-            tau_j = wp.clamp(data_joints_tau_j[vio_j], -model_joints_tau_j_max[vio_j], model_joints_tau_j_max[vio_j])
+            tau_j = clamp_joint_effort_wp(data_joints_tau_j[vio_j], model_joints_tau_j_max[vio_j])
             w_j_B += jac_block * tau_j
         wp.atomic_add(data_bodies_w_a, bid_B_j, w_j_B)
 

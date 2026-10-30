@@ -85,8 +85,8 @@ Drives and clamping objects are pluggable: implement the
 .. note::
 
    **Current limitations:** the first version does not include a transmission
-   model (gear ratios / linkage transforms), supports only single-input
-   single-output (SISO) actuators (one DOF per actuator), and does not model
+   model (gear ratios / linkage transforms), supports only one DOF per
+   actuator, and does not model
    actuator dynamics (inertia, friction, thermal effects).
 
 Usage
@@ -175,7 +175,8 @@ Stateful Actuators
 ------------------
 
 Drives that maintain internal state (e.g. :class:`DrivePID` with an
-integral accumulator, or :class:`DriveNeuralLSTM` with hidden/cell state) and
+integral accumulator, :class:`DriveNeuralGRU` with hidden state, or
+:class:`DriveNeuralLSTM` with hidden/cell state) and
 actuators with a :class:`Delay` require explicit double-buffered state
 management.  Create two state objects with :meth:`Actuator.state` and swap them
 after each step:
@@ -252,18 +253,87 @@ state objects — simply omit them:
 
    m2.actuators[0].step(m2.state(), m2.control())
 
+.. _custom-drive-inputs:
+
+Custom Drive Inputs
+-------------------
+
+A drive may need an array beyond the positions, velocities and targets the
+actuator already reads. It lists the array names in
+:attr:`DriveBase.custom_inputs`. These values are caller-owned inputs for the
+current evaluation, so they are always read from the ``sim_control`` argument
+of :meth:`Actuator.step`, even when a value describes physical state such as an
+estimated load or measured temperature.
+
+:class:`Actuator` reads each declared value and passes it unchanged to
+:meth:`DriveBase.compute` in the ``custom_inputs`` mapping, keyed by attribute
+name. A missing attribute is passed as ``None``. The drive owns requiredness,
+fallback behavior, and all type, length, dtype, device, shape, and semantic
+validation. A drive called directly receives the same mapping explicitly; it
+does not look for custom values on a simulation state or control object.
+
+For actuators created by :class:`~newton.ModelBuilder`,
+:meth:`Actuator.register_custom_attributes` automatically registers every
+name declared by the drive as a ``wp.float32`` joint-DOF array on
+:class:`~newton.Control`. Registration allocates the array but does not
+populate or clear it. Write every declared value before each actuator
+evaluation to avoid reusing stale data. Users of another simulation engine
+provide the same-named arrays through their ``sim_control`` adapter instead.
+
+:meth:`Actuator.sim_state` returns an empty container with exactly the fields
+the actuator reads from ``sim_state``; :meth:`Actuator.sim_control` is its
+counterpart and includes all declared custom inputs. Passing your own object or
+a mapping to :meth:`Actuator.step` is also supported.
+
+.. warning::
+
+   ``sim_state`` holds references. The simulation loop swaps ``state_0`` and
+   ``state_1`` each step, so a ``sim_state`` built once from ``state_0`` still
+   points at that buffer after the swap and the actuator reads stale positions
+   and velocities. Re-point its fields every step.
+
+In the loop below the drive declares one array named ``extra_input``:
+
+.. code-block:: python
+
+   sim_state = actuator.sim_state()
+
+   for _ in range(num_steps):
+       extra_input = compute_extra_input(model, state_0)
+
+       sim_state.joint_q = state_0.joint_q
+       sim_state.joint_qd = state_0.joint_qd
+
+       control.clear(model)
+       control.joint_target_q.assign(target_positions)
+       control.extra_input.assign(extra_input)
+       actuator.step(sim_state, control, actuator_state_a, actuator_state_b, dt=dt)
+       actuator_state_a, actuator_state_b = actuator_state_b, actuator_state_a
+
+       solver.step(state_0, state_1, control, contacts, dt)
+       state_0, state_1 = state_1, state_0
+
 .. _neural-network-checkpoints:
 
 Neural-Network Checkpoints
 --------------------------
 
-Neural-network drives (:class:`DriveNeuralMLP`,
-:class:`DriveNeuralLSTM`) support two checkpoint backends. `ONNX
-<https://onnx.ai/>`__ (``.onnx``) is an open format for trained networks, which
-Warp-NN runs with its own Warp kernels. Torch checkpoints use the Torch backend
-and require PyTorch.
+Neural-network drives support `ONNX <https://onnx.ai/>`__ (``.onnx``), which
+Warp-NN runs with its own Warp kernels. :class:`DriveNeuralMLP` and
+:class:`DriveNeuralLSTM` additionally support Torch checkpoints through the
+Torch backend; :class:`DriveNeuralGRU` uses ONNX only.
 
-Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
+For :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM`, prefer ONNX exports
+with dynamic batch axes: axis 0 of the MLP input and axis 1 of the LSTM
+input, hidden state, and cell state. Existing fixed-batch exports remain
+supported by adapting these input declarations without changing the source
+checkpoint. This does not rewrite batch sizes embedded in graph operations
+such as ``Reshape``; re-export those models with dynamic batch axes when
+running a different number of actuators.
+
+Torch checkpoints must be pt2 archives saved with ``torch.export.save``.
+Use the ``.pt2`` extension; ``.pt`` and ``.pth`` are also accepted for these
+archives.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
 extra file:
 
@@ -276,11 +346,22 @@ extra file:
    metadata = {"effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
    torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
 
+USD neural actuators may reference a checkpoint through ``newton:modelPath``.
+Importing a USD rejects Torch checkpoints (``.pt2``, ``.pt``, or ``.pth``)
+by default because :meth:`~newton.ModelBuilder.finalize` would load them with
+``torch.export.load``, which can execute code from an untrusted checkpoint.
+For a trusted USD asset and checkpoint, pass
+``allow_unsafe_torch_checkpoints=True`` to
+:meth:`newton.ModelBuilder.add_usd`. Programmatic construction of a neural
+drive from a checkpoint path remains the caller's explicit trust decision.
+
 :class:`DriveNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
-the metadata of both pt2 and ONNX checkpoints.  Only legacy Torch checkpoints
-may omit them: they contain the original module, whose ``torch.nn.LSTM``
-submodule is inspected directly, while ``torch.export`` flattens the network
-into a computation graph that no longer exposes it.
+the metadata of both pt2 and ONNX checkpoints.
+
+:class:`DriveNeuralGRU` requires ``input_columns``, ``normalization`` and
+``sample_dt_s`` in its ONNX checkpoint metadata, and an optional
+``custom_inputs`` that marks one column of ``input_columns`` as an array the
+application supplies each step.
 
 .. _effort-modes:
 
@@ -301,10 +382,6 @@ than the control law nominally asks for. The trade-off is between stability at
 large timesteps with the implicit mode, and fidelity to the requested gains at
 small timesteps with the explicit mode.
 
-The predicted state accounts only for the actuator's own impulse. Gravity, any
-other applied force, other actuators driving the same articulation, and joint
-drive applied without the actuator are all absent from it.
-
 The implicit effort mode necessarily requires the joint-space inverse mass
 matrix. This is supplied by a :class:`~newton.actuators.JointSpaceResponse`, which
 is refreshed once per step at the current pose:
@@ -321,6 +398,70 @@ is refreshed once per step at the current pose:
    sim_control.joint_f.zero_()
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
    solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
+
+By default the predicted state accounts only for the actuator's own impulse.
+Gravity, Coriolis forces and every other force the step applies are absent
+from it. The drive still pushes back once those forces have moved the joint,
+but it cannot anticipate them. For a single joint under a constant load ``g``
+with ``kd = kp dt``, this leaves a steady error of ``g / kp + 2 dt^2 A g``: the
+first part shrinks as the gain grows, the second part does not. Pass the forces
+as a *bias force* to include them in the prediction. The bias force uses the
+sign convention of the manipulator equation ``tau = M qdd + C qd + g``: it is
+``C qd + g``, indexed like ``joint_qd``, and the step itself applies its
+negative. The predicted end-of-step velocity
+then becomes ``qd + A (p - dt bias_force)`` instead of ``qd + A p``, where
+``A`` is the inverse mass matrix (see below) and ``p`` the actuator's impulse.
+
+:func:`~newton.eval_inverse_dynamics_passive` returns the two parts,
+``gravity_force`` ``g(q)`` and ``coriolis_force`` ``C(q, qd) qd``, so the bias
+force is their sum. The function reads ``body_q``, which must match
+``joint_q``; call :func:`~newton.eval_fk` first if it may not.
+
+.. code-block:: python
+
+   @wp.kernel
+   def bias_force_kernel(
+       gravity_force: wp.array[float],
+       coriolis_force: wp.array[float],
+       bias_force: wp.array[float],
+   ):
+       i = wp.tid()
+       bias_force[i] = gravity_force[i] + coriolis_force[i]
+
+
+   dt = 0.01
+   n = model.joint_dof_count
+   gravity_force = wp.zeros(n, dtype=float, device=model.device)
+   coriolis_force = wp.zeros(n, dtype=float, device=model.device)
+   bias_force = wp.zeros(n, dtype=float, device=model.device)
+
+   # Simulation loop
+   response.refresh(sim_state)
+   newton.eval_inverse_dynamics_passive(
+       model, sim_state, gravity_force=gravity_force, coriolis_force=coriolis_force
+   )
+   wp.launch(
+       bias_force_kernel,
+       dim=n,
+       inputs=[gravity_force, coriolis_force],
+       outputs=[bias_force],
+       device=model.device,
+   )
+   sim_control.joint_f.zero_()
+   actuator.step(sim_state, sim_control, state_a, state_b, dt=dt, bias_force=bias_force)
+   solver.step(sim_state, next_sim_state, sim_control, contacts, dt=dt)
+
+These are the forces at the start of the step. A solver that holds them
+constant over the step, such as :class:`~newton.solvers.SolverMuJoCo` with its
+default ``implicitfast`` integrator, applies the same values, so the
+prediction matches its step up to the approximations of the response described
+below. This bias force does not include contacts, joint limits, joint damping,
+other actuators, or joint force applied without the actuator, such as other
+writes to ``joint_f``. Contact and limit forces depend on the actuator's own
+effort and cannot be computed before it.
+:func:`~newton.eval_inverse_dynamics_passive` allocates scratch memory on every
+call, so capturing it in a CUDA graph needs the device's memory pool. The
+explicit effort mode ignores the bias force.
 
 In this mode :meth:`Actuator.step <newton.actuators.Actuator.step>` evaluates
 the joint force for each actuated DOF. A force on one DOF changes the velocity
@@ -352,7 +493,9 @@ exception of loop closure effects. To this end,
 <newton.actuators.JointSpaceResponse.refresh_from_solve>` takes a callable that
 computes ``x = M^-1 y``. The response recovers the matrix one column at a time,
 by passing unit vectors through that callable. MuJoCo is currently the only
-Newton solver that provides one.
+Newton solver that provides one. MuJoCo's free and ball joints use different
+coordinates from Newton's, so pass the state as well; the response then
+converts them at that pose.
 
 .. code-block:: python
 
@@ -361,14 +504,14 @@ Newton solver that provides one.
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
    # Simulation loop, in place of response.refresh(sim_state)
-   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof, state=sim_state)
 
 Both refresh paths launch only kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.
 
 :meth:`~newton.actuators.Actuator.set_effort_mode_explicit` switches back to
 explicit mode. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
-solve's iteration count and convergence tolerances.
+solve's iteration count, line-search length and convergence tolerances.
 
 The following built-in drives support the implicit mode (neural drives require
 the ONNX backend):
@@ -415,6 +558,8 @@ Drives
 * :class:`DrivePD` — proportional-derivative control law (stateless).
 * :class:`DrivePID` — proportional-integral-derivative control law
   (stateful: integral accumulator with anti-windup clamp).
+* :class:`DriveNeuralGRU` — GRU neural-network drive
+  (stateful: hidden state; explicit Warp-NN inference).
 * :class:`DriveNeuralMLP` — MLP neural-network drive
   (stateful: position/velocity history buffers).
 * :class:`DriveNeuralLSTM` — LSTM neural-network drive
@@ -470,7 +615,7 @@ For example, a custom drive needs to implement
        def compute(self, positions, velocities, target_pos, target_vel,
                    feedforward, pos_indices, vel_indices,
                    target_pos_indices, target_vel_indices,
-                   forces, state, dt, device=None):
+                   forces, state, dt, device=None, *, custom_inputs=None):
            # Launch a Warp kernel that writes effort into `forces`
            ...
 
@@ -483,6 +628,11 @@ A stateful custom drive also defines a dataclass subclass of
 default :meth:`Actuator.State.assign` behavior copies direct Warp array and
 Torch tensor fields without replacing their storage. States with other field
 types or nested storage implement ``assign()`` to define that copy.
+
+A drive that needs additional per-step arrays declares them through
+:attr:`DriveBase.custom_inputs`. They arrive in the ``custom_inputs`` argument
+to :meth:`~DriveBase.compute` after being read from ``sim_control``; see
+:ref:`custom-drive-inputs`.
 
 A custom drive works in the explicit mode with the methods above. To also
 support the implicit mode it provides three more things, because the solve

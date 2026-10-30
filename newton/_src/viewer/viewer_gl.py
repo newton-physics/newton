@@ -7,6 +7,7 @@ import ctypes
 import enum
 import re
 import time
+import warnings
 from collections.abc import Callable, Sequence
 from importlib import metadata
 from typing import Any, Literal
@@ -17,13 +18,16 @@ import warp as wp
 import newton as nt
 
 from ..core.types import Axis, override
+from ..exceptions import NewtonDeprecationWarning
+from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
-from .gl.image_logger import ImageLogger
+from .gl.frame_cache import FrameCache
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
+from .image_logger import ImageLogger
 from .picking import Picking
 from .plot_logger import PlotLogger
-from .utils import OPAQUE_OPACITY_THRESHOLD
+from .utils import OPAQUE_OPACITY_THRESHOLD, gaussian_display_colors
 from .viewer import _DEFAULT_LAYER_ID, ViewerBase
 from .viewer_gui import ViewerGui
 from .wind import Wind
@@ -44,33 +48,15 @@ def _imgui_uses_imvec4_color_edit3() -> bool:
 
 
 _IMGUI_BUNDLE_IMVEC4_COLOR_EDIT3 = _imgui_uses_imvec4_color_edit3()
-# Width of the main Newton Viewer sidebar in logical (96-DPI) pixels. The
-# actual framebuffer width used at render time is ``_SIDEBAR_WIDTH_PX *
-# ui.dpi_scale`` so the sidebar keeps a constant visual size on HiDPI
-# displays — see :meth:`ViewerGL._dpi_scale`.
-_SIDEBAR_WIDTH_PX: float = 300.0
 _TRANSPARENT_INSTANCER_SUFFIX = "/__transparent__"
 
 
 @wp.kernel
-def _capsule_duplicate_vec3(in_values: wp.array[wp.vec3], out_values: wp.array[wp.vec3]):
-    # Duplicate N values into 2N values (two caps per capsule).
+def _capsule_render_scales(scales: wp.array[wp.vec3], out_scales: wp.array[wp.vec3]) -> None:
     tid = wp.tid()
-    out_values[tid] = in_values[tid // 2]
-
-
-@wp.kernel
-def _capsule_duplicate_vec4(in_values: wp.array[wp.vec4], out_values: wp.array[wp.vec4]):
-    # Duplicate N values into 2N values (two caps per capsule).
-    tid = wp.tid()
-    out_values[tid] = in_values[tid // 2]
-
-
-@wp.kernel
-def _capsule_duplicate_float(in_values: wp.array[wp.float32], out_values: wp.array[wp.float32]):
-    # Duplicate N values into 2N values (two caps per capsule).
-    tid = wp.tid()
-    out_values[tid] = in_values[tid // 2]
+    scale = scales[tid]
+    # Keep the axial basis nonzero for the zero-length (sphere) case.
+    out_scales[tid] = wp.vec3(scale[0], scale[1], scale[0] + scale[2])
 
 
 @wp.kernel
@@ -78,41 +64,16 @@ def _capsule_build_body_scales(
     shape_scale: wp.array[wp.vec3],
     shape_indices: wp.array[wp.int32],
     out_scales: wp.array[wp.vec3],
-):
+) -> None:
     # model.shape_scale stores capsule params as (radius, half_height, _unused).
     # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
-    # (radius, radius, half_height) for the cylinder body.
+    # (radius, radius, half_height) for the capsule instance parameters.
     tid = wp.tid()
     s = shape_indices[tid]
     scale = shape_scale[s]
     r = scale[0]
     half_height = scale[1]
     out_scales[tid] = wp.vec3(r, r, half_height)
-
-
-@wp.kernel
-def _capsule_build_cap_xforms_and_scales(
-    capsule_xforms: wp.array[wp.transform],
-    capsule_scales: wp.array[wp.vec3],
-    out_xforms: wp.array[wp.transform],
-    out_scales: wp.array[wp.vec3],
-):
-    tid = wp.tid()
-    i = tid // 2
-    # Each capsule has two caps; even tid is the +Z end, odd tid is the -Z end.
-    is_plus_end = (tid % 2) == 0
-
-    t = capsule_xforms[i]
-    p = wp.transform_get_translation(t)
-    q = wp.transform_get_rotation(t)
-
-    r = capsule_scales[i][0]
-    half_height = capsule_scales[i][2]
-    offset_local = wp.vec3(0.0, 0.0, half_height if is_plus_end else -half_height)
-    p2 = p + wp.quat_rotate(q, offset_local)
-
-    out_xforms[tid] = wp.transform(p2, q)
-    out_scales[tid] = wp.vec3(r, r, r)
 
 
 @wp.kernel
@@ -217,6 +178,8 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
+    _supports_deformable_visual_meshes = True
+
     class CudaInterop(enum.IntFlag):
         """Render-geometry categories eligible for CUDA-OpenGL interoperability."""
 
@@ -224,10 +187,10 @@ class ViewerGL(ViewerBase):
         """Disable CUDA-OpenGL interoperability for render geometry."""
 
         DYNAMIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=True``."""
+        """Meshes logged with ``dynamic=True``. Either mesh flag also enables model-owned skinned meshes."""
 
         STATIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=False``."""
+        """Meshes logged with ``dynamic=False``. Either mesh flag also enables model-owned skinned meshes."""
 
         POINTS = enum.auto()
         """Point instance-transform buffers."""
@@ -264,10 +227,10 @@ class ViewerGL(ViewerBase):
             paused: Start the viewer in paused mode.
             plot_history_size: Maximum number of samples kept per
                 :meth:`log_scalar` signal for the live time-series plots.
-            num_frames: Number of frames to render in headless mode before
+            num_frames: Number of viewer-loop frames in headless mode before
                 :meth:`is_running` returns False. If None, headless rendering
-                is unbounded; if 0, no frames are rendered. Ignored in
-                windowed mode.
+                is unbounded; if 0, no frames are rendered. Includes
+                rendering-paused frames. Ignored in windowed mode.
             enable_cuda_interop: Render-geometry categories that use CUDA-OpenGL
                 interoperability. Combine :class:`CudaInterop` flags with ``|``.
                 Defaults to :attr:`CudaInterop.DYNAMIC_MESH`.
@@ -287,17 +250,14 @@ class ViewerGL(ViewerBase):
         # Initialized below once self.device is available; declared here so
         # close() can safely run if __init__ raises before that point.
         self._image_logger: ImageLogger | None = None
+        self._displayed_frame = FrameCache()
+        self._has_rendered_frame = False
 
         super().__init__()
 
         self.renderer = RendererGL(vsync=vsync, screen_width=width, screen_height=height, headless=headless)
         self.renderer.set_title("Newton Viewer")
-        self._image_logger = ImageLogger(
-            device=self.device,
-            sidebar_width_px=self._sidebar_width_fb_px(),
-            dpi_scale=self._dpi_scale(),
-        )
-        self._main_image_name: str | None = None
+        self._image_logger = ImageLogger(device=self.device)
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis="Z")
@@ -326,8 +286,6 @@ class ViewerGL(ViewerBase):
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
             self.gui = ViewerGui(self, self.renderer.window)
-            # ViewerGL owns the pyglet ``on_scale`` event so the GUI and
-            # ImageLogger receive the same resolved DPI scale value.
             self.renderer.window.push_handlers(on_scale=self._on_window_scale)
         else:
             self.gui = None
@@ -337,8 +295,6 @@ class ViewerGL(ViewerBase):
         if self.gui is not None:
             # Register GL-specific rendering options (sky, shadows, wireframe, colors)
             self.gui.register_ui_callback(self._ui_populate_rendering_panel, position="rendering")
-            # Draw image-logger floating windows outside the sidebar window.
-            self.gui.register_ui_callback(lambda _imgui: self._image_logger.draw(), position="free")
             # Top-level Layers panel (visible only when multiple layers exist).
             self.gui.register_ui_callback(self._ui_populate_layers_panel, position="panel")
 
@@ -491,15 +447,19 @@ class ViewerGL(ViewerBase):
 
         Args:
             name: Unique gizmo path/name.
-            transform: Gizmo world transform.
+            transform: Gizmo world transform with translation [m] and a
+                unitless rotation quaternion.
             translate: Axes on which the translation handles are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all translation handles.
             rotate: Axes on which the rotation rings are shown.
                 Defaults to all axes when ``None``. Pass an empty sequence
                 to hide all rotation rings.
-            snap_to: Optional world transform to snap to when this gizmo is
-                released by the user.
+            snap_to: Optional world transform with translation [m] and a
+                unitless rotation quaternion to apply when this gizmo is
+                released by the user. Cancelling a drag by removing its handle,
+                hiding the UI, pausing rendering, or losing window focus keeps
+                the current pose instead.
         """
         axis_order = (Axis.X, Axis.Y, Axis.Z)
 
@@ -531,6 +491,9 @@ class ViewerGL(ViewerBase):
         the currently active layer are destroyed so other layers' models
         keep rendering.
         """
+        self._displayed_frame.clear()
+        self._has_rendered_frame = False
+
         # Only destroy backend objects owned by the active layer so other
         # live layers retain their meshes / instancers / lines / wireframes.
         owns = self._is_layer_owned_path
@@ -636,16 +599,9 @@ class ViewerGL(ViewerBase):
             # per-frame overlay path.
             self.gui.update_shape_counts(self.model)
 
-        # ``ViewerBase.set_model`` may have switched ``self.device`` to the
-        # model's device. Rebind the image logger so its GPU path tests against
-        # — and registers PBO interop with — the correct CUDA context.
-        if self._image_logger is not None and self._image_logger.device != self.device:
-            self._image_logger.clear()
-            self._image_logger = ImageLogger(
-                device=self.device,
-                sidebar_width_px=self._sidebar_width_fb_px(),
-                dpi_scale=self._dpi_scale(),
-            )
+        # ``ViewerBase.set_model`` may have switched ``self.device`` to the model's device.
+        if self._image_logger is not None:
+            self._image_logger.set_device(self.device)
 
         if self.model is not None:
             # For capsule batches, replace per-instance scales with (radius, radius, half_height)
@@ -683,19 +639,16 @@ class ViewerGL(ViewerBase):
                 )
                 batch.scales = out_scales
 
-        self.picking = Picking(model, world_offsets=self.world_offsets)
-        self.picking.visible_worlds_mask = self._visible_worlds_mask
-        self.wind = Wind(model)
-
-        # Precompile picking/raycast kernels to avoid JIT delay on first pick
+        self.picking = None
         if model is not None:
+            self.picking = Picking(
+                model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask
+            )
             try:
-                from ..geometry import raycast as _raycast_module  # noqa: PLC0415
-
-                wp.load_module(module=_raycast_module, device=model.device)
-                wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+                self.picking._load_kernels()
             except Exception:
                 pass
+        self.wind = Wind(model)
 
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
@@ -756,7 +709,7 @@ class ViewerGL(ViewerBase):
 
         # Write-index: maps model shape index → packed output position (-1 = skip)
         write_np = np.full(shape_count, -1, dtype=np.int32)
-        # World xforms output (capsules read these for cap sphere computation)
+        # World transforms for the capsule instancing path
         all_world_xforms = wp.empty(total, dtype=wp.transform, device=device)
 
         for _key, shapes, offset, n in groups:
@@ -767,18 +720,20 @@ class ViewerGL(ViewerBase):
                 shapes.world_xforms = all_world_xforms[offset : offset + n]
 
             if _key not in capsule_keys:
-                if shapes.name not in self.objects:
-                    if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
-                        instancer = MeshInstancerGL(
-                            max(n, 1),
-                            self.objects[shapes.mesh],
-                            enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
-                        )
-                        # Planes (e.g. the ground) opt out of the wireframe edge
-                        # overlay. Keyed on geometry type, not the checker material
-                        # bit, so checker-shaded non-planes still get edges (#2808).
-                        instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
-                        self.objects[shapes.name] = instancer
+                mesh = self.objects.get(shapes.mesh)
+                instancer = self.objects.get(shapes.name)
+                # Visibility changes can reuse a batch name for a different geometry.
+                if isinstance(mesh, MeshGL) and (instancer is None or instancer.mesh is not mesh):
+                    instancer = MeshInstancerGL(
+                        max(n, 1),
+                        mesh,
+                        enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
+                    )
+                    # Planes (e.g. the ground) opt out of the wireframe edge
+                    # overlay. Keyed on geometry type, not the checker material
+                    # bit, so checker-shaded non-planes still get edges (#2808).
+                    instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
+                    self.objects[shapes.name] = instancer
 
         self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms
@@ -962,6 +917,59 @@ class ViewerGL(ViewerBase):
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
         """
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            normals,
+            uvs,
+            texture,
+            hidden,
+            backface_culling,
+            color,
+            roughness,
+            metallic,
+            dynamic,
+            opacity,
+        )
+
+    @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        existing = self.objects.get(name)
+        if hidden and existing is not None:
+            existing.hidden = True
+            return
+        # Skinning changes vertices, not topology. Keep indices fixed with either mesh interop flag.
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            hidden=hidden,
+            reuse_texture=True,
+            cuda_interop_category=self.CudaInterop.DYNAMIC_MESH | self.CudaInterop.STATIC_MESH,
+            **kwargs,
+        )
+
+    def _log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+        dynamic=False,
+        opacity=None,
+        *,
+        reuse_texture=False,
+        cuda_interop_category: CudaInterop | None = None,
+    ):
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
@@ -980,6 +988,8 @@ class ViewerGL(ViewerBase):
 
         updated = False
         if replace:
+            if cuda_interop_category is None:
+                cuda_interop_category = self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
             point_capacity = len(points)
             index_capacity = len(indices)
             if existing is not None and existing.dynamic and dynamic:
@@ -992,15 +1002,14 @@ class ViewerGL(ViewerBase):
                 hidden=hidden,
                 backface_culling=backface_culling,
                 dynamic=dynamic,
-                enable_cuda_interop=self._cuda_interop_enabled(
-                    self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
-                ),
+                enable_cuda_interop=self._cuda_interop_enabled(cuda_interop_category),
             )
             if existing is not None:
                 replacement.color = existing.color
+                replacement._color_is_default = existing._color_is_default
                 replacement.material = existing.material
             try:
-                replacement.update(points, indices, normals, uvs, texture, opacity=opacity)
+                replacement.update(points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture)
             except Exception:
                 replacement.destroy()
                 raise
@@ -1013,12 +1022,23 @@ class ViewerGL(ViewerBase):
                 existing.destroy()
 
         if not updated:
-            self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
+            self.objects[name].update(
+                points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture
+            )
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+        if reuse_texture:
+            # Model-owned visuals opt in without changing ordinary log_mesh materials.
+            mesh = self.objects[name]
+            r, m, c, _t = mesh.material
+            mesh.material = (r, m, c, 1.0 if mesh.texture_id else 0.0)
+            if mesh._color_is_default:
+                # Textures supply their own albedo; retain explicit tints across updates.
+                mesh.color = (1.0, 1.0, 1.0) if mesh.texture_id else MeshGL._DEFAULT_COLOR
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
+            self.objects[name]._color_is_default = False
 
         if roughness is not None or metallic is not None:
             r, m, c, t = self.objects[name].material
@@ -1044,7 +1064,7 @@ class ViewerGL(ViewerBase):
         transform_count = len(xforms) if xforms is not None else 0
         resized = False
 
-        if instancer is None:
+        if instancer is None or instancer.mesh is not mesh:
             capacity = max(transform_count, 1)
             instancer = MeshInstancerGL(
                 capacity,
@@ -1170,6 +1190,15 @@ class ViewerGL(ViewerBase):
         if isinstance(transparent_instancer, MeshInstancerGL):
             transparent_instancer.hidden = True
 
+    def _get_capsule_mesh(self) -> str:
+        """Share one closed prototype across all capsule sizes in this layer."""
+        name = self._qualify("/geometry/_capsule_instancer/mesh")
+        if name not in self.objects:
+            # Match the unit radius/half-height assumed by gl.shaders.capsule_vertex_transform.
+            self.log_geo(name, nt.GeoType.CAPSULE, (1.0, 1.0), 0.0, True, hidden=True)
+            self.objects[name]._capsule_instancing = True
+        return name
+
     @override
     def log_capsules(
         self,
@@ -1181,117 +1210,44 @@ class ViewerGL(ViewerBase):
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
         opacities: wp.array[wp.float32] | None = None,
-    ):
-        """
-        Render capsules using instanced cylinder bodies + instanced sphere end caps.
+    ) -> None:
+        """Render continuous capsule surfaces, batching arbitrary radii and lengths.
 
-        This specialized path improves batching for varying-length capsules by reusing two
-        prototype meshes (unit cylinder + unit sphere) and applying per-instance transforms/scales.
+        The shared prototype comes from :meth:`newton.Mesh.create_capsule`.
+        Instance scales are ``(radius, radius, half_height)``; the shader scales
+        the hemispheres uniformly and translates them to the cylinder ends.
+        The supplied mesh path is unused in this specialized backend.
 
         Args:
-            name: Unique name for the capsule instancer group.
-            mesh: Capsule prototype mesh path from ViewerBase (unused in this backend).
-            xforms: Capsule instance transforms (wp.transform), length N.
-            scales: Capsule body instance scales, expected (radius, radius, half_height), length N.
-            colors: Capsule instance colors (wp.vec3), length N or None (no update).
-            materials: Capsule instance materials (wp.vec4), length N or None (no update).
-            hidden: Whether the instances are hidden.
-            opacities: Capsule display opacities (wp.float32), length N or None (no update).
+            name: Unique name for the capsule batch within the active layer.
+            mesh: Capsule prototype path, unused by this backend.
+            xforms: Per-instance transforms, or ``None`` to clear visible instances.
+            scales: Per-instance capsule dimensions [m] as ``(radius, radius, half_height)``.
+                Supply these with visible transforms; ``None`` uses unit-radius spheres.
+            colors: Per-instance RGB colors, or ``None`` to keep existing colors.
+            materials: Per-instance material parameters, or ``None`` to keep existing materials.
+            hidden: Whether to hide the batch without updating existing instance buffers.
+            opacities: Per-instance display opacities in ``[0, 1]``, or ``None`` to keep existing values.
         """
-        # Route the user-supplied capsule batch name through the active
-        # layer so two layers calling ``log_capsules`` with the same path
-        # don't overwrite each other (idempotent on already-qualified names).
-        name = self._qualify(name)
-
-        # Render capsules via instanced cylinder body + instanced sphere caps.
-        # Prototype mesh keys are qualified with the active layer so a
-        # ``clear_model()`` on one layer does not destroy prototypes shared
-        # by capsule instancers in other live layers.
-        sphere_mesh = self._qualify("/geometry/_capsule_instancer/sphere")
-        cylinder_mesh = self._qualify("/geometry/_capsule_instancer/cylinder")
-
-        if sphere_mesh not in self.objects:
-            self.log_geo(sphere_mesh, nt.GeoType.SPHERE, (1.0,), 0.0, True, hidden=True)
-        if cylinder_mesh not in self.objects:
-            self.log_geo(cylinder_mesh, nt.GeoType.CYLINDER, (1.0, 1.0), 0.0, True, hidden=True)
-
-        # Cylinder body uses the capsule transforms and (radius, radius, half_height) scaling.
-        cyl_name = f"{name}/capsule_cylinder"
-        cap_name = f"{name}/capsule_caps"
-
-        # If hidden, just hide the instancers (skip all per-frame cap buffer work).
-        if hidden:
-            self.log_instances(cyl_name, cylinder_mesh, None, None, None, None, hidden=True)
-            self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
-            return
-
+        render_scales = None
+        if not hidden and scales is not None:
+            render_scales = wp.empty_like(scales)
+            wp.launch(
+                _capsule_render_scales,
+                dim=len(scales),
+                inputs=[scales],
+                outputs=[render_scales],
+                device=self.device,
+                record_tape=False,
+            )
         self.log_instances(
-            cyl_name, cylinder_mesh, xforms, scales, colors, materials, opacities=opacities, hidden=hidden
-        )
-
-        # Sphere caps: two spheres per capsule, offset by ±half_height along local +Z.
-        n = len(xforms) if xforms is not None else 0
-        if n == 0:
-            self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
-            return
-
-        cap_count = n * 2
-        cap_xforms = wp.empty(cap_count, dtype=wp.transform, device=self.device)
-        cap_scales = wp.empty(cap_count, dtype=wp.vec3, device=self.device)
-
-        wp.launch(
-            _capsule_build_cap_xforms_and_scales,
-            dim=cap_count,
-            inputs=[xforms, scales],
-            outputs=[cap_xforms, cap_scales],
-            device=self.device,
-            record_tape=False,
-        )
-
-        cap_colors = None
-        if colors is not None:
-            cap_colors = wp.empty(cap_count, dtype=wp.vec3, device=self.device)
-            wp.launch(
-                _capsule_duplicate_vec3,
-                dim=cap_count,
-                inputs=[colors],
-                outputs=[cap_colors],
-                device=self.device,
-                record_tape=False,
-            )
-
-        cap_materials = None
-        if materials is not None:
-            cap_materials = wp.empty(cap_count, dtype=wp.vec4, device=self.device)
-            wp.launch(
-                _capsule_duplicate_vec4,
-                dim=cap_count,
-                inputs=[materials],
-                outputs=[cap_materials],
-                device=self.device,
-                record_tape=False,
-            )
-
-        cap_opacities = None
-        if opacities is not None:
-            cap_opacities = wp.empty(cap_count, dtype=wp.float32, device=self.device)
-            wp.launch(
-                _capsule_duplicate_float,
-                dim=cap_count,
-                inputs=[opacities],
-                outputs=[cap_opacities],
-                device=self.device,
-                record_tape=False,
-            )
-
-        self.log_instances(
-            cap_name,
-            sphere_mesh,
-            cap_xforms,
-            cap_scales,
-            cap_colors,
-            cap_materials,
-            opacities=cap_opacities,
+            name,
+            self._get_capsule_mesh(),
+            xforms,
+            render_scales,
+            colors,
+            materials,
+            opacities=opacities,
             hidden=hidden,
         )
 
@@ -1609,8 +1565,6 @@ class ViewerGL(ViewerBase):
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
-    _SH_C0 = 0.28209479177387814
-
     def _create_gaussian_mesh(self):
         """Create a very low-poly sphere mesh dedicated to Gaussian splat rendering."""
         mesh = nt.Mesh.create_sphere(1.0, num_latitudes=3, num_longitudes=4, compute_inertia=False)
@@ -1685,7 +1639,7 @@ class ViewerGL(ViewerBase):
             vbo[:, 15] = 1.0
 
             if sh is not None and sh.shape[1] >= 3:
-                colors = np.ascontiguousarray((self._SH_C0 * sh[:, :3] + 0.5).clip(0.0, 1.0).astype(np.float32))
+                colors = np.ascontiguousarray(gaussian_display_colors(sh, gaussian.sh_color_space))
             else:
                 colors = np.ones((n, 3), dtype=np.float32)
 
@@ -1790,10 +1744,7 @@ class ViewerGL(ViewerBase):
         """See :meth:`~newton.viewer.ViewerBase.log_image`."""
         # Route user-supplied names through the active layer (idempotent)
         # so two layers logging the same image name don't stomp each other.
-        name = self._qualify(name)
-        self._image_logger.log(name, image, fullscreen=fullscreen)
-        if fullscreen:
-            self._main_image_name = name
+        self._image_logger.log(self._qualify(name), image, fullscreen=fullscreen)
 
     @override
     def log_scalar(
@@ -1965,24 +1916,17 @@ class ViewerGL(ViewerBase):
             self.log_lines("picking_line", None, None, None)
             return
 
-        # Get the picked body index
-        pick_body_idx = self.picking.pick_body.numpy()[0]
-        if pick_body_idx < 0:
-            self.log_lines("picking_line", None, None, None)
-            return
-
+        pick_body_idx = self.picking.pick_body
         # Get the pick target and current picked point on geometry (in physics space)
-        pick_state = self.picking.pick_state.numpy()
-
-        pick_target = pick_state[0]["picking_target_world"]
-        picked_point = pick_state[0]["picked_point_world"]
+        pick_target = self.picking.pick_target
+        picked_point = self.picking.pick_point
 
         # Apply world offset to convert from physics space to visual space
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
             if self.model.body_world is not None:
                 body_world_idx = self.model.body_world.numpy()[pick_body_idx]
                 if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
-                    world_offset = self.world_offsets.numpy()[body_world_idx]
+                    world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
                     pick_target = pick_target + world_offset
                     picked_point = picked_point + world_offset
 
@@ -2031,7 +1975,7 @@ class ViewerGL(ViewerBase):
             state: The current simulation state.
         """
         if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
         if self.wind is not None:
             self.wind._apply_wind_force(state)
@@ -2051,31 +1995,62 @@ class ViewerGL(ViewerBase):
         if self.wind is not None:
             self.wind.update(dt)
 
-        try:
-            # If the window was closed during event processing, skip rendering
-            if self.renderer.has_exit():
-                return
+        fullscreen_name = self._image_logger.pop_fullscreen()
 
-            # Fullscreen image logs are frame-scoped so stale sensor output cannot
-            # keep replacing the 3D scene after an example stops logging it.
-            main_image_name = self._main_image_name
-            if main_image_name is not None:
-                texture = self._image_logger.get_texture(main_image_name, fullscreen=True)
-                if texture is None:
-                    self.renderer.render_texture(None, 0, 0)
-                else:
-                    self.renderer.render_texture(*texture)
+        # If the window was closed during event processing, skip rendering
+        if self.renderer.has_exit():
+            return
+
+        if self.gui:
+            self.gui.prepare_frame()
+        if self.renderer.has_exit():
+            return
+
+        if self.is_rendering_paused():
+            frame = self._displayed_frame
+            self.renderer.render_texture(frame.texture, frame.width, frame.height, flip_y=False)
+        elif fullscreen_name is not None:
+            texture = self._image_logger.get_texture(fullscreen_name, fullscreen=True)
+            self.renderer.render_texture(*(texture or (None, 0, 0)))
+            self._has_rendered_frame = texture is not None
+        else:
+            self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
+            self._has_rendered_frame = True
+
+        if not self.is_rendering_paused():
+            if self._has_rendered_frame:
+                self._displayed_frame.store(
+                    self.renderer._frame_texture, self.renderer._screen_width, self.renderer._screen_height
+                )
             else:
-                self.renderer.render(self.camera, self.objects, self.lines, self.wireframe_shapes, self.arrows)
+                self._displayed_frame.clear()
 
-            if self.gui:
-                self.gui.render_frame(update_fps=True)
+        if self.gui:
+            self.gui.render_prepared_frame()
 
-            self.renderer.present()
-        finally:
-            self._main_image_name = None
+        self.renderer.present()
 
-    def get_frame(self, target_image: wp.array | None = None, render_ui: bool = False) -> wp.array:
+    @override
+    def set_rendering_paused(self, paused: bool) -> None:
+        """See :meth:`newton.viewer.ViewerBase.set_rendering_paused`."""
+        if bool(paused) == self.is_rendering_paused():
+            return
+        self._rendering_paused = bool(paused)
+        if paused:
+            if self.picking is not None:
+                self.picking.release()
+            if self.gui is not None:
+                self.gui.on_rendering_paused()
+
+    @override
+    @deprecate_nonkeyword_arguments
+    def get_frame(
+        self,
+        *,
+        output: wp.array3d[wp.uint8] | None = None,
+        render_ui: bool = False,
+        target_image: wp.array3d[wp.uint8] | None = None,
+    ) -> wp.array3d[wp.uint8]:
         """
         Retrieve the last rendered frame.
 
@@ -2083,17 +2058,39 @@ class ViewerGL(ViewerBase):
         CUDA-OpenGL interoperability, while CPU viewers read the PBO into host
         memory.
 
+        .. deprecated:: 1.7
+            ``target_image`` and passing optional arguments positionally are
+            deprecated. Use ``get_frame(output=..., render_ui=...)`` instead.
+
         Args:
-            target_image:
+            output:
                 Optional pre-allocated Warp array with shape `(height, width, 3)`
                 and dtype `wp.uint8`. If `None`, a new array will be created.
             render_ui: Whether to render the UI.
+            target_image: Deprecated alias for ``output``.
 
         Returns:
             wp.array: RGB image data on the viewer device with shape
                 `(height, width, 3)` and dtype `wp.uint8`. Origin is top-left
                 (OpenGL's bottom-left is flipped).
+                If supplied, returns ``output``.
+
+        Raises:
+            TypeError: Both ``output`` and ``target_image`` are supplied.
+            RuntimeError: Rendering is paused before an image has been displayed.
         """
+        if target_image is not None:
+            if output is not None:
+                raise TypeError("Specify only one of `output` and `target_image`")
+            warnings.warn(
+                "ViewerGL.get_frame(target_image=...) is deprecated as of Newton 1.7; use output=... instead.",
+                NewtonDeprecationWarning,
+                stacklevel=3,
+            )
+            output = target_image
+
+        if self.is_rendering_paused() and not self._has_rendered_frame:
+            raise RuntimeError("Frame capture requires at least one displayed frame")
 
         gl = RendererGL.gl
         w, h = self.renderer._screen_width, self.renderer._screen_height
@@ -2150,22 +2147,22 @@ class ViewerGL(ViewerBase):
             assert self._pbo_host_buffer is not None
             buf = self._pbo_host_buffer
 
-        if target_image is None:
-            target_image = wp.empty(
+        if output is None:
+            output = wp.empty(
                 shape=(h, w, 3),
                 dtype=wp.uint8,  # pyright: ignore[reportArgumentType]
                 device=self.device,
             )
 
-        if target_image.shape != (h, w, 3):
-            raise ValueError(f"Shape of `target_image` must be ({h}, {w}, 3), got {target_image.shape}")
+        if output.shape != (h, w, 3):
+            raise ValueError(f"Shape of `output` must be ({h}, {w}, 3), got {output.shape}")
 
         # Launch the RGB kernel.
         wp.launch(
             copy_rgb_frame_uint8,
             dim=(w, h),
             inputs=[buf, w, h],
-            outputs=[target_image],
+            outputs=[output],
             device=self.device,
         )
 
@@ -2173,7 +2170,7 @@ class ViewerGL(ViewerBase):
             assert self._wp_pbo is not None
             self._wp_pbo.unmap()
 
-        return target_image
+        return output
 
     @override
     def is_running(self) -> bool:
@@ -2232,6 +2229,7 @@ class ViewerGL(ViewerBase):
         Close the viewer and clean up resources.
         """
         self._plot_logger.clear()
+        self._displayed_frame.clear()
         self._invalidate_pbo()
         if self._image_logger is not None:
             self._image_logger.clear()
@@ -2339,7 +2337,9 @@ class ViewerGL(ViewerBase):
             scroll_x: Horizontal scroll delta.
             scroll_y: Vertical scroll delta.
         """
-        if self.gui:
+        # With ImGui, mouse input is routed during prepare_frame() so the
+        # camera and gizmos see the same processed events and hover state.
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_scroll(scroll_y, is_ctrl_down=self._is_ctrl_down())
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
@@ -2362,7 +2362,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
     def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
@@ -2375,7 +2375,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button released.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_release(x, y, button)
 
     def on_mouse_drag(
@@ -2398,7 +2398,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords, modifiers)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
@@ -2474,34 +2474,12 @@ class ViewerGL(ViewerBase):
         """Propagate the current DPI to all DPI-dependent layout state.
 
         ``dpi_scale`` is the raw pyglet ``on_scale`` value when available. We
-        resolve it against the current framebuffer/window ratio once here, then
-        feed that same value to both UI and ImageLogger.
+        resolve it against the current framebuffer/window ratio before handing
+        it to the UI.
         """
         resolved_scale = self._resolve_dpi_scale(dpi_scale)
         if self.ui is not None and self.ui.is_available:
-            resolved_scale = self.ui.refresh_dpi(resolved_scale)
-        if self._image_logger is not None:
-            self._image_logger._sidebar_width_px = _SIDEBAR_WIDTH_PX * resolved_scale
-            self._image_logger.dpi_scale = resolved_scale
-
-    def _dpi_scale(self) -> float:
-        """Return the current DPI scale.
-
-        Falls back to ``window.scale`` (pyglet's documented HiDPI API) and
-        then the framebuffer/window-size ratio when the ImGui UI is not yet
-        available (e.g. during ``__init__`` before the UI is created, or in
-        headless mode). On macOS Retina ``window.scale`` is the only signal
-        that yields a value > 1.0 because pyglet reports both sizes in
-        physical pixels there.
-        """
-        ui = getattr(self, "ui", None)
-        if ui is not None and ui.is_available:
-            return ui.dpi_scale
-        return self._detect_window_dpi_scale()
-
-    def _detect_window_dpi_scale(self) -> float:
-        """Return the current DPI scale from pyglet window APIs."""
-        return self._resolve_dpi_scale()
+            self.ui.refresh_dpi(resolved_scale)
 
     def _resolve_dpi_scale(self, dpi_scale: float | None = None) -> float:
         """Return one DPI scale resolved from event and window signals."""
@@ -2530,20 +2508,16 @@ class ViewerGL(ViewerBase):
         except (TypeError, ValueError):
             return 1.0
 
-    def _sidebar_width_fb_px(self) -> float:
-        """Sidebar width in framebuffer pixels, scaled by the current DPI."""
-        return _SIDEBAR_WIDTH_PX * self._dpi_scale()
-
     def _ui_populate_rendering_panel(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""
         # Sky rendering
-        _changed, self.renderer.draw_sky = imgui.checkbox("Sky", self.renderer.draw_sky)
+        self._edit_display_option(self.renderer, "draw_sky", imgui.checkbox, "Sky")
 
         # Shadow rendering
-        _changed, self.renderer.draw_shadows = imgui.checkbox("Shadows", self.renderer.draw_shadows)
+        self._edit_display_option(self.renderer, "draw_shadows", imgui.checkbox, "Shadows")
 
         # Wireframe mode
-        _changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
+        self._edit_display_option(self.renderer, "draw_wireframe", imgui.checkbox, "Wireframe")
 
         def _edit_color3(label: str, color: tuple[float, float, float]) -> tuple[bool, tuple[float, float, float]]:
             """Normalize color_edit3 input/output across imgui_bundle versions."""
@@ -2555,13 +2529,11 @@ class ViewerGL(ViewerBase):
             return changed, (updated_color[0], updated_color[1], updated_color[2])
 
         # Light color
-        _changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
+        self._edit_display_option(self.renderer, "_light_color", _edit_color3, "Light Color")
         # Sky color
-        _changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
+        self._edit_display_option(self.renderer, "sky_upper", _edit_color3, "Sky Color")
         # Ground color
-        _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
-
-        self._image_logger.draw_controls()
+        self._edit_display_option(self.renderer, "sky_lower", _edit_color3, "Ground Color")
 
     def _ui_populate_layers_panel(self, imgui):
         """Top-level Layers panel — toggle visibility of overlaid solvers/models.

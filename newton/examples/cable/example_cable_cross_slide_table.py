@@ -1,28 +1,29 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Cross-Slide Table
-#
-# Demonstrates a cable-driven cross-slide table inspired by the Simscape
-# Multibody cable-driven XY table example:
-# https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html
-# The mechanism is laid out on the ground plane: the blue base is fixed, the
-# green carriage moves horizontally, and the beige carriage moves vertically on
-# the green carriage. The cable is driven only by the two blue input pulleys.
-#
-# The sample combines passive revolute pulleys, a closed cable loop, and two
-# commanded input pulleys. The input rotations trace a rectangle with the
-# beige table marker while the solver resolves cable wrapping and contact
-# against the guides.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table --test --viewer null
-#
-###########################################################################
+"""Example Cable Cross-Slide Table
+
+Demonstrates a cable-driven cross-slide table inspired by the Simscape
+Multibody cable-driven XY table example:
+https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html
+The mechanism is laid out on the ground plane: the blue base is fixed, the
+green carriage moves horizontally, and the beige carriage moves vertically on
+the green carriage. The cable is driven only by the two blue input pulleys.
+
+The sample combines passive revolute pulleys, a closed cable loop, and two
+commanded input pulleys. The input rotations trace a rectangle with the
+beige table marker while the solver resolves cable wrapping and contact
+against the guides.
+
+Success criteria:
+- Two blue input pulleys pull the green and beige carriages through a deformable cable loop.
+- The beige table moves in the XY plane, tracking the commanded path without losing the cable from
+  its guides.
+- Live plots report both blue input rotations, beige table X and Y positions, and tracking error.
+
+Runs:
+- `python -m newton.examples cable_cross_slide_table`
+"""
 
 from __future__ import annotations
 
@@ -42,8 +43,6 @@ TABLE_TRACKING_RMS_ERROR_TOLERANCE = 0.0025
 CABLE_XY_ABS_BOUND = 0.30
 JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
-MOUSE_PICK_STIFFNESS = 0.01
-MOUSE_PICK_DAMPING = 0.001
 PULLEY_OPACITY = 0.55
 CONTACT_KE = 1.0e6
 
@@ -116,21 +115,6 @@ def drive_input_pulleys(
 def advance_time(sim_time: wp.array[wp.float32], dt: float):
     """Advance a device-side time accumulator for graph-captured simulation."""
     sim_time[0] = sim_time[0] + dt
-
-
-@wp.kernel
-def set_body_xforms(
-    body_indices: wp.array[wp.int32],
-    body_xforms: wp.array[wp.transform],
-    body_q0: wp.array[wp.transform],
-    body_q1: wp.array[wp.transform],
-):
-    """Initialize selected body transforms in both state buffers."""
-    tid = wp.tid()
-    body = body_indices[tid]
-    xform = body_xforms[tid]
-    body_q0[body] = xform
-    body_q1[body] = xform
 
 
 def _symmetric_bounds(half_extent: float) -> tuple[float, float]:
@@ -508,7 +492,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             limit_lower=self.slide_x_bounds[0],
             limit_upper=self.slide_x_bounds[1],
-            limit_ke=2.0e3,
+            limit_ke=1.0e4,
             limit_kd=1.0e-4,
             friction=0.0,
             label="green_x_slide_axis",
@@ -521,7 +505,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             limit_lower=self.table_y_bounds[0],
             limit_upper=self.table_y_bounds[1],
-            limit_ke=2.0e3,
+            limit_ke=1.0e4,
             limit_kd=1.0e-4,
             friction=0.0,
             label="beige_y_table_axis",
@@ -678,23 +662,14 @@ class Example:
             segment_length=initial_segment_length,
             wrap_clearance=cable_wrap_clearance,
         )
-        cable_rod = newton.Rod(cable_points)
-        cable_quats = [wp.quat(*(float(value) for value in frame)) for frame in cable_rod.quaternions]
-        cable_segment_count = len(cable_points) - 1
-        straight_rod = newton.Rod.create_straight(
-            start=left_anchor_world,
-            direction=wp.vec3(1.0, 0.0, 0.0),
-            length=cable_segment_count * cable_segment_length,
-            segment_count=cable_segment_count,
-            radius=cable_radius,
-        )
+        cable_rod = newton.Rod(cable_points, radius=cable_radius, rest_straight=True)
 
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 200.0
         cable_cfg.gap = 2.0 * cable_radius
 
         self.cable_bodies, cable_joints = builder.add_rod(
-            rod=straight_rod,
+            rod=cable_rod,
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
             stretch_damping=1.0e-4,
@@ -702,12 +677,7 @@ class Example:
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
             label="xy_table_cable",
-            body_frame_origin="com",
         )
-        initial_cable_xforms = [
-            wp.transform(cable_points[i] + (cable_points[i + 1] - cable_points[i]) * 0.5, cable_quats[i])
-            for i in range(len(self.cable_bodies))
-        ]
         filter_body_group_collisions(builder, self.cable_bodies)
 
         # Ball joints close the cable loop at the table anchors.
@@ -771,7 +741,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
-            rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=256,
         )
@@ -798,38 +767,10 @@ class Example:
             device=self.model.device,
         )
         self.target_table_xy = wp.zeros(2, dtype=wp.float32, device=self.model.device)
-        cable_body_indices = wp.array(
-            self.cable_bodies,
-            dtype=wp.int32,
-            device=self.model.device,
-        )
-        cable_body_xforms = wp.array(
-            initial_cable_xforms,
-            dtype=wp.transform,
-            device=self.model.device,
-        )
-        wp.launch(
-            set_body_xforms,
-            dim=cable_body_indices.shape[0],
-            inputs=[
-                cable_body_indices,
-                cable_body_xforms,
-                self.state_0.body_q,
-                self.state_1.body_q,
-            ],
-            device=self.model.device,
-        )
-        self.solver.body_q_prev = wp.clone(self.state_0.body_q, device=self.solver.device)
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
 
         # Viewer setup.
         self.viewer.set_model(self.model)
-        picking = getattr(self.viewer, "picking", None)
-        if picking is not None:
-            pick_state = picking.pick_state.numpy()
-            pick_state[0]["pick_stiffness"] = MOUSE_PICK_STIFFNESS
-            pick_state[0]["pick_damping"] = MOUSE_PICK_DAMPING
-            picking.pick_state.assign(pick_state)
 
         self.viewer.set_camera(
             pos=wp.vec3(0.0, 0.0, 0.8),
