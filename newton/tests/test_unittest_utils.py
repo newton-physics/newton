@@ -75,6 +75,18 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         unittest.defaultTestLoader.loadTestsFromTestCase(cls).run(result)
         return result
 
+    def _run_with_text_runner_on_stderr(self, cls: type[unittest.TestCase]) -> tuple[unittest.TestResult, str]:
+        unittest_utils.wp.init()
+        stderr_capture = unittest_utils.StdErrCapture()
+        stderr_capture.begin()
+        try:
+            result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(
+                unittest.defaultTestLoader.loadTestsFromTestCase(cls)
+            )
+        finally:
+            runner_output = stderr_capture.end()
+        return result, runner_output
+
     def test_allowlisted_deprecation_is_replayed_after_validation(self):
         """Accept and replay an allowlisted in-process deprecation warning."""
         unittest_utils.wp.init()
@@ -299,16 +311,49 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         )
         self.assertTrue(result.wasSuccessful(), stream.getvalue())
 
-        stderr_capture = unittest_utils.StdErrCapture()
-        stderr_capture.begin()
-        try:
-            result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(
-                unittest.defaultTestLoader.loadTestsFromTestCase(QuietTest)
-            )
-        finally:
-            stderr_capture.end()
+        result, runner_output = self._run_with_text_runner_on_stderr(QuietTest)
 
-        self.assertTrue(result.wasSuccessful())
+        self.assertTrue(result.wasSuccessful(), runner_output)
+
+    def test_text_runner_subtest_progress_is_not_captured(self):
+        """Keep the runner's subtest skip and failure lines out of the output contract."""
+
+        class SkipsSubtest(NewtonTestCase):
+            def test_variants(self):
+                with self.subTest(variant="skipped"):
+                    self.skipTest("optional dependency missing")
+                with self.subTest(variant="passed"):
+                    pass
+
+        class FailsSubtest(NewtonTestCase):
+            def test_variants(self):
+                with self.subTest(variant="failed"):
+                    self.fail("variant failed")
+
+        skip_result, _ = self._run_with_text_runner_on_stderr(SkipsSubtest)
+        fail_result, _ = self._run_with_text_runner_on_stderr(FailsSubtest)
+
+        self.assertTrue(skip_result.wasSuccessful(), skip_result.failures)
+        self.assertEqual(len(skip_result.skipped), 1)
+        self.assertEqual(len(fail_result.failures), 1, fail_result.failures)
+        self.assertIn("variant failed", fail_result.failures[0][1])
+
+    def test_subtest_skip_does_not_hide_other_output(self):
+        """Report unexpected output from one subtest when another subtest skips."""
+
+        class SkipsOneSubtest(NewtonTestCase):
+            def test_variants(self):
+                with self.subTest(variant="skipped"):
+                    self.skipTest("optional dependency missing")
+                with self.subTest(variant="prints"):
+                    print("unexpected output")
+
+        result, _ = self._run_with_text_runner_on_stderr(SkipsOneSubtest)
+
+        self.assertEqual(len(result.failures), 1, result.failures)
+        self.assertIn("Unexpected stdout", result.failures[0][1])
+        self.assertIn("unexpected output", result.failures[0][1])
+        self.assertNotIn("skipped", result.failures[0][1])
 
     def test_text_runner_buffering_is_supported(self):
         class EmitsExpectedOutput(NewtonTestCase):
@@ -347,14 +392,7 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
 
         unittest_utils.add_function_test(GeneratedTest, "test_generated", test_func, devices=[])
 
-        stderr_capture = unittest_utils.StdErrCapture()
-        stderr_capture.begin()
-        try:
-            result = unittest.TextTestRunner(stream=sys.stderr, verbosity=2).run(
-                unittest.defaultTestLoader.loadTestsFromTestCase(GeneratedTest)
-            )
-        finally:
-            runner_output = stderr_capture.end()
+        result, runner_output = self._run_with_text_runner_on_stderr(GeneratedTest)
 
         self.assertTrue(result.wasSuccessful(), runner_output)
         self.assertEqual(len(result.skipped), 1)
