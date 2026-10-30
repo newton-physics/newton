@@ -38,7 +38,7 @@ def _closest_triangle_weights(p: wp.vec3d, a: wp.vec3d, b: wp.vec3d, c: wp.vec3d
     return weights
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def embed_triangles(
     mesh: wp.uint64,
     vertices: wp.array[wp.vec3],
@@ -78,7 +78,7 @@ def embed_triangles(
     weights[i] = wp.vec3(best_weights)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def embed_tetrahedra(
     bvh: wp.uint64,
     vertices: wp.array[wp.vec3],
