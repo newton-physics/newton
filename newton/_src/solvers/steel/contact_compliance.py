@@ -11,10 +11,10 @@ bulk stiffness [N/m^3]. Friction weighting is applied once to the existing pair
 coefficient, with the cone bounded by the compliant normal impulse.
 
 Row coefficients are prepared on the device in persistent buffers, and the solve
-kernels add ``gamma * lambda`` to compliant normal residuals in every sweep, so a
-step needs no host synchronization and can be graph captured. Errors latch in device
-status words: an eager step raises from its own word, and captured steps latch into a
-word that :meth:`SolverSteel.check_constraint_capacity` reports until :meth:`SolverSteel.reset`.
+kernels add ``gamma * lambda`` to compliant normal residuals in every sweep, so the
+step can be graph captured. Errors latch in device status words: an eager step reads its
+own word back to the host and raises, and captured steps latch into a word that
+:meth:`SolverSteel.check_constraint_capacity` reports until :meth:`SolverSteel.reset`.
 """
 
 import math
@@ -124,6 +124,10 @@ def start_step(solver, contacts, dt):
         for key in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction")
     ):
         raise ValueError("contact_compliance requires per-contact hydroelastic material arrays")
+    # The row kernels index these arrays by contact, up to rigid_contact_max.
+    for key in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+        if getattr(contacts, key).shape != (contacts.rigid_contact_max,):
+            raise ValueError(f"contact_compliance requires {key} of shape ({contacts.rigid_contact_max},)")
 
 
 class ComplianceBuffers:

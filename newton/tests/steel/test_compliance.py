@@ -474,6 +474,11 @@ def test_missing_material_arrays_rejected(test, device):
             start_step(solver, contacts, 0.005)
     with test.assertRaisesRegex(ValueError, "hydroelastic material arrays"):
         start_step(solver, None, 0.005)
+    for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+        contacts = _contacts(device)
+        setattr(contacts, name, wp.zeros(3, device=device))
+        with test.subTest(short=name), test.assertRaisesRegex(ValueError, rf"{name} of shape \(4,\)"):
+            start_step(solver, contacts, 0.005)
 
 
 def test_invalid_contact_stiffness_rejected(test, device):
