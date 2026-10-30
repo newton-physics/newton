@@ -124,6 +124,7 @@ class RenderContext:
         self._triangle_particle_start = 0
         self._triangle_particle_count = 0
         self._skinned_vertex_count = 0
+        self._skinned_points: wp.array[wp.vec3f] | None = None
         self._triangle_groups: wp.array[wp.int32] | None = None
         self._triangle_mesh_uvs = wp.empty(0, dtype=wp.vec2f, device=self.device)
         self._triangle_mesh_texture_ids = wp.empty(0, dtype=wp.int32, device=self.device)

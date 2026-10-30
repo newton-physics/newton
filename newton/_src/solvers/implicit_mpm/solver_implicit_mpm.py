@@ -1366,6 +1366,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             - ``mpm:dilatancy``: Dilatancy factor for plasticity
             - ``mpm:viscosity``: Viscosity for plasticity [Pa·s]
 
+        Attributes registered on Model (per-shape):
+            - ``mpm:collider_adhesion``: Collider adhesion in Pa, used when the shape is a collider
+              (see :meth:`setup_collider`)
+            - ``mpm:collider_projection_threshold``: Collider projection threshold in m; a negative value (default)
+              selects the solver default, which scales with the voxel size
+
         Attributes registered on State (per-particle):
             - ``mpm:particle_qd_grad``: Velocity gradient for APIC transfer
             - ``mpm:particle_elastic_strain``: Elastic deformation gradient
@@ -1491,6 +1497,28 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 assignment=newton.Model.AttributeAssignment.MODEL,
                 dtype=wp.float32,
                 default=0.0,
+                namespace="mpm",
+            )
+        )
+
+        # Per-shape collider material
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="collider_adhesion",
+                frequency=newton.Model.AttributeFrequency.SHAPE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=0.0,
+                namespace="mpm",
+            )
+        )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="collider_projection_threshold",
+                frequency=newton.Model.AttributeFrequency.SHAPE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=-1.0,
                 namespace="mpm",
             )
         )
@@ -1715,6 +1743,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         body_inv_inertia: wp.array | None = None,
         body_q: wp.array | None = None,
         collider_world_ids: list[int] | None = None,
+        collider_material_counts: list[int | None] | None = None,
     ) -> None:
         """Configure collider geometry and material properties.
 
@@ -1730,6 +1759,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             collider_adhesion: Per-mesh adhesion (Pa).
             collider_projection_threshold: Per-mesh projection threshold (m).
             collider_particle_ids: For deformable mesh colliders, model particle ids corresponding to each mesh vertex.
+            collider_material_counts: Number of materials to allocate per collider (default 1), to be assigned
+                per face with :meth:`collider_face_materials`. Body colliders allocate
+                ``max(shape count, count)`` materials, the first ones being the shape materials.
             model: The model to read collider properties from. Default to solver's model.
             body_com: For dynamic colliders, per-body center of mass.
             body_mass: For dynamic colliders, per-body effective mass. When omitted, bodies flagged
@@ -1766,9 +1798,62 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             body_inv_inertia=body_inv_inertia,
             body_q=body_q,
             collider_world_ids=collider_world_ids,
+            collider_material_counts=collider_material_counts,
         )
 
         self._last_step_data.save_collider_current_position(self._mpm_model.collider_body_q)
+
+    def collider_face_materials(self, collider_id: int) -> wp.array[int]:
+        """Return a writable view of the per-face material ids of a collider.
+
+        Entries are collider-local material indices, i.e. ``k`` selects the material at index ``k`` of the views
+        returned by :meth:`collider_materials`. Values outside ``[0, count)`` are clamped to that range. Writing to
+        the view takes effect on the next step and is safe inside captured graphs. Face order follows the collider
+        mesh; for body colliders, faces of successive shapes are concatenated.
+
+        Args:
+            collider_id: Collider index, in the order the colliders were discovered or passed to
+                :meth:`setup_collider`.
+
+        Returns:
+            View into the solver's face material table. It is invalidated by the next :meth:`setup_collider` call.
+        """
+        offset, count = self._mpm_model.collider_face_ranges[collider_id]
+        return self._mpm_model.collider.face_material_index[offset : offset + count]
+
+    def collider_materials(self, collider_id: int) -> dict[str, wp.array[float]]:
+        """Return writable views of the material values of a collider.
+
+        The views are indexed by the collider-local material index ``k``, as in :meth:`collider_face_materials`.
+        Body colliders own one material per collision shape, in shape order, followed by any extra materials
+        requested through ``collider_material_counts``. Mesh colliders own ``collider_material_counts[collider_id]``
+        materials (1 by default).
+
+        Args:
+            collider_id: Collider index, see :meth:`collider_face_materials`.
+
+        Returns:
+            Dictionary with keys ``"friction"`` (Coulomb coefficient), ``"adhesion"`` [Pa],
+            ``"projection_threshold"`` [m] and ``"margin"`` [m].
+            The views are invalidated by the next :meth:`setup_collider` call.
+
+        Warning:
+            The collider's query range is derived at setup from the largest margin among its materials.
+            Setting a margin above that construction-time maximum can lead to unexpected failures,
+            such as missed contacts; call :meth:`setup_collider` again with larger ``collider_margins`` instead.
+
+            The contact face is selected by geometric distance, so margins that differ between nearby
+            faces apply to the nearest face only; a face with a larger margin can be missed when a
+            closer face has a smaller one.
+        """
+        first, count = self._mpm_model.collider_material_ranges[collider_id]
+        collider = self._mpm_model.collider
+        return {
+            "friction": collider.material_friction[first : first + count],
+            "adhesion": collider.material_adhesion[first : first + count],
+            "projection_threshold": collider.material_projection_threshold[first : first + count],
+            "margin": collider.material_thickness[first : first + count],
+        }
 
     @property
     def voxel_size(self) -> float:
@@ -2124,7 +2209,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         velocities, and stress.
 
         Args:
-            state_in: Input state at the start of the step.
+            state_in: Input state at the start of the step. If
+                ``state_in.particle_f`` is allocated, it is applied as an
+                external force [N] on each active, dynamic particle, in
+                addition to gravity.
             state_out: Output state written with updated particle data.
                 May be the same object as ``state_in`` for in-place stepping.
             control: Control input (unused; material parameters come from the model).
@@ -2322,6 +2410,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 self.model.particle_flags,
                 self._mpm_model.particle_flags,
                 particle_gravity_acceleration,
+                state.particle_f,
                 coupling_forces,
                 self.model.particle_inv_mass,
                 state.particle_qd,
@@ -3323,6 +3412,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     "dt": dt,
                     "gravity": model.gravity,
                     "particle_world": model.particle_world,
+                    "particle_f": state_in.particle_f,
+                    "particle_inv_mass": model.particle_inv_mass,
                     "particle_density": mpm_model.particle_density,
                     "particle_flags": mpm_model.particle_flags,
                     "inv_cell_volume": inv_cell_volume,
@@ -4614,6 +4705,7 @@ def _rewind_mpm_proxy_particles_kernel(
     particle_flags: wp.array[wp.int32],
     transfer_flags: wp.array[wp.int32],
     particle_gravity_acceleration: wp.array[wp.vec3],
+    particle_f: wp.array[wp.vec3],
     coupling_forces: wp.array[wp.vec3],
     particle_inv_mass: wp.array[float],
     particle_qd: wp.array[wp.vec3],
@@ -4623,8 +4715,14 @@ def _rewind_mpm_proxy_particles_kernel(
     if proxy_global < 0 or (particle_flags[local_particle] & proxy_flag) == 0:
         return
 
-    delta_v = dt * particle_inv_mass[local_particle] * coupling_forces[proxy_global]
-    if (transfer_flags[local_particle] & active_flag) != 0:
+    # The source velocity already includes these forces. Gravity and particle_f are
+    # applied by the solver on active particles only, and are removed likewise.
+    force = coupling_forces[proxy_global]
+    is_active = (transfer_flags[local_particle] & active_flag) != 0
+    if particle_f and is_active:
+        force += particle_f[local_particle]
+    delta_v = dt * particle_inv_mass[local_particle] * force
+    if is_active:
         delta_v = delta_v + dt * particle_gravity_acceleration[local_particle]
 
     particle_qd[local_particle] = particle_qd[local_particle] - delta_v

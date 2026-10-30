@@ -1,6 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Render a collapsing granular column with multiple visual points per simulation particle.
+
+Success criteria:
+- A column of particles collapses on the ground floor creating a circular pile of particles.
+
+Runs:
+- `python -m newton.examples mpm_grain_rendering`
+"""
+
 import numpy as np
 import warp as wp
 

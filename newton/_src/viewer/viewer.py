@@ -742,7 +742,6 @@ class ViewerBase(ABC):
         layer._deformable_visual_mesh_names: dict[int, str] = {}
         layer._deformable_visual_textures: dict[str, np.ndarray | None] = {}
         layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array]] = {}
-        layer._deformable_visual_mesh_null_offsets: wp.array | None = None
         layer._user_spacing: tuple[float, float, float] | None = None
         layer._visible_worlds: set[int] | None = None
         layer._visible_worlds_mask: wp.array | None = None
@@ -1824,7 +1823,7 @@ class ViewerBase(ABC):
         opacities: wp.array[wp.float32] | None = None,
     ):
         """
-        Convenience helper to create/cache a mesh of a given geometry and
+        Convenience helper to create/cache a prototype of a given geometry and
         render a batch of instances with the provided transforms/colors/materials.
 
         Args:
@@ -3904,17 +3903,17 @@ class ViewerBase(ABC):
                 self._deformable_visual_mesh_scratch[rm.index] = scratch
             points, normals = scratch
 
-            # World offsets stay on-device; a missing offset buffer skips the add.
-            offsets = self.world_offsets
-            world_index = rm.world if offsets is not None else -1
-            if offsets is None:
-                if self._deformable_visual_mesh_null_offsets is None:
-                    self._deformable_visual_mesh_null_offsets = wp.zeros(1, dtype=wp.vec3, device=self.device)
-                offsets = self._deformable_visual_mesh_null_offsets
+            # Without world offsets the kernel receives a null array and skips the add.
             wp.launch(
                 apply_world_offset_and_layer_transform_normals,
                 dim=n,
-                inputs=[visuals.get_points(rm), visuals.get_normals(rm), offsets, world_index, self.layer.xform],
+                inputs=[
+                    visuals.get_points(rm),
+                    visuals.get_normals(rm),
+                    self.world_offsets,
+                    rm.world,
+                    self.layer.xform,
+                ],
                 outputs=[points, normals],
                 device=self.device,
             )
