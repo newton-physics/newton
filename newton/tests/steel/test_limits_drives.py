@@ -1581,10 +1581,20 @@ def test_passive_damping_with_changing_timestep(test, device, solve_mode="matrix
             state.joint_qd.assign(velocity)
             newton.eval_fk(model, state.joint_q, state.joint_qd, state)
             control = model.control()
-            for dt in (0.01, 0.02, 0.005):
+            model.joint_target_kd.fill_(-100.0)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+            for dt in (0.01, 0.01, 0.02, 0.005):
                 solver.step(state, output, control, None, dt)
                 state, output = output, state
                 velocity /= 1.0 + dt * 100.0
+                np.testing.assert_allclose(state.joint_qd.numpy(), velocity, atol=1.0e-6)
+
+            model.joint_damping.fill_(1.0e8)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
+            for dt in (1.0e-8, 1.5e-8, 1.5e-8):
+                solver.step(state, output, control, None, dt)
+                state, output = output, state
+                velocity /= 1.0 + dt * 1.0e8
                 np.testing.assert_allclose(state.joint_qd.numpy(), velocity, atol=1.0e-6)
 
 

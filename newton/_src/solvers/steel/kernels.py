@@ -720,8 +720,8 @@ def jcalc_tau(
         for i in range(axis_count):
             j = dof_start + i
             S_s = joint_S_s[j]
-            # Passive spring/damping applied explicitly; the drive gains stay on the
-            # implicit augmented path. These joint types have one coordinate per DOF,
+            # Passive forces enter the RHS; Steel also adds the positive damping
+            # velocity derivative to the augmented mass diagonal. These joint types have one coordinate per DOF,
             # so coord_start + i addresses the axis position.
             passive_f = joint_spring_stiffness[j] * (joint_spring_ref[j] - joint_q[coord_start + i])
             passive_f -= joint_damping[j] * joint_qd[j]
@@ -2539,7 +2539,7 @@ def prepare_articulation_augmented_drives(
     row_K: wp.array[float],
     tau: wp.array[float],
 ):
-    """Prepare one articulation's implicit drive rows and explicit force."""
+    """Prepare implicit drive/damping rows and the explicit drive force."""
     joint_start = articulation_start[articulation]
     joint_end = articulation_start[articulation + 1]
     if reset_tau != 0:
@@ -2575,14 +2575,20 @@ def prepare_articulation_augmented_drives(
             if augment_drives and type != JointType.BALL:
                 ke = joint_target_ke[dof_index]
                 kd = joint_target_kd[dof_index]
+            # Preserve the existing rule that a nonpositive drive diagonal is skipped.
+            drive = augment_drives and type != JointType.BALL and (ke > 0.0 or kd > 0.0)
+            drive_K = ke * dt * dt + kd * dt
+            drive = drive and drive_K > 0.0
+            if not drive:
+                drive_K = 0.0
             # The explicit -damping * qd remains in tau. This diagonal makes
             # its velocity dependence implicit without applying drive limits.
-            K = ke * dt * dt + (kd + wp.max(joint_damping[dof_index], 0.0)) * dt
+            K = drive_K + wp.max(joint_damping[dof_index], 0.0) * dt
             if K <= 0.0:
                 continue
 
             u0 = float(0.0)
-            if augment_drives and type != JointType.BALL:
+            if drive:
                 q = joint_q[coord_start + axis]
                 qd = joint_qd[dof_index]
                 target_pos = joint_target_pos[joint_target_q_start[joint_index] + axis]
@@ -4858,7 +4864,7 @@ def scatter_augmented_drive_dof_K(
     # outputs
     dof_K: wp.array[float],
 ):
-    """Write each DOF's implicit drive term ``dt * kd + dt^2 * ke`` for a mass refresh.
+    """Write each DOF's combined implicit drive and passive damping diagonal for a mass refresh.
 
     The DOF-indexed form of :func:`apply_augmented_mass_diagonal_grouped`, consumed by the
     sparse mass factors, which assemble the mass matrix without dense storage.

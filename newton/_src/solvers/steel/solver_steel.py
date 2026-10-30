@@ -2948,7 +2948,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         dof_force = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
         if flags & dof_force:
             self._refresh_passive_joint_damping()
-            # Augmented drive gains enter the factored mass-matrix diagonal.
+            # Augmented drive gains and passive damping enter the factored mass diagonal.
             self._mass_update_requested.fill_(1)
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_shape_materials()
@@ -6538,8 +6538,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 # Captured steps defer errors to the device; eager steps raise during preparation.
                 self._device_torsion.deferred_errors = wp.get_stream(self.model.device).is_capturing
                 self._device_torsion.begin_step(state_in, state_out)
-        if self._last_step_dt is not None and abs(self._last_step_dt - dt) > 1.0e-8:
-            # The augmented mass matrix depends on dt through the implicit drive terms.
+        if self._last_step_dt is not None and self._last_step_dt != dt:
+            # The mass matrix depends on dt through implicit drives and passive damping.
             self._force_mass_update = True
         self._last_step_dt = dt
 
@@ -7990,9 +7990,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         external body forces), :attr:`~newton.Control.joint_f`, passive joint damping and the
         explicit part ``u0`` of each drive, clamped to :attr:`~newton.Model.joint_effort_limit`
         (an actuator-only clamp, as MuJoCo's ``actuatorfrcrange`` and PhysX's drive
-        ``maxForce``). The implicit part ``K = dt * kd + dt^2 * ke`` is stored in
+        ``maxForce``). The implicit drive part plus ``dt * max(joint_damping, 0)`` is stored in
         ``aug_row_K`` and added to the mass-matrix diagonal by :meth:`_stage1_crba`. With
-        ``drive_mode="rows"`` drives contribute nothing here; their rows are solved
+        ``drive_mode="rows"`` only passive damping contributes to this diagonal; drive rows are solved
         with the constraints. ``body_parent_f`` defaults to ``state_out.body_parent_f``.
         """
         if body_parent_f is None:
