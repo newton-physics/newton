@@ -55,7 +55,11 @@ from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
 from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
-from ..sim.shape_contact_pairs import _shape_contact_pair_count_for_mask, _shape_contact_pair_counts
+from ..sim.shape_contact_pairs import (
+    _shape_contact_pair_count_for_mask,
+    _shape_contact_pair_counts,
+    _shape_contact_pairs_for_mask,
+)
 from ..sim.state import State
 
 if TYPE_CHECKING:
@@ -1507,8 +1511,9 @@ class CollisionPipeline:
             mesh: Reduce mesh and heightfield triangle contacts while they are
                 generated.  This is the behavior selected by the legacy
                 ``reduce_contacts=True`` value and is supported by every
-                solver.  It is automatically inactive when the scene has no
-                colliding mesh or heightfield shapes.
+                solver.  It is automatically inactive when no colliding shape
+                takes the mesh or heightfield contact path, which also serves
+                SDF shapes with mesh edges.
             body_pairs: Post-reduce materialized ordinary contacts by body-pair
                 patch.  This is intended for compound bodies made from many
                 colliders and is currently supported by
@@ -2502,10 +2507,13 @@ class CollisionPipeline:
                     f"body-pair contact reduction supports at most {MAX_GROUP_ID + 1} reduction groups, "
                     f"got {group_count}"
                 )
-            # Group-table sizing anchor: how many distinct group pairs this
-            # model's contact-pair list can produce. Host-side, alongside the
-            # grouping it depends on.
-            group_pair_bound = build_reduction_group_pair_bound(model, shape_group)
+            # Group-table sizing anchor: how many distinct group pairs the candidate
+            # pairs can produce. A host build, so SAP and NXN leave the model's
+            # device pair array unbuilt.
+            candidate_pairs = _shape_contact_pairs_for_mask(
+                model, np.ones(model.shape_count, dtype=bool), shape_pairs=self.shape_pairs_filtered
+            )
+            group_pair_bound = build_reduction_group_pair_bound(candidate_pairs, shape_group)
             self._body_pair_reducer = BodyPairContactReducer(
                 rigid_contact_max,
                 self.contact_reduction_config.body_pair_cell_size,
@@ -3054,9 +3062,28 @@ class CollisionPipeline:
                 this call. Ignored when speculative contacts are disabled. See
                 :ref:`Speculative contacts <speculative-contacts>`.
         """
-        # Validate the buffer BEFORE any marker assignment, clear, or launch:
+        # Validate the inputs BEFORE any marker assignment, clear, launch or capture lease:
         # a rejected buffer must come back untouched, and a wrong-device buffer
         # must produce this ValueError rather than a cross-device Warp launch.
+        if self._speculative_enabled:
+            if dt is None:
+                raise ValueError("dt must be provided when speculative contacts are enabled")
+            if not np.isfinite(dt) or dt < 0.0:
+                raise ValueError(f"dt must be a non-negative finite number, got {dt!r}")
+        if self.deterministic and contacts.rigid_contact_max != self._sort_key_array.shape[0]:
+            raise ValueError(
+                f"Contacts buffer capacity ({contacts.rigid_contact_max}) does not match the "
+                f"deterministic sort buffer size ({self._sort_key_array.shape[0]}). "
+                f"The sorter operates over fixed-capacity buffers for CUDA graph capture "
+                f"compatibility, so the sizes must match exactly. Use CollisionPipeline.contacts() "
+                f"or pass matching rigid_contact_max."
+            )
+        if self._contact_matcher is not None and contacts.rigid_contact_match_index is None:
+            raise ValueError(
+                "CollisionPipeline has contact_matching enabled but the "
+                "Contacts buffer was created without contact_matching. "
+                "Use pipeline.contacts() to create a compatible buffer."
+            )
         if self._body_pair_reducer is not None:
             # The reducer's caches, scratch, and launch bounds are sized to the
             # pipeline's capacity at construction; an external buffer with any
@@ -3165,11 +3192,7 @@ class CollisionPipeline:
         else:
             soft_contact_gap = self.soft_contact_gap
         if self._speculative_enabled:
-            if dt is None:
-                raise ValueError("dt must be provided when speculative contacts are enabled")
             collision_update_dt = dt
-            if not np.isfinite(collision_update_dt) or collision_update_dt < 0.0:
-                raise ValueError(f"dt must be a non-negative finite number, got {collision_update_dt!r}")
             max_speculative_extension = float(self.speculative_contact_gap_max)
             speculative_active = collision_update_dt > 0.0 and max_speculative_extension > 0.0
             search_gap = self._shape_search_gap if speculative_active else model.shape_gap
@@ -3333,14 +3356,6 @@ class CollisionPipeline:
         writer_data.out_stiffness = contacts.rigid_contact_stiffness
         writer_data.out_damping = contacts.rigid_contact_damping
         writer_data.out_friction = contacts.rigid_contact_friction
-        if self.deterministic and contacts.rigid_contact_max != self._sort_key_array.shape[0]:
-            raise ValueError(
-                f"Contacts buffer capacity ({contacts.rigid_contact_max}) does not match the "
-                f"deterministic sort buffer size ({self._sort_key_array.shape[0]}). "
-                f"The sorter operates over fixed-capacity buffers for CUDA graph capture "
-                f"compatibility, so the sizes must match exactly. Use CollisionPipeline.contacts() "
-                f"or pass matching rigid_contact_max."
-            )
         writer_data.out_sort_key = self._sort_key_array
         writer_data.shape_transform = self.geom_transform
         writer_data.shape_linear_velocity = self._shape_linear_velocity
@@ -3407,13 +3422,6 @@ class CollisionPipeline:
                 inputs=[reducer.ht_insert_failures, reducer.buffer_overflows, contacts._reduction_overflow],
                 device=self.device,
                 record_tape=False,
-            )
-
-        if self._contact_matcher is not None and contacts.rigid_contact_match_index is None:
-            raise ValueError(
-                "CollisionPipeline has contact_matching enabled but the "
-                "Contacts buffer was created without contact_matching. "
-                "Use pipeline.contacts() to create a compatible buffer."
             )
 
         if self.deterministic and self._contact_sorter is not None:

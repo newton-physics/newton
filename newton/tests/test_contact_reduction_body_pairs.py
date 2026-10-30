@@ -873,6 +873,20 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
         bigger = _make_pipeline(self._scene(24), True)
         self.assertGreater(bigger._body_pair_reducer.describe()["group_pair_bound"], desc["group_pair_bound"])
 
+    def test_bound_counts_the_pipeline_candidate_pairs(self):
+        """Count group pairs from the broad phase's own candidates without building the model pair array."""
+        model = self._scene(8)
+        nxn = _make_pipeline(model, True)
+        self.assertIsNone(model._shape_contact_pairs, "NXN sizing built the model's device pair array")
+        self.assertEqual(nxn._body_pair_reducer.describe()["group_pair_bound"], model.shape_contact_pair_count)
+        explicit = newton.CollisionPipeline(
+            model,
+            broad_phase="explicit",
+            shape_pairs_filtered=wp.array(model.shape_contact_pairs.numpy()[:3], dtype=wp.vec2i, device=model.device),
+            reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(body_pairs=True),
+        )
+        self.assertEqual(explicit._body_pair_reducer.describe()["group_pair_bound"], 3)
+
     def test_headroom_scales_the_derived_capacity(self):
         """Scale the derived capacity by ``body_pair_hashtable_headroom``."""
         model = self._scene(24)
@@ -1732,6 +1746,32 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
                 pipeline.collide(state, contacts)
         finally:
             capture.__exit__(None, None, None)
+
+    def test_rejected_capture_binds_no_buffer(self):
+        """Reject invalid collide() arguments before the capture lease, so the pipeline stays unbound.
+
+        Skipped on CPU devices.
+        """
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+        model = self._foot_scene()
+        state = model.state()
+        pipeline = _make_pipeline(model, True, speculative_contact_gap_max=0.01)
+        contacts_a = pipeline.contacts()
+        contacts_b = pipeline.contacts()
+        pipeline.collide(state, contacts_a, dt=DT)
+        capture = wp.ScopedCapture(device)
+        capture.__enter__()
+        try:
+            with self.assertRaisesRegex(ValueError, "dt must be provided"):
+                pipeline.collide(state, contacts_a)
+        finally:
+            capture.__exit__(None, None, None)
+        del capture
+        gc.collect()
+        self.assertFalse(contacts_a.rigid_contacts_body_pair_reduced_capture)
+        pipeline.collide(state, contacts_b, dt=DT)
 
     def test_capture_release_allows_new_buffer(self):
         """Destroy the graph and release the captured buffer before rebinding a new buffer.

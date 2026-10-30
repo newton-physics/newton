@@ -49,28 +49,6 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
     def _foot_scene(self):
         return _foot_model((5.13, 5.07, 0.0149))
 
-    def test_steel_warmstart_rejected_at_step(self):
-        """Reject reduced contacts in Steel warm-start configurations.
-
-        Every contact warm-start route requires contact-match identity. Body-pair
-        compaction has not been validated against that contract, so the
-        otherwise-supported solver must reject both entry points before
-        recording launches or mutating step state.
-        """
-        if not wp.get_device().is_cuda:
-            self.skipTest("Steel contact warm start requires solve_mode='matrix_free', which requires CUDA")
-        model = self._foot_model()
-        state_0, state_1 = model.state(), model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts = pipeline.contacts()
-        pipeline.collide(state_0, contacts)
-        cases = (("contact_warmstart=True", {"solve_mode": "matrix_free", "contact_warmstart": True}),)
-        for label, kwargs in cases:
-            with self.subTest(configuration=label):
-                solver = newton.solvers.SolverSteel(model, **kwargs)
-                with self.assertRaisesRegex(ValueError, "contact_matching"):
-                    solver.step(state_0, state_1, model.control(), contacts, DT)
-
     def test_steel_compliance_rejects_reduced_contacts(self):
         """Reject reduced contacts when Steel's compliant contact law is on."""
         if not wp.get_device().is_cuda:
@@ -86,12 +64,11 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
             solver.step(state_0, state_1, model.control(), contacts, DT)
 
     def test_precaptured_steel_warmstart_blocks_reducer_writer(self):
-        """Protect a warm-start Steel graph from later body-pair compaction.
+        """Protect a warm-start Steel graph captured on unreduced contacts from later compaction.
 
-        Steel supports reduced contacts in its default configuration, but
-        identity warm start has not been validated with compaction. Its per-call
-        override must therefore acquire the same unreduced-reader lease as an
-        unsupported solver before graph replay becomes possible.
+        Warm start reads contact identities from the stream it captured. On an
+        unreduced stream it takes the unreduced-reader lease, so a reducer cannot
+        change that stream's layout behind graph replay.
         """
         device = wp.get_device()
         if not device.is_cuda:

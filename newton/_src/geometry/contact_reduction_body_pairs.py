@@ -283,15 +283,15 @@ def build_reduction_groups(model) -> tuple:
     return ids, next_id
 
 
-def build_reduction_group_pair_bound(model, shape_group) -> int:
-    """Count the distinct ``(group_a, group_b)`` pairs the model can ever produce.
+def build_reduction_group_pair_bound(pairs: np.ndarray, shape_group) -> int:
+    """Count the distinct ``(group_a, group_b)`` pairs that ``pairs`` can produce.
 
     The reduction key is ``(group_a, group_b, normal bin, spatial cell)``.  This
-    returns an EXACT upper bound on the pair dimension alone: the image of
-    ``model.shape_contact_pairs`` under :func:`build_reduction_groups`, deduped
-    the same unordered way :func:`_make_group_key` packs it.  Every broad-phase
-    mode applies the same filtering as ``find_shape_contact_pairs``, so no
-    candidate pair reaching the narrow phase is missing from that list.
+    returns an EXACT upper bound on the pair dimension alone: the image of the
+    candidate shape pairs under :func:`build_reduction_groups`, deduped the same
+    unordered way :func:`_make_group_key` packs it.  The caller passes the
+    explicit pair list in explicit broad-phase mode and the model's default
+    pairs otherwise, which SAP and NXN filter the same way.
 
     It bounds ONE dimension of the key, not the entry count, and is loose in
     both directions: a pair spread over several normal bins or spatial cells
@@ -304,17 +304,13 @@ def build_reduction_group_pair_bound(model, shape_group) -> int:
     Read ``stats()["max_hashtable_entries"]`` for what a given scene needs.
 
     Args:
-        model: The simulation model.
+        pairs: Host candidate shape pairs, shape ``(n, 2)``.
         shape_group: Per-shape group ids from :func:`build_reduction_groups`.
 
     Returns:
-        The number of distinct unordered group pairs, or ``-1`` when the model
-        carries no precomputed contact-pair list to derive it from.
+        The number of distinct unordered group pairs.
     """
-    pairs = getattr(model, "shape_contact_pairs", None)
-    if pairs is None:
-        return -1
-    p = pairs.numpy() if hasattr(pairs, "numpy") else np.asarray(pairs)
+    p = np.asarray(pairs).reshape(-1, 2)
     if p.size == 0:
         return 0
     sg = np.asarray(shape_group, dtype=np.int64)
