@@ -6201,6 +6201,10 @@ class SolverSteel(SolverBase):
                 device=model.device,
             )
         if not model.articulation_count:
+            # Bodies outside every articulation carry no parent wrench.
+            for target in (body_parent_f, state_out.body_parent_f):
+                if target is not None:
+                    target.zero_()
             self._step += 1
             return state_out
         wp.launch(

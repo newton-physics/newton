@@ -3678,21 +3678,29 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device="cpu")
         self.assertEqual((model.joint_count, model.articulation_count), (1, 0))
+        with self.assertWarns(DeprecationWarning):
+            model.request_state_attributes("body_parent_f")
         solver = SolverSteel(model, solve_mode="split")
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
-        observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
+        kinds = {SolverBase.ObservableKind.CONTACT_F, SolverBase.ObservableKind.BODY_PARENT_F}
+        observables = solver.observables(kinds, contacts=contacts)
         state_in, state_out = model.state(), model.state()
         body_q, body_qd = state_in.body_q.numpy(), state_in.body_qd.numpy()
         body_qd[root] = self.PRESCRIBED_QD
         body_qd[body] = -np.array(self.PRESCRIBED_QD)
         state_in.body_qd.assign(body_qd)
+        # Stale nonzero outputs, so a step that skips the parent wrenches would leave them.
+        observables.body_parent_f.fill_(wp.spatial_vector(42.0, 42.0, 42.0, 42.0, 42.0, 42.0))
+        state_out.body_parent_f.fill_(wp.spatial_vector(42.0, 42.0, 42.0, 42.0, 42.0, 42.0))
         pipeline.collide(state_in, contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
         solver.step(state_in, state_out, None, contacts, DEFAULT_DT, observables=observables)
         np.testing.assert_array_equal(state_out.body_q.numpy(), body_q)
         np.testing.assert_array_equal(state_out.body_qd.numpy(), body_qd)
         np.testing.assert_array_equal(observables.contact_f.numpy(), 0.0)
+        np.testing.assert_array_equal(observables.body_parent_f.numpy(), 0.0)
+        np.testing.assert_array_equal(state_out.body_parent_f.numpy(), 0.0)
 
 
 class TestSteelPairedResponse(unittest.TestCase):
