@@ -96,6 +96,53 @@ def test_project_outside_keeps_particle_radius(test, device):
                 test.assertAlmostEqual(float(state.particle_q.numpy()[0, 2]), height, delta=1.0e-5)
 
 
+def test_sdf_gradient_normals_particle_contacts(test, device):
+    """Keep particle contacts active with normals from the collider distance gradient, pointing out of colliders."""
+    with wp.ScopedDevice(device):
+        model, _ = _make_contact_solver(device, 0.3, (0.0, 0.0, 0.0), 0.0, 0.0)
+        model.set_gravity((0.0, 0.0, -10.0))
+        solver = SolverImplicitMPM(
+            model,
+            config=SolverImplicitMPM.Config(
+                voxel_size=1.0, collider_basis="pic8", collider_normal_from_sdf_gradient=True, air_drag=1.0e-6
+            ),
+        )
+        state = model.state()
+        for _ in range(60):
+            solver.step(state, state, None, None, 0.02)
+        # The particle rests in the contact band above the ground, within 0.25 voxel of its radius
+        height = float(state.particle_q.numpy()[0, 2])
+        test.assertGreaterEqual(height, _PARTICLE_RADIUS - 1.0e-3)
+        test.assertLessEqual(height, _PARTICLE_RADIUS + 0.25 + 1.0e-3)
+
+        # Particles beside a box wall occupying x > 0.5 get normals pointing out of it
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        for y in (0.3, 0.5, 0.7):
+            builder.add_particle(pos=(0.45, y, 0.5), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.02)
+        builder.add_shape_box(
+            -1, xform=wp.transform(wp.vec3(1.0, 0.5, 0.5), wp.quat_identity()), hx=0.5, hy=2.0, hz=2.0
+        )
+        model = builder.finalize(device=device)
+        solver = SolverImplicitMPM(
+            model,
+            config=SolverImplicitMPM.Config(
+                voxel_size=0.1, collider_basis="pic8", collider_normal_from_sdf_gradient=True, air_drag=1.0e-6
+            ),
+        )
+        state = model.state()
+        apply_transform = solver._apply_strain_basis_transform
+        normals = []
+
+        def capture_normals(scratch, basis_transform, stress_transform):
+            normals.append(scratch.collider_normal_field.dof_values.numpy().copy())
+            apply_transform(scratch, basis_transform, stress_transform)
+
+        solver._apply_strain_basis_transform = capture_normals
+        solver.step(state, state, None, None, 0.01)
+        np.testing.assert_allclose(normals[0], np.tile((-1.0, 0.0, 0.0), (3, 1)), atol=1.0e-3)
+
+
 def test_predictive_contact_grid_bases(test, device):
     """Prevent a wall crossing with predictive contacts on grid collider bases."""
     with wp.ScopedDevice(device):
@@ -414,6 +461,7 @@ for function in (
     test_contact_recovery_truncated,
     test_predictive_contact_truncated,
     test_project_outside_keeps_particle_radius,
+    test_sdf_gradient_normals_particle_contacts,
     test_predictive_contact_grid_bases,
     test_volume_recovery_truncated,
     test_density_measures_elastic_volume,

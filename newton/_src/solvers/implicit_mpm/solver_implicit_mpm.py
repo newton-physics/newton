@@ -42,6 +42,7 @@ from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
 from .rasterized_collisions import (
     Collider,
     build_rigidity_operator,
+    collider_distance_gradients,
     interpolate_collider_normals,
     point_contact_radii,
     project_outside_collider,
@@ -1138,7 +1139,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             Density measurements may change without prior notice.
         """
         collider_normal_from_sdf_gradient: bool = False
-        """Compute collider normals from sdf gradient rather than closest point"""
+        """Compute collider normals from the signed-distance gradient rather than the closest point.
+
+        Grid collider bases differentiate the distance rasterized at their nodes. Particle
+        collider bases (``"pic"`` and ``"picN"``) differentiate the collider distance
+        rasterized at cell centers with quadratic B-spline weights, so normals turn smoothly
+        around concave and convex collider edges, such as the seams between assembled boxes.
+        """
         collider_basis: _MPMColliderBasisName = "S2"
         """Collider basis function. Defaults to ``"S2"``; pass ``"Q1"``
         to restore the previous trilinear collider basis. Common values are
@@ -3656,6 +3663,19 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             # normal interpolation
             if self.collider_normal_from_sdf_gradient:
+                distance_gradients = None
+                if speculative:
+                    # Particle nodes differentiate the collider distance rasterized at cell centers
+                    distance_gradients = collider_distance_gradients(
+                        self._mpm_model.collider,
+                        state_in.body_q,
+                        scratch.grid,
+                        self._mpm_model.voxel_size,
+                        scratch.collider_position_field.dof_values,
+                        scratch.collider_environment_offsets,
+                        self._separate_worlds,
+                        self.temporary_store,
+                    )
                 interpolate_collider_normals(
                     scratch.collider_fraction_test.space_restriction,
                     scratch.collider_distance_field,
@@ -3663,6 +3683,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     temporary_store=self.temporary_store,
                     collider_velocity=scratch.collider_velocity,
                     dt=dt,
+                    distance_gradients=distance_gradients,
                     stop_distance=speculative_stop_distance(self._mpm_model.voxel_size),
                 )
 
