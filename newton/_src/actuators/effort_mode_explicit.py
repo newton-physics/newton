@@ -9,7 +9,8 @@ from typing import Any
 
 import warp as wp
 
-from .clamping.base import ClampingBase, CommandClampingBase
+from .clamping.base import ClampingBase
+from .command_clamping.base import CommandClampingBase
 from .drives.base import DriveBase
 
 

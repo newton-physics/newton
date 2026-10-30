@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import warp as wp
 
@@ -38,6 +38,8 @@ class DriveVoltageControlled(DriveBase):
     limits of the servo are applied by a
     :class:`~newton.actuators.ClampingCurrentPWM`.
     """
+
+    OUTPUTS_MOTOR_COMMAND: ClassVar[bool] = True
 
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:

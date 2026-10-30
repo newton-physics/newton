@@ -48,9 +48,8 @@ class DriveBase:
     parameters, commanded inputs (targets, feedforward), and simulation
     state. The output may still be constrained by one or more
     :class:`~newton.actuators.ClampingBase` objects. Only drives that
-    output a motor command instead, such as
-    :class:`~newton.actuators.DriveVoltageControlled`, can be combined with a
-    motor (e.g. :class:`~newton.actuators.MotorDC`).
+    output a motor command instead (see :attr:`OUTPUTS_MOTOR_COMMAND`) can be
+    combined with a motor (e.g. :class:`~newton.actuators.MotorDC`).
 
     Subclasses must override ``compute`` and ``resolve_arguments``.
 
@@ -78,6 +77,14 @@ class DriveBase:
             """
 
     SHARED_PARAMS: ClassVar[set[str]] = set()
+
+    OUTPUTS_MOTOR_COMMAND: ClassVar[bool] = False
+    """Whether :meth:`compute` outputs a motor command (e.g. a voltage) instead of an effort.
+
+    A drive that outputs a motor command requires a motor, such as
+    :class:`~newton.actuators.MotorDC`, and receives its supply voltage; a
+    drive that outputs an effort cannot be combined with one.
+    """
 
     custom_inputs: tuple[str, ...] = ()
     """Names of extra caller-provided Control arrays this drive reads.

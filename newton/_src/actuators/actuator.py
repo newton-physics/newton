@@ -12,9 +12,10 @@ from typing import TYPE_CHECKING, Any
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
-from .clamping.base import ClampingBase, CommandClampingBase
+from .clamping.base import ClampingBase
+from .clamping.clamping_dc_motor import ClampingDCMotor
+from .command_clamping.base import CommandClampingBase
 from .drives.base import DriveBase
-from .drives.drive_voltage_controlled import DriveVoltageControlled
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
 from .input_processors.base import InputProcessorBase
@@ -434,8 +435,9 @@ class Actuator:
             motor: Optional motor (e.g. :class:`~newton.actuators.MotorDC`),
                 applied between the command clamping and the other clamping.
                 With a motor, the drive
-                must compute the motor command (e.g.
-                :class:`~newton.actuators.DriveVoltageControlled`) and
+                must compute the motor command (see
+                :attr:`DriveBase.OUTPUTS_MOTOR_COMMAND
+                <newton.actuators.DriveBase.OUTPUTS_MOTOR_COMMAND>`) and
                 receives the supply voltage of each slot.
             actuator_indices: Index of each actuator into per-actuator arrays,
                 i.e. arrays with one entry per actuator of the model rather
@@ -504,10 +506,14 @@ class Actuator:
         self._uses_battery = motor is not None and motor.uses_battery
         if self._uses_battery and actuator_indices is None:
             raise ValueError(f"{type(motor).__name__} draws from a battery, which requires actuator_indices")
-        if isinstance(drive, DriveVoltageControlled) and motor is None:
+        if drive.OUTPUTS_MOTOR_COMMAND and motor is None:
             raise ValueError(f"{type(drive).__name__} requires a motor, such as MotorDC")
-        if not isinstance(drive, DriveVoltageControlled) and motor is not None:
+        if not drive.OUTPUTS_MOTOR_COMMAND and motor is not None:
             raise ValueError(f"{type(drive).__name__} outputs an effort and cannot be combined with a motor")
+        if motor is not None and any(isinstance(c, ClampingDCMotor) for c in self.clamping):
+            raise ValueError(
+                "ClampingDCMotor cannot be combined with a motor, which models the effort-speed limit itself"
+            )
         if self._command_clamping and motor is None:
             raise ValueError(
                 f"{type(self._command_clamping[0]).__name__} bounds the motor command and requires a motor, "
@@ -516,21 +522,24 @@ class Actuator:
 
         self.device = indices.device
         self.requires_grad = requires_grad
-        self._computed_forces = wp.zeros(
+        self._drive_output = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
         self._applied_forces = wp.zeros(
             self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
         )
         self._supply_voltage = None
-        self._command = None
-        if motor is not None:
+        if motor is None:
+            self._computed_forces = self._drive_output
+            self._clamped_drive_output = self._applied_forces
+        else:
             self._supply_voltage = wp.zeros(
                 self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
             )
-            self._command = wp.zeros(
+            self._computed_forces = wp.zeros(
                 self.num_actuators, dtype=wp.float32, device=self.device, requires_grad=requires_grad
             )
+            self._clamped_drive_output = self._drive_output
 
         drive.finalize(self.device, self.num_actuators)
         for processor in self.input_processors:
@@ -795,20 +804,22 @@ class Actuator:
            (see :meth:`MotorDC.compute_supply_voltage
            <newton.actuators.MotorDC.compute_supply_voltage>`), which is
            passed to the drive and the motor.
-        3. **Effort** — raw effort into ``_computed_forces`` (explicit control
-           law, or the implicit end-of-step solve). With a motor, the motor
-           command (e.g. a voltage) into ``_command`` instead.
-        4. **Clamping** — bounded effort into ``_applied_forces``. Explicit
-           clamps after the drive law; implicit enforces them inside the
-           solve. With a motor, the command clamping bounds ``_command``.
+        3. **Drive** — the drive output into ``_drive_output`` (explicit
+           control law, or the implicit end-of-step solve): the raw effort,
+           or with a motor the motor command (e.g. a voltage).
+        4. **Command clamping** — with a motor, bound the motor command in
+           ``_drive_output`` in place.
         5. **Motor** — with a motor, the motor effort into
-           ``_computed_forces``, then the other clamping bounds it into
-           ``_applied_forces``. A motor that draws from a battery writes the
-           current it draws.
-        6. **Scatter-add** — *accumulate* applied (and optionally computed)
+           ``_computed_forces``. A motor that draws from a battery writes the
+           current it draws. Without a motor, ``_computed_forces`` is
+           ``_drive_output``.
+        6. **Clamping** — bound the effort in ``_computed_forces`` into
+           ``_applied_forces``. In implicit mode, the solve enforces the
+           clamps instead.
+        7. **Scatter-add** — *accumulate* applied (and optionally computed)
            effort into the output array.  The caller must zero the output
            (e.g. ``control.joint_f.zero_()``) before looping over actuators.
-        7. **Drive state update** — write the drive's ``next_state``.
+        8. **Drive state update** — write the drive's ``next_state``.
 
         Args:
             sim_state: Object or mapping carrying the arrays named by
@@ -896,13 +907,9 @@ class Actuator:
                 battery_voltage, self.actuator_indices, self._supply_voltage, device=self.device
             )
 
-        # --- 3+4. Effort mode: compute raw effort, or the motor command, and clamp ---
+        # --- 3+4. Effort mode: drive, then command clamping (with a motor) or clamping (without) ---
         drive_state = current_act_state.drive_state if current_act_state else None
         custom_inputs = _collect_custom_inputs(sim_control, self.drive.custom_inputs)
-        if self.motor is None:
-            drive_output, clamped_output = self._computed_forces, self._applied_forces
-        else:
-            drive_output = clamped_output = self._command
         output_forces = self._effort_mode.compute_force(
             sim_state,
             inputs.positions,
@@ -914,8 +921,8 @@ class Actuator:
             inputs.vel_indices,
             inputs.target_pos_indices,
             inputs.target_vel_indices,
-            drive_output,
-            clamped_output,
+            self._drive_output,
+            self._clamped_drive_output,
             drive_state,
             dt,
             custom_inputs,
@@ -923,7 +930,7 @@ class Actuator:
             self._supply_voltage,
         )
 
-        # --- 5. Motor, then the effort clamping ---
+        # --- 5+6. Motor, then the clamping of its effort ---
         if self.motor is not None:
             self.motor.compute(
                 output_forces,
@@ -948,7 +955,7 @@ class Actuator:
                 )
                 output_forces = self._applied_forces
 
-        # --- 6. Scatter-add to output ---
+        # --- 7. Scatter-add to output ---
         applied_output = _require_array(sim_control, self.control_output_attr)
         computed_output = None
         if (
@@ -964,7 +971,7 @@ class Actuator:
             device=self.device,
         )
 
-        # --- 7. State updates (write to next_state) ---
+        # --- 8. State updates (write to next_state) ---
         if self.drive.is_stateful():
             self.drive.update_state(
                 current_act_state.drive_state,

@@ -680,8 +680,8 @@ Motors
 
 * :class:`MotorDC` — DC motor driven by a PWM voltage as in BAM (Better
   Actuator Models): takes a voltage command and models the back-EMF,
-  optionally on a battery.  It models the back-EMF itself, so do not combine
-  it with :class:`ClampingDCMotor`.
+  optionally on a battery.  It models the back-EMF itself, so it cannot be
+  combined with :class:`ClampingDCMotor`.
 
 BAM also identifies friction models of a servo, which the actuator does not
 model.  Model Coulomb friction with the joint's

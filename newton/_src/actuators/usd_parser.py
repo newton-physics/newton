@@ -14,14 +14,8 @@ from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .batteries import BatteryBase, BatteryConstantResistance
-from .clamping import (
-    ClampingBase,
-    ClampingCurrentPWM,
-    ClampingDCMotor,
-    ClampingMaxEffort,
-    ClampingPositionBased,
-    CommandClampingBase,
-)
+from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
+from .command_clamping import ClampingCurrentPWM, CommandClampingBase
 from .drives import (
     DriveBase,
     DriveNeuralGRU,

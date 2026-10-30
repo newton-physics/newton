@@ -158,6 +158,70 @@ class TestActuatorDriveAPI(unittest.TestCase):
 
         self.assertAlmostEqual(float(control.joint_f.numpy()[0]), 1.0)
 
+    def test_compute_deprecated_forces_argument(self):
+        """Keep the former name of the compute output argument working, as a call and as an override."""
+        indices = wp.array([0], dtype=wp.uint32)
+        kp = wp.array([2.0], dtype=wp.float32)
+        kd = wp.array([0.0], dtype=wp.float32)
+        q, target = wp.zeros(1, dtype=wp.float32), wp.ones(1, dtype=wp.float32)
+        args = (q, q, target, q, None, indices, indices, indices, indices)
+
+        with self.assertWarnsRegex(NewtonDeprecationWarning, r"rename it to 'output'"):
+
+            class _LegacyDrive(actuators.DrivePD):
+                def compute(
+                    self,
+                    positions,
+                    velocities,
+                    target_pos,
+                    target_vel,
+                    feedforward,
+                    pos_indices,
+                    vel_indices,
+                    target_pos_indices,
+                    target_vel_indices,
+                    forces,
+                    state,
+                    dt,
+                    device=None,
+                    **kwargs,
+                ):
+                    return super().compute(
+                        positions,
+                        velocities,
+                        target_pos,
+                        target_vel,
+                        feedforward,
+                        pos_indices,
+                        vel_indices,
+                        target_pos_indices,
+                        target_vel_indices,
+                        forces,
+                        state,
+                        dt,
+                        device,
+                        **kwargs,
+                    )
+
+        for drive_class in (actuators.DrivePD, _LegacyDrive):
+            with self.subTest(drive=drive_class.__name__):
+                drive = drive_class(kp=kp, kd=kd)
+                output = wp.zeros(1, dtype=wp.float32)
+                drive.compute(*args, output, None, 0.01)
+                self.assertAlmostEqual(float(output.numpy()[0]), 2.0)
+
+                output.zero_()
+                drive.compute(*args, output=output, state=None, dt=0.01)
+                self.assertAlmostEqual(float(output.numpy()[0]), 2.0)
+
+                forces = wp.zeros(1, dtype=wp.float32)
+                with self.assertWarnsRegex(NewtonDeprecationWarning, r"forces argument.*use output"):
+                    drive.compute(*args, forces=forces, state=None, dt=0.01)
+                self.assertAlmostEqual(float(forces.numpy()[0]), 2.0)
+
+                with self.assertRaisesRegex(TypeError, "both 'output' and its deprecated name 'forces'"):
+                    drive.compute(*args, output=output, forces=forces, state=None, dt=0.01)
+
     def test_actuator_registers_drive_inputs_only(self):
         """Ignore undeclared input conventions on delay and clamping components."""
         drive = actuators.DrivePD(

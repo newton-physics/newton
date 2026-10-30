@@ -76,8 +76,8 @@ class MotorDC:
 
     .. note::
 
-        This motor models the back-EMF itself, so do not combine it with a
-        :class:`~newton.actuators.ClampingDCMotor`, which would apply the
+        This motor models the back-EMF itself, so it cannot be combined with
+        a :class:`~newton.actuators.ClampingDCMotor`, which would apply the
         effort-speed limit a second time.
     """
 

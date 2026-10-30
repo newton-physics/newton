@@ -101,7 +101,8 @@ if TYPE_CHECKING:
     from pxr import Usd
 
     from ..actuators.batteries.base import BatteryBase
-    from ..actuators.clamping.base import ClampingBase, CommandClampingBase
+    from ..actuators.clamping.base import ClampingBase
+    from ..actuators.command_clamping.base import CommandClampingBase
     from ..actuators.drives.base import DriveBase
     from ..actuators.input_processors.base import InputProcessorBase
     from ..actuators.motor_dc import MotorDC
@@ -3368,8 +3369,10 @@ class ModelBuilder:
                 a clamping takes parameters from a motor that does not have them (see
                 :attr:`~newton.actuators.CommandClampingBase.MOTOR_PARAMS`), a
                 :class:`~newton.actuators.CommandClampingBase` has no motor, a
-                :class:`~newton.actuators.DriveVoltageControlled` has no motor,
-                or another drive, which outputs an effort, has a motor.
+                drive that outputs a motor command (see
+                :attr:`~newton.actuators.DriveBase.OUTPUTS_MOTOR_COMMAND`) has
+                no motor, a drive that outputs an effort has a motor, or a
+                :class:`~newton.actuators.ClampingDCMotor` has a motor.
         """
         if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
             if drive_class is not None:
@@ -3473,12 +3476,18 @@ class ModelBuilder:
             motor_shared_names = getattr(motor_class, "SHARED_PARAMS", set())
             motor_shared = {k: resolved_motor[k] for k in motor_shared_names if k in resolved_motor}
             motor_array_params = {k: v for k, v in resolved_motor.items() if k not in motor_shared_names}
-        from ..actuators.clamping.base import CommandClampingBase  # noqa: PLC0415
+        from ..actuators.clamping.clamping_dc_motor import ClampingDCMotor  # noqa: PLC0415
+        from ..actuators.command_clamping.base import CommandClampingBase  # noqa: PLC0415
 
         for comp_class in clamping_classes:
             if issubclass(comp_class, CommandClampingBase) and motor is None:
                 raise ValueError(
                     f"add_actuator: {comp_class.__name__} bounds the motor command and requires a motor, such as MotorDC"
+                )
+            if issubclass(comp_class, ClampingDCMotor) and motor is not None:
+                raise ValueError(
+                    f"add_actuator: {comp_class.__name__} cannot be combined with a motor, which models the "
+                    "effort-speed limit itself"
                 )
             missing = getattr(comp_class, "MOTOR_PARAMS", set()) - set(motor_array_params)
             if missing:
@@ -3486,11 +3495,9 @@ class ModelBuilder:
                     f"add_actuator: {comp_class.__name__} takes {', '.join(sorted(missing))} from the motor, "
                     "which requires a motor with these parameters"
                 )
-        from ..actuators.drives.drive_voltage_controlled import DriveVoltageControlled  # noqa: PLC0415
-
-        if issubclass(drive_class, DriveVoltageControlled) and motor is None:
+        if drive_class.OUTPUTS_MOTOR_COMMAND and motor is None:
             raise ValueError(f"add_actuator: {drive_class.__name__} requires a motor, such as MotorDC")
-        if not issubclass(drive_class, DriveVoltageControlled) and motor is not None:
+        if not drive_class.OUTPUTS_MOTOR_COMMAND and motor is not None:
             raise ValueError(
                 f"add_actuator: {drive_class.__name__} outputs an effort and cannot be combined with a motor"
             )
