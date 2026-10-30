@@ -14,6 +14,7 @@ import warp as wp
 import newton
 from newton._src.solvers.steel._testing import kernel_overrides
 from newton._src.solvers.steel.contact_compliance import (
+    begin_rows,
     material_coefficients,
     normal_coefficients,
     prepare_rows,
@@ -550,17 +551,21 @@ def test_rolled_back_capacity_fails_without_warnings(test, device):
 
 def test_solver_overflow_and_dropped_contact_rejected(test, device):
     """Reject overflowing rows, duplicate mappings and missing mappings for positive stiffness."""
-    scene = _CompliantScene(device, articulated=True)
-    scene.step()
-    solver = scene.solver
-    # A second contact mapped to the first one's normal row.
-    for mapping in (solver._contact_path, solver._contact_slot, solver._contact_world):
-        values = mapping.numpy()
-        values[1] = values[0]
-        mapping.assign(values)
-    scene.contacts.rigid_contact_count.fill_(2)
-    with test.assertRaisesRegex(RuntimeError, "one-to-one"):
-        prepare_rows(solver, scene.contacts, 0.005)
+    # A second contact mapped to the first one's normal row, on the free-body and the dense route.
+    for articulated in (False, True):
+        scene = _CompliantScene(device, articulated=articulated)
+        scene.step()
+        solver = scene.solver
+        test.assertEqual(int(solver._contact_path.numpy()[0]), 0 if articulated else 1)
+        for mapping in (solver._contact_path, solver._contact_slot, solver._contact_world):
+            values = mapping.numpy()
+            values[1] = values[0]
+            mapping.assign(values)
+        scene.contacts.rigid_contact_count.fill_(2)
+        begin_rows(solver)
+        with test.subTest(articulated=articulated):
+            with test.assertRaisesRegex(RuntimeError, r"one-to-one to normal rows \(contact 1\)"):
+                prepare_rows(solver, scene.contacts, 0.005)
     scene.contacts.rigid_contact_count.fill_(1)
     solver._constraint_count.fill_(solver.articulation_constraint_max + 1)
     with test.assertRaisesRegex(RuntimeError, "overflowing solver rows"):
