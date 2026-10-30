@@ -2710,6 +2710,9 @@ def accumulate_connect_wrenches_from_impulses(
     connect_body_p: wp.array[int],
     connect_body_c: wp.array[int],
     connect_joint: wp.array[int],
+    connect_rows: wp.array[int],
+    joint_axis: wp.array[wp.vec3],
+    joint_qd_start: wp.array[int],
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
     connect_parent_prescribed: wp.array[int],
@@ -2731,7 +2734,8 @@ def accumulate_connect_wrenches_from_impulses(
     The row builder normalizes each axis row and stores the factor it applied, so a row impulse
     maps back to the force ``e * lambda * inv_norm / dt``: ``+`` on the parent and ``-`` on the
     child, at the points the row's Jacobian uses (the anchors' midpoint when both bodies have
-    response DOFs, otherwise each body's own anchor).
+    response DOFs, otherwise each body's own anchor). A REVOLUTE closure's two hinge rows map back
+    to the couple ``e_i * lambda * inv_norm / dt`` the same way.
     """
     k = wp.tid()
     base_slot = connect_slot[k]
@@ -2761,6 +2765,22 @@ def accumulate_connect_wrenches_from_impulses(
         force = e * (world_impulses[world, slot] * inv_dt * inv_norm)
         _add_point_force(body_p, force, p_a, body_to_articulation, articulation_origin, body_contact_wrench)
         _add_point_force(body_c, -force, p_b, body_to_articulation, articulation_origin, body_contact_wrench)
+    if connect_rows[k] < 5:
+        return
+    _a_p, _a_c, e1, e2 = _connect_hinge_frame(
+        body_p, body_c, joint, joint_axis[joint_qd_start[joint]], joint_X_p, joint_X_c, body_q
+    )
+    for i in range(2):
+        slot = base_slot + 3 + i
+        if slot >= world_constraint_count[world] or world_row_type[world, slot] != PGS_CONSTRAINT_TYPE_CONNECT:
+            continue
+        e = e1
+        if i == 1:
+            e = e2
+        torque = e * (world_impulses[world, slot] * inv_dt * connect_row_inv_norm[k, 3 + i])
+        if body_p >= 0:
+            wp.atomic_add(body_contact_wrench, body_p, wp.spatial_vector(wp.vec3(0.0), torque))
+        wp.atomic_add(body_contact_wrench, body_c, wp.spatial_vector(wp.vec3(0.0), -torque))
 
 
 @wp.kernel
