@@ -60,6 +60,13 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 """
 
 
+def _option_disableflags(mj_model):
+    """MuJoCo disable flags without the parent-filter bit, which SolverMuJoCo always sets because
+    Newton's collision filter pairs decide parent-child contacts."""
+    mujoco, _ = SolverMuJoCo.import_mujoco()
+    return int(mj_model.opt.disableflags) & ~int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
+
+
 class TestImportMjcfBasic(unittest.TestCase):
     def test_nested_option_flags_match_native_mujoco(self):
         """Preserve later flag overrides and apply gravity to the Newton model."""
@@ -76,7 +83,7 @@ class TestImportMjcfBasic(unittest.TestCase):
         builder.add_mjcf(mjcf)
         model = builder.finalize()
         solver = SolverMuJoCo(model)
-        self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
+        self.assertEqual(_option_disableflags(solver.mj_model), native.opt.disableflags)
         self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
         np.testing.assert_allclose(model.gravity.numpy(), [[0, 0, -9.81]])
 
@@ -129,14 +136,14 @@ class TestImportMjcfBasic(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 builder.add_mjcf(mjcf)
                 solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
-                self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
+                self.assertEqual(_option_disableflags(solver.mj_model), native.opt.disableflags)
                 self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
 
     def test_unknown_option_flag_warns(self):
         """Warn and ignore unsupported flags without breaking Warp model construction."""
-        for name in ("mysteryflag", "filterparent", "override", "fwdinv", "diagexact", "midphase", "autoreset"):
+        for name in ("mysteryflag", "override", "fwdinv", "diagexact", "midphase", "autoreset"):
             with self.subTest(flag=name):
-                value = "disable" if name in ("filterparent", "midphase", "autoreset") else "enable"
+                value = "disable" if name in ("midphase", "autoreset") else "enable"
                 mjcf = f"""
 <mujoco>
     <option><flag {name}="{value}"/></option>
@@ -148,6 +155,71 @@ class TestImportMjcfBasic(unittest.TestCase):
                     builder.add_mjcf(mjcf)
                 solver = SolverMuJoCo(builder.finalize())
                 self.assertEqual(solver.mj_model.opt.enableflags, 0)
+
+    def test_filterparent_flag_controls_parent_child_contacts(self):
+        """Honor <flag filterparent="disable"/>: parent and child bodies collide as in native MuJoCo (#4693)."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        for value in ("disable", "enable", None):
+            with self.subTest(filterparent=value):
+                flag = f'<option><flag filterparent="{value}"/></option>' if value else ""
+                mjcf = f"""
+<mujoco>
+  {flag}
+  <worldbody>
+    <body pos="0 0 1"><freejoint/><geom type="sphere" size="0.2"/>
+      <body pos="0 0 0.1"><joint type="hinge"/><geom type="sphere" size="0.2"/></body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+                native_model = mujoco.MjModel.from_xml_string(mjcf)
+                native_data = mujoco.MjData(native_model)
+                mujoco.mj_forward(native_model, native_data)
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf)
+                self.assertFalse([w for w in caught if "filterparent" in str(w.message)])
+                model = builder.finalize(device="cpu")
+                expected_filters = 0 if value == "disable" else 1
+                self.assertEqual(len(model.shape_collision_filter_pairs), expected_filters)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+                self.assertEqual(solver.mj_model.nexclude, expected_filters)
+                mujoco.mj_forward(solver.mj_model, solver.mj_data)
+                self.assertEqual(native_data.ncon, 1 if value == "disable" else 0)
+                self.assertEqual(solver.mj_data.ncon, native_data.ncon)
+
+    def test_equality_welds_do_not_join_weld_groups(self):
+        """MJCF equality welds become loop joints: they keep their direct pair but do not weld groups (#4693)."""
+        mjcf = """
+<mujoco>
+  <worldbody>
+    <body name="a" pos="0 0 1"><freejoint/><geom name="a" type="sphere" size="0.1"/>
+      <body name="a_palm" pos="0 0 0.15">
+        <body name="a_tip" pos="0 0 0.15"><joint type="hinge"/><geom name="a_tip" type="sphere" size="0.1"/></body>
+      </body>
+    </body>
+    <body name="b" pos="1 0 1"><freejoint/><geom name="b" type="sphere" size="0.1"/>
+      <body name="b_palm" pos="0 0 0.15">
+        <body name="b_tip" pos="0 0 0.15"><joint type="hinge"/><geom name="b_tip" type="sphere" size="0.1"/></body>
+      </body>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="a_tip" body2="b_tip"/>
+    <weld body1="a"/>
+  </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            builder.add_mjcf(mjcf, enable_self_collisions=True, convert_mjc_equality_constraints=True)
+        shape = {label.rsplit("/", 1)[-1]: i for i, label in enumerate(builder.shape_label)}
+        pair = lambda x, y: (min(shape[x], shape[y]), max(shape[x], shape[y]))  # noqa: E731
+        pairs = set(builder.finalize(device="cpu").shape_collision_filter_pairs)
+        # each tip is filtered against its hand through the shapeless palm; the welded tips are a direct pair
+        self.assertEqual(pairs, {pair("a", "a_tip"), pair("b", "b_tip"), pair("a_tip", "b_tip")})
 
     def test_constructor_overrides_imported_option_flags(self):
         """Resolve explicit arguments before MJCF or USD flags and Newton defaults."""
@@ -182,14 +254,14 @@ class TestImportMjcfBasic(unittest.TestCase):
                 self.assertFalse(imported.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_MULTICCD)
                 overridden = SolverMuJoCo(model, disable_contacts=False, disable_sensors=True, enable_multiccd=False)
                 self.assertEqual(
-                    overridden.mj_model.opt.disableflags,
+                    _option_disableflags(overridden.mj_model),
                     mujoco.mjtDisableBit.mjDSBL_SENSOR | mujoco.mjtDisableBit.mjDSBL_MULTICCD,
                 )
                 self.assertEqual(overridden.mj_model.opt.enableflags, 0)
         default_builder = newton.ModelBuilder()
         default_builder.add_mjcf(mjcf, parse_mujoco_options=False)
         default_solver = SolverMuJoCo(default_builder.finalize())
-        self.assertEqual(default_solver.mj_model.opt.disableflags, mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+        self.assertEqual(_option_disableflags(default_solver.mj_model), mujoco.mjtDisableBit.mjDSBL_MULTICCD)
 
     def test_geom_rgba_preserves_opacity(self):
         """Preserve authored MJCF geometry opacity."""
