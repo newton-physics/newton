@@ -344,9 +344,11 @@ repository examples spend tuning effort, not a shared solver API.
        when one body carries contacts with different row counts. The saving shrinks as the
        world count grows, and the changed order can converge more slowly on stacks at a
        fixed iteration count, so measure the full step at the target world count before
-       switching. The propagation responses reject contact torsion,
-       contact compliance, sleeping and loop-closing joints, and fall back from bilateral
-       pre-elimination to iterative mimic rows with a warning.
+       switching. ``"propagation"`` solves contact torsion with
+       ``contact_torsion_device=True`` and ``velocity_iterations=0``; ``"propagation_colored"``
+       rejects it. The propagation responses reject contact compliance, sleeping and
+       loop-closing joints, and fall back from bilateral pre-elimination to iterative mimic
+       rows with a warning.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
