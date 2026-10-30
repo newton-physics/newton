@@ -549,10 +549,19 @@ def test_rolled_back_capacity_fails_without_warnings(test, device):
 
 
 def test_solver_overflow_and_dropped_contact_rejected(test, device):
-    """Reject overflowing rows and missing mappings for positive stiffness."""
+    """Reject overflowing rows, duplicate mappings and missing mappings for positive stiffness."""
     scene = _CompliantScene(device, articulated=True)
     scene.step()
     solver = scene.solver
+    # A second contact mapped to the first one's normal row.
+    for mapping in (solver._contact_path, solver._contact_slot, solver._contact_world):
+        values = mapping.numpy()
+        values[1] = values[0]
+        mapping.assign(values)
+    scene.contacts.rigid_contact_count.fill_(2)
+    with test.assertRaisesRegex(RuntimeError, "one-to-one"):
+        prepare_rows(solver, scene.contacts, 0.005)
+    scene.contacts.rigid_contact_count.fill_(1)
     solver._constraint_count.fill_(solver.articulation_constraint_max + 1)
     with test.assertRaisesRegex(RuntimeError, "overflowing solver rows"):
         prepare_rows(solver, scene.contacts, 0.005)
