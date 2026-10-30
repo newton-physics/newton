@@ -948,10 +948,10 @@ def test_world_reset_keeps_shared_support_history(test, device):
 
 
 def test_world_reset_keeps_support_history_read_through_another_world_shape(test, device):
-    """Wake a world-1 sleeper on a jointless world-0 support carrying a world-1 slab, after a world-0 reset."""
+    """Wake a world-1 sleeper on a fixed world-0 support carrying a world-1 slab, after a world-0 reset."""
     builder = newton.ModelBuilder()
     builder.begin_world()
-    support = builder.add_link(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
+    support = _add_fixed_support(builder)
     builder.end_world()
     builder.begin_world()
     builder.add_shape_box(support, hx=1.0, hy=1.0, hz=0.05)
@@ -961,10 +961,10 @@ def test_world_reset_keeps_support_history_read_through_another_world_shape(test
 
 
 def test_world_reset_keeps_support_history_read_through_a_global_shape(test, device):
-    """Wake a world-1 sleeper on a jointless world-0 support carrying a global slab, after a world-0 reset."""
+    """Wake a world-1 sleeper on a fixed world-0 support carrying a global slab, after a world-0 reset."""
     builder = newton.ModelBuilder()
     builder.begin_world()
-    support = builder.add_link(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
+    support = _add_fixed_support(builder)
     builder.end_world()
     builder.begin_world()
     _add_box(builder)
@@ -974,10 +974,10 @@ def test_world_reset_keeps_support_history_read_through_a_global_shape(test, dev
 
 
 def test_world_reset_keeps_support_history_read_by_a_global_shape(test, device):
-    """Wake a world-1 sleeper whose box shape is global on a jointless world-0 support, after a world-0 reset."""
+    """Wake a world-1 sleeper whose box shape is global on a fixed world-0 support, after a world-0 reset."""
     builder = newton.ModelBuilder()
     builder.begin_world()
-    support = builder.add_link(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
+    support = _add_fixed_support(builder)
     builder.add_shape_box(support, hx=1.0, hy=1.0, hz=0.05)
     builder.end_world()
     builder.begin_world()
@@ -1244,6 +1244,14 @@ def _add_slab(builder):
     return slab
 
 
+def _add_fixed_support(builder):
+    """Add a prescribed link welded to the world, without a shape."""
+    xform = wp.transform((0.0, 0.0, -0.05), wp.quat_identity())
+    support = builder.add_link(xform=xform)
+    builder.add_articulation([builder.add_joint_fixed(-1, support, parent_xform=xform)])
+    return support
+
+
 def _expect_support_move_wakes(builder, support, sleepers, world_mask, device):
     """Let ``sleepers`` sleep on ``support``, slide it, reset with ``world_mask``, and require them awake a step later."""
     model = builder.finalize(device=device)
@@ -1256,7 +1264,9 @@ def _expect_support_move_wakes(builder, support, sleepers, world_mask, device):
     _advance(pipeline, solver, states, control, 400)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[sleepers], 0)
     # The contact stays closed under a slide, so only the support's pose history shows the move.
-    coords = model.joint_q_start.numpy()[np.flatnonzero(model.joint_child.numpy() == support)]
+    q_start = model.joint_q_start.numpy()
+    joints = np.flatnonzero(model.joint_child.numpy() == support)
+    coords = [q_start[j] for j in joints if q_start[j + 1] > q_start[j]]
     for state in states:
         body_q, joint_q = state.body_q.numpy(), state.joint_q.numpy()
         body_q[support, 0] += 0.05
