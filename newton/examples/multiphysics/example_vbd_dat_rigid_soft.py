@@ -1,40 +1,46 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example VBD DAT — Rigid-Soft Trampoline (penetration-free truncation)
-#
-# Three small bodies (a box, a sphere and a lying capsule) rest on a sheet
-# pinned at its four edges, a smaller free sheet lies over them, and heavy,
-# fast, spinning projectiles (a sphere and two capsules) are shot onto the
-# stack from above.
-# Contact stiffness alone cannot stop bodies this heavy within a step:
-# without penetration-free truncation they drive the cloth through their
-# surfaces and tunnel out.
-#
-# With ``rigid_soft_enable_dat=True`` the solver truncates both the cloth
-# displacements and the rigid pose updates against per-contact division
-# planes (Divide and Truncate), so the sheets always stay outside the bodies
-# while they catch them; the same truncation keeps the two sheets from
-# passing through each other (particle self-contact). Body-body contacts use
-# compliant ALM with a stiff authored material. Set ``"enable_dat": False`` in
-# PARAMS to compare against penalty contacts alone: at the default 4 substeps x
-# 8 iterations both keep this scene penetration-free, while at 1-2 substeps the
-# penalty-only run lets the sheets sink 6-15 mm into the bodies and DAT still
-# holds them outside.
-#
-# Cost: with the frame replayed as a CUDA graph (the default on CUDA devices),
-# DAT adds a few percent per frame in this scene (23.8 -> 24.5 ms, median of 3
-# runs on an RTX 6000 Ada at 4 substeps x 8 iterations, within the +-1.5 ms
-# run-to-run noise), including the extra ``PRE_POST_INIT`` detection pass that
-# the ``AUTO`` schedule adds. Without graph capture the overhead is about 40 %
-# (35.9 -> 49.6 ms): DAT issues many small kernel launches per iteration and
-# body color, and their host-side launch cost then dominates. All six bodies
-# here share one color, so the per-color rigid truncation costs nothing extra;
-# scenes with several body colors pay one more truncation pass per color.
-#
-# Command: python -m newton.examples vbd_dat_rigid_soft
-###########################################################################
+"""Example VBD DAT — Rigid-Soft Trampoline (penetration-free truncation)
+
+Three small bodies (a box, a sphere and a lying capsule) rest on a sheet
+pinned at its four edges, a smaller free sheet lies over them, and heavy,
+fast, spinning projectiles (a sphere and two capsules) are shot onto the
+stack from above.
+Contact stiffness alone cannot stop bodies this heavy within a step:
+without penetration-free truncation they drive the cloth through their
+surfaces and tunnel out.
+
+With ``rigid_soft_enable_dat=True`` the solver truncates both the cloth
+displacements and the rigid pose updates against per-contact division
+planes (Divide and Truncate), so the sheets always stay outside the bodies
+while they catch them; the same truncation keeps the two sheets from
+passing through each other (particle self-contact). Body-body contacts use
+compliant ALM with a stiff authored material. Set ``"enable_dat": False`` in
+PARAMS to compare against penalty contacts alone: at the default 4 substeps x
+8 iterations both keep this scene penetration-free, while at 1-2 substeps the
+penalty-only run lets the sheets sink 6-15 mm into the bodies and DAT still
+holds them outside.
+
+Cost: with the frame replayed as a CUDA graph (the default on CUDA devices),
+DAT adds a few percent per frame in this scene (23.8 -> 24.5 ms, median of 3
+runs on an RTX 6000 Ada at 4 substeps x 8 iterations, within the +-1.5 ms
+run-to-run noise), including the extra ``PRE_POST_INIT`` detection pass that
+the ``AUTO`` schedule adds. Without graph capture the overhead is about 40 %
+(35.9 -> 49.6 ms): DAT issues many small kernel launches per iteration and
+body color, and their host-side launch cost then dominates. All six bodies
+here share one color, so the per-color rigid truncation costs nothing extra;
+scenes with several body colors pay one more truncation pass per color.
+
+Success criteria:
+- A pinned sheet supports a box, sphere, and capsule under a smaller free sheet.
+- Incoming spinning projectiles deform the sheets, which catch and retain the bodies.
+- Cloth stays outside rigid surfaces and the two sheets do not visibly pass through one another.
+- Bodies remain supported by the pinned sheet without tunneling or unbounded motion.
+
+Runs:
+- `python -m newton.examples vbd_dat_rigid_soft`
+"""
 
 from __future__ import annotations
 

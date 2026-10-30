@@ -1,0 +1,1 @@
+Fix inward-facing triangles in convex hulls capped by `maxhullvert` from `Mesh.compute_convex_hull()`, `newton.utils.remesh_mesh(method="convex_hull")`, `ModelBuilder.approximate_meshes()` and CoACD decompositions. Cached convex decompositions are recomputed.
