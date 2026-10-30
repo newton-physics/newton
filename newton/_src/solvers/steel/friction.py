@@ -411,6 +411,14 @@ _COUPLED_CONTACT_COULOMB_NEWTON = """
         new_lambda_n = -(wNT0 * rT0 + wNT1 * rT1 + bN) / WN;
         new_lambda_t1 = rT0;
         new_lambda_t2 = rT1;
+        // The root search stops within a tolerance and leaves a residual tangent at mu = 0.
+        const float flimit = fmaxf(mu * new_lambda_n, 0.0f);
+        const float tmag = sqrtf(new_lambda_t1 * new_lambda_t1 + new_lambda_t2 * new_lambda_t2);
+        if (tmag > flimit) {
+            const float sc = flimit / tmag;
+            new_lambda_t1 *= sc;
+            new_lambda_t2 *= sc;
+        }
     };
 """
 

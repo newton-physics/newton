@@ -22536,6 +22536,14 @@ _MF_COULOMB_NEWTON_FRICTION_SOURCE = """
                                 new_lambda_n = rN;
                                 new_lambda_t1 = rT0;
                                 new_lambda_t2 = rT1;
+                                // The root search stops within a tolerance and leaves a residual tangent at mu = 0.
+                                float flimit = fmaxf(mu * new_lambda_n, 0.0f);
+                                float tmag = sqrtf(new_lambda_t1 * new_lambda_t1 + new_lambda_t2 * new_lambda_t2);
+                                if (tmag > flimit) {
+                                    float sc = flimit / tmag;
+                                    new_lambda_t1 *= sc;
+                                    new_lambda_t2 *= sc;
+                                }
                             } else {
                                 new_lambda_n = 0.0f;
                                 new_lambda_t1 = 0.0f;

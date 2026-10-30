@@ -2316,10 +2316,11 @@ class _ModeScene:
         articulated=False,
         worlds=1,
         variant=None,
+        mu=_MODE_MU,
         **solver_kwargs,
     ):
         world = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        cfg = newton.ModelBuilder.ShapeConfig(mu=_MODE_MU, gap=0.0, restitution=0.0, density=500.0)
+        cfg = newton.ModelBuilder.ShapeConfig(mu=mu, gap=0.0, restitution=0.0, density=500.0)
         tilt = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(angle))
         world.add_shape_box(-1, hx=2.0, hy=2.0, hz=0.05, xform=wp.transform((0.0, 0.0, -0.05), tilt), cfg=cfg)
         if scene == "incline":
@@ -2448,6 +2449,18 @@ def test_colored_sliding_sphere_rolls_as_on_immediate(test, device):
             test.assertAlmostEqual(spin * 0.05, speed, delta=1.0e-3)
 
 
+def test_coulomb_newton_keeps_frictionless_contacts_frictionless(test, device):
+    """Slide a sphere on a frictionless plane without spinning it up, free and on a six-DOF joint."""
+    for response in ("immediate", "propagation_colored"):
+        for articulated in (False, True):
+            with test.subTest(response=response, articulated=articulated):
+                trace = _mode_trace(
+                    test, device, response, "coulomb_newton", 60, scene="sphere", articulated=articulated, mu=0.0
+                )
+                np.testing.assert_allclose(trace[:, 0, :3], np.tile([2.0, 0.0, 0.0], (60, 1)), atol=1.0e-6, rtol=0.0)
+                test.assertLess(np.abs(trace[:, 0, 3:]).max(), 1.0e-9)
+
+
 def test_every_colored_variant_agrees(test, device):
     """Run the coupled update in every colored sweep, agreeing within float32 summation order.
 
@@ -2530,6 +2543,7 @@ for _fn in (
     test_colored_incline_tracks_immediate,
     test_colored_locked_tangent_keeps_friction,
     test_colored_sliding_sphere_rolls_as_on_immediate,
+    test_coulomb_newton_keeps_frictionless_contacts_frictionless,
     test_every_colored_variant_agrees,
     test_colored_modes_repeat_bitwise_and_replay,
     test_colored_modes_keep_the_coupled_restrictions,
