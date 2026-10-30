@@ -225,7 +225,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``joint_limit_activation_gap``, ``enable_joint_friction``,
        ``enable_joint_velocity_limits``, ``velocity_limit_activation_fraction``,
        ``articulation_constraint_max``, ``free_body_constraint_max``,
-       ``warn_constraint_overflow``, ``drive_mode``,
+       ``propagation_constraint_max``, ``warn_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
        ``contact_regularization``, ``velocity_iterations``,
@@ -292,7 +292,8 @@ repository examples spend tuning effort, not a shared solver API.
        drive gains stable at ordinary ``dt``; ``drive_mode="rows"`` solves
        them as PGS rows together with contacts and limits instead, and each
        driven DOF then uses one row of ``articulation_constraint_max``. Rows beyond ``articulation_constraint_max``
-       (articulated bodies) or ``free_body_constraint_max`` (free bodies) per world
+       (articulated bodies), ``free_body_constraint_max`` (free bodies) or
+       ``propagation_constraint_max`` (propagation rows, see below) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
@@ -329,22 +330,27 @@ repository examples spend tuning effort, not a shared solver API.
        selects how contacts of articulated bodies are solved: ``"immediate"`` rows of
        the generalized coordinates, or the matrix-free ``"propagation"`` responses,
        which solve them as body-space rows and propagate their impulses through each
-       articulation tree. In ``"propagation"`` and ``"propagation_colored"`` every
-       contact row, free bodies included, shares one family of ``free_body_constraint_max +
-       articulation_constraint_max`` rows per world; ``"propagation_colored"`` sweeps them in
-       parallel batches of contacts that share no responding body, which pays off on
-       scenes with many contacts per world. ``propagation_cached_response`` replaces the
-       per-iteration tree walk with cached per-body responses (on by default); which is
-       faster depends on the model. ``propagation_color_order="longest_first"`` colors
-       contacts with more rows first, which shortens the ``"propagation_colored"`` sweep
-       when one body carries contacts with different row counts. The saving shrinks as the
-       world count grows, and the changed order can converge more slowly on stacks at a
-       fixed iteration count, so measure the full step at the target world count before
-       switching. ``"propagation"`` solves contact torsion with
-       ``contact_torsion_device=True`` and ``velocity_iterations=0``; ``"propagation_colored"``
-       rejects it. The propagation responses reject contact compliance, sleeping and
-       loop-closing joints, and fall back from bilateral pre-elimination to iterative mimic
-       rows with a warning.
+       articulation tree. In ``"propagation"`` and ``"propagation_colored"`` contact
+       rows, free bodies included, share one family of ``free_body_constraint_max +
+       articulation_constraint_max`` rows per world, or of ``propagation_constraint_max`` rows
+       when that is set. Contacts between two links of one articulation stay dense rows of
+       ``articulation_constraint_max`` unless ``propagation_same_articulation_rows`` is set,
+       which only ``"propagation"`` accepts.
+       Setting ``propagation_constraint_max`` lets ``free_body_constraint_max`` shrink to the
+       free-body velocity-limit rows, the only free-body rows these responses keep.
+       ``"propagation_colored"`` sweeps the propagation rows in parallel batches of contacts
+       that share no responding body, which pays off on scenes with many contacts per world.
+       ``propagation_cached_response`` replaces the per-iteration tree walk with cached
+       per-body responses (on by default); which is faster depends on the model.
+       ``propagation_color_order="longest_first"`` colors contacts with more rows first, which
+       shortens the ``"propagation_colored"`` sweep when one body carries contacts with
+       different row counts. The saving shrinks as the world count grows, and the changed
+       order can converge more slowly on stacks at a fixed iteration count, so measure the
+       full step at the target world count before switching. ``"propagation"`` solves contact
+       torsion with ``contact_torsion_device=True`` and ``velocity_iterations=0``;
+       ``"propagation_colored"`` rejects it. The propagation responses reject contact compliance,
+       sleeping and loop-closing joints, and fall back from bilateral pre-elimination to iterative
+       mimic rows with a warning.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
@@ -356,12 +362,18 @@ repository examples spend tuning effort, not a shared solver API.
        constraint formulation. Examples mostly use constructor defaults; one
        tracked example disables triangle contact with ``enable_tri_contact``.
    * - :class:`~newton.solvers.SolverStyle3D`
-     - ``iterations``, ``linear_iterations``, ``drag_spring_stiff``,
-       ``enable_mouse_dragging``.
+     - :class:`~newton.solvers.SolverStyle3D.Config`, including ``iterations``,
+       ``linear_iterations``, ``drag_spring_stiff``, and ``enable_mouse_dragging``.
+       The public ``solver.config`` object can be edited between steps, and the
+       updated values take effect on the next step. Recapture CUDA graphs after
+       changing the configuration.
      - Cloth material stiffness is usually authored when calling
        :mod:`newton.solvers.style3d` helper functions. Examples tune
-       ``iterations`` on the solver and keep interaction-specific drag knobs
-       separate from material stiffness.
+       ``Config.iterations`` and keep interaction-specific drag knobs
+       separate from material stiffness. The original constructor keyword
+       options and solver attribute aliases are deprecated as of Newton 1.8;
+       use ``Config`` and ``solver.config`` instead. Deprecated constructor
+       options cannot be combined with an explicit ``config``.
    * - :class:`~newton.solvers.SolverKamino`
      - :class:`~newton.solvers.SolverKamino.Config`, including
        ``sparse_jacobian``, ``sparse_dynamics``, ``use_collision_detector``,

@@ -152,9 +152,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 transforms = model.joint_X_p.numpy()
                 transforms[0, 0] += 0.1
                 model.joint_X_p.assign(transforms)
-                with patch.object(
-                    solver, "_set_const_0_with_physical_meaninertia", side_effect=AssertionError("recomputed constants")
-                ):
+                with patch.object(solver, "_set_const_0", side_effect=AssertionError("recomputed constants")):
                     solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
                 for name, values in before.items():
                     np.testing.assert_array_equal(getattr(solver.mjw_model, name).numpy(), values)
@@ -167,7 +165,9 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 with self.subTest(cpu=cpu, kinematic=kinematic):
                     model = _make_model(worlds=1)
                     if kinematic:
-                        model.body_flags.fill_(int(newton.BodyFlags.KINEMATIC))
+                        body_flags = model.body_flags.numpy()
+                        body_flags[0] = int(newton.BodyFlags.KINEMATIC)
+                        model.body_flags.assign(body_flags)
                     solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                     armature = solver.mjw_model.dof_armature.numpy().copy()
                     meaninertia = (
@@ -213,9 +213,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
             np.testing.assert_array_equal(solver.mjw_model.dof_damping.numpy(), damping)
 
         with (
-            patch.object(
-                solver, "_set_const_0_with_physical_meaninertia", side_effect=AssertionError("recomputed constants")
-            ),
+            patch.object(solver, "_set_const_0", side_effect=AssertionError("recomputed constants")),
             patch.object(
                 solver._mujoco_warp, "set_length_range", side_effect=AssertionError("recomputed length range")
             ),
@@ -241,6 +239,8 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                     mapping = solver.mjc_dof_to_newton_dof.numpy()
                     armature = solver.mjw_model.dof_armature.numpy().copy()
                     invweight = solver.mjw_model.dof_invweight0.numpy().copy()
+                    # Native MuJoCo owns its constants, which see the kinematic root as locked.
+                    native_invweight = solver.mj_model.dof_invweight0.copy() if cpu else None
                     initial_solref = solver.mjw_model.dof_solref.numpy().copy()
                     initial_solimp = solver.mjw_model.dof_solimp.numpy().copy()
                     friction = np.arange(1, model.joint_dof_count + 1, dtype=np.float32)
@@ -267,8 +267,9 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                     for name, values in expected.items():
                         np.testing.assert_allclose(getattr(solver.mjw_model, name).numpy(), values, err_msg=name)
                         if cpu:
+                            native = native_invweight if name == "dof_invweight0" else values[0]
                             np.testing.assert_allclose(
-                                getattr(solver.mj_model, name), values[0], rtol=1.0e-5, err_msg=name
+                                getattr(solver.mj_model, name), native, rtol=1.0e-5, err_msg=name
                             )
 
     def test_force_flags_rearm_raw_limit_validation(self):
@@ -408,7 +409,7 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 self.assertGreater(solver.mj_model.nu, 0)
                 with ExitStack() as stack:
                     for name in (
-                        "_set_const_0_with_physical_meaninertia",
+                        "_set_const_0",
                         "_invalidate_contact_fast_path",
                         "_update_joint_dof_configuration_properties",
                         "_notify_connect_constraints_changed",

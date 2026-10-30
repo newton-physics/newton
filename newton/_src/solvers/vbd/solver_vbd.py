@@ -119,6 +119,16 @@ __all__ = ["SolverVBD"]
 
 _PARTICLE_CONTACT_GATHER_BLOCK_DIM = 128
 
+# ``NewtonVbdSceneAPI`` settings: constructor argument -> (dtype, default, USD attribute name).
+# Read by both ``register_custom_attributes`` and ``SolverVBD.__init__``.
+_SCENE_ATTRIBUTES = {
+    "rigid_contact_history": (wp.bool, False, "newton:vbd:rigid:contactHistory"),
+    "rigid_joint_linear_ke": (wp.float32, 1.0e5, "newton:vbd:rigid:jointLinearStiffness"),
+    "rigid_joint_angular_ke": (wp.float32, 1.0e5, "newton:vbd:rigid:jointAngularStiffness"),
+    "rigid_joint_linear_kd": (wp.float32, 0.0, "newton:vbd:rigid:jointLinearDamping"),
+    "rigid_joint_angular_kd": (wp.float32, 0.0, "newton:vbd:rigid:jointAngularDamping"),
+}
+
 
 def _select_rigid_block_dim(launch_dim: int, device: wp.Device) -> int:
     """Expose more blocks on small rigid launches, allowing sub-warp blocks.
@@ -425,18 +435,18 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_avbd_gamma: float = 0.999,  # Per-step decay for persisted lambda (and legacy penalty k)
         # Rigid body - contacts
         rigid_contact_hard: bool | None = None,  # Legacy body-body contact hard/soft mode
-        rigid_contact_history: bool = False,  # Body-body contact numeric warm-start
+        rigid_contact_history: bool | None = None,  # Body-body contact numeric warm-start
         rigid_contact_k_start: float | None = None,  # Legacy AVBD contact penalty ramp seed
         rigid_body_contact_buffer_size: int = 64,  # Per-body body-body contact list capacity
         rigid_body_particle_contact_buffer_size: int = 256,  # Per-body soft-contact list capacity (particle + edge/face)
         rigid_soft_contact_use_log_barrier: bool = False,  # Use particle-style normal log barrier
         # Rigid body - joints
-        rigid_joint_linear_ke: float = 1.0e5,  # Structural linear joint stiffness
-        rigid_joint_angular_ke: float = 1.0e5,  # Structural angular joint stiffness
+        rigid_joint_linear_ke: float | None = None,  # Structural linear joint stiffness
+        rigid_joint_angular_ke: float | None = None,  # Structural angular joint stiffness
         rigid_joint_linear_k_start: float | None = None,  # Legacy AVBD linear joint penalty ramp seed
         rigid_joint_angular_k_start: float | None = None,  # Legacy AVBD angular joint penalty ramp seed
-        rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-rod linear joint constraints
-        rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-rod angular joint constraints
+        rigid_joint_linear_kd: float | None = None,  # Absolute damping for non-rod linear joint constraints
+        rigid_joint_angular_kd: float | None = None,  # Absolute damping for non-rod angular joint constraints
         # Tendons
         tendon_max_sweeps: int = 256,
         tendon_settle_tol: float = 1.0e-3,
@@ -445,6 +455,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_soft_enable_dat: bool = False,  # Truncate rigid pose updates against per-contact division planes
         rigid_soft_dat_use_interval_arithmetic: bool = False,  # Experimental interval verification of rigid trajectories
         deterministic: wp.DeterministicMode | None = None,
+        enable_fast_math: bool = True,
         collision_pipeline: CollisionPipeline | None = None,
         collision_frequency: Mapping[SolverBase.CollisionSlot, int] | None = None,
         collision_frequency_type: Mapping[SolverBase.CollisionSlot, SolverBase.CollisionFrequencyType] | None = None,
@@ -600,6 +611,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ``model.body_count == 0``. During graph capture, construct the
                 collision pipeline before ``SolverVBD`` so history is pre-allocated,
                 or run one uncaptured solver step before capture.
+                ``None`` (default) reads ``model.vbd.rigid_contact_history`` when
+                registered, otherwise uses ``False``.
             rigid_contact_k_start: Body-body and body-particle contact penalty seed for
                 legacy AVBD ramping [N/m]. Used when ``rigid_avbd_linear_beta`` (or
                 ``rigid_avbd_beta`` fallback) is greater than zero. When the linear beta
@@ -619,7 +632,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 log-barrier law as particle self-contact. When ``False`` (default), they use the legacy quadratic
                 penalty law.
             rigid_joint_linear_ke: Material stiffness for non-rod structural linear joint slots [N/m].
+                ``None`` (default) reads ``model.vbd.rigid_joint_linear_ke`` when
+                registered, otherwise uses ``1.0e5``. A scene-authored value must be finite and
+                non-negative, and applies with and without ``rigid_compliant_alm``.
             rigid_joint_angular_ke: Material stiffness for non-rod structural angular joint slots [N·m/rad].
+                ``None`` (default) reads ``model.vbd.rigid_joint_angular_ke`` when
+                registered, otherwise uses ``1.0e5``. A scene-authored value must be finite and
+                non-negative, and applies with and without ``rigid_compliant_alm``.
             rigid_joint_linear_k_start: Linear penalty seed for legacy AVBD ramping [N/m]. Used when
                 ``rigid_avbd_linear_beta`` (or ``rigid_avbd_beta`` fallback) is greater than zero.
                 When the linear beta is 0, k is fixed at the joint stiffness regardless of this value.
@@ -637,9 +656,15 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     Penalty ramping is deprecated. Keep the effective beta at ``0`` (the
                     default behavior) and author fixed joint stiffness instead.
             rigid_joint_linear_kd: Damping coefficient for non-rod linear joint constraints [N·s/m].
-                Negative values are clamped to 0.
+                ``None`` (default) reads ``model.vbd.rigid_joint_linear_kd`` when
+                registered, otherwise uses ``0.0``. Negative explicit values are clamped to 0; a
+                scene-authored value must be finite and non-negative. Scene values apply with and
+                without ``rigid_compliant_alm``.
             rigid_joint_angular_kd: Damping coefficient for non-rod angular joint constraints [N·m·s/rad].
-                Negative values are clamped to 0.
+                ``None`` (default) reads ``model.vbd.rigid_joint_angular_kd`` when
+                registered, otherwise uses ``0.0``. Negative explicit values are clamped to 0; a
+                scene-authored value must be finite and non-negative. Scene values apply with and
+                without ``rigid_compliant_alm``.
             rigid_soft_enable_dat: Whether to apply Divide-and-Truncate (DAT) penetration-free
                 truncation to rigid-soft contacts, symmetric to particle self-contact truncation.
                 Each rigid-soft contact reported by the owned collision pipeline defines a division
@@ -693,6 +718,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 are accumulated per contact record with atomics in
                 ``NOT_GUARANTEED`` mode and gathered per particle without
                 atomics in every other mode.
+            enable_fast_math: Compile the particle kernels, the rigid body
+                solve, and the joint dual update with Warp's ``fast_math``
+                (approximate division and square root). Results change at the
+                floating-point rounding level. Ignored on CPU.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per VBD iteration.
             tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
@@ -731,6 +760,39 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         """
         integrates_rigid_bodies = model.body_count > 0 and not integrate_with_external_rigid_solver
+        vbd_attrs = getattr(model, "vbd", None)
+
+        def resolve_scene_attribute(name: str, explicit_value: Any) -> tuple[Any, bool]:
+            """Resolve an explicit option before its model custom attribute and default.
+
+            Returns the value and whether it came from the scene (``model.vbd``).
+            """
+            if explicit_value is not None:
+                return explicit_value, False
+            model_value = getattr(vbd_attrs, name, None)
+            if model_value is None:
+                return _SCENE_ATTRIBUTES[name][1], False
+            value = model_value.numpy()[0].item()
+            usd_name = _SCENE_ATTRIBUTES[name][2]
+            if name != "rigid_contact_history" and not (np.isfinite(value) and value >= 0.0):
+                raise ValueError(
+                    f"Scene-authored {usd_name} (model.vbd.{name}) must be finite and >= 0, got {value}. "
+                    f"Fix the scene value or pass {name}= explicitly to SolverVBD."
+                )
+            return value, True
+
+        rigid_contact_history, history_from_scene = resolve_scene_attribute(
+            "rigid_contact_history", rigid_contact_history
+        )
+        rigid_contact_history = bool(rigid_contact_history)
+        if history_from_scene and not integrates_rigid_bodies:
+            # Contact history only applies to rigid bodies integrated by VBD; a scene-authored
+            # value must not make body-free or externally integrated models fail.
+            rigid_contact_history = False
+        rigid_joint_linear_ke = float(resolve_scene_attribute("rigid_joint_linear_ke", rigid_joint_linear_ke)[0])
+        rigid_joint_angular_ke = float(resolve_scene_attribute("rigid_joint_angular_ke", rigid_joint_angular_ke)[0])
+        rigid_joint_linear_kd = float(resolve_scene_attribute("rigid_joint_linear_kd", rigid_joint_linear_kd)[0])
+        rigid_joint_angular_kd = float(resolve_scene_attribute("rigid_joint_angular_kd", rigid_joint_angular_kd)[0])
 
         if rigid_compliant_alm is None:
             raise TypeError("rigid_compliant_alm must be True or False; omit it to use the default.")
@@ -896,6 +958,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "matching for the warm-start restore; construct the pipeline with "
                 "contact_matching='latest' (or 'sticky' for persistent friction anchors). "
                 "Alternatively, set rigid_contact_history=False."
+                + (
+                    " The value came from the scene (model.vbd.rigid_contact_history, "
+                    "newton:vbd:rigid:contactHistory); passing rigid_contact_history=False overrides it."
+                    if history_from_scene
+                    else ""
+                )
             )
         # Per-step schedule cache; refreshed at every step() so runtime
         # set_collision_frequency() changes take effect at the next step.
@@ -936,6 +1004,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 {
                     "deterministic": effective_deterministic,
                     "deterministic_max_records": particle_deterministic_max_records,
+                    "fast_math": enable_fast_math,
                 },
                 module=particle_vbd_kernels,
             )
@@ -952,13 +1021,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if integrates_rigid_bodies:
             rigid_modules = (
                 rigid_vbd_kernels,
-                self._solve_rigid_body_kernel.module,
                 accumulate_body_body_contacts_per_body.module,
                 compute_rigid_contact_forces.module,
                 update_duals_body_body_contacts.module,
             )
             for module in rigid_modules:
                 self._set_module_options(options, module=module)
+            for module in (self._solve_rigid_body_kernel.module, update_duals_joint.module):
+                self._set_module_options(options | {"fast_math": enable_fast_math}, module=module)
         if model.joint_count > 0:
             self._set_module_options(
                 {"deterministic": effective_deterministic, "deterministic_max_records": 0},
@@ -995,6 +1065,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_rest_shape_contact_exclusion_radius,
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
+            enable_fast_math,
         )
 
         # Routed tendon geometry and material state are shared with XPBD; VBD
@@ -1066,6 +1137,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_rest_shape_contact_exclusion_radius: float,
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
+        enable_fast_math: bool,
     ):
         """Initialize particle-specific data structures and settings."""
         # Early exit if no particles
@@ -1115,6 +1187,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._tiled_elasticity_kernel = make_solve_elasticity_tile(
                 include_triangles, include_tets, two_particles_per_warp
             )
+            self._set_module_options({"fast_math": enable_fast_math}, module=self._tiled_elasticity_kernel.module)
             self._tiled_elasticity_particles_per_block = 2 if two_particles_per_warp else 1
         if particle_enable_self_contact:
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
@@ -2406,11 +2479,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
+          - ``vbd:rigid_contact_history``, ``vbd:rigid_joint_linear_ke``, ``vbd:rigid_joint_angular_ke``,
+            ``vbd:rigid_joint_linear_kd`` and ``vbd:rigid_joint_angular_kd`` for the ``NewtonVbdSceneAPI``
+            solver settings, authored in USD as ``newton:vbd:rigid:contactHistory``,
+            ``newton:vbd:rigid:jointLinearStiffness``, ``...jointAngularStiffness``,
+            ``...jointLinearDamping`` and ``...jointAngularDamping``. ``SolverVBD`` uses them as
+            defaults: explicit constructor argument > ``model.vbd.*`` > built-in default. Scene-authored
+            stiffness and damping must be finite and non-negative.
           - ``vbd:joint_is_hard`` for per-joint hard/soft constraint mode (non-rod joints)
           - ``vbd:dahl_eps_max`` and ``vbd:dahl_tau`` for optional rod angular Dahl friction
 
         Attributes are declared in the ``vbd`` namespace so they can be authored
-        in scenes and in USD as ``newton:vbd:<attr>``.
+        in scenes. The Dahl and ``joint_is_hard`` attributes are authored in USD as
+        ``newton:vbd:<attr>``; the solver settings above use the names listed there.
 
         Dahl rod friction is enabled per joint only where both
         ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau`` are authored
@@ -2419,6 +2500,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Args:
             builder: Model builder to register attributes on.
         """
+        for name, (dtype, default, usd_attribute_name) in _SCENE_ATTRIBUTES.items():
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency=Model.AttributeFrequency.ONCE,
+                    assignment=Model.AttributeAssignment.MODEL,
+                    dtype=dtype,
+                    default=default,
+                    namespace="vbd",
+                    usd_attribute_name=usd_attribute_name,
+                )
+            )
+
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dahl_eps_max",

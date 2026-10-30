@@ -1,20 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Selection Materials
-#
-# Demonstrates runtime material property modification using ArticulationView.
-# This example spawns multiple ant robots across worlds and dynamically
-# changes their friction coefficients during simulation. The ants alternate
-# between forward and backward movement with randomized material properties,
-# showcasing how to efficiently modify physics parameters for batches of
-# objects using the selection API.
-#
-# Command: python -m newton.examples selection_materials
-#          python -m newton.examples selection_materials --solver kamino
-#
-###########################################################################
+"""Example Selection Materials
+
+Demonstrates runtime material property modification using ArticulationView.
+This example spawns multiple ant robots across worlds and dynamically
+changes their friction coefficients during simulation. The ants alternate
+between forward and backward movement with randomized material properties,
+showcasing how to efficiently modify physics parameters for batches of
+objects using the selection API.
+
+Success criteria:
+- Ants appear on the ground plane.
+- They are all moving back and forth with different behavior due to random friction applied to them.
+
+Runs:
+- `python -m newton.examples selection_materials --world-count 8`
+  - 8 Ants appear on the ground plane.
+- `python -m newton.examples selection_materials`
+- `python -m newton.examples selection_materials --solver kamino`
+"""
 
 from __future__ import annotations
 

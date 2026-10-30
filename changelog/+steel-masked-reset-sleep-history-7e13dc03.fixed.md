@@ -1,0 +1,1 @@
+Fix a masked `SolverSteel.reset()` with `enable_sleeping=True` keeping the selected worlds' sleep history: their state-change baseline now restarts from the reset state and their asleep counters clear.
