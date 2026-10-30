@@ -474,6 +474,8 @@ class Contacts:
                 total_contacts = rigid_contact_max + soft_contact_max
                 self.force = wp.zeros(total_contacts, dtype=wp.spatial_vector, requires_grad=requires_grad)
 
+        self._self_contact_reset_cursor: wp.array[wp.int32] | None = None
+        """World reset epochs this buffer's sticky self-contact anchors have seen."""
         self.soft_self_contact_data: TriMeshCollisionInfo | None = None
         """Tri-mesh self-contact results owned by this container, written by the
         collision pipeline's tri-mesh collision detector; ``None`` unless

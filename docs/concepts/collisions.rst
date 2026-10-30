@@ -2630,7 +2630,9 @@ and edge-edge pair a friction anchor
 anchor names material points: the vertex position in the triangle's frame, or the
 points of the two edges that touched.  A new pair anchors where it was at the
 start of the step.  A pair found again in the next pass keeps its anchor, dragged
-along so the pair is at most ``contact_matching_pos_threshold`` from it.  The pairs
+along so the pair is at most ``contact_matching_pos_threshold`` from it.  Each
+:class:`~newton.Contacts` buffer keeps its own anchors, and a reset that selects
+the world of either side of a pair restarts the pair in every buffer.  The pairs
 of a pipeline with ``requires_grad`` get no anchor.
 
 :class:`~newton.solvers.SolverVBD` measures self-contact friction slip as a pair's
@@ -2650,7 +2652,8 @@ contact midpoints and normals in buffers owned by the pipeline: 40 bytes per
 ``rigid_contact_max`` slot.  ``"sticky"`` adds 48 bytes per slot and
 ``contact_report=True`` adds 4.  With soft self-contact, ``"sticky"`` also keeps 28
 bytes per vertex-triangle and 20 per edge-edge pair slot (the self-contact
-buffer capacities) and 4 bytes per vertex and per edge.  ``"disabled"`` allocates no
+buffer capacities), 4 bytes per vertex and per edge, and 4 bytes per world per
+buffer.  ``"disabled"`` allocates no
 matching history.
 
 The deterministic pipeline's sorter omits the unused simple-layout scratch,

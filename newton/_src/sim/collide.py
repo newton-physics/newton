@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
-from ..core.reset import normalize_reset_world_mask
+from ..core.reset import WorldResetEpochs, normalize_reset_world_mask
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
@@ -2302,6 +2302,8 @@ class CollisionPipeline:
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
         self._self_contact_matcher: SelfContactMatcher | None = None
         self._contact_matching_pos_threshold = contact_matching_pos_threshold
+        # Contact history kept per Contacts buffer catches up on resets through these.
+        self._world_resets = WorldResetEpochs(model.world_count, device=device) if matching_sticky else None
 
         # Publish only after all construction succeeds.
         if publish_capacity:
@@ -2414,7 +2416,7 @@ class CollisionPipeline:
         )
         contacts._contact_matching_mode = self.contact_matching
         if self._self_contact_matcher is not None:
-            self._self_contact_matcher.allocate_anchors(contacts.soft_self_contact_data)
+            self._self_contact_matcher.allocate_anchors(contacts)
         if self._soft_mesh_contact_data is not None:
             allocate_soft_mesh_contact_buffers(contacts)
             contacts._soft_contact_mesh_data = self._soft_mesh_contact_data
@@ -2515,7 +2517,7 @@ class CollisionPipeline:
                 self.model.edge_count,
                 vertex_buffer_pre_alloc,
                 edge_buffer_pre_alloc,
-                self.model.world_count,
+                self._world_resets,
                 pos_threshold=self._contact_matching_pos_threshold,
                 edge_edge_parallel_epsilon=edge_edge_parallel_epsilon,
                 device=self.model.device,
@@ -2640,7 +2642,9 @@ class CollisionPipeline:
         """Clear all or reset-selected previous-frame contact history.
 
         Masked selections accumulate until the next :meth:`collide` call
-        consumes them.
+        consumes them. Sticky self-contact anchors restart in every
+        :class:`~newton.Contacts` buffer, on that buffer's next self-contact
+        pass.
 
         .. experimental::
 
@@ -2657,8 +2661,8 @@ class CollisionPipeline:
         )
         if self._contact_matcher is not None:
             self._contact_matcher.reset(world_mask)
-        if self._self_contact_matcher is not None:
-            self._self_contact_matcher.reset(world_mask)
+        if self._world_resets is not None:
+            self._world_resets.advance(world_mask)
 
     @staticmethod
     def _build_excluded_pairs(model: Model) -> wp.array[wp.vec2i] | None:

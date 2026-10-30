@@ -31,8 +31,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..core.reset import reset_world_selected
-from .contact_match import _accumulate_reset_world_mask_kernel
+from ..core.reset import WorldResetEpochs, world_reset_since
 from .tri_mesh_collision import (
     NO_ANCHOR,
     TriMeshCollisionInfo,
@@ -47,6 +46,16 @@ from .tri_mesh_collision import (
 if TYPE_CHECKING:
     from ..sim.contacts import Contacts
     from ..sim.model import Model
+
+
+@wp.func
+def _pair_reset_since(
+    world_a: int, world_b: int, epochs: wp.array[wp.int32], cursor: wp.array[wp.int32], world_count: int
+):
+    """Return whether the world of either side of a pair has been reset since ``cursor`` caught up."""
+    return world_reset_since(world_a, epochs, cursor, world_count) or world_reset_since(
+        world_b, epochs, cursor, world_count
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -96,7 +105,8 @@ def _replay_vertex_triangle_anchors_kernel(
     step_start_q: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
     tri_indices: wp.array2d[wp.int32],
-    reset_world_mask: wp.array[wp.bool],
+    reset_epochs: wp.array[wp.int32],
+    reset_cursor: wp.array[wp.int32],
     prev_count: wp.array[wp.int32],
     prev_triangle: wp.array[wp.int32],
     prev_anchor: wp.array[wp.vec3],
@@ -116,9 +126,9 @@ def _replay_vertex_triangle_anchors_kernel(
     c = step_start_q[tri_indices[tri, 2]]
     anchor = vertex_triangle_anchor(p, a, b, c)
     prev_n = prev_count[v]
-    if reset_world_selected(particle_world[v], reset_world_mask, world_count) or reset_world_selected(
-        particle_world[tri_indices[tri, 0]], reset_world_mask, world_count
-    ):
+    vertex_world = particle_world[v]
+    triangle_world = particle_world[tri_indices[tri, 0]]
+    if _pair_reset_since(vertex_world, triangle_world, reset_epochs, reset_cursor, world_count):
         prev_n = 0
     for j in range(offset, offset + prev_n):
         if prev_triangle[j] == tri:
@@ -137,7 +147,8 @@ def _replay_edge_edge_anchors_kernel(
     step_start_q: wp.array[wp.vec3],
     particle_world: wp.array[wp.int32],
     edge_indices: wp.array2d[wp.int32],
-    reset_world_mask: wp.array[wp.bool],
+    reset_epochs: wp.array[wp.int32],
+    reset_cursor: wp.array[wp.int32],
     prev_count: wp.array[wp.int32],
     prev_edge: wp.array[wp.int32],
     prev_anchor: wp.array[wp.vec2],
@@ -157,9 +168,9 @@ def _replay_edge_edge_anchors_kernel(
     q1 = step_start_q[edge_indices[e2, 3]]
     anchor = edge_edge_anchor(p0, p1, q0, q1, parallel_epsilon)
     prev_n = prev_count[e1]
-    if reset_world_selected(particle_world[edge_indices[e1, 2]], reset_world_mask, world_count) or reset_world_selected(
-        particle_world[edge_indices[e2, 2]], reset_world_mask, world_count
-    ):
+    e1_world = particle_world[edge_indices[e1, 2]]
+    e2_world = particle_world[edge_indices[e2, 2]]
+    if _pair_reset_since(e1_world, e2_world, reset_epochs, reset_cursor, world_count):
         prev_n = 0
     for j in range(offset, offset + prev_n):
         if prev_edge[j] == e2:
@@ -180,7 +191,7 @@ class SelfContactMatcher:
         edge_count: Number of mesh edges.
         vertex_buffer_size: Self-contact capacity per vertex row.
         edge_buffer_size: Self-contact capacity per edge row.
-        world_count: Number of local worlds.
+        resets: The pipeline's world reset epochs; each buffer keeps its own cursor on them.
         pos_threshold: Largest drift [m] a pair keeps from its anchor across passes.
         edge_edge_parallel_epsilon: Threshold the detector treats edge directions as parallel below.
         device: Device to allocate on.
@@ -192,7 +203,7 @@ class SelfContactMatcher:
         edge_count: int,
         vertex_buffer_size: int,
         edge_buffer_size: int,
-        world_count: int,
+        resets: WorldResetEpochs,
         pos_threshold: float,
         edge_edge_parallel_epsilon: float,
         device=None,
@@ -200,7 +211,7 @@ class SelfContactMatcher:
         with wp.ScopedDevice(device):
             self._vertex_rows = (particle_count, vertex_buffer_size)
             self._edge_rows = (edge_count, edge_buffer_size)
-            self._world_count = int(world_count)
+            self._resets = resets
             self._pos_threshold = pos_threshold
             self._edge_edge_parallel_epsilon = edge_edge_parallel_epsilon
             self._prev_vertex_count = wp.zeros(particle_count, dtype=wp.int32)
@@ -211,27 +222,16 @@ class SelfContactMatcher:
             self._prev_edge_anchor = wp.zeros(edge_count * edge_buffer_size, dtype=wp.vec2)
             # Whether the last pass anchored its rows, so they are worth saving.
             self._rows_current = wp.zeros(1, dtype=wp.int32)
-            self._reset_world_mask = wp.zeros(self._world_count + 1, dtype=wp.bool)
 
-    def reset(self, world_mask: wp.array[wp.bool] | None = None) -> None:
-        """Forget all or reset-selected saved rows; selections accumulate until the next replay."""
-        if world_mask is None:
-            self._reset_world_mask.fill_(True)
-            return
-        wp.launch(
-            _accumulate_reset_world_mask_kernel,
-            dim=world_mask.shape[0],
-            inputs=[world_mask, self._reset_world_mask],
-            device=self._reset_world_mask.device,
-        )
-
-    def allocate_anchors(self, collision_info: TriMeshCollisionInfo) -> None:
-        """Give a self-contact result buffer one friction anchor per pair slot."""
+    def allocate_anchors(self, contacts: Contacts) -> None:
+        """Give a buffer one friction anchor per self-contact pair slot and its own reset cursor."""
+        collision_info = contacts.soft_self_contact_data
         device = self._rows_current.device
         collision_info.vertex_colliding_triangles_anchor = wp.zeros(
             self._prev_triangle.shape[0], dtype=wp.vec3, device=device
         )
         collision_info.edge_colliding_edges_anchor = wp.zeros(self._prev_edge.shape[0], dtype=wp.vec2, device=device)
+        contacts._self_contact_reset_cursor = self._resets.cursor()
 
     def save(self, contacts: Contacts) -> None:
         """Save the buffer's rows and anchors as the solver left them, before detection rewrites them."""
@@ -268,12 +268,13 @@ class SelfContactMatcher:
             _replay_vertex_triangle_anchors_kernel,
             dim=self._vertex_rows,
             inputs=[
-                self._world_count,
+                self._resets.world_count,
                 self._pos_threshold,
                 step_start_q,
                 model.particle_world,
                 model.tri_indices,
-                self._reset_world_mask,
+                self._resets.epochs,
+                contacts._self_contact_reset_cursor,
                 self._prev_vertex_count,
                 self._prev_triangle,
                 self._prev_triangle_anchor,
@@ -285,13 +286,14 @@ class SelfContactMatcher:
             _replay_edge_edge_anchors_kernel,
             dim=self._edge_rows,
             inputs=[
-                self._world_count,
+                self._resets.world_count,
                 self._pos_threshold,
                 self._edge_edge_parallel_epsilon,
                 step_start_q,
                 model.particle_world,
                 model.edge_indices,
-                self._reset_world_mask,
+                self._resets.epochs,
+                contacts._self_contact_reset_cursor,
                 self._prev_edge_count,
                 self._prev_edge,
                 self._prev_edge_anchor,
@@ -299,7 +301,7 @@ class SelfContactMatcher:
             outputs=[collision_info],
             device=device,
         )
-        self._reset_world_mask.fill_(False)
+        self._resets.catch_up(contacts._self_contact_reset_cursor)
         self._rows_current.fill_(1)
 
     def skip(self) -> None:

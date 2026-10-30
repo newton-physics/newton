@@ -1334,7 +1334,7 @@ def test_sticky_self_contact_anchors_cuda_graph(test, device):
 
 
 def test_sticky_self_contact_history_follows_world_and_buffer(test, device):
-    """A masked reset restarts only the selected world's anchors, and each buffer replays its own."""
+    """A masked reset restarts only the selected world's anchors in every buffer, and each buffer replays its own."""
     with wp.ScopedDevice(device):
         model, state = _build_self_contact_scene(device, world_count=2)
         pipeline = _self_contact_pipeline(model)
@@ -1356,6 +1356,9 @@ def test_sticky_self_contact_history_follows_world_and_buffer(test, device):
         other = pipeline.contacts()
         np.testing.assert_allclose(anchor_x_at(0.0204, other), [0.0204, 0.0204], atol=1.0e-7)
         np.testing.assert_allclose(anchor_x_at(0.0204), [0.0202, 0.02], atol=1.0e-7)
+        pipeline.reset_contact_matching(wp.array((False, True, False), dtype=wp.bool, device=device))
+        np.testing.assert_allclose(anchor_x_at(0.0205), [0.0202, 0.0205], atol=1.0e-7)
+        np.testing.assert_allclose(anchor_x_at(0.0205, other), [0.0204, 0.0205], atol=1.0e-7)
 
         # Without persistent anchors, VBD measures self-contact slip as each step's motion.
         for fresh in (
