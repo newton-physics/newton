@@ -345,7 +345,8 @@ class ImplicitMPMModel:
 
         - ``particle_radius``, ``particle_volume``, and ``particle_density``,
           from ``model.particle_radius`` and ``model.particle_mass``.
-        - Cached extrema (``min_young_modulus``, ``max_hardening``) and feature
+        - Cached extrema (``min_young_modulus``, ``max_hardening``,
+          ``max_particle_radius``) and feature
           flags (``has_viscosity``, ``has_dilatancy``) used to toggle code
           paths without rescanning every step.
         """
@@ -370,6 +371,7 @@ class ImplicitMPMModel:
         with wp.ScopedDevice(model.device):
             num_particles = model.particle_q.shape[0]
             self.particle_radius = _particle_parameter(num_particles, model.particle_radius)
+            self.max_particle_radius = float(np.max(self.particle_radius.numpy(), initial=0.0))
             self.particle_volume = _reuse_or_allocate(getattr(self, "particle_volume", None), num_particles)
             self.particle_density = _reuse_or_allocate(getattr(self, "particle_density", None), num_particles)
             wp.launch(

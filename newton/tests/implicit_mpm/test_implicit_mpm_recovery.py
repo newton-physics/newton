@@ -443,6 +443,7 @@ def test_recovery_config_validation(test, device):
         for options in (
             {"volume_recovery_fraction": float("nan")},
             {"volume_recovery_fraction": -0.1},
+            {"volume_recovery_fraction": 1.1},
             {"critical_fraction_measurement": "box"},
             {"collider_recovery_fraction": float("inf")},
             {"collider_contact_gap": -0.01},

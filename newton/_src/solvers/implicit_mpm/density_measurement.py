@@ -400,7 +400,6 @@ def make_particle_capacity_kernel(grid):
             if cell >= 0 and cell < masks.shape[0]:
                 mask = masks[cell]
             else:
-                # Cells outside the grid hold no particles, but their free space still counts
                 mask = free_box_mask(
                     center, wp.where(separate_worlds, environment, -2), collider, body_q, body_qd, body_q_prev, h
                 )

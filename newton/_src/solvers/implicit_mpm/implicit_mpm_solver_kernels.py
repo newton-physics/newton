@@ -179,9 +179,14 @@ def free_velocity(
 
 
 @wp.kernel
-def max_particle_density(particle_density: wp.array[float], max_density: wp.array[float]):
-    """Accumulate the largest positive particle density; zero-density kinematic particles are skipped."""
-    density = particle_density[wp.tid()]
+def max_particle_density(
+    particle_density: wp.array[float], material_flags: wp.array[wp.int32], max_density: wp.array[float]
+):
+    """Accumulate the largest density of active material particles; zero-density kinematic particles are skipped."""
+    i = wp.tid()
+    if (material_flags[i] & newton.ParticleFlags.ACTIVE) == 0:
+        return
+    density = particle_density[i]
     if density > 0.0:
         wp.atomic_max(max_density, 0, density)
 
