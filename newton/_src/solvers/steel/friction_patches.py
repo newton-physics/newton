@@ -1513,18 +1513,18 @@ def link_patch_rows(
     if row < 0:
         return
     next_slot = slot[c]
-    anchors = int(patches.weight[c] > 0.0 and slots_needed[c] == 3)
+    anchors = int(patches.weight[c] > 0.0 and slots_needed[c] >= 3)
     while row != c:
         if slot[row] >= 0 and path[row] == route and world[row] == world[c]:
             if next_slot == slot[c]:
                 next_slot = slot[row]
-            if patches.weight[row] > 0.0 and slots_needed[row] == 3:
+            if patches.weight[row] > 0.0 and slots_needed[row] >= 3:
                 anchors += 1
             if patches.weight[c] == 0.0:
                 break
         row = patches.next_contact[row]
     parents[world[c], slot[c]] = next_slot
-    if patches.weight[c] > 0.0 and slots_needed[c] == 3 and anchors > 0:
+    if patches.weight[c] > 0.0 and slots_needed[c] >= 3 and anchors > 0:
         for t in range(1, 3):
             mu[world[c], slot[c] + t] /= float(anchors)
 
@@ -1563,7 +1563,7 @@ def seed_patch_impulses(
     scaled by ``decay`` and by the step ratio :func:`warmstart_dt_scale`.
     """
     c = wp.tid()
-    if c >= count[0] or path[c] != route or slot[c] < 0 or slots_needed[c] != 3:
+    if c >= count[0] or path[c] != route or slot[c] < 0 or slots_needed[c] < 3:
         return
     source = frame.source[c]
     if source < 0:
@@ -1637,7 +1637,7 @@ def finish_patch_impulses(
         # and apply that error when it later lands (common on curved meshes).
         frame.valid[c] = 0
         return
-    if slots_needed[c] != 3:
+    if slots_needed[c] < 3:
         # Friction was filtered, but its normal rows still prove support.
         return
     n = frame.normal[c]
