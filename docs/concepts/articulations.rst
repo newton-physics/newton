@@ -55,11 +55,15 @@ Rod joints
    :class:`newton.Rod`, :attr:`newton.JointType.ROD`,
    :meth:`newton.ModelBuilder.add_rod`, and
    :meth:`newton.ModelBuilder.add_joint_rod` are experimental, together with
-   the Rod slices of ``joint_q`` and ``joint_qd``, the Rod material-axis order
-   in :attr:`newton.Model.joint_target_ke` and
+   the Rod slices of ``joint_q``, ``joint_qd``,
+   :attr:`newton.Model.joint_f`, and :attr:`newton.Control.joint_f`,
+   the Rod material-axis order in :attr:`newton.Model.joint_target_ke` and
    :attr:`newton.Model.joint_target_kd`, Rod structural rest stored in
    :attr:`newton.Model.joint_target_q`, and Rod behavior in
-   :func:`newton.eval_fk` and :func:`newton.eval_ik`.
+   :func:`newton.eval_fk`, :func:`newton.eval_ik`, and
+   :class:`newton.solvers.SolverVBD`, including Rod rest refresh through
+   :meth:`~newton.solvers.SolverVBD.notify_model_changed` with
+   :attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`.
    These may change without prior notice.
 
 Newton uses *cable* for the modeled object and *rod* for this discrete
@@ -509,7 +513,7 @@ Joint types
      - Generic D6 joint with up to 3 translational and 3 rotational degrees of freedom
      - up to 6
      - up to 6
-   * - ``JointType.ROD``
+   * - ``JointType.ROD`` (experimental)
      - Rod joint with relative-pose kinematics and stretch/shear/bend/twist material response
      - 7 (3D position + 4D quaternion)
      - 6
