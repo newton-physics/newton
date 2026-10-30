@@ -1592,6 +1592,101 @@ def _compute_body_net_wrench(
     return body_fb_s[child] + f_t_s - f_ext_origin
 
 
+_FLOAT32_MAX = wp.constant(3.4028234663852886e38)
+
+
+@wp.kernel
+def eval_joint_friction_load(
+    articulation_start: wp.array[int],
+    articulation_joint_end: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_S_s: wp.array[wp.spatial_vector],
+    joint_qdd: wp.array[float],
+    body_fb_s: wp.array[wp.spatial_vector],
+    body_f_ext: wp.array[wp.spatial_vector],
+    body_flags: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    body_mass: wp.array[float],
+    body_inertia: wp.array[wp.mat33],
+    articulation_origin: wp.array[wp.vec3],
+    articulation_active: wp.array[int],
+    friction_dof_supported: wp.array[wp.int32],
+    joint_friction: wp.array[float],
+    joint_friction_load_coefficient: wp.array[float],
+    # scratch
+    body_a_s: wp.array[wp.spatial_vector],
+    body_ft_s: wp.array[wp.spatial_vector],
+    # outputs
+    joint_friction_total: wp.array[float],
+):
+    """Write each DOF's friction plus ``c (|F| + |T|)`` of the wrench its joint transmits under the free dynamics.
+
+    ``F`` and ``T`` are taken about the child's center of mass for the stage-3 accelerations ``joint_qdd``.
+    """
+    articulation = wp.tid()
+    start = articulation_start[articulation]
+    end = articulation_joint_end[articulation]
+    active = articulation_active[articulation] != 0
+    origin = articulation_origin[articulation]
+    if active:
+        for i in range(start, end):
+            parent = joint_parent[i]
+            child = joint_child[i]
+            a_s = wp.spatial_vector()
+            if parent >= 0:
+                a_s = body_a_s[parent]
+            dof_start = joint_qd_start[i]
+            for dof in range(dof_start, dof_start + joint_dof_dim[i, 0] + joint_dof_dim[i, 1]):
+                a_s += joint_S_s[dof] * joint_qdd[dof]
+            body_a_s[child] = a_s
+            body_ft_s[child] = wp.spatial_vector()
+    for offset in range(end - start):
+        i = end - offset - 1
+        load = float(0.0)
+        if active:
+            parent = joint_parent[i]
+            child = joint_child[i]
+            X_wb = body_q[child]
+            com_rel = wp.transform_point(X_wb, body_com[child]) - origin
+            mass = body_mass[child]
+            com, inertia_origin = transform_com_inertia_terms(
+                wp.transform(com_rel, wp.transform_get_rotation(X_wb)), mass, body_inertia[child]
+            )
+            f_s = _compute_body_net_wrench(
+                child,
+                body_ft_s[child] + mul_com_spatial_inertia(mass, com, inertia_origin, body_a_s[child]),
+                origin,
+                body_fb_s,
+                body_f_ext,
+                body_flags,
+                body_q,
+                body_com,
+            )
+            if parent >= 0:
+                body_ft_s[parent] = body_ft_s[parent] + f_s
+            force = wp.spatial_top(f_s)
+            load = wp.length(force) + wp.length(wp.spatial_bottom(f_s) - wp.cross(com_rel, force))
+        dof_start = joint_qd_start[i]
+        for dof in range(dof_start, dof_start + joint_dof_dim[i, 0] + joint_dof_dim[i, 1]):
+            total = joint_friction[dof]
+            coefficient = joint_friction_load_coefficient[dof]
+            # Invalid friction stays as is so the DOF builds no row; invalid coefficients add nothing.
+            if (
+                coefficient > 0.0
+                and wp.isfinite(coefficient)
+                and total >= 0.0
+                and wp.isfinite(total)
+                and friction_dof_supported[dof] != 0
+            ):
+                # Saturate so a finite coefficient keeps its row when the product overflows float32.
+                total = wp.min(total + coefficient * load, _FLOAT32_MAX)
+            joint_friction_total[dof] = total
+
+
 @wp.func
 def accumulate_articulation_tau(
     index: int,
@@ -8034,7 +8129,8 @@ def accumulate_propagation_warmstart_body_impulses_ordered(
 # impulses overlap. The units of one color are body-disjoint and solve in parallel; colors run in
 # sequence, a Gauss-Seidel reordering of the serial sweep. A unit's friction rows share its bodies,
 # so a friction pair's sibling write has one writer. The coloring is first-fit greedy over the
-# world's units in contact-index order, which uses at most 2 * degree - 1 colors; units left
+# world's units in contact-index order, after row count with propagation_color_order="longest_first",
+# which uses at most 2 * degree - 1 colors; units left
 # without a color below the cap run in an ordered serial tail.
 
 PROPAGATION_COLOR_TAIL = 512
