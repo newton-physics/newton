@@ -217,8 +217,8 @@ energy per unit rest area is the stable Neo-Hookean membrane energy
    \psi_{\text{m}} = \frac{\mu}{2}\,(I_C - 2) + \frac{\lambda_{\text{NH}}}{2}\,(J_s - \alpha)^2,
    \qquad \alpha = 1 + \frac{\mu}{\lambda_{\text{NH}}},
 
-with :math:`\mu = \texttt{tri\_ke}` and :math:`\lambda_{\text{NH}} =
-\texttt{tri\_ka} + \texttt{tri\_ke}`; the triangle energy is :math:`A_0\,\psi_{\text{m}}`.
+with :math:`\mu = \mathtt{tri\_ke}` and :math:`\lambda_{\text{NH}} =
+\mathtt{tri\_ka} + \mathtt{tri\_ke}`; the triangle energy is :math:`A_0\,\psi_{\text{m}}`.
 ``tri_kd`` damps the rate of the metric :math:`\mathbf{F}^{\mathsf T}\mathbf{F}`,
 so rigid rotations are not damped. The bending term resists a change of the
 dihedral angle :math:`\theta` across an interior edge of rest length
@@ -226,10 +226,10 @@ dihedral angle :math:`\theta` across an interior edge of rest length
 
 .. math::
 
-   E_{\text{b}} = \tfrac{1}{2}\,\texttt{edge\_ke}\;L_0\,(\theta - \theta_0)^2,
+   E_{\text{b}} = \tfrac{1}{2}\,\mathtt{edge\_ke}\;L_0\,(\theta - \theta_0)^2,
 
 and ``edge_kd`` damps the angle rate with the force
-:math:`\mathbf{f}_d = -\texttt{edge\_kd}\,L_0\,\dot\theta\,\partial\theta/\partial\mathbf{x}`,
+:math:`\mathbf{f}_d = -\mathtt{edge\_kd}\,L_0\,\dot\theta\,\partial\theta/\partial\mathbf{x}`,
 where :math:`\dot\theta` is the change of :math:`\theta` over the step divided
 by :math:`h`. The volumetric term is the stable
 Neo-Hookean energy of a tetrahedron of rest volume :math:`V_0`,
@@ -239,23 +239,23 @@ Neo-Hookean energy of a tetrahedron of rest volume :math:`V_0`,
    \psi_{\text{v}} = \frac{\mu}{2}\,(I_C - 3) + \frac{\lambda_{\text{NH}}}{2}\,(J - \alpha)^2,
    \qquad J = \det \mathbf{F},
 
-with :math:`\mu = \texttt{k\_mu}`, :math:`\lambda_{\text{NH}} = \texttt{k\_lambda} +
-\texttt{k\_mu}`, the same :math:`\alpha`, energy :math:`V_0\,\psi_{\text{v}}`,
+with :math:`\mu = \mathtt{k\_mu}`, :math:`\lambda_{\text{NH}} = \mathtt{k\_lambda} +
+\mathtt{k\_mu}`, the same :math:`\alpha`, energy :math:`V_0\,\psi_{\text{v}}`,
 and ``k_damp`` damping the rate of the metric :math:`\mathbf{F}^{\mathsf T}\mathbf{F}`
 like ``tri_kd``. In both Neo-Hookean terms the user values are
 Lamé parameters; the kernels convert them to the Neo-Hookean parameters, which
 is why :math:`\lambda_{\text{NH}}` carries the extra :math:`\mu`.
 
 **Contact** is three different terms, one per contact kind. They share the
-friction smoothing length :math:`\epsilon_u = \texttt{friction\_epsilon}\, h`
+friction smoothing length :math:`\epsilon_u = \mathtt{friction\_epsilon}\, h`
 and nothing else: each kind has its own distance, its own stiffness and its
 own law.
 
 *Self-contact* acts between a vertex and a triangle, or between two edges, of
 one particle system (``accumulate_self_contact_force_and_hessian``). The
 distance :math:`d` is the closest-point distance of the pair, the interaction
-distance is :math:`r = \texttt{particle\_self\_contact\_margin}` and the
-stiffness is :math:`k = \texttt{soft\_contact\_ke}`. The energy
+distance is :math:`r = \mathtt{particle\_self\_contact\_margin}` and the
+stiffness is :math:`k = \mathtt{soft\_contact\_ke}`. The energy
 (``evaluate_self_contact_force_norm``) is a quadratic penalty that turns into
 a logarithmic barrier at half the interaction distance:
 
@@ -286,11 +286,11 @@ relative displacement of the two closest points over the step and
    f_1(x) = \begin{cases} 2x/\epsilon_u - x^2/\epsilon_u^2 & x < \epsilon_u,\\
    1 & x \ge \epsilon_u, \end{cases}
 
-with :math:`\mu = \texttt{soft\_contact\_mu}`. Unlike IPC, the contact normal
+with :math:`\mu = \mathtt{soft\_contact\_mu}`. Unlike IPC, the contact normal
 is held constant inside the block solve; the kernel notes that this improves
 stability. Damping (``damp_collision``) acts on the gap rate :math:`\dot d =
 \mathbf{n}\cdot\Delta\mathbf{x}_{\text{rel}}/h`, only while the gap closes:
-:math:`\mathbf{f}_d = -\texttt{soft\_contact\_kd}\;\dot d\,\mathbf{n}`. A
+:math:`\mathbf{f}_d = -\mathtt{soft\_contact\_kd}\;\dot d\,\mathbf{n}`. A
 separating pair is not damped.
 
 *Rigid-soft contact* acts between a soft contact point and one shape of a
@@ -300,12 +300,12 @@ soft edge or face; the records come from the collision pipeline. The
 distance is :math:`d = \mathbf{n}\cdot(\mathbf{x} - \mathbf{b})`, with
 :math:`\mathbf{b}` the shape's contact point carried along with its body and
 :math:`\mathbf{n}` the stored contact normal. The interaction distance is
-:math:`r = \texttt{particle\_radius}` plus the shape ``margin``; an edge or
+:math:`r = \mathtt{particle\_radius}` plus the shape ``margin``; an edge or
 face point uses the largest radius among its corners. The material is mixed
 per contact from the two sides (``init_body_particle_contacts``):
-:math:`k = \tfrac{1}{2}(\texttt{soft\_contact\_ke} + \texttt{ke}_{\text{shape}})`,
-:math:`k_d = \tfrac{1}{2}(\texttt{soft\_contact\_kd} + \texttt{kd}_{\text{shape}})`
-and :math:`\mu = \sqrt{\texttt{soft\_contact\_mu}\;\texttt{mu}_{\text{shape}}}`.
+:math:`k = \tfrac{1}{2}(\mathtt{soft\_contact\_ke} + \mathtt{ke}_{\text{shape}})`,
+:math:`k_d = \tfrac{1}{2}(\mathtt{soft\_contact\_kd} + \mathtt{kd}_{\text{shape}})`
+and :math:`\mu = \sqrt{\mathtt{soft\_contact\_mu}\;\mathtt{mu}_{\text{shape}}}`.
 The normal law (``_evaluate_rigid_soft_contact_force_norm``) is the plain
 quadratic penalty :math:`E = \tfrac{k}{2}(r - d)^2` for :math:`d < r`;
 ``rigid_soft_contact_use_log_barrier=True`` switches it to the self-contact
@@ -336,9 +336,9 @@ their bodies and :math:`t_0, t_1` the effective thicknesses (shape radius plus
    C = -\big(\mathbf{n}\cdot(\mathbf{p}_1 - \mathbf{p}_0) - t_0 - t_1\big).
 
 The material is the pair average of the shape values:
-:math:`k = \tfrac{1}{2}(\texttt{ke}_0 + \texttt{ke}_1)`,
-:math:`k_d = \tfrac{1}{2}(\texttt{kd}_0 + \texttt{kd}_1)` and
-:math:`\mu = \sqrt{\texttt{mu}_0\,\texttt{mu}_1}`. On the default compliant
+:math:`k = \tfrac{1}{2}(\mathtt{ke}_0 + \mathtt{ke}_1)`,
+:math:`k_d = \tfrac{1}{2}(\mathtt{kd}_0 + \mathtt{kd}_1)` and
+:math:`\mu = \sqrt{\mathtt{mu}_0\,\mathtt{mu}_1}`. On the default compliant
 ALM path (``rigid_compliant_alm=True``) the normal force is
 
 .. math::
