@@ -334,6 +334,7 @@ _BASE_SCHEMAS = {
     "NewtonActuatorClampingBaseAPI",
     "NewtonActuatorCommandClampingBaseAPI",
     "NewtonActuatorInputProcessorBaseAPI",
+    "NewtonActuatorMotorBaseAPI",
 }
 
 
@@ -474,6 +475,7 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
     drive_kwargs: dict[str, Any] = {}
     drive_schema_registered = True
     component_specs: list[tuple[type, dict[str, Any]]] = []
+    motor_class: type | None = None
     detected: list[str] = []
 
     for schema_name in get_applied_api_schemas(prim):
@@ -523,11 +525,11 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             drive_schema_registered = _is_registered_schema(schema_name)
         else:
             if entry.kind is ComponentKind.MOTOR:
-                motor = next((c for c, _ in component_specs if issubclass(c, MotorDC)), None)
-                if motor is not None:
+                if motor_class is not None:
                     raise ValueError(
-                        f"Actuator prim '{prim.GetPath()}' has multiple motors: {motor.__name__} and {cls.__name__}"
+                        f"Actuator prim '{prim.GetPath()}' has multiple motors: {motor_class.__name__} and {cls.__name__}"
                     )
+                motor_class = cls
             component_specs.append((cls, kwargs))
 
     if drive_class is None:

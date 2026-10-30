@@ -36,7 +36,8 @@ def _motor_dc_kernel(
     supply_current: wp.array[float],
 ):
     i = wp.tid()
-    voltage = src[i]
+    limit = wp.max(supply_voltage[i], 0.0)
+    voltage = wp.clamp(src[i], -limit, limit)
     current = (voltage - kt[i] * velocities[vel_indices[i]]) / resistance[i]
     dst[i] = kt[i] * current
     if supply_current:
@@ -49,10 +50,12 @@ def _motor_dc_kernel(
 class MotorDC:
     """DC motor driven by a PWM voltage, as in BAM (Better Actuator Models).
 
-    Computes the effort from the commanded voltage :math:`u`:
+    Computes the effort from the commanded voltage :math:`u`, bounded by the
+    supply voltage :math:`V`, since the motor cannot receive more:
 
     .. math::
 
+        u &\\leftarrow \\operatorname{clamp}(u,\\; -V,\\; V) \\\\
         I &= \\frac{u - k_t\\, \\dot q}{R} \\\\
         \\tau &= k_t\\, I
 
