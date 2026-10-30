@@ -2550,6 +2550,43 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     qacc = solver.mj_data.qacc if use_mujoco_cpu else solver.mjw_data.qacc.numpy()[0]
                     np.testing.assert_allclose(qacc, 0.0, atol=0.05)
 
+    def test_kinematic_roots_coast_between_sparse_pushes(self):
+        """Keep spinning kinematic roots at their pushed velocity while MuJoCo integrates them between pushes."""
+        for kind, use_mujoco_cpu in itertools.product(("revolute", "ball", "free"), (False, True)):
+            with self.subTest(kind=kind, use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                body = builder.add_link(mass=1.0, inertia=wp.mat33(np.diag([1.0, 2.0, 3.0])), is_kinematic=True)
+                # An offset child frame moves the joint origin away from the body origin.
+                child_xform = wp.transform((0.3, 0.1, 0.0), wp.quat_identity())
+                if kind == "revolute":
+                    joint = builder.add_joint_revolute(-1, body, child_xform=child_xform, axis=newton.Axis.Z)
+                elif kind == "ball":
+                    joint = builder.add_joint_ball(-1, body, child_xform=child_xform)
+                else:
+                    joint = builder.add_joint_free(body, child_xform=child_xform)
+                builder.add_articulation([joint])
+                model = builder.finalize()
+                rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 1.0)
+                q = model.joint_q.numpy()
+                qd = {"revolute": [10.0], "ball": [10.0, -7.0, 5.0], "free": [1.0, 0.0, 0.0, 10.0, -7.0, 5.0]}[kind]
+                if kind == "ball":
+                    q[0:4] = rot
+                elif kind == "free":
+                    q[3:7] = rot
+                model.joint_q.assign(q)
+                model.joint_qd.assign(np.array(qd, dtype=np.float32))
+
+                solver = SolverMuJoCo(
+                    model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True, update_data_interval=1000
+                )
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                qvel = []
+                for _ in range(100):
+                    solver.step(state_0, state_1, control, None, 0.002)
+                    state_0, state_1 = state_1, state_0
+                    qvel.append(solver.mj_data.qvel.copy() if use_mujoco_cpu else solver.mjw_data.qvel.numpy()[0])
+                np.testing.assert_allclose(qvel[-1], qvel[0], atol=1.0e-2)
+
     def test_moving_massless_kinematic_root_wakes_sleeping_payload(self):
         """Wake a payload asleep on a massless kinematic root, which MuJoCo moves as a mocap body."""
         if wp.get_cuda_device_count() == 0:

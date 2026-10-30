@@ -121,6 +121,7 @@ from .kernels import (
     update_joint_mimic_eq_data_kernel,
     update_joint_transforms_kernel,
     update_kinematic_weld_active_kernel,
+    update_kinematic_weld_reference_kernel,
     update_mimic_eq_data_and_active_kernel,
     update_model_properties_kernel,
     update_pair_properties_kernel,
@@ -4461,8 +4462,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Active welds per world that njmax has rows for, or None if unbounded.
         self._kinematic_weld_capacity: int | None = None
         self._jnt_mocap: wp.array[wp.int32] | None = None
-        # Template joint -> MuJoCo weld equality holding its kinematic root, or -1.
-        self._jnt_weld: wp.array[wp.int32] | None = None
         self._kinematic_mocap_root_bodies: np.ndarray | None = None
         # Physical qpos0 inertia scratch for computing constants with kinematic roots locked.
         self._physical_dof_M0: wp.array2d[float] | None = None
@@ -4933,6 +4932,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self._update_mjc_data(self.mj_data, self.model, state_in)
+            self._update_kinematic_weld_references()
             self.mj_model.opt.timestep = dt
             needs_body_observables = (
                 state_out.body_qdd is not None
@@ -4956,6 +4956,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
                 if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                     self._update_mjc_data(self.mjw_data, self.model, state_in)
+                self._update_kinematic_weld_references()
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
                     if contacts is None:
@@ -6041,7 +6042,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         mjw_data = getattr(self, "mjw_data", None)
         jnt_mocap = self._jnt_mocap if mjw_data is not None else None
-        jnt_weld = self._jnt_weld if mjw_data is not None else None
         sleep_redirect = is_mjwarp and self.enable_sleeping and write_state
         mocap_root_moved = self._mocap_root_moved if is_mjwarp and jnt_mocap is not None else None
         if mocap_root_moved is not None:
@@ -6067,7 +6067,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_q_start,
                 self.mj_qd_start,
                 jnt_mocap,
-                jnt_weld,
                 write_state,
             ],
             outputs=[
@@ -6076,7 +6075,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjw_data.mocap_pos if jnt_mocap is not None else None,
                 mjw_data.mocap_quat if jnt_mocap is not None else None,
                 mocap_root_moved,
-                self.mjw_model.eq_data if jnt_weld is not None else None,
             ],
             device=model.device,
         )
@@ -6086,8 +6084,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if not is_mjwarp and jnt_mocap is not None:
             mj_data.mocap_pos[:] = mjw_data.mocap_pos.numpy()[0]
             mj_data.mocap_quat[:] = mjw_data.mocap_quat.numpy()[0]
-        if not is_mjwarp and jnt_weld is not None and write_state:
-            self.mj_model.eq_data[:] = self.mjw_model.eq_data.numpy()[0]
         if not write_state:
             return
 
@@ -8946,9 +8942,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._kinematic_unsupported_bodies[self._kinematic_weld_body.ravel()] = False
                 weld_eq = np.array([eq.id for eq in kinematic_welds], dtype=np.int32)
                 self._kinematic_weld_eq = wp.array(weld_eq, dtype=wp.int32)
-                jnt_weld = np.full(n_template_joints, -1, dtype=np.int32)
-                jnt_weld[template_jnt] = weld_eq
-                self._jnt_weld = wp.array(jnt_weld, dtype=wp.int32)
             if np.any(jnt_mocap >= 0):
                 self._jnt_mocap = wp.array(jnt_mocap, dtype=wp.int32)
 
@@ -9660,6 +9653,46 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 KINEMATIC_LOCK_INERTIA_RATIO,
             ],
             outputs=[self.mjw_model.dof_armature],
+            device=self.model.device,
+        )
+
+    def _update_kinematic_weld_references(self):
+        """Re-center active kinematic welds on their roots' current MuJoCo pose before a step."""
+        if self._kinematic_weld_eq is None:
+            return
+        if self.use_mujoco_cpu:
+            m, d = self.mj_model, self.mj_data
+            self._mujoco.mj_kinematics(m, d)
+            for eq in self._kinematic_weld_eq.numpy():
+                if not d.eq_active[eq]:
+                    continue
+                body = m.eq_obj1id[eq]
+                jnt = m.body_jntadr[body]
+                anchor = np.zeros(3) if m.jnt_type[jnt] == self._mujoco.mjtJoint.mjJNT_FREE else m.jnt_pos[jnt]
+                m.eq_data[eq, 0:3] = d.xpos[body] + d.xmat[body].reshape(3, 3) @ anchor
+                m.eq_data[eq, 3:6] = anchor
+                m.eq_data[eq, 6:10] = d.xquat[body] * (1.0, -1.0, -1.0, -1.0)
+            return
+        m, d = self.mjw_model, self.mjw_data
+        wp.launch(
+            update_kinematic_weld_reference_kernel,
+            dim=(d.nworld, self._kinematic_weld_eq.shape[0]),
+            inputs=[
+                self._kinematic_weld_eq,
+                m.eq_obj1id,
+                d.eq_active,
+                m.body_jntadr,
+                m.body_jntnum,
+                m.body_pos,
+                m.body_quat,
+                m.jnt_type,
+                m.jnt_qposadr,
+                m.jnt_pos,
+                m.jnt_axis,
+                m.qpos0,
+                d.qpos,
+            ],
+            outputs=[m.eq_data],
             device=self.model.device,
         )
 

@@ -1148,10 +1148,11 @@ body that interacts physically is to weld it to a moving target (see
 `MoCap bodies <https://mujoco.readthedocs.io/en/stable/modeling.html#mocap-bodies>`__).
 :class:`~newton.solvers.SolverMuJoCo` uses a variant of this: each kinematic
 root keeps its joint and is held by a weld constraint to the world without
-stiffness or damping, re-centered on the prescribed pose whenever the state is
-pushed. The weld locks the root's acceleration, so through each step the root
-keeps the pose and velocity pushed from :attr:`~newton.State.joint_q` and
-:attr:`~newton.State.joint_qd`. Constraints and contacts treat the root as
+stiffness or damping. Before every step the weld is re-centered on the root's
+current pose, because MuJoCo's weld adds acceleration away from its reference
+that grows with the root's velocity. The weld locks the root's acceleration,
+so through each step the root keeps the pose and velocity pushed from
+:attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd`. Constraints and contacts treat the root as
 immovable, while the mass matrix stays physical and the root keeps its authored
 :attr:`~newton.Model.joint_armature`.
 
