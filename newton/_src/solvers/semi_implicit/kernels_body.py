@@ -184,6 +184,12 @@ def update_revolute_coordinates(
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
 ):
+    """Update continuous angles and axis-projected velocities, matching eval_ik.
+
+    As in joint force evaluation, the velocity is projected on the parent axis.
+    With finite attachment penalties, swing can make it differ from the twist
+    angle derivative; it coincides with that derivative for an aligned hinge.
+    """
     joint = wp.tid()
     if joint_type[joint] != JointType.REVOLUTE:
         return

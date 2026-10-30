@@ -427,6 +427,9 @@ def test_semi_implicit_revolute_winding(test, device):
         differentiable_solver.step(state, output, differentiable.control(), None, 0.001)
     tape.backward(grads={output.joint_qd: wp.ones_like(output.joint_qd)})
     test.assertAlmostEqual(float(state.joint_q.grad.numpy()[0]), -0.002, delta=1.0e-5)
+    tape.zero()
+    tape.backward(grads={output.joint_q: wp.ones_like(output.joint_q)})
+    test.assertAlmostEqual(float(state.joint_q.grad.numpy()[0]), 1.0 - 2.0e-6, delta=1.0e-5)
 
 
 add_function_test(

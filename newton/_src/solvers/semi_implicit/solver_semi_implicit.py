@@ -60,6 +60,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
           Initialize or reset these coordinates consistently with body poses (for example, using
           :func:`newton.eval_fk`). Relative rotation must stay below half a turn per step.
           Calling :func:`newton.eval_ik` replaces these coordinates with wrapped angles.
+          REVOLUTE velocities use the parent-axis projection, as in ``eval_ik`` and
+          joint force evaluation; under transient swing they can differ from the twist-angle derivative.
         - Joint limits and targets are not enforced for BALL joints.
         - :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
