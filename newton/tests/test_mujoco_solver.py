@@ -39,6 +39,7 @@ from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layo
 from newton._src.solvers.mujoco.kernels import convert_solref, update_body_inertia_kernel
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
+from newton.exceptions import NewtonDeprecationWarning
 from newton.solvers import SolverMuJoCo
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, patch_sys_module
 
@@ -5771,6 +5772,39 @@ class TestMuJoCoContactForce(unittest.TestCase):
         np.testing.assert_allclose(force[2], expected_fz, rtol=0.05)
 
 
+class TestMuJoCoUpdateDataIntervalDeprecation(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+        cls.model = builder.finalize()
+
+    def test_explicit_interval_warns(self):
+        for interval in (0, 1, 2):
+            with self.subTest(interval=interval):
+                # Caller attribution keeps the warning visible from __main__ under default filters.
+                with self.assertWarnsRegex(NewtonDeprecationWarning, "update_data_interval is deprecated") as cm:
+                    solver = SolverMuJoCo(self.model, use_mujoco_cpu=True, update_data_interval=interval)
+                self.assertEqual(cm.filename, __file__)
+                self.assertEqual(solver._update_data_interval, interval)
+
+    def test_default_interval_does_not_warn(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", NewtonDeprecationWarning)
+            solver = SolverMuJoCo(self.model, use_mujoco_cpu=True)
+        self.assertEqual(solver._update_data_interval, 1)
+
+    def test_attribute_access_warns(self):
+        solver = SolverMuJoCo(self.model, use_mujoco_cpu=True)
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "update_data_interval is deprecated") as cm:
+            solver.update_data_interval = 0
+        self.assertEqual(cm.filename, __file__)
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "update_data_interval is deprecated") as cm:
+            self.assertEqual(solver.update_data_interval, 0)
+        self.assertEqual(cm.filename, __file__)
+
+
 class TestMuJoCoValidation(unittest.TestCase):
     """Test cases for SolverMuJoCo._validate_model_for_separate_worlds()."""
 
@@ -7916,6 +7950,12 @@ class TestMuJoCoOptions(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not support"):
             solver.observables(kinds={solver.ObservableKind.OVERFLOW})
         flag = SolverMuJoCo.ObservableKind.QFRC_ACTUATOR
+        qfrc_kinds = {
+            flag,
+            SolverMuJoCo.ObservableKind.QFRC_BIAS,
+            SolverMuJoCo.ObservableKind.QFRC_CONSTRAINT,
+            SolverMuJoCo.ObservableKind.QFRC_FRICTIONLOSS,
+        }
         with self.assertRaisesRegex(ValueError, "MuJoCo contact capacity"):
             solver.observables(
                 {solver.ObservableKind.CONTACT_F},
@@ -7925,8 +7965,8 @@ class TestMuJoCoOptions(unittest.TestCase):
         observables = solver.observables(solver.supported_observables, contacts=contacts)
         self.assertEqual(
             observables.kinds,
-            {
-                flag,
+            qfrc_kinds
+            | {
                 solver.ObservableKind.BODY_QDD,
                 solver.ObservableKind.BODY_PARENT_F,
                 solver.ObservableKind.CONTACT_F,
@@ -7943,7 +7983,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         # Discrete stepping works, but its native integrator has no Python binding
         # for inserting body exports before integration.
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, integrator=int(solver._mujoco.mjtIntegrator.mjINT_DISCRETE))
-        self.assertEqual(solver.supported_observables, {flag, solver.ObservableKind.CONTACT_F})
+        self.assertEqual(solver.supported_observables, qfrc_kinds | {solver.ObservableKind.CONTACT_F})
         for kind in (solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F):
             with self.subTest(integrator="discrete", kind=kind):
                 with self.assertRaisesRegex(ValueError, "does not support"):
@@ -7970,6 +8010,60 @@ class TestMuJoCoOptions(unittest.TestCase):
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, nconmax=64)
         self.assertEqual(solver.mjw_data.naconmax, 128)
         self.assertEqual(solver.get_max_contact_count(), 64)
+
+    def test_qfrc_constraint_load_observables(self):
+        """Friction-loss forces are split out of the constraint forces of a horizontal arm.
+
+        Arm 0 has more friction than the gravity torque and sticks; arm 1 slides;
+        arm 2 has no friction and rests on its joint limit.
+        """
+        mass, length, gravity = 1.0, 0.5, 9.81
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
+        for friction, limit_upper in ((10.0, None), (2.0, None), (0.0, 0.0)):
+            link = builder.add_link(com=wp.vec3(length, 0.0, 0.0), mass=mass, inertia=wp.diag(wp.vec3(1.0e-6)))
+            joint = builder.add_joint_revolute(
+                parent=-1,
+                child=link,
+                axis=newton.Axis.Y,
+                friction=friction,
+                limit_lower=None if limit_upper is None else -1.0,
+                limit_upper=limit_upper,
+                limit_kd=100.0,
+            )
+            builder.add_articulation([joint])
+        model = builder.finalize()
+        kinds = {
+            SolverMuJoCo.ObservableKind.QFRC_BIAS,
+            SolverMuJoCo.ObservableKind.QFRC_CONSTRAINT,
+            SolverMuJoCo.ObservableKind.QFRC_FRICTIONLOSS,
+        }
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+                observables = solver.observables(kinds)
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                for _ in range(240):
+                    solver.step(state_0, state_1, control, None, 1.0 / 240.0, observables=observables)
+                    state_0, state_1 = state_1, state_0
+
+                bias = observables.qfrc_bias.numpy()
+                constraint = observables.qfrc_constraint.numpy()
+                frictionloss = observables.qfrc_frictionloss.numpy()
+                if use_mujoco_cpu:
+                    mj_bias, mj_constraint = solver.mj_data.qfrc_bias, solver.mj_data.qfrc_constraint
+                else:
+                    mj_bias, mj_constraint = solver.mjw_data.qfrc_bias.numpy(), solver.mjw_data.qfrc_constraint.numpy()
+                np.testing.assert_allclose(bias, mj_bias.ravel(), atol=1e-5)
+                np.testing.assert_allclose(constraint, mj_constraint.ravel(), atol=1e-5)
+
+                gravity_torque = mass * gravity * length
+                np.testing.assert_allclose(bias[0], -gravity_torque, rtol=1e-3)
+                np.testing.assert_allclose(frictionloss[0], -gravity_torque, rtol=1e-3)
+                np.testing.assert_allclose(abs(frictionloss[1]), 2.0, rtol=1e-3)
+                np.testing.assert_allclose((constraint - frictionloss)[:2], 0.0, atol=1e-4)
+                self.assertEqual(frictionloss[2], 0.0)
+                np.testing.assert_allclose(constraint[2], -gravity_torque, rtol=1e-2)
 
     def _create_body_observable_builder(self):
         """Build a moving chain with nonzero velocity-dependent acceleration."""
@@ -8923,7 +9017,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 )
 
     def test_ball_joint_actuator_readback_rotated_child_anchor(self):
-        """convert_qfrc_actuator_from_mj_kernel BALL maps mj_data.qfrc_actuator to state.mujoco.qfrc_actuator in Newton's anchor frame for varying joint_q under non-identity child_xform rotation."""
+        """convert_qfrc_from_mj_kernel BALL maps mj_data.qfrc_actuator to state.mujoco.qfrc_actuator in Newton's anchor frame for varying joint_q under non-identity child_xform rotation."""
         child_rot = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 6.0)
         rx90 = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), math.pi / 2.0)
         ry45 = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), math.pi / 4.0)
@@ -11035,7 +11129,7 @@ class TestActuatorDampratioMultiWorld(unittest.TestCase):
 class TestMultiWorldQfrcActuatorCom(unittest.TestCase):
     """Multi-world qfrc_actuator must use each world's own body CoM.
 
-    Regression test: convert_qfrc_actuator_from_mj_kernel indexed
+    Regression test: convert_qfrc_from_mj_kernel indexed
     joint_type, joint_child, and joint_dof_dim with per-world jntid
     instead of the global index, so world 1 read world 0's CoM for
     the free-joint force transform.
