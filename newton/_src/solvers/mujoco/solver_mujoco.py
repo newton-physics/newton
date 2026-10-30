@@ -4457,6 +4457,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._kinematic_weld_jnt: wp.array2d[wp.int32] | None = None
         self._kinematic_weld_body: np.ndarray | None = None
         self._kinematic_weld_eq: wp.array[wp.int32] | None = None
+        self._kinematic_weld_eq_np: np.ndarray | None = None
         self._kinematic_unsupported_bodies: np.ndarray | None = None
         self._root_bodies: np.ndarray | None = None
         # Active welds per world that njmax has rows for, or None if unbounded.
@@ -8942,6 +8943,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._kinematic_unsupported_bodies[self._kinematic_weld_body.ravel()] = False
                 weld_eq = np.array([eq.id for eq in kinematic_welds], dtype=np.int32)
                 self._kinematic_weld_eq = wp.array(weld_eq, dtype=wp.int32)
+                self._kinematic_weld_eq_np = weld_eq
             if np.any(jnt_mocap >= 0):
                 self._jnt_mocap = wp.array(jnt_mocap, dtype=wp.int32)
 
@@ -9662,16 +9664,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return
         if self.use_mujoco_cpu:
             m, d = self.mj_model, self.mj_data
+            eqs = self._kinematic_weld_eq_np[d.eq_active[self._kinematic_weld_eq_np]]
+            if not eqs.size:
+                return
             self._mujoco.mj_kinematics(m, d)
-            for eq in self._kinematic_weld_eq.numpy():
-                if not d.eq_active[eq]:
-                    continue
-                body = m.eq_obj1id[eq]
-                jnt = m.body_jntadr[body]
-                anchor = np.zeros(3) if m.jnt_type[jnt] == self._mujoco.mjtJoint.mjJNT_FREE else m.jnt_pos[jnt]
-                m.eq_data[eq, 0:3] = d.xpos[body] + d.xmat[body].reshape(3, 3) @ anchor
-                m.eq_data[eq, 3:6] = anchor
-                m.eq_data[eq, 6:10] = d.xquat[body] * (1.0, -1.0, -1.0, -1.0)
+            body = m.eq_obj1id[eqs]
+            jnt = m.body_jntadr[body]
+            anchor = np.where((m.jnt_type[jnt] == self._mujoco.mjtJoint.mjJNT_FREE)[:, None], 0.0, m.jnt_pos[jnt])
+            m.eq_data[eqs, 0:3] = d.xpos[body] + np.einsum("nij,nj->ni", d.xmat[body].reshape(-1, 3, 3), anchor)
+            m.eq_data[eqs, 3:6] = anchor
+            m.eq_data[eqs, 6:10] = d.xquat[body] * (1.0, -1.0, -1.0, -1.0)
             return
         m, d = self.mjw_model, self.mjw_data
         wp.launch(
