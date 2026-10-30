@@ -137,6 +137,7 @@ def _robot_policy_info_output_re(
     """Match the deterministic startup summary for one robot policy."""
     return (
         rf"\[INFO\] Selected robot: {re.escape(robot)}\n"
+        rf"(?:{_NEWTON_ASSET_DOWNLOAD_OUTPUT_RE})?"
         rf"\[INFO\] Asset directory: [^\n]*[/\\]{re.escape(asset_dir)}\n"
         rf"\[INFO\] Loaded config with {num_dofs} DOFs\n"
         rf"\[INFO\] Loading policy from: [^\n]*[/\\]{re.escape(policy_file)}\n?"
@@ -381,6 +382,24 @@ def add_example_batch(cls: type, name: str, variants: list[dict[str, Any]]):
 
 
 class TestExampleOutputRegexes(unittest.TestCase):
+    def test_robot_policy_info_output_allows_asset_download(self):
+        """Allow a cold-cache asset download inside the startup summary."""
+        output = (
+            "[INFO] Selected robot: g1_29dof\n"
+            f"Cloning https://github.com/newton-physics/newton-assets.git (ref: {'0' * 40})...\n"
+            "Successfully downloaded folder to: /tmp/newton-assets/unitree_g1\n"
+            "[INFO] Asset directory: /tmp/newton-assets/unitree_g1\n"
+            "[INFO] Loaded config with 43 DOFs\n"
+            "[INFO] Loading policy from: /tmp/newton-assets/unitree_g1/mjw_g1_29DOF.onnx\n"
+        )
+
+        self.assertIsNotNone(
+            re.fullmatch(
+                _robot_policy_info_output_re("g1_29dof", "unitree_g1", 43, "mjw_g1_29DOF.onnx"),
+                output,
+            )
+        )
+
     def _run_example_with_stderr(self, stderr: str, allowed_prefix: str) -> unittest.TestResult:
         process_result = subprocess.CompletedProcess(
             args=[sys.executable, "-m", "newton.examples.basic.example_basic_pendulum"],
