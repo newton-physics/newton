@@ -3595,6 +3595,57 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         """Pass jointless kinematic bodies' input poses and velocities through split steps beside a free body."""
         self._published("cpu", solve_mode="split")
 
+    @unittest.skipUnless(wp.is_cuda_available(), "friction patches require CUDA")
+    def test_jointless_kinematic_floor_velocity_leaves_patch_friction_unchanged(self):
+        """Hold a box at the Coulomb limit on a jointless kinematic floor the same for any published floor velocity."""
+        mu, mass, half = 0.5, 2.0, 0.05
+
+        def run(floor_velocity):
+            builder = newton.ModelBuilder()
+            floor = builder.add_link(is_kinematic=True)
+            builder.add_shape_box(
+                floor,
+                hx=0.5,
+                hy=0.5,
+                hz=0.02,
+                xform=wp.transform(wp.vec3(0.0, 0.0, -0.02)),
+                cfg=newton.ModelBuilder.ShapeConfig(mu=mu),
+            )
+            box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, half)), mass=mass)
+            builder.add_shape_box(
+                box, hx=half, hy=half, hz=half, cfg=newton.ModelBuilder.ShapeConfig(mu=mu, density=0.0)
+            )
+            model = builder.finalize(device=wp.get_cuda_device())
+            solver = SolverSteel(model, solve_mode="matrix_free", friction_anchor_beta=0.2)
+            pipeline = newton.CollisionPipeline(model)
+            contacts = pipeline.contacts()
+            states = [model.state(), model.state()]
+            for state in states:
+                body_qd = state.body_qd.numpy()
+                body_qd[floor, 0] = floor_velocity
+                state.body_qd.assign(body_qd)
+            body_f = np.zeros((model.body_count, 6), dtype=np.float32)
+            body_f[box, 0] = mu * mass * 9.81
+            control = model.control()
+            kept = []
+            for _ in range(60):
+                states[0].body_f.assign(body_f)
+                pipeline.collide(states[0], contacts)
+                solver.step(states[0], states[1], control, contacts, DEFAULT_DT)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                kept.append(int(solver._friction_patches.previous.valid.numpy()[:count].sum()))
+                states.reverse()
+            return np.array(kept), states[0].body_q.numpy()[box], states[0].body_qd.numpy()[box]
+
+        kept, box_q, box_qd = run(0.0)
+        self.assertGreater(kept.min(), 0)
+        for floor_velocity in (-0.3, -3.0):
+            with self.subTest(floor_velocity=floor_velocity):
+                moving_kept, moving_q, moving_qd = run(floor_velocity)
+                np.testing.assert_array_equal(moving_kept, kept)
+                np.testing.assert_array_equal(moving_q, box_q)
+                np.testing.assert_array_equal(moving_qd, box_qd)
+
     def test_model_without_joints_publishes_its_prescribed_state(self):
         """Pass a jointless kinematic body's state through a step of a model that has no joints."""
         builder = newton.ModelBuilder()

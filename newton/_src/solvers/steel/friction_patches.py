@@ -1500,10 +1500,16 @@ def seed_patch_impulses(
 
 @wp.func
 def _point_velocity(
-    q: wp.array[wp.transform], qd: wp.array[wp.spatial_vector], com: wp.array[wp.vec3], body: int, anchor: wp.vec3
+    q: wp.array[wp.transform],
+    qd: wp.array[wp.spatial_vector],
+    com: wp.array[wp.vec3],
+    body_to_articulation: wp.array[int],
+    body: int,
+    anchor: wp.vec3,
 ):
+    # Contact rows see a body outside every articulation at zero velocity, so its published velocity is ignored.
     velocity = wp.vec3(0.0)
-    if body >= 0:
+    if body >= 0 and body_to_articulation[body] >= 0:
         velocity = velocity_at_point(qd[body], wp.transform_vector(q[body], anchor - com[body]))
     return velocity
 
@@ -1516,6 +1522,7 @@ def finish_patch_impulses(
     q_out: wp.array[wp.transform],
     qd_out: wp.array[wp.spatial_vector],
     com: wp.array[wp.vec3],
+    body_to_articulation: wp.array[int],
     world: wp.array[int],
     slot: wp.array[int],
     path: wp.array[int],
@@ -1565,8 +1572,8 @@ def finish_patch_impulses(
         stored = wp.transform_vector(wp.transform_inverse(q[a]), tangent)
     frame.tangent_impulse[c] = stored
     radius = wp.max(mu[w, s + 1] * load, 0.0)
-    speed = _point_velocity(q_out, qd_out, com, a, frame.anchor_a[c]) - _point_velocity(
-        q_out, qd_out, com, b, frame.anchor_b[c]
+    speed = _point_velocity(q_out, qd_out, com, body_to_articulation, a, frame.anchor_a[c]) - _point_velocity(
+        q_out, qd_out, com, body_to_articulation, b, frame.anchor_b[c]
     )
     # Check opposing tangential motion to distinguish slipping from impending slip.
     if radius > 0.0 and wp.length(tangent) >= (1.0 - 1.0e-5) * radius:
