@@ -15518,9 +15518,12 @@ class ModelBuilder:
 
         A joint with ``collision_filter_parent=True`` filters the colliding shapes of its
         child's weld group against those of its parent's weld group. Weld groups are the
-        bodies connected by FIXED or zero-DOF joints, so a filtering weld joint filters its
-        whole group against itself. Bodies welded to the world form no group, as in MuJoCo,
-        so a joint below one of them filters that body alone. Shapes whose
+        bodies connected by FIXED or zero-DOF tree joints, so a filtering weld joint filters
+        its whole group against itself. Tree joints are the joints of articulations and the
+        first world joint of every other body, as in :class:`~newton.solvers.SolverMuJoCo`;
+        loop-closure joints (MJCF equality welds among them) neither weld nor expand, they keep
+        their direct pair. Bodies welded to the world form no group, as in MuJoCo, so a joint
+        below one of them filters that body alone. Shapes whose
         :attr:`ShapeConfig.collision_filter_parent` is ``False`` take no part.
 
         :meth:`add_joint` and :meth:`add_shape` already add the direct parent-child pairs;
@@ -15535,7 +15538,17 @@ class ModelBuilder:
         joint_child = np.asarray(self.joint_child, dtype=np.int64)
         joint_type = np.asarray(self.joint_type, dtype=np.int64)
         dof_count = np.asarray(self.joint_dof_dim, dtype=np.int64).reshape(-1, 2).sum(axis=1)
-        is_weld = (joint_type == JointType.FIXED) | (dof_count == 0)
+        articulated = np.asarray(self.joint_articulation, dtype=np.int64) >= 0
+        articulated_bodies = np.zeros(body_count, dtype=bool)
+        articulated_bodies[joint_child[articulated]] = True
+        articulated_bodies[joint_parent[articulated & (joint_parent >= 0)]] = True
+        is_tree = articulated.copy()
+        world_joints = np.flatnonzero(~articulated & (joint_parent < 0) & ~articulated_bodies[joint_child])
+        if world_joints.shape[0]:
+            # The first world joint of a body outside any articulation is its tree joint.
+            first = np.unique(joint_child[world_joints], return_index=True)[1]
+            is_tree[world_joints[first]] = True
+        is_weld = is_tree & ((joint_type == JointType.FIXED) | (dof_count == 0))
         welded = is_weld & (joint_parent >= 0)
         if not np.any(welded):
             # Every weld group is a single body: the direct pairs already cover the rule.
@@ -15594,7 +15607,7 @@ class ModelBuilder:
                 (shapes[side_start[left][task] + index_left], shapes[side_start[right][task] + index_right])
             )
 
-        filtering = np.asarray(self.joint_collision_filter_parent, dtype=bool) & (joint_parent >= 0)
+        filtering = np.asarray(self.joint_collision_filter_parent, dtype=bool) & is_tree & (joint_parent >= 0)
         parent_side = side[np.maximum(joint_parent, 0)]
         child_side = side[joint_child]
         # Joints between two groups, where at least one group is more than its direct body.

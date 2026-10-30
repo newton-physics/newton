@@ -4845,6 +4845,22 @@ class TestParentCollisionFilterWeldGroups(unittest.TestCase):
                 self.assertEqual(pairs, {(s_parent, s_filtered)})
                 self.assertNotIn((s_parent, s_free), pairs)
 
+    def test_loop_closure_welds_do_not_form_groups(self):
+        """Fixed loop joints (MJCF equality welds) keep their direct pair but neither weld nor dissolve groups."""
+        builder = newton.ModelBuilder()
+        hand_a = self._hand(builder)
+        hand_b = self._hand(builder)
+        finger_a, finger_b = builder.shape_body[hand_a[1]], builder.shape_body[hand_b[1]]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # parallel joint to the world next to the free joint
+            builder.add_joint_fixed(finger_a, finger_b)  # loop weld between the hands
+            builder.add_joint_fixed(-1, builder.shape_body[hand_a[0]])  # loop weld of hand A to the world
+        pairs = self._pairs(builder.finalize(device="cpu"))
+        expected = {(hand_a[1], hand_b[1])}  # the loop weld's own direct pair
+        for s_hand, s_finger, s_thumb in (hand_a, hand_b):
+            expected |= {(s_hand, s_finger), (s_hand, s_thumb), (s_finger, s_thumb)}
+        self.assertEqual(pairs, expected)
+
     def test_replicated_worlds_keep_weld_group_filters(self):
         """Weld-group pairs are completed for every world added from a template builder."""
         template = newton.ModelBuilder()

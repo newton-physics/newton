@@ -188,6 +188,38 @@ class TestImportMjcfBasic(unittest.TestCase):
                 self.assertEqual(native_data.ncon, 1 if value == "disable" else 0)
                 self.assertEqual(solver.mj_data.ncon, native_data.ncon)
 
+    def test_equality_welds_do_not_join_weld_groups(self):
+        """MJCF equality welds become loop joints: they keep their direct pair but do not weld groups (#4693)."""
+        mjcf = """
+<mujoco>
+  <worldbody>
+    <body name="a" pos="0 0 1"><freejoint/><geom name="a" type="sphere" size="0.1"/>
+      <body name="a_palm" pos="0 0 0.15">
+        <body name="a_tip" pos="0 0 0.15"><joint type="hinge"/><geom name="a_tip" type="sphere" size="0.1"/></body>
+      </body>
+    </body>
+    <body name="b" pos="1 0 1"><freejoint/><geom name="b" type="sphere" size="0.1"/>
+      <body name="b_palm" pos="0 0 0.15">
+        <body name="b_tip" pos="0 0 0.15"><joint type="hinge"/><geom name="b_tip" type="sphere" size="0.1"/></body>
+      </body>
+    </body>
+  </worldbody>
+  <equality>
+    <weld body1="a_tip" body2="b_tip"/>
+    <weld body1="a"/>
+  </equality>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            builder.add_mjcf(mjcf, enable_self_collisions=True, convert_mjc_equality_constraints=True)
+        shape = {label.rsplit("/", 1)[-1]: i for i, label in enumerate(builder.shape_label)}
+        pair = lambda x, y: (min(shape[x], shape[y]), max(shape[x], shape[y]))  # noqa: E731
+        pairs = set(builder.finalize(device="cpu").shape_collision_filter_pairs)
+        # each tip is filtered against its hand through the shapeless palm; the welded tips are a direct pair
+        self.assertEqual(pairs, {pair("a", "a_tip"), pair("b", "b_tip"), pair("a_tip", "b_tip")})
+
     def test_constructor_overrides_imported_option_flags(self):
         """Resolve explicit arguments before MJCF or USD flags and Newton defaults."""
         mjcf = """
