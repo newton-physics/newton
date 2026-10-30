@@ -79,6 +79,7 @@ from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
+from .camera import CAMERA_DEFAULT_VERTICAL_APERTURE, CameraLensType
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -1988,6 +1989,28 @@ class ModelBuilder:
         self.spring_control: list[float] = []
         """Spring control activations accumulated for :attr:`Model.spring_control`."""
 
+        # cameras
+        self.camera_label: list[str] = []
+        """Labels accumulated for :attr:`Model.camera_label`."""
+        self.camera_world: list[int] = []
+        """World indices accumulated for :attr:`Model.camera_world`."""
+        self.camera_body: list[int] = []
+        """Parent body indices accumulated for :attr:`Model.camera_body`."""
+        self.camera_transform: list[Transform] = []
+        """Camera mount transforms accumulated for :attr:`Model.camera_transform`."""
+        self.camera_lens_type: list[int] = []
+        """Lens types accumulated for :attr:`Model.camera_lens_type`."""
+        self.camera_focal_length: list[float] = []
+        """Focal lengths [m] accumulated for :attr:`Model.camera_focal_length`."""
+        self.camera_aperture: list[tuple[float, float]] = []
+        """Apertures [m] accumulated for :attr:`Model.camera_aperture`."""
+        self.camera_aperture_offset: list[tuple[float, float]] = []
+        """Aperture offsets [m] accumulated for :attr:`Model.camera_aperture_offset`."""
+        self.camera_clipping_range: list[tuple[float, float]] = []
+        """Clip ranges [m] accumulated for :attr:`Model.camera_clipping_range`."""
+        self.camera_resolution: list[tuple[int, int]] = []
+        """Nominal resolutions [px] accumulated for :attr:`Model.camera_resolution`."""
+
         # tendons (cable-driven mechanisms)
         self.tendon_label: list[str] = []
         """Names of authored tendon routes."""
@@ -2443,6 +2466,11 @@ class ModelBuilder:
     def _equality_constraint_count(self) -> int:
         """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
         return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
+
+    @property
+    def camera_count(self) -> int:
+        """Number of declared cameras."""
+        return len(self.camera_label)
 
     @property
     def tendon_count(self) -> int:
@@ -3885,6 +3913,18 @@ class ModelBuilder:
                 targets = shape_transform_start + moved_copies[:, None] * counts["shape"] + static_shapes[None]
                 store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
 
+        # Fixed cameras move with their copy, like static shapes.
+        attribute_specs.pop("camera_transform")
+        camera_transform_start = len(self.camera_transform)
+        self.camera_transform.extend(source_list("camera_transform") * copy_count)
+        if counts["camera"] and len(moved_copies):
+            fixed_cameras = np.flatnonzero(np.asarray(builder.camera_body, dtype=np.int64) == -1)
+            if len(fixed_cameras):
+                source = pack_transforms([builder.camera_transform[camera] for camera in fixed_cameras.tolist()])
+                transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
+                targets = camera_transform_start + moved_copies[:, None] * counts["camera"] + fixed_cameras[None]
+                store_transform_rows(self.camera_transform, targets.ravel(), transformed.reshape(-1, 7))
+
         # World guides carry their own frame; body-local guides follow the placed body.
         world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
         for name in ("tendon_guide_offset", "tendon_guide_axis"):
@@ -4636,6 +4676,7 @@ class ModelBuilder:
         bodies_follow_joint_ordering: bool = True,
         skip_mesh_approximation: bool = False,
         load_sites: bool = True,
+        load_cameras: bool = True,
         load_visual_shapes: bool = True,
         load_static_visual_shapes: bool = True,
         hide_collision_shapes: bool = False,
@@ -4748,6 +4789,9 @@ class ModelBuilder:
             bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
             skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
             load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+            load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
+                (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
+                ancestor or fixed in the world. Orthographic cameras are skipped and logged. Default is True.
             load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
                 Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
             load_static_visual_shapes: If True, supported visual-only geometry outside
@@ -4870,6 +4914,8 @@ class ModelBuilder:
                   - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
                 * - ``"path_shape_scale"``
                   - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+                * - ``"path_camera_map"``
+                  - Mapping from prim path (str) of an imported ``UsdGeom.Camera`` to the respective camera index in :class:`~newton.ModelBuilder`
                 * - ``"path_particle_map"``
                   - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
                 * - ``"path_cable_map"``
@@ -4937,6 +4983,7 @@ class ModelBuilder:
             bodies_follow_joint_ordering=bodies_follow_joint_ordering,
             skip_mesh_approximation=skip_mesh_approximation,
             load_sites=load_sites,
+            load_cameras=load_cameras,
             load_visual_shapes=load_visual_shapes,
             load_static_visual_shapes=load_static_visual_shapes,
             hide_collision_shapes=hide_collision_shapes,
@@ -4966,6 +5013,7 @@ class ModelBuilder:
         parse_visuals_as_colliders: bool = False,
         parse_meshes: bool = True,
         parse_sites: bool = True,
+        parse_cameras: bool = True,
         parse_visuals: bool = True,
         parse_mujoco_options: bool = True,
         up_axis: AxisType = Axis.Z,
@@ -5087,6 +5135,9 @@ class ModelBuilder:
             parse_visuals_as_colliders: If True, the geometry defined under the `visual_classes` tags is used for collision handling instead of the `collider_classes` geometries.
             parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
             parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
+            parse_cameras: Whether ``<camera>`` elements should be added as model cameras (see
+                :meth:`~newton.ModelBuilder.add_camera`). Tracking modes and targets are imported as fixed
+                mounts; orthographic cameras are skipped and logged. Default is True.
             parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
             parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
             up_axis: The up axis of the MuJoCo scene. The default is Z up.
@@ -5141,6 +5192,7 @@ class ModelBuilder:
             parse_visuals_as_colliders=parse_visuals_as_colliders,
             parse_meshes=parse_meshes,
             parse_sites=parse_sites,
+            parse_cameras=parse_cameras,
             parse_visuals=parse_visuals,
             parse_mujoco_options=parse_mujoco_options,
             up_axis=up_axis,
@@ -8366,6 +8418,15 @@ class ModelBuilder:
             else:
                 self.attachment_particle_body_body[i] = body_remap[old_body]
 
+        # Remap cameras like shapes: a camera on a merged body moves to the surviving parent (or the
+        # world) with its mount re-expressed in that frame.
+        for camera, old_body in enumerate(self.camera_body):
+            if old_body in body_merged_parent:
+                self.camera_transform[camera] = body_merged_transform[old_body] * self.camera_transform[camera]
+                self.camera_body[camera] = body_remap[body_merged_parent[old_body]]
+            else:
+                self.camera_body[camera] = body_remap[old_body]
+
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
         # Body references follow merges: a reference to a body that was merged into its parent
@@ -9447,6 +9508,135 @@ class ModelBuilder:
             label=label,
             custom_attributes=custom_attributes,
         )
+
+    def add_camera(
+        self,
+        body: int,
+        *,
+        xform: Transform | None = None,
+        lens_type: CameraLensType | int = CameraLensType.PINHOLE,
+        fov: float | None = None,
+        focal_length: float | None = None,
+        horizontal_aperture: float | None = None,
+        vertical_aperture: float | None = None,
+        horizontal_aperture_offset: float = 0.0,
+        vertical_aperture_offset: float = 0.0,
+        clipping_range: tuple[float, float] = (0.01, 1.0e6),
+        resolution: tuple[int, int] | None = None,
+        label: str | None = None,
+        custom_attributes: dict[str, Any] | None = None,
+    ) -> int:
+        """Add a camera rigidly attached to a body or fixed in the current world.
+
+        The camera looks along its local ``-Z`` axis with ``+Y`` up and ``+X``
+        right (USD, OpenGL and MuJoCo convention). Cameras added inside a world
+        context belong to that world; cameras added at global scope (world ``-1``)
+        are rendered once per world by :class:`~newton.sensors.SensorCamera`.
+
+        Args:
+            body: Parent body index, or ``-1`` for a fixed camera.
+            xform: Camera frame relative to the parent body [m, unitless
+                quaternion]; the world pose for ``body == -1``. Defaults to identity.
+            lens_type: Lens type. :attr:`~newton.CameraLensType.PINHOLE` uses the
+                intrinsics below; :attr:`~newton.CameraLensType.CUSTOM` takes its rays
+                from the rendering sensor and ignores the intrinsics.
+            fov: Vertical field of view [rad], in ``(0, pi)``. Mutually exclusive with
+                ``focal_length``. The horizontal extent then follows the image aspect
+                ratio, as with MJCF ``fovy``. Defaults to 45 degrees when no
+                intrinsics are given.
+            focal_length: Focal length [m]. Only its ratio to the aperture affects
+                the projection.
+            horizontal_aperture: Sensor width [m]. ``None`` or 0 derives it from the
+                vertical aperture and the image aspect ratio.
+            vertical_aperture: Sensor height [m]. ``None`` or 0 derives it from the
+                horizontal aperture and the image aspect ratio. When both apertures
+                are set, they map onto ``resolution``; at other image aspect ratios
+                the aperture is expanded to keep that pixel aspect ratio (square
+                pixels without a resolution), like USD's default ``expandAperture``
+                conform policy.
+            horizontal_aperture_offset: Horizontal principal-point offset [m].
+            vertical_aperture_offset: Vertical principal-point offset [m].
+            clipping_range: Near and far clip distance [m], measured along each ray
+                from the camera origin rather than as planar depth. Hits outside the
+                range are misses. USD and MJCF clip ranges are imported unchanged, so
+                toward the image corners they clip slightly closer than a planar clip.
+            resolution: Nominal ``(width, height)`` [px] authored by the asset. Only a
+                default for sensors.
+            label: Unique label; defaults to ``camera_{index}``.
+            custom_attributes: Values of declared ``CAMERA``-frequency custom
+                attributes.
+
+        Returns:
+            The camera index.
+        """
+        body = int(body)
+        if body < -1 or body >= self.body_count:
+            raise ValueError(f"Camera body {body} is out of range for a builder with {self.body_count} bodies")
+        lens_type = CameraLensType(lens_type)
+
+        if fov is not None and focal_length is not None:
+            raise ValueError("fov and focal_length are mutually exclusive")
+        if focal_length is None:
+            if horizontal_aperture is not None or vertical_aperture is not None:
+                raise ValueError("Apertures require focal_length")
+            fov = math.radians(45.0) if fov is None else float(fov)
+            if not 0.0 < fov < math.pi:
+                raise ValueError(f"fov must be in (0, pi) radians, got {fov}")
+            vertical = CAMERA_DEFAULT_VERTICAL_APERTURE
+            horizontal = 0.0
+            focal_length = 0.5 * vertical / math.tan(0.5 * fov)
+        else:
+            focal_length = float(focal_length)
+            horizontal = float(horizontal_aperture or 0.0)
+            vertical = float(vertical_aperture or 0.0)
+            if focal_length <= 0.0:
+                raise ValueError("focal_length must be positive")
+            if horizontal < 0.0 or vertical < 0.0 or (horizontal == 0.0 and vertical == 0.0):
+                raise ValueError("Apertures must be non-negative and at least one must be positive")
+
+        camera_xform = wp.transform() if xform is None else wp.transform(*xform)
+        aperture_offset = (float(horizontal_aperture_offset), float(vertical_aperture_offset))
+        near, far = (float(v) for v in clipping_range)
+        if not all(math.isfinite(v) for v in (focal_length, horizontal, vertical, *aperture_offset, near, far)):
+            raise ValueError("Camera intrinsics and clipping_range must be finite")
+        if not 0.0 <= near < far:
+            raise ValueError(f"clipping_range must satisfy 0 <= near < far, got {clipping_range}")
+        if resolution is None:
+            width, height = 0, 0
+        else:
+            width, height = (int(v) for v in resolution)
+            if width <= 0 or height <= 0:
+                raise ValueError(f"resolution must be positive, got {resolution}")
+
+        # Validate custom attributes before changing any camera array.
+        for name in custom_attributes or {}:
+            attribute = self.custom_attributes.get(name)
+            if attribute is None:
+                raise AttributeError(
+                    f"Custom attribute '{name}' is not defined; declare it with add_custom_attribute()"
+                )
+            if attribute.frequency != Model.AttributeFrequency.CAMERA:
+                frequency = getattr(attribute.frequency, "name", attribute.frequency)
+                raise ValueError(f"Custom attribute '{name}' has frequency {frequency}, expected CAMERA")
+
+        camera = self.camera_count
+        self.camera_label.append(label or f"camera_{camera}")
+        self.camera_world.append(self.body_world[body] if body >= 0 else self.current_world)
+        self.camera_body.append(body)
+        self.camera_transform.append(camera_xform)
+        self.camera_lens_type.append(int(lens_type))
+        self.camera_focal_length.append(focal_length)
+        self.camera_aperture.append((horizontal, vertical))
+        self.camera_aperture_offset.append(aperture_offset)
+        self.camera_clipping_range.append((near, far))
+        self.camera_resolution.append((width, height))
+        if custom_attributes:
+            self._process_custom_attributes(
+                entity_index=camera,
+                custom_attrs=custom_attributes,
+                expected_frequency=Model.AttributeFrequency.CAMERA,
+            )
+        return camera
 
     def approximate_meshes(
         self,
@@ -15478,6 +15668,21 @@ class ModelBuilder:
             m.spring_stiffness = _to_wp_array(self.spring_stiffness, wp.float32, requires_grad=requires_grad)
             m.spring_damping = _to_wp_array(self.spring_damping, wp.float32, requires_grad=requires_grad)
             m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
+
+            # ---------------------
+            # cameras
+
+            m.camera_count = self.camera_count
+            m.camera_label = list(self.camera_label)
+            m.camera_world = wp.array(self.camera_world, dtype=wp.int32)
+            m.camera_body = wp.array(self.camera_body, dtype=wp.int32)
+            m.camera_transform = wp.array(self.camera_transform, dtype=wp.transformf)
+            m.camera_lens_type = wp.array(self.camera_lens_type, dtype=wp.int32)
+            m.camera_focal_length = wp.array(self.camera_focal_length, dtype=wp.float32)
+            m.camera_aperture = wp.array(self.camera_aperture, dtype=wp.vec2f)
+            m.camera_aperture_offset = wp.array(self.camera_aperture_offset, dtype=wp.vec2f)
+            m.camera_clipping_range = wp.array(self.camera_clipping_range, dtype=wp.vec2f)
+            m.camera_resolution = wp.array(self.camera_resolution, dtype=wp.vec2i)
 
             # ---------------------
             # tendons

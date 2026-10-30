@@ -132,6 +132,201 @@ class _CableAttachmentCandidate:
     target_path: str
 
 
+def _usd_render_product_resolutions(stage) -> dict[str, tuple[tuple[int, int], str, float]]:
+    """Map camera prim paths to the image format of the first ``UsdRender.Product`` that renders them.
+
+    Each entry holds the resolution, the ``aspectRatioConformPolicy`` and the ``pixelAspectRatio``.
+    A product inherits unauthored values from the ``UsdRender.Settings`` that lists it in
+    ``products``; values authored on the product take precedence. A resolution is never taken from
+    the schema fallback, while the policy and pixel aspect ratio fall back to the USD defaults.
+    ``UsdRender`` prims live under the ``/Render`` scope by convention, so only that scope is scanned.
+    """
+    resolutions: dict[str, tuple[tuple[int, int], str, float]] = {}
+    render_scope = stage.GetPrimAtPath("/Render")
+    if not (render_scope and render_scope.IsValid()):
+        return resolutions
+    from pxr import Usd, UsdRender
+
+    def authored(attr):
+        return attr.Get() if attr and attr.HasAuthoredValue() else None
+
+    def authored_resolution(settings_base):
+        return authored(settings_base.GetResolutionAttr())
+
+    def image_format(*settings_bases):
+        """Return the conform policy and pixel aspect ratio, from the first base that authors each."""
+        policy = next(
+            (v for b in settings_bases if (v := authored(b.GetAspectRatioConformPolicyAttr())) is not None),
+            UsdRender.Tokens.expandAperture,
+        )
+        pixel_aspect = next(
+            (v for b in settings_bases if (v := authored(b.GetPixelAspectRatioAttr())) is not None),
+            1.0,
+        )
+        return str(policy), float(pixel_aspect)
+
+    def authored_cameras(settings_base):
+        rel = settings_base.GetCameraRel()
+        return rel.GetForwardedTargets() if rel and rel.HasAuthoredTargets() else []
+
+    def add(cameras, resolution, policy, pixel_aspect):
+        if resolution is None or resolution[0] <= 0 or resolution[1] <= 0:
+            return
+        for target in cameras:
+            resolutions.setdefault(str(target), ((int(resolution[0]), int(resolution[1])), policy, pixel_aspect))
+
+    listed_products = set()
+    for prim in Usd.PrimRange(render_scope):
+        if not prim.IsA(UsdRender.Settings):
+            continue
+        settings = UsdRender.Settings(prim)
+        for product_path in settings.GetProductsRel().GetForwardedTargets():
+            product_prim = stage.GetPrimAtPath(product_path)
+            if not (product_prim and product_prim.IsA(UsdRender.Product)):
+                continue
+            listed_products.add(product_prim.GetPath())
+            product = UsdRender.Product(product_prim)
+            add(
+                authored_cameras(product) or authored_cameras(settings),
+                authored_resolution(product) or authored_resolution(settings),
+                *image_format(product, settings),
+            )
+
+    for prim in Usd.PrimRange(render_scope):
+        if prim.IsA(UsdRender.Product) and prim.GetPath() not in listed_products:
+            product = UsdRender.Product(prim)
+            add(authored_cameras(product), authored_resolution(product), *image_format(product))
+    return resolutions
+
+
+def _conform_usd_aperture(
+    horizontal: float, vertical: float, resolution: tuple[int, int], policy: str, pixel_aspect: float
+) -> tuple[float, float]:
+    """Conform a USD camera aperture to an image format, following ``UsdRenderSettingsBase``.
+
+    The result maps exactly onto ``resolution`` with pixels of aspect ratio ``pixel_aspect``, except
+    for ``adjustPixelAspectRatio``, which keeps the authored aperture and lets the pixels stretch.
+    """
+    if horizontal <= 0.0 or vertical <= 0.0 or pixel_aspect <= 0.0 or policy == "adjustPixelAspectRatio":
+        return horizontal, vertical
+    target = resolution[0] * pixel_aspect / resolution[1]
+    aspect = horizontal / vertical
+    if policy == "adjustApertureWidth" or (policy == "expandAperture" and aspect < target):
+        return vertical * target, vertical
+    if policy == "cropAperture" and aspect > target:
+        return vertical * target, vertical
+    if policy in ("adjustApertureHeight", "expandAperture", "cropAperture"):
+        return horizontal, horizontal / target
+    return horizontal, vertical
+
+
+def _import_usd_cameras(
+    builder: ModelBuilder,
+    stage,
+    root_prim,
+    *,
+    ignore_paths: list[str],
+    path_body_map: dict[str, int],
+    path_body_relative_transform: dict[str, wp.transform],
+    path_camera_map: dict[str, int],
+    get_world_mat,
+    xform_cache,
+    linear_unit: float,
+    verbose: bool,
+) -> None:
+    """Add every perspective ``UsdGeom.Camera`` below ``root_prim`` as a model camera.
+
+    A camera is attached to its nearest imported rigid-body ancestor, with its pose taken relative to
+    that body's world frame (composed with the merge transform if the body was collapsed into its
+    parent). Cameras without a rigid-body ancestor are fixed in the world and use the static-shape
+    transform pipeline (``get_world_mat``), which applies the import ``xform`` and up-axis rotation.
+    Cameras below a rigid body that was not imported are skipped.
+
+    USD authors focal length and apertures in tenths of a scene unit and the clipping range in scene
+    units; both are converted to meters with ``linear_unit``. A camera rendered by a ``UsdRender.Product``
+    takes its resolution from it, and its aperture is conformed to that image format.
+    """
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    resolutions = _usd_render_product_resolutions(stage)
+    custom_attrs = builder.get_custom_attributes_by_frequency([AttributeFrequency.CAMERA])
+    lens_unit = 0.1 * linear_unit
+
+    for prim in Usd.PrimRange(root_prim, Usd.TraverseInstanceProxies()):
+        if not prim.IsA(UsdGeom.Camera):
+            continue
+        path = str(prim.GetPath())
+        if any(re.match(pattern, path) for pattern in ignore_paths):
+            continue
+
+        # Find the nearest rigid-body ancestor (the camera prim itself included).
+        body_path = None
+        current = prim
+        while current and current.IsValid() and not current.IsPseudoRoot():
+            current_path = str(current.GetPath())
+            if current_path in path_body_map:
+                body_path = current_path
+                break
+            if current.HasAPI(UsdPhysics.RigidBodyAPI):
+                break
+            current = current.GetParent()
+        if body_path is None and current and current.IsValid() and not current.IsPseudoRoot():
+            if verbose:
+                logger.info("Skipping camera %s below rigid body %s that was not imported.", path, current.GetPath())
+            continue
+
+        camera = UsdGeom.Camera(prim)
+        if camera.GetProjectionAttr().Get() == UsdGeom.Tokens.orthographic:
+            logger.warning("Orthographic camera %s is not supported; skipping.", path)
+            continue
+
+        body = path_body_map[body_path] if body_path is not None else -1
+        if body >= 0:
+            body_prim = stage.GetPrimAtPath(body_path)
+            body_world = usd.get_transform(body_prim, local=False, xform_cache=xform_cache)
+            body_world_inv = wp.transform_inverse(body_world)
+            body_inv_mat = wp.transform_compose(body_world_inv.p, body_world_inv.q, wp.vec3(1.0))
+            rel_mat = body_inv_mat @ usd.get_transform_matrix(prim, local=False, xform_cache=xform_cache)
+            pos, rot, _scale = wp.transform_decompose(rel_mat)
+            camera_xform = wp.transform(pos, rot)
+            merge_xform = path_body_relative_transform.get(body_path)
+            if merge_xform is not None:
+                camera_xform = merge_xform * camera_xform
+        else:
+            pos, rot, _scale = wp.transform_decompose(get_world_mat(prim))
+            camera_xform = wp.transform(pos, rot)
+
+        near, far = camera.GetClippingRangeAttr().Get()
+        horizontal = float(camera.GetHorizontalApertureAttr().Get())
+        vertical = float(camera.GetVerticalApertureAttr().Get())
+        resolution = None
+        if path in resolutions:
+            resolution, policy, pixel_aspect = resolutions[path]
+            horizontal, vertical = _conform_usd_aperture(horizontal, vertical, resolution, policy, pixel_aspect)
+        try:
+            camera_id = builder.add_camera(
+                body,
+                xform=camera_xform,
+                focal_length=float(camera.GetFocalLengthAttr().Get()) * lens_unit,
+                horizontal_aperture=horizontal * lens_unit,
+                vertical_aperture=vertical * lens_unit,
+                horizontal_aperture_offset=float(camera.GetHorizontalApertureOffsetAttr().Get()) * lens_unit,
+                vertical_aperture_offset=float(camera.GetVerticalApertureOffsetAttr().Get()) * lens_unit,
+                clipping_range=(float(near) * linear_unit, float(far) * linear_unit),
+                resolution=resolution,
+                label=path,
+                custom_attributes=usd.get_custom_attribute_values(prim, custom_attrs, context={"builder": builder})
+                if custom_attrs
+                else None,
+            )
+        except ValueError as e:
+            logger.warning("Camera %s has invalid intrinsics and is skipped: %s", path, e)
+            continue
+        path_camera_map[path] = camera_id
+        if verbose:
+            logger.info("Added camera %s (body %s) with id %s.", path, body, camera_id)
+
+
 def parse_usd(
     builder: ModelBuilder,
     source: str | UsdStage,
@@ -153,6 +348,7 @@ def parse_usd(
     bodies_follow_joint_ordering: bool = True,
     skip_mesh_approximation: bool = False,
     load_sites: bool = True,
+    load_cameras: bool = True,
     load_visual_shapes: bool = True,
     load_static_visual_shapes: bool = True,
     hide_collision_shapes: bool = False,
@@ -266,6 +462,9 @@ def parse_usd(
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
         load_sites: If True, sites (prims with ``NewtonSiteAPI`` or ``MjcSiteAPI``) are loaded as non-colliding reference points. If False, sites are ignored. Default is True.
+        load_cameras: If True, perspective ``UsdGeom.Camera`` prims are added as model cameras
+            (see :meth:`~newton.ModelBuilder.add_camera`), attached to their nearest imported rigid-body
+            ancestor or fixed in the world. Orthographic cameras are skipped and logged. Default is True.
         load_visual_shapes: If True, non-physics visual geometry is loaded. If False, visual-only shapes are ignored (sites are still controlled by ``load_sites``). Default is True.
             Also imports experimental deformable visual meshes; see :ref:`usd-deformable-visual-import`.
         load_static_visual_shapes: If True, supported visual-only geometry outside
@@ -388,6 +587,8 @@ def parse_usd(
               - Mapping from prim path (str) of the UsdGeom to the respective shape index in :class:`~newton.ModelBuilder`
             * - ``"path_shape_scale"``
               - Mapping from prim path (str) of the UsdGeom to its respective 3D world scale
+            * - ``"path_camera_map"``
+              - Mapping from prim path (str) of an imported ``UsdGeom.Camera`` to the respective camera index in :class:`~newton.ModelBuilder`
             * - ``"path_particle_map"``
               - Mapping from an imported particle-simulation ``UsdGeom.Points`` prim path to its half-open ``(particle_start, particle_end)`` builder range
             * - ``"path_cable_map"``
@@ -2686,6 +2887,23 @@ def parse_usd(
 
     initialize_free_joint_velocities()
 
+    # Cameras are imported after collapse_fixed_joints so their parent body indices are final.
+    path_camera_map: dict[str, int] = {}
+    if load_cameras and root_prim and root_prim.IsValid():
+        _import_usd_cameras(
+            builder,
+            stage,
+            root_prim,
+            ignore_paths=ignore_paths,
+            path_body_map=path_body_map,
+            path_body_relative_transform=path_body_relative_transform,
+            path_camera_map=path_camera_map,
+            get_world_mat=lambda prim: _get_prim_world_mat(prim, None, incoming_world_xform),
+            xform_cache=xform_cache,
+            linear_unit=linear_unit,
+            verbose=verbose,
+        )
+
     # Mimic constraints from PhysxMimicJointAPI (run after collapse so joint indices are final).
     # PhysxMimicJointAPI is an instance-applied schema (e.g. PhysxMimicJointAPI:rotZ)
     # that couples a follower joint to a leader (reference) joint with a gearing ratio.
@@ -2887,6 +3105,7 @@ def parse_usd(
         "path_joint_map": path_joint_map,
         "path_shape_map": path_shape_map,
         "path_shape_scale": path_shape_scale,
+        "path_camera_map": path_camera_map,
         "path_particle_map": path_particle_map,
         "mass_unit": mass_unit,
         "linear_unit": linear_unit,
