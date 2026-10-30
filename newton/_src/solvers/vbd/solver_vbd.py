@@ -448,6 +448,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_soft_enable_dat: bool = False,  # Truncate rigid pose updates against per-contact division planes
         rigid_soft_dat_use_interval_arithmetic: bool = False,  # Experimental interval verification of rigid trajectories
         deterministic: wp.DeterministicMode | None = None,
+        enable_fast_math: bool = True,
         collision_pipeline: CollisionPipeline | None = None,
         collision_frequency: Mapping[SolverBase.CollisionSlot, int] | None = None,
         collision_frequency_type: Mapping[SolverBase.CollisionSlot, SolverBase.CollisionFrequencyType] | None = None,
@@ -709,6 +710,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 are accumulated per contact record with atomics in
                 ``NOT_GUARANTEED`` mode and gathered per particle without
                 atomics in every other mode.
+            enable_fast_math: Compile the particle kernels, the rigid body
+                solve, and the joint dual update with Warp's ``fast_math``
+                (approximate division and square root). Results change at the
+                floating-point rounding level. Ignored on CPU.
             tendon_max_sweeps: Maximum capstan material-relaxation sweeps per VBD iteration.
             tendon_settle_tol: Relative tension-change tolerance for stopping capstan material relaxation.
             tendon_activation_tol: Relative radius gap that inactive dynamic rollers must cross before activation.
@@ -968,6 +973,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 {
                     "deterministic": effective_deterministic,
                     "deterministic_max_records": particle_deterministic_max_records,
+                    "fast_math": enable_fast_math,
                 },
                 module=particle_vbd_kernels,
             )
@@ -984,13 +990,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if integrates_rigid_bodies:
             rigid_modules = (
                 rigid_vbd_kernels,
-                self._solve_rigid_body_kernel.module,
                 accumulate_body_body_contacts_per_body.module,
                 compute_rigid_contact_forces.module,
                 update_duals_body_body_contacts.module,
             )
             for module in rigid_modules:
                 self._set_module_options(options, module=module)
+            for module in (self._solve_rigid_body_kernel.module, update_duals_joint.module):
+                self._set_module_options(options | {"fast_math": enable_fast_math}, module=module)
         if model.joint_count > 0:
             self._set_module_options(
                 {"deterministic": effective_deterministic, "deterministic_max_records": 0},
@@ -1027,6 +1034,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             particle_rest_shape_contact_exclusion_radius,
             particle_external_vertex_contact_filtering_map,
             particle_external_edge_contact_filtering_map,
+            enable_fast_math,
         )
 
         # Routed tendon geometry and material state are shared with XPBD; VBD
@@ -1104,6 +1112,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         particle_rest_shape_contact_exclusion_radius: float,
         particle_external_vertex_contact_filtering_map: dict | None,
         particle_external_edge_contact_filtering_map: dict | None,
+        enable_fast_math: bool,
     ):
         """Initialize particle-specific data structures and settings."""
         # Early exit if no particles
@@ -1153,6 +1162,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._tiled_elasticity_kernel = make_solve_elasticity_tile(
                 include_triangles, include_tets, two_particles_per_warp
             )
+            self._set_module_options({"fast_math": enable_fast_math}, module=self._tiled_elasticity_kernel.module)
             self._tiled_elasticity_particles_per_block = 2 if two_particles_per_warp else 1
         if particle_enable_self_contact:
             self.particle_conservative_bounds = wp.zeros((model.particle_count,), dtype=float, device=self.device)
