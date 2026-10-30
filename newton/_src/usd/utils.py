@@ -2040,7 +2040,7 @@ def _empty_material_properties() -> dict[str, Any]:
 
 
 def _coerce_color(value: Any) -> tuple[float, float, float] | None:
-    """Coerce a value to an RGB color tuple, or None if not possible."""
+    """Coerce a value to a clamped RGB color tuple, or None if not possible."""
     if value is None:
         return None
     # A per-vertex or per-face primvar holds one entry per element and only the leading one
@@ -2048,9 +2048,19 @@ def _coerce_color(value: Any) -> tuple[float, float, float] | None:
     if hasattr(value, "__len__") and len(value) > 0 and hasattr(value[0], "__len__"):
         value = value[0]
     color_np = np.array(value, dtype=np.float32).reshape(-1)
-    if color_np.size >= 3:
-        return (float(color_np[0]), float(color_np[1]), float(color_np[2]))
-    return None
+    if color_np.size < 3:
+        return None
+    rgb = color_np[:3]
+    color = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    if not np.all(np.isfinite(rgb)):
+        logger.warning("Ignoring non-finite imported color %r.", color)
+        return None
+    # Builder triangle colors reject values outside [0, 1]; clamp like opacity so display data cannot abort an import.
+    rgb = np.clip(rgb, 0.0, 1.0)
+    clamped_color = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
+    if clamped_color != color:
+        logger.warning("Clamping imported color %r to %r.", color, clamped_color)
+    return clamped_color
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -2074,22 +2084,14 @@ def _coerce_opacity(value: Any, *, warn_on_multiple: bool = False) -> float | No
     if value_np.size == 0:
         return None
     if value_np.size > 1 and warn_on_multiple:
-        warnings.warn(
-            f"Opacity data contains {value_np.size} values; using the first value as the shape opacity.",
-            NewtonWarning,
-            stacklevel=2,
-        )
+        logger.warning("Opacity data contains %d values; using the first value as the shape opacity.", value_np.size)
     opacity = float(value_np[0])
     if not np.isfinite(opacity):
-        warnings.warn(f"Ignoring non-finite imported opacity {opacity!r}.", NewtonWarning, stacklevel=2)
+        logger.warning("Ignoring non-finite imported opacity %r.", opacity)
         return None
     clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
     if clamped_opacity != opacity:
-        warnings.warn(
-            f"Clamping imported opacity {opacity!r} to {clamped_opacity!r}.",
-            NewtonWarning,
-            stacklevel=2,
-        )
+        logger.warning("Clamping imported opacity %r to %r.", opacity, clamped_opacity)
     return clamped_opacity
 
 
@@ -2106,30 +2108,34 @@ def _coerce_color_opacity(value: Any) -> float | None:
     return _coerce_opacity(value_np[3])
 
 
-def _extract_display_primvar_properties(prim: Usd.Prim) -> dict[str, Any]:
-    """Extract displayColor/displayOpacity primvars from a prim."""
+def _extract_display_primvar_properties(
+    prim: Usd.Prim, *, read_color: bool = True, read_opacity: bool = True
+) -> dict[str, Any]:
+    """Extract displayColor/displayOpacity primvars from a prim, skipping those not requested."""
     properties = _empty_material_properties()
     if UsdGeom is None or not prim or not prim.IsValid():
         return properties
     primvars_api = UsdGeom.PrimvarsAPI(prim)
 
-    display_color = primvars_api.FindPrimvarWithInheritance("displayColor")
-    if display_color:
-        color_value = display_color.Get()
-        color = _coerce_color(color_value)
-        if color is not None:
-            properties["color"] = _color_to_display_space(color, display_color.GetAttr())
+    if read_color:
+        display_color = primvars_api.FindPrimvarWithInheritance("displayColor")
+        if display_color:
+            color_value = display_color.Get()
+            color = _coerce_color(color_value)
+            if color is not None:
+                properties["color"] = _color_to_display_space(color, display_color.GetAttr())
 
-    display_opacity = primvars_api.FindPrimvarWithInheritance("displayOpacity")
-    if display_opacity:
-        opacity = _coerce_opacity(display_opacity.Get(), warn_on_multiple=True)
-        if opacity is not None:
-            properties["opacity"] = opacity
+    if read_opacity:
+        display_opacity = primvars_api.FindPrimvarWithInheritance("displayOpacity")
+        if display_opacity:
+            opacity = _coerce_opacity(display_opacity.Get(), warn_on_multiple=True)
+            if opacity is not None:
+                properties["opacity"] = opacity
 
-    if properties["opacity"] is None:
-        attr = prim.GetAttribute("displayOpacity")
-        if attr:
-            properties["opacity"] = _coerce_opacity(attr.Get(), warn_on_multiple=True)
+        if properties["opacity"] is None:
+            attr = prim.GetAttribute("displayOpacity")
+            if attr:
+                properties["opacity"] = _coerce_opacity(attr.Get(), warn_on_multiple=True)
 
     return properties
 
@@ -2543,11 +2549,17 @@ def _resolve_prim_material_properties(target_prim: Usd.Prim) -> dict[str, Any] |
     for key in ("texture", "color", "opacity", "metallic", "roughness"):
         if properties.get(key) is None and material_props.get(key) is not None:
             properties[key] = material_props[key]
-    display_props = _extract_display_primvar_properties(target_prim)
-    if properties["color"] is None and properties["texture"] is None and display_props.get("color") is not None:
-        properties["color"] = display_props["color"]
-    if properties["opacity"] is None and display_props.get("opacity") is not None:
-        properties["opacity"] = display_props["opacity"]
+    # Read only the display primvars that fill a gap, so an unused value is not clamped and reported.
+    need_color = properties["color"] is None and properties["texture"] is None
+    need_opacity = properties["opacity"] is None
+    if need_color or need_opacity:
+        display_props = _extract_display_primvar_properties(
+            target_prim, read_color=need_color, read_opacity=need_opacity
+        )
+        if display_props.get("color") is not None:
+            properties["color"] = display_props["color"]
+        if display_props.get("opacity") is not None:
+            properties["opacity"] = display_props["opacity"]
 
     return properties
 

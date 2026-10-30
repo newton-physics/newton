@@ -596,6 +596,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if not collision_enabled:
             _warn_collision_not_disableable(path)
 
+        material_props = usd.resolve_material_properties_for_prim(prim)
         p0, t0, e0 = builder.particle_count, builder.tri_count, builder.edge_count
         builder.add_cloth_mesh(
             pos=wp.vec3(0.0, 0.0, 0.0),
@@ -609,6 +610,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             tri_ka=tri_ka,
             edge_ke=edge_ke,
             particle_radius=particle_radius,
+            color=material_props.get("color"),
+            opacity=material_props.get("opacity"),
             label=path,
         )
         if builder.tri_count - t0 != len(tri_faces):
