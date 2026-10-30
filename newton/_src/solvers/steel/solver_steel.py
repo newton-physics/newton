@@ -1892,7 +1892,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 one-anchor region has no torsional friction of its own. Call :meth:`reset`
                 after teleporting a body to discard its history.
             contact_regularization: Dimensionless regularization ``g`` of penetrating
-                contact rows (``solve_mode="matrix_free"`` only). Each iteration moves a row's impulse toward the rigid solution
+                contact rows (``solve_mode="matrix_free"`` and ``friction_mode="fixed_normal"`` only).
+                Each iteration moves a row's impulse toward the rigid solution
                 with weight ``1 / (1 + g)`` and toward zero with weight ``g / (1 + g)``, the
                 update of an implicitly integrated contact spring. It makes statically
                 indeterminate normal-force splits unique and damps the sweep, at the cost of
@@ -1927,8 +1928,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 iteration on the tangential-force ratio; articulated contacts keep the
                 ``"fixed_normal"`` update. The other modes use point friction: an omitted
                 ``friction_anchor_beta`` selects it with a warning, and friction patches,
-                contact torsion, contact compliance and ``articulated_contact_response="propagation"``
-                require ``"fixed_normal"``. The free-body and articulated rules above apply to
+                contact torsion, contact compliance, ``contact_regularization`` and
+                ``articulated_contact_response="propagation"`` require ``"fixed_normal"``. The
+                free-body and articulated rules above apply to
                 ``articulated_contact_response="immediate"``. ``"propagation_colored"`` solves every
                 contact on a propagation row, articulated ones included, with the free-body update of
                 the selected mode; contacts between two links of one articulation stay on dense rows
@@ -2317,6 +2319,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         # are the exact rigid update.
         self._contact_w = float(np.float32(1.0 / (1.0 + self._contact_regularization)))
         self._regularization_enabled = self._contact_w < 1.0
+        # The coupled friction modes solve each contact row with its friction pair on the rigid law.
+        if self._regularization_enabled and friction_mode != "fixed_normal":
+            raise ValueError(f"contact_regularization > 0 requires friction_mode='fixed_normal', got {friction_mode!r}")
         self._velocity_iterations = int(velocity_iterations)
         if self._velocity_iterations < 0:
             raise ValueError("velocity_iterations must be non-negative")

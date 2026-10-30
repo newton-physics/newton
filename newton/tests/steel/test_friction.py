@@ -2503,6 +2503,15 @@ def test_colored_modes_keep_the_coupled_restrictions(test, device):
                 SolverSteel(model, **colored, friction_anchor_beta=0.2)
             with test.assertRaisesRegex(ValueError, "friction_mode"):
                 SolverSteel(model, **colored, friction_anchor_beta=0.0, contact_compliance=True)
+            for response in ("immediate", "propagation_colored"):
+                with test.assertRaisesRegex(ValueError, "contact_regularization"):
+                    SolverSteel(
+                        model,
+                        articulated_contact_response=response,
+                        friction_mode=mode,
+                        friction_anchor_beta=0.0,
+                        contact_regularization=1.0,
+                    )
             with test.assertRaisesRegex(NotImplementedError, "friction_mode"):
                 SolverSteel(
                     model, articulated_contact_response="propagation", friction_mode=mode, friction_anchor_beta=0.0

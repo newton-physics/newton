@@ -272,7 +272,8 @@ repository examples spend tuning effort, not a shared solver API.
        always uses. A small
        ``contact_regularization`` (for example ``0.02``) makes the
        normal-force split of redundant contacts unique and helps stacks hold at
-       low iteration counts, at the cost of a small resting sag.
+       low iteration counts, at the cost of a small resting sag; it requires
+       the default ``friction_mode``.
        ``velocity_iterations`` remove the velocity that position correction
        adds, and ``contact_warmstart`` (with contact matching in the
        :class:`~newton.CollisionPipeline`) reuses the previous step's

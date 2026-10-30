@@ -1,0 +1,1 @@
+Reject `contact_regularization > 0` together with a `friction_mode` other than `"fixed_normal"` in `SolverSteel`. Those modes solve each contact row with its friction pair on the rigid law, so the regularization had no effect.
