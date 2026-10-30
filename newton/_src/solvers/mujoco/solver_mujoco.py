@@ -5066,6 +5066,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 :meth:`observables`.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         if self._use_speculative_contacts and (not math.isfinite(dt) or dt <= 0.0):
             raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
         if self.use_mujoco_cpu:

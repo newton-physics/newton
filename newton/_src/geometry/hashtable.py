@@ -232,7 +232,7 @@ class HashTable:
         self.keys.fill_(_HASHTABLE_EMPTY_KEY_VALUE)
         self.active_slots.zero_()
 
-    def clear_active(self):
+    def clear_active(self, record_tape: bool = True):
         """Clear only the active entries. CUDA graph capture compatible.
 
         Uses two kernel launches:
@@ -241,6 +241,11 @@ class HashTable:
 
         The two-kernel approach is needed to avoid race conditions on CPU where
         threads execute sequentially.
+
+        Args:
+            record_tape: Pass ``False`` when calling from bookkeeping paths
+                inside an active ``wp.Tape`` scope; both kernels have backward
+                disabled, so recording them only bloats the tape.
         """
         # Use fixed thread count to cover the GPU (65536 = 256 blocks x 256 threads)
         # Grid-stride loop handles any number of active entries
@@ -250,6 +255,7 @@ class HashTable:
             dim=num_threads,
             inputs=[self.keys, self.active_slots, self.capacity, num_threads],
             device=self.device,
+            record_tape=record_tape,
         )
         # Zero the count in a separate kernel to avoid CPU race condition
         wp.launch(
@@ -257,4 +263,5 @@ class HashTable:
             dim=1,
             inputs=[self.active_slots, self.capacity],
             device=self.device,
+            record_tape=record_tape,
         )

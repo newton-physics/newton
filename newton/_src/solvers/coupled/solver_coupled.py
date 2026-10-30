@@ -3030,6 +3030,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         contacts) own their own buffers internally.
         """
         self.validate_observables(observables, contacts)
+        self._require_unreduced_contacts(contacts)
         self._distribute_state(state_in, dt=dt)
         self._active_observables = observables
         try:

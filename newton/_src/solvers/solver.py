@@ -622,6 +622,12 @@ class SolverBase:
             )
         if collision_pipeline is not None and collision_pipeline.model is not model:
             raise ValueError("collision_pipeline and solver must use the same model")
+        if (
+            collision_pipeline is not None
+            and collision_pipeline.contact_reduction_config.body_pairs
+            and not type(self).supports_body_pair_reduced_contacts
+        ):
+            raise ValueError(f"{type(self).__name__} cannot own a pipeline with body-pair contact reduction")
         self.collision_pipeline = collision_pipeline
         """The solver-owned collision pipeline, or ``None`` when detection is driven externally."""
         if collision_pipeline is not None:
@@ -1103,6 +1109,90 @@ class SolverBase:
                 state attributes are reset.
         """
         self._normalize_reset_world_mask(world_mask)
+
+    supports_body_pair_reduced_contacts: bool = False
+    """Whether this solver's default configuration accepts body-pair-reduced contacts.
+
+    :class:`newton.CollisionPipeline` with
+    ``ContactReductionConfig(body_pairs=True)`` compacts rigid contacts to each
+    patch's depth and sampled footprint representatives.  This is distinct from
+    the producer-side mesh/heightfield reduction selected by the legacy
+    ``reduce_contacts=True`` bool, which all solvers may consume.  A solver may
+    only declare body-pair support after a conformance test demonstrates that
+    it consumes contact depth with the reducer's signed-separation convention.
+    Configuration-specific features may impose a stricter requirement.  The
+    built-in solvers that do not declare support raise in :meth:`step` when given
+    a reduced buffer.  :class:`SolverBase` rejects an owned pipeline with
+    body-pair reduction at construction but does not check the buffers passed to
+    a subclass's :meth:`step`; a custom solver that does not declare support
+    should check :attr:`Contacts.rigid_contacts_body_pair_reduced` itself.
+
+    .. experimental::
+    """
+
+    def _require_unreduced_contacts(
+        self,
+        contacts: Contacts | None,
+        *,
+        supports_body_pair_reduced_contacts: bool | None = None,
+        configuration: str | None = None,
+    ) -> None:
+        """Raise if ``contacts`` was compacted by body-pair reduction.
+
+        Call at the top of :meth:`step` in solvers that have not been
+        conformance-tested against reduced contact buffers.  During Warp CUDA
+        capture it also marks the buffer unreduced-only, so no reducer can write
+        it until :meth:`Contacts.release_graph_capture`.  On a buffer a reducer
+        has written, it also attaches a lease that keeps the solver and buffer
+        alive with the capturing graph object.
+
+        A solver with configuration-specific restrictions may override its
+        class-wide capability for one call; a capture still marks the buffer.
+
+        Args:
+            contacts: Contact buffer the solver will consume.
+            supports_body_pair_reduced_contacts: Per-call capability override.
+                ``None`` uses the solver class declaration.
+            configuration: Optional configuration label included in an error.
+        """
+        if supports_body_pair_reduced_contacts is None:
+            supports_body_pair_reduced_contacts = type(self).supports_body_pair_reduced_contacts
+        if contacts is None or supports_body_pair_reduced_contacts:
+            return
+        if getattr(contacts, "rigid_contacts_body_pair_reduced", False) or getattr(
+            contacts, "rigid_contacts_body_pair_reduced_capture", False
+        ):
+            subject = type(self).__name__
+            if configuration:
+                subject += f" with {configuration}"
+                remedy = (
+                    "disable CollisionPipeline.ContactReductionConfig(body_pairs=True) or disable "
+                    f"{configuration}; supports_body_pair_reduced_contacts only covers validated configurations"
+                )
+            else:
+                remedy = (
+                    "disable CollisionPipeline.ContactReductionConfig(body_pairs=True) or use a solver "
+                    "with supports_body_pair_reduced_contacts=True"
+                )
+            raise ValueError(f"{subject} is not validated for body-pair-reduced contacts; {remedy}")
+        if not isinstance(contacts, Contacts):
+            # Duck-typed wrappers around pipeline buffers carry no reducer lease state.
+            return
+        graph = contacts._current_warp_capture_graph()
+        if not contacts._body_pair_reducer_bound:
+            # No reducer has written this buffer, so a step keeps main's behavior; a Warp capture only
+            # leaves a flag that makes a later reducer refuse the buffer until release_graph_capture().
+            if graph is not None:
+                contacts._unreduced_capture_seen = True
+            return
+        if graph is None and contacts.device.is_cuda and wp.get_stream(contacts.device).is_capturing:
+            raise RuntimeError(
+                "capturing an unreduced-only solver requires a Warp-managed CUDA graph on the "
+                "current stream so Newton can retain and protect its Contacts buffer; wrap an "
+                "external capture with wp.capture_begin(external=True)"
+            )
+        if graph is not None:
+            contacts._acquire_graph_lease(graph, "unreduced_reader", self)
 
     def step(
         self,
