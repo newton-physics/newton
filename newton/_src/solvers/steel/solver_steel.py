@@ -3716,6 +3716,7 @@ class SolverSteel(SolverBase):
                         model.joint_X_p,
                         model.joint_X_c,
                         self._connect_parent_prescribed,
+                        self._body_has_response_dofs,
                         state_in.body_q,
                         state_in.body_qd,
                         model.body_com,
