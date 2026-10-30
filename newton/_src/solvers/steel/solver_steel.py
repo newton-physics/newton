@@ -1565,7 +1565,8 @@ class SolverSteel(SolverBase, CouplingInterface):
           :attr:`constraint_overflow` reports dropped rows. The solver reads ``steel:condim`` at
           construction and, on a solver built with the rows, at :meth:`notify_model_changed` with
           ``SHAPE_PROPERTIES``; a solver built without any condim above 3 ignores the attribute and must be
-          rebuilt to gain the rows.
+          rebuilt to gain the rows. A negative or non-finite coefficient that a shape's condim enables
+          raises :class:`ValueError` at the same points.
 
         One per-DOF attribute makes joint friction grow with the load the joint transmits, see
         ``enable_joint_friction``:
@@ -3032,9 +3033,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         With ``enable_joint_friction``, an eager joint DOF or DOF force notification also reads
         :attr:`~newton.Model.joint_friction` and ``steel:joint_friction_load_coefficient`` on the host and
         raises :class:`ValueError` for invalid values, after applying every other update. Likewise, on a
-        solver constructed with free-body angular rows, an eager shape notification reads ``steel:condim`` on the
-        host and raises :class:`ValueError` for a value other than 3, 4 or 6. A captured notification skips these
-        checks.
+        solver constructed with free-body angular rows, an eager shape notification reads ``steel:condim`` and the
+        torsional and rolling coefficients it enables on the host and raises :class:`ValueError` for a condim other
+        than 3, 4 or 6 or a negative or non-finite coefficient. A captured notification skips these checks.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.

@@ -26,8 +26,8 @@ from .kernels import (
 def configure_free_rigid_angular_friction(solver, model) -> None:
     """Decide from the shapes' ``steel:condim`` whether free-body contacts get angular rows, and validate the options.
 
-    Raises :class:`ValueError` for a condim other than 3, 4 or 6, and :class:`NotImplementedError` for an
-    option the angular rows do not support.
+    Raises :class:`ValueError` for a condim other than 3, 4 or 6 or an invalid gated coefficient, and
+    :class:`NotImplementedError` for an option the angular rows do not support.
     """
     condim = solver._namespaced_attribute("condim")
     values = condim.numpy() if condim is not None and model.shape_count else None
@@ -36,6 +36,7 @@ def configure_free_rigid_angular_friction(solver, model) -> None:
     solver._free_rigid_angular_rows = bool(values is not None and np.any(values >= 4))
     if not solver._free_rigid_angular_rows:
         return
+    _check_gated_coefficients(model, values)
     unsupported = [
         name
         for name, requested in (
@@ -73,9 +74,11 @@ def refresh_free_rigid_angular_friction(solver) -> None:
 
 
 def validate_free_rigid_angular_friction(solver) -> None:
-    """Read ``steel:condim`` on the host and raise :class:`ValueError` for a value other than 3, 4 or 6."""
+    """Read ``steel:condim`` and the gated coefficients on the host and raise :class:`ValueError` for invalid values."""
     if solver._free_rigid_angular_rows:
-        _check_condim_values(solver._namespaced_attribute("condim").numpy())
+        values = solver._namespaced_attribute("condim").numpy()
+        _check_condim_values(values)
+        _check_gated_coefficients(solver.model, values)
 
 
 def free_rigid_route_bodies(solver) -> wp.array | None:
@@ -212,3 +215,14 @@ def _check_condim_values(values: np.ndarray) -> None:
     invalid = np.setdiff1d(values, (3, 4, 6))
     if invalid.size:
         raise ValueError(f"steel:condim must be 3, 4 or 6, got {int(invalid[0])}")
+
+
+def _check_gated_coefficients(model, condim: np.ndarray) -> None:
+    """Reject a negative or non-finite coefficient on a shape whose condim enables its row."""
+    for name, array, gate in (
+        ("shape_material_mu_torsional", model.shape_material_mu_torsional, 4),
+        ("shape_material_mu_rolling", model.shape_material_mu_rolling, 6),
+    ):
+        values = array.numpy()[condim >= gate]
+        if not np.all(np.isfinite(values)) or np.any(values < 0.0):
+            raise ValueError(f"{name} must be finite and non-negative on shapes with steel:condim {gate} or above")

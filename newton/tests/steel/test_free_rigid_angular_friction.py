@@ -196,6 +196,44 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
                 _simulate("sphere", 0.0, steps=1, condim=condim, observe=observe)
                 self.assertEqual(seen["slots"], expected)
 
+    def test_rows_exchange_equal_and_opposite_angular_impulse_between_free_bodies(self):
+        """Share a spinning and rolling sphere's angular momentum with a free sphere pressed against it.
+
+        Without gravity, sliding friction or angular damping only the angular rows couple the two equal spheres, so
+        their summed angular velocity is conserved and each ends at half the initial one.
+        """
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z, gravity=(0.0, 0.0, 0.0))
+        SolverSteel.register_custom_attributes(builder)
+        inertia = wp.mat33(*(np.eye(3) * 0.4 * _MASS * _RADIUS**2).astype(np.float32).ravel())
+        cfg = newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.0, mu_torsional=5.0e-4, mu_rolling=1.0e-3)
+        for x in (-_RADIUS, _RADIUS):
+            body = builder.add_body(
+                xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()), mass=_MASS, inertia=inertia, lock_inertia=True
+            )
+            builder.add_shape_sphere(body, radius=_RADIUS, cfg=cfg, custom_attributes={"steel:condim": 6})
+        model = builder.finalize()
+        model.steel.rigid_body_angular_damping.fill_(0.0)
+        solver = SolverSteel(model, solve_mode="matrix_free", iterations=32, deterministic=_RUN_TO_RUN)
+        pipeline = newton.CollisionPipeline(model, deterministic=True)
+        contacts = pipeline.contacts()
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        omega = np.array([6.0, 4.0, 0.0], dtype=np.float32)
+        body_qd = np.zeros((2, 6), dtype=np.float32)
+        body_qd[0, 3:] = omega
+        state_0.body_qd.assign(body_qd)
+        newton.eval_ik(model, state_0, state_0.joint_q, state_0.joint_qd)
+        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+        push = np.array([[1.0, 0.0, 0.0, 0.0, 0.0, 0.0], [-1.0, 0.0, 0.0, 0.0, 0.0, 0.0]], dtype=np.float32)
+        for _ in range(144):
+            state_0.clear_forces()
+            state_0.body_f.assign(push)
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, _DT)
+            state_0, state_1 = state_1, state_0
+        angular = state_0.body_qd.numpy()[:, 3:]
+        np.testing.assert_allclose(angular.sum(axis=0), omega, atol=1.0e-3)
+        np.testing.assert_allclose(angular, [0.5 * omega, 0.5 * omega], atol=0.05)
+
     def test_spin_row_stops_a_spinning_sphere_at_the_coulomb_rate(self):
         """Decelerate a sphere spinning on its contact point at mu_s m g / I, and stop it."""
         torsional = 5.0e-4
@@ -595,6 +633,26 @@ class TestFreeRigidAngularFriction(unittest.TestCase):
             solver.notify_model_changed(flags)
         # The check raises after the notification's other updates are applied.
         self.assertFalse(np.array_equal(solver._body_I_m.numpy(), spatial_inertia))
+        # Reject an invalid coefficient that a shape's condim enables, at construction and at notify.
+        for name, condim in (("shape_material_mu_torsional", 4), ("shape_material_mu_rolling", 6)):
+            array = getattr(model, name)
+            original = array.numpy()
+            for value in (-1.0e-3, np.nan):
+                model.steel.condim.fill_(condim)
+                array.fill_(value)
+                with self.subTest(name=name, value=value), self.assertRaisesRegex(ValueError, name):
+                    SolverSteel(model, solve_mode="matrix_free")
+                array.assign(original)
+                solver = SolverSteel(model, solve_mode="matrix_free")
+                array.fill_(value)
+                with self.subTest(name=name, value=value, notify=True), self.assertRaisesRegex(ValueError, name):
+                    solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                array.assign(original)
+        # A coefficient the shape's condim leaves off is not read.
+        model.steel.condim.fill_(4)
+        model.shape_material_mu_rolling.fill_(-1.0)
+        SolverSteel(model, solve_mode="matrix_free")
+        model.shape_material_mu_rolling.fill_(0.0)
         # A solver built without the rows ignores later condim edits.
         model.steel.condim.fill_(3)
         solver = SolverSteel(model, solve_mode="matrix_free")
