@@ -650,8 +650,8 @@ def _warn_constraint_row_overflow(
         if propagation_requested > propagation_capacity and wp.atomic_exch(warning_emitted, 3, 1) == 0:
             wp.printf(
                 "Warning: Steel propagation constraint-row overflow in world %d: requested %d rows, "
-                "limit %d; dropped %d contact, friction or torsion rows. Increase free_body_constraint_max or "
-                "articulation_constraint_max.\n",
+                "limit %d; dropped %d contact, friction or torsion rows. Increase propagation_constraint_max or, "
+                "when it is unset, free_body_constraint_max or articulation_constraint_max.\n",
                 world,
                 propagation_requested,
                 propagation_capacity,
@@ -1366,10 +1366,10 @@ class SolverSteel(SolverBase, CouplingInterface):
     branches of each tree in parallel.
 
     Constraint rows are stored per world with fixed capacities (``articulation_constraint_max``
-    for rows of articulated bodies, ``free_body_constraint_max`` for free-body contacts, and a
-    propagation-row capacity derived from both, see ``articulated_contact_response``). Rows
-    that do not fit are dropped and the world is flagged in :attr:`constraint_overflow`,
-    a device boolean array with one entry per world plus a final entry for global
+    for rows of articulated bodies, ``free_body_constraint_max`` for free-body contacts, and
+    ``propagation_constraint_max`` for propagation rows, by default the sum of the other two, see
+    ``articulated_contact_response``). Rows that do not fit are dropped and the world is
+    flagged in :attr:`constraint_overflow`, a device boolean array with one entry per world plus a final entry for global
     (world ``-1``) articulations. It also records contact-buffer overflow and contacts
     dropped by global contact reduction. The flags persist until :meth:`reset`. Read them
     in a device kernel (for example an RL termination term) or call
@@ -1474,6 +1474,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     enable_joint_friction = _ConstructionOption()
     articulation_constraint_max = _ConstructionOption()
     free_body_constraint_max = _ConstructionOption()
+    propagation_constraint_max = _ConstructionOption()
     warn_constraint_overflow = _StepOption(lambda name, value: bool(value))
     row_watermark = _ConstructionOption()
     drive_mode = _ConstructionOption()
@@ -1655,6 +1656,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         enable_joint_friction: bool = False,
         articulation_constraint_max: int = 32,
         free_body_constraint_max: int = 512,
+        propagation_constraint_max: int | None = None,
         warn_constraint_overflow: bool = True,
         row_watermark: bool = False,
         drive_mode: Literal["augmented", "rows"] = "augmented",
@@ -1797,8 +1799,18 @@ class SolverSteel(SolverBase, CouplingInterface):
                 dropped and reported, see :attr:`constraint_overflow`. The split solve also
                 stores a ``articulation_constraint_max x articulation_constraint_max`` Delassus matrix per
                 world.
-            free_body_constraint_max: Capacity of free-body contact rows per world. Rows beyond it
-                are dropped and reported, see :attr:`constraint_overflow`.
+            free_body_constraint_max: Capacity of free-body rows per world: free-body contact rows
+                and free-body velocity-limit rows. Under the ``"propagation"`` and
+                ``"propagation_colored"`` responses free-body contacts use the propagation rows, so
+                it sizes only the velocity-limit rows. Rows beyond it are dropped and reported, see
+                :attr:`constraint_overflow`.
+            propagation_constraint_max: Capacity of the propagation row family per world in the
+                ``"propagation"`` and ``"propagation_colored"`` responses, which hold every contact
+                row except those between two links of one articulation; these stay dense unless
+                ``propagation_same_articulation_rows`` is set. ``None`` (default) uses
+                ``free_body_constraint_max + articulation_constraint_max``. Setting it lets
+                ``free_body_constraint_max`` shrink to the free-body velocity-limit rows. At least
+                1; rejected with ``articulated_contact_response="immediate"``.
             warn_constraint_overflow: Print a device-side warning the first time a world
                 exceeds a row capacity. The warning does not synchronize the host and is
                 compatible with CUDA graph capture.
@@ -2027,8 +2039,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                 positive-radius contact on an articulated body that is routed to propagation
                 reserves one more propagation row for torsion (same-articulation contacts stay
                 dense unless ``propagation_same_articulation_rows`` is set), so size
-                ``articulation_constraint_max`` and ``free_body_constraint_max`` for it; each
-                sweep solves the torsion rows after the other rows with the same budget. That
+                ``propagation_constraint_max``, or ``articulation_constraint_max`` and
+                ``free_body_constraint_max`` when it is unset, for it; each sweep solves the torsion rows after the other rows with the same budget. That
                 response requires ``contact_torsion_device=True`` and ``velocity_iterations=0``.
                 When propagation rows overflow, a group keeps the contacts that received rows
                 and the step does not raise: it sets :attr:`constraint_overflow`, warns when
@@ -2098,7 +2110,8 @@ class SolverSteel(SolverBase, CouplingInterface):
                   of its tree. Each iteration solves these rows and then propagates the
                   accumulated body impulses through the trees to the joint velocities. All
                   contacts, including those of free bodies, use these rows, whose capacity per
-                  world is ``free_body_constraint_max + articulation_constraint_max``.
+                  world is ``propagation_constraint_max``, or ``free_body_constraint_max +
+                  articulation_constraint_max`` when that is ``None``.
                 - ``"propagation_colored"``: the ``"propagation"`` rows and capacity, with each
                   sweep solving the contacts of a world in batches of contacts that share no
                   responding body, one batch after the other. The batches are recolored every
@@ -2417,9 +2430,21 @@ class SolverSteel(SolverBase, CouplingInterface):
                 "propagation_same_articulation_rows requires articulated_contact_response='propagation', "
                 f"got {articulated_contact_response!r}"
             )
-        # The propagation responses route every contact row to the propagation family, so its
-        # capacity absorbs both the free-body and the dense contact budgets.
-        if articulated_contact_response != "immediate":
+        # The propagation responses route contact rows, free bodies included, to the propagation
+        # family, so by default its capacity absorbs both contact budgets.
+        self._propagation_constraint_max = (
+            None if propagation_constraint_max is None else int(propagation_constraint_max)
+        )
+        if self._propagation_constraint_max is not None:
+            if articulated_contact_response == "immediate":
+                raise ValueError(
+                    "propagation_constraint_max requires articulated_contact_response 'propagation' or "
+                    "'propagation_colored'"
+                )
+            if self._propagation_constraint_max < 1:
+                raise ValueError("propagation_constraint_max must be >= 1")
+            self._propagation_max_constraints = self._propagation_constraint_max
+        elif articulated_contact_response != "immediate":
             self._propagation_max_constraints = self._free_body_constraint_max + self._requested_dense_max_constraints
         else:
             self._propagation_max_constraints = self._requested_dense_max_constraints
@@ -7888,8 +7913,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 where += " and global (world -1) articulations"
             raise RuntimeError(
                 f"Steel dropped contacts or constraint rows in {where} (capacity exceeded, or "
-                "contacts that cannot be solved per world). Rows beyond "
-                "articulation_constraint_max or free_body_constraint_max, and contacts beyond the contact buffer or "
+                "contacts that cannot be solved per world). Rows beyond articulation_constraint_max, "
+                "free_body_constraint_max or propagation_constraint_max (by default the sum of the other two), "
+                "and contacts beyond the contact buffer or "
                 "dropped by contact reduction, need larger capacities. Contacts that couple a dynamic "
                 "global body, or a kinematic global articulation with joints, with another world cannot "
                 "be solved per world at any capacity and need a different scene layout. Reset the "
