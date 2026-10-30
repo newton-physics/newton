@@ -4533,12 +4533,12 @@ class TestVBDUsdParsing(unittest.TestCase):
         self.assertAlmostEqual(solver.rigid_joint_linear_kd, 24.0)
         self.assertAlmostEqual(solver.rigid_joint_angular_kd, 25.0)
 
-    def _build_scene_model(self, authored_values, with_body=False):
+    def _build_scene_model(self, authored_values, with_body=False, schema="NewtonVbdSceneAPI", device="cpu"):
         from pxr import Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
         scene = UsdPhysics.Scene.Define(stage, "/Scene").GetPrim()
-        scene.ApplyAPI("NewtonVbdSceneAPI")
+        scene.ApplyAPI(schema)
         if with_body:
             body = UsdGeom.Cube.Define(stage, "/Body").GetPrim()
             UsdPhysics.RigidBodyAPI.Apply(body)
@@ -4550,7 +4550,29 @@ class TestVBDUsdParsing(unittest.TestCase):
         builder.add_usd(stage, load_visual_shapes=False)
         if with_body:
             builder.color()
-        return builder.finalize(device="cpu")
+        return builder.finalize(device=device)
+
+    def test_scene_iterations_precedence(self):
+        """Resolve generic USD iterations below explicit arguments and above the default."""
+        for device in get_test_devices():
+            for authored, expected in ((None, 10), (-1, 10), (0, 0), (23, 23)):
+                values = {} if authored is None else {"newton:maxSolverIterations": authored}
+                model = self._build_scene_model(values, schema="NewtonSceneAPI", device=device)
+                with self.subTest(device=device, authored=authored):
+                    self.assertEqual(newton.solvers.SolverVBD(model).iterations, expected)
+                    self.assertEqual(newton.solvers.SolverVBD(model, iterations=None).iterations, expected)
+                    for explicit in (0, 10, 31):
+                        self.assertEqual(newton.solvers.SolverVBD(model, iterations=explicit).iterations, explicit)
+
+            model = self._build_scene_model({"newton:maxSolverIterations": -2}, schema="NewtonSceneAPI", device=device)
+            with self.assertRaisesRegex(ValueError, "newton:maxSolverIterations"):
+                newton.solvers.SolverVBD(model)
+            self.assertEqual(newton.solvers.SolverVBD(model, iterations=10).iterations, 10)
+
+        # Python-built models need neither USD nor custom-attribute registration.
+        model = newton.ModelBuilder().finalize(device="cpu")
+        self.assertEqual(newton.solvers.SolverVBD(model).iterations, 10)
+        self.assertEqual(newton.solvers.SolverVBD(model, iterations=None).iterations, 10)
 
     def test_registered_defaults_match_schema_fallbacks(self):
         """With the API applied but nothing authored, registered defaults match the schema's fallbacks."""

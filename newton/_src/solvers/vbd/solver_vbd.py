@@ -405,7 +405,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         model: Model,
         *,
         # Common parameters
-        iterations: int = 10,
+        iterations: int | None = None,
         friction_epsilon: float = 1e-2,
         dat_conservative_bound_relaxation: float = 0.85,
         integrate_with_external_rigid_solver: bool = False,
@@ -468,7 +468,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             model: The `Model` object used to initialize the integrator. Must be identical to the `Model` object passed
                 to the `step` function.
 
-            iterations: Number of VBD iterations per step.
+            iterations: Number of VBD iterations per step. If ``None``, use the registered
+                ``newton:maxSolverIterations`` scene value, or ``10`` if absent or ``-1``.
+                Explicit values override the scene, including ``0`` and ``10``.
             friction_epsilon: Threshold to smooth small relative velocities in friction computation (used for both particle
                 and rigid body contacts).
             dat_conservative_bound_relaxation: Relaxation factor in (0, 1) shared by every Divide-and-Truncate
@@ -796,6 +798,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     f"Fix the scene value or pass {name}= explicitly to SolverVBD."
                 )
             return value, True
+
+        if iterations is None:
+            scene_iterations = getattr(vbd_attrs, "max_solver_iterations", None)
+            iterations = int(scene_iterations.numpy()[0]) if scene_iterations is not None else -1
+            if iterations == -1:
+                iterations = 10
+            elif iterations < 0:
+                raise ValueError(
+                    "Scene-authored newton:maxSolverIterations must be >= 0 or -1 (use the default), "
+                    f"got {iterations}. Fix the scene value or pass iterations= explicitly to SolverVBD."
+                )
 
         rigid_contact_history, history_from_scene = resolve_scene_attribute(
             "rigid_contact_history", rigid_contact_history
@@ -2517,6 +2530,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Register SolverVBD custom Model attributes.
 
         Currently registers:
+          - ``vbd:max_solver_iterations`` for ``NewtonSceneAPI.newton:maxSolverIterations``.
+            Explicit ``iterations`` overrides the scene value; an absent value or ``-1`` uses ``10``.
           - ``vbd:rigid_contact_history``, ``vbd:rigid_joint_linear_ke``, ``vbd:rigid_joint_angular_ke``,
             ``vbd:rigid_joint_linear_kd`` and ``vbd:rigid_joint_angular_kd`` for the ``NewtonVbdSceneAPI``
             solver settings, authored in USD as ``newton:vbd:rigid:contactHistory``,
@@ -2538,6 +2553,18 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Args:
             builder: Model builder to register attributes on.
         """
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="max_solver_iterations",
+                frequency=Model.AttributeFrequency.ONCE,
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                namespace="vbd",
+                usd_attribute_name="newton:maxSolverIterations",
+            )
+        )
+
         for name, (dtype, default, usd_attribute_name) in _SCENE_ATTRIBUTES.items():
             builder.add_custom_attribute(
                 ModelBuilder.CustomAttribute(
