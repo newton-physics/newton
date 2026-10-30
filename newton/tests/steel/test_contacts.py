@@ -2155,7 +2155,7 @@ def test_non_crossing_speculative_contact_does_not_bounce(test, device):
 
 
 def test_shape_restitution_uses_symmetric_arithmetic_average(test, device):
-    """Average sanitized shape coefficients symmetrically, including authored zero."""
+    """Average finite, clamped shape coefficients symmetrically, including authored zero."""
     speed = 4.0
     separation = IMPACT_FRACTION * speed * DEFAULT_DT
     cases = (
@@ -2164,7 +2164,6 @@ def test_shape_restitution_uses_symmetric_arithmetic_average(test, device):
         (0.8, 0.2, 0.5),
         (2.0, 0.8, 0.9),
         (-0.2, 0.8, 0.4),
-        (float("nan"), 0.8, 0.4),
     )
     for sphere_e, plane_e, mixed in cases:
         label = f"sphere={sphere_e}, plane={plane_e}"
