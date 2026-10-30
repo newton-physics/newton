@@ -557,6 +557,9 @@ def test_solver_overflow_and_dropped_contact_rejected(test, device):
         scene.step()
         solver = scene.solver
         test.assertEqual(int(solver._contact_path.numpy()[0]), 0 if articulated else 1)
+        # Without a duplicate, the cleared step-local coefficients let the single contact through.
+        begin_rows(solver)
+        prepare_rows(solver, scene.contacts, 0.005)
         for mapping in (solver._contact_path, solver._contact_slot, solver._contact_world):
             values = mapping.numpy()
             values[1] = values[0]
@@ -564,7 +567,7 @@ def test_solver_overflow_and_dropped_contact_rejected(test, device):
         scene.contacts.rigid_contact_count.fill_(2)
         begin_rows(solver)
         with test.subTest(articulated=articulated):
-            with test.assertRaisesRegex(RuntimeError, r"one-to-one to normal rows \(contact 1\)"):
+            with test.assertRaisesRegex(RuntimeError, r"one-to-one to normal rows \(contact [01]\)"):
                 prepare_rows(solver, scene.contacts, 0.005)
     scene.contacts.rigid_contact_count.fill_(1)
     solver._constraint_count.fill_(solver.articulation_constraint_max + 1)
