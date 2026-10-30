@@ -5685,8 +5685,10 @@ def _build_mf_contact_row(
     restitution = mixed_contact_restitution(shape_a, shape_b, shape_material_restitution)
     t0, t1 = contact_tangent_basis(normal)
 
-    # Rows past the sliding pair are angular; build_mf_angular_friction_rows writes them.
-    for row_offset in range(wp.min(contact_slots_needed[c], 3)):
+    for row_offset in range(contact_slots_needed[c]):
+        # Rows past the sliding pair are angular; build_mf_angular_friction_rows writes them.
+        if row_offset >= 3:
+            continue
         row_idx = slot + row_offset
         d = normal
         if row_offset == 1:
