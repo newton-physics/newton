@@ -1068,7 +1068,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             Cell-local contact solver ordering may change.
         """
-        collider_stabilization_fraction: float = 0.0
+        collider_recovery_fraction: float = 0.0
         """Fraction of particle contact penetration corrected per step.
 
         Values in ``[0, 1]`` add an outward normal target velocity of
@@ -1077,7 +1077,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         .. experimental::
 
-            Contact stabilization may change without prior notice.
+            Collider recovery may change without prior notice.
         """
         collider_contact_gap: float = 0.0
         """Predictive contact activation distance [m].
@@ -1795,17 +1795,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
         if self.gs_colored_contacts and not supports_colored_contacts:
             raise ValueError("Colored contacts require discontinuous grid strain, particle contacts, and GS or GS-SOA")
-        self.collider_stabilization_fraction = float(config.collider_stabilization_fraction)
+        self.collider_recovery_fraction = float(config.collider_recovery_fraction)
         self.collider_contact_gap = float(config.collider_contact_gap)
-        if (
-            not math.isfinite(self.collider_stabilization_fraction)
-            or not 0.0 <= self.collider_stabilization_fraction <= 1.0
-        ):
-            raise ValueError("collider_stabilization_fraction must be finite and in [0, 1]")
+        if not math.isfinite(self.collider_recovery_fraction) or not 0.0 <= self.collider_recovery_fraction <= 1.0:
+            raise ValueError("collider_recovery_fraction must be finite and in [0, 1]")
         if not math.isfinite(self.collider_contact_gap) or self.collider_contact_gap < 0.0:
             raise ValueError("collider_contact_gap must be finite and nonnegative")
-        if self.collider_stabilization_fraction > 0.0 and not self.collider_basis.startswith("pic"):
-            raise ValueError("Contact stabilization requires a particle collider basis")
+        if self.collider_recovery_fraction > 0.0 and not self.collider_basis.startswith("pic"):
+            raise ValueError("Collider recovery requires a particle collider basis")
 
         if config.collider_velocity_mode not in ("forward", "backward"):
             raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
@@ -3720,13 +3717,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
 
-            if self.collider_stabilization_fraction > 0.0 or self.collider_contact_gap > 0.0:
+            if self.collider_recovery_fraction > 0.0 or self.collider_contact_gap > 0.0:
                 wp.launch(
                     stabilize_collider_velocity,
                     dim=collider_node_count,
                     inputs=[
                         dt,
-                        self.collider_stabilization_fraction,
+                        self.collider_recovery_fraction,
                         not speculative,
                         scratch.collider_distance_field.dof_values,
                         scratch.collider_normal_field.dof_values,
