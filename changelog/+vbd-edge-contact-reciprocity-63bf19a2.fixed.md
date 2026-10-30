@@ -1,1 +1,1 @@
-Fix asymmetric VBD self-contact topology filtering by distinguishing edge endpoints from opposite vertices, so locally adjacent edges are consistently excluded.
+Fix asymmetric edge-edge self-contact topology filtering in `SolverVBD` and `CollisionPipeline.init_soft_self_contact()`: with a topological filter threshold of 2 or more (default: 2), edge pairs whose endpoints lie within the filter ring are consistently excluded in both directions, which can reduce generated edge-edge self-contacts.
