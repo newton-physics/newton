@@ -948,10 +948,10 @@ def test_world_reset_keeps_shared_support_history(test, device):
 
 
 def test_world_reset_keeps_support_history_read_through_another_world_shape(test, device):
-    """Wake a world-1 sleeper on a world-0 support whose slab shape belongs to world 1, after a world-0 reset."""
+    """Wake a world-1 sleeper on a jointless world-0 support carrying a world-1 slab, after a world-0 reset."""
     builder = newton.ModelBuilder()
     builder.begin_world()
-    support = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
+    support = builder.add_link(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
     builder.end_world()
     builder.begin_world()
     builder.add_shape_box(support, hx=1.0, hy=1.0, hz=0.05)
@@ -961,10 +961,10 @@ def test_world_reset_keeps_support_history_read_through_another_world_shape(test
 
 
 def test_world_reset_keeps_support_history_read_through_a_global_shape(test, device):
-    """Wake a world-1 sleeper on a world-0 support whose slab shape is global, after a world-0 reset."""
+    """Wake a world-1 sleeper on a jointless world-0 support carrying a global slab, after a world-0 reset."""
     builder = newton.ModelBuilder()
     builder.begin_world()
-    support = builder.add_body(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
+    support = builder.add_link(xform=wp.transform((0.0, 0.0, -0.05), wp.quat_identity()), is_kinematic=True)
     builder.end_world()
     builder.begin_world()
     _add_box(builder)
@@ -1242,11 +1242,11 @@ def _expect_support_move_wakes(builder, support, sleepers, world_mask, device):
     _advance(pipeline, solver, states, control, 400)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy()[sleepers], 0)
     # The contact stays closed under a slide, so only the support's pose history shows the move.
-    x = model.joint_q_start.numpy()[support]
+    coords = model.joint_q_start.numpy()[np.flatnonzero(model.joint_child.numpy() == support)]
     for state in states:
         body_q, joint_q = state.body_q.numpy(), state.joint_q.numpy()
         body_q[support, 0] += 0.05
-        joint_q[x] += 0.05
+        joint_q[coords] += 0.05
         state.body_q.assign(body_q)
         state.joint_q.assign(joint_q)
     solver.reset(states[0], world_mask=wp.array(world_mask, dtype=wp.bool, device=device))
