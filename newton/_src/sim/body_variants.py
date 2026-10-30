@@ -173,6 +173,17 @@ def _validate_variant_builder(builder: ModelBuilder, variant: ModelBuilder) -> N
         if variant.shape_flags[shape] & ShapeFlags.HYDROELASTIC:
             # The hydroelastic pipeline caches per-shape SDF descriptors at construction.
             raise ValueError("Variant shapes must not be hydroelastic.")
+    for key, attribute in variant.custom_attributes.items():
+        # Selection copies model arrays; state, control, and contact arrays are created later.
+        if (
+            attribute.frequency == Model.AttributeFrequency.SHAPE
+            and attribute.assignment != Model.AttributeAssignment.MODEL
+            and attribute.values
+        ):
+            raise ValueError(
+                f"Variant shape custom attribute '{key}' is assigned to {attribute.assignment.name}; only "
+                "model-assigned shape custom attributes can follow a variant."
+            )
 
 
 def _snapshot_variants(
@@ -405,7 +416,11 @@ class _VariantShapeRows:
             np.asarray(inertias, dtype=np.float32).reshape(-1, 3, 3), dtype=wp.mat33, device=device
         )
         m._variant_row_max = max((variant_set.row_count for variant_set in variant_sets), default=0)
-        m._variant_row_shapes = wp.array(np.flatnonzero(shape_variant_row), dtype=wp.int32, device=device)
+        row_shapes = np.flatnonzero(shape_variant_row)
+        m._variant_row_shapes = wp.array(row_shapes, dtype=wp.int32, device=device)
+        # The builder flags of a row, the union written by add_body_variants, before the initial
+        # selection overwrites them.
+        m._variant_row_flags = wp.array(m.shape_flags.numpy()[row_shapes], dtype=wp.int32, device=device)
         m._shape_variant_row = wp.array(shape_variant_row, dtype=wp.bool, device=device)
         m._shape_variant_shape = wp.full(shape_count, -1, dtype=wp.int32, device=device)
         m.body_variant = wp.full(builder.body_count, -1, dtype=wp.int32, device=device)

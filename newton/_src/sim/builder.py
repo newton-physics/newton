@@ -5921,8 +5921,9 @@ class ModelBuilder:
         Shapes added to ``body`` directly stay in place for every variant.
 
         A row takes everything authored on the variant shape it holds: geometry, flags, color,
-        materials, and shape custom attributes. It keeps its label, world, collision group, filter
-        pairs, and opacity, so the i-th colliders of all variants must share a collision group. An
+        opacity, materials, and model-assigned shape custom attributes. It keeps its label, world,
+        collision group, and filter pairs, so the i-th colliders of all variants must share a
+        collision group. An
         empty row has its collision and visibility flags cleared, so it neither collides nor
         renders. Variant shapes are expressed in the variant body's frame, which maps onto
         ``body``'s frame; the variant body's pose, joints, and other entities are ignored, as are
@@ -5946,10 +5947,13 @@ class ModelBuilder:
         Raises:
             IndexError: If ``body`` or ``initial`` is out of range.
             ValueError: If ``body`` already has variants, ``labels`` does not match ``variants``,
-                colliders held by the same row have different collision groups, or a variant
+                colliders held by the same row have different collision groups, a shape custom
+                attribute is declared differently than here or in another variant, shapes of a later
+                world or trailing global shapes were added after ``body``'s world, or a variant
                 builder is this builder, declares variants itself, uses a different up axis, does
-                not contain exactly one body, contains shapes not attached to it, or contains
-                planes, heightfields, Gaussians, or hydroelastic shapes.
+                not contain exactly one body, contains shapes not attached to it, contains planes,
+                heightfields, Gaussians, or hydroelastic shapes, or has values for shape custom
+                attributes not assigned to the model.
         """
         if not 0 <= body < self.body_count:
             raise IndexError(f"Body index {body} out of range [0, {self.body_count}).")
@@ -5967,15 +5971,31 @@ class ModelBuilder:
             raise ValueError(f"Expected {len(variants)} labels, got {len(labels)}.")
         if not 0 <= initial < len(variants):
             raise IndexError(f"Initial variant {initial} out of range [0, {len(variants)}).")
+        # The rows join the body's world at the end of the shapes, which must keep shapes ordered by world.
+        world = self.body_world[body]
+        tail = self.shape_world[-1] if self.shape_world else -1
+        if world >= 0 and (tail > world or (tail < 0 and any(w >= 0 for w in self.shape_world))):
+            raise ValueError(
+                f"Variants of body {body} in world {world} must be declared before shapes of later worlds "
+                "or trailing global shapes are added."
+            )
         for variant in variants:
             _validate_variant_builder(self, variant)
         variant_set = _snapshot_variants(variants, labels, self._shape_row_attributes())
         rows = _plan_variant_rows(variant_set, initial, self.body_label[body])
+        declarations = dict(self.custom_attributes)
+        for row in rows:
+            for candidate in row.candidates:
+                for key, declaration, _ in candidate.custom:
+                    if not self._custom_attribute_specs_match(declarations.setdefault(key, declaration), declaration):
+                        raise ValueError(
+                            f"Variant shape custom attribute '{key}' is declared differently than in this "
+                            "builder or another variant."
+                        )
 
         # A row's builder flags are the union over the shapes it can hold, which all have the row's
         # role, so contact pairs and joint filters include every one of them.
         row_start = self.shape_count
-        world = self.body_world[body]
         for row in rows:
             shape = self._append_shape_row(row.seed, body, world, row.label)
             flags = 0

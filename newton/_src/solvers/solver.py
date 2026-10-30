@@ -1165,11 +1165,14 @@ class SolverBase:
           have changed.
         * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia
           tensors have changed.
-        * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms or geometry have
-          changed.
-        * ``ModelFlags.SHAPE_GEOMETRY``: Variant rows took other variant shapes
-          or were emptied by :meth:`~newton.Model.select_body_variants`.
-          Solvers that read shapes through Newton contacts need no refresh.
+        * ``ModelFlags.SHAPE_PROPERTIES``: Shape transforms, scales, or
+          materials have changed.
+        * ``ModelFlags.SHAPE_TYPE_AND_SOURCE``: Shapes changed type or source,
+          for example variant rows that took other variant shapes or were
+          emptied by :meth:`~newton.Model.select_body_variants`. Pass the flags
+          to every solver: some cache data derived from shapes, such as
+          :class:`~newton.solvers.SolverVBD`'s body radii for rigid-soft
+          contact truncation.
         * ``ModelFlags.MODEL_PROPERTIES``: Model global properties (e.g.,
           gravity) have changed.
         * ``ModelFlags.CONSTRAINT_PROPERTIES``: Constraint definitions,

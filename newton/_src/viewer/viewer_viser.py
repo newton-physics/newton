@@ -696,8 +696,10 @@ class ViewerViser(ViewerBase):
 
     @override
     def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
-        if self.model is None or not flags & newton.ModelFlags.SHAPE_GEOMETRY:
+        if self.model is None or not flags & newton.ModelFlags.SHAPE_TYPE_AND_SOURCE:
             return
+        # The picked point was on geometry that changed, as on clear_model().
+        self._remove_picking_control(self.layer.layer_id, release=True)
         # Batches change their instance counts, so drop the previous batch handles.
         for shapes in self._shape_instances.values():
             name = self._qualify(shapes.name)

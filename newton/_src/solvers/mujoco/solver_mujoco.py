@@ -7520,6 +7520,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                                 if ss >= 0:
                                     tendon_required_shapes.add(ss)
 
+        if model._variant_row_max and tendon_required_shapes:
+            # MuJoCo compiles a wrapping geom's type once, which a variant selection can change.
+            variant_row = model._shape_variant_row.numpy()
+            if any(variant_row[s] and not shape_flags[s] & ShapeFlags.SITE for s in tendon_required_shapes):
+                raise NotImplementedError("Spatial tendons cannot wrap around body variant shapes.")
+
         # Collect shapes required by actuators targeting sites so they are not
         # skipped when include_sites=False.  USD actuators may still carry
         # sentinel trnid/trntype at this point (resolved later from
@@ -11422,7 +11428,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             unless ``use_mujoco_cpu`` is ``True`` or the solver was initialized with
             ``separate_worlds`` set to ``False``.
 
-            The MuJoCo viewer is only meant as a debugging tool.
+            The MuJoCo viewer is only meant as a debugging tool. It shows the geoms compiled at
+            construction, so it rejects models with body variants.
 
         Args:
             show_left_ui: Whether to show the left UI.
@@ -11430,7 +11437,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             show_contact_points: Whether to show contact points.
             show_contact_forces: Whether to show contact forces.
             show_transparent_geoms: Whether to show transparent geoms.
+
+        Raises:
+            NotImplementedError: If the model has body variants.
         """
+        if self.model._has_body_variants:
+            raise NotImplementedError(
+                "The MuJoCo viewer cannot follow body variant selections; use a Newton viewer instead."
+            )
         if self._viewer is None:
             import mujoco.viewer
 

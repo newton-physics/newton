@@ -1530,7 +1530,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         )
         if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
             self._refresh_kinematic_state()
-        if flags & ModelFlags.SHAPE_GEOMETRY and getattr(self, "_rigid_dat_body_bounding_radius", None) is not None:
+        if (
+            flags & ModelFlags.SHAPE_TYPE_AND_SOURCE
+            and getattr(self, "_rigid_dat_body_bounding_radius", None) is not None
+        ):
             # Prototype assignments change the shapes and center of mass the radius bounds.
             self._init_rigid_dat_body_bounding_radius(self.model)
         if (
@@ -3135,6 +3138,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if has_rigid_soft_queries and model.particle_count > 0 and model.shape_count > 0:
             particle_radius_min = float(np.min(model.particle_radius.numpy()))
             shape_margin_min = float(np.min(model.shape_margin.numpy()))
+            # A variant row can take a variant shape with a smaller margin after construction.
+            variant_margin = model._variant_shape_geometry.get("shape_margin")
+            if variant_margin is not None and variant_margin.shape[0] > 0:
+                shape_margin_min = min(shape_margin_min, float(np.min(variant_margin.numpy())))
             rigid_soft_query_radius_min = (
                 float(self.collision_pipeline.soft_contact_gap) + particle_radius_min + shape_margin_min
             )

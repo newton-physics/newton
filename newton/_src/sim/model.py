@@ -70,6 +70,7 @@ _SHAPE_VARIANT_ATTRIBUTES = (
     "_shape_voxel_resolution",
     "shape_flags",
     "shape_color",
+    "shape_opacity",
     "shape_material_ke",
     "shape_material_kd",
     "shape_material_kf",
@@ -81,8 +82,8 @@ _SHAPE_VARIANT_ATTRIBUTES = (
     "shape_material_kh",
 )
 """Per-shape model arrays a variant row takes from the variant shape it holds: geometry, the collision
-data derived from it in :meth:`ModelBuilder.finalize`, flags, color, and materials. Everything else,
-such as body, world, label, collision group, and opacity, belongs to the row. Model-assigned shape
+data derived from it in :meth:`ModelBuilder.finalize`, flags, color, opacity, and materials. Everything
+else, such as body, world, label, and collision group, belongs to the row. Model-assigned shape
 custom attributes are copied as well."""
 
 _EMPTY_ROW_CLEARED_FLAGS = wp.constant(
@@ -543,6 +544,7 @@ class Model:
         "_variant_com": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "_variant_inertia": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "_variant_row_shapes": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_variant_row_flags": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "body_variant": AttributeSpec(AttributeFrequency.BODY),
         "_body_variant_set": AttributeSpec(AttributeFrequency.BODY),
         "_body_variant_count": AttributeSpec(AttributeFrequency.BODY),
@@ -1414,6 +1416,10 @@ class Model:
         """Largest number of variant rows of a body."""
         self._variant_row_shapes: wp.array[wp.int32] | None = None
         """Shape index of every variant row, int."""
+        self._variant_row_flags: wp.array[wp.int32] | None = None
+        """Flags each variant row was finalized with, the union over the variant shapes it can hold,
+        indexed like :attr:`_variant_row_shapes`, int. Contact pairs and joint filters were built from
+        them, and consumers that must cover every variant read them."""
         self._shape_variant_row: wp.array[wp.bool] | None = None
         """Whether each shape is a variant row, shape [shape_count], bool."""
         self._shape_variant_shape: wp.array[wp.int32] | None = None
@@ -2331,10 +2337,14 @@ class Model:
         return np.concatenate(row_shapes), np.concatenate(variant_shapes)
 
     def _shape_option_flags(self) -> np.ndarray:
-        """Shape flags with each variant row's replaced by the union over the variant shapes it can hold."""
+        """Shape flags with each variant row's replaced by the flags it was finalized with.
+
+        Those are the union over the variant shapes the row can hold, which contact pairs and joint
+        filters were built from.
+        """
         flags = self.shape_flags.numpy().copy()
-        row_shapes, variant_shapes = self._variant_row_options()
-        np.bitwise_or.at(flags, row_shapes, self._variant_shape_geometry["shape_flags"].numpy()[variant_shapes])
+        if self._variant_row_max:
+            flags[self._variant_row_shapes.numpy()] = self._variant_row_flags.numpy()
         return flags
 
     def _shape_current_sources(self) -> list[Any]:
@@ -2668,7 +2678,9 @@ class Model:
                 )
         elif bodies.shape != variants.shape:
             raise ValueError(f"bodies shape {bodies.shape} must match variants shape {variants.shape}.")
-        flags = int(ModelFlags.SHAPE_GEOMETRY | ModelFlags.SHAPE_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES)
+        flags = int(
+            ModelFlags.SHAPE_TYPE_AND_SOURCE | ModelFlags.SHAPE_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES
+        )
         if self._variant_mass is None or self._variant_mass.shape[0] == 0 or variants.shape[0] == 0:
             return flags
         bodies = wp.empty(0, dtype=wp.int32, device=self.device) if bodies is None else bodies
@@ -2766,7 +2778,12 @@ class Model:
 
         Returns:
             The labels, or an empty list for a body without variants.
+
+        Raises:
+            IndexError: If ``body`` is out of range.
         """
+        if not 0 <= body < self.body_count:
+            raise IndexError(f"Body index {body} out of range [0, {self.body_count}).")
         if self._body_variant_set is None or self._body_variant_set[body] < 0:
             return []
         return list(self._variant_set_labels[self._body_variant_set[body]])

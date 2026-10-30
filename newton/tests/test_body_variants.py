@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from dataclasses import replace
 
 import numpy as np
 import warp as wp
@@ -84,7 +85,9 @@ class TestBodyVariants(unittest.TestCase):
     def test_select_body_variants(self):
         env = newton.ModelBuilder()
         body = env.add_body(xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()), label="object")
-        env.add_body_variants(body, [_variant("cube", mu=0.9, tag=1), _variant("spheres", mu=0.2, tag=2)])
+        spheres = _variant("spheres", mu=0.2, tag=2)
+        spheres.shape_opacity[:] = [0.5, 0.5]
+        env.add_body_variants(body, [_variant("cube", mu=0.9, tag=1), spheres])
         scene = newton.ModelBuilder()
         scene.replicate(env, 3)
         model = scene.finalize(device="cpu")
@@ -93,7 +96,7 @@ class TestBodyVariants(unittest.TestCase):
         flags = _select(model, [1, 0, 5], bodies=[0, 1, 2])
         self.assertEqual(
             flags,
-            newton.ModelFlags.SHAPE_GEOMETRY
+            newton.ModelFlags.SHAPE_TYPE_AND_SOURCE
             | newton.ModelFlags.SHAPE_PROPERTIES
             | newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
         )
@@ -103,8 +106,9 @@ class TestBodyVariants(unittest.TestCase):
         # The cube leaves the second row empty: it neither collides nor renders.
         live = int(newton.ShapeFlags.VISIBLE | newton.ShapeFlags.COLLIDE_SHAPES)
         np.testing.assert_array_equal(model.shape_flags.numpy()[[1, 3, 5]] & live, [live, 0, 0])
-        # Materials and shape custom attributes follow the variant.
+        # Materials, opacity, and shape custom attributes follow the variant.
         np.testing.assert_allclose(model.shape_material_mu.numpy()[:3], [0.2, 0.2, 0.9])
+        np.testing.assert_allclose(model.shape_opacity.numpy()[:3], [0.5, 0.5, 1.0])
         np.testing.assert_array_equal(model.test.tag.numpy()[:3], [2, 2, 1])
         self.assertLess(model.body_mass.numpy()[0], initial_mass[0])
         np.testing.assert_allclose(model.body_mass.numpy()[1:], initial_mass[1:])
@@ -139,6 +143,8 @@ class TestBodyVariants(unittest.TestCase):
         np.testing.assert_array_equal(model.shape_type.numpy()[[2, 4]], [newton.GeoType.BOX] * 2)
         self.assertEqual(model.body_variant_labels(1), ["cube", "spheres"])
         self.assertEqual(model.body_variant_labels(0), ["spheres", "cube"])
+        with self.assertRaises(IndexError):
+            model.body_variant_labels(-1)
 
     def test_add_body_variants_validation(self):
         builder = newton.ModelBuilder()
@@ -169,6 +175,33 @@ class TestBodyVariants(unittest.TestCase):
         grouped.shape_collision_group[0] = 2
         with self.assertRaisesRegex(ValueError, "collision groups"):
             builder.add_body_variants(builder.add_body(), [_variant("cube"), grouped])
+        retyped = _variant("cube")
+        retyped.custom_attributes["test:tag"] = replace(retyped.custom_attributes["test:tag"], dtype=wp.float32)
+        with self.assertRaisesRegex(ValueError, "declared differently"):
+            builder.add_body_variants(builder.add_body(), [_variant("cube"), retyped])
+        stateful = _variant("cube")
+        stateful.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="heat",
+                frequency=newton.Model.AttributeFrequency.SHAPE,
+                assignment=newton.Model.AttributeAssignment.STATE,
+                dtype=wp.float32,
+                values={0: 1.0},
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "STATE"):
+            builder.add_body_variants(builder.add_body(), [stateful])
+        worlds = newton.ModelBuilder()
+        worlds.begin_world()
+        first = worlds.add_body()
+        worlds.end_world()
+        worlds.begin_world()
+        worlds.add_shape_sphere(worlds.add_body(), radius=0.1)
+        worlds.end_world()
+        with self.assertRaisesRegex(ValueError, "later worlds"):
+            worlds.add_body_variants(first, [_variant("cube")])
+        # The rows were checked before any was appended.
+        self.assertEqual(builder.shape_count, 1)
         with self.assertRaises(NotImplementedError):
             builder.collapse_fixed_joints()
 
@@ -197,6 +230,18 @@ class TestBodyVariants(unittest.TestCase):
             set(contacts.rigid_contact_shape0.numpy()[:count]) | set(contacts.rigid_contact_shape1.numpy()[:count]),
             {0, 1, 2},
         )
+
+    def test_pipeline_covers_variant_mesh_properties(self):
+        """A row that starts as a box can take a surface-velocity mesh later."""
+        conveyor = newton.ModelBuilder()
+        mesh = newton.Mesh.create_box(0.25)
+        mesh.enable_surface_velocity = True
+        conveyor.add_shape_mesh(conveyor.add_body(), mesh=mesh)
+        builder = newton.ModelBuilder()
+        builder.add_body_variants(builder.add_body(), [_variant("cube"), conveyor])
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model)
+        self.assertIsNotNone(pipeline.contacts().rigid_contact_surface_velocity)
 
     def test_viewer_renders_selected_variant(self):
         model = _scene(2).finalize(device="cpu")
@@ -290,6 +335,8 @@ def test_mujoco_rest_height_follows_selection(test, device):
     # Cube half-extent 0.25; the lower sphere's bottom sits 0.1 below the body origin.
     np.testing.assert_allclose(heights, [0.25, 0.1], atol=0.02)
 
+    with test.assertRaises(NotImplementedError):
+        solver.render_mujoco_viewer()
     with test.assertRaises(NotImplementedError):
         newton.solvers.SolverMuJoCo(model, use_mujoco_contacts=True)
 

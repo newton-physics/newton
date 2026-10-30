@@ -1351,10 +1351,10 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.ACTUATOR_PROPERTIES
             | ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.TENDON_PROPERTIES
+            # Newton contacts read shape geometry directly, and the Kamino detector rejects models
+            # with body variants at construction, so nothing caches what this flag changes.
+            | ModelFlags.SHAPE_TYPE_AND_SOURCE
         )
-        if self._collision_detector_kamino is None:
-            # Newton contacts read shape geometry directly; geom offsets follow SHAPE_PROPERTIES above.
-            handled |= ModelFlags.SHAPE_GEOMETRY
         unsupported = int(flags) & ~int(handled)
         if unsupported:
             self._kamino.msg.warning(

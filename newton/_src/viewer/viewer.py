@@ -799,7 +799,8 @@ class ViewerBase(ABC):
         layer._slot_to_shape_wp: wp.array | None = None
         layer._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
         # Render geometry of each variant shape and the variant rows, cached for variant selections.
-        layer._variant_shape_render: list[tuple[int, str, int, wp.vec4, bool]] | None = None
+        layer._variant_shape_render: dict[int, tuple[int, str, int, wp.vec4, bool]] | None = None
+        layer._variant_shape_render_args: tuple[np.ndarray, ...] = ()
         layer._variant_shape_types: np.ndarray | None = None
         layer._variant_row_shapes: np.ndarray | None = None
         layer._variant_row_body: np.ndarray | None = None
@@ -951,7 +952,7 @@ class ViewerBase(ABC):
         """Notify the viewer that parts of its :class:`~newton.Model` were modified.
 
         The viewer refreshes the cached data affected by ``flags``. It currently handles only
-        :attr:`ModelFlags.SHAPE_GEOMETRY <newton.ModelFlags.SHAPE_GEOMETRY>`, such as a body variant
+        :attr:`ModelFlags.SHAPE_TYPE_AND_SOURCE <newton.ModelFlags.SHAPE_TYPE_AND_SOURCE>`, such as a body variant
         selection by :meth:`~newton.Model.select_body_variants`, by regrouping the variant rows by
         the variant shape they hold, without recompiling geometry. Other flags are ignored; call
         :meth:`set_model` again after changing shape data such as transforms, scales, or sources.
@@ -963,7 +964,7 @@ class ViewerBase(ABC):
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
         """
-        if self.model is None or not flags & newton.ModelFlags.SHAPE_GEOMETRY:
+        if self.model is None or not flags & newton.ModelFlags.SHAPE_TYPE_AND_SOURCE:
             return
         if self.model._shape_sdf_index is not None:
             self._shape_sdf_index_host = self.model._shape_sdf_index.numpy()
@@ -2943,12 +2944,27 @@ class ViewerBase(ABC):
         self._variant_shape_render = None
         self._select_shape_instances()
 
+    def _variant_shape_render_geometry(self, q: int) -> tuple[int, str, int, wp.vec4, bool]:
+        """Render geometry of variant shape ``q``, created on first use."""
+        if q not in self._variant_shape_render:
+            types, scales, margins, solids, flags, sdf_index = self._variant_shape_render_args
+            self._variant_shape_render[q] = self._shape_render_geometry(
+                types[q],
+                [float(v) for v in scales[q]],
+                float(margins[q]),
+                bool(solids[q]),
+                self.model._variant_shape_source[q],
+                int(flags[q]),
+                int(sdf_index[q]),
+            )
+        return self._variant_shape_render[q]
+
     def _variant_instances(self) -> tuple[dict[str, np.ndarray], np.ndarray] | None:
         """Instances of the variant rows that hold a variant shape, and the batch ordinal of each.
 
-        Variant shapes get their render geometry once; every call groups the rows by the variant
-        shape they hold, creating batches on first use, so its cost does not depend on the number
-        of variants.
+        A variant shape gets its render geometry the first time a row holds it; every call groups
+        the rows by the variant shape they hold, creating batches on first use, so its cost does not
+        depend on the number of variants.
         """
         model = self.model
         if model._variant_row_max == 0:
@@ -2967,18 +2983,8 @@ class ViewerBase(ABC):
             scales = np.where(
                 ((types == newton.GeoType.CYLINDER) & site_size.astype(bool))[:, None], scales * (1.0, 1.0, 0.0), scales
             )
-            self._variant_shape_render = [
-                self._shape_render_geometry(
-                    types[q],
-                    [float(v) for v in scales[q]],
-                    float(margins[q]),
-                    bool(solids[q]),
-                    model._variant_shape_source[q],
-                    int(flags[q]),
-                    int(sdf_index[q]),
-                )
-                for q in range(model._variant_shape_count)
-            ]
+            self._variant_shape_render = {}
+            self._variant_shape_render_args = (types, scales, margins, solids, flags, sdf_index)
             self._variant_shape_types = types
             rows = model._variant_row_shapes.numpy()
             self._variant_row_shapes = rows
@@ -3005,7 +3011,7 @@ class ViewerBase(ABC):
         uses_scale = np.empty(len(combos), dtype=bool)
         for c, combo in enumerate(combos.tolist()):
             q = combo // 4
-            geo_hash, mesh_name, flags, material, scaled = self._variant_shape_render[q]
+            geo_hash, mesh_name, flags, material, scaled = self._variant_shape_render_geometry(q)
             batch = self._shape_batch(
                 geo_hash, mesh_name, self._variant_shape_types[q], bool(combo & 2), flags, bool(combo & 1)
             )

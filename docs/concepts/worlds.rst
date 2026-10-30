@@ -467,12 +467,13 @@ properties to those of the body as built plus the variant. It returns the :class
 Variant ids are positions in the list passed to :meth:`~newton.ModelBuilder.add_body_variants`;
 they are the same in every world. Bodies copied with :meth:`~newton.ModelBuilder.add_builder` or
 :meth:`~newton.ModelBuilder.replicate` share their variants, which :meth:`~newton.ModelBuilder.finalize`
-stores once, so model memory grows with the number of rows, not with the catalog size.
+stores once: each variant shape is stored a single time, and each world only adds its rows, so
+model memory grows with the catalog size plus the rows of all worlds, not with their product.
 
 A row takes everything authored on the variant shape it holds: geometry, the collision data derived
-from it, flags, color, materials, and shape custom attributes. Apply domain randomization after
-selecting. A row keeps its label, world, collision group, filter pairs, and opacity, so the i-th
-colliders of all variants must share a collision group. Empty rows have
+from it, flags, color, opacity, materials, and model-assigned shape custom attributes. Apply domain
+randomization after selecting. A row keeps its label, world, collision group, and filter pairs, so
+the i-th colliders of all variants must share a collision group. Empty rows have
 their collision and visibility flags cleared. Shapes added to the body directly stay in place for
 every variant.
 
@@ -484,7 +485,8 @@ select. Current limitations:
   ``use_collision_detector=False``, and ``SolverImplicitMPM`` is unsupported. ``SolverMuJoCo``
   compiles one geom layout for all worlds, so construct it before selecting different variants per
   world. It follows per-world ``solref``, ``solimp``, ``solmix``, and friction after a selection, but
-  ``condim`` and ``priority`` stay as compiled.
+  ``condim`` and ``priority`` stay as compiled, all worlds use world 0's site sizes, spatial tendons
+  cannot wrap around variant shapes, and its MuJoCo viewer is unavailable.
 - Variant shapes cannot be planes, heightfields, Gaussians, or hydroelastic shapes.
 - :class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` follow selections after
   the next :meth:`~newton.Model.bvh_refit_shapes`. The deprecated ``SensorTiledCamera`` raises for

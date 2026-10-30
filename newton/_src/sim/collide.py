@@ -1838,10 +1838,14 @@ class CollisionPipeline:
                 broad_phase_instance = broad_phase
 
         shape_count = model.shape_count
-        shape_mesh_properties = getattr(model, "_shape_mesh_properties", None)
-        self._rigid_contact_surface_velocity = bool(
-            shape_mesh_properties is not None
-            and np.any(shape_mesh_properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
+        # A variant row can take a surface-velocity mesh after construction.
+        mesh_properties = (
+            getattr(model, "_shape_mesh_properties", None),
+            getattr(model, "_variant_shape_geometry", {}).get("_shape_mesh_properties"),
+        )
+        self._rigid_contact_surface_velocity = any(
+            properties is not None and np.any(properties.numpy() & int(MeshProperties.SURFACE_VELOCITY))
+            for properties in mesh_properties
         )
         self._contact_sort_shape_index_bits = contact_sort_shape_index_bits(shape_count)
         device = model.device
