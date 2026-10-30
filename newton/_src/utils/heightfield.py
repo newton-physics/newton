@@ -434,15 +434,12 @@ def get_triangle_shape_from_heightfield(
     return shape_data, v0_world
 
 
-_NARROW_PHASE_CORE_RADIUS = 1.0e-4
-"""Core radius [m] that the narrow phase substitutes for spheres and capsules before adding their radius.
+_CELL_REJECT_PADDING = wp.constant(2.0e-4)
+"""Absolute cell-rejection padding [m], a conservative margin.
 
-Mirrors ``small_radius`` in ``collision_core.py`` and ``narrow_phase.py``; their contacts can reach this far beyond
-the query AABB. Keep the values in sync.
+The narrow phase admits a contact only within the summed contact gap, which the query AABB already includes, so this
+padding only retains extra cells and never drops a contact the narrow phase admits.
 """
-
-_CELL_REJECT_SHELL_PADDING = wp.constant(2.0 * _NARROW_PHASE_CORE_RADIUS)
-"""Absolute cell-rejection padding [m] for the narrow-phase core shell: twice its radius, for margin."""
 
 _CELL_REJECT_ROUNDOFF = wp.constant(64.0 * 1.1920928955078125e-7)
 """Relative cell-rejection padding for float32 roundoff, per unit of the summed coordinate scale (64 ulp)."""
@@ -572,7 +569,7 @@ def heightfield_vs_convex_midphase(
     padding = float(0.0)
     can_reject = bool(False)
     if reject_cells:
-        # Retain the narrow-phase query shell, plus roundoff from world-coordinate
+        # Retain a conservative margin, plus roundoff from world-coordinate
         # cancellation, transformed extents and height reconstruction.
         scale = (
             1.0
@@ -586,7 +583,7 @@ def heightfield_vs_convex_midphase(
             + wp.abs(hfd.max_z - hfd.min_z)
             + wp.abs(contact_threshold)
         )
-        padding = _CELL_REJECT_SHELL_PADDING + _CELL_REJECT_ROUNDOFF * scale
+        padding = _CELL_REJECT_PADDING + _CELL_REJECT_ROUNDOFF * scale
         can_reject = wp.isfinite(aabb_lower[2]) and wp.isfinite(padding)
     for r in range(row_min, row_max + 1):
         for c in range(col_min, col_max + 1):

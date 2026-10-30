@@ -1,16 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Box Pyramid
-#
-# Builds pyramids of box-shaped cubes with a wrecking ball on a ramp
-# to stress-test narrow-phase contact generation.
-#
-# Command: python -m newton.examples pyramid
-# Kamino DVI: python -m newton.examples pyramid --solver kamino
-#
-###########################################################################
+"""Example Box Pyramid
+
+Builds pyramids of box-shaped cubes with a wrecking ball on a ramp
+to stress-test narrow-phase contact generation.
+
+Success criteria:
+- Box pyramids and a large sphere on a ramp appear; pyramid count and height match the selected
+  options.
+- The sphere rolls down the ramp and knocks boxes from the stacks.
+- Boxes respond through contact without explosive motion.
+
+Runs:
+- `python -m newton.examples pyramid --broad-phase nxn`
+- `python -m newton.examples pyramid --broad-phase sap --num-pyramids 5 --pyramid-size 40`
+- `python -m newton.examples pyramid --broad-phase explicit --num-pyramids 40 --pyramid-size 5`
+- `python -m newton.examples pyramid`
+- `python -m newton.examples pyramid --solver kamino`
+"""
 
 import numpy as np
 import warp as wp

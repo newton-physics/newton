@@ -178,6 +178,8 @@ class ViewerGL(ViewerBase):
         - Extensible logging of meshes, lines, points, and arrays for custom visualization.
     """
 
+    _supports_deformable_visual_meshes = True
+
     class CudaInterop(enum.IntFlag):
         """Render-geometry categories eligible for CUDA-OpenGL interoperability."""
 
@@ -185,10 +187,10 @@ class ViewerGL(ViewerBase):
         """Disable CUDA-OpenGL interoperability for render geometry."""
 
         DYNAMIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=True``."""
+        """Meshes logged with ``dynamic=True``. Either mesh flag also enables model-owned skinned meshes."""
 
         STATIC_MESH = enum.auto()
-        """Vertex and index buffers for meshes logged with ``dynamic=False``."""
+        """Meshes logged with ``dynamic=False``. Either mesh flag also enables model-owned skinned meshes."""
 
         POINTS = enum.auto()
         """Point instance-transform buffers."""
@@ -455,7 +457,9 @@ class ViewerGL(ViewerBase):
                 to hide all rotation rings.
             snap_to: Optional world transform with translation [m] and a
                 unitless rotation quaternion to apply when this gizmo is
-                released by the user.
+                released by the user. Cancelling a drag by removing its handle,
+                hiding the UI, pausing rendering, or losing window focus keeps
+                the current pose instead.
         """
         axis_order = (Axis.X, Axis.Y, Axis.Z)
 
@@ -635,15 +639,16 @@ class ViewerGL(ViewerBase):
                 )
                 batch.scales = out_scales
 
-        self.picking = Picking(model, world_offsets=self.world_offsets)
-        self.picking.visible_worlds_mask = self._visible_worlds_mask
-        self.wind = Wind(model)
-
+        self.picking = None
         if model is not None:
+            self.picking = Picking(
+                model, world_offsets=self.world_offsets, visible_worlds_mask=self._visible_worlds_mask
+            )
             try:
                 self.picking._load_kernels()
             except Exception:
                 pass
+        self.wind = Wind(model)
 
         # Build packed arrays for batched GPU rendering of shape instances
         self._build_packed_vbo_arrays()
@@ -912,6 +917,59 @@ class ViewerGL(ViewerBase):
             dynamic: Whether mesh topology may change between frames.
             opacity: Optional display opacity in [0, 1].
         """
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            normals,
+            uvs,
+            texture,
+            hidden,
+            backface_culling,
+            color,
+            roughness,
+            metallic,
+            dynamic,
+            opacity,
+        )
+
+    @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        existing = self.objects.get(name)
+        if hidden and existing is not None:
+            existing.hidden = True
+            return
+        # Skinning changes vertices, not topology. Keep indices fixed with either mesh interop flag.
+        self._log_mesh(
+            name,
+            points,
+            indices,
+            hidden=hidden,
+            reuse_texture=True,
+            cuda_interop_category=self.CudaInterop.DYNAMIC_MESH | self.CudaInterop.STATIC_MESH,
+            **kwargs,
+        )
+
+    def _log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+        dynamic=False,
+        opacity=None,
+        *,
+        reuse_texture=False,
+        cuda_interop_category: CudaInterop | None = None,
+    ):
         assert isinstance(points, wp.array)
         assert isinstance(indices, wp.array)
         assert normals is None or isinstance(normals, wp.array)
@@ -930,6 +988,8 @@ class ViewerGL(ViewerBase):
 
         updated = False
         if replace:
+            if cuda_interop_category is None:
+                cuda_interop_category = self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
             point_capacity = len(points)
             index_capacity = len(indices)
             if existing is not None and existing.dynamic and dynamic:
@@ -942,15 +1002,14 @@ class ViewerGL(ViewerBase):
                 hidden=hidden,
                 backface_culling=backface_culling,
                 dynamic=dynamic,
-                enable_cuda_interop=self._cuda_interop_enabled(
-                    self.CudaInterop.DYNAMIC_MESH if dynamic else self.CudaInterop.STATIC_MESH
-                ),
+                enable_cuda_interop=self._cuda_interop_enabled(cuda_interop_category),
             )
             if existing is not None:
                 replacement.color = existing.color
+                replacement._color_is_default = existing._color_is_default
                 replacement.material = existing.material
             try:
-                replacement.update(points, indices, normals, uvs, texture, opacity=opacity)
+                replacement.update(points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture)
             except Exception:
                 replacement.destroy()
                 raise
@@ -963,12 +1022,23 @@ class ViewerGL(ViewerBase):
                 existing.destroy()
 
         if not updated:
-            self.objects[name].update(points, indices, normals, uvs, texture, opacity=opacity)
+            self.objects[name].update(
+                points, indices, normals, uvs, texture, opacity=opacity, reuse_texture=reuse_texture
+            )
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
+        if reuse_texture:
+            # Model-owned visuals opt in without changing ordinary log_mesh materials.
+            mesh = self.objects[name]
+            r, m, c, _t = mesh.material
+            mesh.material = (r, m, c, 1.0 if mesh.texture_id else 0.0)
+            if mesh._color_is_default:
+                # Textures supply their own albedo; retain explicit tints across updates.
+                mesh.color = (1.0, 1.0, 1.0) if mesh.texture_id else MeshGL._DEFAULT_COLOR
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))
+            self.objects[name]._color_is_default = False
 
         if roughness is not None or metallic is not None:
             r, m, c, t = self.objects[name].material
@@ -1846,24 +1916,17 @@ class ViewerGL(ViewerBase):
             self.log_lines("picking_line", None, None, None)
             return
 
-        # Get the picked body index
-        pick_body_idx = self.picking.pick_body.numpy()[0]
-        if pick_body_idx < 0:
-            self.log_lines("picking_line", None, None, None)
-            return
-
+        pick_body_idx = self.picking.pick_body
         # Get the pick target and current picked point on geometry (in physics space)
-        pick_state = self.picking.pick_state.numpy()
-
-        pick_target = pick_state[0]["picking_target_world"]
-        picked_point = pick_state[0]["picked_point_world"]
+        pick_target = self.picking.pick_target
+        picked_point = self.picking.pick_point
 
         # Apply world offset to convert from physics space to visual space
         if self.world_offsets is not None and self.world_offsets.shape[0] > 0:
             if self.model.body_world is not None:
                 body_world_idx = self.model.body_world.numpy()[pick_body_idx]
                 if body_world_idx >= 0 and body_world_idx < self.world_offsets.shape[0]:
-                    world_offset = self.world_offsets.numpy()[body_world_idx]
+                    world_offset = wp.vec3(*self.world_offsets.numpy()[body_world_idx])
                     pick_target = pick_target + world_offset
                     picked_point = picked_point + world_offset
 
@@ -1912,7 +1975,7 @@ class ViewerGL(ViewerBase):
             state: The current simulation state.
         """
         if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
         if self.wind is not None:
             self.wind._apply_wind_force(state)
@@ -2274,7 +2337,9 @@ class ViewerGL(ViewerBase):
             scroll_x: Horizontal scroll delta.
             scroll_y: Vertical scroll delta.
         """
-        if self.gui:
+        # With ImGui, mouse input is routed during prepare_frame() so the
+        # camera and gizmos see the same processed events and hover state.
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_scroll(scroll_y, is_ctrl_down=self._is_ctrl_down())
 
     def _to_framebuffer_coords(self, x: float, y: float) -> tuple[float, float]:
@@ -2297,7 +2362,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_press(x, y, button, self._to_framebuffer_coords)
 
     def on_mouse_release(self, x: float, y: float, button: int, modifiers: int):
@@ -2310,7 +2375,7 @@ class ViewerGL(ViewerBase):
             button: Mouse button released.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_release(x, y, button)
 
     def on_mouse_drag(
@@ -2333,7 +2398,7 @@ class ViewerGL(ViewerBase):
             buttons: Mouse buttons pressed.
             modifiers: Modifier keys.
         """
-        if self.gui:
+        if self.gui and not self.gui.is_available:
             self.gui.handle_mouse_drag(x, y, dx, dy, buttons, self._to_framebuffer_coords, modifiers)
 
     def on_mouse_motion(self, x: float, y: float, dx: float, dy: float):
@@ -2446,13 +2511,13 @@ class ViewerGL(ViewerBase):
     def _ui_populate_rendering_panel(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""
         # Sky rendering
-        _changed, self.renderer.draw_sky = imgui.checkbox("Sky", self.renderer.draw_sky)
+        self._edit_display_option(self.renderer, "draw_sky", imgui.checkbox, "Sky")
 
         # Shadow rendering
-        _changed, self.renderer.draw_shadows = imgui.checkbox("Shadows", self.renderer.draw_shadows)
+        self._edit_display_option(self.renderer, "draw_shadows", imgui.checkbox, "Shadows")
 
         # Wireframe mode
-        _changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
+        self._edit_display_option(self.renderer, "draw_wireframe", imgui.checkbox, "Wireframe")
 
         def _edit_color3(label: str, color: tuple[float, float, float]) -> tuple[bool, tuple[float, float, float]]:
             """Normalize color_edit3 input/output across imgui_bundle versions."""
@@ -2464,11 +2529,11 @@ class ViewerGL(ViewerBase):
             return changed, (updated_color[0], updated_color[1], updated_color[2])
 
         # Light color
-        _changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
+        self._edit_display_option(self.renderer, "_light_color", _edit_color3, "Light Color")
         # Sky color
-        _changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
+        self._edit_display_option(self.renderer, "sky_upper", _edit_color3, "Sky Color")
         # Ground color
-        _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
+        self._edit_display_option(self.renderer, "sky_lower", _edit_color3, "Ground Color")
 
     def _ui_populate_layers_panel(self, imgui):
         """Top-level Layers panel — toggle visibility of overlaid solvers/models.

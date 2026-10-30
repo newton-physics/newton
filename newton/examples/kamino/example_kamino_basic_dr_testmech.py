@@ -1,14 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example for basic DR TestMech system
-#
-# Shows how to simulate DR TestMech with multiple worlds using SolverKamino.
-#
-# Command: python -m newton.examples kamino_basic_dr_testmech --world-count 16
-#
-###########################################################################
+"""Example for basic DR TestMech system
+
+Shows how to simulate DR TestMech with multiple worlds using SolverKamino.
+
+Success criteria:
+- A mechanism with multiple linked pieces moves back and forth.
+- Motion propagates through its joints and links without disconnection.
+
+Runs:
+- `python -m newton.examples kamino_basic_dr_testmech`
+- `python -m newton.examples kamino_basic_dr_testmech --world-count 16`
+"""
 
 import warp as wp
 

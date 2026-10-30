@@ -30,11 +30,13 @@ resolver types used by :meth:`newton.ModelBuilder.add_usd`.
    :toctree: _generated
    :signatures: long
 
+   find_deformable_visual_prims
    find_tetmesh_prims
    get_attribute
    get_attributes_in_namespace
    get_custom_attribute_declarations
    get_custom_attribute_values
+   get_deformable_bind_pose
    get_float
    get_gprim_axis
    get_mesh
