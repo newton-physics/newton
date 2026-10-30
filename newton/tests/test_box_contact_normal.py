@@ -449,6 +449,61 @@ add_function_test(
 )
 
 
+def test_capsule_box_edge_contact(test, device, *, split=False):
+    """Keep one capsule endpoint contact and preserve an overlapping segment."""
+    # Regression for #4756, resolved by the GJK convergence changes in #4771.
+    for center_x, expected_x in ((-0.075, [-0.05]), (-0.025, [-0.05, 0.0])):
+        with test.subTest(center_x=center_x):
+            builder = newton.ModelBuilder()
+            rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.5 * wp.pi)
+            builder.add_shape_capsule(
+                -1,
+                xform=wp.transform((center_x, 0.0, 0.012), rotation),
+                radius=0.012,
+                half_height=0.025,
+            )
+            box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.074 - 1.0e-5), wp.quat_identity()))
+            box_shape = builder.add_shape_box(box, hx=0.05, hy=0.08, hz=0.05)
+            model = builder.finalize(device)
+            pipeline = newton.CollisionPipeline(model)
+            test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertEqual(count, len(expected_x))
+            shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+            point0 = contacts.rigid_contact_point0.numpy()[:count]
+            point1 = contacts.rigid_contact_point1.numpy()[:count]
+            box_points = np.where((shape0 == box_shape)[:, None], point0, point1)
+            np.testing.assert_allclose(np.sort(box_points[:, 0]), expected_x, atol=1.0e-5, rtol=0.0)
+            np.testing.assert_allclose(box_points[:, 1], 0.0, atol=1.0e-5, rtol=0.0)
+            np.testing.assert_allclose(box_points[:, 2], -0.05, atol=1.0e-5, rtol=0.0)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_capsule_box_edge_contact",
+    test_capsule_box_edge_contact,
+    devices=get_test_devices(),
+)
+
+
+def test_capsule_box_edge_contact_split(test, device):
+    """Check capsule endpoint and segment contacts through the split CUDA kernels."""
+    if not device.is_cuda:
+        test.skipTest("Split collision kernels run only on CUDA")
+    with patch("newton._src.sim.collide._SPLIT_GJK_MPR_FULL_PAIR_COUNT_THRESHOLD", 0):
+        test_capsule_box_edge_contact(test, device, split=True)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_capsule_box_edge_contact_split",
+    test_capsule_box_edge_contact_split,
+    devices=get_test_devices(),
+)
+
+
 def test_capsule_cylinder_tangent_contact(test, device, *, split=False):
     """Use a single contact where a capsule is tangent to a straight cylinder's side."""
     rotations = (wp.quat_identity(), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, 3.0)), 0.7))
