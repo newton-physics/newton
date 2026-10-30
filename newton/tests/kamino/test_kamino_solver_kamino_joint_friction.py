@@ -15,6 +15,7 @@ from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm import mak
 from newton._src.solvers.kamino._src.solvers.dvi.response import make_response_kernel
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino.utils.make import force_row_storage
 from newton.tests.kamino.utils.solver_configs import (
     KAMINO_CONFIGS,
     PADMM_CONFIG_NAMES,
@@ -299,8 +300,19 @@ class TestSolverKaminoJointFriction(unittest.TestCase):
         """Preserve analytical friction when reusing a forward-solved RHS."""
         self._check_compact_schur_friction(response_kernel, omega=1.0, max_iterations=8, joint_counts=(137,))
         if wp.get_device(test_context.device).is_cuda:
-            self.assertIn(mock.call(32, False), solve_kernel.call_args_list)
-            self.assertIn(mock.call(32, True, False), solve_kernel.call_args_list)
+            self.assertIn(mock.call(32, False, array_ndim=1), solve_kernel.call_args_list)
+            self.assertIn(mock.call(32, True, False, array_ndim=1), solve_kernel.call_args_list)
+
+    @mock.patch(
+        "newton._src.solvers.kamino._src.solvers.dvi.sparse.make_response_kernel",
+        wraps=make_response_kernel,
+    )
+    def test_compact_schur_friction_row_storage(self, response_kernel):
+        """Preserve analytical friction when every dense matrix uses one row per world."""
+        with force_row_storage():
+            self._check_compact_schur_friction(response_kernel, omega=1.0, max_iterations=8)
+        if wp.get_device(test_context.device).is_cuda:
+            self.assertTrue(all(call.args[1] == 2 for call in response_kernel.call_args_list))
 
     def _check_compact_schur_friction(self, response_kernel, omega, max_iterations, joint_counts=(137, 9)):
         """Preserve spin-down, sticking, and reversals across ragged friction strengths."""

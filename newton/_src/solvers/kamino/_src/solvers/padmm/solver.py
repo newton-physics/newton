@@ -36,7 +36,6 @@ from .kernels import (
     _project_to_feasible_cone,
     _reset_solver_data,
     _scale_warmstart_forces,
-    _update_delassus_proximal_regularization,
     _update_delassus_proximal_regularization_sparse,
     _warmstart_contact_constraints,
     _warmstart_desaxce_correction,
@@ -46,6 +45,7 @@ from .kernels import (
     make_collect_solver_info_kernel_sparse,
     make_desaxce_correction_and_velocity_bias_kernel,
     make_initialize_solver_kernel,
+    make_update_delassus_proximal_regularization_kernel,
     make_update_dual_variables_and_compute_primal_dual_residuals,
 )
 from .types import (
@@ -551,7 +551,7 @@ class PADMMSolver:
         else:
             # Update the proximal regularization term in the Delassus matrix
             wp.launch(
-                kernel=_update_delassus_proximal_regularization,
+                kernel=make_update_delassus_proximal_regularization_kernel(problem.data.D.ndim),
                 dim=(self._size.num_worlds, self._size.max_of_max_total_cts),
                 inputs=[
                     # Inputs:
@@ -1344,7 +1344,7 @@ class PADMMSolver:
             )
         else:
             wp.launch(
-                kernel=self._collect_solver_info_kernel,
+                kernel=make_collect_solver_info_kernel(self._use_acceleration, problem.data.D.ndim),
                 dim=self._size.num_worlds,
                 inputs=[
                     # Inputs:

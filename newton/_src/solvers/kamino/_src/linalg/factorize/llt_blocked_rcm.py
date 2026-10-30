@@ -114,7 +114,7 @@ def make_llt_blocked_rcm_permute_vector_kernel(max_dim: int):
 
 
 @cache
-def make_llt_blocked_rcm_fused_permute_and_tp_kernel(block_size: int, max_dim: int):
+def make_llt_blocked_rcm_fused_permute_and_tp_kernel(block_size: int, max_dim: int, array_ndim: int = 1):
     """Fused kernel: builds ``inv_P``, permutes ``A -> A_hat``, and reduces
     ``|A_hat|`` into the tile pattern in a single launch.
 
@@ -134,6 +134,7 @@ def make_llt_blocked_rcm_fused_permute_and_tp_kernel(block_size: int, max_dim: i
     contribution is an atomic OR, not an overwrite). ``max_dim`` is baked in
     for the cache key.
     """
+    MatrixType = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
     del max_dim
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
@@ -145,12 +146,14 @@ def make_llt_blocked_rcm_fused_permute_and_tp_kernel(block_size: int, max_dim: i
         tpo: wp.array[wp.int32],
         tol: float,
         P: wp.array[wp.int32],
-        A: wp.array[wp.float32],
-        A_hat: wp.array[wp.float32],
+        A: MatrixType,
+        A_hat: MatrixType,
         inv_P: wp.array[wp.int32],
         tile_pattern: wp.array[wp.int32],
     ):
         b, triangular_index = wp.tid()
+        A_world = A[b] if wp.static(MatrixType.ndim == 2) else A
+        A_hat_world = A_hat[b] if wp.static(MatrixType.ndim == 2) else A_hat
         n_i = dim[b]
         triangular_size = n_i * (n_i + 1) // 2
         if triangular_index >= triangular_size:
@@ -181,8 +184,8 @@ def make_llt_blocked_rcm_fused_permute_and_tp_kernel(block_size: int, max_dim: i
 
         # 2. Permuted value.
         stride = ld[b]
-        v = A[mat_off + p_r * stride + p_c]
-        A_hat[mat_off + r * stride + c] = v
+        v = A_world[mat_off + p_r * stride + p_c]
+        A_hat_world[mat_off + r * stride + c] = v
 
         # 3. Tile-pattern OR (via atomic_max on 0/1).
         av = v
@@ -277,7 +280,7 @@ def make_llt_blocked_rcm_symbolic_fill_in_kernel(max_n_tiles: int):
 
 
 @cache
-def make_llt_blocked_rcm_factorize_kernel(block_size: int):
+def make_llt_blocked_rcm_factorize_kernel(block_size: int, array_ndim: int = 1):
     """Clone of :func:`llt_blocked.make_llt_blocked_factorize_kernel` with tile
     skipping. Reads tile pattern from ``tile_pattern`` indexed by ``tpo[tid]``.
 
@@ -286,6 +289,7 @@ def make_llt_blocked_rcm_factorize_kernel(block_size: int):
     to contribute; the destination tile is also skipped if its pattern slot
     is zero. Skipped output tiles are cleared for dense factor consumers.
     """
+    MatrixType = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_rcm_factorize_kernel(
@@ -294,21 +298,23 @@ def make_llt_blocked_rcm_factorize_kernel(block_size: int):
         ld: wp.array[wp.int32],
         mio: wp.array[wp.int32],
         tpo: wp.array[wp.int32],
-        A: wp.array[wp.float32],
+        A: MatrixType,
         tile_pattern: wp.array[wp.int32],
         clear_skipped: bool,
         # Outputs:
-        L: wp.array[wp.float32],
+        L: MatrixType,
     ):
         tid, tid_block = wp.tid()
+        A_world = A[tid] if wp.static(MatrixType.ndim == 2) else A
+        L_world = L[tid] if wp.static(MatrixType.ndim == 2) else L
         num_threads_per_block = wp.block_dim()
 
         n_i = dim[tid]
         A_i_start = mio[tid]
         tp_i_start = tpo[tid]
 
-        A_i_ptr = get_float32_array_offset_ptr(A, A_i_start)
-        L_i_ptr = get_float32_array_offset_ptr(L, A_i_start)
+        A_i_ptr = get_float32_array_offset_ptr(A_world, A_i_start)
+        L_i_ptr = get_float32_array_offset_ptr(L_world, A_i_start)
         tp_i_ptr = get_int32_array_offset_ptr(tile_pattern, tp_i_start)
 
         n_i_padded = ((n_i + block_size - 1) // block_size) * block_size
@@ -411,7 +417,7 @@ def make_llt_blocked_rcm_factorize_kernel(block_size: int):
 
 
 @cache
-def make_llt_blocked_rcm_parallel_factorize_kernels(block_size: int):
+def make_llt_blocked_rcm_parallel_factorize_kernels(block_size: int, array_ndim: int = 1):
     """Create diagonal, panel, and fused panel Cholesky kernels from one body.
 
     The fused kernel recomputes the diagonal in each panel block, avoiding a
@@ -419,6 +425,7 @@ def make_llt_blocked_rcm_parallel_factorize_kernels(block_size: int):
     separate diagonal and panel launches to avoid that redundant work.
     The input matrix and output factor must use separate buffers.
     """
+    MatrixType = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
     def make_kernel(diagonal_only: bool, fused: bool):
         @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
@@ -428,12 +435,14 @@ def make_llt_blocked_rcm_parallel_factorize_kernels(block_size: int):
             ld: wp.array[wp.int32],
             mio: wp.array[wp.int32],
             tpo: wp.array[wp.int32],
-            A: wp.array[wp.float32],
+            A: MatrixType,
             tile_pattern: wp.array[wp.int32],
             clear_skipped: bool,
-            L: wp.array[wp.float32],
+            L: MatrixType,
         ):
             bid, panel_tile_i, tid_block = wp.tid()
+            A_world = A[bid] if wp.static(MatrixType.ndim == 2) else A
+            L_world = L[bid] if wp.static(MatrixType.ndim == 2) else L
             if wp.static(diagonal_only):
                 tile_i = tile_k
             else:
@@ -449,8 +458,12 @@ def make_llt_blocked_rcm_parallel_factorize_kernels(block_size: int):
             mat_offset = mio[bid]
             pattern_offset = tpo[bid]
             stride = ld[bid]
-            A_i = wp.array(ptr=get_float32_array_offset_ptr(A, mat_offset), shape=(stride, stride), dtype=wp.float32)
-            L_i = wp.array(ptr=get_float32_array_offset_ptr(L, mat_offset), shape=(stride, stride), dtype=wp.float32)
+            A_i = wp.array(
+                ptr=get_float32_array_offset_ptr(A_world, mat_offset), shape=(stride, stride), dtype=wp.float32
+            )
+            L_i = wp.array(
+                ptr=get_float32_array_offset_ptr(L_world, mat_offset), shape=(stride, stride), dtype=wp.float32
+            )
             TP_i = wp.array(
                 ptr=get_int32_array_offset_ptr(tile_pattern, pattern_offset),
                 shape=(n_tiles, n_tiles),
@@ -531,7 +544,7 @@ def make_llt_blocked_rcm_parallel_factorize_kernels(block_size: int):
 
 @cache
 def make_llt_blocked_rcm_solve_kernel(
-    block_size: int, forward_substitution: bool = True, backward_substitution: bool = True
+    block_size: int, forward_substitution: bool = True, backward_substitution: bool = True, array_ndim: int = 1
 ):
     """RCM solve with tile skipping and fused output un-permutation.
 
@@ -542,6 +555,7 @@ def make_llt_blocked_rcm_solve_kernel(
     ``L^-1 P b``; the kernel only performs backward substitution.
     With ``backward_substitution=False``, only ``y`` is written.
     """
+    MatrixType = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_rcm_solve_kernel(
@@ -552,7 +566,7 @@ def make_llt_blocked_rcm_solve_kernel(
         vio: wp.array[wp.int32],
         tpo: wp.array[wp.int32],
         P: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L: MatrixType,
         tile_pattern: wp.array[wp.int32],
         b: wp.array[wp.float32],
         # Outputs:
@@ -561,6 +575,7 @@ def make_llt_blocked_rcm_solve_kernel(
         x: wp.array[wp.float32],
     ):
         tid, tid_block = wp.tid()
+        L_world = L[tid] if wp.static(MatrixType.ndim == 2) else L
         num_threads_per_block = wp.block_dim()
 
         n_i = dim[tid]
@@ -568,7 +583,7 @@ def make_llt_blocked_rcm_solve_kernel(
         v_i_start = vio[tid]
         tp_i_start = tpo[tid]
 
-        L_i_ptr = get_float32_array_offset_ptr(L, L_i_start)
+        L_i_ptr = get_float32_array_offset_ptr(L_world, L_i_start)
         b_i_ptr = get_float32_array_offset_ptr(b, v_i_start)
         y_i_ptr = get_float32_array_offset_ptr(y, v_i_start)
         x_hat_i_ptr = get_float32_array_offset_ptr(x_hat, v_i_start)
@@ -659,12 +674,13 @@ def make_llt_blocked_rcm_solve_kernel(
 
 
 @cache
-def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
+def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int, array_ndim: int = 1):
     """Clone of :func:`llt_blocked.make_llt_blocked_solve_inplace_kernel` with tile skipping.
 
     Takes ``x`` as in/out; forward substitution reads from ``x`` (as b) and
     writes ``y``, backward substitution reads ``y`` and writes ``x``.
     """
+    MatrixType = wp.array[wp.float32] if array_ndim == 1 else wp.array2d[wp.float32]
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_rcm_solve_inplace_kernel(
@@ -674,13 +690,14 @@ def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
         mio: wp.array[wp.int32],
         vio: wp.array[wp.int32],
         tpo: wp.array[wp.int32],
-        L: wp.array[wp.float32],
+        L: MatrixType,
         tile_pattern: wp.array[wp.int32],
         # Outputs:
         y: wp.array[wp.float32],
         x: wp.array[wp.float32],
     ):
         tid, tid_block = wp.tid()
+        L_world = L[tid] if wp.static(MatrixType.ndim == 2) else L
         num_threads_per_block = wp.block_dim()
 
         n_i = dim[tid]
@@ -688,7 +705,7 @@ def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
         v_i_start = vio[tid]
         tp_i_start = tpo[tid]
 
-        L_i_ptr = get_float32_array_offset_ptr(L, L_i_start)
+        L_i_ptr = get_float32_array_offset_ptr(L_world, L_i_start)
         y_i_ptr = get_float32_array_offset_ptr(y, v_i_start)
         x_i_ptr = get_float32_array_offset_ptr(x, v_i_start)
         tp_i_ptr = get_int32_array_offset_ptr(tile_pattern, tp_i_start)
