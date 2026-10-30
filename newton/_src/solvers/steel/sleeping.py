@@ -113,6 +113,7 @@ class _SleepState:
         )
         self.changed = wp.zeros(count, dtype=int, device=device)
         self.asleep_steps = wp.zeros(count, dtype=int, device=device)
+        self.shared_boundaries = wp.zeros(model.body_count, dtype=int, device=device)
         self.frozen_bodies = wp.zeros(model.body_count, dtype=int, device=device)
         shape_art = np.full(model.shape_count, -1, dtype=np.int32)
         shape_body = model.shape_body.numpy()
@@ -167,6 +168,22 @@ class _SleepState:
             device=device,
         )
         # The masked counterpart of valid=0, except for contact boundaries that unselected entries also read.
+        self.shared_boundaries.zero_()
+        wp.launch(
+            _mark_shared_boundaries,
+            self.model.shape_count,
+            [
+                world_mask,
+                world_count,
+                self.model.shape_body,
+                self.model.shape_world,
+                self.body_nodes,
+                self.model.body_flags,
+                self.global_islands,
+                self.shared_boundaries,
+            ],
+            device=device,
+        )
         wp.launch(
             _restart_world_body_history,
             self.model.body_count,
@@ -177,6 +194,7 @@ class _SleepState:
                 self.body_nodes,
                 self.model.body_flags,
                 self.global_islands,
+                self.shared_boundaries,
                 state.body_q,
                 state.body_qd,
                 self.last_body_q,
@@ -653,6 +671,27 @@ def _wake_worlds(
 
 
 @wp.kernel(enable_backward=False)
+def _mark_shared_boundaries(
+    mask: wp.array[wp.bool],
+    world_count: int,
+    shape_body: wp.array[int],
+    shape_world: wp.array[int],
+    nodes: wp.array[int],
+    flags: wp.array[int],
+    global_islands: int,
+    shared: wp.array[int],
+):
+    i = wp.tid()
+    body = shape_body[i]
+    if body < 0 or _node(body, nodes, flags) >= 0:
+        return
+    # A shape is visible to its own world and the global islands, or to every entry when it is global.
+    w = shape_world[i]
+    if w < 0 or not mask[w] or (global_islands != 0 and not mask[world_count]):
+        shared[body] = 1
+
+
+@wp.kernel(enable_backward=False)
 def _restart_world_body_history(
     mask: wp.array[wp.bool],
     world_count: int,
@@ -660,6 +699,7 @@ def _restart_world_body_history(
     nodes: wp.array[int],
     flags: wp.array[int],
     global_islands: int,
+    shared: wp.array[int],
     q: wp.array[wp.transform],
     qd: wp.array[wp.spatial_vector],
     last_q: wp.array[wp.transform],
@@ -669,9 +709,9 @@ def _restart_world_body_history(
     w = body_world[i]
     if not reset_world_selected(w, mask, world_count):
         return
-    # A contact boundary's history also shows its moves to other entries' islands: every world's for a global
-    # boundary, the global islands' for a world boundary. Keep it unless those entries are selected too.
-    if _node(i, nodes, flags) < 0 and (w < 0 or (global_islands != 0 and not mask[world_count])):
+    # A contact boundary's history also shows its moves to the islands that can touch it: every world's through a
+    # global body or shape, else its shapes' worlds and the global islands. Keep it while any of those is unselected.
+    if _node(i, nodes, flags) < 0 and (w < 0 or shared[i] != 0 or (global_islands != 0 and not mask[world_count])):
         return
     last_q[i] = q[i]
     last_qd[i] = qd[i]
