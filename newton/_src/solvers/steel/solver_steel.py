@@ -1926,7 +1926,9 @@ class SolverSteel(SolverBase, CouplingInterface):
                 free-body contacts (Le Lidec and Carpentier, 2024). ``"coulomb_newton"`` solves
                 each free-body contact's Coulomb cone exactly with a bracketed scalar Newton
                 iteration on the tangential-force ratio; articulated contacts keep the
-                ``"fixed_normal"`` update. The other modes use point friction: an omitted
+                ``"fixed_normal"`` update. The other modes replace each contact's normal and
+                friction impulses with their coupled solution, which ``relaxation`` does not
+                scale, and use point friction: an omitted
                 ``friction_anchor_beta`` selects it with a warning, and friction patches,
                 contact torsion, contact compliance, ``contact_regularization`` and
                 ``articulated_contact_response="propagation"`` require ``"fixed_normal"``. The
