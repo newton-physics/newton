@@ -3535,15 +3535,15 @@ def _run_mixed_response(
 class TestSteelJointlessKinematicBody(unittest.TestCase):
     PRESCRIBED_QD = (0.3, -0.2, 0.0, 0.0, 0.0, 0.5)
 
-    def _published(self, response, capture):
+    def _published(self, device, capture=False, **solver_options):
         """Step a free box on a jointless kinematic floor and return the floor's state in both buffers."""
         builder = newton.ModelBuilder()
         floor = builder.add_link(is_kinematic=True)
         builder.add_shape_box(floor, hx=0.5, hy=0.5, hz=0.02, xform=wp.transform(wp.vec3(0.0, 0.0, -0.02)))
         box = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.021)))
         builder.add_shape_box(box, hx=0.02, hy=0.02, hz=0.02)
-        model = builder.finalize(device=wp.get_cuda_device())
-        solver = SolverSteel(model, articulated_contact_response=response)
+        model = builder.finalize(device=device)
+        solver = SolverSteel(model, **solver_options)
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()
         states = (model.state(), model.state())
@@ -3581,10 +3581,20 @@ class TestSteelJointlessKinematicBody(unittest.TestCase):
         for response in ("immediate", "propagation"):
             for capture in (False, True):
                 with self.subTest(response=response, capture=capture):
-                    prescribed_q, published = self._published(response, capture)
-                    for body_q, body_qd in published:
-                        np.testing.assert_array_equal(body_q, prescribed_q)
-                        np.testing.assert_array_equal(body_qd, np.array(self.PRESCRIBED_QD, dtype=np.float32))
+                    prescribed_q, published = self._published(
+                        wp.get_cuda_device(), capture, articulated_contact_response=response
+                    )
+                    self._assert_prescribed(prescribed_q, published)
+
+    def test_jointless_kinematic_body_publishes_its_prescribed_state_split_cpu(self):
+        """Pass a jointless kinematic body's input pose and velocity through split steps beside a free body."""
+        self._assert_prescribed(*self._published("cpu", solve_mode="split"))
+
+    def _assert_prescribed(self, prescribed_q, published):
+        """Assert that every published buffer holds the prescribed pose and velocity."""
+        for body_q, body_qd in published:
+            np.testing.assert_array_equal(body_q, prescribed_q)
+            np.testing.assert_array_equal(body_qd, np.array(self.PRESCRIBED_QD, dtype=np.float32))
 
     def test_model_without_joints_publishes_its_prescribed_state(self):
         """Pass a jointless kinematic body's state through a step of a model that has no joints."""
