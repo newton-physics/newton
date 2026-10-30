@@ -225,7 +225,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``joint_limit_activation_gap``, ``enable_joint_friction``,
        ``enable_joint_velocity_limits``, ``velocity_limit_activation_fraction``,
        ``articulation_constraint_max``, ``free_body_constraint_max``,
-       ``warn_constraint_overflow``, ``drive_mode``,
+       ``propagation_constraint_max``, ``warn_constraint_overflow``, ``drive_mode``,
        ``fuse_joint_velocity_limits``, ``enable_bilateral_preelimination``,
        ``bilateral_preelimination_include_mimics``, ``friction_anchor_beta``,
        ``contact_regularization``, ``velocity_iterations``,
@@ -239,6 +239,7 @@ repository examples spend tuning effort, not a shared solver API.
        ``sleep_quiet_time``, ``sleep_skip_constraints``,
        ``articulated_contact_response``, ``propagation_same_articulation_rows``,
        ``propagation_cached_response``, ``propagation_cached_response_body_max``,
+       ``propagation_color_order``,
        ``contact_shared_anchor``, ``contact_friction_shared_anchor``,
        ``row_watermark``, ``row_schedule``, ``use_parallel_streams``,
        ``double_buffer``, ``friction_mode``.
@@ -254,7 +255,14 @@ repository examples spend tuning effort, not a shared solver API.
        Joint limits are enforced only with ``enable_joint_limits=True`` (off by
        default). Joint friction (:attr:`~newton.Model.joint_friction`, for
        example from MJCF ``frictionloss``) is enforced only with
-       ``enable_joint_friction=True`` (off by default). Contacts and joint limits are hard
+       ``enable_joint_friction=True`` (off by default). A positive per-DOF
+       ``steel:joint_friction_load_coefficient`` adds the joint friction law of
+       PhysX articulations before PhysX 5.6, a bound that grows with the force
+       and torque the joint transmits.
+       The solver sets up this load term only if some coefficient is positive
+       at construction; to randomize coefficients after construction, make at
+       least one positive before creating the solver.
+       Contacts and joint limits are hard
        constraints solved by projected Gauss-Seidel, so contact ``ke`` / ``kd``
        are not used; more ``iterations`` reduce residual penetration and
        slip, and ``baumgarte`` sets how much position error is corrected per
@@ -286,7 +294,8 @@ repository examples spend tuning effort, not a shared solver API.
        drive gains stable at ordinary ``dt``; ``drive_mode="rows"`` solves
        them as PGS rows together with contacts and limits instead, and each
        driven DOF then uses one row of ``articulation_constraint_max``. Rows beyond ``articulation_constraint_max``
-       (articulated bodies) or ``free_body_constraint_max`` (free bodies) per world
+       (articulated bodies), ``free_body_constraint_max`` (free bodies) or
+       ``propagation_constraint_max`` (propagation rows, see below) per world
        are dropped and flagged in ``constraint_overflow`` (one entry per world
        and a final entry for global articulations); call
        ``check_constraint_capacity()`` at an observation boundary, and raise the
@@ -323,15 +332,27 @@ repository examples spend tuning effort, not a shared solver API.
        selects how contacts of articulated bodies are solved: ``"immediate"`` rows of
        the generalized coordinates, or the matrix-free ``"propagation"`` responses,
        which solve them as body-space rows and propagate their impulses through each
-       articulation tree. In ``"propagation"`` and ``"propagation_colored"`` every
-       contact row, free bodies included, shares one family of ``free_body_constraint_max +
-       articulation_constraint_max`` rows per world; ``"propagation_colored"`` sweeps them in
-       parallel batches of contacts that share no responding body, which pays off on
-       scenes with many contacts per world. ``propagation_cached_response`` replaces the
-       per-iteration tree walk with cached per-body responses (on by default); which is
-       faster depends on the model. The propagation responses reject contact torsion,
-       contact compliance, sleeping and loop-closing joints, and fall back from bilateral
-       pre-elimination to iterative mimic rows with a warning.
+       articulation tree. In ``"propagation"`` and ``"propagation_colored"`` contact
+       rows, free bodies included, share one family of ``free_body_constraint_max +
+       articulation_constraint_max`` rows per world, or of ``propagation_constraint_max`` rows
+       when that is set. Contacts between two links of one articulation stay dense rows of
+       ``articulation_constraint_max`` unless ``propagation_same_articulation_rows`` is set,
+       which only ``"propagation"`` accepts.
+       Setting ``propagation_constraint_max`` lets ``free_body_constraint_max`` shrink to the
+       free-body velocity-limit rows, the only free-body rows these responses keep.
+       ``"propagation_colored"`` sweeps the propagation rows in parallel batches of contacts
+       that share no responding body, which pays off on scenes with many contacts per world.
+       ``propagation_cached_response`` replaces the per-iteration tree walk with cached
+       per-body responses (on by default); which is faster depends on the model.
+       ``propagation_color_order="longest_first"`` colors contacts with more rows first, which
+       shortens the ``"propagation_colored"`` sweep when one body carries contacts with
+       different row counts. The saving shrinks as the world count grows, and the changed
+       order can converge more slowly on stacks at a fixed iteration count, so measure the
+       full step at the target world count before switching. ``"propagation"`` solves contact
+       torsion with ``contact_torsion_device=True`` and ``velocity_iterations=0``;
+       ``"propagation_colored"`` rejects it. The propagation responses reject contact compliance,
+       sleeping and loop-closing joints, and fall back from bilateral pre-elimination to iterative
+       mimic rows with a warning.
        ``use_parallel_streams`` overlaps the work of articulation-size groups and
        ``double_buffer`` clears a step's buffers on a side stream, without changing
        results; measure the full step before relying on them.
