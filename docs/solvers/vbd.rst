@@ -180,24 +180,31 @@ Each energy term depends on a few blocks and on model parameters:
      - ``k_mu``, ``k_lambda``, ``k_damp``
      - ``evaluate_volumetric_neo_hookean_force_and_hessian``
    * - Self-contact, with friction and damping
-     - a vertex and a triangle, or two edges
-     - ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``
+     - a vertex and a triangle, or two edges, of one particle system
+     - ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``,
+       ``particle_self_contact_margin``
      - ``evaluate_self_contact_force_norm``, ``compute_friction``, ``damp_collision``
    * - Rigid-soft contact, with friction and damping
-     - a particle, edge or face and one body or static shape
-     - ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu``, averaged
+     - a particle, or a point on a soft edge or face, and one shape
+     - ``soft_contact_ke``, ``soft_contact_kd``, ``soft_contact_mu`` averaged
        with the shape ``ke``, ``kd``, ``mu``; ``particle_radius`` and the shape
        ``margin``
-     - ``init_body_particle_contacts``, ``_compute_body_particle_contact_force``
+     - ``_compute_body_particle_contact_force``,
+       ``compute_projected_isotropic_friction``
+   * - Body-body contact, with friction and damping
+     - two shapes, on two rigid bodies or on a rigid body and a static shape
+     - shape ``ke``, ``kd``, ``mu`` averaged over the pair; shape radius and
+       ``margin``
+     - ``evaluate_rigid_contact_from_collision``, ``_compliant_contact_dual_step``
    * - Attachments and springs
      - a particle and a body, or two particles
      - attachment and spring stiffness and damping
      - ``accumulate_body_particle_attachment_force_and_hessian``,
        ``accumulate_spring_force_and_hessian``
-   * - Joints and body-body contacts
+   * - Joints, drives and limits
      - one or two bodies
-     - joint stiffness and damping, shape materials
-     - compliant augmented-Lagrangian rows; see :doc:`VBD </solvers/vbd>`
+     - joint stiffness and damping
+     - compliant augmented-Lagrangian rows, ``update_duals_joint``
 
 **Elasticity** is three terms. The membrane term resists stretch and shear of a
 triangle. With :math:`\mathbf{F}` the in-plane deformation gradient,
@@ -238,38 +245,147 @@ like ``tri_kd``. In both Neo-Hookean terms the user values are
 Lamé parameters; the kernels convert them to the Neo-Hookean parameters, which
 is why :math:`\lambda_{\text{NH}}` carries the extra :math:`\mu`.
 
-**Contact** is a penalty on the distance :math:`d` between the two primitives of
-a pair, acting inside the interaction distance :math:`r`:
+**Contact** is three different terms, one per contact kind. They share the
+friction smoothing length :math:`\epsilon_u = \texttt{friction\_epsilon}\, h`
+and nothing else: each kind has its own distance, its own stiffness and its
+own law.
+
+*Self-contact* acts between a vertex and a triangle, or between two edges, of
+one particle system (``accumulate_self_contact_force_and_hessian``). The
+distance :math:`d` is the closest-point distance of the pair, the interaction
+distance is :math:`r = \texttt{particle\_self\_contact\_margin}` and the
+stiffness is :math:`k = \texttt{soft\_contact\_ke}`. The energy
+(``evaluate_self_contact_force_norm``) is a quadratic penalty that turns into
+a logarithmic barrier at half the interaction distance:
 
 .. math::
 
-   E_{\text{c}} = \frac{k}{2}\,(r - d)^2 \quad \text{for } \tfrac{r}{2} \le d < r,
+   E_{\text{sc}}(d) =
+   \begin{cases}
+   \tfrac{k}{2}\,(r - d)^2 & \tfrac{r}{2} \le d < r,\\[3pt]
+   -k\,(\tfrac{r}{2})^2 \ln d + \text{const} & d_{\min} < d < \tfrac{r}{2},\\[3pt]
+   \text{second-order expansion of the barrier at } d_{\min} & d \le d_{\min},
+   \end{cases}
+   \qquad d_{\min} = \min(10\,\mu\text{m},\ \tfrac{r}{4}).
 
-with :math:`k = \texttt{soft\_contact\_ke}`. For self-contact the law switches
-to a logarithmic barrier below :math:`d = r/2`, with gradient
-:math:`-k\,(r/2)^2 / d`, and to a quadratic extension below 10 micrometres, so
-two surfaces never cross. For rigid-soft contact :math:`r` is ``particle_radius``
-plus the shape ``margin``, :math:`k` is the mean of ``soft_contact_ke`` and the
-shape ``ke``, and the law stays quadratic unless
-``rigid_soft_contact_use_log_barrier`` is set. **Friction** follows the IPC
-form, :math:`\mathbf{f} = -\mu_f\, f_n\, \mathbf{T}\, f_1(\lVert\mathbf{u}\rVert)\,
-\hat{\mathbf{u}}`, where :math:`f_n` is the normal force, :math:`\mathbf{u}` the
-tangential displacement over the step, and :math:`f_1(x) = 2x/\epsilon_u - x^2/\epsilon_u^2`
-ramps smoothly to one at the smoothing length :math:`\epsilon_u = \texttt{friction\_epsilon}\, h`
-and stays one beyond it; the contact normal is held fixed inside the block
-solve. **Contact damping** acts on the gap rate
-:math:`\dot d`, only while the gap closes: :math:`\mathbf{f}_d = -\texttt{soft\_contact\_kd}\;
-\dot d\,\mathbf{n}`. For rigid-soft contact the friction coefficient is the
-geometric mean of ``soft_contact_mu`` and the shape ``mu``, and the damping the
-mean of the two ``kd`` values.
+The gradient in the barrier region is :math:`-k\,(r/2)^2/d`, so the force
+grows like :math:`1/d` as the gap closes; below :math:`d_{\min}` it continues
+linearly, so the force stays finite. The pair force is distributed to the
+four vertices by the barycentric weights of the two closest points. Friction
+follows the IPC form (``compute_friction``). With :math:`f_n = -\partial
+E_{\text{sc}}/\partial d` the normal force, :math:`\mathbf{u}` the tangential
+relative displacement of the two closest points over the step and
+:math:`\mathbf{T}` the tangent basis,
+
+.. math::
+
+   \mathbf{f}_{\text{fr}} = -\mu\, f_n\, \mathbf{T}\,
+   \frac{f_1(\lVert\mathbf{u}\rVert)}{\lVert\mathbf{u}\rVert}\,\mathbf{u},
+   \qquad
+   f_1(x) = \begin{cases} 2x/\epsilon_u - x^2/\epsilon_u^2 & x < \epsilon_u,\\
+   1 & x \ge \epsilon_u, \end{cases}
+
+with :math:`\mu = \texttt{soft\_contact\_mu}`. Unlike IPC, the contact normal
+is held constant inside the block solve; the kernel notes that this improves
+stability. Damping (``damp_collision``) acts on the gap rate :math:`\dot d =
+\mathbf{n}\cdot\Delta\mathbf{x}_{\text{rel}}/h`, only while the gap closes:
+:math:`\mathbf{f}_d = -\texttt{soft\_contact\_kd}\;\dot d\,\mathbf{n}`. A
+separating pair is not damped.
+
+*Rigid-soft contact* acts between a soft contact point and one shape of a
+rigid or static body. The point is a particle, or, with full-surface mesh
+contact (``enable_rigid_soft_full_surface_contact``), a barycentric point on a
+soft edge or face; the records come from the collision pipeline. The
+distance is :math:`d = \mathbf{n}\cdot(\mathbf{x} - \mathbf{b})`, with
+:math:`\mathbf{b}` the shape's contact point carried along with its body and
+:math:`\mathbf{n}` the stored contact normal. The interaction distance is
+:math:`r = \texttt{particle\_radius}` plus the shape ``margin``; an edge or
+face point uses the largest radius among its corners. The material is mixed
+per contact from the two sides (``init_body_particle_contacts``):
+:math:`k = \tfrac{1}{2}(\texttt{soft\_contact\_ke} + \texttt{ke}_{\text{shape}})`,
+:math:`k_d = \tfrac{1}{2}(\texttt{soft\_contact\_kd} + \texttt{kd}_{\text{shape}})`
+and :math:`\mu = \sqrt{\texttt{soft\_contact\_mu}\;\texttt{mu}_{\text{shape}}}`.
+The normal law (``_evaluate_rigid_soft_contact_force_norm``) is the plain
+quadratic penalty :math:`E = \tfrac{k}{2}(r - d)^2` for :math:`d < r`;
+``rigid_soft_contact_use_log_barrier=True`` switches it to the self-contact
+barrier law. Damping and friction have the same form as for self-contact,
+written in world space (``_compute_body_particle_contact_force``,
+``compute_projected_isotropic_friction``): the damping force
+:math:`-k_d\,\dot d\,\mathbf{n}` acts only while the point approaches the
+shape, and the friction force is :math:`-\mu\, f_n\,
+f_1(\lVert\mathbf{u}_t\rVert)\,\hat{\mathbf{u}}_t`, with :math:`\mathbf{u}_t`
+the tangential slip of the point relative to the shape surface over the step.
+The force is distributed to the particles by their barycentric weights, and
+the equal and opposite force with its torque acts on the body
+(``accumulate_body_particle_contacts_per_body``). With full-surface mesh
+contact, every detected edge and face record is kept for DAT, but only the
+records that pass the feature-region test of Offset Geometric Contact produce
+force (``mesh_contact_valid``).
+
+*Body-body contact* acts between two shapes, on two rigid bodies or on a
+rigid body and a static shape. It is a constraint row of the rigid solve, not
+a penalty energy. The gap is measured between the two effective surfaces:
+with :math:`\mathbf{p}_0, \mathbf{p}_1` the support points carried along with
+their bodies and :math:`t_0, t_1` the effective thicknesses (shape radius plus
+``margin``, stored by the collision pipeline as ``rigid_contact_margin0`` and
+``rigid_contact_margin1``), the penetration is
+
+.. math::
+
+   C = -\big(\mathbf{n}\cdot(\mathbf{p}_1 - \mathbf{p}_0) - t_0 - t_1\big).
+
+The material is the pair average of the shape values:
+:math:`k = \tfrac{1}{2}(\texttt{ke}_0 + \texttt{ke}_1)`,
+:math:`k_d = \tfrac{1}{2}(\texttt{kd}_0 + \texttt{kd}_1)` and
+:math:`\mu = \sqrt{\texttt{mu}_0\,\texttt{mu}_1}`. On the default compliant
+ALM path (``rigid_compliant_alm=True``) the normal force is
+
+.. math::
+
+   f_n = \max\!\big(k_{\text{eff}}\,C + s\,\lambda_n,\ 0\big),
+   \qquad k_{\text{eff}} = \frac{k\,\rho_n}{k + \rho_n},
+   \qquad s = \frac{k}{k + \rho_n},
+
+where :math:`\lambda_n` is the multiplier of the row and :math:`\rho_n` is an
+internal metric that the solver sets every step from the pair's inverse
+Delassus support over :math:`h^2` plus structural stiffness
+(``_contact_conditioning_scale``); the user does not set :math:`\rho_n`. The
+force acts along :math:`\mathbf{n}` at the support points with the matching
+torques, and the row adds :math:`k_{\text{eff}}\,\mathbf{n}\mathbf{n}^{\mathsf T}`
+to the body Hessians (``evaluate_rigid_contact_from_collision``). After every
+iteration the multiplier is advanced by the relaxed ascent
+:math:`\lambda_n \leftarrow \max\big(s\,(\lambda_n + \rho_n C),\ 0\big)`
+(``update_duals_body_body_contacts``, ``_compliant_contact_dual_step``), so a
+resting contact carries its load in :math:`\lambda_n` instead of in
+penetration. Friction is a Coulomb bound, not a smooth law: the tangential
+force :math:`\rho_t\,\mathbf{u}_t + \boldsymbol{\lambda}_t`, with
+:math:`\mathbf{u}_t` the tangential offset between the two anchored surface
+points and :math:`\rho_t` the tangent metric, is projected onto the disk
+:math:`\lVert\mathbf{f}_t\rVert \le \mu f_n` (``_project_coulomb_tangent``),
+and :math:`\boldsymbol{\lambda}_t` is advanced and projected onto the disk of
+radius :math:`\mu\lambda_n` in the same dual step. Damping is
+:math:`-k_d\,(\mathbf{n}\cdot\mathbf{v}_{\text{rel}})\,\mathbf{n}` while the
+bodies approach and the row carries load. The multipliers start from zero in
+every step unless ``rigid_contact_history=True`` warm-starts them from the
+matched contacts of the previous step. The legacy AVBD path
+(``rigid_compliant_alm=False``, deprecated) ramps a penalty stiffness from
+``rigid_contact_k_start`` by ``rigid_avbd_beta`` per iteration up to the pair
+stiffness, and its soft mode uses the IPC friction law instead of the Coulomb
+projection.
+
+The underlying methods are described in the references cited by
+:class:`~newton.solvers.SolverVBD`: VBD for the particle blocks, AVBD for the
+rigid rows, Divide and Truncate (DAT) for penetration-free contact and Offset
+Geometric Contact (OGC) for the feature regions of mesh contact. The two
+contact papers are also listed under Contact Handling below.
 
 .. _vbd-dat:
 
 Penetration-free truncation (DAT)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Contacts are penalty energies, so a large step could jump through a surface
-between two detections. The Divide and Truncate scheme (DAT) prevents that.
+Self-contact and rigid-soft contact are penalty energies, so a large step
+could jump through a surface between two detections. The Divide and Truncate scheme (DAT) prevents that.
 After each detection, every vertex receives a **motion budget**: the relaxation
 factor ``dat_conservative_bound_relaxation`` (default 0.85) times the nearest
 detected distance among its own elements, capped at the detection query radius
