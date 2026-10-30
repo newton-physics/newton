@@ -12,7 +12,9 @@ volumes. Native construction and supported USD imports record these objects
 on the builder. Finalization exposes their labels, worlds, and ranges on the model.
 
 The sections below explain what each family records. See :ref:`usd_parsing`
-for supported USD schemas, materials, attachments, and import limitations.
+for supported USD schemas, materials, attachments, and import limitations. A
+:ref:`deformable visual mesh <deformable-visual-meshes>` can follow a recorded
+object for rendering without adding simulation elements.
 
 .. _deformable-objects-builder-identities:
 
