@@ -569,26 +569,99 @@ API Explanations
 Construction and Stepping
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-*In development.* This section will cover the canonical setup and step loop:
-coloring via :meth:`~newton.ModelBuilder.color` (required for particles and
-for rigid bodies integrated by VBD), the recommended
-``CollisionPipeline`` → ``Contacts`` → ``SolverVBD`` construction order, and
-the CUDA graph capture constraints around contact state pre-allocation.
+Colour the model before you finalize it. :meth:`~newton.ModelBuilder.color`
+fills :attr:`~newton.Model.particle_color_groups` and
+:attr:`~newton.Model.body_color_groups`; the solver raises at construction when
+particles are present without particle colours, or when rigid bodies are
+integrated by VBD without body colours. Pass ``include_bending=True`` when the
+model has bending edges. Then build the collision pipeline, its contacts buffer
+and the solver, in that order:
 
-Until then, see the :class:`~newton.solvers.SolverVBD` API reference, which
-documents the constructor and includes a minimal working simulation loop.
+.. code-block:: python
+
+   builder.color()
+   model = builder.finalize()
+
+   collision_pipeline = newton.CollisionPipeline(model)
+   contacts = collision_pipeline.contacts()
+   solver = newton.solvers.SolverVBD(model, iterations=10)
+
+   state_in, state_out = model.state(), model.state()
+   control = model.control()
+   for _ in range(num_steps):
+       collision_pipeline.collide(state_in, contacts)
+       solver.step(state_in, state_out, control, contacts, dt)
+       state_in, state_out = state_out, state_in
+
+For rigid joints the solver captures the structural rest pose from
+``model.body_q`` at construction, so the body transforms must match the joint
+angles when the solver is built; ROD rest bend and twist come from
+``model.joint_target_q``.
+
+With a solver-owned pipeline, ``SolverVBD(model, collision_pipeline=...)``, the
+solver allocates its own contacts buffer, seeds the pipeline's self-contact
+configuration from the ``particle_self_contact_*`` arguments, runs rigid
+detection itself on the schedule of ``collision_frequency_type``, and ``step``
+takes ``contacts=None``. Rigid-soft DAT requires this form. The self-contact
+slot works in both forms; :ref:`vbd-jitter-pipeline` shows the arguments that
+put it on the ``ITERATIONS`` schedule.
+
+For CUDA graph capture keep the same order, pipeline, contacts, solver, all
+before capture. Body-body contact state is pre-sized from the pipeline's
+published rigid contact maximum and body-particle contact state from the
+particle-shape pair count; both grow from ``Contacts`` on the first step.
+During capture that growth needs Warp's stream-ordered memory pool, otherwise
+the solver raises and asks you to pre-size. ``rigid_contact_history=True``
+allocates its warm-start buffers before capture in every case.
+
+Start at ``dt`` = 1/600 s with 10 iterations and adjust following
+:ref:`vbd-rules-of-thumb`. The :ref:`Tuning VBD` parameter table lists every
+constructor argument that matters for particle systems, with its effect and
+cost.
 
 Model Inputs
 ~~~~~~~~~~~~
 
-*In development.* This section will explain what the solver consumes from
-:class:`~newton.ModelBuilder` for each system: triangle meshes for cloth,
-tetrahedral meshes for soft bodies, rigid bodies with the supported joint
-types (including rods), the default compliant ALM constraint mode
-(``rigid_compliant_alm=True``) versus the deprecated legacy path, and the deprecated
-legacy-path controls — ``model.vbd.joint_is_hard`` and
-:meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode` (deprecated since
-1.6; no solver-mode effect under compliant ALM).
+The solver reads three systems from the :class:`~newton.Model`:
+
+- **Cloth**: particles with triangles and bending edges, from
+  :meth:`~newton.ModelBuilder.add_cloth_mesh`,
+  :meth:`~newton.ModelBuilder.add_cloth_grid`, or
+  :meth:`~newton.ModelBuilder.add_triangle` and
+  :meth:`~newton.ModelBuilder.add_edge`. Material: ``tri_ke``, ``tri_ka`` and
+  ``tri_kd`` per triangle, ``edge_ke`` and ``edge_kd`` per edge, and
+  ``particle_radius`` per particle. ``validate_mesh=True`` runs the
+  element-quality checker.
+- **Soft bodies**: particles with tetrahedra, from
+  :meth:`~newton.ModelBuilder.add_soft_mesh`,
+  :meth:`~newton.ModelBuilder.add_soft_grid` or
+  :meth:`~newton.ModelBuilder.add_tetrahedron`. Material: ``k_mu``,
+  ``k_lambda`` and ``k_damp`` per tetrahedron. The surface triangles take part
+  in self-contact and rigid-soft contact.
+- **Rigid bodies**: :meth:`~newton.ModelBuilder.add_body` with shapes, and
+  joints of type BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6 and ROD
+  (:meth:`~newton.ModelBuilder.add_joint_rod` for cables). DISTANCE joints are
+  not supported. Shape materials ``ke``, ``kd``, ``mu`` and ``margin`` come
+  from :class:`~newton.ModelBuilder.ShapeConfig`. Drives and limits read
+  ``joint_target_ke``, ``joint_target_kd``, ``joint_limit_lower``,
+  ``joint_limit_upper``, ``joint_limit_ke`` and ``joint_limit_kd``.
+
+Springs (:meth:`~newton.ModelBuilder.add_spring`) and particle-body
+attachments (:meth:`~newton.ModelBuilder.add_attachment_particle_body`) connect
+the systems. The contact material between particles and shapes mixes
+``soft_contact_ke``, ``soft_contact_kd`` and ``soft_contact_mu`` on the Model
+with the shape values (:ref:`vbd-energy-terms`). The Model Parameters table of
+:ref:`Tuning VBD` gives the effect and typical values of each of these.
+
+Rigid constraint rows use the compliant ALM formulation by default
+(``rigid_compliant_alm=True``): the authored stiffness is the physical
+compliance and the solver picks the metric :math:`\rho` itself
+(:ref:`vbd-rigid-joints`). The legacy AVBD path (``rigid_compliant_alm=False``)
+is deprecated since 1.6, together with its controls: the per-joint
+``vbd:joint_is_hard`` custom attribute (``model.vbd.joint_is_hard``, declared
+by :meth:`~newton.solvers.SolverVBD.register_custom_attributes`) and
+:meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode`. Under compliant
+ALM they have no solver-mode effect.
 
 Scene-authored settings
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -641,24 +714,53 @@ schema scopes them to the compliant ALM path.
 Coupling Modes
 ~~~~~~~~~~~~~~
 
-*In development.* This section will cover how deformables and rigid bodies
-interact inside the solver (no special coupling setup is needed) and one-way
-coupling with an external rigid-body solver
-(``integrate_with_external_rigid_solver=True``).
+Inside one solver no coupling setup is needed. Rigid blocks and particle
+blocks are solved in the same iteration loop, rigid blocks first, and
+rigid-soft contacts, attachments and springs connect them as ordinary energy
+terms (:ref:`vbd-how-solved`). Cloth between the fingers of a VBD-integrated
+gripper is the plain case.
 
-Until then, see :doc:`Coupled Solvers </concepts/coupling>`.
+With ``integrate_with_external_rigid_solver=True`` the rigid bodies belong to
+another solver. SolverVBD then skips the rigid solve, reads the body poses the
+external solver wrote into the output state, and applies rigid-soft contact to
+the particles only (one-way coupling). Attachments are not supported in this
+mode. For two-way coupling through proxies, including contact forces reported
+back to the source body, see :doc:`Coupled Solvers </concepts/coupling>`.
 
 Contact Handling
 ~~~~~~~~~~~~~~~~
 
-*In development.* This section will explain the contact stack: particle
-self-contact detection (vertex–triangle and edge–edge), body–particle
-contacts, friction, and the penetration-free Divide and Truncate (DAT)
-scheme that truncates particle motion against contact bounds. Coverage of
-Offset Geometric Contact (OGC) will be added once it is available in
-Newton.
+The contact stack has three layers.
 
-The contact methods are described in:
+**Detection.** Self-contact pairs come from the triangle-mesh self-contact
+detector: vertex-triangle and edge-edge candidates within
+``particle_self_contact_margin + particle_self_contact_gap``, stored in fixed
+buffers of ``particle_vertex_contact_buffer_size`` and
+``particle_edge_contact_buffer_size`` entries, and filtered by topological
+distance (``particle_topological_contact_filter_threshold``) and rest-shape
+distance (``particle_rest_shape_contact_exclusion_radius``). It runs on the
+schedule of the ``SOFT_SELF_CONTACT`` collision slot, by default before and
+after the inertial step of every substep. Rigid-soft records (particles, and
+with ``enable_rigid_soft_full_surface_contact`` also soft edges and faces) and
+body-body records come from the :class:`~newton.CollisionPipeline`, which
+detects out to its ``soft_contact_gap`` beyond ``particle_radius`` plus the
+shape ``margin`` and carries the shape thicknesses of body-body pairs. With a
+solver-owned pipeline the rigid slot follows ``collision_frequency_type`` as
+well.
+
+**Forces.** Each contact kind has its own law with friction and damping;
+self-contact, rigid-soft contact and body-body contact are given in
+:ref:`vbd-energy-terms`. Full-surface mesh records produce force only when they
+pass the feature-region test of Offset Geometric Contact
+(``mesh_contact_valid``); every record is kept for truncation.
+
+**Truncation.** Divide and Truncate keeps self-contact, and with
+``rigid_soft_enable_dat`` also rigid-soft contact, penetration-free between
+detections, through the planar and the radius truncation of :ref:`vbd-dat`.
+
+How to set the distances, and what they cost, is on the tuning page:
+:ref:`vbd-contact-handling` and :ref:`vbd-margin-gap-guide`. The contact
+methods are described in:
 
 - Anka H. Chen, Jerry Hsu, Youssef Ayman, and Miles Macklin. 2026. Divide
   and Truncate: A Penetration and Inversion Free Framework for Coupled
@@ -671,16 +773,25 @@ The contact methods are described in:
 Key Constructor Parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-*In development.* A lean orientation over the three constructor parameter
-groups — common, ``particle_*``, and ``rigid_*`` — cross-linked to
-:class:`~newton.solvers.SolverVBD` for defaults and to :ref:`Tuning VBD` for
-effects and recommended values.
+The constructor has three groups. Common: ``iterations``, ``friction_epsilon``,
+``dat_conservative_bound_relaxation``,
+``integrate_with_external_rigid_solver``, and ``collision_pipeline`` with
+``collision_frequency_type`` and ``collision_frequency``. ``particle_*``:
+self-contact on or off, margin and gap, the candidate buffer sizes, the
+topological and rest-shape filters, and the tile solve. ``rigid_*``: the
+compliant ALM switch with its stabilization and retention factors, body-body
+contact history, the per-body contact list capacities, the rigid-soft barrier
+law and DAT, and the structural joint stiffness and damping. Defaults and exact
+semantics are in :class:`~newton.solvers.SolverVBD`; effects, symptoms and
+recommended values for particle systems are in the :ref:`Tuning VBD`
+parameter table.
 
 Examples
 --------
 
-*In development.* This section will walk through a small, representative set
-of examples per system rather than the full list.
+:ref:`vbd-empirical-table` on the tuning page lists one shipped example per
+scenario, from cloth drape to a gripper on a soft pad, with the material,
+contact and time-step values each one runs with.
 
 Runnable examples using :class:`~newton.solvers.SolverVBD` on GitHub:
 
