@@ -32,6 +32,7 @@ from ..core.types import (
 )
 from ..geometry.contacts import ContactsKamino
 from ..kinematics.limits import LimitsKamino
+from ..linalg import prefix_offsets
 from ..linalg.sparse_matrix import BlockDType, BlockSparseMatrices
 from ..linalg.sparse_operator import BlockSparseLinearOperators
 from .joints import gimbal_reciprocal_axes, universal_intermediary_axes
@@ -59,6 +60,36 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 # Functions
 ###
+
+
+def _expand_joint_indices(counts: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Expand per-joint counts into joint IDs and joint-local IDs."""
+    joint_ids = np.repeat(np.arange(counts.size), counts)
+    local_ids = np.arange(joint_ids.size) - np.repeat(prefix_offsets(counts)[:-1], counts)
+    return joint_ids, local_ids
+
+
+def _fill_joint_nzb_coordinates(
+    rows: np.ndarray,
+    cols: np.ndarray,
+    counts: np.ndarray,
+    row_offsets: np.ndarray,
+    nzb_offsets: np.ndarray,
+    num_adjacent_bodies: np.ndarray,
+    body_F_cols: np.ndarray,
+    body_B_cols: np.ndarray,
+) -> None:
+    """Fill the coordinates of ``counts[j]`` Jacobian rows per joint.
+
+    Starting at ``nzb_offsets[j]``, each joint gets one block per row for body F,
+    followed by one block per row for body B if the joint is binary.
+    """
+    joint_ids, local_block_ids = _expand_joint_indices(num_adjacent_bodies * counts)
+    joint_counts = counts[joint_ids]
+    body_ids = local_block_ids // joint_counts
+    positions = nzb_offsets[joint_ids] + local_block_ids
+    rows[positions] = row_offsets[joint_ids] + local_block_ids % joint_counts
+    cols[positions] = np.where(body_ids == 0, body_F_cols[joint_ids], body_B_cols[joint_ids])
 
 
 @wp.func
@@ -1761,23 +1792,30 @@ class SparseSystemJacobians:
 
         # Extract the constraint and DoF sizes of each world
         num_worlds = model.info.num_worlds
-        num_body_dofs = model.info.num_body_dofs.numpy().tolist()
-        num_bilateral_joint_cts = model.info.num_joint_bilateral_cts.numpy().tolist()
-        num_bounded_joint_cts = model.info.num_joint_bounded_cts.numpy().tolist()
-        num_joint_dofs = model.info.num_joint_dofs.numpy().tolist()
-        max_num_limits = (
+        num_body_dofs = model.info.num_body_dofs.numpy()
+        num_bilateral_joint_cts = model.info.num_joint_bilateral_cts.numpy()
+        num_bounded_joint_cts = model.info.num_joint_bounded_cts.numpy()
+        num_joint_dofs = model.info.num_joint_dofs.numpy()
+        max_num_limits = np.asarray(
             limits.world_max_limits_host if limits and limits.model_max_limits_host > 0 else [0] * num_worlds
         )
-        max_num_contacts = (
+        max_num_contacts = np.asarray(
             contacts.world_max_contacts_host if contacts and contacts.model_max_contacts_host > 0 else [0] * num_worlds
         )
-        max_num_constraints = [
-            num_bilateral_joint_cts[w] + num_bounded_joint_cts[w] + max_num_limits[w] + 3 * max_num_contacts[w]
-            for w in range(num_worlds)
-        ]
+        if max_num_limits.shape != (num_worlds,):
+            raise ValueError(
+                f"`limits` holds the capacities of {max_num_limits.size} worlds, but the model has {num_worlds}."
+            )
+        if max_num_contacts.shape != (num_worlds,):
+            raise ValueError(
+                f"`contacts` holds the capacities of {max_num_contacts.size} worlds, but the model has {num_worlds}."
+            )
+        max_num_constraints = num_bilateral_joint_cts + num_bounded_joint_cts + max_num_limits + 3 * max_num_contacts
 
         # Compute the number of non-zero blocks required for each Jacobian matrix, as well as the
-        # per-joint and per-dof offsets, and nzb coordinates.
+        # per-joint and per-dof offsets, and nzb coordinates. The joint `dofs_offset` array
+        # ends with the model-wide total, which is dropped here.
+        num_joints = model.size.sum_of_num_joints
         joint_wid = model.joints.wid.numpy()
         joint_bid_B = model.joints.bid_B.numpy()
         joint_bid_F = model.joints.bid_F.numpy()
@@ -1787,7 +1825,6 @@ class SparseSystemJacobians:
         joint_num_bounded_cts = model.joints.num_bounded_cts.numpy()
         joint_num_friction_cts = model.joints.num_friction_cts.numpy()
         joint_num_effort_cts = model.joints.num_effort_cts.numpy()
-        joint_bounded_cts_offset = model.joints.bounded_cts_offset.numpy()
         joint_num_dofs = model.joints.num_dofs.numpy()
         joint_q_j_min = model.joints.q_j_min.numpy()
         joint_q_j_max = model.joints.q_j_max.numpy()
@@ -1796,126 +1833,104 @@ class SparseSystemJacobians:
         joint_friction_cts_offset_total_cts = model.joints.friction_cts_offset_total_cts.numpy()
         joint_effort_cts_offset_total_cts = model.joints.effort_cts_offset_total_cts.numpy()
         world_cts_offset = model.info.total_cts_offset.numpy()
-        joint_dofs_offset = model.joints.dofs_offset.numpy()
+        # World bounded rows group friction before effort; sparse blocks are grouped per joint.
+        bounded_row_base = (
+            model.info.joint_bounded_cts_offset.numpy()[joint_wid]
+            - world_cts_offset[joint_wid]
+            - num_bilateral_joint_cts[joint_wid]
+        )
+        joint_dofs_offset = model.joints.dofs_offset.numpy()[:num_joints]
         world_dofs_offset = model.info.joint_dofs_offset.numpy()
         bodies_offset = model.info.bodies_offset.numpy()
-        world_bounded_offset = model.info.joint_bounded_cts_offset.numpy()
-        J_cts_nnzb_min = [0] * num_worlds
-        J_cts_nnzb_max = [0] * num_worlds
-        J_dofs_nnzb = [0] * num_worlds
-        J_cts_joint_nzb_offsets = [0] * model.size.sum_of_num_joints
-        J_dofs_joint_nzb_offsets = [0] * model.size.sum_of_num_joints
-        # Static per-row nzb offsets for bounded-multiplier rows: one entry per
-        # adjacent body, with the second body's entry left at -1 for unary joints.
-        J_cts_bounded_nzb_offsets_F = [-1] * model.size.sum_of_num_bounded_joint_cts
-        J_cts_bounded_nzb_offsets_B = [-1] * model.size.sum_of_num_bounded_joint_cts
-        J_cts_nzb_row = [[] for _ in range(num_worlds)]
-        J_cts_nzb_col = [[] for _ in range(num_worlds)]
-        J_dofs_nzb_row = [[] for _ in range(num_worlds)]
-        J_dofs_nzb_col = [[] for _ in range(num_worlds)]
-        dofs_start = 0
-        # Add non-zero blocks for joints and joint limits
-        for _j in range(model.size.sum_of_num_joints):
-            w = joint_wid[_j]
-            J_cts_joint_nzb_offsets[_j] = J_cts_nnzb_min[w]
-            J_dofs_joint_nzb_offsets[_j] = J_dofs_nnzb[w]
+        is_binary = joint_bid_B > -1
+        num_adjacent_bodies = np.where(is_binary, 2, 1)
+        joint_cts_nzb_counts = num_adjacent_bodies * (joint_num_bilateral_cts + joint_num_bounded_cts)
+        joint_dofs_nzb_counts = num_adjacent_bodies * joint_num_dofs
 
-            # Joint nzb counts
-            is_binary = joint_bid_B[_j] > -1
-            num_adjacent_bodies = 2 if is_binary else 1
-            num_cts = int(joint_num_bilateral_cts[_j])
-            num_dynamic_cts = int(joint_num_dynamic_cts[_j])
-            num_kinematic_cts = int(joint_num_kinematic_cts[_j])
-            num_bounded_joint_cts = int(joint_num_bounded_cts[_j])
-            num_friction_cts = int(joint_num_friction_cts[_j])
-            num_effort_cts = int(joint_num_effort_cts[_j])
-            num_dofs = int(joint_num_dofs[_j])
-            J_cts_nnzb_min[w] += num_adjacent_bodies * (num_cts + num_bounded_joint_cts)
-            J_cts_nnzb_max[w] += num_adjacent_bodies * (num_cts + num_bounded_joint_cts)
-            J_dofs_nnzb[w] += num_adjacent_bodies * num_dofs
+        # Count the joint blocks of each world
+        J_cts_nnzb_min = np.zeros(num_worlds, dtype=np.int64)
+        J_dofs_nnzb = np.zeros(num_worlds, dtype=np.int64)
+        np.add.at(J_cts_nnzb_min, joint_wid, joint_cts_nzb_counts)
+        np.add.at(J_dofs_nnzb, joint_wid, joint_dofs_nzb_counts)
+        J_cts_nnzb_max = J_cts_nnzb_min.copy()
 
-            # Static bounded-row nzb offsets, still relative to the world's local nzb block
-            # (converted to a global nzb index below, once `J_cts_nzb_start` is known). Block
-            # order within a joint's nzb region is [dynamic_F, dynamic_B, kinematic_F,
-            # kinematic_B, friction_F, friction_B, effort_F, effort_B] (see the nzb coordinate
-            # loops below), so bounded blocks start after both bodies' dynamic+kinematic blocks.
-            if num_bounded_joint_cts > 0:
-                # Constraint rows group all friction rows before all effort rows.
-                # The per-joint bounded offset instead interleaves these categories.
-                bounded_base = world_bounded_offset[w] - world_cts_offset[w] - num_bilateral_joint_cts[w]
-                bounded_row_start = bounded_base + joint_friction_cts_offset_total_cts[_j]
-                body_F_local_offset = J_cts_joint_nzb_offsets[_j] + num_adjacent_bodies * (
-                    num_dynamic_cts + num_kinematic_cts
-                )
-                body_B_local_offset = body_F_local_offset + num_friction_cts
-                for r in range(num_friction_cts):
-                    J_cts_bounded_nzb_offsets_F[bounded_row_start + r] = body_F_local_offset + r
-                    if is_binary:
-                        J_cts_bounded_nzb_offsets_B[bounded_row_start + r] = body_B_local_offset + r
-                effort_row_start = bounded_base + joint_effort_cts_offset_total_cts[_j]
-                body_F_local_offset += num_adjacent_bodies * num_friction_cts
-                body_B_local_offset = body_F_local_offset + num_effort_cts
-                for r in range(num_effort_cts):
-                    J_cts_bounded_nzb_offsets_F[effort_row_start + r] = body_F_local_offset + r
-                    if is_binary:
-                        J_cts_bounded_nzb_offsets_B[effort_row_start + r] = body_B_local_offset + r
+        # Add the maximum possible limit blocks. Joint DoFs are contiguous in joint order.
+        dof_joint_ids, _ = _expand_joint_indices(joint_num_dofs)
+        dof_world_ids = joint_wid[dof_joint_ids]
+        dof_block_counts = num_adjacent_bodies[dof_joint_ids]
+        limited_dofs = (joint_q_j_min > float(FLOAT32_MIN)) | (joint_q_j_max < float(FLOAT32_MAX))
+        limited_dofs &= max_num_limits[dof_world_ids] > 0
+        np.add.at(
+            J_cts_nnzb_max,
+            dof_world_ids[limited_dofs],
+            dof_block_counts[limited_dofs],
+        )
 
-            # Joint nzb coordinates
-            dynamic_cts_offset = joint_dynamic_cts_offset_total_cts[_j] - world_cts_offset[w]
-            kinematic_cts_offset = joint_kinematic_cts_offset_total_cts[_j] - world_cts_offset[w]
-            friction_cts_offset = joint_friction_cts_offset_total_cts[_j] - world_cts_offset[w]
-            effort_cts_offset = joint_effort_cts_offset_total_cts[_j] - world_cts_offset[w]
-            dofs_offset = joint_dofs_offset[_j] - world_dofs_offset[w]
-            column_ids = [6 * (joint_bid_F[_j] - bodies_offset[w])]
-            if is_binary:
-                column_ids.append(6 * (joint_bid_B[_j] - bodies_offset[w]))
-            for col_id in column_ids:
-                for i in range(num_dynamic_cts):
-                    J_cts_nzb_row[w].append(dynamic_cts_offset + i)
-                    J_cts_nzb_col[w].append(col_id)
-            for col_id in column_ids:
-                for i in range(num_kinematic_cts):
-                    J_cts_nzb_row[w].append(kinematic_cts_offset + i)
-                    J_cts_nzb_col[w].append(col_id)
-            for col_id in column_ids:
-                for i in range(num_friction_cts):
-                    J_cts_nzb_row[w].append(friction_cts_offset + i)
-                    J_cts_nzb_col[w].append(col_id)
-            for col_id in column_ids:
-                for i in range(num_effort_cts):
-                    J_cts_nzb_row[w].append(effort_cts_offset + i)
-                    J_cts_nzb_col[w].append(col_id)
-            for col_id in column_ids:
-                for i in range(num_dofs):
-                    J_dofs_nzb_row[w].append(dofs_offset + i)
-                    J_dofs_nzb_col[w].append(col_id)
-
-            # Limit nzb counts (maximum)
-            if max_num_limits[w] > 0:
-                for d_j in range(num_dofs):
-                    if joint_q_j_min[dofs_start + d_j] > float(FLOAT32_MIN) or joint_q_j_max[dofs_start + d_j] < float(
-                        FLOAT32_MAX
-                    ):
-                        J_cts_nnzb_max[w] += num_adjacent_bodies
-            dofs_start += num_dofs
         # Add non-zero blocks for contacts
         # TODO: Use the candidate geom-pair info to compute maximum possible contact constraint blocks more accurately
         if contacts is not None and contacts.model_max_contacts_host > 0:
-            for w in range(num_worlds):
-                J_cts_nnzb_max[w] += 2 * 3 * max_num_contacts[w]
+            J_cts_nnzb_max += 2 * 3 * max_num_contacts
+
+        # Joints are grouped by world; include each preceding world's reserved block capacity.
+        J_cts_joint_nzb_offsets = (
+            prefix_offsets(joint_cts_nzb_counts)[:-1]
+            - prefix_offsets(J_cts_nnzb_min)[joint_wid]
+            + prefix_offsets(J_cts_nnzb_max)[joint_wid]
+        )
+        J_dofs_joint_nzb_offsets = prefix_offsets(joint_dofs_nzb_counts)[:-1]
+
+        # Reserve capacity for joint, limit, and contact blocks.
+        J_cts_nzb_row = np.zeros(int(J_cts_nnzb_max.sum()), dtype=np.int64)
+        J_cts_nzb_col = np.zeros(int(J_cts_nnzb_max.sum()), dtype=np.int64)
+        J_dofs_nzb_row = np.zeros(int(J_dofs_nnzb.sum()), dtype=np.int64)
+        J_dofs_nzb_col = np.zeros(int(J_dofs_nnzb.sum()), dtype=np.int64)
+        J_cts_bounded_nzb_offsets_F = np.full(model.size.sum_of_num_bounded_joint_cts, -1, dtype=np.int64)
+        J_cts_bounded_nzb_offsets_B = np.full(model.size.sum_of_num_bounded_joint_cts, -1, dtype=np.int64)
+        joint_col_F = 6 * (joint_bid_F - bodies_offset[joint_wid])
+        joint_col_B = 6 * (joint_bid_B - bodies_offset[joint_wid])
+        # Per-joint blocks must remain dynamic, kinematic, friction, effort, with F before B in each group.
+        constraint_groups = {
+            "dynamic": (joint_num_dynamic_cts, joint_dynamic_cts_offset_total_cts),
+            "kinematic": (joint_num_kinematic_cts, joint_kinematic_cts_offset_total_cts),
+            "friction": (joint_num_friction_cts, joint_friction_cts_offset_total_cts),
+            "effort": (joint_num_effort_cts, joint_effort_cts_offset_total_cts),
+        }
+        group_nzb_offsets = J_cts_joint_nzb_offsets.copy()
+        for group_name, (row_counts, row_offsets) in constraint_groups.items():
+            _fill_joint_nzb_coordinates(
+                J_cts_nzb_row,
+                J_cts_nzb_col,
+                row_counts,
+                row_offsets - world_cts_offset[joint_wid],
+                group_nzb_offsets,
+                num_adjacent_bodies,
+                joint_col_F,
+                joint_col_B,
+            )
+            if group_name in ("friction", "effort"):
+                joint_ids, local_ids = _expand_joint_indices(row_counts)
+                bounded_rows = bounded_row_base[joint_ids] + row_offsets[joint_ids] + local_ids
+                J_cts_bounded_nzb_offsets_F[bounded_rows] = group_nzb_offsets[joint_ids] + local_ids
+                binary_rows = is_binary[joint_ids]
+                J_cts_bounded_nzb_offsets_B[bounded_rows[binary_rows]] = (
+                    J_cts_bounded_nzb_offsets_F[bounded_rows[binary_rows]] + row_counts[joint_ids[binary_rows]]
+                )
+            group_nzb_offsets += num_adjacent_bodies * row_counts
+
+        _fill_joint_nzb_coordinates(
+            J_dofs_nzb_row,
+            J_dofs_nzb_col,
+            joint_num_dofs,
+            joint_dofs_offset - world_dofs_offset[joint_wid],
+            J_dofs_joint_nzb_offsets,
+            num_adjacent_bodies,
+            joint_col_F,
+            joint_col_B,
+        )
 
         # Compute the sizes of the Jacobian matrix data for each world
-        J_cts_dims_max = [(max_num_constraints[i], num_body_dofs[i]) for i in range(num_worlds)]
-        J_dofs_dims = [(num_joint_dofs[i], num_body_dofs[i]) for i in range(num_worlds)]
-
-        # Flatten nzb coordinates
-        for w in range(num_worlds):
-            J_cts_nzb_row[w] += [0] * (J_cts_nnzb_max[w] - J_cts_nnzb_min[w])
-            J_cts_nzb_col[w] += [0] * (J_cts_nnzb_max[w] - J_cts_nnzb_min[w])
-        J_cts_nzb_row = [i for rows in J_cts_nzb_row for i in rows]
-        J_cts_nzb_col = [j for cols in J_cts_nzb_col for j in cols]
-        J_dofs_nzb_row = [i for rows in J_dofs_nzb_row for i in rows]
-        J_dofs_nzb_col = [j for cols in J_dofs_nzb_col for j in cols]
+        J_cts_dims_max = list(zip(max_num_constraints.tolist(), num_body_dofs.tolist(), strict=True))
+        J_dofs_dims = list(zip(num_joint_dofs.tolist(), num_body_dofs.tolist(), strict=True))
 
         # Use the model's device
         device = model.device
@@ -1928,7 +1943,7 @@ class SparseSystemJacobians:
                 nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(6,)),
                 device=device,
             )
-            bsm_cts.finalize(max_dims=J_cts_dims_max, capacities=J_cts_nnzb_max)
+            bsm_cts.finalize(max_dims=J_cts_dims_max, capacities=J_cts_nnzb_max.tolist())
             self._J_cts = BlockSparseLinearOperators[wp.float32, wp.int32](bsm=bsm_cts)
 
             # Then allocate the geometric DoFs Jacobian
@@ -1937,7 +1952,7 @@ class SparseSystemJacobians:
                 nzb_dtype=BlockDType[wp.float32](dtype=wp.float32, shape=(6,)),
                 device=device,
             )
-            bsm_dofs.finalize(max_dims=J_dofs_dims, capacities=J_dofs_nnzb)
+            bsm_dofs.finalize(max_dims=J_dofs_dims, capacities=J_dofs_nnzb.tolist())
             self._J_dofs = BlockSparseLinearOperators[wp.float32, wp.int32](bsm=bsm_dofs)
 
             # Set all constant values into BSMs (corresponding to joint dofs/cts)
@@ -1951,22 +1966,6 @@ class SparseSystemJacobians:
                 assign_to_warp_int32_array(bsm_dofs.num_rows, num_joint_dofs)
                 assign_to_warp_int32_array(bsm_dofs.num_cols, num_body_dofs)
                 assign_to_warp_int32_array(bsm_dofs.num_nzb, J_dofs_nnzb)
-
-            # Convert per-world nzb offsets to global nzb offsets
-            J_cts_nzb_start = bsm_cts.nzb_start.numpy()
-            J_dofs_nzb_start = bsm_dofs.nzb_start.numpy()
-            for _j in range(model.size.sum_of_num_joints):
-                w = joint_wid[_j]
-                J_cts_joint_nzb_offsets[_j] += J_cts_nzb_start[w]
-                J_dofs_joint_nzb_offsets[_j] += J_dofs_nzb_start[w]
-                num_bounded_cts = int(joint_num_bounded_cts[_j])
-                if num_bounded_cts > 0:
-                    row_start = joint_bounded_cts_offset[_j]
-                    for r in range(num_bounded_cts):
-                        if J_cts_bounded_nzb_offsets_F[row_start + r] > -1:
-                            J_cts_bounded_nzb_offsets_F[row_start + r] += J_cts_nzb_start[w]
-                        if J_cts_bounded_nzb_offsets_B[row_start + r] > -1:
-                            J_cts_bounded_nzb_offsets_B[row_start + r] += J_cts_nzb_start[w]
 
             # Create/move precomputed helper arrays to device
             self._J_cts_joint_nzb_offsets = to_warp_int32_array(J_cts_joint_nzb_offsets, device=device)

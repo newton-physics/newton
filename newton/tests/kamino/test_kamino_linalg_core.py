@@ -12,6 +12,7 @@ from newton._src.solvers.kamino._src.linalg.core import (
     DenseRectangularMultiLinearInfo,
     DenseSquareMultiLinearInfo,
     make_dtype_tolerance,
+    prefix_offsets,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
@@ -19,6 +20,43 @@ from newton.tests.kamino import setup_tests, test_context
 ###
 # Tests
 ###
+
+
+class TestLinAlgCorePrefixOffsets(unittest.TestCase):
+    def test_prefix_offsets_of_list(self):
+        """Return the offset of each block followed by the total size."""
+        offsets = prefix_offsets([6, 0, 4, 3], validate_dtype=np.int16)
+        self.assertEqual(offsets.dtype, np.int64)
+        np.testing.assert_array_equal(offsets, [0, 6, 6, 10, 13])
+
+    def test_prefix_offsets_of_empty_sizes(self):
+        """Return a single zero offset when there are no blocks."""
+        np.testing.assert_array_equal(prefix_offsets([]), [0])
+
+    def test_prefix_offsets_of_int32_sizes(self):
+        """Accumulate int32 block sizes in 64-bit integers."""
+        size = 2**30 + 1
+        offsets = prefix_offsets(np.full(3, size, dtype=np.int32))
+        np.testing.assert_array_equal(offsets, [0, size, 2 * size, 3 * size])
+
+    def test_dense_offset_overflow(self):
+        """Reject overflowing dense offsets for rectangular and square systems."""
+        cases = (
+            (DenseRectangularMultiLinearInfo, [(46341, 46341), (1, 1)], [(1, 1), (182, 182)]),
+            (DenseSquareMultiLinearInfo, [46341, 1], [1, 182]),
+        )
+        for info_type, dims, int16_dims in cases:
+            with self.subTest(info_type=info_type.__name__):
+                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
+                    info_type().finalize(dimensions=dims, itype=wp.int32)
+                # Every block starts within the index range, but the last one ends past it
+                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
+                    info_type().finalize(dimensions=dims[::-1], itype=wp.int32)
+                with self.assertRaisesRegex(OverflowError, "Total block size .* does not fit"):
+                    info_type().finalize(dimensions=int16_dims, itype=wp.int16)
+                info = info_type()
+                info.finalize(dimensions=dims, itype=wp.int64)
+                self.assertEqual(info.mio.numpy()[1], 46341 * 46341)
 
 
 class TestLinAlgCoreMakeTolerance(unittest.TestCase):
