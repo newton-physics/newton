@@ -1456,8 +1456,8 @@ class SolverSteel(SolverBase):
         }
     )
 
-    # The default configuration is conformance-tested against body-pair-reduced contact buffers
-    # (test_contact_reduction_body_pairs). Contact compliance rejects them in step(); warm start accepts them.
+    # Conformance-tested against body-pair-reduced contacts (tests/steel/test_contact_reduction.py);
+    # contact compliance rejects them in step().
     supports_body_pair_reduced_contacts: bool = True
 
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.
@@ -6120,8 +6120,7 @@ class SolverSteel(SolverBase):
         if self._contact_compliance:
             # Reject unsupported state before any stage can launch work.
             _contact_compliance.validate_step(self)
-            # The material law is validated on unreduced contacts only; a captured step also leases the
-            # buffer so no reducer graph can compact it behind replay.
+            # The compliant contact law is validated on unreduced contacts only.
             self._require_unreduced_contacts(
                 contacts, supports_body_pair_reduced_contacts=False, configuration="contact_compliance=True"
             )
@@ -6131,16 +6130,6 @@ class SolverSteel(SolverBase):
                 "Steel contact capacity mismatch: received "
                 f"{contacts.rigid_contact_max} slots, but solver scratch was allocated for "
                 f"{self._max_contacts_alloc}. Set model.rigid_contact_max before constructing the solver."
-            )
-        if self._contact_warmstart:
-            # A reduced stream is valid when it carries retained identities; an unreduced captured stream
-            # keeps its reader lease so a later producer cannot change its layout behind graph replay.
-            self._require_unreduced_contacts(
-                contacts,
-                supports_body_pair_reduced_contacts=bool(
-                    contacts is not None and contacts.rigid_contacts_body_pair_reduced
-                ),
-                configuration="contact_warmstart=True",
             )
         if self._contact_warmstart and contacts is not None and contacts.rigid_contact_match_index is None:
             raise ValueError(

@@ -1284,8 +1284,8 @@ To disable reduction, set ``reduce_contacts=False`` when creating the pipeline.
 Bodies built from many colliders (a foot made of several spheres or capsules, a
 hand of boxes) produce one manifold per shape pair, so a single physical patch
 can reach the solver as dozens of near-redundant contacts. An optional pass
-after the narrow phase compacts them per body pair. Select it with a
-:class:`~CollisionPipeline.ContactReductionConfig` passed as ``reduce_contacts``:
+after the narrow phase compacts them per body pair. Enable it with
+``body_pair_reduction``:
 
 .. testcode:: body-pair-reduction
 
@@ -1295,13 +1295,11 @@ after the narrow phase compacts them per body pair. Select it with a
     builder.add_ground_plane()
     model = builder.finalize()
 
-    reduction = newton.CollisionPipeline.ContactReductionConfig(
-        mesh=True,
-        body_pairs=True,
-        body_pair_cell_size=0.25,
-        body_pair_hysteresis=0.001,
+    pipeline = newton.CollisionPipeline(
+        model,
+        body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(cell_size=0.25),
     )
-    pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+    contacts = pipeline.contacts()
 
 Contacts are grouped by body pair, material class, normal bin and spatial cell.
 Each group keeps one depth representative, up to six sampled footprint extremes
@@ -1309,32 +1307,25 @@ over all its contacts and up to six more over its touching contacts only, so
 speculative contacts cannot displace the support polygon. The pass reduces
 ``rigid_contact_count`` in place and never drops a contact it could not
 register. It is an approximation: support is sampled, not exact, and keeping
-rim points can strengthen torsional friction.
+rim points can strengthen torsional friction. Selection is memoryless, so on
+curved or mesh supports the kept set can change between steps.
 
-The hysteresis margin keeps the previous winners unless a new contact beats
-them by more than the margin, which stops the kept set from churning on curved
-or mesh supports. Call :meth:`~CollisionPipeline.reset_contact_matching` and the
-solver's ``reset()`` after resets or teleports, and
-:meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` after changing shape
-materials at runtime. :meth:`~CollisionPipeline.body_pair_reduction_stats`
-reports the input and kept totals; keep the pass off when it doesn't reduce the
-end-to-end step time.
+Shapes on one body share a group only when their ``shape_material_*`` values
+and their per-shape custom attributes match;
+``BodyPairReductionConfig.material_attributes`` narrows
+the attributes that count. Call
+:meth:`~CollisionPipeline.refresh_body_pair_reduction_groups` after changing
+them at runtime.
 
-A solver accepts reduced contacts only if it declares
-:attr:`~solvers.SolverBase.supports_body_pair_reduced_contacts`; the others raise
-in ``step()``. :class:`~solvers.SolverSteel` supports it, including contact
-warm start with ``contact_matching="latest"``. Body-pair reduction requires the
-mesh/heightfield producer reduction to stay on, and it doesn't support
-``contact_matching="sticky"`` or hydroelastic contacts.
-
-Before capturing a reducing ``collide`` in a CUDA graph, run one ordinary
-``pipeline.collide`` on the same ``Contacts`` buffer; capturing a buffer that has
-not been collided raises ``RuntimeError``. Capture binds the buffer to the reducer
-(or, for a solver that rejects reduced contacts, to that solver) until
-:meth:`~Contacts.release_graph_capture`. Call it after destroying every graph that
-captured the buffer, including graphs that embed one. Newton tracks captures made
-through Warp's capture API (``wp.capture_begin``, ``wp.ScopedCapture``); a step
-captured outside it on a buffer no reducer has written is not tracked.
+Buffers from the pipeline's :meth:`~CollisionPipeline.contacts` are stamped
+:attr:`~Contacts.rigid_contacts_body_pair_reduced`. Only a pipeline with
+body-pair reduction collides into a stamped buffer, and a solver accepts one only
+if it declares :attr:`~solvers.SolverBase.supports_body_pair_reduced_contacts`;
+the others raise in ``step()``, also during CUDA graph capture.
+:class:`~solvers.SolverSteel` supports it, except with ``contact_compliance``.
+Body-pair reduction requires ``reduce_contacts=True`` in mesh or heightfield
+scenes, and it doesn't support ``contact_matching="sticky"`` or hydroelastic
+contacts. Keep the pass off when it doesn't reduce the end-to-end step time.
 
 This body-pair reduction API is experimental and may change without prior notice.
 

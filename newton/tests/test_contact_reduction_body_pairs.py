@@ -9,22 +9,19 @@ such foot. The body-pair reduction pass approximates each body-pair/normal-bin
 patch with one depth slot and six sampled footprint-support slots, so the
 registered contact count reflects the physical patch more closely than the
 collider decomposition. Directional sampling has no shape-independent support
-bound, and nonzero hysteresis permits an incumbent within the configured score
-margin of the instantaneous winner.
+bound.
 
 The tests here assert both halves of the contract:
 
 * the registered count drops on multi-shape pairs (and why: interior points of
   a single flat patch are the ones discarded), and
-* the solver gate and capture bindings keep reduced rows away from solvers
+* the allocation stamp and solver gate keep reduced rows away from solvers
   that do not declare support. SolverSteel's settling conformance lives in
   ``newton/tests/steel/test_contact_reduction.py``.
 """
 
-import gc
 import unittest
 import unittest.mock
-import weakref
 
 import numpy as np
 import warp as wp
@@ -245,26 +242,26 @@ def _max_angular_hole(points_xy, center_xy):
     return float(holes.max())
 
 
-def _make_pipeline(model, reduce_body_pairs, *, reduce_mesh_contacts=True, **kwargs):
-    config_fields = {
-        "body_pair_cell_size",
-        "body_pair_verify",
-        "body_pair_hysteresis",
-        "body_pair_hashtable_headroom",
+def _make_pipeline(model, reduce_body_pairs, *, reduce_mesh_contacts=True, body_pair_verify=False, **kwargs):
+    config_kwargs = {
+        name: kwargs.pop(f"body_pair_{name}")
+        for name in ("cell_size", "hashtable_headroom", "material_attributes")
+        if f"body_pair_{name}" in kwargs
     }
-    config_kwargs = {name: kwargs.pop(name) for name in tuple(kwargs) if name in config_fields}
     deterministic = kwargs.pop("deterministic", True)
-    return newton.CollisionPipeline(
+    pipeline = newton.CollisionPipeline(
         model,
         broad_phase="nxn",
         deterministic=deterministic,
-        reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(
-            mesh=reduce_mesh_contacts,
-            body_pairs=reduce_body_pairs,
-            **config_kwargs,
+        reduce_contacts=reduce_mesh_contacts,
+        body_pair_reduction=(
+            newton.CollisionPipeline.BodyPairReductionConfig(**config_kwargs) if reduce_body_pairs else None
         ),
         **kwargs,
     )
+    if body_pair_verify:
+        pipeline._body_pair_reducer.verify = True
+    return pipeline
 
 
 def _collide_once(model, state, reduce_body_pairs, **kwargs):
@@ -535,44 +532,28 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         builder.add_ground_plane()
         return builder.finalize(device=wp.get_device())
 
-    def test_unified_reduce_contacts_bool_compatibility(self):
-        """Keep the released bool spelling limited to producer-side reduction."""
-        model = self._mesh_model()
-        for enabled_value, disabled_value in ((True, False), (np.bool_(True), np.bool_(False))):
-            with self.subTest(bool_type=type(enabled_value).__name__):
-                enabled = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=enabled_value)
-                disabled = newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=disabled_value)
-                self.assertTrue(enabled.reduce_contacts)
-                self.assertTrue(enabled.contact_reduction_config.mesh)
-                self.assertTrue(enabled.narrow_phase.reduce_contacts)
-                self.assertFalse(enabled.contact_reduction_config.body_pairs)
-                self.assertFalse(disabled.reduce_contacts)
-                self.assertFalse(disabled.contact_reduction_config.mesh)
-                self.assertFalse(disabled.narrow_phase.reduce_contacts)
-                self.assertFalse(disabled.contact_reduction_config.body_pairs)
-
-    def test_unified_config_enables_body_pair_stage(self):
-        """Select body-pair reduction through the existing reduce_contacts entry."""
+    def test_config_enables_body_pair_stage(self):
+        """Enable body-pair reduction through its own argument, leaving reduce_contacts alone."""
         model = self._foot_model()
-        pipeline = newton.CollisionPipeline(
-            model,
-            broad_phase="nxn",
-            reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(body_pairs=True),
-        )
-        # The requested producer policy remains visible, while the effective
-        # stage is inactive because this model has no mesh path.
+        config = newton.CollisionPipeline.BodyPairReductionConfig()
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn", body_pair_reduction=config)
         self.assertTrue(pipeline.reduce_contacts)
-        self.assertTrue(pipeline.contact_reduction_config.mesh)
-        self.assertFalse(pipeline.narrow_phase.reduce_contacts)
-        self.assertTrue(pipeline.contact_reduction_config.body_pairs)
+        self.assertIs(pipeline.body_pair_reduction, config)
         self.assertIsNotNone(pipeline._body_pair_reducer)
+        plain = newton.CollisionPipeline(model, broad_phase="nxn")
+        self.assertIsNone(plain.body_pair_reduction)
+        self.assertIsNone(plain._body_pair_reducer)
 
     def test_body_pair_stage_requires_mesh_stage_for_mesh_scenes(self):
         """Reject a postpass that cannot protect raw mesh output from overflow."""
         model = self._mesh_model()
-        config = newton.CollisionPipeline.ContactReductionConfig(mesh=False, body_pairs=True)
-        with self.assertRaisesRegex(ValueError, "producer reduction to be active"):
-            newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts=config)
+        with self.assertRaisesRegex(ValueError, "reduce_contacts=True"):
+            newton.CollisionPipeline(
+                model,
+                broad_phase="nxn",
+                reduce_contacts=False,
+                body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
+            )
 
     def test_mesh_and_body_pair_stages_compose(self):
         """Run producer and body-pair reduction in order on one compound mesh patch."""
@@ -608,28 +589,23 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         state = model.state()
         rigid_contact_max = 4096
 
-        def contact_count(config):
+        def contact_count(reduce_contacts, body_pair_reduction=None):
             pipeline = newton.CollisionPipeline(
                 model,
                 broad_phase="nxn",
                 deterministic=True,
                 rigid_contact_max=rigid_contact_max,
-                reduce_contacts=config,
+                reduce_contacts=reduce_contacts,
+                body_pair_reduction=body_pair_reduction,
             )
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
             return pipeline, int(contacts.rigid_contact_count.numpy()[0])
 
-        raw, raw_count = contact_count(newton.CollisionPipeline.ContactReductionConfig(mesh=False))
-        mesh_only, mesh_count = contact_count(newton.CollisionPipeline.ContactReductionConfig(mesh=True))
-        both, both_count = contact_count(
-            newton.CollisionPipeline.ContactReductionConfig(
-                mesh=True,
-                body_pairs=True,
-                body_pair_cell_size=1.0,
-            )
-        )
-        stats = both.body_pair_reduction_stats()
+        raw, raw_count = contact_count(False)
+        mesh_only, mesh_count = contact_count(True)
+        both, both_count = contact_count(True, newton.CollisionPipeline.BodyPairReductionConfig(cell_size=1.0))
+        stats = both._body_pair_reducer.stats()
         self.assertFalse(raw.narrow_phase.reduce_contacts)
         self.assertTrue(mesh_only.narrow_phase.reduce_contacts, "mesh producer reduction was not active")
         self.assertTrue(both.narrow_phase.reduce_contacts)
@@ -639,11 +615,11 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
         self.assertLess(both_count, mesh_count, "body-pair stage did not further compact the compound patch")
         self.assertEqual(stats["input_overflow_frames"], 0)
 
-    def test_unified_reduce_contacts_rejects_unknown_policy(self):
-        """Reject strings and other values that are not reduction policies."""
+    def test_body_pair_reduction_rejects_other_types(self):
+        """Reject values that are not a BodyPairReductionConfig."""
         model = self._foot_model()
-        with self.assertRaisesRegex(TypeError, "reduce_contacts must be bool"):
-            newton.CollisionPipeline(model, broad_phase="nxn", reduce_contacts="body_pairs")
+        with self.assertRaisesRegex(TypeError, "BodyPairReductionConfig"):
+            newton.CollisionPipeline(model, broad_phase="nxn", body_pair_reduction=True)
 
     def test_unused_hydroelastic_config_is_allowed(self):
         """Allow a hydroelastic config when the model has no active hydro pair.
@@ -656,7 +632,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
             model,
             broad_phase="nxn",
             deterministic=True,
-            reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(body_pairs=True),
+            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
             sdf_hydroelastic_config=HydroelasticSDF.Config(),
         )
         self.assertIsNone(pipeline.narrow_phase.hydroelastic_sdf)
@@ -682,7 +658,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
             newton.CollisionPipeline(
                 model,
                 broad_phase="nxn",
-                reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(body_pairs=True),
+                body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
                 sdf_hydroelastic_config=HydroelasticSDF.Config(),
             )
 
@@ -709,7 +685,7 @@ class TestBodyPairReductionGuarantees(unittest.TestCase):
             model,
             broad_phase="nxn",
             deterministic=False,
-            reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(body_pairs=True),
+            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
         )
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
@@ -835,7 +811,7 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
-        stats = pipeline.body_pair_reduction_stats()
+        stats = pipeline._body_pair_reducer.stats()
         self.assertEqual(stats["fallback_frames"], 0)
         self.assertEqual(stats["probe_failures"], 0)
         self.assertLess(stats["max_contacts_kept"], stats["max_contacts_in"])
@@ -883,12 +859,12 @@ class TestBodyPairReductionTableSizing(unittest.TestCase):
             model,
             broad_phase="explicit",
             shape_pairs_filtered=wp.array(model.shape_contact_pairs.numpy()[:3], dtype=wp.vec2i, device=model.device),
-            reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(body_pairs=True),
+            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
         )
         self.assertEqual(explicit._body_pair_reducer.describe()["group_pair_bound"], 3)
 
     def test_headroom_scales_the_derived_capacity(self):
-        """Scale the derived capacity by ``body_pair_hashtable_headroom``."""
+        """Scale the derived capacity by ``hashtable_headroom``."""
         model = self._scene(24)
         small = _make_pipeline(model, True, body_pair_hashtable_headroom=1.0)
         large = _make_pipeline(model, True, body_pair_hashtable_headroom=8.0)
@@ -1046,6 +1022,31 @@ class TestBodyPairReductionGrouping(unittest.TestCase):
         pipeline.collide(state, contacts)
         self.assertGreater(self._pad_contact_count(contacts, pad), 0, "refresh did not separate the torsion pad")
 
+    def test_material_attributes_select_the_split(self):
+        """Split groups on exactly the per-shape attributes the config names.
+
+        ``None`` uses every per-shape custom attribute the model registers, so
+        the Steel torsion pad stays separate; an empty tuple merges it back into
+        the body's group; an unknown name is rejected.
+        """
+        model, state, pad = self._torsion_pad_model(0.05)
+        self.assertEqual(
+            newton.CollisionPipeline.BodyPairReductionConfig().material_attributes,
+            None,
+        )
+        named = _collide_once(
+            model,
+            state,
+            True,
+            body_pair_cell_size=10.0,
+            body_pair_material_attributes=["steel:min_torsional_patch_radius"],
+        )
+        self.assertGreater(self._pad_contact_count(named, pad), 0)
+        merged = _collide_once(model, state, True, body_pair_cell_size=10.0, body_pair_material_attributes=())
+        self.assertEqual(self._pad_contact_count(merged, pad), 0, "an unnamed attribute still split the group")
+        with self.assertRaisesRegex(ValueError, "steel:missing"):
+            _make_pipeline(model, True, body_pair_material_attributes=("steel:missing",))
+
     def test_swapped_endpoints_share_one_group(self):
         """Merge one physical patch whose contacts arrive with both endpoint orders.
 
@@ -1138,9 +1139,9 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             broad_phase="nxn",
             deterministic=True,
             rigid_contact_max=8,
-            reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(body_pairs=True),
+            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
         )
-        contacts = reduced.contacts()
+        contacts = plain.contacts()
         plain.collide(state, contacts)
         raw_count = int(contacts.rigid_contact_count.numpy()[0])
         rows_before = _full_contact_rows(contacts)
@@ -1155,7 +1156,7 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             rows_before,
             "overflow fail-open changed the materialized contact prefix",
         )
-        overflow_stats = reduced.body_pair_reduction_stats()
+        overflow_stats = reduced._body_pair_reducer.stats()
         self.assertEqual(overflow_stats["total_frames"], 1)
         self.assertEqual(overflow_stats["input_overflow_frames"], 1)
         self.assertEqual(overflow_stats["sum_contacts_in"], 0)
@@ -1207,12 +1208,13 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         self.assertEqual(stats["sum_contacts_in"], n_base)
         self.assertEqual(stats["sum_contacts_kept"], n_base)
 
-    def test_mismatched_contacts_buffer_rejected(self):
-        """Refuse an external Contacts buffer whose capacity differs from the pipeline's.
+    def test_buffer_stamp_must_match_pipeline(self):
+        """Pair stamped buffers with reducing pipelines only, at the reducer's own capacity.
 
-        The reducer's caches and launch bounds are sized to the pipeline's
-        capacity; a larger external buffer would let the narrow phase write
-        beyond them.
+        The stamp is fixed at allocation, so it holds through clear() and graph
+        replay. An unstamped buffer cannot be reduced, a stamped one cannot be
+        refilled unreduced, and a stamped buffer of another capacity would let
+        the narrow phase write past the reducer's scratch.
         """
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         _cylinder_foot(builder, (0.0, 0.0, 0.0175))
@@ -1220,11 +1222,24 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         model = builder.finalize(device=wp.get_device())
         state = model.state()
         pipeline = _make_pipeline(model, True)
-        oversized = Contacts(
-            rigid_contact_max=pipeline.rigid_contact_max * 2, soft_contact_max=0, device=wp.get_device()
-        )
-        with self.assertRaisesRegex(ValueError, "rigid_contact_max"):
+        plain = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+        self.assertTrue(contacts.rigid_contacts_body_pair_reduced)
+        contacts.clear()
+        self.assertTrue(contacts.rigid_contacts_body_pair_reduced)
+        self.assertFalse(plain.contacts().rigid_contacts_body_pair_reduced)
+        with self.assertRaisesRegex(ValueError, "contacts\\(\\)"):
+            plain.collide(state, contacts)
+        for unstamped in (
+            plain.contacts(),
+            Contacts(rigid_contact_max=pipeline.rigid_contact_max, soft_contact_max=0, device=wp.get_device()),
+        ):
+            with self.assertRaisesRegex(ValueError, "contacts\\(\\)"):
+                pipeline.collide(state, unstamped)
+        oversized = _make_pipeline(model, True, rigid_contact_max=pipeline.rigid_contact_max * 2).contacts()
+        with self.assertRaisesRegex(ValueError, "contacts\\(\\)"):
             pipeline.collide(state, oversized)
+        self.assertEqual(int(oversized.rigid_contact_count.numpy()[0]), 0, "rejected buffer was written")
 
     def test_invalid_configuration_rejected(self):
         """Reject non-finite or non-positive reduction configuration at construction."""
@@ -1237,14 +1252,12 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             {"body_pair_cell_size": float("inf")},
             {"body_pair_cell_size": float("nan")},
             {"body_pair_cell_size": 1.0e-50},
-            {"body_pair_hysteresis": float("inf")},
-            {"body_pair_hysteresis": -1.0},
-            {"body_pair_hysteresis": -1.0e-50},
-            {"body_pair_hysteresis": 1.0e-50},
             {"body_pair_hashtable_headroom": 0.0},
         ):
             with self.assertRaises(ValueError, msg=f"accepted invalid {kwargs}"):
                 _make_pipeline(model, True, **kwargs)
+        with self.assertRaises(TypeError):
+            _make_pipeline(model, True, body_pair_material_attributes="steel:min_torsional_patch_radius")
 
     def test_identity_frames_leave_buffer_untouched(self):
         """Detect no-benefit frames and skip compaction without changing results.
@@ -1284,7 +1297,7 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             _full_contact_rows(contacts_base),
             "identity fast path changed a solver-visible contact field or row order",
         )
-        stats = pipeline.body_pair_reduction_stats()
+        stats = pipeline._body_pair_reducer.stats()
         self.assertEqual(stats["identity_frames"], 1)
         self.assertEqual(stats["total_frames"], 1)
         self.assertEqual(stats["sum_contacts_in"], n_base)
@@ -1321,7 +1334,7 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             _full_contact_rows(contacts_base),
             "tier-two no-op changed a solver-visible contact field or row order",
         )
-        self.assertGreaterEqual(pipeline.body_pair_reduction_stats()["identity_frames"], 1)
+        self.assertGreaterEqual(pipeline._body_pair_reducer.stats()["identity_frames"], 1)
 
     def test_stats_totals_give_achieved_ratio(self):
         """Accumulate paired frame totals that yield the achieved reduction ratio.
@@ -1355,15 +1368,15 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             observed_kept += frame_kept
             observed_max_in = max(observed_max_in, frame_in)
             observed_max_kept = max(observed_max_kept, frame_kept)
-        stats = pipeline.body_pair_reduction_stats()
+        stats = pipeline._body_pair_reducer.stats()
         self.assertEqual(stats["total_frames"], 4)
         self.assertEqual(stats["sum_contacts_in"], observed_in)
         self.assertEqual(stats["sum_contacts_kept"], observed_kept)
         self.assertEqual(stats["max_contacts_in"], observed_max_in)
         self.assertEqual(stats["max_contacts_kept"], observed_max_kept)
         self.assertLess(stats["sum_contacts_kept"], stats["sum_contacts_in"], "cylinder foot must reduce")
-        pipeline.clear_body_pair_reduction_stats()
-        cleared = pipeline.body_pair_reduction_stats()
+        pipeline._body_pair_reducer.clear_stats()
+        cleared = pipeline._body_pair_reducer.stats()
         for key in (
             "total_frames",
             "sum_contacts_in",
@@ -1381,7 +1394,7 @@ class TestBodyPairReductionSafety(unittest.TestCase):
             self.assertEqual(cleared[key], 0, f"{key} survived clear")
 
     def test_telemetry_rejected_during_capture(self):
-        """Reject stats reads and clears while a CUDA graph capture is active.
+        """Reject stats reads, clears and group refreshes while a CUDA graph capture is active.
 
         stats() would die on its device sync anyway, but cryptically;
         clear_stats() would silently record its zeroing into the graph and
@@ -1397,144 +1410,17 @@ class TestBodyPairReductionSafety(unittest.TestCase):
         state = model.state()
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)  # warm-up
         with wp.ScopedCapture(device) as capture:
             # Record real reducer work first so the guard is exercised during
             # a non-empty capture, not only in an otherwise empty graph.
             pipeline.collide(state, contacts)
             with self.assertRaisesRegex(RuntimeError, "outside CUDA graph capture"):
-                pipeline.body_pair_reduction_stats()
+                pipeline._body_pair_reducer.stats()
             with self.assertRaisesRegex(RuntimeError, "outside CUDA graph capture"):
-                pipeline.clear_body_pair_reduction_stats()
+                pipeline._body_pair_reducer.clear_stats()
+            with self.assertRaisesRegex(RuntimeError, "outside CUDA graph capture"):
+                pipeline.refresh_body_pair_reduction_groups()
         self.assertIsNotNone(capture.graph)
-
-    def test_property_schema_switch_is_safe(self):
-        """Reduce a property-enabled buffer after a property-less one safely.
-
-        The first reduce installs zero-length material placeholders in the
-        gather scratch; a later same-capacity buffer WITH per-contact material
-        arrays must re-provision them or the gather writes out of bounds.
-        """
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        _cylinder_foot(builder, (0.0, 0.0, 0.0175))
-        builder.add_ground_plane()
-        model = builder.finalize(device=wp.get_device())
-        state = model.state()
-        pipeline = _make_pipeline(model, True)
-        plain = pipeline.contacts()
-        pipeline.collide(state, plain)  # installs the property-less scratch
-
-        rich = Contacts(
-            rigid_contact_max=pipeline.rigid_contact_max,
-            soft_contact_max=0,
-            device=wp.get_device(),
-            per_contact_shape_properties=True,
-        )
-        pipeline.collide(state, rich)  # must not write into zero-length arrays
-        n = int(rich.rigid_contact_count.numpy()[0])
-        self.assertGreater(n, 0)
-        self.assertTrue(np.isfinite(rich.rigid_contact_friction.numpy()[:n]).all())
-
-    def test_deterministic_sort_keeps_rich_properties_aligned(self):
-        """Permute an external rich buffer's material triple with its geometry.
-
-        Reducer pipelines normally allocate property-less Contacts, but their
-        deterministic sorter must still provision material scratch for a rich
-        external buffer. Otherwise the subsequent reducer receives stiffness,
-        damping, and friction values attached to the wrong contact rows.
-        """
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        for k in range(4):
-            builder.add_shape_sphere(-1, xform=wp.transform(wp.vec3(float(k), 0.0, 0.0), wp.quat_identity()))
-        model = builder.finalize(device=wp.get_device())
-        pipeline = _make_pipeline(model, True, rigid_contact_max=4)
-        contacts = Contacts(
-            rigid_contact_max=4,
-            soft_contact_max=0,
-            device=wp.get_device(),
-            per_contact_shape_properties=True,
-        )
-        contacts.rigid_contact_count.assign(np.array([4], dtype=np.int32))
-        contacts.rigid_contact_shape0.assign(np.arange(4, dtype=np.int32))
-        contacts.rigid_contact_shape1.assign(np.full(4, -1, dtype=np.int32))
-        points = np.arange(12, dtype=np.float32).reshape(4, 3)
-        zeros3 = np.zeros((4, 3), dtype=np.float32)
-        contacts.rigid_contact_point0.assign(points)
-        contacts.rigid_contact_point1.assign(points + 0.5)
-        contacts.rigid_contact_offset0.assign(zeros3)
-        contacts.rigid_contact_offset1.assign(zeros3)
-        contacts.rigid_contact_normal.assign(np.tile(np.array([0.0, 0.0, 1.0], dtype=np.float32), (4, 1)))
-        contacts.rigid_contact_margin0.assign(np.zeros(4, dtype=np.float32))
-        contacts.rigid_contact_margin1.assign(np.zeros(4, dtype=np.float32))
-        contacts.rigid_contact_tids.assign(np.arange(4, dtype=np.int32))
-        contacts.rigid_contact_stiffness.assign(np.arange(100.0, 104.0, dtype=np.float32))
-        contacts.rigid_contact_damping.assign(np.arange(200.0, 204.0, dtype=np.float32))
-        contacts.rigid_contact_friction.assign(np.arange(300.0, 304.0, dtype=np.float32))
-        pipeline._sort_key_array.assign(np.array([40, 30, 20, 10], dtype=np.int64))
-
-        pipeline._contact_sorter.sort_full(
-            pipeline._sort_key_array,
-            contacts.rigid_contact_count,
-            shape0=contacts.rigid_contact_shape0,
-            shape1=contacts.rigid_contact_shape1,
-            point0=contacts.rigid_contact_point0,
-            point1=contacts.rigid_contact_point1,
-            offset0=contacts.rigid_contact_offset0,
-            offset1=contacts.rigid_contact_offset1,
-            normal=contacts.rigid_contact_normal,
-            margin0=contacts.rigid_contact_margin0,
-            margin1=contacts.rigid_contact_margin1,
-            tids=contacts.rigid_contact_tids,
-            stiffness=contacts.rigid_contact_stiffness,
-            damping=contacts.rigid_contact_damping,
-            friction=contacts.rigid_contact_friction,
-            device=wp.get_device(),
-        )
-        np.testing.assert_array_equal(contacts.rigid_contact_shape0.numpy(), [3, 2, 1, 0])
-        np.testing.assert_allclose(contacts.rigid_contact_stiffness.numpy(), [103.0, 102.0, 101.0, 100.0])
-        np.testing.assert_allclose(contacts.rigid_contact_damping.numpy(), [203.0, 202.0, 201.0, 200.0])
-        np.testing.assert_allclose(contacts.rigid_contact_friction.numpy(), [303.0, 302.0, 301.0, 300.0])
-
-    def test_clear_resets_reduced_provenance(self):
-        """Reset the reduced marker when the buffer is cleared.
-
-        A cleared buffer holds no contacts at all; keeping the stale marker
-        would make unsupported solvers reject an empty buffer.
-        """
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        _cylinder_foot(builder, (0.0, 0.0, 0.0175))
-        builder.add_ground_plane()
-        model = builder.finalize(device=wp.get_device())
-        state = model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)
-        self.assertTrue(contacts.rigid_contacts_body_pair_reduced)
-        contacts.clear()
-        self.assertFalse(contacts.rigid_contacts_body_pair_reduced)
-
-    def test_reduced_marker_tracks_pipeline_mode(self):
-        """Assign buffer provenance from the pipeline mode on every collide.
-
-        A sticky marker would make an unsupported solver reject a buffer that
-        was later refilled by an ordinary pipeline.
-        """
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        _cylinder_foot(builder, (0.0, 0.0, 0.0175))
-        builder.add_ground_plane()
-        model = builder.finalize(device=wp.get_device())
-        state = model.state()
-        reduced = _make_pipeline(model, True)
-        plain = newton.CollisionPipeline(model, broad_phase="nxn")
-        contacts = reduced.contacts()
-        self.assertFalse(contacts.rigid_contacts_body_pair_reduced)
-        reduced.collide(state, contacts)
-        self.assertTrue(contacts.rigid_contacts_body_pair_reduced)
-        plain.collide(state, contacts)
-        self.assertFalse(
-            contacts.rigid_contacts_body_pair_reduced,
-            "marker must clear when an ordinary pipeline refills",
-        )
 
 
 class TestBodyPairReductionRobustness(unittest.TestCase):
@@ -1555,7 +1441,7 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
                 broad_phase="nxn",
                 deterministic=True,
                 contact_matching="sticky",
-                reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(body_pairs=True),
+                body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
             )
 
     def test_group_id_capacity_rejected_at_construction(self):
@@ -1575,18 +1461,16 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         builder.add_ground_plane()
         model = builder.finalize(device=wp.get_device())
         with unittest.mock.patch("newton._src.sim.collide.MAX_GROUP_ID", 4):
-            with self.assertRaisesRegex(ValueError, "at most 5 reduction groups"):
+            with self.assertRaisesRegex(ValueError, "at most 5 groups"):
                 _make_pipeline(model, True)
 
     def test_cuda_graph_capture(self):
-        """Replay a captured collide() on changing states against an uncaptured reference.
+        """Capture collide() cold and replay it on changing states against an uncaptured reference.
 
-        All reduction launches are fixed-size, so capture must succeed, and a
-        replay must equal an ordinary collide that saw the same state history
-        (hysteresis makes the kept set history-dependent, so the reference
-        pipeline is stepped through the identical sequence).  Every
-        solver-visible contact field is compared, on the settled pose and
-        again after pitching the foot in place.  Skipped on CPU devices.
+        All reducer buffers are allocated at construction, so the very first
+        collide on a fresh buffer can be captured.  Every solver-visible contact
+        field is compared, on the settled pose and again after pitching the
+        foot in place.  Skipped on CPU devices.
         """
         device = wp.get_device()
         if not device.is_cuda:
@@ -1594,32 +1478,17 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         model = self._foot_scene()
         state = model.state()
         pipeline = _make_pipeline(model, True)
-        contacts = Contacts(
-            rigid_contact_max=pipeline.rigid_contact_max,
-            soft_contact_max=pipeline.soft_contact_max,
-            device=device,
-            per_contact_shape_properties=True,
-        )
-        pipeline.collide(state, contacts)  # warm-up: lazy allocations + kernel loads
+        contacts = pipeline.contacts()
         with wp.ScopedCapture(device) as capture:
             pipeline.collide(state, contacts)
         wp.capture_launch(capture.graph)
         wp.capture_launch(capture.graph)
 
-        # reference: same model, fresh pipeline, identical executed history
-        # (capture itself records without executing: warm-up + two replays)
         state_ref = model.state()
         ref = _make_pipeline(model, True)
-        contacts_ref = Contacts(
-            rigid_contact_max=ref.rigid_contact_max,
-            soft_contact_max=ref.soft_contact_max,
-            device=device,
-            per_contact_shape_properties=True,
-        )
-        for _ in range(3):
-            ref.collide(state_ref, contacts_ref)
-        self.assertEqual(_full_contact_rows(contacts, canonical=True), _full_contact_rows(contacts_ref, canonical=True))
-        self.assertEqual(_full_contact_rows(contacts), _full_contact_rows(contacts_ref), "captured row order changed")
+        contacts_ref = ref.contacts()
+        ref.collide(state_ref, contacts_ref)
+        self.assertEqual(_full_contact_rows(contacts), _full_contact_rows(contacts_ref), "captured rows changed")
 
         # mutate the captured state IN PLACE (the graph holds the pointers):
         # pitch shifts depth ownership across the foot, changing the kept set
@@ -1636,189 +1505,44 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
             rows_before, rows_after, "pitch did not change the reference output; the changing-state leg is vacuous"
         )
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
-        self.assertEqual(_full_contact_rows(contacts, canonical=True), rows_after)
-        self.assertEqual(_full_contact_rows(contacts), _full_contact_rows(contacts_ref), "captured row order changed")
+        self.assertEqual(_full_contact_rows(contacts), _full_contact_rows(contacts_ref), "captured rows changed")
 
-    def test_second_reducer_graph_and_buffer_rejected(self):
-        """Refuse a second live reducer-writer graph or a second buffer.
+    def test_graphs_share_buffers_and_pipeline(self):
+        """Capture several graphs, and buffers, on one reducing pipeline and replay them in any order.
 
-        Graph replay repeats neither the buffer-switch history reset nor the
-        provenance assignment, so two captured buffers would silently share
-        hysteresis history; collide() must raise at capture time instead --
-        BEFORE any state mutation: the rejected buffer and the reducer's
-        history must come back untouched.  Even the same buffer cannot be
-        recaptured while its first graph is live: independent replays would
-        race the reducer history, telemetry, and output rows.  Skipped on CPU
-        devices.
+        The reducer keeps no state across frames, so separate substep and
+        reset graphs into one buffer, or graphs into two double-buffered
+        Contacts, replay to the eager result.  Skipped on CPU devices.
         """
         device = wp.get_device()
         if not device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device")
         model = self._foot_scene()
         state = model.state()
-        pipeline = _make_pipeline(model, True)
+        pipeline = _make_pipeline(model, True, contact_matching="latest")
         contacts_a = pipeline.contacts()
         contacts_b = pipeline.contacts()
-        pipeline.collide(state, contacts_a)  # warm-up
-        with wp.ScopedCapture(device) as capture_a:
+        with wp.ScopedCapture(device) as step_a:
             pipeline.collide(state, contacts_a)
-        wp.capture_launch(capture_a.graph)
-        red = pipeline._body_pair_reducer
-        prev_keys_before = red.prev_keys.numpy().copy()
-        generations_before = red.history_generation.numpy().copy()
-        # A second graph for the same buffer is unsafe even though its pointers
-        # match: either graph executable could be launched independently.
-        capture_a2 = wp.ScopedCapture(device)
-        capture_a2.__enter__()
-        try:
-            with self.assertRaisesRegex(RuntimeError, "second body-pair reducer graph"):
-                pipeline.collide(state, contacts_a)
-        finally:
-            capture_a2.__exit__(None, None, None)
-        # different buffer: must raise while capture is active; end the
-        # capture outside the exception path so the stream is left clean
-        capture_b = wp.ScopedCapture(device)
-        capture_b.__enter__()
-        try:
-            with self.assertRaisesRegex(RuntimeError, "per captured buffer"):
-                pipeline.collide(state, contacts_b)
-        finally:
-            capture_b.__exit__(None, None, None)
-        self.assertEqual(int(contacts_b.rigid_contact_count.numpy()[0]), 0, "rejected buffer was written")
-        self.assertFalse(contacts_b.rigid_contacts_body_pair_reduced, "rejected buffer was stamped")
-        np.testing.assert_array_equal(red.prev_keys.numpy(), prev_keys_before)
-        np.testing.assert_array_equal(red.history_generation.numpy(), generations_before)
-        # Releasing after the graph is gone clears capture provenance and unlocks the pipeline, while
-        # keeping conservative ordinary provenance for rows left by the final replay.
-        del capture_a
-        gc.collect()
-        self.assertTrue(contacts_a.rigid_contacts_body_pair_reduced_capture)
-        contacts_a.release_graph_capture()
-        self.assertFalse(contacts_a.rigid_contacts_body_pair_reduced_capture)
+        with wp.ScopedCapture(device) as reset_a:
+            pipeline.reset_contact_matching()
+            pipeline.collide(state, contacts_a)
+        with wp.ScopedCapture(device) as step_b:
+            pipeline.collide(state, contacts_b)
+        ref = _make_pipeline(model, True)
+        contacts_ref = ref.contacts()
+        ref.collide(state, contacts_ref)
+        expected = _full_contact_rows(contacts_ref)
+        for graph in (step_a, step_b, reset_a, step_b, step_a, step_a):
+            wp.capture_launch(graph.graph)
+        contacts_a.clear()
+        wp.capture_launch(step_a.graph)
+        self.assertEqual(_full_contact_rows(contacts_a), expected)
+        self.assertEqual(_full_contact_rows(contacts_b), expected)
         self.assertTrue(contacts_a.rigid_contacts_body_pair_reduced)
 
-    def test_ordinary_other_buffer_rejected_while_graph_live(self):
-        """Refuse ANY other buffer while a captured graph's binding is live.
-
-        An ordinary (uncaptured) collide with buffer B after capturing buffer
-        A passes a capture-time-only check, then resets and repopulates the
-        shared hysteresis state -- every subsequent replay of A's graph runs
-        against B's history.  The binding must reject other buffers whether
-        or not the current call is being captured.  Skipped on CPU devices.
-        """
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        model = self._foot_scene()
-        state = model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts_a = pipeline.contacts()
-        contacts_b = pipeline.contacts()
-        pipeline.collide(state, contacts_a)  # warm-up
-        with wp.ScopedCapture(device) as capture_a:
-            pipeline.collide(state, contacts_a)
-        wp.capture_launch(capture_a.graph)
-        with self.assertRaisesRegex(RuntimeError, "per captured buffer"):
-            pipeline.collide(state, contacts_b)
-        # the captured buffer itself stays usable outside capture
-        pipeline.collide(state, contacts_a)
-
-    def test_capture_requires_warmed_buffer(self):
-        """Refuse to capture a Contacts buffer that never collided outside capture.
-
-        Capturing cold reaches the buffer-switch history reset inside the
-        capture, recording its fills and launches into the graph -- every
-        replay then erases hysteresis before reducing, silently restoring the
-        memoryless behavior the graph's owner did not ask for.  Skipped on
-        CPU devices.
-        """
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        model = self._foot_scene()
-        state = model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts = pipeline.contacts()
-        capture = wp.ScopedCapture(device)
-        capture.__enter__()
-        try:
-            with self.assertRaisesRegex(RuntimeError, "outside capture before capturing"):
-                pipeline.collide(state, contacts)
-        finally:
-            capture.__exit__(None, None, None)
-
-    def test_rejected_capture_binds_no_buffer(self):
-        """Reject invalid collide() arguments before the capture lease, so the pipeline stays unbound.
-
-        Skipped on CPU devices.
-        """
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        model = self._foot_scene()
-        state = model.state()
-        pipeline = _make_pipeline(model, True, speculative_contact_gap_max=0.01)
-        contacts_a = pipeline.contacts()
-        contacts_b = pipeline.contacts()
-        pipeline.collide(state, contacts_a, dt=DT)
-        capture = wp.ScopedCapture(device)
-        capture.__enter__()
-        try:
-            with self.assertRaisesRegex(ValueError, "dt must be provided"):
-                pipeline.collide(state, contacts_a)
-        finally:
-            capture.__exit__(None, None, None)
-        del capture
-        gc.collect()
-        self.assertFalse(contacts_a.rigid_contacts_body_pair_reduced_capture)
-        pipeline.collide(state, contacts_b, dt=DT)
-
-    def test_capture_release_allows_new_buffer(self):
-        """Destroy the graph and release the captured buffer before rebinding a new buffer.
-
-        Release refuses while the graph object is alive. Ordinary reduced provenance stays conservative
-        until a new collide or clear.
-        Skipped on CPU devices.
-        """
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        model = self._foot_scene()
-        state = model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts_a = pipeline.contacts()
-        contacts_b = pipeline.contacts()
-        pipeline.collide(state, contacts_a)
-        with wp.ScopedCapture(device) as capture_a:
-            pipeline.collide(state, contacts_a)
-        wp.capture_launch(capture_a.graph)
-        with self.assertRaisesRegex(RuntimeError, "still alive"):
-            contacts_a.release_graph_capture()
-        del capture_a
-        gc.collect()
-        with self.assertRaisesRegex(RuntimeError, "per captured buffer"):
-            pipeline.collide(state, contacts_b)
-        contacts_a.release_graph_capture()
-        self.assertFalse(contacts_a.rigid_contacts_body_pair_reduced_capture)
-        self.assertTrue(
-            contacts_a.rigid_contacts_body_pair_reduced,
-            "destroying the last graph must conservatively describe rows left by its final replay",
-        )
-        pipeline.collide(state, contacts_b)  # warm-up now legal
-        with wp.ScopedCapture(device) as capture_b:
-            pipeline.collide(state, contacts_b)
-        wp.capture_launch(capture_b.graph)
-
-    def test_captured_buffer_keeps_conservative_provenance(self):
-        """Keep rejecting unsupported solvers after a non-reducing refill of a captured buffer.
-
-        Replay is invisible to host-side provenance: a plain pipeline can
-        refill a captured buffer and stamp it unreduced, then a replay of the
-        reducer graph compacts the device records again -- an unsupported
-        solver reading the plain marker would consume reduced contacts
-        without raising.  A buffer a reducer graph captured carries a
-        may-contain-reduced marker until release_graph_capture().  Skipped on CPU devices.
-        """
+    def test_unsupported_solver_rejects_stamped_buffer_in_capture(self):
+        """Reject a stamped buffer when an unsupported solver step is captured, as when it runs eagerly."""
         device = wp.get_device()
         if not device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device")
@@ -1826,202 +1550,33 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
         state_0, state_1 = model.state(), model.state()
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
-        pipeline.collide(state_0, contacts)
-        with wp.ScopedCapture(device) as capture:
+        solver = newton.solvers.SolverSemiImplicit(model)
+        capture = wp.ScopedCapture(device)
+        capture.__enter__()
+        try:
             pipeline.collide(state_0, contacts)
-        wp.capture_launch(capture.graph)
-        plain = newton.CollisionPipeline(model, broad_phase="nxn")
-        plain.collide(state_0, contacts)
-        self.assertFalse(
-            contacts.rigid_contacts_body_pair_reduced,
-            "plain refill should clear the per-collide marker",
-        )
-        # Recreate the exact dangerous state: replay compacts the device rows,
-        # but no Python collide runs to restamp ordinary provenance.
-        wp.capture_launch(capture.graph)
-        self.assertFalse(contacts.rigid_contacts_body_pair_reduced)
-        self.assertTrue(contacts.rigid_contacts_body_pair_reduced_capture)
-        solver = newton.solvers.SolverSemiImplicit(model)
-        with self.assertRaisesRegex(ValueError, "supports_body_pair_reduced_contacts"):
-            solver.step(state_0, state_1, model.control(), contacts, DT)
+            with self.assertRaisesRegex(ValueError, "supports_body_pair_reduced_contacts"):
+                solver.step(state_0, state_1, model.control(), contacts, DT)
+        finally:
+            capture.__exit__(None, None, None)
 
-    def test_graph_lease_retains_pipeline_and_contacts(self):
-        """The graph itself owns every reducer/contact array it recorded."""
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
+    def test_reducer_launches_stay_off_the_tape(self):
+        """Record no reducer bookkeeping launches on an active autodiff tape.
+
+        Every reducer kernel has backward disabled; recording them would only
+        bloat the tape. This guards the full reduce() path including the
+        hashtable maintenance kernels.
+        """
         model = self._foot_scene()
         state = model.state()
         pipeline = _make_pipeline(model, True)
         contacts = pipeline.contacts()
         pipeline.collide(state, contacts)
-        pipeline_ref = weakref.ref(pipeline)
-        contacts_ref = weakref.ref(contacts)
-        with wp.ScopedCapture(device) as capture:
-            pipeline.collide(state, contacts)
-        graph = capture.graph
-        del capture, contacts, pipeline
-        gc.collect()
-        self.assertIsNotNone(pipeline_ref(), "graph lease did not retain reducer arrays")
-        self.assertIsNotNone(contacts_ref(), "graph lease did not retain Contacts arrays")
-        del graph
-        gc.collect()
-        self.assertIsNone(pipeline_ref())
-        self.assertIsNone(contacts_ref())
-
-    def test_reducer_writer_graph_is_exclusive_across_pipelines(self):
-        """Two pipelines cannot capture writers for the same contact buffer."""
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        model = self._foot_scene()
-        state = model.state()
-        pipeline_a = _make_pipeline(model, True)
-        pipeline_b = _make_pipeline(model, True)
-        contacts = pipeline_a.contacts()
-        pipeline_a.collide(state, contacts)
-        pipeline_b.collide(state, contacts)
-        with wp.ScopedCapture(device) as capture_a:
-            pipeline_a.collide(state, contacts)
-        capture_b_rejected = wp.ScopedCapture(device)
-        capture_b_rejected.__enter__()
-        try:
-            with self.assertRaisesRegex(RuntimeError, "second body-pair reducer graph"):
-                pipeline_b.collide(state, contacts)
-        finally:
-            capture_b_rejected.__exit__(None, None, None)
-
-        del capture_a
-        gc.collect()
-        # The role outlives the graph object: an embedding graph could still replay it.
-        capture_b_rejected = wp.ScopedCapture(device)
-        capture_b_rejected.__enter__()
-        try:
-            with self.assertRaisesRegex(RuntimeError, "second body-pair reducer graph"):
-                pipeline_b.collide(state, contacts)
-        finally:
-            capture_b_rejected.__exit__(None, None, None)
-        contacts.release_graph_capture()
-        with wp.ScopedCapture(device) as capture_b:
-            pipeline_b.collide(state, contacts)
-        wp.capture_launch(capture_b.graph)
-        self.assertTrue(contacts.rigid_contacts_body_pair_reduced_capture)
-        del capture_b
-        gc.collect()
-        self.assertTrue(contacts.rigid_contacts_body_pair_reduced_capture)
-        contacts.release_graph_capture()
-        self.assertFalse(contacts.rigid_contacts_body_pair_reduced_capture)
-        self.assertTrue(contacts.rigid_contacts_body_pair_reduced)
-
-    def test_precaptured_unsupported_solver_blocks_reducer_writer(self):
-        """A raw-contact solver graph cannot later replay over reduced rows."""
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        model = self._foot_scene()
-        state_0, state_1 = model.state(), model.state()
-        plain = newton.CollisionPipeline(model, broad_phase="nxn")
-        contacts = plain.contacts()
-        plain.collide(state_0, contacts)
-        solver = newton.solvers.SolverSemiImplicit(model)
-        control = model.control()
-        solver.step(state_0, state_1, control, contacts, DT)  # warm-up
-        with wp.ScopedCapture(device) as solver_capture:
-            solver.step(state_0, state_1, control, contacts, DT)
-
-        reducer = _make_pipeline(model, True)
-        with self.assertRaisesRegex(RuntimeError, "unreduced-only solver configuration"):
-            reducer.collide(state_0, contacts)
-        self.assertFalse(contacts.rigid_contacts_body_pair_reduced)
-        self.assertFalse(contacts.rigid_contacts_body_pair_reduced_capture)
-        del solver_capture
-        gc.collect()
-        with self.assertRaisesRegex(RuntimeError, "unreduced-only solver configuration"):
-            reducer.collide(state_0, contacts)
-        contacts.release_graph_capture()
-        reducer.collide(state_0, contacts)
-
-    def test_unsupported_solver_capture_on_unreduced_buffer_takes_no_lease(self):
-        """Capture an unsupported solver on a buffer no reducer wrote as on main: no lease, no reference."""
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        model = self._foot_scene()
-        state_0, state_1 = model.state(), model.state()
-        plain = newton.CollisionPipeline(model, broad_phase="nxn")
-        contacts = plain.contacts()
-        plain.collide(state_0, contacts)
-        solver = newton.solvers.SolverSemiImplicit(model)
-        control = model.control()
-        solver.step(state_0, state_1, control, contacts, DT)  # warm-up
-        with wp.ScopedCapture(device) as capture:
-            solver.step(state_0, state_1, control, contacts, DT)
-        self.assertFalse(hasattr(capture.graph, "_newton_contact_graph_leases"))
-        self.assertIsNone(contacts._graph_capture_role)
-
-        solver_ref = weakref.ref(solver)
-        del solver
-        gc.collect()
-        self.assertIsNone(solver_ref(), "the captured graph kept the solver alive")
-
-    def test_embedded_unsupported_reader_keeps_blocking_reducer(self):
-        """Keep rejecting a reducer after the captured reader's own graph object is gone but an embedding graph lives."""
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        model = self._foot_scene()
-        state, output = model.state(), model.state()
-        raw = newton.CollisionPipeline(model, broad_phase="nxn")
-        contacts = raw.contacts()
-        raw.collide(state, contacts)
-
-        class UnreducedReader(newton.solvers.SolverBase):
-            def __init__(self, model):
-                super().__init__(model)
-                self.observed_count = wp.zeros(1, dtype=wp.int32, device=model.device)
-
-            def step(self, state_in, state_out, control, contacts, dt):
-                self._require_unreduced_contacts(contacts)
-                wp.copy(self.observed_count, contacts.rigid_contact_count)
-
-        reader = UnreducedReader(model)
-        control = model.control()
-        reader.step(state, output, control, contacts, DT)
-        condition = wp.ones(1, dtype=wp.int32, device=device)
-        with wp.ScopedCapture(device) as child:
-            reader.step(state, output, control, contacts, DT)
-        with wp.ScopedCapture(device) as parent:
-            wp.capture_if(condition, child.graph)
-        del child
-        gc.collect()
-
-        reducer = _make_pipeline(model, True)
-        with self.assertRaisesRegex(RuntimeError, "unreduced-only solver configuration"):
-            reducer.collide(state, contacts)
-        wp.capture_launch(parent.graph)
-        raw_count = int(contacts.rigid_contact_count.numpy()[0])
-        self.assertEqual(int(reader.observed_count.numpy()[0]), raw_count)
-
-    def test_capture_lifecycle_mutations_are_guarded(self):
-        """Host topology/reset/release mutations never enter a CUDA graph."""
-        device = wp.get_device()
-        if not device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device")
-        model = self._foot_scene()
-        state = model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)
-        reset_mask = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=device)
-        with wp.ScopedCapture(device) as capture:
-            pipeline.collide(state, contacts)
-            with self.assertRaisesRegex(RuntimeError, "no CUDA graph capture"):
-                pipeline.refresh_body_pair_reduction_groups()
-            # A device world mask is the capture-safe reset path.
-            pipeline.reset_contact_matching(reset_mask)
-            with self.assertRaisesRegex(RuntimeError, "lifecycle mutation"):
-                contacts.release_graph_capture()
-        self.assertIsNotNone(capture.graph)
+        red = pipeline._body_pair_reducer
+        tape = wp.Tape()
+        with tape:
+            red.reduce(model, state, contacts)
+        self.assertEqual(len(tape.launches), 0, "reducer bookkeeping was recorded on the tape")
 
     def test_requires_grad_diff_augmentation(self):
         """Evaluate finite differentiable contact distances on the compacted set."""
@@ -2034,7 +1589,7 @@ class TestBodyPairReductionRobustness(unittest.TestCase):
             model,
             broad_phase="nxn",
             deterministic=True,
-            reduce_contacts=newton.CollisionPipeline.ContactReductionConfig(body_pairs=True),
+            body_pair_reduction=newton.CollisionPipeline.BodyPairReductionConfig(),
             requires_grad=True,
         )
         contacts = pipeline.contacts()
@@ -2097,7 +1652,6 @@ class TestBodyPairReductionGroupAssignment(unittest.TestCase):
             True,
             rigid_contact_max=2,
             body_pair_cell_size=0.02,
-            body_pair_hysteresis=0.0,
         )
         contacts = pipeline.contacts()
 
@@ -2191,271 +1745,6 @@ class TestBodyPairReductionGroupAssignment(unittest.TestCase):
             kept_sets.append(rows)
         self.assertEqual(kept_sets[0], kept_sets[1], "kept set changed under translation")
         self.assertEqual(kept_sets[0], kept_sets[2], "kept set changed under translation")
-
-
-class TestBodyPairReductionHysteresis(unittest.TestCase):
-    """Temporal hysteresis: kept-set continuity without sticky wrong winners."""
-
-    def _kept_set_handoffs(self, hysteresis, steps=120):
-        """Winner handoffs of a micro-rocked plate on curved support, solver-free.
-
-        A sphere-grid plate on a 20 m dome has near-degenerate winner scores
-        (the gap spread across the plate is ~0.14 mm).  The plate is rocked
-        KINEMATICALLY with a 5 mrad tilt oscillation -- contact points move
-        ~0.4 mm per cycle, under the 0.5 mm identity quantum so incumbency can
-        attach, and the score shifts stay well inside the 1 mm margin.  The
-        kept set is identified by WHICH plate spheres survive; a handoff is
-        any step whose kept multiset differs from the previous step's.  No
-        solver runs, so this measures the reducer's own churn -- the quantity
-        hysteresis exists to remove -- independent of any solver's support
-        status.
-        """
-        r_ground = 20.0
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        builder.add_shape_sphere(
-            -1, xform=wp.transform(wp.vec3(0.0, 0.0, -r_ground), wp.quat_identity()), radius=r_ground
-        )
-        body = _sphere_grid_body(builder, (0.0, 0.0, 0.0095), n=4, spacing=0.05)
-        model = builder.finalize(device=wp.get_device())
-        state = model.state()
-        pipeline = _make_pipeline(model, True, body_pair_hysteresis=hysteresis)
-        contacts = pipeline.contacts()
-        q0 = state.body_q.numpy().copy()
-        prev, handoffs = None, 0
-        for k in range(steps):
-            theta = 0.005 * np.sin(2.0 * np.pi * k / 40.0)
-            rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(theta))
-            q = q0.copy()
-            q[body][3:7] = [rot[0], rot[1], rot[2], rot[3]]
-            state.body_q.assign(q)
-            pipeline.collide(state, contacts)
-            n = int(contacts.rigid_contact_count.numpy()[0])
-            rows = tuple(sorted(contacts.rigid_contact_shape1.numpy()[:n].tolist()))
-            if prev is not None and rows != prev:
-                handoffs += 1
-            prev = rows
-        return handoffs
-
-    def test_hysteresis_removes_winner_churn_on_curved_support(self):
-        """Stop near-degenerate winner handoffs on curved support.
-
-        Memoryless selection hands the kept set off repeatedly as the rock
-        sweeps the near-tied scores (measured 18 handoffs in 119 steps); the
-        1 mm incumbency margin removes ALL of them.  This is the reducer-level
-        mechanism behind the settle-churn the hysteresis feature was built
-        for, pinned without a solver in the loop.
-        """
-        churn_off = self._kept_set_handoffs(hysteresis=0.0)
-        churn_on = self._kept_set_handoffs(hysteresis=0.001)
-        self.assertGreaterEqual(churn_off, 10, "scene stopped churning; the probe is vacuous")
-        self.assertEqual(churn_on, 0, f"hysteresis left {churn_on} winner handoffs")
-
-    def test_challenger_beyond_margin_wins_immediately(self):
-        """Dethrone an incumbent depth winner as soon as a clearly deeper one exists.
-
-        Hysteresis must only stop near-tie handoffs. A three-cylinder foot
-        whose MIDDLE cylinder sits 2 mm lower is kept only through the depth
-        slot (both end cylinders own every spatial extreme). Establish
-        incumbency, then pitch the body so an end cylinder becomes deeper by
-        several times the 1 mm margin while every contact's in-plane position
-        moves less than the 0.5 mm identity quantum -- incumbency stays attached
-        AND must lose: the middle contact has to vanish from the kept set on
-        the very next collide.
-        """
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0195), wp.quat_identity()), mass=1.0)
-        for i in range(3):
-            z_local = -0.002 if i == 1 else 0.0
-            builder.add_shape_cylinder(
-                body,
-                xform=wp.transform(wp.vec3((i - 1.0) * 0.05, 0.0, z_local), wp.quat_identity()),
-                radius=0.02,
-                half_height=0.015,
-            )
-        builder.add_ground_plane()
-        model = builder.finalize(device=wp.get_device())
-        state = model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)  # establish winners
-        pipeline.collide(state, contacts)  # winners now incumbents
-        pts = _world_points0(model, state, contacts)
-        mid = np.abs(pts[:, 0]) < 0.02
-        self.assertTrue(bool(mid.any()), "middle cylinder should be kept as the depth winner")
-
-        # pitch about y: the -x end cylinder gains ~5 mm of depth over the
-        # middle (>> 1 mm hysteresis), while in-plane positions shift by
-        # 0.05 * (1 - cos 0.1) ~ 0.25 mm (< the 0.5 mm identity quantum)
-        q = state.body_q.numpy()
-        pitch = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.1)
-        q[0][3:7] = [pitch[0], pitch[1], pitch[2], pitch[3]]
-        state.body_q.assign(q)
-        pipeline.collide(state, contacts)
-        pts = _world_points0(model, state, contacts)
-        mid = np.abs(pts[:, 0]) < 0.02
-        self.assertFalse(bool(mid.any()), "beaten incumbent depth winner was kept anyway")
-
-    def test_reset_history_matches_fresh_pipeline(self):
-        """Produce a fresh pipeline's kept set on the first collide after a reset.
-
-        Hysteresis history is trajectory state; episode resets and teleports
-        must be able to sever it so no incumbency bonus crosses the boundary.
-        """
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        _cylinder_foot(builder, (0.0, 0.0, 0.0175))
-        builder.add_ground_plane()
-        model = builder.finalize(device=wp.get_device())
-        state = model.state()
-
-        pipeline = _make_pipeline(model, True)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)  # establish history
-        pipeline.reset_contact_matching()
-        pipeline.collide(state, contacts)
-        n_reset, s0_r, s1_r, _n1, p0_r = _contact_snapshot(contacts)
-
-        fresh = _make_pipeline(model, True)
-        contacts_f = fresh.contacts()
-        fresh.collide(state, contacts_f)
-        n_f, s0_f, s1_f, _n2, p0_f = _contact_snapshot(contacts_f)
-
-        self.assertEqual(n_reset, n_f)
-        rows_r = sorted(
-            (int(a), int(b), *(round(float(v), 6) for v in p)) for a, b, p in zip(s0_r, s1_r, p0_r, strict=True)
-        )
-        rows_f = sorted(
-            (int(a), int(b), *(round(float(v), 6) for v in p)) for a, b, p in zip(s0_f, s1_f, p0_f, strict=True)
-        )
-        self.assertEqual(rows_r, rows_f, "reset did not sever hysteresis history")
-
-    def test_new_contacts_buffer_resets_history(self):
-        """Sever hysteresis history automatically when a different buffer is supplied.
-
-        A different Contacts instance means a different stream of states;
-        winners recorded for the previous buffer must not bias the new one.
-        """
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        _cylinder_foot(builder, (0.0, 0.0, 0.0175))
-        builder.add_ground_plane()
-        model = builder.finalize(device=wp.get_device())
-        state = model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts_a = pipeline.contacts()
-        pipeline.collide(state, contacts_a)
-        contacts_b = pipeline.contacts()
-        pipeline.collide(state, contacts_b)  # must not inherit buffer A's winners
-        red = pipeline._body_pair_reducer
-        masks = red.contact_incumbent.numpy()[: int(contacts_b.rigid_contact_count.numpy()[0])]
-        self.assertTrue((masks == 0).all(), "incumbency leaked across Contacts buffers")
-
-    def test_reducer_launches_stay_off_the_tape(self):
-        """Record no reducer bookkeeping launches on an active autodiff tape.
-
-        Every reducer kernel has backward disabled; recording them would only
-        bloat the tape. This guards the full reduce() path including the
-        hashtable maintenance kernels.
-        """
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        _cylinder_foot(builder, (0.0, 0.0, 0.0175))
-        builder.add_ground_plane()
-        model = builder.finalize(device=wp.get_device())
-        state = model.state()
-        pipeline = _make_pipeline(model, True)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)  # warm up allocations outside the tape
-        red = pipeline._body_pair_reducer
-        tape = wp.Tape()
-        with tape:
-            red.reduce(model, state, contacts)
-        self.assertEqual(len(tape.launches), 0, "reducer bookkeeping was recorded on the tape")
-
-    def test_per_world_reset_severs_only_masked_worlds(self):
-        """Reset one world's hysteresis history and leave the other's intact.
-
-        Vectorized RL teleports individual environments mid-rollout; a global
-        reset would sever every environment's history for one env's reset.
-        The masked form advances only the selected worlds' generations: their
-        contacts stop matching the snapshot while other worlds keep their
-        incumbency bits.
-        """
-        # one sphere per world: identity frames skip compaction, so the
-        # incumbency-mask cache (pre-compaction indexed) aligns with the
-        # delivered contacts and worlds can be attributed exactly
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        for w in range(2):
-            builder.begin_world()
-            body = builder.add_body(xform=wp.transform(wp.vec3(2.0 * w, 0.0, 0.0095), wp.quat_identity()), mass=1.0)
-            builder.add_shape_sphere(body, radius=0.01)
-            builder.end_world()
-        builder.add_ground_plane()
-        model = builder.finalize(device=wp.get_device())
-        self.assertGreaterEqual(model.world_count, 2)
-        state = model.state()
-
-        pipeline = _make_pipeline(model, True)
-        contacts = pipeline.contacts()
-        pipeline.collide(state, contacts)
-        pipeline.collide(state, contacts)  # winners are now incumbents in both worlds
-
-        def masks_by_world():
-            red = pipeline._body_pair_reducer
-            n = int(contacts.rigid_contact_count.numpy()[0])
-            s0 = contacts.rigid_contact_shape0.numpy()[:n]
-            s1 = contacts.rigid_contact_shape1.numpy()[:n]
-            sw = model.shape_world.numpy()
-            masks = red.contact_incumbent.numpy()[:n]
-            out = {0: [], 1: []}
-            for k in range(n):
-                w = max(int(sw[s0[k]]), int(sw[s1[k]]))
-                out[w].append(int(masks[k]))
-            return out
-
-        before = masks_by_world()
-        self.assertTrue(any(m != 0 for m in before[0]) and any(m != 0 for m in before[1]))
-
-        mask = wp.array([True, False, False], dtype=wp.bool, device=wp.get_device())
-        pipeline.reset_contact_matching(mask)
-        pipeline.collide(state, contacts)
-        after = masks_by_world()
-        self.assertTrue(all(m == 0 for m in after[0]), "reset world kept incumbency")
-        self.assertTrue(any(m != 0 for m in after[1]), "unreset world lost incumbency")
-
-    def test_disabled_hysteresis_is_history_independent(self):
-        """Reduce identically with hysteresis=0 regardless of what ran before.
-
-        The zero setting must restore the exact memoryless behavior: the same
-        state reduced by a pipeline that saw a different previous step and by a
-        fresh pipeline must produce identical kept sets.
-        """
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        body = _cylinder_foot(builder, (0.0, 0.0, 0.0175))
-        builder.add_ground_plane()
-        model = builder.finalize(device=wp.get_device())
-        state_a = model.state()
-        state_b = model.state()
-        q = state_b.body_q.numpy()
-        q[body][0] += 0.01  # a slightly different "previous" step
-        state_b.body_q.assign(q)
-
-        with_history = _make_pipeline(model, True, body_pair_hysteresis=0.0)
-        contacts_h = with_history.contacts()
-        with_history.collide(state_b, contacts_h)
-        with_history.collide(state_a, contacts_h)
-
-        fresh = _make_pipeline(model, True, body_pair_hysteresis=0.0)
-        contacts_f = fresh.contacts()
-        fresh.collide(state_a, contacts_f)
-
-        n_h, s0_h, s1_h, _n1, p0_h = _contact_snapshot(contacts_h)
-        n_f, s0_f, s1_f, _n2, p0_f = _contact_snapshot(contacts_f)
-        self.assertEqual(n_h, n_f)
-        rows_h = sorted(
-            (int(a), int(b), *(round(float(v), 6) for v in p)) for a, b, p in zip(s0_h, s1_h, p0_h, strict=True)
-        )
-        rows_f = sorted(
-            (int(a), int(b), *(round(float(v), 6) for v in p)) for a, b, p in zip(s0_f, s1_f, p0_f, strict=True)
-        )
-        self.assertEqual(rows_h, rows_f)
 
 
 class TestBodyPairReductionVerifier(unittest.TestCase):

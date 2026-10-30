@@ -284,7 +284,7 @@ def _match_contacts_kernel(data: _MatchData):
         data.match_index[tid] = MATCH_NOT_FOUND
         return
 
-    n_old = wp.min(data.prev_count[0], data.prev_keys.shape[0])
+    n_old = data.prev_count[0]
     if n_old == 0:
         data.match_index[tid] = MATCH_NOT_FOUND
         return

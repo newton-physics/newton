@@ -1,1 +1,1 @@
-Add opt-in body-pair contact reduction through `CollisionPipeline.ContactReductionConfig(body_pairs=True)`, with `SolverBase.supports_body_pair_reduced_contacts` so solvers that are not validated for reduced contacts reject them. `SolverSteel` supports it.
+Add opt-in body-pair contact reduction through `CollisionPipeline(body_pair_reduction=CollisionPipeline.BodyPairReductionConfig())`, with `SolverBase.supports_body_pair_reduced_contacts` so solvers that are not validated for reduced contacts reject the buffers it allocates. `SolverSteel` supports it.

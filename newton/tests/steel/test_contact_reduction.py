@@ -3,7 +3,6 @@
 
 """SolverSteel on body-pair-reduced contacts: the solver gate and settling conformance."""
 
-import gc
 import unittest
 
 import numpy as np
@@ -59,38 +58,45 @@ class TestSteelBodyPairReductionGate(unittest.TestCase):
         contacts = pipeline.contacts()
         pipeline.collide(state_0, contacts)
         self.assertTrue(contacts.rigid_contacts_body_pair_reduced)
-        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_compliance=True)
+        solver = newton.solvers.SolverSteel(
+            model, solve_mode="matrix_free", contact_compliance=True, friction_anchor_beta=0.0
+        )
         with self.assertRaisesRegex(ValueError, "contact_compliance=True"):
             solver.step(state_0, state_1, model.control(), contacts, DT)
 
-    def test_precaptured_steel_warmstart_blocks_reducer_writer(self):
-        """Protect a warm-start Steel graph captured on unreduced contacts from later compaction.
+    def test_captured_warmstart_step_keeps_accepting_reduced_contacts(self):
+        """Capture collide and a warm-started Steel step before any eager step, then step eagerly after replay.
 
-        Warm start reads contact identities from the stream it captured. On an
-        unreduced stream it takes the unreduced-reader lease, so a reducer cannot
-        change that stream's layout behind graph replay.
+        The reduced stamp is fixed at allocation, so replay after clear() cannot
+        leave the buffer looking unreduced to the warm-start check.
         """
         device = wp.get_device()
         if not device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device")
         model = self._foot_scene()
         state_0, state_1 = model.state(), model.state()
-        plain = newton.CollisionPipeline(model, broad_phase="nxn", contact_matching="latest")
-        contacts = plain.contacts()
-        plain.collide(state_0, contacts)
-        solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free", contact_warmstart=True)
         control = model.control()
-        solver.step(state_0, state_1, control, contacts, DT)
-        with wp.ScopedCapture(device) as solver_capture:
+        pipeline = _make_pipeline(model, True, contact_matching="latest")
+        contacts = pipeline.contacts()
+        solver = newton.solvers.SolverSteel(
+            model, solve_mode="matrix_free", contact_warmstart=True, friction_anchor_beta=0.0
+        )
+        with wp.ScopedCapture(device) as capture:
+            pipeline.collide(state_0, contacts)
             solver.step(state_0, state_1, control, contacts, DT)
+        for _ in range(3):
+            wp.capture_launch(capture.graph)
+        contacts.clear()
+        wp.capture_launch(capture.graph)
 
-        reducer = _make_pipeline(model, True)
-        with self.assertRaisesRegex(RuntimeError, "unreduced-only solver configuration"):
-            reducer.collide(state_0, contacts)
-        del solver_capture
-        gc.collect()
-        contacts.release_graph_capture()
-        reducer.collide(state_0, contacts)
+        raw = _make_pipeline(model, False)
+        raw_contacts = raw.contacts()
+        raw.collide(state_0, raw_contacts)
+        reduced_count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(reduced_count, 0)
+        self.assertLess(reduced_count, int(raw_contacts.rigid_contact_count.numpy()[0]))
+        solver.step(state_0, state_1, control, contacts, DT)
+        self.assertTrue(np.isfinite(state_1.body_q.numpy()).all())
 
 
 class TestSteelBodyPairReductionConformance(unittest.TestCase):
@@ -364,15 +370,14 @@ class TestSteelBodyPairReductionConformance(unittest.TestCase):
         # solver derives depth from body poses at solve time), so
         # deep/shallow is a gap-band split, not a signed-depth split; the
         # dynamic equivalence itself is pinned by the settle comparisons
-        # below.  Hysteresis is disabled on the probe pipeline so slot winners
-        # are exact projections, not incumbency-biased ones.
+        # below.
         probe_builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         probe_body = build(probe_builder)
         probe_builder.add_ground_plane()
         probe_model = probe_builder.finalize(device=wp.get_device())
         ps0, ps1 = probe_model.state(), probe_model.state()
         probe_control = probe_model.control()
-        probe_pipe = _make_pipeline(probe_model, True, body_pair_hysteresis=0.0)
+        probe_pipe = _make_pipeline(probe_model, True)
         probe_contacts = probe_pipe.contacts()
         probe_solver = newton.solvers.SolverXPBD(probe_model, iterations=8)
         red = probe_pipe._body_pair_reducer
@@ -451,7 +456,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
             state_0.clear_forces()
             solver.step(state_0, state_1, control, contacts, DT)
             state_0, state_1 = state_1, state_0
-        stats = pipeline.body_pair_reduction_stats() if reduce_on else None
+        stats = pipeline._body_pair_reducer.stats() if reduce_on else None
         return state_0.body_q.numpy()[body], stats
 
     def test_plank_settles_level(self):
@@ -493,7 +498,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
                 solver.step(state_0, state_1, control, contacts, DT)
                 state_0, state_1 = state_1, state_0
                 zs.append(float(state_0.body_q.numpy()[body][2]))
-            stats = pipeline.body_pair_reduction_stats() if reduce_on else None
+            stats = pipeline._body_pair_reducer.stats() if reduce_on else None
             return np.array(zs), stats
 
         z_off, _ = run(False)
@@ -542,7 +547,7 @@ class TestSteelBodyPairReductionSettling(unittest.TestCase):
                     q = state_0.body_q.numpy()[body][3:7]
                     cos_half = min(1.0, abs(float(np.dot(q, q_ref))))
                     rots.append(float(np.degrees(2.0 * np.arccos(cos_half))))
-            stats = pipeline.body_pair_reduction_stats() if reduce_on else None
+            stats = pipeline._body_pair_reducer.stats() if reduce_on else None
             return float(np.mean(speeds)), float(np.max(rots)), stats
 
         v_off, rot_off, _ = settle(False)

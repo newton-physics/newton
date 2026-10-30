@@ -276,9 +276,7 @@ class ContactSorter:
         the contents as clobbered by every :meth:`sort_full` call.
 
         Returns:
-            Mapping from contact field name to the scratch array. The
-            ``stiffness``/``damping``/``friction`` entries are zero-length
-            unless the sorter was built with ``per_contact_shape_properties``.
+            Mapping from contact field name to the scratch array.
         """
         return {
             "shape0": self._full_shape0_buf,
@@ -291,9 +289,6 @@ class ContactSorter:
             "margin0": self._full_margin0_buf,
             "margin1": self._full_margin1_buf,
             "tids": self._full_tids_buf,
-            "stiffness": self._full_stiffness_buf,
-            "damping": self._full_damping_buf,
-            "friction": self._full_friction_buf,
         }
 
     def sort_simple(
@@ -406,20 +401,7 @@ class ContactSorter:
         """
         n = self._capacity
 
-        # Scratch provisioning and the current buffer schema are separate.
-        # A reducer-enabled deterministic pipeline provisions material scratch
-        # so a later external rich Contacts buffer is safe, but its ordinary
-        # property-less buffer must not run an in-place permutation over the
-        # scratch placeholders themselves.
-        has_props = (
-            self._has_shape_props
-            and stiffness is not None
-            and damping is not None
-            and friction is not None
-            and stiffness.shape[0] > 0
-            and damping.shape[0] > 0
-            and friction.shape[0] > 0
-        )
+        has_props = self._has_shape_props
         has_match = match_index is not None and match_index.shape[0] > 0
 
         data = _FullContactArrays()
