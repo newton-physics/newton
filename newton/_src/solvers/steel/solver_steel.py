@@ -3192,7 +3192,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         reset keep the cadence captured into them.
 
         Args:
-            state: Simulation state; left unchanged.
+            state: Simulation state; left unchanged. With ``enable_sleeping``, a masked reset
+                restarts the selected worlds' sleep state-change history from it. The pose history of a
+                kinematic or prescribed body is kept while a shape of an unselected island can collide with one
+                of its shapes, so a move of that body made before the reset still wakes the islands resting on
+                it. Collision follows shape worlds, which can differ from body worlds: a global shape collides
+                with every shape, a world shape with the shapes of its world and the global shapes.
             world_mask: Optional boolean mask of shape ``(world_count + 1,)``. The first
                 ``world_count`` entries select worlds; the final entry selects global
                 articulations (world ``-1``) and the final entry of
@@ -3218,7 +3223,10 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._device_torsion.clear_status()
         world_mask = self._normalize_reset_world_mask(world_mask)
         if self._sleeping is not None:
-            self._sleeping.wake(world_mask)
+            if world_mask is None:
+                self._sleeping.wake()
+            else:
+                self._sleeping.wake_worlds(world_mask, state)
         if self._world_count == 0:
             return
 

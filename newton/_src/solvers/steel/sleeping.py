@@ -112,6 +112,8 @@ class _SleepState:
         )
         self.changed = wp.zeros(count, dtype=int, device=device)
         self.asleep_steps = wp.zeros(count, dtype=int, device=device)
+        self.shared_boundaries = wp.zeros(model.body_count, dtype=int, device=device)
+        self.unselected_reader_scopes = wp.zeros(model.world_count + 2, dtype=int, device=device)
         self.frozen_bodies = wp.zeros(model.body_count, dtype=int, device=device)
         shape_art = np.full(model.shape_count, -1, dtype=np.int32)
         shape_body = model.shape_body.numpy()
@@ -135,33 +137,79 @@ class _SleepState:
         """Bodies whose friction-patch history can be carried; only row-free sleeping qualifies."""
         return self.frozen_bodies if self.skip_constraints and self.carry_frozen_patches else None
 
-    def wake(self, world_mask=None):
-        """Wake every component and invalidate state-change history, or wake only the masked worlds.
+    def wake(self):
+        """Wake every component and invalidate state-change history."""
+        requested = self.solver._mass_update_requested
+        wp.launch(_wake_all, self.art_awake.size, [self.art_awake, requested], device=self.model.device)
+        self.body_awake.fill_(1)
+        self.quiet_age.zero_()
+        self.valid.zero_()
+        self.asleep_steps.zero_()
 
-        ``world_mask`` has the solver's ``(world_count + 1,)`` reset layout; its final entry
-        selects global articulations.
+    def wake_worlds(self, world_mask, state):
+        """Wake the masked worlds and restart their state-change history from ``state``.
+
+        ``world_mask`` has the solver's ``(world_count + 1,)`` reset layout; its final entry selects global entities.
         """
         requested = self.solver._mass_update_requested
-        if world_mask is None:
-            wp.launch(_wake_all, self.art_awake.size, [self.art_awake, requested], device=self.model.device)
-            self.body_awake.fill_(1)
-            self.quiet_age.zero_()
-            self.valid.zero_()
-            self.asleep_steps.zero_()
-            return
         device = self.model.device
         world = self.solver._articulation_model_world
         world_count = int(self.model.world_count)
         wp.launch(
             _wake_worlds,
             self.art_awake.size,
-            [world_mask, world_count, world, self.art_awake, self.quiet_age, requested],
+            [world_mask, world_count, world, self.art_awake, self.quiet_age, self.asleep_steps, requested],
             device=device,
         )
         wp.launch(
             _wake_world_bodies,
             self.body_awake.size,
             [world_mask, world_count, world, self.body_nodes, self.body_awake],
+            device=device,
+        )
+        # The masked counterpart of valid=0, except for contact boundaries that unselected islands can also touch.
+        self.unselected_reader_scopes.zero_()
+        self.shared_boundaries.zero_()
+        shapes = [self.model.shape_body, self.model.shape_world, self.body_nodes, self.model.body_flags]
+        wp.launch(
+            _unselected_reader_scopes,
+            self.model.shape_count,
+            [world_mask, world_count, world, *shapes, self.unselected_reader_scopes],
+            device=device,
+        )
+        wp.launch(
+            _mark_shared_boundaries,
+            self.model.shape_count,
+            [world_count, *shapes, self.unselected_reader_scopes, self.shared_boundaries],
+            device=device,
+        )
+        wp.launch(
+            _restart_world_body_history,
+            self.model.body_count,
+            [
+                world_mask,
+                world_count,
+                self.model.body_world,
+                self.body_nodes,
+                self.model.body_flags,
+                self.shared_boundaries,
+                state.body_q,
+                state.body_qd,
+                self.last_body_q,
+                self.last_body_qd,
+            ],
+            device=device,
+        )
+        wp.launch(
+            _restart_world_history,
+            self.model.joint_coord_count,
+            [world_mask, world_count, world, self.coord_art, state.joint_q, self.last_q],
+            device=device,
+        )
+        wp.launch(
+            _restart_world_history,
+            self.model.joint_dof_count,
+            [world_mask, world_count, world, self.dof_art, state.joint_qd, self.last_qd],
             device=device,
         )
 
@@ -608,6 +656,7 @@ def _wake_worlds(
     world: wp.array[int],
     awake: wp.array[int],
     age: wp.array[float],
+    asleep_steps: wp.array[int],
     requested: wp.array[int],
 ):
     i = wp.tid()
@@ -616,6 +665,90 @@ def _wake_worlds(
             requested[i] = 1
         awake[i] = 1
         age[i] = 0.0
+        asleep_steps[i] = 0
+
+
+@wp.kernel(enable_backward=False)
+def _unselected_reader_scopes(
+    mask: wp.array[wp.bool],
+    world_count: int,
+    world: wp.array[int],
+    shape_body: wp.array[int],
+    shape_world: wp.array[int],
+    nodes: wp.array[int],
+    flags: wp.array[int],
+    scopes: wp.array[int],
+):
+    """Flag the shape worlds of unselected islands; entry ``world_count`` flags a global shape, the last any shape."""
+    i = wp.tid()
+    node = _node(shape_body[i], nodes, flags)
+    if node < 0 or reset_world_selected(world[node], mask, world_count):
+        return
+    w = shape_world[i]
+    if w < 0:
+        scopes[world_count] = 1
+    else:
+        scopes[w] = 1
+    scopes[world_count + 1] = 1
+
+
+@wp.kernel(enable_backward=False)
+def _mark_shared_boundaries(
+    world_count: int,
+    shape_body: wp.array[int],
+    shape_world: wp.array[int],
+    nodes: wp.array[int],
+    flags: wp.array[int],
+    scopes: wp.array[int],
+    shared: wp.array[int],
+):
+    """Mark the contact boundaries with a shape that a shape of an unselected island can collide with."""
+    i = wp.tid()
+    body = shape_body[i]
+    if body < 0 or _node(body, nodes, flags) >= 0:
+        return
+    w = shape_world[i]
+    if scopes[world_count] != 0 or (w < 0 and scopes[world_count + 1] != 0) or (w >= 0 and scopes[w] != 0):
+        shared[body] = 1
+
+
+@wp.kernel(enable_backward=False)
+def _restart_world_body_history(
+    mask: wp.array[wp.bool],
+    world_count: int,
+    body_world: wp.array[int],
+    nodes: wp.array[int],
+    flags: wp.array[int],
+    shared: wp.array[int],
+    q: wp.array[wp.transform],
+    qd: wp.array[wp.spatial_vector],
+    last_q: wp.array[wp.transform],
+    last_qd: wp.array[wp.spatial_vector],
+):
+    i = wp.tid()
+    w = body_world[i]
+    if not reset_world_selected(w, mask, world_count):
+        return
+    # A contact boundary's history also shows its moves to the islands resting on it; keep it for unselected ones.
+    if _node(i, nodes, flags) < 0 and shared[i] != 0:
+        return
+    last_q[i] = q[i]
+    last_qd[i] = qd[i]
+
+
+@wp.kernel(enable_backward=False)
+def _restart_world_history(
+    mask: wp.array[wp.bool],
+    world_count: int,
+    world: wp.array[int],
+    nodes: wp.array[int],
+    value: wp.array[float],
+    last: wp.array[float],
+):
+    i = wp.tid()
+    node = nodes[i]
+    if node >= 0 and reset_world_selected(world[node], mask, world_count):
+        last[i] = value[i]
 
 
 @wp.kernel(enable_backward=False)
