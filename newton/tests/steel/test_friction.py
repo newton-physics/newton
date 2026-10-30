@@ -589,6 +589,9 @@ def _solve_contact_block(device, tangent_mass, rhs, initial, capacity=32):
             wp.ones((1, 1), dtype=float, device=device),
             wp.full((1, 1), -1, dtype=int, device=device),
             wp.zeros((1, 1), dtype=float, device=device),
+            # Compliance coefficients: no compliant rows.
+            wp.zeros((1, 1), dtype=float, device=device),
+            wp.zeros((1, 1), dtype=float, device=device),
             1,
             1.0,
             0,
