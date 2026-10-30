@@ -2655,6 +2655,106 @@ def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
     test.assertIn(f"unsupported follower joint indices: {followers[:10]}; 2 additional indices omitted.", message)
 
 
+def test_apply_body_deltas_rigid_update(test, device):
+    """Preserve rigid-body updates, static copies, and velocity snap decisions."""
+    rng = np.random.default_rng(42)
+    count = 13
+    dt = 1.0 / 120.0
+    poses = rng.uniform(-0.5, 0.5, (count, 7)).astype(np.float32)
+    poses[:, 3:] /= np.linalg.norm(poses[:, 3:], axis=1, keepdims=True)
+    velocities = rng.uniform(-1.0, 1.0, (count, 6)).astype(np.float32)
+    com = rng.uniform(-0.2, 0.2, (count, 3)).astype(np.float32)
+    inverse_mass = rng.uniform(0.2, 2.0, count).astype(np.float32)
+    inverse_mass[0] = 0.0
+    factors = rng.uniform(-0.5, 0.5, (count, 3, 3))
+    inertia = (factors @ factors.transpose(0, 2, 1) + np.eye(3)).astype(np.float32)
+    inverse_inertia = np.linalg.inv(inertia).astype(np.float32)
+    deltas = rng.uniform(-0.1, 0.1, (count, 6)).astype(np.float32)
+    weights = np.resize(np.array([0.0, 2.0, -1.0, 4.0], dtype=np.float32), count)
+
+    # Probe both sides of the float32 threshold, including exact equality.
+    threshold = np.float32(1.0e-4)
+    speeds = [np.nextafter(threshold, np.float32(0.0)), threshold, np.nextafter(threshold, np.float32(np.inf))]
+    poses[1:7, 3:] = [0.0, 0.0, 0.0, 1.0]
+    velocities[1:7] = 0.0
+    velocities[1:4, 0] = speeds
+    velocities[4:7, 3] = speeds
+    com[1:7] = 0.0
+    inertia[1:7] = np.eye(3)
+    inverse_inertia[1:7] = np.eye(3)
+    deltas[1:7] = 0.0
+
+    for weighted in (False, True):
+        expected_poses = poses.astype(np.float64)
+        expected_velocities = velocities.astype(np.float64)
+        for i in range(7, count):
+            rotation = _quat_to_R(poses[i, 3:].astype(np.float64))
+            weight = 1.0 / float(weights[i]) if weighted and weights[i] > 0.0 else 1.0
+            linear_delta = deltas[i, :3].astype(np.float64) * float(inverse_mass[i]) * weight
+            angular_impulse = deltas[i, 3:].astype(np.float64) * weight
+            body_omega = rotation.T @ velocities[i, 3:]
+            body_delta = inverse_inertia[i].astype(np.float64) @ rotation.T @ angular_impulse
+            torque = np.cross(body_delta, inertia[i] @ (body_omega + body_delta)) + np.cross(
+                body_omega, inertia[i] @ body_delta
+            )
+            angular_delta = rotation @ (body_delta - dt * (inverse_inertia[i] @ torque))
+            old_quat = poses[i, 3:].astype(np.float64)
+            increment = np.concatenate(
+                (
+                    old_quat[3] * angular_delta * dt + np.cross(angular_delta * dt, old_quat[:3]),
+                    [-np.dot(angular_delta * dt, old_quat[:3])],
+                )
+            )
+            new_quat = old_quat + 0.5 * increment
+            new_quat /= np.linalg.norm(new_quat)
+            expected_poses[i, :3] += rotation @ com[i] + linear_delta * dt - _quat_to_R(new_quat) @ com[i]
+            expected_poses[i, 3:] = new_quat
+            expected_velocities[i, :3] += linear_delta
+            expected_velocities[i, 3:] += angular_delta
+        expected_velocities[[1, 4]] = 0.0
+
+        for in_place in (False, True):
+            with test.subTest(weighted=weighted, in_place=in_place):
+                q_in = wp.array(poses, dtype=wp.transform, device=device)
+                qd_in = wp.array(velocities, dtype=wp.spatial_vector, device=device)
+                inputs = [
+                    q_in,
+                    qd_in,
+                    wp.array(com, dtype=wp.vec3, device=device),
+                    wp.array(inertia, dtype=wp.mat33, device=device),
+                    wp.array(inverse_mass, dtype=wp.float32, device=device),
+                    wp.array(inverse_inertia, dtype=wp.mat33, device=device),
+                    wp.array(deltas, dtype=wp.spatial_vector, device=device),
+                    wp.array(weights, dtype=wp.float32, device=device) if weighted else None,
+                    dt,
+                ]
+                q_out = q_in if in_place else wp.empty_like(q_in)
+                qd_out = qd_in if in_place else wp.empty_like(qd_in)
+                wp.launch(
+                    xpbd_kernels.apply_body_deltas,
+                    dim=count,
+                    inputs=inputs,
+                    outputs=[q_out, qd_out],
+                    device=device,
+                )
+                actual_poses, actual_velocities = q_out.numpy(), qd_out.numpy()
+                np.testing.assert_allclose(actual_poses, expected_poses, atol=2.0e-6, rtol=2.0e-6)
+                np.testing.assert_allclose(actual_velocities, expected_velocities, atol=2.0e-5, rtol=2.0e-6)
+                np.testing.assert_array_equal(actual_poses[0].view(np.uint8), poses[0].view(np.uint8))
+                np.testing.assert_array_equal(actual_velocities[0].view(np.uint8), velocities[0].view(np.uint8))
+                np.testing.assert_array_equal(actual_velocities[1:7], expected_velocities[1:7])
+                np.testing.assert_allclose(np.linalg.norm(actual_poses[1:, 3:], axis=1), 1.0, atol=3.0e-6, rtol=0.0)
+                for value, expected in zip(
+                    inputs[2:7], (com, inertia, inverse_mass, inverse_inertia, deltas), strict=True
+                ):
+                    np.testing.assert_array_equal(value.numpy().view(np.uint8), expected.view(np.uint8))
+                if weighted:
+                    np.testing.assert_array_equal(inputs[7].numpy().view(np.uint8), weights.view(np.uint8))
+                if not in_place:
+                    np.testing.assert_array_equal(q_in.numpy().view(np.uint8), poses.view(np.uint8))
+                    np.testing.assert_array_equal(qd_in.numpy().view(np.uint8), velocities.view(np.uint8))
+
+
 devices = get_test_devices()
 
 
@@ -3038,6 +3138,11 @@ add_function_test(
     test_xpbd_mimic_warns_for_unsupported_joint_types,
     devices=devices,
     check_output=False,
+)
+
+
+add_function_test(
+    TestSolverXPBD, "test_apply_body_deltas_rigid_update", test_apply_body_deltas_rigid_update, devices=devices
 )
 
 
